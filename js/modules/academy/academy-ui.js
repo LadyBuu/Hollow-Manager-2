@@ -19,8 +19,8 @@
  * 
  * STATE MODEL (v2 - People shell):
  * 
- *   selectedView:      'people' | 'weeklyTeams' | 'rankings' |
- *                      'disciplines' | 'locations'
+ *   selectedView:      'people' | 'tournaments' | 'weeklyTeams' |
+ *                      'rankings' | 'disciplines' | 'locations'
  *   selectedClassId:   graduating class ID (a class entity ID,
  *                      not a discipline)
  *   selectedCharacterId: character ID
@@ -30,7 +30,9 @@
  * 
  * ROLE SEMANTICS:
  *   - A character's role is defined RELATIVE TO A GRADUATING CLASS.
- *   - 'instructor' means class.instructorId === char.id.
+ *   - 'instructor' means class.instructorIds includes charId
+ *     (or, for legacy single-instructor classes, class.instructorId
+ *     equals charId).
  *   - 'trainee' means any other case where the character is a member.
  *   - Role is DERIVED, not stored. Use getRoleFor(charId, classId).
  *   - There is no selectedRole field. The role follows from the
@@ -84,7 +86,14 @@
     // CONSTANTS
     // ============================================================
 
-    var VALID_VIEWS = ['people', 'weeklyTeams', 'rankings', 'disciplines', 'locations'];
+    var VALID_VIEWS = [
+        'people',
+        'tournaments',
+        'weeklyTeams',
+        'rankings',
+        'disciplines',
+        'locations'
+    ];
     var DEFAULT_VIEW = 'people';
 
     var VALID_ROLES = ['trainee', 'instructor'];
@@ -273,20 +282,46 @@
         return data.academy.graduatingClasses[String(classId)] || null;
     }
 
+    /**
+     * Determine whether a character is the instructor of a class.
+     * Supports BOTH the plural form (class.instructorIds[]) and the
+     * legacy singular form (class.instructorId) so this module works
+     * before and after the plural migration.
+     */
+    function isClassInstructor(cls, charId) {
+        if (!cls || !charId) {
+            return false;
+        }
+        var target = String(charId);
+
+        if (Array.isArray(cls.instructorIds)) {
+            for (var i = 0; i < cls.instructorIds.length; i++) {
+                if (String(cls.instructorIds[i]) === target) {
+                    return true;
+                }
+            }
+        }
+
+        if (cls.instructorId !== undefined && cls.instructorId !== null) {
+            if (String(cls.instructorId) === target) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     function isCharacterInClass(charId, classId) {
         if (!charId || !classId) {
             return false;
         }
 
         var AcademyQueries = getAcademyQueries();
-        if (AcademyQueries && typeof AcademyQueries.isCharacterInClass === 'function') {
-            var char = null;
-            if (typeof AcademyQueries.getClassStudents === 'function') {
-                var students = AcademyQueries.getClassStudents(classId) || [];
-                for (var i = 0; i < students.length; i++) {
-                    if (String(students[i].id) === String(charId)) {
-                        return true;
-                    }
+        if (AcademyQueries && typeof AcademyQueries.getClassStudents === 'function') {
+            var students = AcademyQueries.getClassStudents(classId) || [];
+            for (var i = 0; i < students.length; i++) {
+                if (String(students[i].id) === String(charId)) {
+                    return true;
                 }
             }
         }
@@ -321,7 +356,8 @@
      * 
      * Returns:
      *   'instructor' — the character is the class's instructor
-     *                  (class.instructorId === charId)
+     *                  (class.instructorIds includes charId, or
+     *                  legacy class.instructorId === charId)
      *   'trainee'    — any other case where the class exists
      *   null         — the class does not exist
      * 
@@ -343,7 +379,7 @@
             return null;
         }
 
-        if (cls.instructorId && String(cls.instructorId) === String(charId)) {
+        if (isClassInstructor(cls, charId)) {
             return 'instructor';
         }
 
@@ -469,8 +505,8 @@
 
             if (!stillMember) {
                 var cls = getClassRecord(normalised);
-                if (cls && cls.instructorId) {
-                    isInstructor = String(cls.instructorId) === String(_state.selectedCharacterId);
+                if (cls) {
+                    isInstructor = isClassInstructor(cls, _state.selectedCharacterId);
                 }
             }
 
