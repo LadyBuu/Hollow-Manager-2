@@ -1,16 +1,16 @@
 /**
  * modules/academy/academy-view.js - Academy Unified Shell
  * Top-level renderer for the Academy tab
- * 
+ *
  * Path: js/modules/academy/academy-view.js
- * 
+ *
  * This module provides:
  *   - The unified Academy shell (view switcher, class dropdown, week selector)
  *   - The People view: character list + detail panel
  *   - Delegation to AcademyClassDetail and AcademyCharacterDetail for the right panel
  *   - Full event wiring for the People view
  *   - Placeholder views for Weekly Teams / Rankings / Disciplines / Locations
- * 
+ *
  * IMPORTANT:
  *   - RENDER + WIRE - no mutations, no domain logic
  *   - Reads state from AcademyUI
@@ -18,14 +18,14 @@
  *   - Delegates right-panel rendering to AcademyClassDetail / AcademyCharacterDetail
  *   - Uses container-level event delegation (survives innerHTML replacement)
  *   - Uses DomUtils for escaping
- * 
+ *
  * VIEWS:
  *   people       - default; class + character browsing (FULLY WIRED)
  *   weeklyTeams  - placeholder (Session E)
  *   rankings     - placeholder (Session E)
  *   disciplines  - placeholder (Session E)
  *   locations    - placeholder (Session E)
- * 
+ *
  * LAYOUT (people view):
  *   ┌─────────────────────────────────────────────────────────┐
  *   │ [People] [Weekly Teams] [Rankings] [Disciplines] [...] │
@@ -40,7 +40,7 @@
  *   │ Bob Jones            │                                  │
  *   │ Jane Smith (Inst.)   │                                  │
  *   └──────────────────────┴──────────────────────────────────┘
- * 
+ *
  * DEPENDENCIES:
  *   - window.AcademyUI (MANDATORY)
  *   - window.AcademyAggregator (MANDATORY)
@@ -53,7 +53,7 @@
  *   - window.CharacterDetail (LAZY - only for View Full Profile)
  *   - window.AcademyClassDetail (LAZY - optional)
  *   - window.AcademyCharacterDetail (LAZY - optional)
- * 
+ *
  * USAGE:
  *   // Called by academy/index.js
  *   AcademyView.render(container);
@@ -193,7 +193,7 @@
     /**
      * Render the entire Academy tab into a container.
      * Called by academy/index.js on mount and refresh.
-     * 
+     *
      * @param {HTMLElement} container - The #tab-academy container
      */
     function render(container) {
@@ -590,7 +590,11 @@
         }
 
         // ---- Character row selection ----
-        var charRow = target.closest('.academy-character-row');
+        // Matches BOTH the sidebar list rows (.academy-character-row)
+        // AND the roster rows on the class detail panel
+        // (.academy-student-row). Clicking either selects the character
+        // and swaps the right panel to that character's detail.
+        var charRow = target.closest('.academy-character-row, .academy-student-row');
         if (charRow) {
             e.preventDefault();
             handleCharacterSelect(charRow.dataset.characterId);
