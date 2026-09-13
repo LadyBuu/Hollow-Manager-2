@@ -2,17 +2,36 @@
  * modules/calendar/student-calendar-ui.js - Student Calendar UI
  * Thin UI layer for the student calendar
  * Path: js/modules/calendar/student-calendar-ui.js
- * 
+ *
  * IMPORTANT:
  *   - THIN UI LAYER - orchestrates interaction only
  *   - Uses CalendarAggregator for reads (cross-domain resolved view models)
  *   - Uses ScheduleCore for mutations
  *   - Uses CalendarRenderer for HTML generation
  *   - Uses CalendarUIBase for shared UI helpers
- *   - Persists changes via window.saveData() after every ScheduleCore mutation
  *   - No direct external domain access
  *   - No direct window.data access
- * 
+ *
+ * PERSISTENCE CONTRACT (Session D5):
+ *   - ScheduleCore mutations are Promise-based and go through
+ *     MutationPipeline. The pipeline owns persistence, rollback,
+ *     activity logging, and user-facing notifications.
+ *   - This module does NOT call window.saveData().
+ *   - This module does NOT call a local persist() helper.
+ *   - The UI AWAITS each mutation, then either re-renders on success
+ *     or does nothing on failure (the pipeline has already notified).
+ *
+ * WRITE CALL SITES (all Promise-based):
+ *   1. handleAddClass         → ScheduleCore.setStudentSlot
+ *   2. handleRemoveClass      → ScheduleCore.removeStudentSlot
+ *   3. handleSaveRestDays     → ScheduleCore.setRestDays
+ *
+ * READ CALL SITES (synchronous, unchanged):
+ *   - CharacterQueries.getStudents
+ *   - DisciplineQueries.getAvailableDisciplines
+ *   - CalendarAggregator.getStudentCalendar
+ *   - CalendarAggregator.getClassDetails
+ *
  * DEPENDENCIES:
  *   - window.CalendarUIBase
  *   - window.CalendarAggregator
@@ -21,8 +40,8 @@
  *   - window.CalendarConstants
  *   - window.CharacterQueries
  *   - window.DisciplineQueries
- *   - window.CalendarQueries (for class details lookup)
- * 
+ *   - window.CalendarQueries
+ *
  * USAGE:
  *   var ui = window.StudentCalendarUI;
  *   ui.render(container, { selectedId: 'char_123', week: 5 });
@@ -32,7 +51,7 @@
     'use strict';
 
     // ============================================================
-    // LOAD GUARD - set immediately so re-inclusion is a no-op
+    // LOAD GUARD
     // ============================================================
 
     if (window.__studentCalendarUILoaded) { return; }
@@ -78,19 +97,6 @@
             hours.push(h);
         }
         return hours;
-    }
-
-    /**
-     * Persist the current data state after a ScheduleCore mutation.
-     * ScheduleCore mutates window.data.curriculum synchronously and does
-     * NOT persist. Callers must invoke saveData() themselves.
-     */
-    function persist() {
-        if (typeof window.saveData === 'function') {
-            window.saveData().catch(function() {
-                UIBase.notify('Changes applied but failed to save.', 'error');
-            });
-        }
     }
 
     // ============================================================
@@ -145,7 +151,7 @@
     }
 
     // ============================================================
-    // BIND EVENTS
+    // EVENT BINDING
     // ============================================================
 
     function bindEvents() {
@@ -230,6 +236,14 @@
         render(_container, _state);
     }
 
+    /**
+     * Add a class to the selected student's schedule.
+     *
+     * ScheduleCore.setStudentSlot is Promise-based (Session D1).
+     * The pipeline owns persistence and notification. On success we
+     * re-render; on failure we do nothing beyond letting the pipeline
+     * notification stand.
+     */
     function handleAddClass(day, hour) {
         if (!_state.selectedId) {
             UIBase.notify('No student selected.', 'error');
@@ -331,7 +345,8 @@
                 var metadata = {};
                 if (labelValue) { metadata.label = labelValue; }
 
-                var result = ScheduleCore.setStudentSlot(
+                // ---- WRITE (Promise-based) ----
+                ScheduleCore.setStudentSlot(
                     _state.selectedId,
                     _state.week,
                     day,
@@ -339,20 +354,27 @@
                     disciplineId,
                     duration,
                     metadata
-                );
-
-                if (result && result.success) {
-                    persist();
-                    closeModal();
-                    UIBase.notify('Class added successfully.', 'success');
-                    render(_container, _state);
-                } else {
-                    UIBase.notify(result ? result.message : 'Failed to add class.', 'error');
-                }
+                ).then(function(result) {
+                    if (result && result.success) {
+                        closeModal();
+                        render(_container, _state);
+                    }
+                    // On failure: pipeline already notified. Modal
+                    // stays open so the user can retry.
+                }).catch(function(err) {
+                    UIBase.notify(
+                        'Unexpected error: ' + (err && err.message ? err.message : 'unknown'),
+                        'error'
+                    );
+                });
             };
         }
     }
 
+    /**
+     * Show details for an occupied slot.
+     * Read-only. No Promise.
+     */
     function handleClassDetails(day, hour) {
         if (!_state.selectedId) { return; }
 
@@ -426,22 +448,40 @@
         }
     }
 
+    /**
+     * Remove a class from the selected student's schedule.
+     *
+     * ScheduleCore.removeStudentSlot is Promise-based.
+     */
     function handleRemoveClass(day, hour) {
         if (!_state.selectedId) {
             UIBase.notify('No student selected.', 'error');
             return;
         }
 
-        var result = ScheduleCore.removeStudentSlot(_state.selectedId, _state.week, day, hour);
-        if (result && result.success) {
-            persist();
-            UIBase.notify('Class removed from schedule.', 'success');
-            render(_container, _state);
-        } else {
-            UIBase.notify(result ? result.message : 'Failed to remove class.', 'error');
-        }
+        ScheduleCore.removeStudentSlot(
+            _state.selectedId,
+            _state.week,
+            day,
+            hour
+        ).then(function(result) {
+            if (result && result.success) {
+                render(_container, _state);
+            }
+            // On failure: pipeline already notified. No re-render.
+        }).catch(function(err) {
+            UIBase.notify(
+                'Unexpected error: ' + (err && err.message ? err.message : 'unknown'),
+                'error'
+            );
+        });
     }
 
+    /**
+     * Save the student's rest days for the current week.
+     *
+     * ScheduleCore.setRestDays is Promise-based.
+     */
     function handleSaveRestDays() {
         if (!_state.selectedId) {
             UIBase.notify('No student selected.', 'error');
@@ -458,14 +498,21 @@
             }
         }
 
-        var result = ScheduleCore.setRestDays(_state.selectedId, _state.week, days);
-        if (result && result.success) {
-            persist();
-            UIBase.notify('Rest days saved.', 'success');
-            render(_container, _state);
-        } else {
-            UIBase.notify(result ? result.message : 'Failed to save rest days.', 'error');
-        }
+        ScheduleCore.setRestDays(
+            _state.selectedId,
+            _state.week,
+            days
+        ).then(function(result) {
+            if (result && result.success) {
+                render(_container, _state);
+            }
+            // On failure: pipeline already notified. No re-render.
+        }).catch(function(err) {
+            UIBase.notify(
+                'Unexpected error: ' + (err && err.message ? err.message : 'unknown'),
+                'error'
+            );
+        });
     }
 
     // ============================================================

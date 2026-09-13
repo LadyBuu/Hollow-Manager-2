@@ -2,17 +2,54 @@
  * modules/calendar/location-calendar-ui.js - Location Calendar UI
  * Thin UI layer for the location calendar
  * Path: js/modules/calendar/location-calendar-ui.js
- * 
+ *
  * IMPORTANT:
  *   - THIN UI LAYER - orchestrates interaction only
- *   - Uses CalendarAggregator for reads
+ *   - Uses CalendarAggregator for reads (cross-domain resolved view models)
  *   - Uses ScheduleCore for mutations
  *   - Uses CalendarRenderer for HTML generation
  *   - Uses CalendarUIBase for shared UI helpers
- *   - Persists changes via window.saveData() after every ScheduleCore mutation
  *   - No direct external domain access
  *   - No direct window.data access
- * 
+ *
+ * PERSISTENCE CONTRACT (Session D7):
+ *   - ScheduleCore mutations are Promise-based and go through
+ *     MutationPipeline. The pipeline owns persistence, rollback,
+ *     activity logging, and user-facing notifications.
+ *   - This module does NOT call window.saveData().
+ *   - This module does NOT call a local persist() helper.
+ *   - The UI AWAITS each mutation, then either re-renders on success
+ *     or does nothing on failure (the pipeline has already notified).
+ *
+ * WRITE CALL SITES (all Promise-based):
+ *   1. handleAddClass    → ScheduleCore.setLocationClass
+ *   2. handleRemoveClass → ScheduleCore.removeLocationClass
+ *
+ * READ CALL SITES (synchronous, unchanged):
+ *   - LocationQueries.getLocations
+ *   - LocationQueries.getLocation
+ *   - LocationQueries.getLocationName
+ *   - CharacterQueries.getCharacterById (for instructor names)
+ *   - DisciplineQueries.getDiscipline
+ *   - CalendarQueries.getLocationSchedule
+ *   - CalendarQueries.getSlotMetadata
+ *   - CalendarAggregator.getLocationCalendar
+ *   - CalendarAggregator.getLocationDisciplineAvailability
+ *   - CalendarAggregator.getStudentsAtLocation
+ *
+ * NOTE ON setLocationClass SIGNATURE:
+ *   ScheduleCore.setLocationClass takes 7 positional arguments:
+ *     (locationId, week, day, hour, disciplineId, duration, metadata)
+ *
+ *   The provider wrapper assembled in academy/index.js collapses
+ *   this to 6 by hard-coding duration to 1:
+ *     setLocationClass(locationId, week, day, hour, disciplineId, metadata)
+ *       → ScheduleCore.setLocationClass(locationId, week, day, hour, disciplineId, 1, metadata)
+ *
+ *   This module calls ScheduleCore directly, so it uses the FULL
+ *   7-argument signature and passes the user-selected duration.
+ *   The provider's collapsed signature is not consumed here.
+ *
  * DEPENDENCIES:
  *   - window.CalendarUIBase
  *   - window.CalendarAggregator
@@ -22,8 +59,8 @@
  *   - window.LocationQueries
  *   - window.CharacterQueries
  *   - window.DisciplineQueries
- *   - window.CalendarQueries (for location schedule lookups)
- * 
+ *   - window.CalendarQueries
+ *
  * USAGE:
  *   var ui = window.LocationCalendarUI;
  *   ui.render(container, { selectedId: 'loc_123', week: 5 });
@@ -33,7 +70,7 @@
     'use strict';
 
     // ============================================================
-    // LOAD GUARD - set immediately so re-inclusion is a no-op
+    // LOAD GUARD
     // ============================================================
 
     if (window.__locationCalendarUILoaded) { return; }
@@ -79,19 +116,6 @@
             hours.push(h);
         }
         return hours;
-    }
-
-    /**
-     * Persist the current data state after a ScheduleCore mutation.
-     * ScheduleCore mutates window.data.curriculum synchronously and does
-     * NOT persist. Callers must invoke saveData() themselves.
-     */
-    function persist() {
-        if (typeof window.saveData === 'function') {
-            window.saveData().catch(function() {
-                UIBase.notify('Changes applied but failed to save.', 'error');
-            });
-        }
     }
 
     // ============================================================
@@ -146,7 +170,7 @@
     }
 
     // ============================================================
-    // BIND EVENTS
+    // EVENT BINDING
     // ============================================================
 
     function bindEvents() {
@@ -226,6 +250,12 @@
         render(_container, _state);
     }
 
+    /**
+     * Assign a class to the selected location.
+     *
+     * ScheduleCore.setLocationClass is Promise-based (Session D1).
+     * The pipeline owns persistence and notification.
+     */
     function handleAddClass(day, hour) {
         if (!_state.selectedId) {
             UIBase.notify('No location selected.', 'error');
@@ -319,28 +349,36 @@
                     return;
                 }
 
+                // ---- WRITE (Promise-based) ----
                 // Signature: setLocationClass(locationId, week, day, hour, disciplineId, duration, metadata)
-                var result = ScheduleCore.setLocationClass(
+                ScheduleCore.setLocationClass(
                     _state.selectedId,
                     _state.week,
                     day,
                     hour,
                     disciplineId,
                     duration
-                );
-
-                if (result && result.success) {
-                    persist();
-                    closeModal();
-                    UIBase.notify('Class assigned to location successfully.', 'success');
-                    render(_container, _state);
-                } else {
-                    UIBase.notify(result ? result.message : 'Failed to assign class.', 'error');
-                }
+                ).then(function(result) {
+                    if (result && result.success) {
+                        closeModal();
+                        render(_container, _state);
+                    }
+                    // On failure: pipeline already notified. Modal
+                    // stays open so the user can retry.
+                }).catch(function(err) {
+                    UIBase.notify(
+                        'Unexpected error: ' + (err && err.message ? err.message : 'unknown'),
+                        'error'
+                    );
+                });
             };
         }
     }
 
+    /**
+     * Show details for an occupied slot.
+     * Read-only. No Promise.
+     */
     function handleClassDetails(day, hour) {
         if (!_state.selectedId) { return; }
 
@@ -422,20 +460,33 @@
         }
     }
 
+    /**
+     * Remove a class from the selected location.
+     *
+     * ScheduleCore.removeLocationClass is Promise-based.
+     */
     function handleRemoveClass(day, hour) {
         if (!_state.selectedId) {
             UIBase.notify('No location selected.', 'error');
             return;
         }
 
-        var result = ScheduleCore.removeLocationClass(_state.selectedId, _state.week, day, hour);
-        if (result && result.success) {
-            persist();
-            UIBase.notify('Class removed from location successfully.', 'success');
-            render(_container, _state);
-        } else {
-            UIBase.notify(result ? result.message : 'Failed to remove class.', 'error');
-        }
+        ScheduleCore.removeLocationClass(
+            _state.selectedId,
+            _state.week,
+            day,
+            hour
+        ).then(function(result) {
+            if (result && result.success) {
+                render(_container, _state);
+            }
+            // On failure: pipeline already notified. No re-render.
+        }).catch(function(err) {
+            UIBase.notify(
+                'Unexpected error: ' + (err && err.message ? err.message : 'unknown'),
+                'error'
+            );
+        });
     }
 
     // ============================================================

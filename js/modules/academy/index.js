@@ -1,7 +1,9 @@
 /**
  * modules/academy/index.js - Academy Module Entry Point
  * Single entry point for all academic year functionality
- * 
+ *
+ * Path: js/modules/academy/index.js
+ *
  * This module is responsible for:
  *   - Registering with TabManager
  *   - Verifying schema and dependencies at mount time
@@ -9,28 +11,68 @@
  *   - Delegating all rendering and event coordination to AcademyEvents
  *   - Handling DataLoader integration
  *   - Exposing the public Academy API
- * 
+ *
  * ARCHITECTURE:
  *   This file is the LIFECYCLE ENTRY POINT, not a render module.
  *   All rendering, refresh, and event coordination live in
  *   academy-events.js. This file's job is to make sure the world is
  *   ready and then hand the container to AcademyEvents.
- * 
+ *
  *   Do not add render logic here. Do not add refresh logic here.
  *   Do not add tab-content event binding here. If something needs to
  *   re-render or re-bind, it goes through AcademyEvents.refreshUI().
- * 
- * CALENDAR PROVIDER READ/WRITE SPLIT:
+ *
+ * CALENDAR PROVIDER READ/WRITE SPLIT (Session D3):
  *   The calendar provider is a facade over two modules:
- *     - CalendarQueries owns READS.
- *     - ScheduleCore owns WRITES.
- *   The provider maps each method to the correct module.
- * 
+ *     - CalendarQueries owns READS. Synchronous.
+ *     - ScheduleCore owns WRITES. Promise-based (MutationPipeline).
+ *
+ *   The provider maps each method to the correct module. The
+ *   provider contract is:
+ *
+ *     READS (synchronous):
+ *       getStudentSchedule(studentId, week)
+ *       getStudentRestDays(studentId, week)
+ *       getSlotMetadata(studentId, week, day, hour)
+ *       findClassStart(schedule, metadata, studentId, week, day, hour)
+ *       getInstructorSchedule(instructorId, week)
+ *       getInstructorTemplates(instructorId, week)
+ *       getInstructorBlocks(instructorId, week)
+ *       getLocationSchedule(locationId, week)
+ *       hasConflict(schedule, day, hour, duration)   // pure predicate
+ *
+ *     WRITES (Promise-based):
+ *       setStudentSlot(studentId, week, day, hour, disciplineId, duration, metadata)
+ *       removeStudentSlot(studentId, week, day, hour)
+ *       clearStudentSchedule(studentId, week)
+ *       duplicateStudentSchedule(studentId, fromWeek, toWeek)
+ *       setRestDays(studentId, week, days)
+ *       removeRestDays(studentId, week)
+ *       setSlotMetadata(studentId, week, day, hour, metadata)
+ *       setInstructorTemplate(instructorId, week, day, hour, templateData)
+ *       removeInstructorTemplate(instructorId, week, day, hour)
+ *       setInstructorBlock(instructorId, week, day, hour, blockData)
+ *       removeInstructorBlock(instructorId, week, day, hour)
+ *       setLocationClass(locationId, week, day, hour, disciplineId, metadata)
+ *       removeLocationClass(locationId, week, day, hour)
+ *
+ *   AcademySchedule consumes this provider and must be configured
+ *   with it before any schedule operation runs.
+ *
  * NOTE ON ACADEMY DATA STRUCTURE (v15+):
  *   - window.data.academy is created by database.js.
  *   - academy.classStudents no longer exists.
  *   - The structure guard below is DEFENSIVE ONLY.
- * 
+ *
+ * MOUNT IDEMPOTENCY:
+ *   mountAcademy() may be invoked from two paths:
+ *     - DataLoader.whenReady  → handleDataReady → mountAcademy
+ *     - tabChanged            → mountAcademy
+ *   Both paths can fire in the same tick during a fresh load. The
+ *   _mounted flag plus the unmount-before-mount sequence inside
+ *   mountAcademy() guarantees at most one live mount. This file
+ *   does not add a separate debounce; the flag is sufficient.
+ *
  * DEPENDENCIES:
  *   - window.TabManager
  *   - window.CharacterQueries
@@ -137,6 +179,12 @@
         if (!CalendarQueries || typeof CalendarQueries.findClassStart !== 'function') {
             missing.push('CalendarQueries.findClassStart');
         }
+        if (!CalendarQueries || typeof CalendarQueries.getInstructorTemplates !== 'function') {
+            missing.push('CalendarQueries.getInstructorTemplates');
+        }
+        if (!CalendarQueries || typeof CalendarQueries.getInstructorBlocks !== 'function') {
+            missing.push('CalendarQueries.getInstructorBlocks');
+        }
 
         // ---- ScheduleCore — WRITE operations ----
         if (!ScheduleCore || typeof ScheduleCore.setStudentSlot !== 'function') {
@@ -157,11 +205,29 @@
         if (!ScheduleCore || typeof ScheduleCore.removeRestDays !== 'function') {
             missing.push('ScheduleCore.removeRestDays');
         }
-        if (!ScheduleCore || typeof ScheduleCore.hasConflict !== 'function') {
-            missing.push('ScheduleCore.hasConflict');
-        }
         if (!ScheduleCore || typeof ScheduleCore.setSlotMetadata !== 'function') {
             missing.push('ScheduleCore.setSlotMetadata');
+        }
+        if (!ScheduleCore || typeof ScheduleCore.setInstructorTemplate !== 'function') {
+            missing.push('ScheduleCore.setInstructorTemplate');
+        }
+        if (!ScheduleCore || typeof ScheduleCore.removeInstructorTemplate !== 'function') {
+            missing.push('ScheduleCore.removeInstructorTemplate');
+        }
+        if (!ScheduleCore || typeof ScheduleCore.setInstructorBlock !== 'function') {
+            missing.push('ScheduleCore.setInstructorBlock');
+        }
+        if (!ScheduleCore || typeof ScheduleCore.removeInstructorBlock !== 'function') {
+            missing.push('ScheduleCore.removeInstructorBlock');
+        }
+        if (!ScheduleCore || typeof ScheduleCore.setLocationClass !== 'function') {
+            missing.push('ScheduleCore.setLocationClass');
+        }
+        if (!ScheduleCore || typeof ScheduleCore.removeLocationClass !== 'function') {
+            missing.push('ScheduleCore.removeLocationClass');
+        }
+        if (!ScheduleCore || typeof ScheduleCore.hasConflict !== 'function') {
+            missing.push('ScheduleCore.hasConflict');
         }
 
         if (!AcademyUI || typeof AcademyUI.init !== 'function') {
@@ -270,6 +336,16 @@
     // ============================================================
     // PROVIDER ASSEMBLY
     // ============================================================
+    //
+    // READS → CalendarQueries (synchronous)
+    // WRITES → ScheduleCore (Promise-based, MutationPipeline)
+    //
+    // The provider is the SINGLE boundary AcademySchedule talks to.
+    // AcademySchedule's contract (Session D2) states:
+    //   - Read methods return synchronously.
+    //   - Write methods return Promises.
+    // The methods below satisfy that contract by delegating to the
+    // correct module on each side.
 
     var _providersInitialized = false;
 
@@ -301,9 +377,11 @@
             }
         };
 
-        // Read/write split: reads to CalendarQueries, writes to ScheduleCore.
+        // Read/write split: reads go to CalendarQueries, writes to ScheduleCore.
         var calendarProvider = {
-            // ---- READS ----
+            // ====================================================
+            // READS — CalendarQueries (synchronous)
+            // ====================================================
             getStudentSchedule: function(studentId, week) {
                 return CalendarQueries.getStudentSchedule(studentId, week);
             },
@@ -329,7 +407,9 @@
                 return CalendarQueries.getLocationSchedule(locationId, week);
             },
 
-            // ---- WRITES ----
+            // ====================================================
+            // WRITES — ScheduleCore (Promise-based)
+            // ====================================================
             setStudentSlot: function(studentId, week, day, hour, disciplineId, duration, metadata) {
                 return ScheduleCore.setStudentSlot(studentId, week, day, hour, disciplineId, duration, metadata);
             },
@@ -370,7 +450,9 @@
                 return ScheduleCore.removeLocationClass(locationId, week, day, hour);
             },
 
-            // ---- PURE PREDICATE ----
+            // ====================================================
+            // PURE PREDICATE — synchronous
+            // ====================================================
             hasConflict: function(schedule, day, hour, duration) {
                 return ScheduleCore.hasConflict(schedule, day, hour, duration);
             }

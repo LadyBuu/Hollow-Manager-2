@@ -2,17 +2,47 @@
  * modules/calendar/instructor-calendar-ui.js - Instructor Calendar UI
  * Thin UI layer for the instructor calendar
  * Path: js/modules/calendar/instructor-calendar-ui.js
- * 
+ *
  * IMPORTANT:
  *   - THIN UI LAYER - orchestrates interaction only
- *   - Uses CalendarAggregator for reads
+ *   - Uses CalendarAggregator for reads (cross-domain resolved view models)
  *   - Uses ScheduleCore for mutations
  *   - Uses CalendarRenderer for HTML generation
  *   - Uses CalendarUIBase for shared UI helpers
- *   - Persists changes via window.saveData() after every ScheduleCore mutation
  *   - No direct external domain access
  *   - No direct window.data access
- * 
+ *
+ * PERSISTENCE CONTRACT (Session D6):
+ *   - ScheduleCore mutations are Promise-based and go through
+ *     MutationPipeline. The pipeline owns persistence, rollback,
+ *     activity logging, and user-facing notifications.
+ *   - This module does NOT call window.saveData().
+ *   - This module does NOT call a local persist() helper.
+ *   - The UI AWAITS each mutation, then either re-renders on success
+ *     or does nothing on failure (the pipeline has already notified).
+ *
+ * WRITE CALL SITES (all Promise-based):
+ *   1. handleAddTemplate      → ScheduleCore.setInstructorTemplate
+ *   2. handleRemoveTemplate   → ScheduleCore.removeInstructorTemplate
+ *   3. handleRemoveBlock      → ScheduleCore.removeInstructorBlock
+ *
+ * READ CALL SITES (synchronous, unchanged):
+ *   - CharacterQueries.getInstructors
+ *   - CalendarQueries.getInstructorTemplates
+ *   - DisciplineQueries.getDiscipline
+ *   - CalendarAggregator.getInstructorCalendar
+ *   - CalendarAggregator.getInstructorAvailableDisciplines
+ *   - CalendarAggregator.getAssignedStudents
+ *
+ * NOTE ON PROVIDER SHAPE:
+ *   The instructor calendar calls ScheduleCore directly, not through
+ *   AcademySchedule. The calendarProvider assembled in
+ *   academy/index.js exposes instructor methods, but nothing in this
+ *   module consumes that provider. If instructor writes are ever
+ *   routed through the provider, the argument shape there must be
+ *   reconciled with ScheduleCore.setInstructorTemplate's positional
+ *   signature.
+ *
  * DEPENDENCIES:
  *   - window.CalendarUIBase
  *   - window.CalendarAggregator
@@ -21,8 +51,8 @@
  *   - window.CalendarConstants
  *   - window.CharacterQueries
  *   - window.DisciplineQueries
- *   - window.CalendarQueries (for template lookups)
- * 
+ *   - window.CalendarQueries
+ *
  * USAGE:
  *   var ui = window.InstructorCalendarUI;
  *   ui.render(container, { selectedId: 'char_123', week: 5 });
@@ -32,7 +62,7 @@
     'use strict';
 
     // ============================================================
-    // LOAD GUARD - set immediately so re-inclusion is a no-op
+    // LOAD GUARD
     // ============================================================
 
     if (window.__instructorCalendarUILoaded) { return; }
@@ -78,19 +108,6 @@
             hours.push(h);
         }
         return hours;
-    }
-
-    /**
-     * Persist the current data state after a ScheduleCore mutation.
-     * ScheduleCore mutates window.data.curriculum synchronously and does
-     * NOT persist. Callers must invoke saveData() themselves.
-     */
-    function persist() {
-        if (typeof window.saveData === 'function') {
-            window.saveData().catch(function() {
-                UIBase.notify('Changes applied but failed to save.', 'error');
-            });
-        }
     }
 
     // ============================================================
@@ -145,7 +162,7 @@
     }
 
     // ============================================================
-    // BIND EVENTS
+    // EVENT BINDING
     // ============================================================
 
     function bindEvents() {
@@ -245,6 +262,12 @@
         render(_container, _state);
     }
 
+    /**
+     * Add a template to the selected instructor's calendar.
+     *
+     * ScheduleCore.setInstructorTemplate is Promise-based (Session D1).
+     * The pipeline owns persistence and notification.
+     */
     function handleAddTemplate(day, hour) {
         if (!_state.selectedId) {
             UIBase.notify('No instructor selected.', 'error');
@@ -340,8 +363,9 @@
                     return;
                 }
 
+                // ---- WRITE (Promise-based) ----
                 // Signature: setInstructorTemplate(instructorId, week, day, hour, disciplineId, duration, label, assignedStudents)
-                var result = ScheduleCore.setInstructorTemplate(
+                ScheduleCore.setInstructorTemplate(
                     _state.selectedId,
                     _state.week,
                     day,
@@ -350,20 +374,27 @@
                     duration,
                     labelValue,
                     []
-                );
-
-                if (result && result.success) {
-                    persist();
-                    closeModal();
-                    UIBase.notify('Template added successfully.', 'success');
-                    render(_container, _state);
-                } else {
-                    UIBase.notify(result ? result.message : 'Failed to add template.', 'error');
-                }
+                ).then(function(result) {
+                    if (result && result.success) {
+                        closeModal();
+                        render(_container, _state);
+                    }
+                    // On failure: pipeline already notified. Modal
+                    // stays open so the user can retry.
+                }).catch(function(err) {
+                    UIBase.notify(
+                        'Unexpected error: ' + (err && err.message ? err.message : 'unknown'),
+                        'error'
+                    );
+                });
             };
         }
     }
 
+    /**
+     * Show details for an occupied template slot.
+     * Read-only. No Promise.
+     */
     function handleTemplateDetails(day, hour) {
         if (!_state.selectedId) { return; }
 
@@ -440,22 +471,39 @@
         }
     }
 
+    /**
+     * Remove a template from the selected instructor's calendar.
+     *
+     * ScheduleCore.removeInstructorTemplate is Promise-based.
+     */
     function handleRemoveTemplate(day, hour) {
         if (!_state.selectedId) {
             UIBase.notify('No instructor selected.', 'error');
             return;
         }
 
-        var result = ScheduleCore.removeInstructorTemplate(_state.selectedId, _state.week, day, hour);
-        if (result && result.success) {
-            persist();
-            UIBase.notify('Template removed successfully.', 'success');
-            render(_container, _state);
-        } else {
-            UIBase.notify(result ? result.message : 'Failed to remove template.', 'error');
-        }
+        ScheduleCore.removeInstructorTemplate(
+            _state.selectedId,
+            _state.week,
+            day,
+            hour
+        ).then(function(result) {
+            if (result && result.success) {
+                render(_container, _state);
+            }
+            // On failure: pipeline already notified. No re-render.
+        }).catch(function(err) {
+            UIBase.notify(
+                'Unexpected error: ' + (err && err.message ? err.message : 'unknown'),
+                'error'
+            );
+        });
     }
 
+    /**
+     * Show details for a blocked slot.
+     * Read-only. No Promise.
+     */
     function handleBlockDetails(day, hour) {
         if (!_state.selectedId) { return; }
 
@@ -514,20 +562,33 @@
         }
     }
 
+    /**
+     * Remove a block from the selected instructor's calendar.
+     *
+     * ScheduleCore.removeInstructorBlock is Promise-based.
+     */
     function handleRemoveBlock(day, hour) {
         if (!_state.selectedId) {
             UIBase.notify('No instructor selected.', 'error');
             return;
         }
 
-        var result = ScheduleCore.removeInstructorBlock(_state.selectedId, _state.week, day, hour);
-        if (result && result.success) {
-            persist();
-            UIBase.notify('Block removed successfully.', 'success');
-            render(_container, _state);
-        } else {
-            UIBase.notify(result ? result.message : 'Failed to remove block.', 'error');
-        }
+        ScheduleCore.removeInstructorBlock(
+            _state.selectedId,
+            _state.week,
+            day,
+            hour
+        ).then(function(result) {
+            if (result && result.success) {
+                render(_container, _state);
+            }
+            // On failure: pipeline already notified. No re-render.
+        }).catch(function(err) {
+            UIBase.notify(
+                'Unexpected error: ' + (err && err.message ? err.message : 'unknown'),
+                'error'
+            );
+        });
     }
 
     // ============================================================

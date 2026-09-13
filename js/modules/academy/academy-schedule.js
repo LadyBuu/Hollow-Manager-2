@@ -2,6 +2,8 @@
  * modules/academy/academy-schedule.js - Academy Schedule
  * Academy's integration boundary with Calendar for scheduling operations
  *
+ * Path: js/modules/academy/academy-schedule.js
+ *
  * This module provides Academy-specific scheduling operations that
  * delegate to the Calendar domain for actual schedule mechanics.
  *
@@ -13,28 +15,55 @@
  *   - No direct CalendarCore/ScheduleCore imports (uses provider)
  *   - All operations are candidate-based: validate → delegate
  *   - Invalid inputs are REJECTED (operation returns null/false)
- *   - Mutations are ATOMIC: if any part is invalid, nothing changes
- *   - This module does NOT call saveData() - callers own persistence
+ *   - This module does NOT call saveData()
  *
- * DEPENDENCY INJECTION:
- *   - CalendarProvider is injected via configure()
- *   - No hard dependency on ScheduleCore or CalendarQueries
+ * WRITE vs READ CONTRACT (v2 — Session D2):
+ *   - WRITE operations return Promise<{ success, data?, message? }>.
+ *     They delegate to the provider's Promise-based methods, which
+ *     route through MutationPipeline. Persistence, rollback, and
+ *     activity logging are owned by the pipeline.
+ *   - READ operations remain SYNCHRONOUS. They delegate to the
+ *     provider's read methods, which read window.data.curriculum
+ *     directly.
+ *   - Callers MUST treat writes as Promises. Do not test
+ *     `if (result.success)` on a write — test it on the resolved
+ *     value: `result.then(r => { if (r.success) ... })`.
+ *   - The provider is the single boundary. If the provider returns
+ *     a Promise for a write, this module returns a Promise for that
+ *     write. If the provider returns a value synchronously for a
+ *     read, this module returns synchronously for that read.
  *
- * CALENDAR PROVIDER INTERFACE:
- *   {
- *       getStudentSchedule: function(studentId, week) { ... },
- *       setStudentSlot: function(studentId, week, day, hour, disciplineId, duration, metadata) { ... },
- *       removeStudentSlot: function(studentId, week, day, hour) { ... },
- *       clearStudentSchedule: function(studentId, week) { ... },
- *       duplicateStudentSchedule: function(studentId, fromWeek, toWeek) { ... },
- *       getStudentRestDays: function(studentId, week) { ... },
- *       setRestDays: function(studentId, week, days) { ... },
- *       removeRestDays: function(studentId, week) { ... },
- *       hasConflict: function(schedule, day, hour, duration) { ... },
- *       getSlotMetadata: function(studentId, week, day, hour) { ... },
- *       setSlotMetadata: function(studentId, week, day, hour, metadata) { ... },
- *       findClassStart: function(schedule, metadata, studentId, week, day, hour) { ... }
- *   }
+ * WHY THE SPLIT:
+ *   - ScheduleCore was rewritten in Session D1 to route every
+ *     mutation through MutationPipeline. Those mutations are now
+ *     Promise-based. Reads never went through the pipeline and
+ *     remain synchronous.
+ *   - This module does not wrap reads in Promises, because doing
+ *     so would break every UI consumer that reads schedules
+ *     synchronously (the calendar grid, the aggregator, the
+ *     attendance views).
+ *
+ * PROVIDER INTERFACE:
+ *   The provider MUST expose the following methods.
+ *   Writes return Promise. Reads return synchronously.
+ *
+ *   Writes (Promise-based):
+ *     setStudentSlot(studentId, week, day, hour, disciplineId, duration, metadata)
+ *     removeStudentSlot(studentId, week, day, hour, duration)
+ *     clearStudentSchedule(studentId, week)
+ *     duplicateStudentSchedule(studentId, fromWeek, toWeek)
+ *     setRestDays(studentId, week, days)
+ *     removeRestDays(studentId, week)
+ *     setSlotMetadata(studentId, week, day, hour, metadata)
+ *     setLocationClass(locationId, week, day, hour, disciplineId, duration, metadata)
+ *     removeLocationClass(locationId, week, day, hour)
+ *
+ *   Reads (synchronous):
+ *     getStudentSchedule(studentId, week)
+ *     getStudentRestDays(studentId, week)
+ *     getSlotMetadata(studentId, week, day, hour)
+ *     hasConflict(schedule, day, hour, duration)
+ *     findClassStart(schedule, metadata, studentId, week, day, hour)
  *
  * METADATA MAP CONTRACT:
  *   - The `metadata` argument to `findClassStart` is the FULL metadata map,
@@ -51,9 +80,7 @@
  *   - Returns ONE entry per occupied slot. A class that spans hours
  *     9, 10, 11 appears as three entries (one per hour).
  *   - This matches what StudentCalendarUI and the CalendarAggregator
- *     expect for grid rendering. Consumers that want one entry per
- *     CLASS should deduplicate using getFullClassDetails / findClassStartHour.
- *   - The behaviour is intentional and part of the public contract.
+ *     expect for grid rendering.
  *
  * DEPENDENCIES:
  *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
@@ -62,25 +89,6 @@
  *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.DisciplineQueries (from discipline-queries.js) - MANDATORY
- *
- * USAGE:
- *   // Configure with CalendarProvider
- *   AcademySchedule.configure({
- *       calendarProvider: {
- *           getStudentSchedule: function(studentId, week) {
- *               return CalendarQueries.getStudentSchedule(studentId, week);
- *           },
- *           setStudentSlot: function(studentId, week, day, hour, disciplineId, duration, metadata) {
- *               return ScheduleCore.setStudentSlot(studentId, week, day, hour, disciplineId, duration, metadata);
- *           },
- *           // ... all other methods
- *       }
- *   });
- *
- *   // Use schedule operations
- *   var schedule = AcademySchedule.getStudentSchedule('student_123', 5);
- *   var result = AcademySchedule.setStudentScheduleClass('student_123', 5, 1, 9, 'disc_abc', 2);
- *   var result = AcademySchedule.removeStudentScheduleClass('student_123', 5, 1, 9);
  */
 
 (function() {
@@ -92,7 +100,7 @@
     window.__academyScheduleLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
+    // DEPENDENCY IMPORTS
     // ============================================================
 
     var AcademyQueries = window.AcademyQueries;
@@ -126,49 +134,59 @@
 
     /**
      * Configure AcademySchedule with external dependencies.
-     * Must be called before any schedule operations.
      *
-     * @param {object} deps - Dependency injection object
-     * @param {object} deps.calendarProvider - Calendar provider with schedule methods
+     * Validates the provider interface:
+     *   - Read methods must be present as functions.
+     *   - Write methods must be present as functions.
+     *   - This module does not verify that writes actually return
+     *     Promises — it trusts the contract. If a write returns a
+     *     raw value, this module wraps it in Promise.resolve so
+     *     callers always get a Promise back.
+     *
+     * @param {object} deps - { calendarProvider }
      * @returns {boolean} True if configured successfully
      */
     function configure(deps) {
         deps = deps || {};
 
-        if (deps.calendarProvider) {
-            var required = [
-                'getStudentSchedule',
-                'setStudentSlot',
-                'removeStudentSlot',
-                'clearStudentSchedule',
-                'duplicateStudentSchedule',
-                'getStudentRestDays',
-                'setRestDays',
-                'removeRestDays',
-                'hasConflict',
-                'getSlotMetadata',
-                'setSlotMetadata',
-                'findClassStart'
-            ];
-
-            var missing = [];
-            for (var i = 0; i < required.length; i++) {
-                var method = required[i];
-                if (typeof deps.calendarProvider[method] !== 'function') {
-                    missing.push(method);
-                }
-            }
-
-            if (missing.length > 0) {
-                console.warn('[AcademySchedule] calendarProvider missing methods:', missing.join(', '));
-                return false;
-            }
-
-            _calendarProvider = deps.calendarProvider;
-            return true;
+        if (!deps.calendarProvider) {
+            return false;
         }
 
-        return false;
+        var required = [
+            // Reads (sync)
+            'getStudentSchedule',
+            'getStudentRestDays',
+            'getSlotMetadata',
+            'hasConflict',
+            'findClassStart',
+            // Writes (Promise)
+            'setStudentSlot',
+            'removeStudentSlot',
+            'clearStudentSchedule',
+            'duplicateStudentSchedule',
+            'setRestDays',
+            'removeRestDays',
+            'setSlotMetadata',
+            'setLocationClass',
+            'removeLocationClass'
+        ];
+
+        var missing = [];
+        for (var i = 0; i < required.length; i++) {
+            var method = required[i];
+            if (typeof deps.calendarProvider[method] !== 'function') {
+                missing.push(method);
+            }
+        }
+
+        if (missing.length > 0) {
+            console.warn('[AcademySchedule] calendarProvider missing methods:', missing.join(', '));
+            return false;
+        }
+
+        _calendarProvider = deps.calendarProvider;
+        return true;
     }
 
     // ============================================================
@@ -262,8 +280,33 @@
         return { success: true, data: data };
     }
 
+    /**
+     * Coerce a provider write result to a Promise.
+     *
+     * If the provider already returns a Promise, pass it through.
+     * If the provider returns a raw value (e.g. a synchronous
+     * { success, data, message } from a legacy path), wrap it.
+     * If the provider throws synchronously, catch and reject.
+     *
+     * This keeps the caller-facing contract uniform: writes ALWAYS
+     * resolve to { success, data?, message? }.
+     *
+     * @param {function} fn - Zero-arg thunk that calls the provider
+     * @returns {Promise<object>}
+     */
+    function asPromise(fn) {
+        try {
+            return Promise.resolve(fn());
+        } catch (err) {
+            return Promise.resolve({
+                success: false,
+                message: err && err.message ? err.message : 'Provider threw during write.'
+            });
+        }
+    }
+
     // ============================================================
-    // METADATA MAP RECONSTRUCTION - FIX
+    // METADATA MAP RECONSTRUCTION
     // ============================================================
     //
     // The provider only exposes single-slot metadata lookup. The
@@ -272,13 +315,12 @@
     // by walking the schedule's occupied slots and calling
     // getSlotMetadata for each.
     //
-    // The reconstruction is bounded by the student's own schedule
+    // The reconstruction is bounded by the entity's own schedule
     // (typically tens of slots at most), so the extra provider calls
     // are cheap. It avoids having to add a new required method to
-    // the provider interface, which would break every existing
-    // configure() call site.
+    // the provider interface.
     //
-    // @param {string} entityId - Student ID
+    // @param {string} entityId - Student ID or location ID
     // @param {number} weekNum - Week number
     // @param {object} schedule - Schedule object { day: { hour: disciplineId } }
     // @returns {object} Metadata map keyed `${entityId}_${week}_${day}_${hour}`
@@ -317,7 +359,8 @@
 
                 var meta = _calendarProvider.getSlotMetadata(entityId, weekNum, dayNum, hourNum);
                 if (meta && typeof meta === 'object') {
-                    var key = String(entityId) + '_' + String(weekNum) + '_' + String(dayNum) + '_' + String(hourNum);
+                    var key = String(entityId) + '_' + String(weekNum) + '_' +
+                              String(dayNum) + '_' + String(hourNum);
                     map[key] = meta;
                 }
             }
@@ -327,7 +370,7 @@
     }
 
     // ============================================================
-    // STUDENT SCHEDULE - READ OPERATIONS
+    // STUDENT SCHEDULE - READ OPERATIONS (synchronous)
     // ============================================================
 
     /**
@@ -567,7 +610,7 @@
     }
 
     // ============================================================
-    // STUDENT SCHEDULE - MUTATION OPERATIONS
+    // STUDENT SCHEDULE - WRITE OPERATIONS (Promise-based)
     // ============================================================
 
     /**
@@ -581,64 +624,73 @@
      * @param {string} disciplineId - Discipline ID
      * @param {number|string} duration - Duration in hours
      * @param {object} metadata - Additional metadata (instructor, label, etc.)
-     * @returns {object} { success: boolean, message?: string, data?: object }
+     * @returns {Promise<{ success: boolean, message?: string, data?: object }>}
      */
     function setStudentScheduleClass(studentId, week, day, hour, disciplineId, duration, metadata) {
         if (!checkDependencies()) {
-            return failure('Dependencies not available.');
+            return Promise.resolve(failure('Dependencies not available.'));
         }
 
         // ---- PHASE 1: VALIDATE ----
         if (!isNonEmptyString(studentId)) {
-            return failure('Student ID is required.');
+            return Promise.resolve(failure('Student ID is required.'));
         }
 
         if (!isNonEmptyString(disciplineId)) {
-            return failure('Discipline ID is required.');
+            return Promise.resolve(failure('Discipline ID is required.'));
         }
 
         var weekNum = parseWeek(week);
         if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
+            return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
         }
 
         var dayNum = parseDay(day);
         if (dayNum === null || dayNum < MIN_DAY || dayNum > MAX_DAY) {
-            return failure('Valid day is required (' + MIN_DAY + '-' + MAX_DAY + ').');
+            return Promise.resolve(failure('Valid day is required (' + MIN_DAY + '-' + MAX_DAY + ').'));
         }
 
         var hourNum = parseHour(hour);
         if (hourNum === null || hourNum < MIN_HOUR || hourNum > MAX_HOUR) {
-            return failure('Valid hour is required (' + MIN_HOUR + '-' + MAX_HOUR + ').');
+            return Promise.resolve(failure('Valid hour is required (' + MIN_HOUR + '-' + MAX_HOUR + ').'));
         }
 
         var durationNum = parseDuration(duration);
         if (durationNum === null || durationNum < MIN_CLASS_DURATION || durationNum > MAX_DURATION) {
-            return failure('Duration must be between ' + MIN_CLASS_DURATION + ' and ' + MAX_DURATION + ' hours.');
+            return Promise.resolve(failure('Duration must be between ' + MIN_CLASS_DURATION + ' and ' + MAX_DURATION + ' hours.'));
         }
 
         if (hourNum + durationNum > MAX_HOUR + 1) {
-            return failure('Class extends beyond the end of the day.');
+            return Promise.resolve(failure('Class extends beyond the end of the day.'));
         }
 
-        // ---- PHASE 2: CHECK FOR CONFLICTS ----
+        // ---- PHASE 2: CHECK FOR CONFLICTS (sync read) ----
         var schedule = _calendarProvider.getStudentSchedule(studentId, weekNum);
         if (_calendarProvider.hasConflict(schedule, dayNum, hourNum, durationNum)) {
-            return failure('Student already has a class during this time.');
+            return Promise.resolve(failure('Student already has a class during this time.'));
         }
 
         // ---- PHASE 3: DELEGATE TO CALENDAR ----
-        var result = _calendarProvider.setStudentSlot(
-            studentId,
-            weekNum,
-            dayNum,
-            hourNum,
-            disciplineId,
-            durationNum,
-            metadata || {}
-        );
-
-        return result ? success(result) : failure('Failed to set class.');
+        return asPromise(function() {
+            return _calendarProvider.setStudentSlot(
+                studentId,
+                weekNum,
+                dayNum,
+                hourNum,
+                disciplineId,
+                durationNum,
+                metadata || {}
+            );
+        }).then(function(providerResult) {
+            if (providerResult && providerResult.success) {
+                return success(providerResult.data !== undefined ? providerResult.data : providerResult);
+            }
+            return failure(
+                providerResult && providerResult.message
+                    ? providerResult.message
+                    : 'Failed to set class.'
+            );
+        });
     }
 
     /**
@@ -649,35 +701,44 @@
      * @param {number|string} day - Day number (1-7)
      * @param {number|string} hour - Hour number
      * @param {number|string} duration - Optional duration (if not provided, uses metadata)
-     * @returns {object} { success: boolean, message?: string, data?: object }
+     * @returns {Promise<{ success: boolean, message?: string, data?: object }>}
      */
     function removeStudentScheduleClass(studentId, week, day, hour, duration) {
         if (!checkDependencies()) {
-            return failure('Dependencies not available.');
+            return Promise.resolve(failure('Dependencies not available.'));
         }
 
         if (!isNonEmptyString(studentId)) {
-            return failure('Student ID is required.');
+            return Promise.resolve(failure('Student ID is required.'));
         }
 
         var weekNum = parseWeek(week);
         if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
+            return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
         }
 
         var dayNum = parseDay(day);
         if (dayNum === null || dayNum < MIN_DAY || dayNum > MAX_DAY) {
-            return failure('Valid day is required (' + MIN_DAY + '-' + MAX_DAY + ').');
+            return Promise.resolve(failure('Valid day is required (' + MIN_DAY + '-' + MAX_DAY + ').'));
         }
 
         var hourNum = parseHour(hour);
         if (hourNum === null || hourNum < MIN_HOUR || hourNum > MAX_HOUR) {
-            return failure('Valid hour is required (' + MIN_HOUR + '-' + MAX_HOUR + ').');
+            return Promise.resolve(failure('Valid hour is required (' + MIN_HOUR + '-' + MAX_HOUR + ').'));
         }
 
-        // DELEGATE TO CALENDAR
-        var result = _calendarProvider.removeStudentSlot(studentId, weekNum, dayNum, hourNum, duration);
-        return result ? success(result) : failure('Failed to remove class.');
+        return asPromise(function() {
+            return _calendarProvider.removeStudentSlot(studentId, weekNum, dayNum, hourNum, duration);
+        }).then(function(providerResult) {
+            if (providerResult && providerResult.success) {
+                return success(providerResult.data !== undefined ? providerResult.data : providerResult);
+            }
+            return failure(
+                providerResult && providerResult.message
+                    ? providerResult.message
+                    : 'Failed to remove class.'
+            );
+        });
     }
 
     /**
@@ -685,66 +746,88 @@
      *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
-     * @returns {object} { success: boolean, message?: string, data?: object }
+     * @returns {Promise<{ success: boolean, message?: string, data?: object }>}
      */
     function clearStudentSchedule(studentId, week) {
         if (!checkDependencies()) {
-            return failure('Dependencies not available.');
+            return Promise.resolve(failure('Dependencies not available.'));
         }
 
         if (!isNonEmptyString(studentId)) {
-            return failure('Student ID is required.');
+            return Promise.resolve(failure('Student ID is required.'));
         }
 
         var weekNum = parseWeek(week);
         if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
+            return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
         }
 
-        // DELEGATE TO CALENDAR
-        var result = _calendarProvider.clearStudentSchedule(studentId, weekNum);
-        return result ? success(result) : failure('Failed to clear schedule.');
+        return asPromise(function() {
+            return _calendarProvider.clearStudentSchedule(studentId, weekNum);
+        }).then(function(providerResult) {
+            if (providerResult && providerResult.success) {
+                return success(providerResult.data !== undefined ? providerResult.data : providerResult);
+            }
+            return failure(
+                providerResult && providerResult.message
+                    ? providerResult.message
+                    : 'Failed to clear schedule.'
+            );
+        });
     }
 
     /**
      * Duplicate a student's schedule from one week to another.
      *
+     * NOTE: The provider's duplicateStudentSchedule is expected to
+     * copy the schedule, rest days, and metadata in one transaction.
+     * See ScheduleCore.duplicateStudentSchedule for the semantics.
+     *
      * @param {string} studentId - Student ID
      * @param {number|string} fromWeek - Source week
      * @param {number|string} toWeek - Target week
-     * @returns {object} { success: boolean, message?: string, data?: object }
+     * @returns {Promise<{ success: boolean, message?: string, data?: object }>}
      */
     function duplicateStudentSchedule(studentId, fromWeek, toWeek) {
         if (!checkDependencies()) {
-            return failure('Dependencies not available.');
+            return Promise.resolve(failure('Dependencies not available.'));
         }
 
         if (!isNonEmptyString(studentId)) {
-            return failure('Student ID is required.');
+            return Promise.resolve(failure('Student ID is required.'));
         }
 
         var fromWeekNum = parseWeek(fromWeek);
         var toWeekNum = parseWeek(toWeek);
 
         if (fromWeekNum === null || fromWeekNum < MIN_WEEK || fromWeekNum > MAX_WEEK) {
-            return failure('Valid source week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
+            return Promise.resolve(failure('Valid source week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
         }
 
         if (toWeekNum === null || toWeekNum < MIN_WEEK || toWeekNum > MAX_WEEK) {
-            return failure('Valid target week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
+            return Promise.resolve(failure('Valid target week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
         }
 
         if (fromWeekNum === toWeekNum) {
-            return failure('Source and target weeks must be different.');
+            return Promise.resolve(failure('Source and target weeks must be different.'));
         }
 
-        // DELEGATE TO CALENDAR
-        var result = _calendarProvider.duplicateStudentSchedule(studentId, fromWeekNum, toWeekNum);
-        return result ? success(result) : failure('Failed to duplicate schedule.');
+        return asPromise(function() {
+            return _calendarProvider.duplicateStudentSchedule(studentId, fromWeekNum, toWeekNum);
+        }).then(function(providerResult) {
+            if (providerResult && providerResult.success) {
+                return success(providerResult.data !== undefined ? providerResult.data : providerResult);
+            }
+            return failure(
+                providerResult && providerResult.message
+                    ? providerResult.message
+                    : 'Failed to duplicate schedule.'
+            );
+        });
     }
 
     // ============================================================
-    // REST DAYS
+    // REST DAYS - READS (synchronous)
     // ============================================================
 
     /**
@@ -771,43 +854,55 @@
         return _calendarProvider.getStudentRestDays(studentId, weekNum);
     }
 
+    // ============================================================
+    // REST DAYS - WRITES (Promise-based)
+    // ============================================================
+
     /**
      * Set a student's rest days for a week.
      *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
      * @param {array} days - Array of day numbers (1-7)
-     * @returns {object} { success: boolean, message?: string, data?: object }
+     * @returns {Promise<{ success: boolean, message?: string, data?: object }>}
      */
     function setStudentRestDays(studentId, week, days) {
         if (!checkDependencies()) {
-            return failure('Dependencies not available.');
+            return Promise.resolve(failure('Dependencies not available.'));
         }
 
         if (!isNonEmptyString(studentId)) {
-            return failure('Student ID is required.');
+            return Promise.resolve(failure('Student ID is required.'));
         }
 
         var weekNum = parseWeek(week);
         if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
+            return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
         }
 
         if (!Array.isArray(days)) {
-            return failure('Rest days must be an array.');
+            return Promise.resolve(failure('Rest days must be an array.'));
         }
 
-        // Validate each day
         for (var i = 0; i < days.length; i++) {
             var dayNum = parseDay(days[i]);
             if (dayNum === null || dayNum < MIN_DAY || dayNum > MAX_DAY) {
-                return failure('Valid day is required (' + MIN_DAY + '-' + MAX_DAY + ').');
+                return Promise.resolve(failure('Valid day is required (' + MIN_DAY + '-' + MAX_DAY + ').'));
             }
         }
 
-        // DELEGATE TO CALENDAR
-        var result = _calendarProvider.setRestDays(studentId, weekNum, days);
-        return result ? success(result) : failure('Failed to set rest days.');
+        return asPromise(function() {
+            return _calendarProvider.setRestDays(studentId, weekNum, days);
+        }).then(function(providerResult) {
+            if (providerResult && providerResult.success) {
+                return success(providerResult.data !== undefined ? providerResult.data : providerResult);
+            }
+            return failure(
+                providerResult && providerResult.message
+                    ? providerResult.message
+                    : 'Failed to set rest days.'
+            );
+        });
     }
 
     /**
@@ -815,29 +910,38 @@
      *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
-     * @returns {object} { success: boolean, message?: string, data?: object }
+     * @returns {Promise<{ success: boolean, message?: string, data?: object }>}
      */
     function clearStudentRestDays(studentId, week) {
         if (!checkDependencies()) {
-            return failure('Dependencies not available.');
+            return Promise.resolve(failure('Dependencies not available.'));
         }
 
         if (!isNonEmptyString(studentId)) {
-            return failure('Student ID is required.');
+            return Promise.resolve(failure('Student ID is required.'));
         }
 
         var weekNum = parseWeek(week);
         if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
+            return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
         }
 
-        // DELEGATE TO CALENDAR
-        var result = _calendarProvider.removeRestDays(studentId, weekNum);
-        return result ? success(result) : failure('Failed to clear rest days.');
+        return asPromise(function() {
+            return _calendarProvider.removeRestDays(studentId, weekNum);
+        }).then(function(providerResult) {
+            if (providerResult && providerResult.success) {
+                return success(providerResult.data !== undefined ? providerResult.data : providerResult);
+            }
+            return failure(
+                providerResult && providerResult.message
+                    ? providerResult.message
+                    : 'Failed to clear rest days.'
+            );
+        });
     }
 
     // ============================================================
-    // CONFLICT DETECTION
+    // CONFLICT DETECTION (synchronous, pure)
     // ============================================================
 
     /**
@@ -907,32 +1011,14 @@
     }
 
     // ============================================================
-    // CLASS METADATA HELPERS
+    // CLASS METADATA HELPERS (synchronous)
     // ============================================================
 
-    /**
-     * Get the instructor ID for a specific class slot.
-     *
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
-     * @param {number|string} day - Day number (1-7)
-     * @param {number|string} hour - Hour number
-     * @returns {string|null} Instructor ID or null
-     */
     function getClassInstructor(studentId, week, day, hour) {
         var details = getClassDetails(studentId, week, day, hour);
         return details ? details.instructorId : null;
     }
 
-    /**
-     * Get the instructor name for a specific class slot.
-     *
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
-     * @param {number|string} day - Day number (1-7)
-     * @param {number|string} hour - Hour number
-     * @returns {string} Instructor name or 'Not assigned'
-     */
     function getClassInstructorName(studentId, week, day, hour) {
         var details = getClassDetails(studentId, week, day, hour);
         if (!details || !details.instructorId) {
@@ -941,29 +1027,11 @@
         return details.instructorName || 'Not assigned';
     }
 
-    /**
-     * Get the duration for a specific class slot.
-     *
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
-     * @param {number|string} day - Day number (1-7)
-     * @param {number|string} hour - Hour number
-     * @returns {number} Duration in hours (default: 1)
-     */
     function getClassDuration(studentId, week, day, hour) {
         var details = getClassDetails(studentId, week, day, hour);
         return details ? details.duration || 1 : 1;
     }
 
-    /**
-     * Get the label for a specific class slot.
-     *
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
-     * @param {number|string} day - Day number (1-7)
-     * @param {number|string} hour - Hour number
-     * @returns {string} Class label or empty string
-     */
     function getClassLabel(studentId, week, day, hour) {
         var details = getClassDetails(studentId, week, day, hour);
         return details ? details.label || '' : '';
@@ -972,13 +1040,10 @@
     /**
      * Find the start hour of a class that may span multiple hours.
      *
-     * FIX: The provider's findClassStart contract expects the FULL
+     * The provider's findClassStart contract expects the FULL
      * metadata map (keyed `${entityId}_${week}_${day}_${hour}`), not a
      * single-entry object. This function reconstructs the full map
-     * from the student's own schedule before delegating. The previous
-     * implementation passed a one-key object, which made findClassStart
-     * unable to look up any candidate hours past the first, so the
-     * function always returned the input hour (the fallback).
+     * from the student's own schedule before delegating.
      *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
@@ -1018,120 +1083,144 @@
         return result ? result.startHour : null;
     }
 
-    /**
-     * Get full class details with all metadata.
-     *
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
-     * @param {number|string} day - Day number (1-7)
-     * @param {number|string} hour - Hour number
-     * @returns {object|null} Full class details or null
-     */
     function getFullClassDetails(studentId, week, day, hour) {
         return getClassDetails(studentId, week, day, hour);
     }
 
     // ============================================================
-    // BULK OPERATIONS
+    // BULK OPERATIONS (Promise-based, sequential)
     // ============================================================
 
     /**
      * Save multiple schedule slots at once.
      *
+     * SLOTS are applied SEQUENTIALLY. If any write fails, subsequent
+     * writes are skipped and the failure is reported in `errors`.
+     * Successful writes before the failure remain applied — there is
+     * no cross-slot transaction here. If you need all-or-nothing
+     * across multiple slots, you need a bulk pipeline operation in
+     * ScheduleCore, not this fan-out loop.
+     *
      * @param {array} slots - Array of slot objects
      * @param {object} options - Save options
      * @param {boolean} options.overwrite - Overwrite existing slots
-     * @returns {object} { success: boolean, data?: object, message?: string }
+     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
     function saveScheduleSlots(slots, options) {
         if (!checkDependencies()) {
-            return failure('Dependencies not available.');
+            return Promise.resolve(failure('Dependencies not available.'));
         }
 
         if (!Array.isArray(slots) || slots.length === 0) {
-            return failure('Schedule slots array is required.');
+            return Promise.resolve(failure('Schedule slots array is required.'));
         }
 
         options = options || {};
         var overwrite = options.overwrite !== false;
 
-        var created = 0;
-        var updated = 0;
-        var skipped = 0;
+        var counters = {
+            created: 0,
+            updated: 0,
+            skipped: 0
+        };
         var errors = [];
+        var succeeded = 0;
 
+        // Pre-flight: validate the entire batch before running any writes.
+        // We don't want to partially apply if most of the input is
+        // malformed.
+        var validated = [];
         for (var i = 0; i < slots.length; i++) {
             var slot = slots[i];
             if (!slot || typeof slot !== 'object') {
-                errors.push({
-                    index: i,
-                    error: 'Invalid slot data.'
-                });
+                errors.push({ index: i, error: 'Invalid slot data.' });
                 continue;
             }
-
-            if (!slot.studentId || !slot.disciplineId || slot.week === undefined ||
-                slot.day === undefined || slot.hour === undefined) {
+            if (!slot.studentId || !slot.disciplineId ||
+                slot.week === undefined || slot.day === undefined || slot.hour === undefined) {
                 errors.push({
                     index: i,
                     error: 'Missing required fields: studentId, disciplineId, week, day, hour'
                 });
                 continue;
             }
-
-            var schedule = _calendarProvider.getStudentSchedule(slot.studentId, slot.week);
-            var dayNum = parseDay(slot.day);
-            var hourNum = parseHour(slot.hour);
-
-            if (dayNum === null || hourNum === null) {
-                errors.push({
-                    index: i,
-                    error: 'Invalid day or hour.'
-                });
-                continue;
-            }
-
-            var exists = schedule[dayNum] && schedule[dayNum][hourNum];
-
-            if (exists && !overwrite) {
-                skipped++;
-                continue;
-            }
-
-            var duration = slot.duration || 1;
-            var metadata = slot.metadata || {};
-
-            var result = setStudentScheduleClass(
-                slot.studentId,
-                slot.week,
-                slot.day,
-                slot.hour,
-                slot.disciplineId,
-                duration,
-                metadata
-            );
-
-            if (result.success) {
-                if (exists) {
-                    updated++;
-                } else {
-                    created++;
-                }
-            } else {
-                errors.push({
-                    index: i,
-                    error: result.message
-                });
-            }
+            validated.push({ index: i, slot: slot });
         }
 
-        return success({
-            total: slots.length,
-            created: created,
-            updated: updated,
-            skipped: skipped,
-            errors: errors,
-            successCount: created + updated
+        if (validated.length === 0) {
+            return Promise.resolve(success({
+                total: slots.length,
+                created: 0,
+                updated: 0,
+                skipped: 0,
+                errors: errors,
+                successCount: 0
+            }));
+        }
+
+        // Sequential write chain. Each `.then` returns either a
+        // resolved result or a rejected one; we catch per-slot so a
+        // single failure does not abort the whole chain unless we
+        // choose to stop. Here, we continue so the report is complete.
+        var chain = Promise.resolve();
+
+        validated.forEach(function(item) {
+            chain = chain.then(function() {
+                var slot = item.slot;
+                var dayNum = parseDay(slot.day);
+                var hourNum = parseHour(slot.hour);
+
+                if (dayNum === null || hourNum === null) {
+                    errors.push({ index: item.index, error: 'Invalid day or hour.' });
+                    return;
+                }
+
+                var schedule = _calendarProvider.getStudentSchedule(slot.studentId, slot.week);
+                var exists = schedule[dayNum] && schedule[dayNum][hourNum];
+
+                if (exists && !overwrite) {
+                    counters.skipped++;
+                    return;
+                }
+
+                var duration = slot.duration || 1;
+                var metadata = slot.metadata || {};
+
+                return setStudentScheduleClass(
+                    slot.studentId,
+                    slot.week,
+                    slot.day,
+                    slot.hour,
+                    slot.disciplineId,
+                    duration,
+                    metadata
+                ).then(function(result) {
+                    if (result && result.success) {
+                        if (exists) {
+                            counters.updated++;
+                        } else {
+                            counters.created++;
+                        }
+                        succeeded++;
+                    } else {
+                        errors.push({
+                            index: item.index,
+                            error: result && result.message ? result.message : 'Unknown error.'
+                        });
+                    }
+                });
+            });
+        });
+
+        return chain.then(function() {
+            return success({
+                total: slots.length,
+                created: counters.created,
+                updated: counters.updated,
+                skipped: counters.skipped,
+                errors: errors,
+                successCount: succeeded
+            });
         });
     }
 
@@ -1143,26 +1232,30 @@
         // Configuration
         configure: configure,
 
-        // ---- Student Schedule ----
+        // ---- Student Schedule: Reads (synchronous) ----
         getStudentSchedule: getStudentSchedule,
         getStudentClasses: getStudentClasses,
         getClassDetails: getClassDetails,
         getStudentWeeklyUsage: getStudentWeeklyUsage,
+
+        // ---- Student Schedule: Writes (Promise-based) ----
         setStudentScheduleClass: setStudentScheduleClass,
         removeStudentScheduleClass: removeStudentScheduleClass,
         clearStudentSchedule: clearStudentSchedule,
         duplicateStudentSchedule: duplicateStudentSchedule,
 
-        // ---- Rest Days ----
+        // ---- Rest Days: Reads (synchronous) ----
         getStudentRestDays: getStudentRestDays,
+
+        // ---- Rest Days: Writes (Promise-based) ----
         setStudentRestDays: setStudentRestDays,
         clearStudentRestDays: clearStudentRestDays,
 
-        // ---- Conflict Detection ----
+        // ---- Conflict Detection (synchronous) ----
         hasStudentScheduleConflict: hasStudentScheduleConflict,
         isStudentRestDay: isStudentRestDay,
 
-        // ---- Class Metadata ----
+        // ---- Class Metadata (synchronous) ----
         getClassInstructor: getClassInstructor,
         getClassInstructorName: getClassInstructorName,
         getClassDuration: getClassDuration,
@@ -1170,7 +1263,7 @@
         findClassStartHour: findClassStartHour,
         getFullClassDetails: getFullClassDetails,
 
-        // ---- Bulk Operations ----
+        // ---- Bulk Operations (Promise-based) ----
         saveScheduleSlots: saveScheduleSlots,
 
         // ---- Constants ----
