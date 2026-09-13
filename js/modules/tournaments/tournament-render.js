@@ -1076,7 +1076,6 @@
         if (missing.length > 0) {
             console.warn('[TournamentsRender] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[TournamentsRender] All exports verified successfully.');
         }
     })();
 

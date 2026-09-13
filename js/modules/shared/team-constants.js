@@ -731,7 +731,6 @@
         if (missing.length > 0) {
             console.warn('[TeamConstants] Verification failed - missing exports:', missing.join(', '));
         } else {
-            console.log('[TeamConstants] All exports verified successfully.');
             console.log('[TeamConstants] Bounds:', {
                 MIN_WEEK: exports.MIN_WEEK,
                 MAX_WEEK: exports.MAX_WEEK

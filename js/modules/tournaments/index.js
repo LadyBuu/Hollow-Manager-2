@@ -614,7 +614,6 @@
         if (missing.length > 0) {
             console.warn('[TournamentsModule] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[TournamentsModule] All exports verified successfully.');
         }
     })();
 

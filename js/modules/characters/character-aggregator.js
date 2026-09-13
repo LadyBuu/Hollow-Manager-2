@@ -1151,7 +1151,6 @@
         if (missing.length > 0) {
             console.warn('[CharacterAggregator] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[CharacterAggregator] All exports verified successfully.');
         }
     })();
 

@@ -310,10 +310,6 @@ function processFile(filePath) {
 
 function main() {
     const mode = APPLY ? 'APPLY' : 'DRY RUN';
-    console.log('=== strip-success-logs.js ===');
-    console.log('mode:', mode);
-    console.log('root:', ROOT);
-    console.log('');
 
     let totalFiles = 0;
     let touchedFiles = 0;
@@ -334,38 +330,25 @@ function main() {
             totalRemoved += result.removed;
 
             const rel = path.relative(ROOT, filePath);
-            console.log(rel + '  (' + result.removed + ' line' + (result.removed === 1 ? '' : 's') + ')');
 
             if (VERBOSE) {
                 for (const r of result.lines) {
-                    console.log('    ' + r.lineNumber + ': ' + r.text.trim());
                 }
             }
         }
     }
 
-    console.log('');
-    console.log('--- summary ---');
-    console.log('files scanned:  ' + totalFiles);
-    console.log('files touched:  ' + touchedFiles);
-    console.log('lines removed:  ' + totalRemoved);
 
     if (errors.length > 0) {
-        console.log('');
         console.log('--- errors ---');
         for (const e of errors) {
-            console.log(path.relative(ROOT, e.filePath) + ': ' + e.message);
         }
     }
 
     if (!APPLY && touchedFiles > 0) {
-        console.log('');
-        console.log('Re-run with --apply to write changes.');
     }
 
     if (APPLY && touchedFiles > 0) {
-        console.log('');
-        console.log('Changes written.');
     }
 }
 

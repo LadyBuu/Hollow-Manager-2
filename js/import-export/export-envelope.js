@@ -718,8 +718,6 @@
         if (missing.length > 0) {
             console.warn('[ExportEnvelope] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[ExportEnvelope] All exports verified successfully.');
-            console.log('[ExportEnvelope] Current format version:', window.ExportSchema.FORMAT_VERSION);
         }
     })();
 

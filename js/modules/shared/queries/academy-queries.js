@@ -1482,7 +1482,6 @@
         if (missing.length > 0) {
             console.warn('[AcademyQueries] Verification failed - missing exports:', missing.join(', '));
         } else {
-            console.log('[AcademyQueries] All exports verified successfully.');
         }
     })();
 

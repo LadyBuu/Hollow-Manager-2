@@ -513,7 +513,6 @@
 
     try {
         validateConstants();
-        console.log('[MagicConstants] Validation passed successfully.');
     } catch (e) {
         console.error('[MagicConstants] Validation failed:', e.message);
         throw e;

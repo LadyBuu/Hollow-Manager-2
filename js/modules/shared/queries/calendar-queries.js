@@ -839,7 +839,6 @@
         if (missing.length > 0) {
             console.warn('[CalendarQueries] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[CalendarQueries] All exports verified successfully.');
         }
     })();
 

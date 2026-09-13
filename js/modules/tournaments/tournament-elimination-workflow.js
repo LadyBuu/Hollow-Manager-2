@@ -963,7 +963,6 @@
         if (missing.length > 0) {
             console.warn('[TournamentEliminationWorkflow] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[TournamentEliminationWorkflow] All exports verified successfully.');
         }
     })();
 

@@ -221,7 +221,6 @@
         _initialized = false;
         _bootstrapping = false;
         _resolved = false;
-        console.log('[Bootstrap] Reset complete');
     }
 
     function reinit() {

@@ -452,7 +452,6 @@
             );
         }
 
-        console.log('[ImportExport] All critical dependencies verified successfully.');
     }
 
     // ============================================================
@@ -514,9 +513,6 @@
     (function outputStatus() {
         var status = getStatus();
 
-        console.log('[ImportExport] Module initialized successfully.');
-        console.log('[ImportExport] Version:', publicAPI.VERSION);
-        console.log('[ImportExport] Format:', publicAPI.FORMAT_NAME, 'v' + publicAPI.FORMAT_VERSION);
 
         // Log loaded modules
         var loadedModules = [];
@@ -525,7 +521,6 @@
                 loadedModules.push(name);
             }
         }
-        console.log('[ImportExport] Loaded modules (' + loadedModules.length + '):', loadedModules.join(', '));
 
         if (status.missingNonCritical.length > 0) {
             console.warn('[ImportExport] Non-critical modules missing:', status.missingNonCritical.join(', '));

@@ -436,7 +436,6 @@
 
     try {
         validateConstants();
-        console.log('[SocialConstants] Validation passed successfully.');
     } catch (e) {
         console.error('[SocialConstants] Validation failed:', e.message);
         throw e;

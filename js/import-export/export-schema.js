@@ -621,9 +621,6 @@
         if (missing.length > 0) {
             console.warn('[ExportSchema] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[ExportSchema] All exports verified successfully.');
-            console.log('[ExportSchema] Current format version:', exports.FORMAT_VERSION);
-            console.log('[ExportSchema] Sections:', exports.getSections().join(', '));
         }
     })();
 

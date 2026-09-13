@@ -1258,7 +1258,6 @@
         if (missing.length > 0) {
             console.warn('[MissionCSV] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[MissionCSV] All exports verified successfully.');
         }
     })();
 

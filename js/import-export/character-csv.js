@@ -902,7 +902,6 @@
         if (missing.length > 0) {
             console.warn('[CharacterCSV] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[CharacterCSV] All exports verified successfully.');
         }
     })();
 

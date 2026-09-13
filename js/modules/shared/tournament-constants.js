@@ -892,7 +892,6 @@
         if (missing.length > 0) {
             console.warn('[TournamentConstants] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[TournamentConstants] All exports verified successfully.');
             console.log('[TournamentConstants] Bounds:', {
                 MIN_WEEK: exports.MIN_WEEK,
                 MAX_WEEK: exports.MAX_WEEK

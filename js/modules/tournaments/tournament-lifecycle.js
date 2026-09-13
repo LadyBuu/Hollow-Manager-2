@@ -675,7 +675,6 @@
         if (missing.length > 0) {
             console.warn('[TournamentLifecycle] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[TournamentLifecycle] All exports verified successfully.');
         }
     })();
 

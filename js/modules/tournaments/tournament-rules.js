@@ -1027,7 +1027,6 @@
         if (missing.length > 0) {
             console.warn('[TournamentRules] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[TournamentRules] All exports verified successfully.');
         }
     })();
 

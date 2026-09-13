@@ -8,61 +8,38 @@
  *   - Registering with TabManager
  *   - Verifying schema and dependencies at mount time
  *   - Assembling and injecting external providers
- *   - Delegating all rendering and event coordination to AcademyEvents
+ *   - Handing the container to AcademyView for rendering
  *   - Handling DataLoader integration
  *   - Exposing the public Academy API
  *
  * ARCHITECTURE:
  *   This file is the LIFECYCLE ENTRY POINT, not a render module.
- *   All rendering, refresh, and event coordination live in
- *   academy-events.js. This file's job is to make sure the world is
- *   ready and then hand the container to AcademyEvents.
+ *   All rendering and interaction live in academy-view.js.
+ *   This file's job is to make sure the world is ready and then
+ *   hand the container to AcademyView.
  *
  *   Do not add render logic here. Do not add refresh logic here.
- *   Do not add tab-content event binding here. If something needs to
- *   re-render or re-bind, it goes through AcademyEvents.refreshUI().
+ *   Do not add tab-content event binding here. If something needs
+ *   to re-render, it goes through AcademyView.render(container).
  *
- * CALENDAR PROVIDER READ/WRITE SPLIT (Session D3):
+ * SHELL HISTORY:
+ *   Previously this file handed the container to AcademyEvents,
+ *   which rendered a class/student/faculty sub-tab shell. That
+ *   shell is being replaced by AcademyView's People shell.
+ *
+ *   AcademyEvents is still loaded (its <script> tag is in
+ *   index.html), but it is no longer wired to the tab. It will
+ *   be repurposed later as the sub-view switcher for
+ *   Weekly Teams / Rankings / Disciplines / Locations.
+ *
+ * CALENDAR PROVIDER READ/WRITE SPLIT:
  *   The calendar provider is a facade over two modules:
  *     - CalendarQueries owns READS. Synchronous.
  *     - ScheduleCore owns WRITES. Promise-based (MutationPipeline).
  *
- *   The provider maps each method to the correct module. The
- *   provider contract is:
- *
- *     READS (synchronous):
- *       getStudentSchedule(studentId, week)
- *       getStudentRestDays(studentId, week)
- *       getSlotMetadata(studentId, week, day, hour)
- *       findClassStart(schedule, metadata, studentId, week, day, hour)
- *       getInstructorSchedule(instructorId, week)
- *       getInstructorTemplates(instructorId, week)
- *       getInstructorBlocks(instructorId, week)
- *       getLocationSchedule(locationId, week)
- *       hasConflict(schedule, day, hour, duration)   // pure predicate
- *
- *     WRITES (Promise-based):
- *       setStudentSlot(studentId, week, day, hour, disciplineId, duration, metadata)
- *       removeStudentSlot(studentId, week, day, hour)
- *       clearStudentSchedule(studentId, week)
- *       duplicateStudentSchedule(studentId, fromWeek, toWeek)
- *       setRestDays(studentId, week, days)
- *       removeRestDays(studentId, week)
- *       setSlotMetadata(studentId, week, day, hour, metadata)
- *       setInstructorTemplate(instructorId, week, day, hour, templateData)
- *       removeInstructorTemplate(instructorId, week, day, hour)
- *       setInstructorBlock(instructorId, week, day, hour, blockData)
- *       removeInstructorBlock(instructorId, week, day, hour)
- *       setLocationClass(locationId, week, day, hour, disciplineId, metadata)
- *       removeLocationClass(locationId, week, day, hour)
- *
- *   AcademySchedule consumes this provider and must be configured
- *   with it before any schedule operation runs.
- *
- * NOTE ON ACADEMY DATA STRUCTURE (v15+):
- *   - window.data.academy is created by database.js.
- *   - academy.classStudents no longer exists.
- *   - The structure guard below is DEFENSIVE ONLY.
+ *   The provider maps each method to the correct module. It is
+ *   assembled here and injected into AcademySchedule before any
+ *   schedule operation runs.
  *
  * MOUNT IDEMPOTENCY:
  *   mountAcademy() may be invoked from two paths:
@@ -70,8 +47,7 @@
  *     - tabChanged            → mountAcademy
  *   Both paths can fire in the same tick during a fresh load. The
  *   _mounted flag plus the unmount-before-mount sequence inside
- *   mountAcademy() guarantees at most one live mount. This file
- *   does not add a separate debounce; the flag is sufficient.
+ *   mountAcademy() guarantees at most one live mount.
  *
  * DEPENDENCIES:
  *   - window.TabManager
@@ -80,7 +56,7 @@
  *   - window.CalendarQueries
  *   - window.ScheduleCore
  *   - window.AcademyUI
- *   - window.AcademyEvents
+ *   - window.AcademyView
  *   - window.AcademyClasses
  *   - window.AcademyQueries
  *   - window.AcademyGrades
@@ -114,7 +90,7 @@
     var CalendarQueries = window.CalendarQueries;
     var ScheduleCore = window.ScheduleCore;
     var AcademyUI = window.AcademyUI;
-    var AcademyEvents = window.AcademyEvents;
+    var AcademyView = window.AcademyView;
     var AcademyClasses = window.AcademyClasses;
     var AcademyQueries = window.AcademyQueries;
     var AcademyGrades = window.AcademyGrades;
@@ -186,7 +162,7 @@
             missing.push('CalendarQueries.getInstructorBlocks');
         }
 
-        // ---- ScheduleCore — WRITE operations ----
+        // ---- ScheduleCore — WRITE operations (Promise-based) ----
         if (!ScheduleCore || typeof ScheduleCore.setStudentSlot !== 'function') {
             missing.push('ScheduleCore.setStudentSlot');
         }
@@ -230,18 +206,15 @@
             missing.push('ScheduleCore.hasConflict');
         }
 
-        if (!AcademyUI || typeof AcademyUI.init !== 'function') {
-            missing.push('AcademyUI.init');
+        if (!AcademyUI || typeof AcademyUI.getSelectedView !== 'function') {
+            missing.push('AcademyUI.getSelectedView');
+        }
+        if (!AcademyUI || typeof AcademyUI.getSelectedClassId !== 'function') {
+            missing.push('AcademyUI.getSelectedClassId');
         }
 
-        if (!AcademyEvents || typeof AcademyEvents.init !== 'function') {
-            missing.push('AcademyEvents.init');
-        }
-        if (!AcademyEvents || typeof AcademyEvents.destroy !== 'function') {
-            missing.push('AcademyEvents.destroy');
-        }
-        if (!AcademyEvents || typeof AcademyEvents.refreshUI !== 'function') {
-            missing.push('AcademyEvents.refreshUI');
+        if (!AcademyView || typeof AcademyView.render !== 'function') {
+            missing.push('AcademyView.render');
         }
 
         if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
@@ -339,13 +312,6 @@
     //
     // READS → CalendarQueries (synchronous)
     // WRITES → ScheduleCore (Promise-based, MutationPipeline)
-    //
-    // The provider is the SINGLE boundary AcademySchedule talks to.
-    // AcademySchedule's contract (Session D2) states:
-    //   - Read methods return synchronously.
-    //   - Write methods return Promises.
-    // The methods below satisfy that contract by delegating to the
-    // correct module on each side.
 
     var _providersInitialized = false;
 
@@ -377,11 +343,8 @@
             }
         };
 
-        // Read/write split: reads go to CalendarQueries, writes to ScheduleCore.
         var calendarProvider = {
-            // ====================================================
-            // READS — CalendarQueries (synchronous)
-            // ====================================================
+            // ---- READS — CalendarQueries (synchronous) ----
             getStudentSchedule: function(studentId, week) {
                 return CalendarQueries.getStudentSchedule(studentId, week);
             },
@@ -407,9 +370,7 @@
                 return CalendarQueries.getLocationSchedule(locationId, week);
             },
 
-            // ====================================================
-            // WRITES — ScheduleCore (Promise-based)
-            // ====================================================
+            // ---- WRITES — ScheduleCore (Promise-based) ----
             setStudentSlot: function(studentId, week, day, hour, disciplineId, duration, metadata) {
                 return ScheduleCore.setStudentSlot(studentId, week, day, hour, disciplineId, duration, metadata);
             },
@@ -450,9 +411,7 @@
                 return ScheduleCore.removeLocationClass(locationId, week, day, hour);
             },
 
-            // ====================================================
-            // PURE PREDICATE — synchronous
-            // ====================================================
+            // ---- PURE PREDICATE — synchronous ----
             hasConflict: function(schedule, day, hour, duration) {
                 return ScheduleCore.hasConflict(schedule, day, hour, duration);
             }
@@ -522,9 +481,12 @@
         _container = container;
         _mounted = true;
 
-        // Hand the container to AcademyEvents. From this point, all
-        // rendering and refresh goes through AcademyEvents.
-        AcademyEvents.init(container);
+        // Initialize UI state (loads persisted state from sessionStorage)
+        AcademyUI.init();
+
+        // Hand the container to AcademyView. From this point, all
+        // rendering goes through AcademyView.render(container).
+        AcademyView.render(container);
 
         dispatchReady();
     }
@@ -534,16 +496,27 @@
             return;
         }
 
-        if (AcademyEvents && typeof AcademyEvents.destroy === 'function') {
-            AcademyEvents.destroy();
-        }
-
         if (_container) {
             _container.innerHTML = '';
         }
 
         _mounted = false;
         _container = null;
+    }
+
+    // ============================================================
+    // REFRESH
+    // ============================================================
+    //
+    // AcademyView is the authoritative renderer. Refreshing the
+    // Academy tab means re-rendering the whole tab. There is no
+    // partial refresh path.
+
+    function refreshAcademy() {
+        if (!_mounted || !_container) {
+            return;
+        }
+        AcademyView.render(_container);
     }
 
     // ============================================================
@@ -624,13 +597,8 @@
         mount: mountAcademy,
         unmount: unmountAcademy,
 
-        // Refresh — delegated to AcademyEvents, which is the
-        // authoritative refresher.
-        refresh: function() {
-            if (AcademyEvents && typeof AcademyEvents.refreshUI === 'function') {
-                AcademyEvents.refreshUI();
-            }
-        },
+        // Refresh — re-renders the whole Academy tab.
+        refresh: refreshAcademy,
 
         // State
         getState: function() {
@@ -640,42 +608,26 @@
         // Selections
         selectClass: function(classId) {
             AcademyUI.selectClass(classId);
-            if (AcademyEvents && typeof AcademyEvents.refreshUI === 'function') {
-                AcademyEvents.refreshUI();
-            }
+            refreshAcademy();
         },
-        selectStudent: function(studentId) {
-            AcademyUI.selectStudent(studentId);
-            if (AcademyEvents && typeof AcademyEvents.refreshUI === 'function') {
-                AcademyEvents.refreshUI();
-            }
+        selectCharacter: function(characterId) {
+            AcademyUI.selectCharacter(characterId);
+            refreshAcademy();
         },
-        selectInstructor: function(instructorId) {
-            AcademyUI.selectInstructor(instructorId);
-            if (AcademyEvents && typeof AcademyEvents.refreshUI === 'function') {
-                AcademyEvents.refreshUI();
-            }
-        },
-        switchSubTab: function(subTab) {
-            if (AcademyUI.setActiveTab(subTab)) {
-                if (AcademyEvents && typeof AcademyEvents.refreshUI === 'function') {
-                    AcademyEvents.refreshUI();
-                }
+        switchView: function(viewId) {
+            if (AcademyUI.setSelectedView(viewId)) {
+                refreshAcademy();
             }
         },
         clearSelections: function() {
             AcademyUI.clearSelections();
-            if (AcademyEvents && typeof AcademyEvents.refreshUI === 'function') {
-                AcademyEvents.refreshUI();
-            }
+            refreshAcademy();
         },
         setWeek: function(week) {
             var num = parseInt(week, 10);
             if (!isNaN(num) && num >= 1) {
                 AcademyUI.setDisplayWeek(num);
-                if (AcademyEvents && typeof AcademyEvents.refreshUI === 'function') {
-                    AcademyEvents.refreshUI();
-                }
+                refreshAcademy();
             }
         },
 
@@ -693,7 +645,10 @@
         AcademyDistribute: AcademyDistribute,
         AcademySchedule: AcademySchedule,
         AcademyDisciplines: AcademyDisciplines,
-        AcademyLocations: AcademyLocations
+        AcademyLocations: AcademyLocations,
+
+        // View reference
+        AcademyView: AcademyView
     };
 
     window.renderAcademy = mountAcademy;

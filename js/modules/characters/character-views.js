@@ -694,6 +694,5 @@
         }
     };
 
-    console.log('[CharacterViews] Loaded.');
 
 })();

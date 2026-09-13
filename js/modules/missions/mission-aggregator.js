@@ -735,7 +735,6 @@
         if (missing.length > 0) {
             console.warn('[MissionAggregator] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[MissionAggregator] All exports verified successfully.');
         }
     })();
 

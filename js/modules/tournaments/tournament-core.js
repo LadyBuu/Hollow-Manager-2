@@ -1608,7 +1608,6 @@
         if (missing.length > 0) {
             console.warn('[TournamentCore] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[TournamentCore] All exports verified successfully.');
         }
     })();
 

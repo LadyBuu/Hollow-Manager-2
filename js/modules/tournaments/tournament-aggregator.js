@@ -995,7 +995,6 @@
         if (missing.length > 0) {
             console.warn('[TournamentAggregator] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[TournamentAggregator] All exports verified successfully.');
         }
     })();
 

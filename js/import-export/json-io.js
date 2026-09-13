@@ -800,8 +800,6 @@
             console.warn('[JSONIO] Verification - some exports may be missing:', missing.join(', '));
         } else {
             var envelopeStatus = getEnvelope() ? 'available' : 'NOT available (envelope features degraded)';
-            console.log('[JSONIO] All exports verified successfully.');
-            console.log('[JSONIO] ExportEnvelope:', envelopeStatus);
         }
     })();
 

@@ -405,7 +405,6 @@
         if (missing.length > 0) {
             console.warn('[CharacterList] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[CharacterList] All exports verified successfully.');
         }
     })();
 

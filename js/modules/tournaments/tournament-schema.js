@@ -1554,7 +1554,6 @@
         if (missing.length > 0) {
             console.warn('[TournamentSchema] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[TournamentSchema] All exports verified successfully.');
         }
     })();
 

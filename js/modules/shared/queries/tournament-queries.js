@@ -998,7 +998,6 @@
         if (missing.length > 0) {
             console.warn('[TournamentQueries] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[TournamentQueries] All exports verified successfully.');
         }
     })();
 

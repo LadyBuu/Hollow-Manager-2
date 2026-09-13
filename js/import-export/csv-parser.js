@@ -467,7 +467,6 @@
         if (missing.length > 0) {
             console.warn('[CSV] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[CSV] All exports verified successfully.');
         }
     })();
 

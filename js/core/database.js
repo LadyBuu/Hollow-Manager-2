@@ -287,7 +287,6 @@
                 var request = indexedDB.deleteDatabase(DB_NAME);
 
                 request.onsuccess = function() {
-                    console.log('[Database] Old database deleted successfully.');
                     resolve();
                 };
 
@@ -348,7 +347,6 @@
                             .then(function() {
                                 _dbOpenPromise = null;
                                 _dbStatus = 'uninitialized';
-                                console.log('[Database] Recreating database with version ' + DB_VERSION + '...');
                                 return openDatabase();
                             })
                             .then(resolve)
@@ -881,7 +879,6 @@
         });
 
         if (legacyMergedCount > 0) {
-            console.log('[Database] v15: merged ' + legacyMergedCount + ' legacy classStudents entries into character.classIds.');
         }
         if (prunedCount > 0) {
             console.warn('[Database] v15: pruned ' + prunedCount + ' classId references to non-existent classes.');

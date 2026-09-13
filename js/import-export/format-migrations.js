@@ -398,9 +398,6 @@
         if (missing.length > 0) {
             console.warn('[FormatMigrations] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[FormatMigrations] All exports verified successfully.');
-            console.log('[FormatMigrations] Current version:', CURRENT_VERSION);
-            console.log('[FormatMigrations] Migrations registered:', Object.keys(MIGRATIONS).join(', '));
         }
     })();
 

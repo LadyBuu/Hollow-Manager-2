@@ -1019,7 +1019,6 @@
         if (missing.length > 0) {
             console.warn('[ImportPipeline] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[ImportPipeline] All exports verified successfully.');
         }
     })();
 

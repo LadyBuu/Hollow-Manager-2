@@ -94,10 +94,8 @@
             } else if (typeof notifier.notifyInfo === 'function') {
                 notifier.notifyInfo(message);
             } else {
-                console.log('[Notification]', type || 'info', message);
             }
         } else {
-            console.log('[Notification]', type || 'info', message);
         }
     }
 
@@ -693,7 +691,6 @@
         bindFileInput('missions-csv-file-input', handleMissionImport);
         bindButton('template-missions-csv-btn', handleMissionTemplate);
 
-        console.log('[ImportExportUI] Initialized successfully');
     }
 
     // ============================================================
@@ -703,7 +700,6 @@
     function destroy() {
         _initialized = false;
         _handlers = {};
-        console.log('[ImportExportUI] Destroyed');
     }
 
     // ============================================================
