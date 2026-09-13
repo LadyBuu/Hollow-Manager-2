@@ -3996,3 +3996,493 @@ main {
         padding: 8px;
     }
 }
+
+/* ============================================================
+   ACADEMY WEEKLY TEAMS
+   ============================================================ */
+
+.academy-weekly-teams-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.academy-weekly-teams-top-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.academy-weekly-teams-top-left,
+.academy-weekly-teams-top-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.academy-weekly-teams-empty {
+    padding: 30px 12px;
+    text-align: center;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.academy-weekly-teams-panels {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 12px;
+    align-items: start;
+}
+
+@media (max-width: 768px) {
+    .academy-weekly-teams-panels {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* ---------- Sidebar ---------- */
+
+.academy-weekly-teams-sidebar {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px;
+    max-height: 640px;
+    overflow-y: auto;
+}
+
+@media (max-width: 768px) {
+    .academy-weekly-teams-sidebar {
+        max-height: 320px;
+    }
+}
+
+.academy-weekly-teams-list-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-weekly-teams-list-title {
+    font-size: 0.8rem;
+    color: var(--accent);
+    margin: 0;
+}
+
+.academy-weekly-teams-list-count {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+}
+
+.academy-weekly-teams-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.academy-weekly-team-row {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border-soft);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.academy-weekly-team-row:hover {
+    background: var(--panel-alt);
+}
+
+.academy-weekly-team-row.selected {
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    padding-left: 6px;
+}
+
+.academy-weekly-team-row-main {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.academy-weekly-team-name {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text);
+}
+
+.academy-weekly-team-row-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin-top: 3px;
+    font-size: 0.6rem;
+    color: var(--text-dim);
+}
+
+/* ---------- Detail panel ---------- */
+
+.academy-weekly-teams-detail {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px;
+    min-height: 200px;
+    max-height: 640px;
+    overflow-y: auto;
+}
+
+@media (max-width: 768px) {
+    .academy-weekly-teams-detail {
+        max-height: none;
+    }
+}
+
+.academy-weekly-team-detail-header {
+    border-bottom: 1px solid var(--border-soft);
+    padding-bottom: 10px;
+    margin-bottom: 12px;
+}
+
+.academy-weekly-team-detail-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+
+.academy-weekly-team-detail-title {
+    font-size: 1.05rem;
+    color: var(--accent);
+    margin: 0;
+}
+
+.academy-weekly-team-detail-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-size: 0.7rem;
+}
+
+.academy-weekly-team-detail-meta-item .meta-label {
+    color: var(--text-dim);
+    font-size: 0.65rem;
+}
+
+/* ---------- Members section ---------- */
+
+.academy-weekly-team-members-section {
+    margin-top: 4px;
+}
+
+.academy-weekly-team-members-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-weekly-team-members-title {
+    font-size: 0.85rem;
+    color: var(--accent);
+    margin: 0;
+}
+
+.academy-weekly-team-members-count {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+}
+
+.academy-weekly-team-members-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.academy-weekly-team-member-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 8px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.academy-weekly-team-member-row:hover {
+    background: var(--accent-soft);
+}
+
+.academy-weekly-team-member-row.former {
+    border-left-color: var(--text-dim);
+    opacity: 0.75;
+}
+
+.academy-weekly-team-member-row.deceased {
+    border-left-color: var(--danger);
+    opacity: 0.6;
+}
+
+.academy-weekly-team-member-main {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.academy-weekly-team-member-name {
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+.academy-weekly-team-member-secondary {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+}
+
+.academy-weekly-team-member-period {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+/* ---------- Badges ---------- */
+
+.academy-team-type-badge,
+.academy-team-status-badge,
+.academy-weekly-member-badge {
+    display: inline-block;
+    font-size: 0.55rem;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 8px;
+    border: 1px solid;
+    white-space: nowrap;
+}
+
+.academy-team-type-academic {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.academy-team-type-professional {
+    color: var(--info);
+    background: var(--info-soft);
+    border-color: var(--info);
+}
+
+.academy-team-type-temporary {
+    color: var(--warning);
+    background: var(--warning-soft);
+    border-color: var(--warning);
+}
+
+.academy-team-type-civilian {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+.academy-team-type-unknown {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+.academy-team-status-active {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.academy-team-status-inactive {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+.academy-team-status-deprecated {
+    color: var(--danger);
+    background: var(--danger-soft);
+    border-color: var(--danger);
+}
+
+.academy-team-status-unknown {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+.academy-weekly-member-active {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.academy-weekly-member-former {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+.academy-weekly-member-deceased {
+    color: var(--danger);
+    background: var(--danger-soft);
+    border-color: var(--danger);
+}
+
+.academy-weekly-member-unknown {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+/* Mobile */
+@media (max-width: 480px) {
+    .academy-weekly-teams-top-bar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .academy-weekly-team-detail-title {
+        font-size: 0.9rem;
+    }
+}
+
+/* ============================================================
+   ACADEMY INLINE GRADES EDITOR
+   ============================================================ */
+
+.academy-grades-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.academy-grades-editor-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-grades-editor-title {
+    font-size: 0.85rem;
+    color: var(--accent);
+    margin: 0;
+}
+
+.academy-grades-editor-table-wrapper {
+    max-height: 320px;
+    overflow-y: auto;
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+}
+
+.academy-grades-editor-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.7rem;
+}
+
+.academy-grades-editor-table thead th {
+    text-align: left;
+    padding: 5px 8px;
+    background: var(--panel-alt);
+    color: var(--text-dim);
+    font-size: 0.62rem;
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+.academy-grades-editor-table tbody td {
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--border-soft);
+    vertical-align: middle;
+}
+
+.academy-grades-editor-row:hover {
+    background: var(--panel-alt);
+}
+
+.academy-grades-editor-table .week-col {
+    width: 50px;
+    color: var(--text-dim);
+}
+
+.academy-grades-editor-table .type-col {
+    width: 80px;
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+.academy-grades-editor-table .weight-col {
+    width: 55px;
+    color: var(--text-dim);
+    text-align: right;
+}
+
+.academy-grades-editor-table .score-col {
+    width: 70px;
+    text-align: right;
+}
+
+.academy-grades-editor-table .actions-col {
+    width: 110px;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.academy-grades-editor-table .actions-col button {
+    font-size: 0.6rem;
+    padding: 2px 8px;
+    margin-left: 4px;
+}
+
+/* Host element inside character detail panel */
+.academy-grades-editor-host {
+    /* No special styling needed — the editor styles itself. */
+}
+
+/* Mobile */
+@media (max-width: 500px) {
+    .academy-grades-editor-table {
+        font-size: 0.62rem;
+    }
+    .academy-grades-editor-table thead th,
+    .academy-grades-editor-table tbody td {
+        padding: 3px 5px;
+    }
+    .academy-grades-editor-table .actions-col {
+        width: 90px;
+    }
+    .academy-grades-editor-table .actions-col button {
+        font-size: 0.55rem;
+        padding: 1px 5px;
+        margin-left: 2px;
+    }
+}

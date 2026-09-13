@@ -327,6 +327,20 @@
         };
     }
 
+    /**
+     * Format a tournament or standalone elimination for display.
+     *
+     * IMPORTANT:
+     *   TournamentQueries exposes getTournament(id), NOT
+     *   getTournamentById(id). This function resolves the tournament
+     *   name defensively: a missing method or a thrown error degrades
+     *   to the fallback 'Unknown Tournament' name instead of killing
+     *   the whole character detail render.
+     *
+     * @param {object} elim - Elimination record
+     * @param {string} charId - Character ID (unused but kept for symmetry)
+     * @returns {object|null} Formatted elimination or null
+     */
     function formatElimination(elim, charId) {
         if (!elim) { return null; }
 
@@ -343,7 +357,23 @@
 
         var tournamentName = 'Unknown Tournament';
         if (elim.tournamentId && TournamentQueries) {
-            var tourn = TournamentQueries.getTournamentById(elim.tournamentId);
+            var tourn = null;
+            try {
+                if (typeof TournamentQueries.getTournament === 'function') {
+                    tourn = TournamentQueries.getTournament(elim.tournamentId);
+                } else if (typeof TournamentQueries.getTournamentById === 'function') {
+                    // Backwards-compat: honour an alias if the query
+                    // module ever exposes one. Not required.
+                    tourn = TournamentQueries.getTournamentById(elim.tournamentId);
+                }
+            } catch (e) {
+                console.warn(
+                    '[CharacterAggregator] Failed to resolve tournament name:',
+                    elim.tournamentId,
+                    e
+                );
+                tourn = null;
+            }
             if (tourn) { tournamentName = tourn.name || 'Unknown Tournament'; }
         }
 
@@ -1150,7 +1180,6 @@
 
         if (missing.length > 0) {
             console.warn('[CharacterAggregator] Verification - some exports may be missing:', missing.join(', '));
-        } else {
         }
     })();
 
