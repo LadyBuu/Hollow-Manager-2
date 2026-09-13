@@ -21,7 +21,6 @@
                 <a href="#teams" data-tab="teams">Teams</a>
                 <a href="#calendar" data-tab="calendar">Calendar</a>
                 <a href="#social" data-tab="social">Social</a>
-                <a href="#tournaments" data-tab="tournaments">Tournaments</a>
                 <a href="#academy" data-tab="academy">Academy</a>
                 <a href="#missions" data-tab="missions">Missions</a>
             </nav>
@@ -49,7 +48,6 @@
             <div id="tab-teams" class="tab-content"></div>
             <div id="tab-calendar" class="tab-content"></div>
             <div id="tab-social" class="tab-content"></div>
-            <div id="tab-tournaments" class="tab-content"></div>
             <div id="tab-academy" class="tab-content"></div>
             <div id="tab-missions" class="tab-content"></div>
         </main>
@@ -122,14 +120,20 @@
     <script src="js/modules/academy/academy-aggregator.js"></script>
     <script src="js/modules/academy/academy-ui.js"></script>
 
-    <!-- ACADEMY VIEW SHELL (People / Disciplines / Locations) -->
+    <!-- ACADEMY VIEW SHELL -->
     <script src="js/modules/academy/academy-class-detail.js"></script>
+    <script src="js/modules/academy/academy-grades-editor.js"></script>
     <script src="js/modules/academy/academy-character-detail.js"></script>
     <script src="js/modules/academy/academy-discipline-view.js"></script>
     <script src="js/modules/academy/academy-location-view.js"></script>
+    <script src="js/modules/academy/academy-ranking-view.js"></script>
+    <script src="js/modules/academy/academy-weekly-teams-view.js"></script>
+    <script src="js/modules/academy/academy-tournament-view.js"></script>
+    <script src="js/modules/academy/academy-crud-modals.js"></script>
+    <script src="js/modules/academy/academy-tournament-events.js"></script>
     <script src="js/modules/academy/academy-view.js"></script>
 
-    <!-- ACADEMY EVENTS (legacy shell; retained for Session E repurposing) -->
+    <!-- ACADEMY EVENTS (legacy shell; retained for Phase 12 cleanup) -->
     <script src="js/modules/academy/academy-events.js"></script>
     <script src="js/modules/academy/tabs/class-tab.js"></script>
     <script src="js/modules/academy/tabs/student-tab.js"></script>
@@ -163,12 +167,12 @@
     <script src="js/modules/characters/character-events.js"></script>
     <script src="js/modules/characters/index.js"></script>
 
-    <!-- TOURNAMENT DOMAIN -->
+    <!-- TOURNAMENT DOMAIN (loaded for Academy exams view) -->
     <script src="js/modules/tournaments/tournament-schema.js"></script>
     <script src="js/modules/tournaments/tournament-lifecycle.js"></script>
     <script src="js/modules/tournaments/tournament-rules.js"></script>
-    <script src="js/modules/tournaments/tournament-matches.js"></script>
     <script src="js/modules/tournaments/tournament-core.js"></script>
+    <script src="js/modules/tournaments/tournament-matches.js"></script>
     <script src="js/modules/tournaments/tournament-aggregator.js"></script>
     <script src="js/modules/tournaments/tournament-render.js"></script>
     <script src="js/modules/tournaments/tournament-ui.js"></script>

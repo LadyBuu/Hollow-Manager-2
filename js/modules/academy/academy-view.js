@@ -5,39 +5,33 @@
  * Path: js/modules/academy/academy-view.js
  *
  * This module provides:
- *   - The unified Academy shell (view switcher, class dropdown, week selector)
- *   - Five views: People, Weekly Teams, Rankings, Disciplines, Locations
+ *   - The unified Academy shell (view switcher)
+ *   - Six views: People, Exams, Weekly Teams, Rankings, Disciplines, Locations
  *   - Delegation to AcademyClassDetail / AcademyCharacterDetail for the
  *     People view's right panel
  *   - Delegation to AcademyDisciplineView / AcademyLocationView /
- *     AcademyRankingView / AcademyWeeklyTeamsView for the other views
+ *     AcademyRankingView / AcademyWeeklyTeamsView / AcademyTournamentView
+ *     for the other views
  *   - Container-level event delegation for all views
+ *   - Mount/unmount of the inline grades editor after each render
+ *   - View model assembly for the Exams view
  *
  * IMPORTANT:
  *   - RENDER + WIRE - no mutations, no domain logic
  *   - Reads state from AcademyUI
- *   - Reads projections from AcademyAggregator / AcademyQueries
+ *   - Reads projections from AcademyAggregator / TournamentAggregator / AcademyQueries
  *   - Delegates rendering to per-view renderers where they exist
+ *   - Delegates exam mutations to AcademyTournamentEvents
  *   - Uses container-level event delegation (survives innerHTML replacement)
  *   - Uses DomUtils for escaping
  *
  * VIEWS:
  *   people       - class + character browsing
+ *   tournaments  - one exam per class + week; runs eliminations
  *   weeklyTeams  - academic teams per class and week
  *   rankings     - class rankings for a week
  *   disciplines  - discipline (curriculum) browser
  *   locations    - location browser with schedules
- *
- * LAYOUT:
- *   ┌─────────────────────────────────────────────────────────┐
- *   │ [People] [Weekly Teams] [Rankings] [Disciplines] [...] │
- *   ├─────────────────────────────────────────────────────────┤
- *   │ View-specific body                                       │
- *   └─────────────────────────────────────────────────────────┘
- *
- *   The People view has its own class + week bar.
- *   Weekly Teams and Rankings have their own class + week bars.
- *   Disciplines and Locations are class-independent.
  *
  * DEPENDENCIES:
  *   - window.AcademyUI (MANDATORY)
@@ -46,19 +40,18 @@
  *   - window.CharacterQueries (MANDATORY)
  *   - window.DomUtils (MANDATORY)
  *   - window.CalendarConstants (MANDATORY)
- *   - window.AcademyClasses (LAZY - only for Add Class)
- *   - window.NotificationSystem (LAZY - only for Add Class errors)
- *   - window.CharacterDetail (LAZY - only for View Full Profile)
- *   - window.AcademyClassDetail (LAZY)
- *   - window.AcademyCharacterDetail (LAZY)
- *   - window.AcademyDisciplineView (LAZY)
- *   - window.AcademyLocationView (LAZY)
- *   - window.AcademyRankingView (LAZY)
- *   - window.AcademyWeeklyTeamsView (LAZY)
- *   - window.CalendarQueries (LAZY - for location schedules)
- *   - window.TeamQueries (LAZY - for weekly teams)
- *   - window.TeamConstants (LAZY - for team labels)
- *   - window.DisciplineQueries (LAZY - for discipline names)
+ *   - window.AcademyClasses (LAZY - CRUD)
+ *   - window.NotificationSystem (LAZY)
+ *   - window.CharacterDetail (LAZY)
+ *   - window.AcademyClassDetail / AcademyCharacterDetail (LAZY)
+ *   - window.AcademyDisciplineView / AcademyLocationView /
+ *     AcademyRankingView / AcademyWeeklyTeamsView / AcademyTournamentView (LAZY)
+ *   - window.AcademyCRUDModals (LAZY)
+ *   - window.AcademyTournamentEvents (LAZY)
+ *   - window.AcademyGradesEditor (LAZY)
+ *   - window.CalendarQueries / TeamQueries / TeamConstants /
+ *     DisciplineQueries (LAZY)
+ *   - window.TournamentQueries / TournamentAggregator / TournamentMatches (LAZY)
  *
  * USAGE:
  *   // Called by academy/index.js
@@ -107,10 +100,12 @@
             missing.push('AcademyUI.getRoleFor');
         }
 
-        if (!AcademyAggregator || typeof AcademyAggregator.getClassViewModel !== 'function') {
+        if (!AcademyAggregator ||
+            typeof AcademyAggregator.getClassViewModel !== 'function') {
             missing.push('AcademyAggregator.getClassViewModel');
         }
-        if (!AcademyAggregator || typeof AcademyAggregator.getClassListViewModel !== 'function') {
+        if (!AcademyAggregator ||
+            typeof AcademyAggregator.getClassListViewModel !== 'function') {
             missing.push('AcademyAggregator.getClassListViewModel');
         }
 
@@ -118,7 +113,8 @@
             missing.push('AcademyQueries.getClasses');
         }
 
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+        if (!CharacterQueries ||
+            typeof CharacterQueries.getDisplayName !== 'function') {
             missing.push('CharacterQueries.getDisplayName');
         }
 
@@ -165,9 +161,6 @@
     }
 
     function getCharacterDetailModule() {
-        // NOTE: window.CharacterDetail is the modal from
-        // modules/characters/character-detail.js. The Academy panel
-        // renderer exposes itself as window.AcademyCharacterDetail.
         return window.AcademyCharacterDetail || null;
     }
 
@@ -187,19 +180,35 @@
         return window.AcademyWeeklyTeamsView || null;
     }
 
+    function getTournamentViewModule() {
+        return window.AcademyTournamentView || null;
+    }
+
+    function getTournamentEventsModule() {
+        return window.AcademyTournamentEvents || null;
+    }
+
     function getCharacterDisplayName(charId) {
-        if (!charId) {
-            return 'Unknown';
-        }
+        if (!charId) { return 'Unknown'; }
         var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
-            return 'Unknown';
-        }
+        if (!char) { return 'Unknown'; }
         return CharacterQueries.getDisplayName(char);
     }
 
+    function getTeamName(teamId) {
+        if (!teamId) { return 'Unknown Team'; }
+        var TeamQueries = window.TeamQueries;
+        if (!TeamQueries || typeof TeamQueries.getTeamById !== 'function') {
+            return 'Unknown Team';
+        }
+        var team = TeamQueries.getTeamById(teamId);
+        if (!team) { return 'Unknown Team'; }
+        return team.name || 'Unknown Team';
+    }
+
     function notify(message, type) {
-        if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
+        if (window.NotificationSystem &&
+            typeof window.NotificationSystem.notify === 'function') {
             window.NotificationSystem.notify(message, type || 'info');
         }
     }
@@ -210,6 +219,7 @@
 
     var VIEWS = [
         { id: 'people',       label: 'People' },
+        { id: 'tournaments',  label: 'Exams' },
         { id: 'weeklyTeams',  label: 'Weekly Teams' },
         { id: 'rankings',     label: 'Rankings' },
         { id: 'disciplines',  label: 'Disciplines' },
@@ -230,7 +240,8 @@
         }
 
         if (!checkDependencies()) {
-            container.innerHTML = '<p class="empty-state">Academy view dependencies not loaded.</p>';
+            container.innerHTML =
+                '<p class="empty-state">Academy view dependencies not loaded.</p>';
             return;
         }
 
@@ -241,6 +252,21 @@
             renderBody(view);
 
         bindEvents(container);
+
+        // Register change callbacks so mutations trigger a re-render.
+        if (window.AcademyCRUDModals &&
+            typeof window.AcademyCRUDModals.setOnChangeCallback === 'function') {
+            window.AcademyCRUDModals.setOnChangeCallback(refreshView);
+        }
+        if (window.AcademyTournamentEvents &&
+            typeof window.AcademyTournamentEvents.setOnChangeCallback === 'function') {
+            window.AcademyTournamentEvents.setOnChangeCallback(refreshView);
+        }
+
+        // Mount the inline grades editor when the People view rendered
+        // a character detail panel. It's imperative and must be
+        // re-mounted after every innerHTML swap.
+        mountGradesEditorIfPresent();
     }
 
     // ============================================================
@@ -253,11 +279,12 @@
         for (var i = 0; i < VIEWS.length; i++) {
             var v = VIEWS[i];
             var isActive = v.id === activeView;
-            html += '<button class="academy-view-btn' + (isActive ? ' active' : '') + '" ' +
-                'data-view="' + escapeAttribute(v.id) + '" ' +
-                'type="button">' +
-                escapeHtml(v.label) +
-                '</button>';
+            html += '<button class="academy-view-btn' +
+                        (isActive ? ' active' : '') + '" ' +
+                        'data-view="' + escapeAttribute(v.id) + '" ' +
+                        'type="button">' +
+                        escapeHtml(v.label) +
+                    '</button>';
         }
 
         html += '</div>';
@@ -272,6 +299,8 @@
         switch (view) {
             case 'people':
                 return renderPeopleView();
+            case 'tournaments':
+                return renderTournamentView();
             case 'weeklyTeams':
                 return renderWeeklyTeamsView();
             case 'rankings':
@@ -288,7 +317,8 @@
     function renderPlaceholder(label) {
         return (
             '<div class="academy-body academy-body-placeholder">' +
-                '<p class="empty-state">' + escapeHtml(label) + ' view coming soon.</p>' +
+                '<p class="empty-state">' + escapeHtml(label) +
+                    ' view coming soon.</p>' +
             '</div>'
         );
     }
@@ -299,7 +329,6 @@
 
     function renderPeopleView() {
         var html = '';
-
         html += renderPeopleTopBar();
 
         var classId = AcademyUI.getSelectedClassId();
@@ -307,7 +336,9 @@
 
         if (!classId) {
             html += '<div class="academy-body academy-body-empty">' +
-                        '<p class="empty-state">Select a class to view its members.</p>' +
+                        '<p class="empty-state">' +
+                            'Select a class to view its members.' +
+                        '</p>' +
                     '</div>';
             return html;
         }
@@ -361,14 +392,16 @@
         }
 
         html += '</select>';
-        html += '<button id="academy-add-class-btn" class="primary small" type="button">+ Add Class</button>';
+        html += '<button id="academy-add-class-btn" class="primary small" ' +
+                    'type="button">+ Add Class</button>';
         html += '</div>';
 
         html += '<div class="academy-top-right">';
         html += '<label class="academy-top-label">Week:</label>';
-        html += '<input type="number" id="academy-week-input" class="academy-week-input" ' +
-            'value="' + escapeAttribute(String(week)) + '" ' +
-            'min="' + getMinWeek() + '" max="' + getMaxWeek() + '">';
+        html += '<input type="number" id="academy-week-input" ' +
+                    'class="academy-week-input" ' +
+                    'value="' + escapeAttribute(String(week)) + '" ' +
+                    'min="' + getMinWeek() + '" max="' + getMaxWeek() + '">';
         html += '</div>';
 
         html += '</div>';
@@ -394,22 +427,31 @@
 
         var html = '<div class="academy-character-filters">';
 
-        html += '<input type="text" id="academy-people-search" class="academy-people-search" ' +
-            'placeholder="Search..." value="' + escapeAttribute(search) + '">';
+        html += '<input type="text" id="academy-people-search" ' +
+                    'class="academy-people-search" ' +
+                    'placeholder="Search..." ' +
+                    'value="' + escapeAttribute(search) + '">';
 
         html += '<label class="academy-filter-label">Role:</label>';
         html += '<select id="academy-people-role" class="academy-people-role">';
-        html += '<option value="all" ' + (role === 'all' ? 'selected' : '') + '>All</option>';
-        html += '<option value="trainee" ' + (role === 'trainee' ? 'selected' : '') + '>Trainees</option>';
-        html += '<option value="instructor" ' + (role === 'instructor' ? 'selected' : '') + '>Instructors</option>';
+        html += '<option value="all" ' +
+                    (role === 'all' ? 'selected' : '') + '>All</option>';
+        html += '<option value="trainee" ' +
+                    (role === 'trainee' ? 'selected' : '') + '>Trainees</option>';
+        html += '<option value="instructor" ' +
+                    (role === 'instructor' ? 'selected' : '') + '>Instructors</option>';
         html += '</select>';
 
         html += '<label class="academy-filter-label">Status:</label>';
         html += '<select id="academy-people-status" class="academy-people-status">';
-        html += '<option value="active" ' + (status === 'active' ? 'selected' : '') + '>Active</option>';
-        html += '<option value="eliminated" ' + (status === 'eliminated' ? 'selected' : '') + '>Eliminated</option>';
-        html += '<option value="deceased" ' + (status === 'deceased' ? 'selected' : '') + '>Deceased</option>';
-        html += '<option value="all" ' + (status === 'all' ? 'selected' : '') + '>All</option>';
+        html += '<option value="active" ' +
+                    (status === 'active' ? 'selected' : '') + '>Active</option>';
+        html += '<option value="eliminated" ' +
+                    (status === 'eliminated' ? 'selected' : '') + '>Eliminated</option>';
+        html += '<option value="deceased" ' +
+                    (status === 'deceased' ? 'selected' : '') + '>Deceased</option>';
+        html += '<option value="all" ' +
+                    (status === 'all' ? 'selected' : '') + '>All</option>';
         html += '</select>';
 
         html += '</div>';
@@ -427,48 +469,50 @@
             if (search && student.name.toLowerCase().indexOf(search) === -1) {
                 return false;
             }
-
             if (roleFilter !== 'all' && student.role !== roleFilter) {
                 return false;
             }
-
             if (statusFilter !== 'all') {
                 var isDeceased = student.deceased === true;
-                if (statusFilter === 'deceased' && !isDeceased) {
-                    return false;
-                }
-                if (statusFilter === 'active' && isDeceased) {
-                    return false;
-                }
+                if (statusFilter === 'deceased' && !isDeceased) { return false; }
+                if (statusFilter === 'active' && isDeceased) { return false; }
             }
-
             return true;
         });
 
         if (filtered.length === 0) {
-            return '<p class="empty-state small">No characters match the current filters.</p>';
+            return '<p class="empty-state small">' +
+                        'No characters match the current filters.' +
+                    '</p>';
         }
 
         var html = '';
         for (var i = 0; i < filtered.length; i++) {
             var s = filtered[i];
-            var isSelected = selectedCharId && String(selectedCharId) === String(s.id);
+            var isSelected = selectedCharId &&
+                String(selectedCharId) === String(s.id);
 
             var classes = 'academy-character-row';
             if (isSelected) { classes += ' selected'; }
             if (s.deceased) { classes += ' deceased'; }
 
-            html += '<div class="' + classes + '" data-character-id="' + escapeAttribute(s.id) + '">';
+            html += '<div class="' + classes + '" ' +
+                        'data-character-id="' + escapeAttribute(s.id) + '">';
 
             html += '<div class="academy-character-row-main">';
-            html += '<span class="academy-character-name">' + escapeHtml(s.name) + '</span>';
+            html += '<span class="academy-character-name">' +
+                        escapeHtml(s.name) +
+                    '</span>';
             if (s.role === 'instructor') {
-                html += '<span class="academy-character-role-badge">Instructor</span>';
+                html += '<span class="academy-character-role-badge">' +
+                            'Instructor</span>';
             }
             html += '</div>';
 
             if (s.status) {
-                html += '<div class="academy-character-row-status">' + escapeHtml(s.status) + '</div>';
+                html += '<div class="academy-character-row-status">' +
+                            escapeHtml(s.status) +
+                        '</div>';
             }
 
             html += '</div>';
@@ -527,10 +571,414 @@
 
         return (
             '<div class="academy-detail-placeholder">' +
-                '<h3>' + escapeHtml(CharacterQueries.getDisplayName(char)) + '</h3>' +
-                '<p class="empty-state small">Character detail view coming soon.</p>' +
+                '<h3>' + escapeHtml(CharacterQueries.getDisplayName(char)) +
+                '</h3>' +
+                '<p class="empty-state small">' +
+                    'Character detail view coming soon.' +
+                '</p>' +
             '</div>'
         );
+    }
+
+    // ============================================================
+    // GRADES EDITOR MOUNT
+    // ============================================================
+
+    function mountGradesEditorIfPresent() {
+        if (AcademyUI.getSelectedView() !== 'people') {
+            unmountGradesEditor();
+            return;
+        }
+
+        var charId = AcademyUI.getSelectedCharacterId();
+        if (!charId) {
+            unmountGradesEditor();
+            return;
+        }
+
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char) {
+            unmountGradesEditor();
+            return;
+        }
+
+        var classId = AcademyUI.getSelectedClassId();
+        var classVM = classId
+            ? AcademyAggregator.getClassViewModel(classId, {
+                includeStudents: true,
+                includeTeams: false,
+                includeRankings: false,
+                includeGrades: false
+            })
+            : null;
+
+        var CharacterDetail = getCharacterDetailModule();
+        if (!CharacterDetail ||
+            typeof CharacterDetail.mountGradesEditor !== 'function') {
+            return;
+        }
+
+        try {
+            CharacterDetail.mountGradesEditor(charId, classVM, {
+                week: AcademyUI.getDisplayWeek()
+            });
+        } catch (e) {
+            console.warn('[AcademyView] mountGradesEditor failed:', e);
+        }
+    }
+
+    function unmountGradesEditor() {
+        var GE = window.AcademyGradesEditor;
+        if (GE && typeof GE.unmount === 'function') {
+            try { GE.unmount(); } catch (e) { /* ignore */ }
+        }
+    }
+
+    // ============================================================
+    // TOURNAMENTS / EXAMS VIEW
+    // ============================================================
+
+    var _selectedExamClassId = null;
+
+    function renderTournamentView() {
+        var Renderer = getTournamentViewModule();
+        if (!Renderer || typeof Renderer.renderHTML !== 'function') {
+            return renderPlaceholder('Exams');
+        }
+
+        var week = AcademyUI.getDisplayWeek();
+
+        var classes = AcademyQueries.getClasses() || [];
+        classes = classes.slice().sort(function(a, b) {
+            return (a.name || '').localeCompare(b.name || '');
+        });
+
+        var classListVM = classes.map(function(c) {
+            return { id: c.id, name: c.name };
+        });
+
+        // Default the class selection to People's selected class on
+        // first entry.
+        if (!_selectedExamClassId) {
+            var peopleClassId = AcademyUI.getSelectedClassId();
+            if (peopleClassId) {
+                _selectedExamClassId = peopleClassId;
+            }
+        }
+
+        var selectedClass = null;
+        if (_selectedExamClassId) {
+            for (var i = 0; i < classes.length; i++) {
+                if (String(classes[i].id) === String(_selectedExamClassId)) {
+                    selectedClass = classes[i];
+                    break;
+                }
+            }
+            if (!selectedClass) {
+                _selectedExamClassId = null;
+            }
+        }
+
+        var examVM = null;
+        var pool = [];
+
+        if (selectedClass) {
+            examVM = buildExamViewModel(selectedClass, week);
+            pool = buildExamPool(selectedClass, week, examVM);
+        }
+
+        return Renderer.renderHTML({
+            classes: classListVM,
+            classId: _selectedExamClassId,
+            className: selectedClass ? selectedClass.name : null,
+            week: week,
+            exam: examVM,
+            pool: pool
+        });
+    }
+
+    /**
+     * Build the exam view model for a class + week.
+     * At most one exam per class per week. Delegates to
+     * TournamentAggregator for the heavy projection.
+     */
+    function buildExamViewModel(classRecord, week) {
+        var TQ = window.TournamentQueries;
+        var TA = window.TournamentAggregator;
+        if (!TQ || !TA) { return null; }
+
+        // Find the exam for this class+week.
+        var examRecord = null;
+        if (typeof TQ.getExamForClassAndWeek === 'function') {
+            examRecord = TQ.getExamForClassAndWeek(classRecord.id, week);
+        }
+
+        if (!examRecord) { return null; }
+
+        var vm = TA.getTournamentViewModel(examRecord.id, {
+            includeParticipants: true,
+            includeRounds: true,
+            includeEliminations: false,
+            includeFinalPassers: true,
+            includeStatistics: false
+        });
+
+        if (!vm) { return null; }
+
+        return {
+            id: vm.id,
+            name: vm.name,
+            status: vm.status,
+            statusLabel: vm.statusDisplay ? vm.statusDisplay.text : vm.status,
+            mode: vm.mode,
+            modeLabel: vm.modeLabel,
+            participantCount: vm.participantCount || 0,
+            roundCount: vm.roundCount || 0,
+            totalRounds: vm.totalRounds || 1,
+            finalPassers: vm.finalPassers || [],
+            finalPasserCount: vm.finalPasserCount || 0,
+            rounds: (vm.rounds || []).map(buildExamRoundVM)
+        };
+    }
+
+    function buildExamRoundVM(round) {
+        return {
+            index: round.index,
+            roundNumber: round.roundNumber,
+            status: round.status,
+            statusLabel: round.statusDisplay ? round.statusDisplay.text : round.status,
+            matchSize: round.matchSize,
+            matchType: round.matchType,
+            matchTypeLabel: round.matchTypeLabel,
+            isPairExam: round.isPairExam === true,
+            matches: (round.matches || []).map(buildExamMatchVM)
+        };
+    }
+
+    function buildExamMatchVM(match) {
+        if (!match) { return null; }
+
+        var vm = {
+            index: match.index,
+            id: match.id,
+            type: match.type,
+            typeLabel: match.typeLabel,
+            status: match.status,
+            statusLabel: match.statusDisplay ? match.statusDisplay.text : match.status,
+            isPairExam: match.isPairExam === true,
+            isGroupExam: match.isGroupExam === true,
+            isTeamMatch: match.isTeamMatch === true,
+            isComplete: match.isComplete === true,
+            participantCount: match.participantCount || 0
+        };
+
+        if (Array.isArray(match.participants)) {
+            vm.participants = match.participants.map(buildExamParticipantVM);
+        }
+
+        if (Array.isArray(match.pairings)) {
+            vm.pairings = match.pairings.map(function(pair) {
+                return Array.isArray(pair)
+                    ? pair.map(buildExamParticipantVM)
+                    : [];
+            });
+        }
+
+        if (Array.isArray(match.teams)) {
+            vm.teams = match.teams.map(buildExamTeamVM);
+        }
+
+        return vm;
+    }
+
+    function buildExamParticipantVM(participant) {
+        if (!participant) { return null; }
+        return {
+            id: participant.id,
+            name: participant.name,
+            type: participant.type,
+            typeLabel: participant.typeLabel,
+            result: participant.result,
+            resultCategory: participant.resultCategory,
+            outcomeDisplay: participant.outcomeDisplay,
+            isPassing: participant.isPassing === true,
+            isRetrying: participant.isRetrying === true,
+            isFailing: participant.isFailing === true
+        };
+    }
+
+    function buildExamTeamVM(team) {
+        if (!team) { return null; }
+        return {
+            teamId: team.teamId,
+            name: team.name,
+            result: team.result,
+            resultCategory: team.resultCategory,
+            outcomeDisplay: team.outcomeDisplay,
+            isPassing: team.isPassing === true,
+            isRetrying: team.isRetrying === true,
+            isFailing: team.isFailing === true,
+            members: (team.members || []).map(function(member) {
+                return {
+                    characterId: member.characterId,
+                    name: member.name,
+                    role: member.role,
+                    result: member.result,
+                    resultCategory: member.resultCategory,
+                    outcomeDisplay: member.outcomeDisplay,
+                    isPassing: member.isPassing === true,
+                    isRetrying: member.isRetrying === true,
+                    isFailing: member.isFailing === true
+                };
+            }),
+            memberCount: team.memberCount || 0
+        };
+    }
+
+    /**
+     * Build the eligible pool for the week.
+     *
+     * When no exam exists, the pool is informational: mode is
+     * inferred from the class's academic teams. If the class has any
+     * academic teams, the pool defaults to teams; otherwise characters.
+     */
+    function buildExamPool(classRecord, week, examVM) {
+        var TeamQ = window.TeamQueries;
+        var Matches = window.TournamentMatches;
+
+        var mode = 'individuals';
+        if (examVM && examVM.mode) {
+            mode = examVM.mode;
+        } else if (TeamQ && typeof TeamQ.getTeamsByClass === 'function') {
+            var teams = TeamQ.getTeamsByClass(classRecord.id) || [];
+            var academicCount = 0;
+            for (var i = 0; i < teams.length; i++) {
+                if (teams[i] && teams[i].type === 'academic') { academicCount++; }
+            }
+            if (academicCount > 0) {
+                mode = 'teams';
+            }
+        }
+
+        if (examVM) {
+            return buildExamPoolWithExam(classRecord, week, examVM, mode);
+        }
+
+        // No exam — informational pool.
+        if (mode === 'teams') {
+            return buildTeamPoolForClass(classRecord, week, {});
+        }
+        return buildCharacterPoolForClass(classRecord, week, {});
+    }
+
+    /**
+     * Pool for a class that already has an exam. Uses
+     * TournamentMatches.getEligibleParticipants when available to
+     * correctly reflect "not eliminated, not already failed."
+     * Then adds the "inExam" flag from the roster.
+     */
+    function buildExamPoolWithExam(classRecord, week, examVM, mode) {
+        var TQ = window.TournamentQueries;
+        var inExamSet = {};
+        if (TQ && typeof TQ.getParticipants === 'function') {
+            var participants = TQ.getParticipants(examVM.id);
+            for (var i = 0; i < participants.length; i++) {
+                if (participants[i] && participants[i].id) {
+                    inExamSet[String(participants[i].id)] = true;
+                }
+            }
+        }
+
+        if (mode === 'teams') {
+            return buildTeamPoolForClass(classRecord, week, inExamSet);
+        }
+        return buildCharacterPoolForClass(classRecord, week, inExamSet);
+    }
+
+    function buildCharacterPoolForClass(classRecord, week, inExamSet) {
+        var classVM = AcademyAggregator.getClassViewModel(classRecord.id, {
+            includeStudents: true,
+            includeTeams: false,
+            includeRankings: false,
+            includeGrades: false,
+            week: week
+        });
+
+        if (!classVM || !Array.isArray(classVM.students)) {
+            return [];
+        }
+
+        var EQ = window.EliminationQueries;
+        var pool = [];
+        for (var i = 0; i < classVM.students.length; i++) {
+            var student = classVM.students[i];
+            if (!student || !student.id) { continue; }
+
+            var eliminated = false;
+            if (EQ && typeof EQ.isCharacterEliminatedByWeek === 'function') {
+                var char = CharacterQueries.getCharacterById(student.id);
+                if (char) {
+                    try {
+                        eliminated = EQ.isCharacterEliminatedByWeek(char, week) === true;
+                    } catch (e) {
+                        eliminated = false;
+                    }
+                }
+            }
+
+            pool.push({
+                id: student.id,
+                name: student.name,
+                subtitle: student.role === 'instructor'
+                    ? 'Instructor'
+                    : (student.status || ''),
+                inExam: inExamSet[String(student.id)] === true,
+                eliminated: eliminated
+            });
+        }
+
+        return pool;
+    }
+
+    function buildTeamPoolForClass(classRecord, week, inExamSet) {
+        var TeamQ = window.TeamQueries;
+        if (!TeamQ || typeof TeamQ.getTeamsByClass !== 'function') {
+            return [];
+        }
+
+        var teams = TeamQ.getTeamsByClass(classRecord.id) || [];
+        var pool = [];
+
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (!team || !team.id) { continue; }
+            if (team.type !== 'academic') { continue; }
+
+            // "Available in week": team was active at the given week.
+            var active = true;
+            var joinW = parseInt(team.startPeriod, 10);
+            var leaveW = parseInt(team.endPeriod, 10);
+            if (!isNaN(joinW) && joinW > week) { active = false; }
+            if (!isNaN(leaveW) && leaveW < week) { active = false; }
+
+            if (!active) { continue; }
+
+            var subtitleParts = [];
+            if (team.periodDisplay) { subtitleParts.push(team.periodDisplay); }
+            if (team.status && team.status !== 'active') {
+                subtitleParts.push(team.status);
+            }
+
+            pool.push({
+                id: team.id,
+                name: team.name || 'Unnamed Team',
+                subtitle: subtitleParts.join(' \u00b7 '),
+                inExam: inExamSet[String(team.id)] === true,
+                eliminated: false
+            });
+        }
+
+        return pool;
     }
 
     // ============================================================
@@ -583,7 +1031,9 @@
         return disciplines.filter(function(d) {
             if (!d || !d.id) { return false; }
             if (type !== 'all' && d.type !== type) { return false; }
-            if (search && (d.name || '').toLowerCase().indexOf(search) === -1) { return false; }
+            if (search && (d.name || '').toLowerCase().indexOf(search) === -1) {
+                return false;
+            }
             return true;
         });
     }
@@ -663,7 +1113,9 @@
         return locations.filter(function(l) {
             if (!l || !l.id) { return false; }
             if (type !== 'all' && l.type !== type) { return false; }
-            if (search && (l.name || '').toLowerCase().indexOf(search) === -1) { return false; }
+            if (search && (l.name || '').toLowerCase().indexOf(search) === -1) {
+                return false;
+            }
             return true;
         });
     }
@@ -699,9 +1151,7 @@
         }
 
         var raw = CQ.getLocationSchedule(locationId, week);
-        if (!raw || typeof raw !== 'object') {
-            return [];
-        }
+        if (!raw || typeof raw !== 'object') { return []; }
 
         var entries = [];
         var disciplineCache = {};
@@ -714,7 +1164,9 @@
             if (!daySchedule || typeof daySchedule !== 'object') { continue; }
 
             for (var hourKey in daySchedule) {
-                if (!Object.prototype.hasOwnProperty.call(daySchedule, hourKey)) { continue; }
+                if (!Object.prototype.hasOwnProperty.call(daySchedule, hourKey)) {
+                    continue;
+                }
                 var hourNum = parseInt(hourKey, 10);
                 if (isNaN(hourNum)) { continue; }
                 var disciplineId = daySchedule[hourKey];
@@ -782,7 +1234,6 @@
             return { id: c.id, name: c.name };
         });
 
-        // Default to People's selected class on first entry.
         if (!_selectedRankingClassId) {
             var peopleClassId = AcademyUI.getSelectedClassId();
             if (peopleClassId) {
@@ -819,14 +1270,13 @@
     }
 
     function buildRankingEntries(classRecord, week) {
-        if (!AcademyQueries || typeof AcademyQueries.calculateClassRanking !== 'function') {
+        if (!AcademyQueries ||
+            typeof AcademyQueries.calculateClassRanking !== 'function') {
             return [];
         }
 
         var raw = AcademyQueries.calculateClassRanking(classRecord.id, week) || [];
-        if (!Array.isArray(raw)) {
-            return [];
-        }
+        if (!Array.isArray(raw)) { return []; }
 
         var instructorId = classRecord.instructorId
             ? String(classRecord.instructorId)
@@ -837,11 +1287,13 @@
             var studentId = e.studentId ? String(e.studentId) : '';
             return {
                 studentId: studentId,
-                studentName: e.name || e.studentName || getCharacterDisplayName(studentId),
+                studentName: e.name || e.studentName ||
+                    getCharacterDisplayName(studentId),
                 rank: e.rank,
                 average: e.average,
                 gradeCount: e.gradeCount || 0,
-                isInstructor: instructorId !== null && studentId === instructorId
+                isInstructor: instructorId !== null &&
+                    studentId === instructorId
             };
         }).filter(function(e) { return e !== null; });
 
@@ -878,7 +1330,6 @@
             return { id: c.id, name: c.name };
         });
 
-        // Default to People's selected class on first entry.
         if (!_selectedWeeklyTeamsClassId) {
             var peopleClassId = AcademyUI.getSelectedClassId();
             if (peopleClassId) {
@@ -904,7 +1355,6 @@
             teams = buildWeeklyTeamsList(selectedClass, week);
         }
 
-        // Resolve selected team.
         var selectedTeamVM = null;
         if (_selectedWeeklyTeamId && selectedClass) {
             for (var j = 0; j < teams.length; j++) {
@@ -918,7 +1368,6 @@
             }
         }
 
-        // Strip the private _team reference from the list VM.
         var teamsVM = teams.map(function(t) {
             return {
                 id: t.id,
@@ -951,17 +1400,13 @@
         }
 
         var raw = TeamQ.getTeamsByClass(classRecord.id) || [];
-        if (!Array.isArray(raw)) {
-            return [];
-        }
+        if (!Array.isArray(raw)) { return []; }
 
         var items = [];
 
         for (var i = 0; i < raw.length; i++) {
             var team = raw[i];
             if (!team || !team.id) { continue; }
-
-            // Academy tab shows academic teams only.
             if (team.type !== 'academic') { continue; }
 
             var activeMembers = buildTeamMembersVM(team, week).filter(function(m) {
@@ -1012,14 +1457,10 @@
     }
 
     function buildTeamMembersVM(team, week) {
-        if (!team || !Array.isArray(team.members)) {
-            return [];
-        }
+        if (!team || !Array.isArray(team.members)) { return []; }
 
         var periodNum = parseInt(week, 10);
-        if (isNaN(periodNum) || periodNum < 1) {
-            periodNum = 1;
-        }
+        if (isNaN(periodNum) || periodNum < 1) { periodNum = 1; }
 
         var result = [];
 
@@ -1035,8 +1476,10 @@
 
             var joinNum = parseInt(member.joinPeriod, 10);
             var leaveNum = parseInt(member.leavePeriod, 10);
-            var hasJoin = member.joinPeriod !== undefined && member.joinPeriod !== null && member.joinPeriod !== '';
-            var hasLeave = member.leavePeriod !== undefined && member.leavePeriod !== null && member.leavePeriod !== '';
+            var hasJoin = member.joinPeriod !== undefined &&
+                member.joinPeriod !== null && member.joinPeriod !== '';
+            var hasLeave = member.leavePeriod !== undefined &&
+                member.leavePeriod !== null && member.leavePeriod !== '';
             var joined = !hasJoin || (!isNaN(joinNum) && joinNum <= periodNum);
             var notLeft = !hasLeave || (!isNaN(leaveNum) && leaveNum >= periodNum);
             var activeAtPeriod = joined && notLeft;
@@ -1064,26 +1507,29 @@
     }
 
     function getTeamTypeLabel(type) {
-        if (window.TeamConstants && typeof window.TeamConstants.getTypeLabel === 'function') {
+        if (window.TeamConstants &&
+            typeof window.TeamConstants.getTypeLabel === 'function') {
             return window.TeamConstants.getTypeLabel(type);
         }
-        if (type === 'academic') return 'Academic';
-        if (type === 'professional') return 'Professional';
-        if (type === 'temporary') return 'Temporary';
-        if (type === 'civilian') return 'Civilian';
+        if (type === 'academic') { return 'Academic'; }
+        if (type === 'professional') { return 'Professional'; }
+        if (type === 'temporary') { return 'Temporary'; }
+        if (type === 'civilian') { return 'Civilian'; }
         return 'Team';
     }
 
     function getTeamPeriodLabel(type) {
-        if (window.TeamConstants && typeof window.TeamConstants.getPeriodLabel === 'function') {
+        if (window.TeamConstants &&
+            typeof window.TeamConstants.getPeriodLabel === 'function') {
             return window.TeamConstants.getPeriodLabel(type);
         }
-        if (type === 'academic') return 'Week';
+        if (type === 'academic') { return 'Week'; }
         return 'Year';
     }
 
     function getTeamPeriodDisplay(team) {
-        if (window.TeamQueries && typeof window.TeamQueries.getTeamPeriodDisplay === 'function') {
+        if (window.TeamQueries &&
+            typeof window.TeamQueries.getTeamPeriodDisplay === 'function') {
             return window.TeamQueries.getTeamPeriodDisplay(team);
         }
         return '';
@@ -1092,14 +1538,6 @@
     // ============================================================
     // EVENT WIRING
     // ============================================================
-    //
-    // Delegation strategy:
-    //   - Listeners attached to the CONTAINER once per container
-    //     identity. Since the container is stable across re-renders
-    //     (only its innerHTML changes), we use a marker to prevent
-    //     stacking listeners.
-    //   - Handlers use event.target.closest() to resolve targets, so
-    //     they survive innerHTML replacement.
 
     var _boundContainer = null;
 
@@ -1107,7 +1545,6 @@
         if (_boundContainer === container) {
             return;
         }
-
         _boundContainer = container;
 
         container.addEventListener('click', handleDelegatedClick);
@@ -1138,6 +1575,30 @@
             return;
         }
 
+        // ---- Add Discipline button ----
+        if (target.closest('#academy-add-discipline-btn')) {
+            e.preventDefault();
+            if (window.AcademyCRUDModals) {
+                window.AcademyCRUDModals.openDisciplineForm(null);
+            }
+            return;
+        }
+
+        // ---- Add Location button ----
+        if (target.closest('#academy-add-location-btn')) {
+            e.preventDefault();
+            if (window.AcademyCRUDModals) {
+                window.AcademyCRUDModals.openLocationForm(null);
+            }
+            return;
+        }
+
+        // ---- Exam actions (checked before generic [data-action]) ----
+        var examAction = target.closest('[data-action]');
+        if (examAction && _handleExamAction(examAction, e)) {
+            return;
+        }
+
         // ---- Weekly team row selection ----
         var weeklyTeamRow = target.closest('.academy-weekly-team-row');
         if (weeklyTeamRow) {
@@ -1153,7 +1614,7 @@
             return;
         }
 
-        // ---- Weekly team member row (navigate to People) ----
+        // ---- Weekly team member row ----
         var weeklyMemberRow = target.closest('.academy-weekly-team-member-row');
         if (weeklyMemberRow) {
             e.preventDefault();
@@ -1199,13 +1660,14 @@
             return;
         }
 
-        // ---- Ranking row selection (navigate to People) ----
+        // ---- Ranking row selection ----
         var rankingRow = target.closest('.academy-ranking-row');
         if (rankingRow) {
             e.preventDefault();
             var rankingCharId = rankingRow.dataset.characterId;
             if (rankingCharId) {
-                var rankingClassId = _selectedRankingClassId || AcademyUI.getSelectedClassId();
+                var rankingClassId = _selectedRankingClassId ||
+                    AcademyUI.getSelectedClassId();
                 if (rankingClassId) {
                     AcademyUI.selectClass(rankingClassId);
                 }
@@ -1217,18 +1679,20 @@
         }
 
         // ---- Character row selection (People sidebar + roster) ----
-        var charRow = target.closest('.academy-character-row, .academy-student-row');
+        var charRow = target.closest(
+            '.academy-character-row, .academy-student-row'
+        );
         if (charRow) {
             e.preventDefault();
             handleCharacterSelect(charRow.dataset.characterId);
             return;
         }
 
-        // ---- Character detail actions ----
-        var actionEl = target.closest('[data-action]');
-        if (actionEl) {
-            var action = actionEl.dataset.action;
-            var charId = actionEl.dataset.characterId;
+        // ---- Class/discipline/location CRUD actions ----
+        if (examAction) {
+            // Not an exam action — fall through to generic handlers.
+            var action = examAction.dataset.action;
+            var charId = examAction.dataset.characterId;
 
             if (action === 'view-full-character' && charId) {
                 e.preventDefault();
@@ -1242,26 +1706,166 @@
                 return;
             }
 
-            if (actionEl.dataset.classId) {
+            if (examAction.dataset.classId) {
                 e.preventDefault();
-                handleClassAction(action, actionEl.dataset.classId);
+                handleClassAction(action, examAction.dataset.classId);
                 return;
             }
 
-            if (actionEl.dataset.disciplineId) {
+            if (examAction.dataset.disciplineId) {
                 e.preventDefault();
-                handleDisciplineAction(action, actionEl.dataset.disciplineId);
+                handleDisciplineAction(
+                    action, examAction.dataset.disciplineId
+                );
                 return;
             }
 
-            if (actionEl.dataset.locationId) {
+            if (examAction.dataset.locationId) {
                 e.preventDefault();
-                handleLocationAction(action, actionEl.dataset.locationId);
+                handleLocationAction(action, examAction.dataset.locationId);
                 return;
             }
-
-            return;
         }
+    }
+
+    /**
+     * Handle exam-specific actions. Returns true if handled.
+     */
+    function _handleExamAction(actionEl, e) {
+        var action = actionEl.dataset.action;
+        var Events = getTournamentEventsModule();
+        if (!Events) { return false; }
+
+        // Only handle exam actions here.
+        var examActions = [
+            'create-exam', 'delete-exam', 'toggle-pool-member',
+            'add-round', 'remove-round', 'auto-generate-round',
+            'add-match', 'edit-match', 'complete-match', 'remove-match',
+            'complete-exam'
+        ];
+        if (examActions.indexOf(action) === -1) {
+            return false;
+        }
+
+        e.preventDefault();
+
+        var examId = actionEl.dataset.examId || null;
+
+        // Some actions need the current exam ID. Read it from the
+        // rendered context: the top-level exam panel carries it via
+        // the class + week pair. Fall back to the currently selected
+        // exam in this view.
+        var currentExamId = _getCurrentExamId();
+
+        switch (action) {
+            case 'create-exam':
+                Events.createExam(
+                    _selectedExamClassId,
+                    AcademyUI.getDisplayWeek()
+                );
+                return true;
+
+            case 'delete-exam':
+                if (currentExamId) {
+                    Events.deleteExam(currentExamId);
+                }
+                return true;
+
+            case 'toggle-pool-member':
+                if (currentExamId) {
+                    Events.togglePoolMember(
+                        currentExamId, actionEl.dataset.poolId
+                    );
+                }
+                return true;
+
+            case 'add-round':
+                if (currentExamId) {
+                    Events.addRound(currentExamId);
+                }
+                return true;
+
+            case 'remove-round':
+                if (currentExamId) {
+                    Events.removeRound(
+                        currentExamId,
+                        parseInt(actionEl.dataset.roundIndex, 10)
+                    );
+                }
+                return true;
+
+            case 'auto-generate-round':
+                if (currentExamId) {
+                    Events.autoGenerateRound(
+                        currentExamId,
+                        parseInt(actionEl.dataset.roundIndex, 10)
+                    );
+                }
+                return true;
+
+            case 'add-match':
+                if (currentExamId) {
+                    Events.addMatchManual(
+                        currentExamId,
+                        parseInt(actionEl.dataset.roundIndex, 10)
+                    );
+                }
+                return true;
+
+            case 'edit-match':
+                if (currentExamId) {
+                    Events.editMatch(
+                        currentExamId,
+                        parseInt(actionEl.dataset.roundIndex, 10),
+                        parseInt(actionEl.dataset.matchIndex, 10)
+                    );
+                }
+                return true;
+
+            case 'complete-match':
+                if (currentExamId) {
+                    Events.completeMatch(
+                        currentExamId,
+                        parseInt(actionEl.dataset.roundIndex, 10),
+                        parseInt(actionEl.dataset.matchIndex, 10)
+                    );
+                }
+                return true;
+
+            case 'remove-match':
+                if (currentExamId) {
+                    Events.removeMatch(
+                        currentExamId,
+                        parseInt(actionEl.dataset.roundIndex, 10),
+                        parseInt(actionEl.dataset.matchIndex, 10)
+                    );
+                }
+                return true;
+
+            case 'complete-exam':
+                if (currentExamId) {
+                    Events.completeExam(currentExamId);
+                }
+                return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Find the exam ID for the currently rendered class+week pair.
+     * Re-reads from TournamentQueries so it's always up to date.
+     */
+    function _getCurrentExamId() {
+        if (!_selectedExamClassId) { return null; }
+        var TQ = window.TournamentQueries;
+        if (!TQ || typeof TQ.getExamForClassAndWeek !== 'function') {
+            return null;
+        }
+        var exam = TQ.getExamForClassAndWeek(
+            _selectedExamClassId, AcademyUI.getDisplayWeek()
+        );
+        return exam ? exam.id : null;
     }
 
     // ============================================================
@@ -1276,21 +1880,33 @@
             handleClassSelect(target.value);
             return;
         }
-
         if (target.id === 'academy-week-input') {
             handleWeekChange(target.value);
             return;
         }
-
         if (target.id === 'academy-people-role') {
             AcademyUI.setFilter('people', 'role', target.value);
             refreshView();
             return;
         }
-
         if (target.id === 'academy-people-status') {
             AcademyUI.setFilter('people', 'status', target.value);
             refreshView();
+            return;
+        }
+
+        // ---- Exams view ----
+        if (target.id === 'at-class-select') {
+            _selectedExamClassId = target.value || null;
+            refreshView();
+            return;
+        }
+        if (target.id === 'at-week-input') {
+            var atWeek = parseInt(target.value, 10);
+            if (!isNaN(atWeek) && atWeek >= getMinWeek() && atWeek <= getMaxWeek()) {
+                AcademyUI.setDisplayWeek(atWeek);
+                refreshView();
+            }
             return;
         }
 
@@ -1300,7 +1916,6 @@
             refreshView();
             return;
         }
-
         if (target.id === 'academy-ranking-week-input') {
             var rankWeek = parseInt(target.value, 10);
             if (!isNaN(rankWeek) && rankWeek >= getMinWeek() && rankWeek <= getMaxWeek()) {
@@ -1317,10 +1932,10 @@
             refreshView();
             return;
         }
-
         if (target.id === 'academy-weekly-teams-week-input') {
             var weeklyTeamsWeek = parseInt(target.value, 10);
-            if (!isNaN(weeklyTeamsWeek) && weeklyTeamsWeek >= getMinWeek() && weeklyTeamsWeek <= getMaxWeek()) {
+            if (!isNaN(weeklyTeamsWeek) &&
+                weeklyTeamsWeek >= getMinWeek() && weeklyTeamsWeek <= getMaxWeek()) {
                 AcademyUI.setDisplayWeek(weeklyTeamsWeek);
                 refreshView();
             }
@@ -1370,12 +1985,23 @@
     function handleDelegatedKeydown(e) {
         var target = e.target;
 
-        if (target.id === 'academy-week-input' && e.key === 'Enter') {
+        if (e.key !== 'Enter') { return; }
+
+        if (target.id === 'academy-week-input') {
             e.preventDefault();
             handleWeekChange(target.value);
             return;
         }
-        if (target.id === 'academy-ranking-week-input' && e.key === 'Enter') {
+        if (target.id === 'at-week-input') {
+            e.preventDefault();
+            var atWeek = parseInt(target.value, 10);
+            if (!isNaN(atWeek) && atWeek >= getMinWeek() && atWeek <= getMaxWeek()) {
+                AcademyUI.setDisplayWeek(atWeek);
+                refreshView();
+            }
+            return;
+        }
+        if (target.id === 'academy-ranking-week-input') {
             e.preventDefault();
             var rankWeek = parseInt(target.value, 10);
             if (!isNaN(rankWeek) && rankWeek >= getMinWeek() && rankWeek <= getMaxWeek()) {
@@ -1384,10 +2010,11 @@
             }
             return;
         }
-        if (target.id === 'academy-weekly-teams-week-input' && e.key === 'Enter') {
+        if (target.id === 'academy-weekly-teams-week-input') {
             e.preventDefault();
             var teamsWeek = parseInt(target.value, 10);
-            if (!isNaN(teamsWeek) && teamsWeek >= getMinWeek() && teamsWeek <= getMaxWeek()) {
+            if (!isNaN(teamsWeek) &&
+                teamsWeek >= getMinWeek() && teamsWeek <= getMaxWeek()) {
                 AcademyUI.setDisplayWeek(teamsWeek);
                 refreshView();
             }
@@ -1443,7 +2070,8 @@
     function handleViewFullCharacter(charId) {
         var char = CharacterQueries.getCharacterById(charId);
         if (!char) { return; }
-        if (window.CharacterDetail && typeof window.CharacterDetail.open === 'function') {
+        if (window.CharacterDetail &&
+            typeof window.CharacterDetail.open === 'function') {
             window.CharacterDetail.open(charId);
         } else {
             notify('Character detail view not available.', 'error');
@@ -1451,7 +2079,6 @@
     }
 
     function handleEditCharacter(charId) {
-        // character-events.js listens for this exact event on document.
         try {
             var event = new CustomEvent('characterEdit', {
                 detail: { characterId: charId },
@@ -1465,14 +2092,20 @@
     }
 
     function handleClassAction(action, classId) {
-        // Class-detail panel actions. No-ops for now — the class-detail
-        // panel renders as a summary. Session E delivers the modals.
+        var CRUD = window.AcademyCRUDModals;
+        if (!CRUD) {
+            notify('CRUD module not available.', 'error');
+            return;
+        }
         switch (action) {
             case 'add-character':
+                CRUD.openAddCharacterToClass(classId);
                 break;
             case 'edit-class':
+                CRUD.openClassForm(classId);
                 break;
             case 'delete-class':
+                CRUD.openClassDelete(classId);
                 break;
             default:
                 break;
@@ -1480,11 +2113,17 @@
     }
 
     function handleDisciplineAction(action, disciplineId) {
-        // Discipline CRUD is delivered in Session E.
+        var CRUD = window.AcademyCRUDModals;
+        if (!CRUD) {
+            notify('CRUD module not available.', 'error');
+            return;
+        }
         switch (action) {
             case 'edit-discipline':
+                CRUD.openDisciplineForm(disciplineId);
                 break;
             case 'delete-discipline':
+                CRUD.openDisciplineDelete(disciplineId);
                 break;
             default:
                 break;
@@ -1492,11 +2131,17 @@
     }
 
     function handleLocationAction(action, locationId) {
-        // Location CRUD is delivered in Session E.
+        var CRUD = window.AcademyCRUDModals;
+        if (!CRUD) {
+            notify('CRUD module not available.', 'error');
+            return;
+        }
         switch (action) {
             case 'edit-location':
+                CRUD.openLocationForm(locationId);
                 break;
             case 'delete-location':
+                CRUD.openLocationDelete(locationId);
                 break;
             default:
                 break;
@@ -1504,31 +2149,12 @@
     }
 
     function handleAddClass() {
-        if (!window.AcademyClasses || typeof window.AcademyClasses.create !== 'function') {
-            notify('Class module not available.', 'error');
-            return;
+        if (window.AcademyCRUDModals &&
+            typeof window.AcademyCRUDModals.openClassForm === 'function') {
+            window.AcademyCRUDModals.openClassForm(null);
+        } else {
+            notify('CRUD module not available.', 'error');
         }
-
-        var name = window.prompt('Class name:');
-        if (name === null) { return; }
-        name = name.trim();
-        if (!name) { return; }
-
-        window.AcademyClasses.create(name).then(function(result) {
-            if (result && result.success) {
-                var newClassId = result.data && result.data.classId
-                    ? result.data.classId
-                    : null;
-                if (newClassId) {
-                    AcademyUI.selectClass(newClassId);
-                }
-                refreshView();
-            }
-            // On failure, MutationPipeline has already notified.
-        }).catch(function(err) {
-            console.warn('[AcademyView] Failed to create class:', err);
-            notify('Failed to create class.', 'error');
-        });
     }
 
     // ============================================================

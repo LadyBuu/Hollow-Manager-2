@@ -2,14 +2,14 @@
  * modules/tournaments/tournament-lifecycle.js - Tournament Lifecycle
  * Single source of truth for tournament lifecycle rules and permissions
  * Path: js/modules/tournaments/tournament-lifecycle.js
- * 
+ *
  * This module is responsible for:
  *   - Tournament status lifecycle rules
  *   - Operation permissions by status (EXPLICIT capabilities)
  *   - Status transition validation
  *   - Lifecycle query functions
  *   - Permission checks for all operations
- * 
+ *
  * IMPORTANT:
  *   - This is the CANONICAL authority for tournament lifecycle rules
  *   - All modules MUST use this for permission checks
@@ -19,12 +19,25 @@
  *   - Uses EXPLICIT capabilities, not vague "edit: true"
  *   - Capabilities: canEditMetadata, canModifyParticipants, canAddRounds,
  *     canRemoveRounds, canModifyEliminations, canComplete
- * 
+ *
+ * COMPLETION SEMANTICS:
+ *   - A tournament can be completed when its lifecycle permits it.
+ *     The DOMAIN condition (every round's matches completed) is
+ *     validated separately by TournamentRules.isReadyForCompletion.
+ *   - No winner is required. A tournament can finish with zero, one,
+ *     or many final passers.
+ *   - The lifecycle module does NOT inspect round or match state.
+ *
+ * MATCH TYPES:
+ *   - No match type affects lifecycle rules directly.
+ *   - Pair exams, group exams, and team matches share the same
+ *     lifecycle rules as any other match.
+ *
  * DEPENDENCIES:
  *   - window.TournamentConstants (from tournament-constants.js) - MANDATORY
  *   - window.TournamentSchema (from tournament-schema.js) - MANDATORY
  *     (used for isValidStatus delegation)
- * 
+ *
  * USAGE:
  *   var Lifecycle = window.TournamentLifecycle;
  *   var canEdit = Lifecycle.canEditMetadata(tournament);
@@ -50,14 +63,13 @@
     if (!window.TournamentConstants) {
         missing.push('TournamentConstants');
     }
-
     if (!window.TournamentSchema) {
         missing.push('TournamentSchema');
     }
 
     if (missing.length > 0) {
         console.warn('[TournamentLifecycle] Missing dependencies:', missing.join(', '));
-        // Fallback to default rules if constants not available
+        // Fall back to default rules below.
     }
 
     // ============================================================
@@ -67,7 +79,17 @@
     var Constants = window.TournamentConstants || {};
     var Schema = window.TournamentSchema || {};
 
-    // Get lifecycle rules from Constants (if available)
+    // ============================================================
+    // LIFECYCLE RULES TABLE
+    // ============================================================
+    //
+    // Each status has a set of explicit capabilities. There is no
+    // generic "editable" flag. Each operation checks its specific
+    // capability.
+    //
+    // canComplete means "lifecycle permits completion". The domain
+    // prerequisite (every round done) is checked by Rules, not here.
+
     var LIFECYCLE_RULES = Constants.LIFECYCLE_RULES || {
         draft: {
             canEditMetadata: true,
@@ -75,7 +97,7 @@
             canAddRounds: true,
             canRemoveRounds: true,
             canModifyEliminations: false,
-            canComplete: false,
+            canComplete: true,
             description: 'Setup phase - fully editable'
         },
         active: {
@@ -113,11 +135,9 @@
     // ============================================================
 
     /**
-     * Extract a status string from either a status string or a tournament
-     * object. Returns null if neither yields a usable status.
-     * 
-     * @param {string|object} statusOrTournament - Status string or tournament
-     * @returns {string|null} Status string or null
+     * Extract a status string from either a status string or a
+     * tournament object. Returns null if neither yields a usable
+     * status.
      */
     function extractStatus(statusOrTournament) {
         if (typeof statusOrTournament === 'string') {
@@ -131,14 +151,8 @@
 
     /**
      * Internal status validity check.
-     * Delegates to TournamentSchema.isValidStatus when available, otherwise
-     * falls back to the locally-known VALID_STATUSES list.
-     * 
-     * This is the INTERNAL implementation. The public isValidStatus()
-     * function further down delegates to this.
-     * 
-     * @param {string} status - Status string
-     * @returns {boolean} True if valid
+     * Delegates to TournamentSchema.isValidStatus when available,
+     * otherwise falls back to the locally-known VALID_STATUSES list.
      */
     function isValidStatusInternal(status) {
         if (Schema.isValidStatus && typeof Schema.isValidStatus === 'function') {
@@ -151,13 +165,6 @@
     // PERMISSION CHECKS - EXPLICIT CAPABILITIES
     // ============================================================
 
-    /**
-     * Get lifecycle rules for a status.
-     * Returns default rules if status not found.
-     * 
-     * @param {string} status - Tournament status
-     * @returns {object} Lifecycle rules
-     */
     function getLifecycleRules(status) {
         if (!status || typeof status !== 'string') {
             return LIFECYCLE_RULES.draft || {
@@ -179,188 +186,94 @@
         };
     }
 
-    /**
-     * Check if tournament metadata can be edited (name, mode, weeks, totalRounds).
-     * 
-     * @param {string|object} statusOrTournament - Status string or tournament object
-     * @returns {boolean} True if metadata can be edited
-     */
     function canEditMetadata(statusOrTournament) {
         var status = extractStatus(statusOrTournament);
-        if (status === null) {
-            return false;
-        }
-        var rules = getLifecycleRules(status);
-        return rules.canEditMetadata === true;
+        if (status === null) { return false; }
+        return getLifecycleRules(status).canEditMetadata === true;
     }
 
-    /**
-     * Check if participants can be modified (add/remove).
-     * 
-     * @param {string|object} statusOrTournament - Status string or tournament object
-     * @returns {boolean} True if participants can be modified
-     */
     function canModifyParticipants(statusOrTournament) {
         var status = extractStatus(statusOrTournament);
-        if (status === null) {
-            return false;
-        }
-        var rules = getLifecycleRules(status);
-        return rules.canModifyParticipants === true;
+        if (status === null) { return false; }
+        return getLifecycleRules(status).canModifyParticipants === true;
     }
 
-    /**
-     * Check if eliminations can be modified.
-     * 
-     * @param {string|object} statusOrTournament - Status string or tournament object
-     * @returns {boolean} True if eliminations can be modified
-     */
     function canModifyEliminations(statusOrTournament) {
         var status = extractStatus(statusOrTournament);
-        if (status === null) {
-            return false;
-        }
-        var rules = getLifecycleRules(status);
-        return rules.canModifyEliminations === true;
+        if (status === null) { return false; }
+        return getLifecycleRules(status).canModifyEliminations === true;
     }
 
-    /**
-     * Check if rounds can be added.
-     * 
-     * @param {string|object} statusOrTournament - Status string or tournament object
-     * @returns {boolean} True if rounds can be added
-     */
     function canAddRounds(statusOrTournament) {
         var status = extractStatus(statusOrTournament);
-        if (status === null) {
-            return false;
-        }
-        var rules = getLifecycleRules(status);
-        return rules.canAddRounds === true;
+        if (status === null) { return false; }
+        return getLifecycleRules(status).canAddRounds === true;
     }
 
-    /**
-     * Check if rounds can be removed.
-     * 
-     * @param {string|object} statusOrTournament - Status string or tournament object
-     * @returns {boolean} True if rounds can be removed
-     */
     function canRemoveRounds(statusOrTournament) {
         var status = extractStatus(statusOrTournament);
-        if (status === null) {
-            return false;
-        }
-        var rules = getLifecycleRules(status);
-        return rules.canRemoveRounds === true;
+        if (status === null) { return false; }
+        return getLifecycleRules(status).canRemoveRounds === true;
     }
 
     /**
-     * Check if a tournament can be completed.
-     * 
-     * @param {string|object} statusOrTournament - Status string or tournament object
-     * @param {boolean} winnerExists - Whether a winner has been determined
-     * @returns {boolean} True if completion is allowed
+     * Check whether the lifecycle permits completing a tournament.
+     *
+     * NOTE: This does NOT inspect round or match state, and does NOT
+     * require a winner. The domain condition (every match done) is
+     * checked by TournamentRules.validateCompletionReadiness.
+     *
+     * @param {string|object} statusOrTournament
+     * @returns {boolean}
      */
-    function canCompleteTournament(statusOrTournament, winnerExists) {
+    function canCompleteTournament(statusOrTournament) {
         var status = extractStatus(statusOrTournament);
-        if (status === null) {
-            return false;
-        }
-
-        var rules = getLifecycleRules(status);
-        if (rules.canComplete !== true) {
-            return false;
-        }
-
-        // Active tournaments require a winner to complete
-        if (status === 'active' && !winnerExists) {
-            return false;
-        }
-
-        return true;
+        if (status === null) { return false; }
+        return getLifecycleRules(status).canComplete === true;
     }
 
-    /**
-     * Check if a round can be added (includes count check).
-     * 
-     * @param {string|object} statusOrTournament - Status string or tournament object
-     * @param {number} currentRoundCount - Current number of rounds
-     * @param {number} totalRounds - Maximum rounds allowed
-     * @returns {boolean} True if a round can be added
-     */
     function canAddRound(statusOrTournament, currentRoundCount, totalRounds) {
         var status = extractStatus(statusOrTournament);
-        if (status === null) {
-            return false;
-        }
+        if (status === null) { return false; }
 
         var rules = getLifecycleRules(status);
-        if (rules.canAddRounds !== true) {
-            return false;
-        }
+        if (rules.canAddRounds !== true) { return false; }
 
-        if (currentRoundCount >= totalRounds) {
+        if (typeof currentRoundCount === 'number' &&
+            typeof totalRounds === 'number' &&
+            currentRoundCount >= totalRounds) {
             return false;
         }
 
         return true;
     }
 
-    /**
-     * Check if a round can be removed (includes count check).
-     * 
-     * @param {string|object} statusOrTournament - Status string or tournament object
-     * @param {number} currentRoundCount - Current number of rounds
-     * @param {number} roundIndex - Index of the round to remove
-     * @param {array} rounds - Array of rounds (for checking completion status)
-     * @returns {boolean} True if the round can be removed
-     */
     function canRemoveRound(statusOrTournament, currentRoundCount, roundIndex, rounds) {
         var status = extractStatus(statusOrTournament);
-        if (status === null) {
-            return false;
-        }
+        if (status === null) { return false; }
 
         var rules = getLifecycleRules(status);
-        if (rules.canRemoveRounds !== true) {
-            return false;
-        }
+        if (rules.canRemoveRounds !== true) { return false; }
 
-        if (currentRoundCount === 0) {
-            return false;
-        }
+        if (currentRoundCount === 0) { return false; }
+        if (roundIndex < 0 || roundIndex >= currentRoundCount) { return false; }
 
-        if (roundIndex < 0 || roundIndex >= currentRoundCount) {
-            return false;
-        }
-
-        // If tournament is active or completed, check if the round has completed matches
+        // If tournament is active or completed, check round contents.
         if (status === 'active' || status === 'completed') {
-            if (!rounds || !Array.isArray(rounds)) {
-                return false;
-            }
+            if (!Array.isArray(rounds)) { return false; }
 
             var round = rounds[roundIndex];
-            if (!round) {
-                return false;
-            }
+            if (!round) { return false; }
 
-            // Check if any matches in this round are completed
             if (Array.isArray(round.matches)) {
-                var hasCompletedMatches = false;
                 for (var i = 0; i < round.matches.length; i++) {
                     var match = round.matches[i];
                     if (match && match.status === 'completed') {
-                        hasCompletedMatches = true;
-                        break;
+                        return false;
                     }
-                }
-                if (hasCompletedMatches) {
-                    return false;
                 }
             }
 
-            // Check if the round itself is completed
             if (round.status === 'completed') {
                 return false;
             }
@@ -369,31 +282,15 @@
         return true;
     }
 
-    /**
-     * Check if a status is terminal (completed).
-     * 
-     * @param {string|object} statusOrTournament - Status string or tournament object
-     * @returns {boolean} True if terminal
-     */
     function isStatusTerminal(statusOrTournament) {
         var status = extractStatus(statusOrTournament);
-        if (status === null) {
-            return false;
-        }
+        if (status === null) { return false; }
         return status === 'completed';
     }
 
-    /**
-     * Check if any mutation is allowed on this status.
-     * 
-     * @param {string|object} statusOrTournament - Status string or tournament object
-     * @returns {boolean} True if any mutation is allowed
-     */
     function isStatusMutable(statusOrTournament) {
         var status = extractStatus(statusOrTournament);
-        if (status === null) {
-            return false;
-        }
+        if (status === null) { return false; }
         var rules = getLifecycleRules(status);
         return rules.canEditMetadata === true ||
                rules.canModifyParticipants === true ||
@@ -407,12 +304,6 @@
     // PUBLIC STATUS VALIDITY CHECK
     // ============================================================
 
-    /**
-     * Check if a status is valid.
-     * 
-     * @param {string} status - Tournament status
-     * @returns {boolean} True if valid
-     */
     function isValidStatus(status) {
         return isValidStatusInternal(status);
     }
@@ -422,10 +313,11 @@
     // ============================================================
 
     /**
-     * Get complete lifecycle status of a tournament.
-     * 
-     * @param {object} tournament - Tournament object
-     * @returns {object} Lifecycle status object with all capabilities
+     * Get the complete lifecycle status of a tournament.
+     *
+     * NOTE: The canComplete field on the returned object reflects
+     * ONLY the lifecycle permission. Callers must additionally check
+     * TournamentRules.isReadyForCompletion for the domain condition.
      */
     function getLifecycleStatus(tournament) {
         if (!tournament || typeof tournament !== 'object') {
@@ -446,14 +338,17 @@
 
         var status = tournament.status || 'unknown';
         var rules = getLifecycleRules(status);
-
-        // Check if status is valid
         var valid = isValidStatusInternal(status);
 
         return {
             status: status,
             valid: valid,
-            mutable: rules.canEditMetadata || rules.canModifyParticipants || rules.canAddRounds || rules.canRemoveRounds || rules.canModifyEliminations || rules.canComplete,
+            mutable: rules.canEditMetadata ||
+                     rules.canModifyParticipants ||
+                     rules.canAddRounds ||
+                     rules.canRemoveRounds ||
+                     rules.canModifyEliminations ||
+                     rules.canComplete,
             canEditMetadata: rules.canEditMetadata === true,
             canModifyParticipants: rules.canModifyParticipants === true,
             canAddRounds: rules.canAddRounds === true,
@@ -462,24 +357,20 @@
             canComplete: rules.canComplete === true,
             terminal: status === 'completed',
             description: rules.description || 'Unknown status',
-            // Helper methods for convenience
+
+            // Convenience closures
             canAddRound: function(currentRoundCount, totalRounds) {
                 return canAddRound(status, currentRoundCount, totalRounds);
             },
             canRemoveRound: function(currentRoundCount, roundIndex, rounds) {
                 return canRemoveRound(status, currentRoundCount, roundIndex, rounds);
             },
-            canComplete: function(winnerExists) {
-                return canCompleteTournament(status, winnerExists);
+            canCompleteTournament: function() {
+                return canCompleteTournament(status);
             }
         };
     }
 
-    /**
-     * Get the lifecycle rules table (read-only).
-     * 
-     * @returns {object} Immutable lifecycle rules
-     */
     function getRulesTable() {
         return LIFECYCLE_RULES;
     }
@@ -488,58 +379,31 @@
     // STATUS TRANSITION VALIDATION
     // ============================================================
 
-    /**
-     * Check if a status transition is allowed.
-     * 
-     * @param {string} fromStatus - Current status
-     * @param {string} toStatus - Desired status
-     * @returns {boolean} True if transition is allowed
-     */
     function isValidStatusTransition(fromStatus, toStatus) {
-        if (!isValidStatusInternal(fromStatus) || !isValidStatusInternal(toStatus)) {
+        if (!isValidStatusInternal(fromStatus) ||
+            !isValidStatusInternal(toStatus)) {
             return false;
         }
 
-        // Same status is always allowed (no-op)
         if (fromStatus === toStatus) {
             return true;
         }
 
-        // Check against transition table
         var allowed = STATUS_TRANSITIONS[fromStatus];
-        if (!allowed) {
-            return false;
-        }
+        if (!allowed) { return false; }
 
         return allowed.indexOf(toStatus) !== -1;
     }
 
-    /**
-     * Get allowed transitions for a status.
-     * 
-     * @param {string} status - Current status
-     * @returns {array} Array of allowed status strings
-     */
     function getAllowedTransitions(status) {
         if (!isValidStatusInternal(status)) {
             return [];
         }
-
         var allowed = STATUS_TRANSITIONS[status];
-        if (!allowed) {
-            return [];
-        }
-
+        if (!allowed) { return []; }
         return allowed.slice();
     }
 
-    /**
-     * Get the next status after a transition.
-     * 
-     * @param {string} fromStatus - Current status
-     * @param {string} toStatus - Desired status
-     * @returns {string|null} The new status or null if invalid
-     */
     function getTransitionResult(fromStatus, toStatus) {
         if (isValidStatusTransition(fromStatus, toStatus)) {
             return toStatus;
@@ -547,12 +411,6 @@
         return null;
     }
 
-    /**
-     * Get the valid transitions with labels for UI.
-     * 
-     * @param {string} status - Current status
-     * @returns {array} Array of { value, label } objects
-     */
     function getTransitionOptions(status) {
         var transitions = getAllowedTransitions(status);
         var labels = {
@@ -570,36 +428,22 @@
     }
 
     // ============================================================
-    // COMPLETION READINESS
+    // COMPLETION READINESS (LIFECYCLE SIDE)
     // ============================================================
+    //
+    // This is a lifecycle-only check. It answers: "may the tournament
+    // be moved to 'completed' status?" It does not inspect round or
+    // match state. The domain check belongs in TournamentRules.
+    //
+    // Signature kept for backward compatibility with the previous
+    // version, which took allRoundsComplete and hasWinner. Those
+    // arguments are accepted but IGNORED — the lifecycle check is
+    // status-based only. Removing them entirely would break callers
+    // that still pass them.
 
-    /**
-     * Check if a tournament is ready for completion.
-     * This checks both lifecycle permissions AND business conditions.
-     * 
-     * @param {object} tournament - Tournament object
-     * @param {boolean} allRoundsComplete - Whether all rounds are complete
-     * @param {boolean} hasWinner - Whether a winner exists
-     * @returns {boolean} True if tournament can be completed
-     */
-    function isReadyForCompletion(tournament, allRoundsComplete, hasWinner) {
-        if (!tournament) {
-            return false;
-        }
-
-        // Check lifecycle permission
-        if (!canCompleteTournament(tournament, hasWinner)) {
-            return false;
-        }
-
-        // Check business conditions
-        if (tournament.status === 'active') {
-            if (!allRoundsComplete || !hasWinner) {
-                return false;
-            }
-        }
-
-        return true;
+    function isReadyForCompletion(tournament, _allRoundsComplete, _hasWinner) {
+        if (!tournament) { return false; }
+        return canCompleteTournament(tournament);
     }
 
     // ============================================================
@@ -631,7 +475,7 @@
         getTransitionResult: getTransitionResult,
         getTransitionOptions: getTransitionOptions,
 
-        // Completion readiness
+        // Completion readiness (lifecycle-only)
         isReadyForCompletion: isReadyForCompletion,
 
         // Constants (read-only)
@@ -663,7 +507,7 @@
             }
         }
 
-        // Smoke-test isValidStatus to catch the recursion class of bug
+        // Smoke-test isValidStatus
         try {
             if (typeof exports.isValidStatus('draft') !== 'boolean') {
                 missing.push('isValidStatus (returned non-boolean)');
@@ -674,7 +518,6 @@
 
         if (missing.length > 0) {
             console.warn('[TournamentLifecycle] Verification - some exports may be missing:', missing.join(', '));
-        } else {
         }
     })();
 

@@ -2,17 +2,17 @@
  * modules/tournaments/tournament-rules.js - Tournament Rules
  * Domain conditions for tournament operations (not state permissions)
  * Path: js/modules/tournaments/tournament-rules.js
- * 
+ *
  * This module is responsible for:
  *   - Domain condition validation (not state permissions)
  *   - Validating week ranges
  *   - Validating participant eligibility
- *   - Validating match results
+ *   - Validating match results (pass | fail | retry)
  *   - Checking if a tournament is ready for completion
  *   - Validating round removal conditions
  *   - Validating participant counts
  *   - Validating match participant eligibility
- * 
+ *
  * IMPORTANT:
  *   - This is the CANONICAL authority for domain conditions
  *   - All modules MUST use this for domain condition checks
@@ -23,21 +23,33 @@
  *   - Lifecycle: "Can I do this in this state?"
  *   - Rules: "Are the domain conditions satisfied?"
  *   - Schema: "Is this structurally valid?"
- * 
+ *
+ * RESULT VOCABULARY:
+ *   - 'pass'  : advanced and successful
+ *   - 'retry' : advanced but not successful
+ *   - 'fail'  : not advanced; eliminated from this tournament
+ *   - Advancement = 'pass' OR 'retry'.
+ *   - No winner/loser concept anywhere in this module.
+ *
+ * COMPLETION READINESS:
+ *   - A tournament can be completed when every round's matches are
+ *     completed. No winner is required. A tournament may end with
+ *     zero, one, or many final passers.
+ *
  * YEAR SEMANTICS:
  *   - Years are UNBOUNDED positive integers.
  *   - There is no MIN_YEAR or MAX_YEAR.
  *   - Tournaments are scoped to WEEKS (bounded 1-52), not years.
  *   - Years are not stored on tournaments; this module never
  *     reads or writes year values.
- * 
+ *
  * DEPENDENCIES:
  *   - window.TournamentConstants (from tournament-constants.js) - MANDATORY
  *   - window.TournamentSchema (from tournament-schema.js) - MANDATORY
  *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.TeamQueries (from team-queries.js) - MANDATORY
- * 
+ *
  * USAGE:
  *   var Rules = window.TournamentRules;
  *   var isValid = Rules.isValidWeekRange(startWeek, endWeek);
@@ -93,15 +105,9 @@
     function checkDependencies() {
         var missing = [];
 
-        if (!getConstants()) {
-            missing.push('TournamentConstants (lazy)');
-        }
-        if (!getSchema()) {
-            missing.push('TournamentSchema (lazy)');
-        }
-        if (!getCalendarValidation()) {
-            missing.push('CalendarValidation (lazy)');
-        }
+        if (!getConstants()) { missing.push('TournamentConstants (lazy)'); }
+        if (!getSchema()) { missing.push('TournamentSchema (lazy)'); }
+        if (!getCalendarValidation()) { missing.push('CalendarValidation (lazy)'); }
 
         if (missing.length > 0) {
             console.warn('[TournamentRules] Some dependencies not yet loaded:', missing.join(', '));
@@ -201,6 +207,15 @@
         return [];
     }
 
+    function isValidResult(value) {
+        var Schema = getSchema();
+        if (Schema && typeof Schema.isValidResult === 'function') {
+            return Schema.isValidResult(value);
+        }
+        // Fallback
+        return value === 'pass' || value === 'fail' || value === 'retry';
+    }
+
     function isCharacter(participantId) {
         var CharacterQueries = getCharacterQueries();
         if (CharacterQueries && typeof CharacterQueries.getCharacterById === 'function') {
@@ -223,14 +238,6 @@
 
     /**
      * Validate tournament week range.
-     * 
-     * SEMANTICS:
-     *   - Weeks are bounded (MIN_WEEK to MAX_WEEK).
-     *   - startWeek must be <= endWeek.
-     * 
-     * @param {number|string} startWeek - Start week
-     * @param {number|string} endWeek - End week
-     * @returns {object} { valid: boolean, message?: string, start: number|null, end: number|null }
      */
     function validateWeekRange(startWeek, endWeek) {
         var Constants = getConstants();
@@ -239,56 +246,50 @@
 
         var start = parseWeek(startWeek);
         if (start === null) {
-            return { valid: false, message: 'Invalid start week. Must be between ' + minWeek + ' and ' + maxWeek + '.', start: null, end: null };
+            return {
+                valid: false,
+                message: 'Invalid start week. Must be between ' + minWeek + ' and ' + maxWeek + '.',
+                start: null,
+                end: null
+            };
         }
 
         var end = parseWeek(endWeek);
         if (end === null) {
-            return { valid: false, message: 'Invalid end week. Must be between ' + minWeek + ' and ' + maxWeek + '.', start: start, end: null };
+            return {
+                valid: false,
+                message: 'Invalid end week. Must be between ' + minWeek + ' and ' + maxWeek + '.',
+                start: start,
+                end: null
+            };
         }
 
         if (start > end) {
-            return { valid: false, message: 'Start week (' + start + ') cannot be after end week (' + end + ').', start: start, end: end };
+            return {
+                valid: false,
+                message: 'Start week (' + start + ') cannot be after end week (' + end + ').',
+                start: start,
+                end: end
+            };
         }
 
         return { valid: true, start: start, end: end };
     }
 
-    /**
-     * Check if a week range is valid.
-     * 
-     * @param {number|string} startWeek - Start week
-     * @param {number|string} endWeek - End week
-     * @returns {boolean} True if valid
-     */
     function isValidWeekRange(startWeek, endWeek) {
         var result = validateWeekRange(startWeek, endWeek);
         return result.valid;
     }
 
-    /**
-     * Check if a week is within a tournament's range.
-     * 
-     * @param {object} tournament - Tournament object
-     * @param {number|string} week - Week to check
-     * @returns {boolean} True if week is within range
-     */
     function isWeekInTournamentRange(tournament, week) {
-        if (!tournament) {
-            return false;
-        }
+        if (!tournament) { return false; }
 
         var weekNum = parseWeek(week);
-        if (weekNum === null) {
-            return false;
-        }
+        if (weekNum === null) { return false; }
 
         var startWeek = parseWeek(tournament.startWeek);
         var endWeek = parseWeek(tournament.endWeek);
-
-        if (startWeek === null || endWeek === null) {
-            return false;
-        }
+        if (startWeek === null || endWeek === null) { return false; }
 
         return weekNum >= startWeek && weekNum <= endWeek;
     }
@@ -297,14 +298,6 @@
     // PARTICIPANT VALIDATION
     // ============================================================
 
-    /**
-     * Validate that a participant can be added to a tournament.
-     * 
-     * @param {object} tournament - Tournament object
-     * @param {string} participantId - Participant ID
-     * @param {string} participantType - 'character' or 'team'
-     * @returns {object} { valid: boolean, message?: string }
-     */
     function validateParticipantAddition(tournament, participantId, participantType) {
         var Constants = getConstants();
 
@@ -325,12 +318,15 @@
             return { valid: false, message: 'Participant type is required.' };
         }
 
-        var validTypes = Constants ? Constants.VALID_PARTICIPANT_TYPES : ['character', 'team'];
+        var validTypes = Constants
+            ? Constants.VALID_PARTICIPANT_TYPES
+            : ['character', 'team'];
+
         if (validTypes.indexOf(participantType) === -1) {
             return { valid: false, message: 'Invalid participant type: ' + participantType };
         }
 
-        // Verify participant exists
+        // Verify participant exists in the wider application.
         if (participantType === 'character') {
             if (!isCharacter(id)) {
                 return { valid: false, message: 'Character not found.' };
@@ -343,47 +339,41 @@
             return { valid: false, message: 'Unknown participant type.' };
         }
 
-        // Check participant type matches tournament mode
-        var canonicalType = Constants ? Constants.getCanonicalParticipantType(tournament.mode) : null;
+        // Type must match tournament mode.
+        var canonicalType = Constants && typeof Constants.getCanonicalParticipantType === 'function'
+            ? Constants.getCanonicalParticipantType(tournament.mode)
+            : (tournament.mode === 'teams' ? 'team' : 'character');
+
         if (canonicalType && participantType !== canonicalType) {
-            return { valid: false, message: 'Participant type "' + participantType + '" does not match tournament mode "' + tournament.mode + '" (expected "' + canonicalType + '").' };
+            return {
+                valid: false,
+                message: 'Participant type "' + participantType +
+                    '" does not match tournament mode "' + tournament.mode +
+                    '" (expected "' + canonicalType + '").'
+            };
         }
 
-        // Check if already a participant
         if (isParticipantInTournament(tournament, id)) {
             return { valid: false, message: 'Participant is already in this tournament.' };
         }
 
-        // Check participant count
         var participants = getParticipants(tournament);
         var maxParticipants = tournament.maxParticipants || 100;
         if (participants.length >= maxParticipants) {
-            return { valid: false, message: 'Maximum participant count (' + maxParticipants + ') reached.' };
+            return {
+                valid: false,
+                message: 'Maximum participant count (' + maxParticipants + ') reached.'
+            };
         }
 
         return { valid: true };
     }
 
-    /**
-     * Check if a participant can be added to a tournament.
-     * 
-     * @param {object} tournament - Tournament object
-     * @param {string} participantId - Participant ID
-     * @param {string} participantType - 'character' or 'team'
-     * @returns {boolean} True if can be added
-     */
     function canAddParticipant(tournament, participantId, participantType) {
         var result = validateParticipantAddition(tournament, participantId, participantType);
         return result.valid;
     }
 
-    /**
-     * Validate that a participant can be removed from a tournament.
-     * 
-     * @param {object} tournament - Tournament object
-     * @param {string} participantId - Participant ID
-     * @returns {object} { valid: boolean, message?: string }
-     */
     function validateParticipantRemoval(tournament, participantId) {
         if (!tournament || typeof tournament !== 'object') {
             return { valid: false, message: 'Tournament is required.' };
@@ -398,31 +388,28 @@
             return { valid: false, message: 'Invalid participant ID.' };
         }
 
-        // Check if participant exists
         if (!isParticipantInTournament(tournament, id)) {
             return { valid: false, message: 'Participant not found in tournament.' };
         }
 
-        // Check if participant is already eliminated
         if (isParticipantEliminated(tournament, id)) {
             return { valid: false, message: 'Cannot remove an eliminated participant.' };
         }
 
-        // Check if participant has matches
+        // Cannot remove a participant who is in a match.
         var rounds = getRounds(tournament);
         for (var i = 0; i < rounds.length; i++) {
             var round = rounds[i];
-            if (!round || !Array.isArray(round.matches)) {
-                continue;
-            }
+            if (!round || !Array.isArray(round.matches)) { continue; }
             for (var j = 0; j < round.matches.length; j++) {
                 var match = round.matches[j];
-                if (!match || !Array.isArray(match.participants)) {
-                    continue;
-                }
+                if (!match || !Array.isArray(match.participants)) { continue; }
                 for (var k = 0; k < match.participants.length; k++) {
                     if (normaliseId(match.participants[k]) === id) {
-                        return { valid: false, message: 'Participant is in a match and cannot be removed.' };
+                        return {
+                            valid: false,
+                            message: 'Participant is in a match and cannot be removed.'
+                        };
                     }
                 }
             }
@@ -431,16 +418,75 @@
         return { valid: true };
     }
 
-    /**
-     * Check if a participant can be removed from a tournament.
-     * 
-     * @param {object} tournament - Tournament object
-     * @param {string} participantId - Participant ID
-     * @returns {boolean} True if can be removed
-     */
     function canRemoveParticipant(tournament, participantId) {
         var result = validateParticipantRemoval(tournament, participantId);
         return result.valid;
+    }
+
+    // ============================================================
+    // RESULT MAP VALIDATION
+    // ============================================================
+
+    /**
+     * Validate a results map against a list of expected keys.
+     *
+     * @param {object} results - Map of { id: 'pass' | 'fail' | 'retry' }
+     * @param {array} expectedIds - Expected keys (participant or team IDs)
+     * @param {object} options - { requireAll: boolean (default: true) }
+     * @returns {object} { valid, message?, map? }
+     */
+    function validateResultMap(results, expectedIds, options) {
+        options = options || {};
+        var requireAll = options.requireAll !== false;
+
+        if (!isObject(results)) {
+            return { valid: false, message: 'Results must be an object.' };
+        }
+
+        var normalised = {};
+        var keys = Object.keys(results);
+
+        for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
+            var id = normaliseId(key);
+            if (id === null) {
+                return { valid: false, message: 'Invalid result key: ' + key };
+            }
+
+            var value = results[key];
+            if (!isValidResult(value)) {
+                return {
+                    valid: false,
+                    message: 'Invalid result for ' + id + ': ' + value +
+                        ' (expected pass, fail, or retry)'
+                };
+            }
+
+            if (Array.isArray(expectedIds) && expectedIds.length > 0) {
+                if (expectedIds.indexOf(id) === -1) {
+                    return {
+                        valid: false,
+                        message: 'Result for ' + id + ' does not match an expected participant.'
+                    };
+                }
+            }
+
+            normalised[id] = value;
+        }
+
+        if (requireAll && Array.isArray(expectedIds)) {
+            for (var j = 0; j < expectedIds.length; j++) {
+                var pid = normaliseId(expectedIds[j]);
+                if (pid !== null && normalised[pid] === undefined) {
+                    return {
+                        valid: false,
+                        message: 'Missing result for participant: ' + pid
+                    };
+                }
+            }
+        }
+
+        return { valid: true, map: normalised };
     }
 
     // ============================================================
@@ -448,18 +494,13 @@
     // ============================================================
 
     /**
-     * Validate that a match result is valid.
-     * 
-     * @param {object} match - Match object
-     * @param {object} result - Result to validate
-     * @param {string} result.winner - Winner ID (for standard matches)
-     * @param {object} result.results - Results (for group exam matches)
-     * @returns {object} { valid: boolean, message?: string }
+     * Validate a match result payload against a match's shape.
+     *
+     * @param {object} match
+     * @param {object} result
+     * @returns {object} { valid, message? }
      */
     function validateMatchResult(match, result) {
-        var Constants = getConstants();
-        var validGroupExamResults = Constants ? Constants.VALID_GROUP_EXAM_RESULTS : ['pass', 'fail'];
-
         if (!match || typeof match !== 'object') {
             return { valid: false, message: 'Match is required.' };
         }
@@ -468,84 +509,65 @@
             return { valid: false, message: 'Result is required.' };
         }
 
-        var type = match.type || 'standard';
+        var type = match.type || 'group_exam';
+        var participants = Array.isArray(match.participants) ? match.participants : [];
 
-        if (type === 'standard') {
-            var winner = result.winner;
-            if (!winner) {
-                return { valid: false, message: 'Winner is required for standard match.' };
-            }
+        if (type === 'group_exam') {
+            var check = validateResultMap(result.results, participants, { requireAll: true });
+            if (!check.valid) { return check; }
+            return { valid: true };
+        }
 
-            var winnerId = normaliseId(winner);
-            if (winnerId === null) {
-                return { valid: false, message: 'Invalid winner ID.' };
-            }
+        if (type === 'team_vs_team') {
+            var teamCheck = validateResultMap(result.teamResults, participants, { requireAll: true });
+            if (!teamCheck.valid) { return teamCheck; }
 
-            if (!Array.isArray(match.participants) || match.participants.indexOf(winnerId) === -1) {
-                return { valid: false, message: 'Winner must be a participant in the match.' };
-            }
-
-            // Winner must be an active participant
-            if (match.status !== 'completed') {
-                // Check if winner is eliminated from tournament
-                // This is a business rule check
+            if (result.individualResults !== undefined && result.individualResults !== null) {
+                // Individual results are free-form: any character ID that
+                // is a member of one of the participating teams.
+                // Membership is validated at a higher level; here we
+                // only check the values.
+                if (!isObject(result.individualResults)) {
+                    return { valid: false, message: 'individualResults must be an object.' };
+                }
+                var indKeys = Object.keys(result.individualResults);
+                for (var i = 0; i < indKeys.length; i++) {
+                    var val = result.individualResults[indKeys[i]];
+                    if (!isValidResult(val)) {
+                        return {
+                            valid: false,
+                            message: 'Invalid individual result: ' + val
+                        };
+                    }
+                }
             }
 
             return { valid: true };
         }
 
-        if (type === 'group_exam') {
-            var results = result.results;
-            if (!results || typeof results !== 'object') {
-                return { valid: false, message: 'Results are required for group exam match.' };
+        if (type === 'standard') {
+            // Legacy. Only the winner is required.
+            if (!result.winner) {
+                return { valid: false, message: 'Winner is required for standard match.' };
             }
-
-            if (!Array.isArray(match.participants) || match.participants.length === 0) {
-                return { valid: false, message: 'Match has no participants.' };
+            var winnerId = normaliseId(result.winner);
+            if (winnerId === null || participants.indexOf(winnerId) === -1) {
+                return {
+                    valid: false,
+                    message: 'Winner must be a participant in the match.'
+                };
             }
-
-            for (var i = 0; i < match.participants.length; i++) {
-                var id = match.participants[i];
-                var normalisedId = normaliseId(id);
-                if (normalisedId === null) {
-                    return { valid: false, message: 'Invalid participant ID in match.' };
-                }
-
-                var resultValue = results[normalisedId] || results[id];
-                if (!resultValue) {
-                    return { valid: false, message: 'Missing result for participant: ' + id };
-                }
-
-                if (validGroupExamResults.indexOf(resultValue) === -1) {
-                    return { valid: false, message: 'Invalid result for participant: ' + id + ' (expected pass or fail)' };
-                }
-            }
-
             return { valid: true };
         }
 
         return { valid: false, message: 'Unknown match type: ' + type };
     }
 
-    /**
-     * Check if a match result is valid.
-     * 
-     * @param {object} match - Match object
-     * @param {object} result - Result to validate
-     * @returns {boolean} True if valid
-     */
     function isValidMatchResult(match, result) {
         var validation = validateMatchResult(match, result);
         return validation.valid;
     }
 
-    /**
-     * Validate that a match can be completed.
-     * 
-     * @param {object} match - Match object
-     * @param {object} result - Result to validate
-     * @returns {object} { valid: boolean, message?: string }
-     */
     function validateMatchCompletion(match, result) {
         if (!match || typeof match !== 'object') {
             return { valid: false, message: 'Match is required.' };
@@ -559,30 +581,9 @@
             return { valid: false, message: 'Result is required to complete a match.' };
         }
 
-        var validation = validateMatchResult(match, result);
-        if (!validation.valid) {
-            return validation;
-        }
-
-        // Additional business rules for completion
-        var type = match.type || 'standard';
-
-        if (type === 'standard') {
-            var winner = result.winner;
-            // Winner must not be eliminated from the tournament
-            // This is checked in the workflow layer
-        }
-
-        return { valid: true };
+        return validateMatchResult(match, result);
     }
 
-    /**
-     * Check if a match can be completed.
-     * 
-     * @param {object} match - Match object
-     * @param {object} result - Result to validate
-     * @returns {boolean} True if can be completed
-     */
     function canCompleteMatch(match, result) {
         var validation = validateMatchCompletion(match, result);
         return validation.valid;
@@ -592,13 +593,6 @@
     // ROUND VALIDATION
     // ============================================================
 
-    /**
-     * Validate that a round can be removed.
-     * 
-     * @param {object} tournament - Tournament object
-     * @param {number} roundIndex - Index of the round to remove
-     * @returns {object} { valid: boolean, message?: string }
-     */
     function validateRoundRemoval(tournament, roundIndex) {
         if (!tournament || typeof tournament !== 'object') {
             return { valid: false, message: 'Tournament is required.' };
@@ -619,22 +613,18 @@
             return { valid: false, message: 'Round not found.' };
         }
 
-        // Check if round has completed matches
         if (Array.isArray(round.matches)) {
-            var hasCompletedMatches = false;
             for (var i = 0; i < round.matches.length; i++) {
                 var match = round.matches[i];
                 if (match && match.status === 'completed') {
-                    hasCompletedMatches = true;
-                    break;
+                    return {
+                        valid: false,
+                        message: 'Round has completed matches and cannot be removed.'
+                    };
                 }
-            }
-            if (hasCompletedMatches) {
-                return { valid: false, message: 'Round has completed matches and cannot be removed.' };
             }
         }
 
-        // Check if round is completed
         if (round.status === 'completed') {
             return { valid: false, message: 'Round is completed and cannot be removed.' };
         }
@@ -642,25 +632,11 @@
         return { valid: true };
     }
 
-    /**
-     * Check if a round can be removed.
-     * 
-     * @param {object} tournament - Tournament object
-     * @param {number} roundIndex - Index of the round to remove
-     * @returns {boolean} True if can be removed
-     */
     function canRemoveRound(tournament, roundIndex) {
         var validation = validateRoundRemoval(tournament, roundIndex);
         return validation.valid;
     }
 
-    /**
-     * Validate that a round can be added.
-     * 
-     * @param {object} tournament - Tournament object
-     * @param {object} roundData - Round data
-     * @returns {object} { valid: boolean, message?: string }
-     */
     function validateRoundAddition(tournament, roundData) {
         if (!tournament || typeof tournament !== 'object') {
             return { valid: false, message: 'Tournament is required.' };
@@ -670,10 +646,12 @@
         var totalRounds = tournament.totalRounds || 10;
 
         if (rounds.length >= totalRounds) {
-            return { valid: false, message: 'Maximum rounds (' + totalRounds + ') reached.' };
+            return {
+                valid: false,
+                message: 'Maximum rounds (' + totalRounds + ') reached.'
+            };
         }
 
-        // Validate round data if provided
         if (roundData && typeof roundData === 'object') {
             if (roundData.matchSize !== undefined) {
                 var size = parseInt(roundData.matchSize, 10);
@@ -684,9 +662,14 @@
 
             if (roundData.matchType !== undefined) {
                 var Constants = getConstants();
-                var validTypes = Constants ? Constants.VALID_MATCH_TYPES : ['standard', 'group_exam'];
+                var validTypes = Constants
+                    ? Constants.VALID_MATCH_TYPES
+                    : ['standard', 'group_exam', 'team_vs_team'];
                 if (validTypes.indexOf(roundData.matchType) === -1) {
-                    return { valid: false, message: 'Invalid match type: ' + roundData.matchType };
+                    return {
+                        valid: false,
+                        message: 'Invalid match type: ' + roundData.matchType
+                    };
                 }
             }
         }
@@ -694,13 +677,6 @@
         return { valid: true };
     }
 
-    /**
-     * Check if a round can be added.
-     * 
-     * @param {object} tournament - Tournament object
-     * @param {object} roundData - Round data
-     * @returns {boolean} True if can be added
-     */
     function canAddRound(tournament, roundData) {
         var validation = validateRoundAddition(tournament, roundData);
         return validation.valid;
@@ -709,35 +685,41 @@
     // ============================================================
     // COMPLETION READINESS
     // ============================================================
+    //
+    // A tournament is ready to complete when every round's matches
+    // are completed. No winner is required. A tournament may finish
+    // with zero, one, or many final passers.
 
-    /**
-     * Validate that a tournament is ready for completion.
-     * 
-     * @param {object} tournament - Tournament object
-     * @returns {object} { valid: boolean, message?: string, missing: array }
-     */
     function validateCompletionReadiness(tournament) {
         if (!tournament || typeof tournament !== 'object') {
-            return { valid: false, message: 'Tournament is required.', missing: ['tournament'] };
+            return {
+                valid: false,
+                message: 'Tournament is required.',
+                missing: ['tournament']
+            };
         }
 
         var missing = [];
 
-        // Check all rounds are complete
         var rounds = getRounds(tournament);
         if (rounds.length === 0) {
-            missing.push('No rounds');
+            // A tournament with no rounds can still be completed —
+            // there is nothing to run.
+            return {
+                valid: true,
+                message: 'Tournament is ready for completion (no rounds).',
+                missing: [],
+                allRoundsComplete: true,
+                finalPasserCount: 0
+            };
         }
 
-        var allRoundsComplete = true;
         for (var i = 0; i < rounds.length; i++) {
             var round = rounds[i];
             if (!round || round.status !== 'completed') {
-                allRoundsComplete = false;
                 missing.push('Round ' + (i + 1) + ' not complete');
             }
 
-            // Check all matches in round are complete
             if (Array.isArray(round.matches)) {
                 for (var j = 0; j < round.matches.length; j++) {
                     var match = round.matches[j];
@@ -748,39 +730,35 @@
             }
         }
 
-        // Check winner exists
-        if (!tournament.winner) {
-            missing.push('No winner');
-        }
-
         var valid = missing.length === 0;
+
+        // Count final passers, if the Schema exposes the derivation.
+        var finalPasserCount = 0;
+        var Schema = getSchema();
+        if (Schema && typeof Schema.deriveFinalPassers === 'function' && valid) {
+            try {
+                finalPasserCount = Schema.deriveFinalPassers(tournament).length;
+            } catch (e) {
+                finalPasserCount = 0;
+            }
+        }
 
         return {
             valid: valid,
-            message: valid ? 'Tournament is ready for completion.' : 'Tournament is not ready for completion.',
+            message: valid
+                ? 'Tournament is ready for completion.'
+                : 'Tournament is not ready for completion.',
             missing: missing,
-            allRoundsComplete: allRoundsComplete,
-            hasWinner: !!tournament.winner
+            allRoundsComplete: valid,
+            finalPasserCount: finalPasserCount
         };
     }
 
-    /**
-     * Check if a tournament is ready for completion.
-     * 
-     * @param {object} tournament - Tournament object
-     * @returns {boolean} True if ready
-     */
     function isReadyForCompletion(tournament) {
         var validation = validateCompletionReadiness(tournament);
         return validation.valid;
     }
 
-    /**
-     * Get completion readiness report.
-     * 
-     * @param {object} tournament - Tournament object
-     * @returns {object} Readiness report
-     */
     function getCompletionReadinessReport(tournament) {
         return validateCompletionReadiness(tournament);
     }
@@ -789,14 +767,6 @@
     // PARTICIPANT ELIGIBILITY
     // ============================================================
 
-    /**
-     * Validate that a participant is eligible for a match.
-     * 
-     * @param {object} tournament - Tournament object
-     * @param {string} participantId - Participant ID
-     * @param {string} participantType - 'character' or 'team'
-     * @returns {object} { valid: boolean, message?: string }
-     */
     function validateParticipantEligibility(tournament, participantId, participantType) {
         if (!tournament || typeof tournament !== 'object') {
             return { valid: false, message: 'Tournament is required.' };
@@ -811,35 +781,28 @@
             return { valid: false, message: 'Invalid participant ID.' };
         }
 
-        // Check participant is in tournament
         if (!isParticipantInTournament(tournament, id)) {
             return { valid: false, message: 'Participant is not in this tournament.' };
         }
 
-        // Check participant is not eliminated
         if (isParticipantEliminated(tournament, id)) {
             return { valid: false, message: 'Participant has been eliminated.' };
         }
 
-        // Check participant type matches
         if (participantType) {
             var actualType = getParticipantType(tournament, id);
             if (actualType && actualType !== participantType) {
-                return { valid: false, message: 'Participant type mismatch. Expected ' + participantType + ', got ' + actualType + '.' };
+                return {
+                    valid: false,
+                    message: 'Participant type mismatch. Expected ' +
+                        participantType + ', got ' + actualType + '.'
+                };
             }
         }
 
         return { valid: true };
     }
 
-    /**
-     * Check if a participant is eligible for a match.
-     * 
-     * @param {object} tournament - Tournament object
-     * @param {string} participantId - Participant ID
-     * @param {string} participantType - 'character' or 'team'
-     * @returns {boolean} True if eligible
-     */
     function isParticipantEligible(tournament, participantId, participantType) {
         var validation = validateParticipantEligibility(tournament, participantId, participantType);
         return validation.valid;
@@ -849,28 +812,26 @@
     // TOURNAMENT READINESS
     // ============================================================
 
-    /**
-     * Validate that a tournament can be started (transitioned from draft to active).
-     * 
-     * @param {object} tournament - Tournament object
-     * @returns {object} { valid: boolean, message?: string }
-     */
     function validateTournamentStart(tournament) {
         if (!tournament || typeof tournament !== 'object') {
             return { valid: false, message: 'Tournament is required.' };
         }
 
         if (tournament.status !== 'draft') {
-            return { valid: false, message: 'Tournament must be in draft status to start.' };
+            return {
+                valid: false,
+                message: 'Tournament must be in draft status to start.'
+            };
         }
 
-        // Check minimum participants
         var participants = getParticipants(tournament);
         if (participants.length < 2) {
-            return { valid: false, message: 'Tournament needs at least 2 participants to start.' };
+            return {
+                valid: false,
+                message: 'Tournament needs at least 2 participants to start.'
+            };
         }
 
-        // Check week range is valid
         var weekValidation = validateWeekRange(tournament.startWeek, tournament.endWeek);
         if (!weekValidation.valid) {
             return weekValidation;
@@ -879,12 +840,6 @@
         return { valid: true };
     }
 
-    /**
-     * Check if a tournament can be started.
-     * 
-     * @param {object} tournament - Tournament object
-     * @returns {boolean} True if can be started
-     */
     function canStartTournament(tournament) {
         var validation = validateTournamentStart(tournament);
         return validation.valid;
@@ -894,43 +849,19 @@
     // QUERY HELPERS
     // ============================================================
 
-    /**
-     * Get the minimum number of participants required for a tournament.
-     * 
-     * @param {string} mode - Tournament mode
-     * @returns {number} Minimum participants
-     */
     function getMinimumParticipants(mode) {
         return 2;
     }
 
-    /**
-     * Get the maximum number of participants for a tournament mode.
-     * 
-     * @param {string} mode - Tournament mode
-     * @returns {number} Maximum participants
-     */
     function getMaximumParticipants(mode) {
         return 100;
     }
 
-    /**
-     * Check if a tournament has enough participants.
-     * 
-     * @param {object} tournament - Tournament object
-     * @returns {boolean} True if enough participants
-     */
     function hasEnoughParticipants(tournament) {
         var participants = getParticipants(tournament);
         return participants.length >= 2;
     }
 
-    /**
-     * Check if a tournament has active participants (not eliminated).
-     * 
-     * @param {object} tournament - Tournament object
-     * @returns {boolean} True if has active participants
-     */
     function hasActiveParticipants(tournament) {
         if (!tournament || !Array.isArray(tournament.participants)) {
             return false;
@@ -948,6 +879,43 @@
     }
 
     // ============================================================
+    // FINAL PASSERS HELPERS
+    // ============================================================
+
+    /**
+     * Get the final passers of a tournament, using the Schema's
+     * canonical derivation.
+     *
+     * @param {object} tournament
+     * @returns {array} Array of participant IDs
+     */
+    function getFinalPassers(tournament) {
+        var Schema = getSchema();
+        if (!Schema || typeof Schema.deriveFinalPassers !== 'function') {
+            return [];
+        }
+        try {
+            return Schema.deriveFinalPassers(tournament);
+        } catch (e) {
+            return [];
+        }
+    }
+
+    /**
+     * Classify a result value into a semantic category.
+     * 'pass'    → 'passed'
+     * 'retry'   → 'retry'
+     * 'fail'    → 'failed'
+     * anything  → 'unknown'
+     */
+    function getResultCategory(resultValue) {
+        if (resultValue === 'pass') { return 'passed'; }
+        if (resultValue === 'retry') { return 'retry'; }
+        if (resultValue === 'fail') { return 'failed'; }
+        return 'unknown';
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -962,6 +930,9 @@
         canAddParticipant: canAddParticipant,
         validateParticipantRemoval: validateParticipantRemoval,
         canRemoveParticipant: canRemoveParticipant,
+
+        // Result maps
+        validateResultMap: validateResultMap,
 
         // Match results
         validateMatchResult: validateMatchResult,
@@ -992,7 +963,11 @@
         getMinimumParticipants: getMinimumParticipants,
         getMaximumParticipants: getMaximumParticipants,
         hasEnoughParticipants: hasEnoughParticipants,
-        hasActiveParticipants: hasActiveParticipants
+        hasActiveParticipants: hasActiveParticipants,
+
+        // Final passers
+        getFinalPassers: getFinalPassers,
+        getResultCategory: getResultCategory
     };
 
     // ============================================================
@@ -1007,6 +982,7 @@
             'validateWeekRange', 'isValidWeekRange', 'isWeekInTournamentRange',
             'validateParticipantAddition', 'canAddParticipant',
             'validateParticipantRemoval', 'canRemoveParticipant',
+            'validateResultMap',
             'validateMatchResult', 'isValidMatchResult',
             'validateMatchCompletion', 'canCompleteMatch',
             'validateRoundRemoval', 'canRemoveRound',
@@ -1015,7 +991,8 @@
             'validateParticipantEligibility', 'isParticipantEligible',
             'validateTournamentStart', 'canStartTournament',
             'getMinimumParticipants', 'getMaximumParticipants',
-            'hasEnoughParticipants', 'hasActiveParticipants'
+            'hasEnoughParticipants', 'hasActiveParticipants',
+            'getFinalPassers', 'getResultCategory'
         ];
 
         for (var i = 0; i < required.length; i++) {
@@ -1026,7 +1003,6 @@
 
         if (missing.length > 0) {
             console.warn('[TournamentRules] Verification - some exports may be missing:', missing.join(', '));
-        } else {
         }
     })();
 
