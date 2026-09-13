@@ -8,6 +8,7 @@
  *   - Rendering the character summary header (name, role badge, status)
  *   - Rendering the character's class membership chips
  *   - Rendering the character's academic stats for the selected week
+ *   - Rendering an elimination warning banner when applicable
  *   - Rendering the character's grades (this week + recent)
  *   - Rendering the character's team memberships
  *   - Rendering the character's ranking snapshot
@@ -15,40 +16,31 @@
  *
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no domain logic
- *   - Receives a character OBJECT (not a view model). The
- *     aggregator's getCharacterDetail is NOT used here; it pulls
- *     cross-domain data that isn't all relevant to the Academy
- *     panel. Instead, this module uses CharacterQueries and
- *     AcademyQueries directly for the pieces it needs.
- *   - Does NOT bind events. Buttons emit data-* and are handled
- *     by AcademyEvents (or a future AcademyDetailEvents).
+ *   - Receives a character OBJECT (not a view model).
+ *   - Uses CharacterQueries, AcademyQueries, EliminationQueries directly.
+ *   - Does NOT bind events. Buttons emit data-* and are handled by
+ *     AcademyView's delegated container listeners.
  *   - Uses DomUtils for escaping.
  *   - Returns an HTML string.
  *
  * NAME COLLISION:
- *   window.CharacterDetail is already used by
- *   js/modules/characters/character-detail.js (the modal).
- *   This module exposes itself as window.AcademyCharacterDetail.
- *   academy-view.js must look it up by that name.
+ *   window.CharacterDetail is already used by the modal in
+ *   js/modules/characters/character-detail.js. This module exposes
+ *   itself as window.AcademyCharacterDetail.
+ *
+ * ELIMINATION WEEK SEMANTICS:
+ *   - getEliminationWeek(charId) returns the earliest week the character
+ *     was eliminated, considering both explicit elimination records and
+ *     the death timeline.
+ *   - If it returns null, the character has no elimination on record.
+ *   - Warning banner logic:
+ *       week > eliminationWeek  → RED    "Eliminated in week N"
+ *       week === eliminationWeek → YELLOW "Eliminated this week"
+ *       week < eliminationWeek  → no banner
  *
  * INTERFACE:
  *   AcademyCharacterDetail.renderHTML(char, classVM, options) -> string
- *
- *   char     - character object from CharacterQueries.getCharacterById
- *   classVM  - the same class view model ClassDetail renders.
- *              Used to determine the character's role within the
- *              currently selected class (trainee vs instructor).
- *   options  - { week: number }  (defaults to current week)
- *
- *   If char is null, an empty state is rendered.
- *   If classVM is null, the role badge is omitted.
- *
- * EVENTS EMITTED (via data-* attributes, for the shell to bind):
- *   - .academy-character-detail [data-character-id]
- *   - .academy-grade-row [data-grade-id]
- *   - .academy-character-team-row [data-team-id]
- *   - [data-action="edit-character"] with [data-character-id]
- *   - [data-action="view-full-character"] with [data-character-id]
+ *   AcademyCharacterDetail.mountGradesEditor(charId, classVM, options)
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
@@ -56,10 +48,7 @@
  *   - window.AcademyQueries (MANDATORY)
  *   - window.DisciplineQueries (MANDATORY)
  *   - window.CalendarConstants (MANDATORY)
- *
- * USAGE:
- *   var html = AcademyCharacterDetail.renderHTML(char, classVM, { week: 5 });
- *   container.innerHTML = html;
+ *   - window.EliminationQueries (LAZY - optional)
  */
 
 (function() {
@@ -243,6 +232,104 @@
     }
 
     // ============================================================
+    // ELIMINATION LOOKUP
+    // ============================================================
+    //
+    // getEliminationWeek returns the earliest week the character was
+    // eliminated, or null if they were never eliminated. It factors
+    // in both explicit elimination records and the death timeline.
+
+    function getCharacterEliminationWeek(char) {
+        if (!char || !char.id) {
+            return null;
+        }
+        var EQ = window.EliminationQueries;
+        if (!EQ || typeof EQ.getEliminationWeek !== 'function') {
+            return null;
+        }
+        try {
+            var week = EQ.getEliminationWeek(char);
+            if (typeof week !== 'number' || !isFinite(week)) {
+                return null;
+            }
+            return week;
+        } catch (e) {
+            console.warn('[AcademyCharacterDetail] getEliminationWeek failed:', e);
+            return null;
+        }
+    }
+
+    function getCharacterEliminationReason(char) {
+        if (!char || !char.id) {
+            return '';
+        }
+        var EQ = window.EliminationQueries;
+        if (!EQ || typeof EQ.getEliminationReason !== 'function') {
+            return '';
+        }
+        try {
+            var reason = EQ.getEliminationReason(char);
+            return isNonEmptyString(reason) ? reason : '';
+        } catch (e) {
+            return '';
+        }
+    }
+
+    // ============================================================
+    // ELIMINATION WARNING BANNER
+    // ============================================================
+    //
+    // Three states:
+    //   - week > eliminationWeek  → RED    "Eliminated in week N"
+    //   - week === eliminationWeek → YELLOW "Eliminated this week"
+    //   - otherwise                → no banner
+
+    function renderEliminationWarning(char, week) {
+        var eliminationWeek = getCharacterEliminationWeek(char);
+        if (eliminationWeek === null) {
+            return '';
+        }
+
+        var displayedWeek = parseInt(week, 10);
+        if (isNaN(displayedWeek)) {
+            return '';
+        }
+
+        if (displayedWeek < eliminationWeek) {
+            // Character was still active this week.
+            return '';
+        }
+
+        var reason = getCharacterEliminationReason(char);
+        var reasonSuffix = reason && reason !== 'Unknown'
+            ? ' \u2014 ' + escapeHtml(reason)
+            : '';
+
+        if (displayedWeek === eliminationWeek) {
+            return (
+                '<div class="academy-character-detail-warning academy-warning-elimination-now">' +
+                    '<span class="academy-warning-icon">\u26a0</span>' +
+                    '<span class="academy-warning-text">' +
+                        'Eliminated this week (Week ' + escapeHtml(String(eliminationWeek)) + ')' +
+                        reasonSuffix +
+                    '</span>' +
+                '</div>'
+            );
+        }
+
+        // displayedWeek > eliminationWeek
+        return (
+            '<div class="academy-character-detail-warning academy-warning-eliminated">' +
+                '<span class="academy-warning-icon">\u26a0</span>' +
+                '<span class="academy-warning-text">' +
+                    'Eliminated in Week ' + escapeHtml(String(eliminationWeek)) +
+                    reasonSuffix +
+                '</span>' +
+            '</div>'
+        );
+    }
+
+    // ============================================================
     // RENDER - Top-level
     // ============================================================
 
@@ -275,6 +362,7 @@
         html += '<div class="academy-character-detail" ' +
                     'data-character-id="' + escapeAttribute(char.id) + '">';
         html += renderHeader(char, role);
+        html += renderEliminationWarning(char, week);
         html += renderClassChips(char);
         html += renderGradesSection(char, week);
         html += renderRankingSection(char, classVM, week);
@@ -415,70 +503,12 @@
         }
         html += '</div>';
 
-        if (allGrades.length === 0) {
-            html += '<p class="empty-state small">No grades recorded.</p>';
-            html += '</div>';
-            return html;
-        }
+        // Host element. AcademyGradesEditor.mount() populates this after
+        // the detail panel is inserted into the DOM.
+        html += '<div id="academy-grades-editor-host" ' +
+                    'class="academy-grades-editor-host"></div>';
 
-        // Sort by week ascending, then date
-        var sorted = allGrades.slice().sort(function(a, b) {
-            var wa = parseInt(a.week, 10) || 0;
-            var wb = parseInt(b.week, 10) || 0;
-            if (wa !== wb) { return wa - wb; }
-            return String(a.date || '').localeCompare(String(b.date || ''));
-        });
-
-        // Show all grades in a scrollable table (max-height via CSS)
-        html += '<div class="academy-grade-table-wrapper">';
-        html += '<table class="academy-grade-table">';
-        html += '<thead>';
-        html += '<tr>';
-        html += '<th class="week-col">Week</th>';
-        html += '<th class="discipline-col">Discipline</th>';
-        html += '<th class="type-col">Type</th>';
-        html += '<th class="score-col">Score</th>';
-        html += '</tr>';
-        html += '</thead>';
-        html += '<tbody>';
-
-        for (var i = 0; i < sorted.length; i++) {
-            html += renderGradeRow(sorted[i]);
-        }
-
-        html += '</tbody>';
-        html += '</table>';
         html += '</div>';
-        html += '</div>';
-
-        return html;
-    }
-
-    function renderGradeRow(grade) {
-        var percentage = getGradePercentage(grade);
-        var percentageLabel = percentage !== null ? String(percentage) + '%' : '\u2014';
-        var scoreClass = getScoreClass(percentage);
-
-        var disciplineName = getDisciplineName(grade.disciplineId);
-        var typeLabel = isNonEmptyString(grade.type) ? grade.type : 'assignment';
-        var weekLabel = grade.week !== undefined && grade.week !== null
-            ? String(grade.week)
-            : '\u2014';
-
-        var html = '';
-        html += '<tr class="academy-grade-row" ' +
-                    'data-grade-id="' + escapeAttribute(grade.id || '') + '">';
-
-        html += '<td class="week-col">' + escapeHtml(weekLabel) + '</td>';
-        html += '<td class="discipline-col">' + escapeHtml(disciplineName) + '</td>';
-        html += '<td class="type-col">' + escapeHtml(typeLabel) + '</td>';
-        html += '<td class="score-col">' +
-                    '<span class="' + scoreClass + '">' +
-                        escapeHtml(percentageLabel) +
-                    '</span>' +
-                '</td>';
-
-        html += '</tr>';
         return html;
     }
 
@@ -602,11 +632,52 @@
     }
 
     // ============================================================
+    // GRADES EDITOR MOUNTING
+    // ============================================================
+    //
+    // The grades editor is a separate module that mounts into a host
+    // element inside the character detail panel. Because the panel is
+    // re-rendered on every interaction (via innerHTML), the editor
+    // must be re-mounted after each render.
+
+    /**
+     * Mount the inline grades editor for a character.
+     * Called by AcademyView after the detail panel is inserted into
+     * the DOM.
+     *
+     * @param {string} charId - Character ID
+     * @param {object|null} classVM - Class view model (for context)
+     * @param {object} options - { week }
+     */
+    function mountGradesEditor(charId, classVM, options) {
+        var GE = window.AcademyGradesEditor;
+        if (!GE || typeof GE.mount !== 'function') {
+            return;
+        }
+
+        var host = document.getElementById('academy-grades-editor-host');
+        if (!host) {
+            return;
+        }
+
+        options = options || {};
+        var week = options.week || 1;
+
+        // Grades are class-scoped. If no class is selected, we still
+        // mount so the table renders — the editor will just filter by
+        // whatever class context we pass.
+        var classId = classVM && classVM.id ? classVM.id : null;
+
+        GE.mount(host, charId, classId, week);
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
     window.AcademyCharacterDetail = {
-        renderHTML: renderHTML
+        renderHTML: renderHTML,
+        mountGradesEditor: mountGradesEditor
     };
 
 })();
