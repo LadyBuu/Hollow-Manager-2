@@ -2,22 +2,30 @@
  * utils/calendar-validation.js - Calendar Validation
  * Canonical single source of truth for all calendar validation
  * Path: js/utils/calendar-validation.js
- * 
+ *
  * This module provides:
  *   - Strict validation and parsing of calendar values
- *   - Week, day, hour, duration, year validation
+ *   - Week, day, hour, duration validation
  *   - Single source of truth - all modules MUST use this
- * 
+ *
  * IMPORTANT:
  *   - This is the CANONICAL validation layer for calendar values
  *   - All modules MUST use these functions - do NOT duplicate
  *   - Validation functions return null for invalid input
  *   - Parse functions return null for invalid input
  *   - No domain knowledge - calendar concepts only
- * 
+ *
+ * YEAR SEMANTICS:
+ *   - Years are UNBOUNDED positive integers.
+ *   - There is no MIN_YEAR or MAX_YEAR.
+ *   - Any integer >= 1 is a valid year.
+ *   - parseYear() accepts any positive integer.
+ *   - Weeks and days remain bounded (they have real semantic
+ *     meaning: 52 weeks per year, 7 days per week).
+ *
  * DEPENDENCIES:
  *   - window.CalendarConstants (for bounds only)
- * 
+ *
  * USAGE:
  *   var CV = window.CalendarValidation;
  *   var week = CV.parseWeek(weekInput);
@@ -42,6 +50,10 @@
     // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
+    //
+    // NOTE: MIN_YEAR and MAX_YEAR are deliberately NOT checked.
+    // Years are unbounded positive integers and are validated
+    // locally by parseYear(). See the YEAR SEMANTICS block above.
 
     function checkDependencies() {
         var missing = [];
@@ -69,12 +81,6 @@
         }
         if (!CC || typeof CC.MAX_CLASS_DURATION !== 'number') {
             missing.push('CalendarConstants.MAX_CLASS_DURATION');
-        }
-        if (!CC || typeof CC.MIN_YEAR !== 'number') {
-            missing.push('CalendarConstants.MIN_YEAR');
-        }
-        if (!CC || typeof CC.MAX_YEAR !== 'number') {
-            missing.push('CalendarConstants.MAX_YEAR');
         }
         if (!CC || typeof CC.CALENDAR_START_HOUR !== 'number') {
             missing.push('CalendarConstants.CALENDAR_START_HOUR');
@@ -267,6 +273,12 @@
     // ============================================================
     // YEAR VALIDATION
     // ============================================================
+    //
+    // Years are UNBOUNDED positive integers. Any integer >= 1 is a
+    // valid year. There is no upper bound.
+    //
+    // This function intentionally does NOT consult CalendarConstants
+    // for bounds. The unbounded contract is local to this function.
 
     function parseYear(value) {
         if (value === undefined || value === null) {
@@ -283,7 +295,7 @@
         if (!isInteger(num)) {
             return null;
         }
-        if (num < CC.MIN_YEAR || num > CC.MAX_YEAR) {
+        if (num < 1) {
             return null;
         }
 
@@ -375,6 +387,11 @@
     // ============================================================
     // BOUNDS ACCESSORS
     // ============================================================
+    //
+    // NOTE: getYearBounds() has been REMOVED. Years are unbounded;
+    // there are no bounds to return. Callers that previously used
+    // it should call parseYear() and check for null instead, or
+    // simply validate "integer >= 1" inline.
 
     function getWeekBounds() {
         return {
@@ -401,13 +418,6 @@
         return {
             min: CC.MIN_CLASS_DURATION,
             max: CC.MAX_CLASS_DURATION
-        };
-    }
-
-    function getYearBounds() {
-        return {
-            min: CC.MIN_YEAR,
-            max: CC.MAX_YEAR
         };
     }
 
@@ -454,11 +464,11 @@
         isInRange: isInRange,
 
         // Bounds
+        // NOTE: getYearBounds is deliberately absent — years are unbounded.
         getWeekBounds: getWeekBounds,
         getDayBounds: getDayBounds,
         getHourBounds: getHourBounds,
         getDurationBounds: getDurationBounds,
-        getYearBounds: getYearBounds,
         getCalendarHourBounds: getCalendarHourBounds
     };
 
