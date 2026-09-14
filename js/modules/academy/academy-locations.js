@@ -17,6 +17,35 @@
  *   - This module does NOT call saveData() directly - the pipeline does
  *   - AcademyQueries is the PUBLIC read facade that uses these internal lookups
  *
+ * READ SAFETY (Phase 2):
+ *   - getDataStore() returns null when window.data is missing.
+ *   - The internal readers (getLocationRecord, getLocationRecords,
+ *     getLocationByNameRecord) never create window.data.locations as
+ *     a side effect of a read. Structure creation is confined to
+ *     ensureLocationStore, which is only called inside pipeline
+ *     mutate() callbacks.
+ *   - Public queries (getLocation, getLocations, getLocationsByType)
+ *     return DEEP CLONES. Callers cannot mutate live state by writing
+ *     to a returned location.
+ *   - Pipeline validate() callbacks read from the `appData` argument
+ *     the pipeline supplies, not from window.data via the internal
+ *     accessors.
+ *   - ObjectUtils.deepClone is used as the clone primitive. If cloning
+ *     fails, the accessor throws. It does NOT fall back to returning
+ *     the original reference, because that would silently alias live
+ *     state.
+ *
+ * NAME NORMALISATION (Phase 2):
+ *   - Location name comparison is centralised in normaliseLocationName:
+ *     trim + lowercase. Every name lookup (duplicate detection, name
+ *     matching) goes through it. This replaces the ad-hoc
+ *     String(x).toLowerCase().trim() scattered across the module.
+ *
+ * VALID_LOCATION_TYPES (Phase 2):
+ *   - The list is deep-frozen at load. Callers cannot mutate the
+ *     module's shared list by writing to it. getValidLocationTypes()
+ *     returns a copy for callers that need one.
+ *
  * CASCADE SEMANTICS (deleteLocation):
  *   Deleting a location is a CASCADE. In a single transaction it:
  *     1. Deletes the location from window.data.locations.
@@ -103,7 +132,7 @@
     // CONSTANTS
     // ============================================================
 
-    var VALID_LOCATION_TYPES = [
+    var VALID_LOCATION_TYPES = Object.freeze([
         'classroom',
         'lab',
         'gym',
@@ -113,7 +142,7 @@
         'library',
         'office',
         'other'
-    ];
+    ]);
 
     var DEFAULT_TYPE = 'other';
 
@@ -136,8 +165,27 @@
         return typeof value === 'number' && isFinite(value);
     }
 
+    /**
+     * Deep clone a value.
+     *
+     * READ SAFETY: this primitive throws if cloning fails. It does NOT
+     * fall back to returning the original reference, because that would
+     * silently alias live state and let callers mutate the store by
+     * writing to a "cloned" result.
+     *
+     * @param {*} value - Value to clone
+     * @returns {*} Deep clone
+     * @throws {Error} If cloning fails
+     */
     function deepClone(value) {
-        return ObjectUtils.deepClone(value);
+        var result = ObjectUtils.deepClone(value);
+        if (result === value && value !== null && typeof value === 'object') {
+            throw new Error(
+                '[AcademyLocations] deepClone returned the original reference. ' +
+                'ObjectUtils.deepClone must return a genuine clone for objects.'
+            );
+        }
+        return result;
     }
 
     function generateId() {
@@ -152,9 +200,47 @@
         return { success: true, data: data };
     }
 
+    /**
+     * Normalise a location name for comparison.
+     *
+     * Centralised name normalisation. Trims leading/trailing whitespace
+     * and lowercases. Every name lookup in this module goes through
+     * this helper, so behaviour is uniform.
+     *
+     * @param {string} name - Location name
+     * @returns {string} Normalised name ('' for empty/invalid input)
+     */
+    function normaliseLocationName(name) {
+        if (name === null || name === undefined) {
+            return '';
+        }
+        return String(name).trim().toLowerCase();
+    }
+
+    /**
+     * Get the valid location types as a fresh array.
+     * Callers that need a mutable list can get one without
+     * mutating the module's frozen shared array.
+     *
+     * @returns {array} Copy of VALID_LOCATION_TYPES
+     */
+    function getValidLocationTypes() {
+        return VALID_LOCATION_TYPES.slice();
+    }
+
     // ============================================================
     // DATA STORE ACCESS - INTERNAL
     // ============================================================
+    //
+    // READ SAFETY:
+    //   - getDataStore() returns null when window.data is missing.
+    //   - ensureLocationStore(appData) creates appData.locations when
+    //     called. It is ONLY called from inside pipeline mutate()
+    //     callbacks, operating on the appData snapshot.
+    //   - The internal readers (getLocationRecord, getLocationRecords,
+    //     getLocationByNameRecord) call getDataStore() and inspect
+    //     data.locations directly. They do NOT call
+    //     ensureLocationStore. A read never creates data.locations.
 
     function getDataStore() {
         if (!window.data || typeof window.data !== 'object') {
@@ -163,6 +249,10 @@
         return window.data;
     }
 
+    /**
+     * Ensure the location store exists on the given appData snapshot.
+     * Only called from inside pipeline mutate() callbacks.
+     */
     function ensureLocationStore(appData) {
         if (!Array.isArray(appData.locations)) {
             appData.locations = [];
@@ -171,8 +261,14 @@
     }
 
     // ============================================================
-    // INTERNAL LOCATION LOOKUP - PRIVATE
+    // INTERNAL LOCATION LOOKUP - PRIVATE (LIVE REFERENCES)
     // ============================================================
+    //
+    // These return LIVE REFERENCES. They are consumed by this
+    // module's own mutation paths and by AcademyQueries. The public
+    // read surface (below) wraps them with deepClone.
+    //
+    // They do NOT create window.data.locations as a side effect.
 
     function getLocationRecord(id) {
         if (!isNonEmptyString(id)) {
@@ -213,16 +309,16 @@
     }
 
     function getLocationByNameRecord(name) {
-        if (!isNonEmptyString(name)) {
+        var target = normaliseLocationName(name);
+        if (target === '') {
             return null;
         }
 
-        var target = String(name).toLowerCase().trim();
         var locations = getLocationRecords();
 
         for (var i = 0; i < locations.length; i++) {
             var loc = locations[i];
-            if (loc && loc.name && String(loc.name).toLowerCase().trim() === target) {
+            if (loc && normaliseLocationName(loc.name) === target) {
                 return loc;
             }
         }
@@ -409,6 +505,7 @@
         // ---- PHASE 3: BUILD CANDIDATE ----
         var newLocation = buildLocationRecord(data, null, null);
         var targetId = newLocation.id;
+        var normalisedNewName = normaliseLocationName(newLocation.name);
 
         // ---- PHASE 4: PIPELINE MUTATION ----
         return MutationPipeline.performMutation({
@@ -416,11 +513,11 @@
                 if (!appData || typeof appData !== 'object') {
                     return { valid: false, message: 'Application data is not available.' };
                 }
+                // Read the snapshot, not window.data.
                 if (Array.isArray(appData.locations)) {
-                    var nameLower = newLocation.name.toLowerCase();
                     for (var i = 0; i < appData.locations.length; i++) {
                         var loc = appData.locations[i];
-                        if (loc && loc.name && String(loc.name).toLowerCase() === nameLower) {
+                        if (loc && normaliseLocationName(loc.name) === normalisedNewName) {
                             return { valid: false, message: 'A location with this name already exists.' };
                         }
                     }
@@ -517,15 +614,25 @@
         }
 
         if (!hasChanges) {
-            return Promise.resolve(success({ location: existing, changed: false }));
+            return Promise.resolve(success({ location: deepClone(existing), changed: false }));
         }
 
         candidate.updatedAt = new Date().toISOString();
         var targetId = String(id);
 
         return MutationPipeline.performMutation({
-            validate: function() {
-                if (!getLocationRecord(targetId)) {
+            validate: function(appData) {
+                if (!appData || !Array.isArray(appData.locations)) {
+                    return { valid: false, message: 'Location no longer exists.' };
+                }
+                var found = false;
+                for (var i = 0; i < appData.locations.length; i++) {
+                    if (String(appData.locations[i].id) === targetId) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
                     return { valid: false, message: 'Location no longer exists.' };
                 }
                 return { valid: true };
@@ -577,8 +684,18 @@
         };
 
         return MutationPipeline.performMutation({
-            validate: function() {
-                if (!getLocationRecord(target)) {
+            validate: function(appData) {
+                if (!appData || !Array.isArray(appData.locations)) {
+                    return { valid: false, message: 'Location no longer exists.' };
+                }
+                var found = false;
+                for (var i = 0; i < appData.locations.length; i++) {
+                    if (String(appData.locations[i].id) === target) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
                     return { valid: false, message: 'Location no longer exists.' };
                 }
                 return { valid: true };
@@ -638,8 +755,13 @@
     }
 
     // ============================================================
-    // QUERY FUNCTIONS - Read-only (synchronous)
+    // PUBLIC READ SURFACE (CLONES)
     // ============================================================
+    //
+    // These are the consumer-facing lookups. They return DEEP CLONES
+    // so callers cannot mutate live state by writing to a returned
+    // location. Internal code paths within this module continue to
+    // use the *Internal accessors, which return live references.
 
     function getLocation(id) {
         var record = getLocationRecord(id);
@@ -648,9 +770,11 @@
 
     function getLocations() {
         var records = getLocationRecords();
-        return records.map(function(r) {
-            return deepClone(r);
-        });
+        var result = [];
+        for (var i = 0; i < records.length; i++) {
+            result.push(deepClone(records[i]));
+        }
+        return result;
     }
 
     function getLocationsByType(type) {
@@ -778,11 +902,10 @@
                     var item = planned[k];
 
                     if (item.action === 'create') {
-                        var nameLower = item.record.name.toLowerCase();
+                        var normalisedName = normaliseLocationName(item.record.name);
                         var collision = false;
                         for (var c = 0; c < locations.length; c++) {
-                            if (locations[c].name &&
-                                String(locations[c].name).toLowerCase() === nameLower) {
+                            if (normaliseLocationName(locations[c].name) === normalisedName) {
                                 collision = true;
                                 break;
                             }
@@ -835,7 +958,7 @@
         delete: deleteLocation,
         saveLocations: saveLocations,
 
-        // ---- Queries (synchronous) ----
+        // ---- Public queries (synchronous, CLONES) ----
         getLocation: getLocation,
         getLocations: getLocations,
         getLocationsByType: getLocationsByType,
@@ -843,10 +966,14 @@
         hasCapacity: hasCapacity,
         getLocationCapacity: getLocationCapacity,
 
-        // ---- Internal (for AcademyQueries) ----
+        // ---- Internal (LIVE REFERENCES - for AcademyQueries and internal use) ----
         getLocationRecord: getLocationRecord,
         getLocationRecords: getLocationRecords,
         getLocationByNameRecord: getLocationByNameRecord,
+
+        // ---- Helpers ----
+        getValidLocationTypes: getValidLocationTypes,
+        normaliseLocationName: normaliseLocationName,
 
         // ---- Constants ----
         VALID_LOCATION_TYPES: VALID_LOCATION_TYPES,
