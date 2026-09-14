@@ -26,14 +26,35 @@
  *     mutate() callback.
  *   - This module does NOT call saveData() directly.
  *
- * STATUS MATCHING:
- *   - CharacterQueries.getCurrentStatus returns TITLE-CASE values
- *     ('Instructor', 'Trainee', 'Junior', ...).
- *   - CharacterConstants.isInstructorStatus / isStudentStatus accept
- *     any casing and do the lowercase comparison internally.
- *   - When CharacterConstants is loaded, this module delegates to it.
- *   - The local fallback lists are lowercase and the comparison
- *     lowercases the incoming status before matching.
+ * READ SAFETY (Phase 2):
+ *   - getAutoGroupsStore() returns null when the store is missing.
+ *     It does NOT create curriculum.autoGroups as a side effect of a
+ *     read.
+ *   - The internal store readers (getGroupFromStore, getStudentIdsFromStore,
+ *     getSlotsFromStore, isStudentInGroupStore) handle null gracefully:
+ *     they return null / [] / false. They never create the store.
+ *   - Structure creation happens only via ensureAutoGroupsStore, which
+ *     is called exclusively from inside pipeline mutate() callbacks,
+ *     operating on the appData snapshot.
+ *
+ * DELETE-ALL NO-OP SEMANTICS (Phase 2):
+ *   - deleteAllGroupsForInstructor and deleteAllGroupsForDiscipline
+ *     treat an empty store as a SUCCESS. The operation completed; there
+ *     was simply nothing to remove. The result reports removed: 0.
+ *   - This matches the semantics of deleteGroup on a non-existent key:
+ *     the requested post-state (group absent) is satisfied.
+ *
+ * STATUS CLASSIFIERS (Phase 2):
+ *   - CharacterConstants is MANDATORY. The status classifiers delegate
+ *     directly to CharacterConstants.isInstructorStatus /
+ *     isStudentStatus. The local fallback lists are gone.
+ *   - The status classifiers accept any casing; CharacterConstants
+ *     lowercases internally.
+ *
+ * DISCIPLINE LOOKUP (Phase 2):
+ *   - AcademyDisciplines is the canonical owner of discipline entities.
+ *     This module uses AcademyDisciplines.getDiscipline for validation
+ *     lookups. It does NOT use DisciplineQueries.
  *
  * MUTATION CONTRACT:
  *   - All public mutations return Promise<{ success, data?, message? }>
@@ -68,11 +89,11 @@
  *   - window.ObjectUtils - MANDATORY
  *   - window.IdUtils - MANDATORY
  *   - window.CharacterQueries - MANDATORY
- *   - window.DisciplineQueries - MANDATORY
+ *   - window.AcademyDisciplines - MANDATORY (replaces DisciplineQueries)
  *   - window.CalendarValidation - MANDATORY
  *   - window.CalendarConstants - MANDATORY
  *   - window.MutationPipeline - MANDATORY
- *   - window.CharacterConstants - OPTIONAL (preferred for status checks)
+ *   - window.CharacterConstants - MANDATORY
  *   - window.AcademyQueries - LAZY (for read aliases only)
  *
  * USAGE:
@@ -117,8 +138,8 @@
         return window.CharacterConstants || null;
     }
 
-    function getDisciplineQueries() {
-        return window.DisciplineQueries || null;
+    function getAcademyDisciplines() {
+        return window.AcademyDisciplines || null;
     }
 
     function getObjectUtils() {
@@ -157,8 +178,8 @@
         if (!getCharacterQueries()) {
             missing.push('CharacterQueries');
         }
-        if (!getDisciplineQueries()) {
-            missing.push('DisciplineQueries');
+        if (!getAcademyDisciplines()) {
+            missing.push('AcademyDisciplines');
         }
         if (!getCalendarValidation()) {
             missing.push('CalendarValidation');
@@ -168,6 +189,9 @@
         }
         if (!getMutationPipeline()) {
             missing.push('MutationPipeline');
+        }
+        if (!getCharacterConstants()) {
+            missing.push('CharacterConstants');
         }
 
         if (!getAcademyQueries()) {
@@ -226,24 +250,35 @@
         return { success: true, data: data };
     }
 
+    /**
+     * Get the autoGroups store from window.data.curriculum.
+     *
+     * READ SAFETY: returns null when the store is missing. It does NOT
+     * create curriculum.autoGroups as a side effect. Internal readers
+     * that call this must handle null.
+     *
+     * @returns {object|null} The live store, or null
+     */
     function getAutoGroupsStore() {
         if (!window.data || typeof window.data !== 'object') {
-            return {};
+            return null;
         }
         if (!window.data.curriculum || typeof window.data.curriculum !== 'object') {
-            return {};
+            return null;
         }
         var store = window.data.curriculum.autoGroups;
         if (!store || typeof store !== 'object' || Array.isArray(store)) {
-            return {};
+            return null;
         }
         return store;
     }
 
     /**
      * Ensure the autoGroups store exists on the given appData object.
+     *
      * This is the ONLY place in the module that creates structure.
-     * Called from inside pipeline mutate callbacks.
+     * Called exclusively from inside pipeline mutate() callbacks,
+     * operating on the appData snapshot the pipeline hands in.
      */
     function ensureAutoGroupsStore(appData) {
         if (!appData.curriculum || typeof appData.curriculum !== 'object') {
@@ -258,19 +293,12 @@
     }
 
     // ============================================================
-    // STATUS CLASSIFIERS
+    // STATUS CLASSIFIERS - Delegates to CharacterConstants
     // ============================================================
     //
-    // CharacterQueries.getCurrentStatus returns TITLE-CASE values
-    // ('Instructor', 'Trainee', ...). We need to classify them without
-    // hard-coding a list that can drift from CharacterConstants.
-    //
-    // Preferred path: CharacterConstants.isInstructorStatus /
-    // isStudentStatus (they already lowercase internally).
-    // Fallback path: local list, lowercased before comparison.
-
-    var LOCAL_INSTRUCTOR_STATUSES = ['instructor', 'teacher', 'professor', 'senior'];
-    var LOCAL_STUDENT_STATUSES = ['trainee', 'rookie', 'junior', 'student'];
+    // Phase 2: CharacterConstants is MANDATORY. The local fallback
+    // lists have been removed. The classifiers accept any casing;
+    // CharacterConstants lowercases internally.
 
     function isInstructorStatus(status) {
         if (!isNonEmptyString(status)) {
@@ -278,11 +306,12 @@
         }
 
         var CC = getCharacterConstants();
-        if (CC && typeof CC.isInstructorStatus === 'function') {
-            return CC.isInstructorStatus(status) === true;
+        if (!CC || typeof CC.isInstructorStatus !== 'function') {
+            console.warn('[AcademyGroups] CharacterConstants.isInstructorStatus not available.');
+            return false;
         }
 
-        return LOCAL_INSTRUCTOR_STATUSES.indexOf(status.toLowerCase()) !== -1;
+        return CC.isInstructorStatus(status) === true;
     }
 
     function isStudentStatus(status) {
@@ -291,11 +320,12 @@
         }
 
         var CC = getCharacterConstants();
-        if (CC && typeof CC.isStudentStatus === 'function') {
-            return CC.isStudentStatus(status) === true;
+        if (!CC || typeof CC.isStudentStatus !== 'function') {
+            console.warn('[AcademyGroups] CharacterConstants.isStudentStatus not available.');
+            return false;
         }
 
-        return LOCAL_STUDENT_STATUSES.indexOf(status.toLowerCase()) !== -1;
+        return CC.isStudentStatus(status) === true;
     }
 
     // ============================================================
@@ -309,15 +339,21 @@
         return { valid: true, key: key };
     }
 
+    /**
+     * Validate a discipline ID.
+     *
+     * Phase 2: uses AcademyDisciplines (the canonical owner of
+     * discipline entities) instead of DisciplineQueries.
+     */
     function validateDisciplineId(disciplineId) {
         if (!isNonEmptyString(disciplineId)) {
             return { valid: false, message: 'Discipline ID is required.' };
         }
-        var DisciplineQueries = getDisciplineQueries();
-        if (!DisciplineQueries) {
-            return { valid: false, message: 'Discipline queries not available.' };
+        var AcademyDisciplines = getAcademyDisciplines();
+        if (!AcademyDisciplines || typeof AcademyDisciplines.getDiscipline !== 'function') {
+            return { valid: false, message: 'AcademyDisciplines not available.' };
         }
-        var discipline = DisciplineQueries.getDiscipline(disciplineId);
+        var discipline = AcademyDisciplines.getDiscipline(disciplineId);
         if (!discipline) {
             return { valid: false, message: 'Discipline not found.' };
         }
@@ -420,16 +456,23 @@
     // ============================================================
     // INTERNAL READS - Direct store access for mutations
     // ============================================================
-    // Used by candidate builders to validate preconditions. These
-    // read the LIVE store, not a snapshot. That's intentional: the
-    // candidate builder is a pre-flight check. The pipeline's
+    //
+    // These read the LIVE store, not a snapshot. That's intentional:
+    // candidate builders are pre-flight checks. The pipeline's
     // validate() callback re-checks against the snapshot.
+    //
+    // READ SAFETY: getAutoGroupsStore() may return null. Every helper
+    // below handles null by returning an empty/null result. None of
+    // them create the store.
 
     function getGroupFromStore(key) {
         if (!isNonEmptyString(key)) {
             return null;
         }
         var store = getAutoGroupsStore();
+        if (!store) {
+            return null;
+        }
         return store[key] || null;
     }
 
@@ -951,6 +994,14 @@
         });
     }
 
+    /**
+     * Build a candidate to delete all groups for an instructor.
+     *
+     * DELETE-ALL NO-OP SEMANTICS: an empty store is a SUCCESS. There
+     * was nothing to remove; the caller's requested post-state (no
+     * groups for this instructor) is already satisfied. The candidate
+     * resolves with removed: 0.
+     */
     function buildDeleteAllForInstructorCandidate(instructorId) {
         if (!isNonEmptyString(instructorId)) {
             return failure('Instructor ID is required.');
@@ -960,20 +1011,25 @@
         var target = String(instructorId);
         var keysToRemove = [];
 
-        for (var key in store) {
-            if (Object.prototype.hasOwnProperty.call(store, key)) {
-                var group = store[key];
-                if (group && String(group.instructorId) === target) {
-                    keysToRemove.push(key);
+        if (store) {
+            for (var key in store) {
+                if (Object.prototype.hasOwnProperty.call(store, key)) {
+                    var group = store[key];
+                    if (group && String(group.instructorId) === target) {
+                        keysToRemove.push(key);
+                    }
                 }
             }
         }
 
-        if (keysToRemove.length === 0) {
-            return failure('No groups found for this instructor.');
-        }
+        // No-op success when there is nothing to remove.
+        // (Previously this returned failure('No groups found...'), which
+        // conflated "nothing to do" with "operation failed".)
 
         function mutate(appData) {
+            if (keysToRemove.length === 0) {
+                return { removed: 0, keys: [] };
+            }
             var candidateStore = ensureAutoGroupsStore(appData);
             var removed = 0;
             for (var i = 0; i < keysToRemove.length; i++) {
@@ -992,6 +1048,12 @@
         });
     }
 
+    /**
+     * Build a candidate to delete all groups for a discipline.
+     *
+     * DELETE-ALL NO-OP SEMANTICS: same as the instructor variant. An
+     * empty store is a success with removed: 0.
+     */
     function buildDeleteAllForDisciplineCandidate(disciplineId) {
         if (!isNonEmptyString(disciplineId)) {
             return failure('Discipline ID is required.');
@@ -1001,20 +1063,21 @@
         var target = String(disciplineId);
         var keysToRemove = [];
 
-        for (var key in store) {
-            if (Object.prototype.hasOwnProperty.call(store, key)) {
-                var group = store[key];
-                if (group && String(group.disciplineId) === target) {
-                    keysToRemove.push(key);
+        if (store) {
+            for (var key in store) {
+                if (Object.prototype.hasOwnProperty.call(store, key)) {
+                    var group = store[key];
+                    if (group && String(group.disciplineId) === target) {
+                        keysToRemove.push(key);
+                    }
                 }
             }
         }
 
-        if (keysToRemove.length === 0) {
-            return failure('No groups found for this discipline.');
-        }
-
         function mutate(appData) {
+            if (keysToRemove.length === 0) {
+                return { removed: 0, keys: [] };
+            }
             var candidateStore = ensureAutoGroupsStore(appData);
             var removed = 0;
             for (var i = 0; i < keysToRemove.length; i++) {
@@ -1263,6 +1326,13 @@
         });
     }
 
+    /**
+     * Delete all groups for an instructor.
+     *
+     * DELETE-ALL NO-OP SEMANTICS: when there are no groups to remove,
+     * this resolves with success and removed: 0. The operation
+     * completed successfully; the post-state was already satisfied.
+     */
     function deleteAllGroupsForInstructor(instructorId) {
         var candidate = buildDeleteAllForInstructorCandidate(instructorId);
         if (!candidate.success) {
@@ -1276,6 +1346,11 @@
         });
     }
 
+    /**
+     * Delete all groups for a discipline.
+     *
+     * DELETE-ALL NO-OP SEMANTICS: same as the instructor variant.
+     */
     function deleteAllGroupsForDiscipline(disciplineId) {
         var candidate = buildDeleteAllForDisciplineCandidate(disciplineId);
         if (!candidate.success) {
@@ -1454,8 +1529,7 @@
         // ---- Cascade helpers (for cross-domain cleanup) ----
         stripCharacterRefs: stripCharacterRefs,
 
-        // ---- Status classifiers (exposed for other modules that need
-        //      to check group eligibility without duplicating the logic) ----
+        // ---- Status classifiers (delegate to CharacterConstants) ----
         isInstructorStatus: isInstructorStatus,
         isStudentStatus: isStudentStatus,
 
