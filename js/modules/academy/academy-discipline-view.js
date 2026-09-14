@@ -1,45 +1,128 @@
 /**
  * modules/academy/academy-discipline-view.js - Academy Discipline View
- * Standalone view for browsing disciplines (curriculum)
+ * Standalone view for browsing and editing disciplines (curriculum)
  *
  * Path: js/modules/academy/academy-discipline-view.js
  *
  * This module is responsible for:
- *   - Rendering the discipline list (with type/status filters)
- *   - Rendering the discipline detail panel (instructors, weeks, weight)
+ *   - Rendering the discipline list (sidebar) with a search and type filter
+ *   - Rendering the "+ Add Discipline" button at the top of the sidebar
+ *   - Rendering the inline discipline editor in the detail panel
+ *   - Rendering the grade scheme editor (preset + band table + live preview)
  *   - Rendering an empty state when no discipline is selected
  *
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no domain logic
- *   - Does NOT fetch data. Does NOT call AcademyDisciplines directly.
- *   - Receives a view model from AcademyAggregator
- *   - Does NOT bind events. Buttons and rows emit data-* attributes
- *     that AcademyView's delegated container listeners resolve.
+ *   - Does NOT fetch data. Does NOT call AcademyDisciplines.
+ *   - Receives a view model from AcademyView
+ *   - Does NOT bind events. Rows, buttons, inputs, and selects emit
+ *     data-* attributes (or stable ids) that AcademyView's delegated
+ *     container listeners resolve.
  *   - Uses DomUtils for escaping.
  *   - Returns an HTML string.
+ *
+ * EDITOR MODE:
+ *   The view model carries `editorMode`:
+ *     'empty'  — nothing selected; render the empty state
+ *     'create' — new discipline form, blank defaults
+ *     'edit'   — existing discipline form, populated from `selected`
+ *
+ *   The renderer does NOT distinguish beyond that. It renders whichever
+ *   fields it has; the view model always supplies a fully-populated
+ *   `selected` object for both 'create' and 'edit'.
+ *
+ * GRADE SCHEME EDITOR:
+ *   The scheme is edited as a band table. Each band is one row:
+ *     [ Label input ] [ Min % input ] [ Remove button ]
+ *   The preset dropdown sits above the table, with an "Apply Preset"
+ *   button. Applying a preset rewrites the bands array in the view
+ *   model (via AcademyView's delegated click handler, which calls
+ *   back into the view model builder). The renderer is stateless.
+ *
+ *   The renderer emits per-band rows with stable data attributes:
+ *     data-band-index="0"
+ *     data-band-field="label"
+ *     data-band-field="minPercent"
+ *     data-action="remove-band" data-band-index="0"
+ *   AcademyView's delegated input listener reads these and updates
+ *   a module-scoped draft on AcademyView's side.
+ *
+ * LIVE PREVIEW:
+ *   The view model supplies `schemePreview` — a precomputed string like
+ *   "A: 90–100%, B: 80–89%, ...". The renderer just drops it in.
+ *   AcademyView recomputes it after every band edit and re-renders.
  *
  * INTERFACE:
  *   AcademyDisciplineView.renderHTML(viewModel) -> string
  *
- *   viewModel is the shape produced by
- *   AcademyAggregator.getDisciplineViewViewModel(options):
+ *   viewModel:
  *     {
- *       disciplines: [ { id, name, type, typeLabel, startWeek, endWeek,
- *                        weeklyHours, weight, instructorIds,
- *                        instructorNames[], status, description } ],
- *       selected: <same shape> | null,
- *       filters: { type, search },
- *       total: number
+ *       disciplines: [ <rowVM> ],       // for the sidebar list
+ *       selected:    <editorVM>|null,   // for the detail panel
+ *       editorMode:  'empty'|'create'|'edit',
+ *       filters:     { type, search },
+ *       total:       number
  *     }
  *
- *   If selected is null, the right panel renders a placeholder.
+ *   rowVM:
+ *     {
+ *       id, name, type, startWeek, endWeek,
+ *       weeklyHours, weight,
+ *       instructorIds: [ ... ],
+ *       instructorNames: [ ... ]
+ *     }
  *
- * EVENTS EMITTED (via data-* attributes, for AcademyView to bind):
- *   - .academy-discipline-row [data-discipline-id]
- *   - #academy-discipline-type-filter (change)
- *   - #academy-discipline-search (input)
- *   - [data-action="edit-discipline"] with [data-discipline-id]
- *   - [data-action="delete-discipline"] with [data-discipline-id]
+ *   editorVM:
+ *     {
+ *       id:              string|null,   // null when creating
+ *       name:            string,
+ *       type:            'mandatory'|'optional',
+ *       startWeek:       number,
+ *       endWeek:         number,
+ *       weeklyHours:     number,
+ *       weight:          number,
+ *       instructorIds:   [ ... ],
+ *       instructorNames: [ ... ],       // display-only, computed by AcademyView
+ *       gradeScheme: {
+ *         id:    'letter'|'pass_fail'|'numeric'|'custom',
+ *         label: string,
+ *         bands: [ { label, minPercent } ]
+ *       },
+ *       schemePresetId:  string,        // dropdown value
+ *       schemePreview:   string,        // "A: 90–100%, B: 80–89%, ..."
+ *       fieldErrors:     { field: message },  // optional; {} when clean
+ *       isNew:           boolean        // true when editorMode === 'create'
+ *     }
+ *
+ * EVENTS EMITTED (data-* attributes, for AcademyView to bind):
+ *   Sidebar:
+ *     #academy-add-discipline-btn                (click)
+ *     #academy-discipline-search                 (input)
+ *     #academy-discipline-type-filter            (change)
+ *     .academy-discipline-row [data-discipline-id]  (click)
+ *
+ *   Editor — top-level fields:
+ *     [data-discipline-field="name"]
+ *     [data-discipline-field="type"]
+ *     [data-discipline-field="startWeek"]
+ *     [data-discipline-field="endWeek"]
+ *     [data-discipline-field="weeklyHours"]
+ *     [data-discipline-field="weight"]
+ *     [data-discipline-field="instructors"]
+ *
+ *   Editor — grade scheme:
+ *     [data-discipline-field="schemeLabel"]
+ *     #academy-discipline-scheme-preset              (change)
+ *     [data-action="apply-scheme-preset"]            (click)
+ *     [data-band-index="N"] [data-band-field="label"]      (input)
+ *     [data-band-index="N"] [data-band-field="minPercent"] (input)
+ *     [data-action="add-band"]                       (click)
+ *     [data-action="remove-band"] [data-band-index="N"] (click)
+ *
+ *   Editor — actions:
+ *     [data-action="save-discipline"]                (click)
+ *     [data-action="cancel-discipline"]              (click)
+ *     [data-action="delete-discipline"]              (click)
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
@@ -121,6 +204,13 @@
         return typeof value === 'number' && isFinite(value);
     }
 
+    function safeString(value) {
+        if (value === undefined || value === null) {
+            return '';
+        }
+        return String(value);
+    }
+
     function getDisciplineTypeBadgeClass(type) {
         switch (type) {
             case 'mandatory': return 'academy-discipline-type-badge academy-discipline-type-mandatory';
@@ -150,16 +240,33 @@
         return '';
     }
 
+    /**
+     * Emit an inline error line for a field, or nothing.
+     */
+    function renderFieldError(errors, field) {
+        if (!errors || typeof errors !== 'object') { return ''; }
+        var message = errors[field];
+        if (!isNonEmptyString(message)) { return ''; }
+        return '<p class="academy-field-error" ' +
+                    'data-field-error-for="' + escapeAttribute(field) + '">' +
+                    escapeHtml(message) +
+                '</p>';
+    }
+
+    /**
+     * Add a class to a base class string if a field error exists.
+     * Used to highlight the offending input.
+     */
+    function withErrorClass(baseClass, errors, field) {
+        if (!errors || typeof errors !== 'object') { return baseClass; }
+        if (!isNonEmptyString(errors[field])) { return baseClass; }
+        return baseClass + ' academy-field-has-error';
+    }
+
     // ============================================================
     // RENDER - Top-level entry point
     // ============================================================
 
-    /**
-     * Render the discipline view.
-     *
-     * @param {object|null} viewModel - { disciplines, selected, filters, total }
-     * @returns {string} HTML string
-     */
     function renderHTML(viewModel) {
         if (!checkDependencies()) {
             return (
@@ -172,12 +279,13 @@
         var vm = viewModel || {};
         var disciplines = Array.isArray(vm.disciplines) ? vm.disciplines : [];
         var selected = vm.selected || null;
+        var editorMode = vm.editorMode || 'empty';
         var filters = vm.filters || { type: 'all', search: '' };
 
         return (
             '<div class="academy-body academy-discipline-layout">' +
                 renderListPanel(disciplines, filters) +
-                renderDetailPanel(selected) +
+                renderDetailPanel(selected, editorMode) +
             '</div>'
         );
     }
@@ -189,11 +297,21 @@
     function renderListPanel(disciplines, filters) {
         var html = '<div class="academy-discipline-sidebar">';
 
+        html += renderAddButton();
         html += renderListFilters(filters);
         html += renderListItems(disciplines);
 
         html += '</div>';
         return html;
+    }
+
+    function renderAddButton() {
+        return (
+            '<button type="button" id="academy-add-discipline-btn" ' +
+                'class="primary small academy-add-discipline-btn">' +
+                '+ Add Discipline' +
+            '</button>'
+        );
     }
 
     function renderListFilters(filters) {
@@ -273,13 +391,13 @@
     // DETAIL PANEL - Right side
     // ============================================================
 
-    function renderDetailPanel(discipline) {
+    function renderDetailPanel(selected, editorMode) {
         var html = '<div class="academy-discipline-detail" id="academy-discipline-detail">';
 
-        if (!discipline || !discipline.id) {
+        if (editorMode === 'empty' || !selected) {
             html += renderEmptyDetailState();
         } else {
-            html += renderDetailContent(discipline);
+            html += renderEditor(selected);
         }
 
         html += '</div>';
@@ -289,119 +407,408 @@
     function renderEmptyDetailState() {
         return (
             '<div class="academy-detail-empty">' +
-                '<p class="empty-state small">Select a discipline to view its details.</p>' +
+                '<p class="empty-state small">Select a discipline to view its details, or click "+ Add Discipline".</p>' +
             '</div>'
         );
     }
 
-    function renderDetailContent(d) {
-        var badgeClass = getDisciplineTypeBadgeClass(d.type);
+    // ============================================================
+    // EDITOR
+    // ============================================================
+
+    function renderEditor(d) {
+        var errors = d.fieldErrors && typeof d.fieldErrors === 'object'
+            ? d.fieldErrors
+            : {};
+
+        var isNew = d.isNew === true;
 
         var html = '';
 
         // ---- Header ----
-        html += '<div class="academy-discipline-detail-header">';
-
-        html += '<div class="academy-discipline-detail-title-row">';
-        html += '<h3 class="academy-discipline-detail-title">' +
-                    escapeHtml(d.name || 'Unnamed Discipline') +
+        html += '<div class="academy-discipline-editor-header">';
+        html += '<div class="academy-discipline-editor-title-row">';
+        html += '<h3 class="academy-discipline-editor-title">' +
+                    (isNew ? 'New Discipline' : 'Edit Discipline') +
                 '</h3>';
-        html += '<span class="' + badgeClass + '">' +
-                    escapeHtml(getDisciplineTypeLabel(d.type)) +
-                '</span>';
-        html += '</div>';
-
-        html += '<div class="academy-discipline-detail-meta">';
-
-        var range = formatWeekRange(d.startWeek, d.endWeek);
-        if (range) {
-            html += '<span class="academy-discipline-detail-meta-item">' +
-                        '<span class="meta-label">Weeks:</span> ' +
-                        escapeHtml(range.replace(/^Weeks /, '')) +
+        if (!isNew) {
+            html += '<span class="' + getDisciplineTypeBadgeClass(d.type) + '">' +
+                        escapeHtml(getDisciplineTypeLabel(d.type)) +
                     '</span>';
         }
-
-        if (isFiniteNumber(d.weeklyHours)) {
-            html += '<span class="academy-discipline-detail-meta-item">' +
-                        '<span class="meta-label">Weekly Hours:</span> ' +
-                        escapeHtml(String(d.weeklyHours)) +
-                    '</span>';
-        }
-
-        if (isFiniteNumber(d.weight)) {
-            html += '<span class="academy-discipline-detail-meta-item">' +
-                        '<span class="meta-label">Weight:</span> ' +
-                        escapeHtml(String(d.weight)) +
-                    '</span>';
-        }
-
         html += '</div>';
 
-        // ---- Actions ----
-        html += '<div class="academy-discipline-detail-actions">';
-        html += '<button type="button" class="small secondary" ' +
-                    'data-action="edit-discipline" ' +
-                    'data-discipline-id="' + escapeAttribute(d.id) + '">' +
-                    'Edit Discipline' +
-                '</button>';
-        html += '<button type="button" class="small danger" ' +
-                    'data-action="delete-discipline" ' +
-                    'data-discipline-id="' + escapeAttribute(d.id) + '">' +
-                    'Delete Discipline' +
-                '</button>';
-        html += '</div>';
-
-        html += '</div>';
-
-        // ---- Description ----
-        if (isNonEmptyString(d.description)) {
-            html += '<div class="academy-discipline-detail-section academy-discipline-description">';
-            html += '<p>' + escapeHtml(d.description) + '</p>';
+        if (!isNew) {
+            html += '<div class="academy-discipline-editor-meta">';
+            html += '<span class="academy-discipline-editor-meta-item">';
+            html += '<span class="meta-label">ID:</span> ' +
+                    escapeHtml(d.id || '');
+            html += '</span>';
             html += '</div>';
         }
+        html += '</div>';
+
+        // ---- Core fields ----
+        html += '<div class="academy-discipline-editor-section">';
+        html += '<div class="academy-discipline-editor-grid">';
+
+        // Name
+        html += '<div class="academy-discipline-editor-field academy-discipline-editor-field-wide">';
+        html += '<label for="academy-discipline-name">Name</label>';
+        html += '<input type="text" id="academy-discipline-name" ' +
+                    'class="' + withErrorClass('academy-discipline-input', errors, 'name') + '" ' +
+                    'data-discipline-field="name" ' +
+                    'value="' + escapeAttribute(d.name || '') + '" ' +
+                    'placeholder="e.g., Combat Training">';
+        html += renderFieldError(errors, 'name');
+        html += '</div>';
+
+        // Type
+        html += '<div class="academy-discipline-editor-field">';
+        html += '<label for="academy-discipline-type">Type</label>';
+        html += '<select id="academy-discipline-type" ' +
+                    'class="' + withErrorClass('academy-discipline-input', errors, 'type') + '" ' +
+                    'data-discipline-field="type">';
+        html += '<option value="mandatory"' +
+                    (d.type === 'mandatory' ? ' selected' : '') +
+                    '>Mandatory</option>';
+        html += '<option value="optional"' +
+                    (d.type === 'optional' ? ' selected' : '') +
+                    '>Optional</option>';
+        html += '</select>';
+        html += renderFieldError(errors, 'type');
+        html += '</div>';
+
+        // Start week
+        html += '<div class="academy-discipline-editor-field">';
+        html += '<label for="academy-discipline-start-week">Start Week</label>';
+        html += '<input type="number" id="academy-discipline-start-week" ' +
+                    'class="' + withErrorClass('academy-discipline-input', errors, 'startWeek') + '" ' +
+                    'data-discipline-field="startWeek" ' +
+                    'value="' + escapeAttribute(safeString(d.startWeek)) + '" ' +
+                    'min="1" max="52">';
+        html += renderFieldError(errors, 'startWeek');
+        html += '</div>';
+
+        // End week
+        html += '<div class="academy-discipline-editor-field">';
+        html += '<label for="academy-discipline-end-week">End Week</label>';
+        html += '<input type="number" id="academy-discipline-end-week" ' +
+                    'class="' + withErrorClass('academy-discipline-input', errors, 'endWeek') + '" ' +
+                    'data-discipline-field="endWeek" ' +
+                    'value="' + escapeAttribute(safeString(d.endWeek)) + '" ' +
+                    'min="1" max="52">';
+        html += renderFieldError(errors, 'endWeek');
+        html += '</div>';
+
+        // Weekly hours
+        html += '<div class="academy-discipline-editor-field">';
+        html += '<label for="academy-discipline-weekly-hours">Weekly Hours</label>';
+        html += '<input type="number" id="academy-discipline-weekly-hours" ' +
+                    'class="' + withErrorClass('academy-discipline-input', errors, 'weeklyHours') + '" ' +
+                    'data-discipline-field="weeklyHours" ' +
+                    'value="' + escapeAttribute(safeString(d.weeklyHours)) + '" ' +
+                    'min="0.5" max="40" step="0.5">';
+        html += renderFieldError(errors, 'weeklyHours');
+        html += '</div>';
+
+        // Weight
+        html += '<div class="academy-discipline-editor-field">';
+        html += '<label for="academy-discipline-weight">Weight</label>';
+        html += '<input type="number" id="academy-discipline-weight" ' +
+                    'class="' + withErrorClass('academy-discipline-input', errors, 'weight') + '" ' +
+                    'data-discipline-field="weight" ' +
+                    'value="' + escapeAttribute(safeString(d.weight)) + '" ' +
+                    'min="0.1" max="10" step="0.1">';
+        html += renderFieldError(errors, 'weight');
+        html += '</div>';
+
+        html += '</div>'; // grid
+        html += '</div>'; // section
 
         // ---- Instructors ----
-        html += renderInstructorsSection(d);
+        html += '<div class="academy-discipline-editor-section">';
+        html += '<div class="academy-discipline-editor-field academy-discipline-editor-field-wide">';
+        html += '<label for="academy-discipline-instructors">Instructors</label>';
+        html += '<select id="academy-discipline-instructors" ' +
+                    'class="' + withErrorClass('academy-discipline-input academy-discipline-instructors', errors, 'instructors') + '" ' +
+                    'data-discipline-field="instructors" ' +
+                    'multiple size="6">';
+        html += renderInstructorOptions(d);
+        html += '</select>';
+        html += '<p class="field-hint">Ctrl/Cmd-click to select multiple.</p>';
+        html += renderFieldError(errors, 'instructors');
+        html += '</div>';
+        html += '</div>';
+
+        // ---- Grade scheme ----
+        html += renderGradeSchemeSection(d, errors);
+
+        // ---- Actions ----
+        html += renderEditorActions(d);
 
         return html;
     }
 
-    function renderInstructorsSection(d) {
-        var html = '';
-        html += '<div class="academy-discipline-detail-section academy-discipline-instructors">';
+    function renderInstructorOptions(d) {
+        // The view model carries the full instructor roster via
+        // `availableInstructors` — an array of { id, name }. If absent,
+        // fall back to rendering only the currently-selected ones.
+        //
+        // The fallback is deliberate: it means the renderer never
+        // silently drops a selected instructor just because the roster
+        // wasn't supplied.
 
-        var count = Array.isArray(d.instructorNames) ? d.instructorNames.length : 0;
+        var available = Array.isArray(d.availableInstructors)
+            ? d.availableInstructors
+            : null;
 
-        html += '<div class="academy-discipline-detail-section-header">';
-        html += '<h4 class="academy-discipline-detail-section-title">Instructors</h4>';
-        html += '<span class="academy-discipline-detail-section-count">' + count + '</span>';
-        html += '</div>';
+        var selectedIds = Array.isArray(d.instructorIds) ? d.instructorIds : [];
+        var selectedNames = Array.isArray(d.instructorNames) ? d.instructorNames : [];
 
-        if (count === 0) {
-            html += '<p class="empty-state small">No instructors assigned to this discipline.</p>';
-            html += '</div>';
+        if (available && available.length > 0) {
+            var html = '';
+            var seen = {};
+            for (var i = 0; i < available.length; i++) {
+                var inst = available[i];
+                if (!inst || !inst.id) { continue; }
+                var isSelected = false;
+                for (var j = 0; j < selectedIds.length; j++) {
+                    if (String(selectedIds[j]) === String(inst.id)) {
+                        isSelected = true;
+                        break;
+                    }
+                }
+                seen[String(inst.id)] = true;
+                html += '<option value="' + escapeAttribute(inst.id) + '"' +
+                            (isSelected ? ' selected' : '') + '>' +
+                            escapeHtml(inst.name || inst.id) +
+                        '</option>';
+            }
+            // Any selected ID not present in the available list is
+            // rendered as a disabled-looking option so the user sees
+            // it but can't accidentally unselect via a stale id.
+            for (var k = 0; k < selectedIds.length; k++) {
+                var sid = String(selectedIds[k]);
+                if (seen[sid]) { continue; }
+                var sname = selectedNames[k] || sid;
+                html += '<option value="' + escapeAttribute(sid) + '" selected>' +
+                            escapeHtml(sname) +
+                        '</option>';
+            }
             return html;
         }
 
-        html += '<div class="academy-discipline-instructor-list">';
-        for (var i = 0; i < d.instructorNames.length; i++) {
-            var name = d.instructorNames[i];
-            if (!isNonEmptyString(name)) {
-                continue;
-            }
-            var instructorId = Array.isArray(d.instructorIds) && d.instructorIds[i]
-                ? d.instructorIds[i]
-                : null;
+        // Fallback: selected-only.
+        if (selectedIds.length === 0) {
+            return '<option value="" disabled>No instructors available</option>';
+        }
 
-            html += '<div class="academy-discipline-instructor-row"';
-            if (instructorId) {
-                html += ' data-character-id="' + escapeAttribute(instructorId) + '"';
+        var out = '';
+        for (var m = 0; m < selectedIds.length; m++) {
+            var id = selectedIds[m];
+            var name = selectedNames[m] || id;
+            out += '<option value="' + escapeAttribute(id) + '" selected>' +
+                        escapeHtml(name) +
+                    '</option>';
+        }
+        return out;
+    }
+
+    // ============================================================
+    // GRADE SCHEME SECTION
+    // ============================================================
+
+    function renderGradeSchemeSection(d, errors) {
+        var scheme = d.gradeScheme && typeof d.gradeScheme === 'object'
+            ? d.gradeScheme
+            : { id: 'numeric', label: 'Numeric', bands: [{ label: '%', minPercent: 0 }] };
+
+        var bands = Array.isArray(scheme.bands) ? scheme.bands : [];
+        var presetId = d.schemePresetId || scheme.id || 'numeric';
+        var preview = isNonEmptyString(d.schemePreview) ? d.schemePreview : '';
+
+        var html = '';
+        html += '<div class="academy-discipline-editor-section academy-discipline-scheme-section">';
+        html += '<div class="academy-discipline-scheme-header">';
+        html += '<h4 class="academy-discipline-editor-section-title">Grade Scheme</h4>';
+        html += '</div>';
+
+        // ---- Scheme name + preset row ----
+        html += '<div class="academy-discipline-editor-grid">';
+
+        html += '<div class="academy-discipline-editor-field">';
+        html += '<label for="academy-discipline-scheme-label">Scheme Name</label>';
+        html += '<input type="text" id="academy-discipline-scheme-label" ' +
+                    'class="' + withErrorClass('academy-discipline-input', errors, 'schemeLabel') + '" ' +
+                    'data-discipline-field="schemeLabel" ' +
+                    'value="' + escapeAttribute(scheme.label || '') + '" ' +
+                    'placeholder="e.g., Letter Grade">';
+        html += renderFieldError(errors, 'schemeLabel');
+        html += '</div>';
+
+        html += '<div class="academy-discipline-editor-field">';
+        html += '<label for="academy-discipline-scheme-preset">Preset</label>';
+        html += '<div class="academy-discipline-preset-row">';
+        html += '<select id="academy-discipline-scheme-preset" ' +
+                    'class="academy-discipline-input" ' +
+                    'data-discipline-field="schemePresetId">';
+        html += '<option value="letter"' +
+                    (presetId === 'letter' ? ' selected' : '') +
+                    '>Letter Grade</option>';
+        html += '<option value="pass_fail"' +
+                    (presetId === 'pass_fail' ? ' selected' : '') +
+                    '>Pass / Fail</option>';
+        html += '<option value="numeric"' +
+                    (presetId === 'numeric' ? ' selected' : '') +
+                    '>Numeric</option>';
+        html += '<option value="custom"' +
+                    (presetId === 'custom' ? ' selected' : '') +
+                    '>Custom</option>';
+        html += '</select>';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-action="apply-scheme-preset">' +
+                    'Apply Preset' +
+                '</button>';
+        html += '</div>';
+        html += '<p class="field-hint">Applying a preset replaces the bands below.</p>';
+        html += '</div>';
+
+        html += '</div>'; // grid
+
+        // ---- Band editor ----
+        html += '<div class="academy-discipline-scheme-bands">';
+        html += '<div class="academy-discipline-scheme-bands-header">';
+        html += '<span class="academy-discipline-scheme-bands-title">Bands</span>';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-action="add-band">' +
+                    '+ Add Band' +
+                '</button>';
+        html += '</div>';
+
+        html += renderFieldError(errors, 'bands');
+
+        if (bands.length === 0) {
+            html += '<p class="empty-state small">No bands. Add at least one band with min % 0.</p>';
+        } else {
+            html += '<table class="academy-discipline-scheme-table">';
+            html += '<thead>';
+            html += '<tr>';
+            html += '<th class="scheme-label-col">Label</th>';
+            html += '<th class="scheme-min-col">Min %</th>';
+            html += '<th class="scheme-actions-col"></th>';
+            html += '</tr>';
+            html += '</thead>';
+            html += '<tbody>';
+            for (var i = 0; i < bands.length; i++) {
+                html += renderBandRow(bands[i], i, errors);
             }
-            html += '>';
-            html += '<span class="academy-discipline-instructor-name">' + escapeHtml(name) + '</span>';
+            html += '</tbody>';
+            html += '</table>';
+        }
+
+        html += '</div>'; // bands
+
+        // ---- Live preview ----
+        if (isNonEmptyString(preview)) {
+            html += '<div class="academy-discipline-scheme-preview">';
+            html += '<span class="academy-discipline-scheme-preview-label">Preview:</span> ';
+            html += '<span class="academy-discipline-scheme-preview-text">' +
+                        escapeHtml(preview) +
+                    '</span>';
             html += '</div>';
         }
-        html += '</div>';
+
+        html += '</div>'; // section
+        return html;
+    }
+
+    function renderBandRow(band, index, errors) {
+        var label = isNonEmptyString(band.label) ? band.label : '';
+        var minP = isFiniteNumber(band.minPercent)
+            ? String(band.minPercent)
+            : '';
+
+        // Per-band error lookup. The view model may supply a
+        // `bandErrors` map keyed by index; if not, no per-band errors
+        // are shown. Field-level error surfacing for bands happens
+        // via the generic `bands` error above.
+        var bandErrors = (errors && typeof errors.bandErrors === 'object')
+            ? errors.bandErrors
+            : {};
+        var perBand = bandErrors && bandErrors[String(index)];
+        var labelErr = perBand && perBand.label;
+        var minErr = perBand && perBand.minPercent;
+
+        var html = '';
+        html += '<tr class="academy-discipline-scheme-row">';
+
+        html += '<td class="scheme-label-col">';
+        html += '<input type="text" ' +
+                    'class="academy-discipline-input academy-discipline-band-label' +
+                    (labelErr ? ' academy-field-has-error' : '') + '" ' +
+                    'data-band-index="' + escapeAttribute(String(index)) + '" ' +
+                    'data-band-field="label" ' +
+                    'value="' + escapeAttribute(label) + '" ' +
+                    'maxlength="12" ' +
+                    'placeholder="A">';
+        if (labelErr) {
+            html += '<p class="academy-field-error">' + escapeHtml(labelErr) + '</p>';
+        }
+        html += '</td>';
+
+        html += '<td class="scheme-min-col">';
+        html += '<input type="number" ' +
+                    'class="academy-discipline-input academy-discipline-band-min' +
+                    (minErr ? ' academy-field-has-error' : '') + '" ' +
+                    'data-band-index="' + escapeAttribute(String(index)) + '" ' +
+                    'data-band-field="minPercent" ' +
+                    'value="' + escapeAttribute(minP) + '" ' +
+                    'min="0" max="100" step="1" ' +
+                    'placeholder="0">';
+        if (minErr) {
+            html += '<p class="academy-field-error">' + escapeHtml(minErr) + '</p>';
+        }
+        html += '</td>';
+
+        html += '<td class="scheme-actions-col">';
+        html += '<button type="button" class="small danger" ' +
+                    'data-action="remove-band" ' +
+                    'data-band-index="' + escapeAttribute(String(index)) + '" ' +
+                    'title="Remove band">\u2715</button>';
+        html += '</td>';
+
+        html += '</tr>';
+        return html;
+    }
+
+    // ============================================================
+    // EDITOR ACTIONS
+    // ============================================================
+
+    function renderEditorActions(d) {
+        var isNew = d.isNew === true;
+
+        var html = '';
+        html += '<div class="academy-discipline-editor-actions">';
+
+        html += '<button type="button" class="primary" ' +
+                    'data-action="save-discipline">' +
+                    (isNew ? 'Create Discipline' : 'Save Changes') +
+                '</button>';
+
+        html += '<button type="button" class="secondary" ' +
+                    'data-action="cancel-discipline">' +
+                    'Cancel' +
+                '</button>';
+
+        if (!isNew) {
+            html += '<button type="button" class="danger academy-discipline-delete-btn" ' +
+                        'data-action="delete-discipline" ' +
+                        'data-discipline-id="' + escapeAttribute(d.id || '') + '">' +
+                        'Delete Discipline' +
+                    '</button>';
+        }
 
         html += '</div>';
         return html;
