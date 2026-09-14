@@ -23,38 +23,69 @@
  * READ SAFETY (Phase 2):
  *   - getAcademyStore() returns null (does NOT create academy.{...}) when
  *     the store is missing. Reads are side-effect free.
- *   - Public queries (getStudentGrades, getClassGrades, getDisciplineGrades,
- *     getWeekGrades, getGrade, getAllGrades) return DEEP CLONES. Callers
- *     cannot mutate live state by writing to a returned grade.
- *   - Internal accessors (getGradeRecord, getGradeRecords) keep returning
- *     LIVE REFERENCES. They are consumed by this module's own mutation
- *     paths and by AcademyQueries.
+ *   - Public queries return DEEP CLONES. Callers cannot mutate live state.
+ *   - Internal accessors (getGradeRecord, getGradeRecords) return LIVE
+ *     REFERENCES. They are consumed by this module's own mutation paths
+ *     and by AcademyQueries.
  *   - Pipeline validate() callbacks read from the `appData` argument the
- *     pipeline supplies, not from window.data via the internal accessors.
- *     This makes validation consistent with the snapshot the mutation
- *     will be applied to.
+ *     pipeline supplies, not from window.data.
  *   - ObjectUtils.deepClone is used as the clone primitive. If cloning
  *     fails, the accessor throws. It does NOT fall back to returning the
- *     original reference, because that would silently alias live state.
+ *     original reference.
+ *
+ * WEIGHT MODEL (Phase 3):
+ *   - Grades NO LONGER carry a `weight` field. Weight is a property of
+ *     the ASSESSMENT TYPE within a discipline, not of the individual
+ *     grade record. It lives at discipline.assessmentWeights:
+ *       discipline.assessmentWeights = {
+ *         exam: 2.0,
+ *         assignment: 1.0,
+ *         participation: 0.5,
+ *         ...
+ *       }
+ *   - Weighted averages are computed by the performance layer
+ *     (academy-performance.js), which reads discipline.assessmentWeights
+ *     and pairs it with grade.type.
+ *   - This module does not compute weighted averages. It computes
+ *     unweighted statistics.
+ *
+ * DERIVED vs STORED (Phase 3):
+ *   - `percentage` and `passing` are DERIVED. They are not stored on
+ *     the grade record.
+ *   - `percentage` = round(score / maxScore * 100).
+ *   - `passing` is SCHEME-AWARE. When a discipline grade scheme is
+ *     supplied, passing is computed via AcademyGradeSchemes.isPassing.
+ *     When it is absent, the default threshold applies.
+ *   - Storing either field would lock in answers that go stale when the
+ *     scheme changes or when the score is edited. Storing a field that
+ *     is a pure function of other stored fields is redundant.
+ *   - The `decorateGrade(grade, scheme)` helper attaches these fields
+ *     to a cloned grade for display. Callers that want them on a read
+ *     result opt in by passing a scheme.
+ *
+ * SCORE VALIDATION (Phase 3):
+ *   - `score > maxScore` is REJECTED, not clamped. Silently clamping
+ *     hides data-entry errors. A grade of 105/100 is a mistake in the
+ *     input, not a grade that should be quietly rounded down.
  *
  * MUTATION CONTRACT:
  *   - create / update / delete / deleteStudentGrades / saveGrades
  *     all return Promise<{ success, data?, message? }>
- *   - getStudentGrades / getClassGrades / getDisciplineGrades / getWeekGrades /
- *     getGrade / getAllGrades and all calculate* functions stay synchronous
+ *   - getStudentGrades / getClassGrades / getDisciplineGrades /
+ *     getWeekGrades / getGrade / getAllGrades / getStudentClassGrades
+ *     stay synchronous
  *
- * SUMMARY SEMANTICS:
- *   - weightThreshold is the MINIMUM weight for a grade to be included in
- *     the summary. A grade with weight below threshold does NOT participate
- *     in average, weightedAverage, passing, failing, passRate, or count.
- *   - `count` is the number of INCLUDED grades (weight >= threshold).
- *   - `totalCount` is the number of grades passed in (includes excluded).
- *   - The denominator for average / passRate is `count`, not totalCount.
- *     This is the correct reading of "minimum weight to include".
+ * SUMMARY SEMANTICS (Phase 3):
+ *   - calculateSummary(grades, scheme) no longer accepts a weight
+ *     threshold. Every grade in the input participates.
+ *   - The summary returns unweighted average, min, max, pass count,
+ *     fail count, pass rate, and a distribution.
+ *   - `passing` is determined by the scheme when supplied. When absent,
+ *     the default threshold is used.
  *
  * CASCADE SEMANTICS (stripCharacterRefs):
- *   When a character is deleted, all grade records keyed to that character
- *   are removed from academy.grades. This helper is called by
+ *   When a character is deleted, all grade records keyed to that
+ *   character are removed from academy.grades. This helper is called by
  *   CharacterCRUD.deleteCharacter from inside its pipeline mutate, so it
  *   runs in the same transaction as the character removal.
  *
@@ -68,7 +99,6 @@
  *       week: 5,
  *       score: 85,
  *       maxScore: 100,
- *       weight: 1.0,
  *       type: 'exam',
  *       date: '2026-02-15',
  *       notes: 'Good work',
@@ -82,18 +112,18 @@
  *   - window.IdUtils (from id-utils.js) - MANDATORY
  *   - window.ValidationUtils (from validation-utils.js) - MANDATORY
  *   - window.AcademyClasses (from academy-classes.js) - MANDATORY
+ *   - window.AcademyGradeSchemes (from academy-grade-schemes.js) - MANDATORY
  *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
  *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
  *
  * USAGE:
  *   var grades = window.AcademyGrades;
  *
- *   // Mutations (Promise-based)
- *   grades.create({ studentId, classId, disciplineId, week, score })
+ *   grades.create({ studentId, classId, disciplineId, week, score, maxScore })
  *       .then(function(result) { ... });
  *
- *   // Reads (synchronous)
  *   var studentGrades = grades.getStudentGrades('char_456');
+ *   var classGrades = grades.getStudentClassGrades('char_456', 'class_789');
  *   var summary = grades.calculateSummary(studentGrades);
  */
 
@@ -130,6 +160,10 @@
         missing.push('AcademyClasses.getClass');
     }
 
+    if (!window.AcademyGradeSchemes || typeof window.AcademyGradeSchemes.isPassing !== 'function') {
+        missing.push('AcademyGradeSchemes.isPassing');
+    }
+
     if (!window.MutationPipeline || typeof window.MutationPipeline.performMutation !== 'function') {
         missing.push('MutationPipeline.performMutation');
     }
@@ -152,6 +186,7 @@
     var IdUtils = window.IdUtils;
     var ValidationUtils = window.ValidationUtils;
     var AcademyClasses = window.AcademyClasses;
+    var GradeSchemes = window.AcademyGradeSchemes;
     var MutationPipeline = window.MutationPipeline;
     var CalendarConstants = window.CalendarConstants;
 
@@ -163,9 +198,11 @@
     var MAX_WEEK = CalendarConstants.MAX_WEEK;
     var MIN_SCORE = 0;
     var MAX_SCORE = 100;
-    var PASSING_THRESHOLD = 70;
 
     var VALID_GRADE_TYPES = ['exam', 'assignment', 'participation', 'project', 'quiz', 'final'];
+
+    // Default passing threshold when no scheme is supplied.
+    var DEFAULT_PASSING_THRESHOLD = GradeSchemes.PASSING_THRESHOLD || 70;
 
     // ============================================================
     // HELPERS
@@ -186,14 +223,8 @@
     /**
      * Deep clone a value.
      *
-     * READ SAFETY: this primitive throws if cloning fails. It does NOT
-     * fall back to returning the original reference, because that would
-     * silently alias live state and let callers mutate the store by
-     * writing to a "cloned" result.
-     *
-     * @param {*} value - Value to clone
-     * @returns {*} Deep clone
-     * @throws {Error} If cloning fails
+     * READ SAFETY: throws if cloning fails or if the clone is the
+     * original reference. Aliasing is a bug, not a graceful degradation.
      */
     function deepClone(value) {
         var result = ObjectUtils.deepClone(value);
@@ -218,34 +249,81 @@
         return { success: true, data: data };
     }
 
-    function clamp(value, min, max) {
-        return Math.max(min, Math.min(max, value));
-    }
+    // ============================================================
+    // DERIVED FIELD HELPERS (Phase 3)
+    // ============================================================
+    //
+    // percentage and passing are DERIVED, not stored. These helpers
+    // compute them on demand. `decorateGrade` returns a CLONE of the
+    // input with the derived fields attached.
 
-    function isPassing(score, maxScore) {
-        var max = isNumber(maxScore) && maxScore > 0 ? maxScore : 100;
-        var percentage = max > 0 ? (score / max) * 100 : 0;
-        return percentage >= PASSING_THRESHOLD;
-    }
-
+    /**
+     * Compute the percentage for a grade.
+     *
+     * @param {number} score
+     * @param {number} maxScore
+     * @returns {number} Rounded percentage (0-100)
+     */
     function calculatePercentage(score, maxScore) {
         var max = isNumber(maxScore) && maxScore > 0 ? maxScore : 100;
-        return max > 0 ? Math.round((score / max) * 100) : 0;
+        var s = isNumber(score) ? score : 0;
+        return max > 0 ? Math.round((s / max) * 100) : 0;
+    }
+
+    /**
+     * Compute whether a grade passes.
+     *
+     * SCHEME-AWARE: when a scheme is supplied, passing is determined by
+     * the scheme's lowest passing band. When it is absent, the default
+     * threshold applies.
+     *
+     * @param {number} score
+     * @param {number} maxScore
+     * @param {object|null} scheme - Optional grade scheme
+     * @returns {boolean}
+     */
+    function isPassing(score, maxScore, scheme) {
+        var pct = calculatePercentage(score, maxScore);
+        return GradeSchemes.isPassing(pct, scheme || null) === true;
+    }
+
+    /**
+     * Attach the derived fields (percentage, passing) to a grade.
+     *
+     * Returns a CLONE. The input record is not modified.
+     *
+     * @param {object} grade - Grade record
+     * @param {object|null} scheme - Optional grade scheme
+     * @returns {object} Decorated clone
+     */
+    function decorateGrade(grade, scheme) {
+        if (!grade || typeof grade !== 'object') {
+            return grade;
+        }
+        var copy = deepClone(grade);
+        var pct = calculatePercentage(copy.score, copy.maxScore);
+        copy.percentage = pct;
+        copy.passing = GradeSchemes.isPassing(pct, scheme || null) === true;
+        return copy;
+    }
+
+    /**
+     * Attach derived fields to an array of grades.
+     */
+    function decorateGrades(grades, scheme) {
+        if (!Array.isArray(grades)) {
+            return [];
+        }
+        var result = [];
+        for (var i = 0; i < grades.length; i++) {
+            result.push(decorateGrade(grades[i], scheme));
+        }
+        return result;
     }
 
     // ============================================================
-    // DATA STORE ACCESS - INTERNAL (no AcademyQueries dependency)
+    // DATA STORE ACCESS - INTERNAL
     // ============================================================
-    //
-    // READ SAFETY:
-    //   - getDataStore() returns null when window.data is missing.
-    //   - getAcademyStore() returns null when window.data.academy is
-    //     missing. It does NOT create academy.{...} as a side effect
-    //     of a read.
-    //
-    //   Structure creation happens ONLY inside pipeline mutate()
-    //   callbacks, operating on the appData snapshot the pipeline
-    //   hands in. That keeps reads side-effect free.
 
     function getDataStore() {
         if (!window.data || typeof window.data !== 'object') {
@@ -270,10 +348,6 @@
     // ============================================================
     // INTERNAL GRADE LOOKUP - PRIVATE (LIVE REFERENCES)
     // ============================================================
-    //
-    // These return LIVE REFERENCES. They are consumed by this
-    // module's own mutation paths and by AcademyQueries. The public
-    // read surface (below) wraps them with deepClone.
 
     function getGradeRecord(gradeId) {
         if (!isNonEmptyString(gradeId)) {
@@ -329,6 +403,14 @@
     // GRADE VALIDATION
     // ============================================================
 
+    /**
+     * Validate grade data.
+     *
+     * SCORE VALIDATION: when both score and maxScore are present in
+     * the input, score must not exceed maxScore. This is checked here
+     * AND re-checked in `update` against the candidate, so a change to
+     * either field cannot produce an out-of-range combination.
+     */
     function validateGradeData(data, isPartial) {
         if (!isObject(data)) {
             return { valid: false, message: 'Grade data must be an object.' };
@@ -373,17 +455,80 @@
             }
         }
 
+        // ---- score <= maxScore ----
+        // Only check when both fields are present. Partial updates are
+        // checked against the candidate in `update`.
+        if (data.score !== undefined && data.maxScore !== undefined) {
+            var s = parseFloat(data.score);
+            var m = parseFloat(data.maxScore);
+            if (!isNaN(s) && !isNaN(m) && s > m) {
+                return {
+                    valid: false,
+                    message: 'Score (' + s + ') cannot exceed max score (' + m + ').'
+                };
+            }
+        }
+
         if (data.type !== undefined) {
             if (VALID_GRADE_TYPES.indexOf(data.type) === -1) {
                 return { valid: false, message: 'Invalid grade type. Must be one of: ' + VALID_GRADE_TYPES.join(', ') };
             }
         }
 
-        if (data.weight !== undefined) {
-            var weight = parseFloat(data.weight);
-            if (isNaN(weight) || weight < 0 || weight > 2) {
-                return { valid: false, message: 'Weight must be between 0 and 2.' };
-            }
+        // NOTE: `weight` is not validated here. Phase 3 removed weight
+        // from grade records. If a caller passes weight, it is silently
+        // ignored by buildGradeRecord. The field is not part of the
+        // canonical grade shape.
+
+        return { valid: true };
+    }
+
+    /**
+     * Validate a completed candidate record.
+     *
+     * This is the final gate before mutation. It enforces invariants
+     * that the partial-update validator cannot check in isolation:
+     *   - score <= maxScore
+     *   - week in bounds
+     *   - every required field present
+     *
+     * Returns { valid, message? }.
+     */
+    function validateCandidate(candidate) {
+        if (!isObject(candidate)) {
+            return { valid: false, message: 'Candidate is not an object.' };
+        }
+
+        if (!isNonEmptyString(candidate.studentId)) {
+            return { valid: false, message: 'Candidate missing studentId.' };
+        }
+        if (!isNonEmptyString(candidate.classId)) {
+            return { valid: false, message: 'Candidate missing classId.' };
+        }
+        if (!isNonEmptyString(candidate.disciplineId)) {
+            return { valid: false, message: 'Candidate missing disciplineId.' };
+        }
+
+        var week = parseInt(candidate.week, 10);
+        if (isNaN(week) || week < MIN_WEEK || week > MAX_WEEK) {
+            return { valid: false, message: 'Candidate week is out of range.' };
+        }
+
+        var score = parseFloat(candidate.score);
+        if (isNaN(score) || score < MIN_SCORE) {
+            return { valid: false, message: 'Candidate score is invalid.' };
+        }
+
+        var maxScore = parseFloat(candidate.maxScore);
+        if (isNaN(maxScore) || maxScore <= 0) {
+            return { valid: false, message: 'Candidate maxScore is invalid.' };
+        }
+
+        if (score > maxScore) {
+            return {
+                valid: false,
+                message: 'Candidate score (' + score + ') exceeds maxScore (' + maxScore + ').'
+            };
         }
 
         return { valid: true };
@@ -395,32 +540,39 @@
 
     /**
      * Build a canonical grade record from raw data.
+     *
      * Pure - does not touch window.data.
+     *
+     * Phase 3 changes:
+     *   - No `weight` field. Weight is not a property of a grade.
+     *   - No `percentage` or `passing` fields. Both are derived on read.
+     *   - `score` is NOT clamped. The caller is responsible for
+     *     validation; if `score > maxScore`, `validateGradeData` /
+     *     `validateCandidate` reject it before we get here.
      */
-    function buildGradeRecord(data, existingId) {
+    function buildGradeRecord(data, existingId, existingCreatedAt) {
         var now = new Date().toISOString();
+
         var score = parseFloat(data.score);
         var maxScore = data.maxScore !== undefined ? parseFloat(data.maxScore) : 100;
-        var weight = data.weight !== undefined ? parseFloat(data.weight) : 1.0;
         var week = parseInt(data.week, 10);
 
-        return {
+        var record = {
             id: existingId || generateId(),
             studentId: String(data.studentId),
             classId: String(data.classId),
             disciplineId: String(data.disciplineId),
             week: week,
-            score: clamp(score, MIN_SCORE, maxScore),
+            score: score,
             maxScore: maxScore > 0 ? maxScore : 100,
-            weight: clamp(weight, 0, 2),
             type: data.type || 'assignment',
             date: data.date || now.split('T')[0],
             notes: data.notes || '',
-            passing: isPassing(score, maxScore),
-            percentage: calculatePercentage(score, maxScore),
-            createdAt: now,
+            createdAt: existingCreatedAt || now,
             updatedAt: now
         };
+
+        return record;
     }
 
     // ============================================================
@@ -434,7 +586,6 @@
      * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
     function create(data) {
-        // Pre-flight validation
         var validation = validateGradeData(data, false);
         if (!validation.valid) {
             return Promise.resolve(failure(validation.message));
@@ -445,7 +596,14 @@
             return Promise.resolve(failure(classValidation.message));
         }
 
-        var newGrade = buildGradeRecord(data, null);
+        var newGrade = buildGradeRecord(data, null, null);
+
+        // Full candidate validation as a final gate.
+        var candidateCheck = validateCandidate(newGrade);
+        if (!candidateCheck.valid) {
+            return Promise.resolve(failure(candidateCheck.message));
+        }
+
         var targetId = newGrade.id;
 
         return MutationPipeline.performMutation({
@@ -474,9 +632,14 @@
     /**
      * Update an existing grade.
      *
-     * @param {string} gradeId - Grade ID
-     * @param {object} updates - Updates to apply
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
+     * VALIDATION ORDER:
+     *   1. Validate each individual field in `updates`.
+     *   2. Apply the updates to a clone of the existing record.
+     *   3. Validate the resulting candidate as a whole. This catches
+     *      cross-field violations that field-level checks miss —
+     *      e.g. lowering maxScore below the existing score, or raising
+     *      score above the existing maxScore.
+     *   4. Only commit if the candidate passes.
      */
     function update(gradeId, updates) {
         if (!isNonEmptyString(gradeId)) {
@@ -492,14 +655,20 @@
             return Promise.resolve(failure('Grade not found.'));
         }
 
-        // Build candidate
+        // ---- Validate update shape ----
+        var fieldValidation = validateGradeData(updates, true);
+        if (!fieldValidation.valid) {
+            return Promise.resolve(failure(fieldValidation.message));
+        }
+
+        // ---- Build candidate ----
         var candidate = deepClone(existing);
         if (candidate === null) {
             return Promise.resolve(failure('Failed to clone grade data.'));
         }
 
         var hasChanges = false;
-        var updateFields = ['studentId', 'classId', 'disciplineId', 'week', 'score', 'maxScore', 'type', 'weight', 'date', 'notes'];
+        var updateFields = ['studentId', 'classId', 'disciplineId', 'week', 'score', 'maxScore', 'type', 'date', 'notes'];
 
         for (var i = 0; i < updateFields.length; i++) {
             var field = updateFields[i];
@@ -538,9 +707,8 @@
                     if (isNaN(score) || score < MIN_SCORE) {
                         return Promise.resolve(failure('Score must be a number greater than or equal to 0.'));
                     }
-                    var maxScore = candidate.maxScore || 100;
-                    if (candidate.score !== clamp(score, MIN_SCORE, maxScore)) {
-                        candidate.score = clamp(score, MIN_SCORE, maxScore);
+                    if (candidate.score !== score) {
+                        candidate.score = score;
                         hasChanges = true;
                     }
                     break;
@@ -566,17 +734,6 @@
                     }
                     break;
 
-                case 'weight':
-                    var weight = parseFloat(value);
-                    if (isNaN(weight) || weight < 0 || weight > 2) {
-                        return Promise.resolve(failure('Weight must be between 0 and 2.'));
-                    }
-                    if (candidate.weight !== weight) {
-                        candidate.weight = weight;
-                        hasChanges = true;
-                    }
-                    break;
-
                 case 'date':
                     if (value !== null && typeof value !== 'string') {
                         return Promise.resolve(failure('Date must be a string.'));
@@ -598,14 +755,16 @@
         }
 
         if (!hasChanges) {
-            return Promise.resolve(success({ grade: deepClone(existing), changed: false }));
+            return Promise.resolve(success({ grade: decorateGrade(existing), changed: false }));
         }
 
-        // Recompute derived fields
-        candidate.percentage = calculatePercentage(candidate.score, candidate.maxScore);
-        candidate.passing = isPassing(candidate.score, candidate.maxScore);
-        candidate.updatedAt = new Date().toISOString();
+        // ---- Full candidate validation ----
+        var candidateCheck = validateCandidate(candidate);
+        if (!candidateCheck.valid) {
+            return Promise.resolve(failure(candidateCheck.message));
+        }
 
+        candidate.updatedAt = new Date().toISOString();
         var targetId = String(gradeId);
 
         return MutationPipeline.performMutation({
@@ -743,12 +902,30 @@
     // PUBLIC READ SURFACE (CLONES)
     // ============================================================
     //
-    // These are the consumer-facing lookups. They return DEEP CLONES
-    // (or arrays of clones) so callers cannot mutate live state by
-    // writing to a returned grade. Internal code paths within this
-    // module continue to use the *Internal accessors, which return
-    // live references.
+    // Grades are returned as DEEP CLONES. The derived fields
+    // (`percentage`, `passing`) are NOT attached by default. Callers
+    // that need them either pass a scheme to the query helpers here,
+    // or call `decorateGrade` / `decorateGrades` directly.
+    //
+    // Returning the raw record without derived fields is deliberate:
+    // it forces callers to decide what scheme applies. `passing`
+    // without a scheme is a lossy answer that can silently disagree
+    // with what the UI displays.
 
+    function sortGrades(a, b) {
+        if (a.week !== b.week) {
+            return a.week - b.week;
+        }
+        return (a.date || '').localeCompare(b.date || '');
+    }
+
+    /**
+     * Get all grades for a student, optionally filtered to a week.
+     *
+     * @param {string} studentId - Student ID
+     * @param {number|string} [week] - Optional week filter
+     * @returns {array} Array of cloned grade records
+     */
     function getStudentGrades(studentId, week) {
         if (!isNonEmptyString(studentId)) {
             return [];
@@ -760,24 +937,63 @@
 
         for (var i = 0; i < all.length; i++) {
             var grade = all[i];
-            if (String(grade.studentId) === targetStudent) {
-                if (week !== undefined) {
-                    var weekNum = parseInt(week, 10);
-                    if (!isNaN(weekNum) && grade.week !== weekNum) {
-                        continue;
-                    }
-                }
-                result.push(grade);
+            if (String(grade.studentId) !== targetStudent) {
+                continue;
             }
+            if (week !== undefined) {
+                var weekNum = parseInt(week, 10);
+                if (!isNaN(weekNum) && grade.week !== weekNum) {
+                    continue;
+                }
+            }
+            result.push(grade);
         }
 
-        result.sort(function(a, b) {
-            if (a.week !== b.week) {
-                return a.week - b.week;
-            }
-            return (a.date || '').localeCompare(b.date || '');
-        });
+        result.sort(sortGrades);
+        return result.map(function(g) { return deepClone(g); });
+    }
 
+    /**
+     * Get all grades for a student within a specific class.
+     *
+     * PHASE 3 ADDITION: this is the query the inline grades editor
+     * actually needs. A student's grades are class-scoped in the UI,
+     * but the underlying record store is flat. This filters to the
+     * requested class in one pass.
+     *
+     * @param {string} studentId - Student ID
+     * @param {string} classId - Class ID
+     * @param {number|string} [week] - Optional week filter
+     * @returns {array} Array of cloned grade records
+     */
+    function getStudentClassGrades(studentId, classId, week) {
+        if (!isNonEmptyString(studentId) || !isNonEmptyString(classId)) {
+            return [];
+        }
+
+        var all = getGradeRecords();
+        var targetStudent = String(studentId);
+        var targetClass = String(classId);
+        var result = [];
+
+        for (var i = 0; i < all.length; i++) {
+            var grade = all[i];
+            if (String(grade.studentId) !== targetStudent) {
+                continue;
+            }
+            if (String(grade.classId) !== targetClass) {
+                continue;
+            }
+            if (week !== undefined) {
+                var weekNum = parseInt(week, 10);
+                if (!isNaN(weekNum) && grade.week !== weekNum) {
+                    continue;
+                }
+            }
+            result.push(grade);
+        }
+
+        result.sort(sortGrades);
         return result.map(function(g) { return deepClone(g); });
     }
 
@@ -792,24 +1008,19 @@
 
         for (var i = 0; i < all.length; i++) {
             var grade = all[i];
-            if (String(grade.classId) === targetClass) {
-                if (week !== undefined) {
-                    var weekNum = parseInt(week, 10);
-                    if (!isNaN(weekNum) && grade.week !== weekNum) {
-                        continue;
-                    }
-                }
-                result.push(grade);
+            if (String(grade.classId) !== targetClass) {
+                continue;
             }
+            if (week !== undefined) {
+                var weekNum = parseInt(week, 10);
+                if (!isNaN(weekNum) && grade.week !== weekNum) {
+                    continue;
+                }
+            }
+            result.push(grade);
         }
 
-        result.sort(function(a, b) {
-            if (a.week !== b.week) {
-                return a.week - b.week;
-            }
-            return (a.date || '').localeCompare(b.date || '');
-        });
-
+        result.sort(sortGrades);
         return result.map(function(g) { return deepClone(g); });
     }
 
@@ -824,24 +1035,19 @@
 
         for (var i = 0; i < all.length; i++) {
             var grade = all[i];
-            if (String(grade.disciplineId) === targetDiscipline) {
-                if (week !== undefined) {
-                    var weekNum = parseInt(week, 10);
-                    if (!isNaN(weekNum) && grade.week !== weekNum) {
-                        continue;
-                    }
-                }
-                result.push(grade);
+            if (String(grade.disciplineId) !== targetDiscipline) {
+                continue;
             }
+            if (week !== undefined) {
+                var weekNum = parseInt(week, 10);
+                if (!isNaN(weekNum) && grade.week !== weekNum) {
+                    continue;
+                }
+            }
+            result.push(grade);
         }
 
-        result.sort(function(a, b) {
-            if (a.week !== b.week) {
-                return a.week - b.week;
-            }
-            return (a.date || '').localeCompare(b.date || '');
-        });
-
+        result.sort(sortGrades);
         return result.map(function(g) { return deepClone(g); });
     }
 
@@ -856,12 +1062,13 @@
 
         for (var i = 0; i < all.length; i++) {
             var grade = all[i];
-            if (grade.week === weekNum) {
-                if (classId !== undefined && String(grade.classId) !== String(classId)) {
-                    continue;
-                }
-                result.push(grade);
+            if (grade.week !== weekNum) {
+                continue;
             }
+            if (classId !== undefined && String(grade.classId) !== String(classId)) {
+                continue;
+            }
+            result.push(grade);
         }
 
         return result.map(function(g) { return deepClone(g); });
@@ -888,83 +1095,76 @@
     /**
      * Calculate a summary for a list of grades.
      *
-     * SEMANTICS:
-     *   - weightThreshold is the MINIMUM weight for a grade to be
-     *     included in the summary.
-     *   - Grades with weight below threshold are excluded from ALL
-     *     summary fields: average, weightedAverage, passing, failing,
-     *     passRate, and count.
-     *   - `count` is the number of INCLUDED grades.
-     *   - `totalCount` is the raw input length, for callers that need
-     *     to distinguish "grades counted" from "grades passed in".
+     * Phase 3 changes:
+     *   - No `weightThreshold`. Every grade in the input participates.
+     *   - No `weightedAverage` or `totalWeight`. Weight is a property
+     *     of the assessment type, not the grade, and it lives on the
+     *     discipline. Weighted averages are computed by the
+     *     performance layer (academy-performance.js).
+     *   - `passing` is SCHEME-AWARE. When a scheme is supplied, passing
+     *     is determined by the scheme's lowest passing band. When
+     *     absent, the default threshold is used.
+     *   - Derived fields are computed on the fly. Grades from the store
+     *     do not carry `percentage` / `passing`; grades from a caller
+     *     that ran `decorateGrade` do. The summary accepts either.
      *
-     * @param {array} grades - Array of grade objects
-     * @param {number} weightThreshold - Minimum weight to include (default: 0.5)
+     * @param {array} grades - Array of grade records
+     * @param {object|null} [scheme] - Optional grade scheme
      * @returns {object} Summary statistics
      */
-    function calculateSummary(grades, weightThreshold) {
-        var totalCount = Array.isArray(grades) ? grades.length : 0;
+    function calculateSummary(grades, scheme) {
+        var count = Array.isArray(grades) ? grades.length : 0;
 
-        if (totalCount === 0) {
+        if (count === 0) {
             return {
                 count: 0,
-                totalCount: 0,
                 average: 0,
                 max: 0,
                 min: 0,
                 passing: 0,
                 failing: 0,
                 passRate: 0,
-                weightedAverage: 0,
-                totalWeight: 0,
                 gradeDistribution: {}
             };
         }
 
-        weightThreshold = typeof weightThreshold === 'number' ? weightThreshold : 0.5;
-
-        var count = 0;
         var total = 0;
         var max = -Infinity;
         var min = Infinity;
         var passing = 0;
         var failing = 0;
-        var weightedTotal = 0;
-        var totalWeight = 0;
         var distribution = {};
 
         for (var i = 0; i < grades.length; i++) {
             var grade = grades[i];
-            var weight = typeof grade.weight === 'number' ? grade.weight : 1.0;
-
-            // Below-threshold grades are excluded from ALL fields.
-            if (weight < weightThreshold) {
+            if (!grade || typeof grade !== 'object') {
                 continue;
             }
 
-            var score = grade.score || 0;
-            var maxScore = grade.maxScore || 100;
-            var percentage = grade.percentage !== undefined
+            var pct = grade.percentage !== undefined
                 ? grade.percentage
-                : calculatePercentage(score, maxScore);
+                : calculatePercentage(grade.score, grade.maxScore);
 
-            count++;
-            total += percentage;
-            if (percentage > max) max = percentage;
-            if (percentage < min) min = percentage;
+            total += pct;
+            if (pct > max) max = pct;
+            if (pct < min) min = pct;
 
-            weightedTotal += percentage * weight;
-            totalWeight += weight;
+            var isPass;
+            if (grade.passing !== undefined) {
+                isPass = grade.passing === true;
+            } else {
+                isPass = GradeSchemes.isPassing(pct, scheme || null) === true;
+            }
 
-            if (grade.passing || isPassing(score, maxScore)) {
+            if (isPass) {
                 passing++;
             } else {
                 failing++;
             }
 
-            var bin = Math.floor(percentage / 10) * 10;
+            var bin = Math.floor(pct / 10) * 10;
             var binKey = bin + '-' + (bin + 9);
-            if (percentage === 100) {
+            if (pct === 100) {
                 binKey = '100';
             }
             if (!distribution[binKey]) {
@@ -973,62 +1173,37 @@
             distribution[binKey]++;
         }
 
-        if (count === 0) {
-            return {
-                count: 0,
-                totalCount: totalCount,
-                average: 0,
-                max: 0,
-                min: 0,
-                passing: 0,
-                failing: 0,
-                passRate: 0,
-                weightedAverage: 0,
-                totalWeight: 0,
-                gradeDistribution: {}
-            };
-        }
-
         var avg = total / count;
-        var weightedAvg = totalWeight > 0 ? weightedTotal / totalWeight : 0;
 
         return {
             count: count,
-            totalCount: totalCount,
             average: Math.round(avg * 10) / 10,
             max: Math.round(max * 10) / 10,
             min: Math.round(min * 10) / 10,
             passing: passing,
             failing: failing,
             passRate: Math.round((passing / count) * 100),
-            weightedAverage: Math.round(weightedAvg * 10) / 10,
-            totalWeight: Math.round(totalWeight * 10) / 10,
             gradeDistribution: distribution
         };
     }
 
     /**
      * Calculate a class summary for a specific week.
-     *
-     * @param {string} classId - Class ID
-     * @param {number} week - Week number
-     * @returns {object} Class summary statistics
      */
-    function calculateClassSummary(classId, week) {
+    function calculateClassSummary(classId, week, scheme) {
         var grades = getClassGrades(classId, week);
-        return calculateSummary(grades);
+        return calculateSummary(grades, scheme);
     }
 
     /**
      * Calculate a student's GPA across all grades.
      *
-     * @param {string} studentId - Student ID
-     * @param {number} week - Optional week filter
-     * @returns {object} GPA statistics
+     * SCHEME-AWARE: `passing` is determined by the scheme when
+     * supplied.
      */
-    function calculateStudentGPA(studentId, week) {
+    function calculateStudentGPA(studentId, week, scheme) {
         var grades = getStudentGrades(studentId, week);
-        var summary = calculateSummary(grades, 0);
+        var summary = calculateSummary(grades, scheme);
 
         var gpa = 0;
         if (summary.count > 0) {
@@ -1043,9 +1218,7 @@
         return {
             studentId: studentId,
             gradeCount: summary.count,
-            totalGradeCount: summary.totalCount,
             average: summary.average,
-            weightedAverage: summary.weightedAverage,
             passRate: summary.passRate,
             gpa: gpa,
             passing: summary.passing,
@@ -1056,12 +1229,19 @@
     /**
      * Calculate class ranking for a specific week.
      *
-     * @param {string} classId - Class ID
-     * @param {number} week - Week number
-     * @param {function} getCharacterById - Function to get character by ID
-     * @returns {array} Array of { studentId, name, average, rank }
+     * NOTE: ranking by UNWEIGHTED average is a legacy path. The
+     * canonical ranking calculation lives in the performance layer
+     * and is consumed by AcademyRanking. This function is retained for
+     * callers that want a quick unweighted ordering. It does NOT
+     * consult discipline.assessmentWeights.
+     *
+     * @param {string} classId
+     * @param {number} week
+     * @param {function} [getCharacterById] - Optional name resolver
+     * @param {object} [scheme] - Optional grade scheme
+     * @returns {array}
      */
-    function calculateClassRanking(classId, week, getCharacterById) {
+    function calculateClassRanking(classId, week, getCharacterById, scheme) {
         if (!isNonEmptyString(classId)) {
             return [];
         }
@@ -1072,34 +1252,32 @@
         for (var i = 0; i < grades.length; i++) {
             var grade = grades[i];
             var studentId = grade.studentId;
-            var percentage = grade.percentage !== undefined
+            var pct = grade.percentage !== undefined
                 ? grade.percentage
-                : calculatePercentage(grade.score, grade.maxScore || 100);
-            var weight = grade.weight || 1.0;
+                : calculatePercentage(grade.score, grade.maxScore);
 
             if (!studentAverages[studentId]) {
-                studentAverages[studentId] = { total: 0, weight: 0, count: 0 };
+                studentAverages[studentId] = { total: 0, count: 0 };
             }
-            studentAverages[studentId].total += percentage * weight;
-            studentAverages[studentId].weight += weight;
+            studentAverages[studentId].total += pct;
             studentAverages[studentId].count++;
         }
 
         var result = [];
-        for (var studentId in studentAverages) {
-            if (Object.prototype.hasOwnProperty.call(studentAverages, studentId)) {
-                var data = studentAverages[studentId];
-                var avg = data.weight > 0 ? data.total / data.weight : 0;
+        for (var sid in studentAverages) {
+            if (Object.prototype.hasOwnProperty.call(studentAverages, sid)) {
+                var data = studentAverages[sid];
+                var avg = data.count > 0 ? data.total / data.count : 0;
                 var name = 'Unknown';
                 if (typeof getCharacterById === 'function') {
-                    var char = getCharacterById(studentId);
+                    var char = getCharacterById(sid);
                     if (char && typeof char === 'object') {
                         name = (char.firstName || '') + ' ' + (char.lastName || '');
                         if (!name.trim()) name = 'Unknown';
                     }
                 }
                 result.push({
-                    studentId: studentId,
+                    studentId: sid,
                     name: name,
                     average: Math.round(avg * 10) / 10,
                     gradeCount: data.count,
@@ -1123,21 +1301,6 @@
     // CASCADE HELPERS - Remove all references to a character ID
     // ============================================================
 
-    /**
-     * Strip all grade records for a character from academy.grades.
-     *
-     * Grades are keyed by id and carry a studentId. Deleting a student
-     * makes their grades unreachable.
-     *
-     * This helper is PURE with respect to `appData`: it mutates the
-     * store, but it does not touch `window.data`. It is designed to be
-     * called from inside a pipeline mutate() callback in another
-     * module's transaction. It never throws.
-     *
-     * @param {object} appData - The pipeline's appData snapshot
-     * @param {string} charId - Character ID to strip
-     * @returns {object} { gradesRemoved }
-     */
     function stripCharacterRefs(appData, charId) {
         var result = { gradesRemoved: 0 };
 
@@ -1179,10 +1342,8 @@
     /**
      * Save multiple grades at once.
      *
-     * @param {array} gradesData - Array of grade data objects
-     * @param {object} options - Save options
-     * @param {boolean} options.overwrite - Overwrite existing grades
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
+     * PLAN / APPLY: validate each entry, decide create/update/skip,
+     * apply all writes in a single transaction.
      */
     function saveGrades(gradesData, options) {
         if (!Array.isArray(gradesData) || gradesData.length === 0) {
@@ -1192,12 +1353,8 @@
         options = options || {};
         var overwrite = options.overwrite !== false;
 
-        // Pre-flight: validate each entry and build candidate records.
-        // This is where we do the "find existing" pass WITHOUT touching
-        // window.data — we read the live store via getGradeRecords().
-
         var existingGrades = getGradeRecords();
-        var planned = [];   // { action: 'create'|'update'|'skip', record, matchId }
+        var planned = [];
         var errors = [];
 
         for (var i = 0; i < gradesData.length; i++) {
@@ -1222,7 +1379,6 @@
                 continue;
             }
 
-            // Find existing grade for the same (student, class, discipline, week)
             var existing = null;
             for (var j = 0; j < existingGrades.length; j++) {
                 var g = existingGrades[j];
@@ -1241,18 +1397,24 @@
             }
 
             if (existing) {
-                // Build updated candidate
-                var candidate = buildGradeRecord(data, existing.id);
-                candidate.createdAt = existing.createdAt;
+                var candidate = buildGradeRecord(data, existing.id, existing.createdAt);
+                var candidateCheck = validateCandidate(candidate);
+                if (!candidateCheck.valid) {
+                    errors.push({ index: i, error: candidateCheck.message });
+                    continue;
+                }
                 planned.push({ action: 'update', record: candidate, matchId: existing.id });
             } else {
-                // Build new candidate
-                var newRecord = buildGradeRecord(data, null);
+                var newRecord = buildGradeRecord(data, null, null);
+                var newCheck = validateCandidate(newRecord);
+                if (!newCheck.valid) {
+                    errors.push({ index: i, error: newCheck.message });
+                    continue;
+                }
                 planned.push({ action: 'create', record: newRecord });
             }
         }
 
-        // Filter out skips for the mutation count
         var creates = planned.filter(function(p) { return p.action === 'create'; });
         var updates = planned.filter(function(p) { return p.action === 'update'; });
         var skipped = planned.filter(function(p) { return p.action === 'skip'; }).length;
@@ -1326,6 +1488,7 @@
 
         // ---- Public queries (synchronous, CLONES) ----
         getStudentGrades: getStudentGrades,
+        getStudentClassGrades: getStudentClassGrades,
         getClassGrades: getClassGrades,
         getDisciplineGrades: getDisciplineGrades,
         getWeekGrades: getWeekGrades,
@@ -1338,6 +1501,12 @@
         calculateStudentGPA: calculateStudentGPA,
         calculateClassRanking: calculateClassRanking,
 
+        // ---- Derived field helpers ----
+        decorateGrade: decorateGrade,
+        decorateGrades: decorateGrades,
+        calculatePercentage: calculatePercentage,
+        isPassing: isPassing,
+
         // ---- Cascade helpers (for cross-domain cleanup) ----
         stripCharacterRefs: stripCharacterRefs,
 
@@ -1345,16 +1514,12 @@
         getGradeRecord: getGradeRecord,
         getGradeRecords: getGradeRecords,
 
-        // ---- Helpers ----
-        isPassing: isPassing,
-        calculatePercentage: calculatePercentage,
-
         // ---- Constants ----
         MIN_WEEK: MIN_WEEK,
         MAX_WEEK: MAX_WEEK,
         MIN_SCORE: MIN_SCORE,
         MAX_SCORE: MAX_SCORE,
-        PASSING_THRESHOLD: PASSING_THRESHOLD,
+        DEFAULT_PASSING_THRESHOLD: DEFAULT_PASSING_THRESHOLD,
         VALID_GRADE_TYPES: VALID_GRADE_TYPES
     };
 
