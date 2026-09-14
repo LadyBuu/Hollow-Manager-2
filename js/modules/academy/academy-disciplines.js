@@ -10,6 +10,7 @@
  *   - Discipline validation
  *   - Instructor assignment for disciplines
  *   - Grade scheme ownership (stored on the discipline record)
+ *   - Assessment weight ownership (stored on the discipline record)
  *
  * IMPORTANT:
  *   - This module OWNS discipline data - it does NOT depend on AcademyQueries
@@ -23,31 +24,25 @@
  * READ SAFETY (Phase 2):
  *   - getCurriculum() returns null (does NOT create curriculum.{...}) when
  *     the store is missing. Reads are side-effect free.
- *   - Public queries (getDiscipline, getDisciplines, getDisciplinesByType,
- *     getDisciplinesByInstructor, getAvailableDisciplines, getActiveDisciplines)
- *     return DEEP CLONES. Callers cannot mutate live state by writing to a
- *     returned discipline.
+ *   - Public queries return DEEP CLONES with normalized gradeScheme and
+ *     assessmentWeights attached. Callers cannot mutate live state.
  *   - Internal accessors (getDisciplineRecord, getDisciplineRecords,
- *     getDisciplineByNameRecord) keep returning LIVE REFERENCES. They are
- *     consumed by this module's own mutation paths, the cascade helpers, and
+ *     getDisciplineByNameRecord) return LIVE REFERENCES. They are consumed
+ *     by this module's own mutation paths, the cascade helpers, and
  *     AcademyQueries.
  *   - Pipeline validate() callbacks read from the `appData` argument the
  *     pipeline supplies, not from window.data via the internal accessors.
- *   - ObjectUtils.deepClone is used as the clone primitive. If cloning
- *     fails, the accessor throws. It does NOT fall back to returning the
- *     original reference, because that would silently alias live state.
+ *   - ObjectUtils.deepClone throws if cloning fails or if the clone is the
+ *     original reference. Aliasing is a bug, not a graceful degradation.
  *
  * WEEK SEMANTICS:
  *   - getActiveDisciplines(week) requires a valid week. It does NOT fall
  *     back to window.data.currentWeek. Callers that want "current week"
- *     must read it themselves and pass it explicitly. This removes the
- *     module's hidden dependency on global state.
+ *     must read it themselves and pass it explicitly.
  *
  * GRADE SCHEME SEMANTICS:
  *   - Each discipline carries a `gradeScheme` object.
- *   - Schemes are FULLY user-editable. Presets (Letter, Pass/Fail, Numeric)
- *     only seed the bands array. Nothing is derived from the preset id at
- *     read time.
+ *   - Schemes are FULLY user-editable. Presets only seed the bands array.
  *   - The scheme is a DISPLAY layer. Grades are always stored as percentages.
  *   - Missing gradeScheme on read → normalized to the numeric default.
  *     This is a READ-TIME normalization only; nothing is written to disk
@@ -55,6 +50,29 @@
  *   - Validation of the scheme shape is delegated to AcademyGradeSchemes.
  *   - isNumericScheme is NOT re-exported here. Callers use
  *     AcademyGradeSchemes.isNumericScheme directly.
+ *
+ * ASSESSMENT WEIGHTS SEMANTICS (Phase 3):
+ *   - Each discipline carries an `assessmentWeights` object: a map from
+ *     assessment type to a positive weight.
+ *   - Weight is a property of the ASSESSMENT TYPE within a discipline,
+ *     not of the individual grade record. The performance layer reads
+ *     this map to compute weighted averages.
+ *   - Canonical shape:
+ *       {
+ *         exam:          number > 0,
+ *         assignment:    number > 0,
+ *         participation: number > 0,
+ *         quiz:          number > 0,
+ *         project:       number > 0,
+ *         final:         number > 0
+ *       }
+ *   - All six keys are always present on a normalized map. Zero is not a
+ *     valid weight - a zero-weight assessment contributes nothing.
+ *   - Missing assessmentWeights on read → normalized to the default map.
+ *     Read-time normalization only; nothing is written to disk until the
+ *     user edits the discipline.
+ *   - The set of valid keys is owned by AcademyGrades.VALID_GRADE_TYPES.
+ *     It is not duplicated here.
  *
  * CASCADE SEMANTICS (deleteDiscipline):
  *   Deleting a discipline is a CASCADE. In a single transaction it:
@@ -86,6 +104,9 @@
  *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
  *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  *   - window.AcademyGradeSchemes (from academy-grade-schemes.js) - MANDATORY
+ *   - window.AcademyGrades (from academy-grades.js) - MANDATORY (for
+ *     VALID_GRADE_TYPES; AcademyGrades does not depend on this module,
+ *     so there is no cycle)
  *
  * USAGE:
  *   var disciplines = window.AcademyDisciplines;
@@ -93,7 +114,8 @@
  *   disciplines.create({
  *       name: 'Combat Training',
  *       type: 'mandatory',
- *       gradeScheme: AcademyGradeSchemes.getPreset('letter')
+ *       gradeScheme: AcademyGradeSchemes.getPreset('letter'),
+ *       assessmentWeights: { exam: 2.5, final: 3.0 }
  *   }).then(function(result) { ... });
  *
  *   disciplines.delete('disc_123').then(function(result) {
@@ -142,6 +164,10 @@
         missing.push('AcademyGradeSchemes.normalizeScheme');
     }
 
+    if (!window.AcademyGrades || !Array.isArray(window.AcademyGrades.VALID_GRADE_TYPES)) {
+        missing.push('AcademyGrades.VALID_GRADE_TYPES');
+    }
+
     if (missing.length > 0) {
         throw new Error('[AcademyDisciplines] Missing dependencies: ' + missing.join(', '));
     }
@@ -159,6 +185,7 @@
     var CalendarConstants = window.CalendarConstants;
     var CalendarValidation = window.CalendarValidation;
     var GradeSchemes = window.AcademyGradeSchemes;
+    var AcademyGrades = window.AcademyGrades;
 
     // ============================================================
     // CONSTANTS
@@ -180,6 +207,20 @@
     var MAX_WEIGHT = 10;
     var DEFAULT_WEIGHT = 1;
 
+    // ---- Assessment weights (Phase 3) ----
+
+    var MIN_ASSESSMENT_WEIGHT = 0.1;
+    var MAX_ASSESSMENT_WEIGHT = 10;
+
+    var DEFAULT_ASSESSMENT_WEIGHTS = Object.freeze({
+        exam: 2.0,
+        assignment: 1.0,
+        participation: 1.0,
+        quiz: 1.0,
+        project: 1.5,
+        final: 3.0
+    });
+
     // ============================================================
     // HELPERS
     // ============================================================
@@ -199,14 +240,8 @@
     /**
      * Deep clone a value.
      *
-     * READ SAFETY: this primitive throws if cloning fails. It does NOT
-     * fall back to returning the original reference, because that would
-     * silently alias live state and let callers mutate the store by
-     * writing to a "cloned" result.
-     *
-     * @param {*} value - Value to clone
-     * @returns {*} Deep clone
-     * @throws {Error} If cloning fails
+     * READ SAFETY: throws if cloning fails or if the clone is the
+     * original reference. Aliasing is a bug, not a graceful degradation.
      */
     function deepClone(value) {
         var result = ObjectUtils.deepClone(value);
@@ -235,25 +270,12 @@
     // GRADE SCHEME HELPERS
     // ============================================================
 
-    /**
-     * Normalize a grade scheme to canonical shape.
-     * Missing or malformed → numeric default.
-     * Always returns a frozen, valid scheme.
-     */
     function normalizeGradeScheme(raw) {
         return GradeSchemes.normalizeScheme(raw);
     }
 
-    /**
-     * Validate a grade scheme.
-     * Returns { valid: boolean, message?: string }.
-     *
-     * The caller-facing shape is flatter than the raw validator:
-     * callers get a single message string, not an error array.
-     */
     function validateGradeScheme(raw) {
         if (raw === undefined || raw === null) {
-            // Absent scheme → defaults will be applied. Valid.
             return { valid: true };
         }
 
@@ -262,7 +284,6 @@
             return { valid: true };
         }
 
-        // Build a single human-readable message.
         var messages = [];
         for (var i = 0; i < result.errors.length; i++) {
             if (result.errors[i] && result.errors[i].message) {
@@ -278,9 +299,151 @@
         };
     }
 
-    // NOTE: isNumericScheme is NOT re-exported here. It was a passthrough
-    // to GradeSchemes.isNumericScheme. Callers should use
-    // AcademyGradeSchemes.isNumericScheme directly.
+    // NOTE: isNumericScheme is deliberately NOT re-exported here.
+    // Callers use AcademyGradeSchemes.isNumericScheme directly.
+
+    // ============================================================
+    // ASSESSMENT WEIGHT HELPERS (Phase 3)
+    // ============================================================
+
+    function getValidAssessmentTypes() {
+        return AcademyGrades.VALID_GRADE_TYPES.slice();
+    }
+
+    /**
+     * Get a fresh, unfrozen copy of the default assessment weights map.
+     */
+    function getDefaultAssessmentWeights() {
+        var copy = {};
+        var types = AcademyGrades.VALID_GRADE_TYPES;
+        for (var i = 0; i < types.length; i++) {
+            var type = types[i];
+            copy[type] = DEFAULT_ASSESSMENT_WEIGHTS[type];
+        }
+        return copy;
+    }
+
+    /**
+     * Normalize an assessmentWeights map to canonical shape.
+     *
+     * SEMANTICS:
+     *   - Missing or malformed input -> returns the default map.
+     *   - Missing keys -> filled with the default value for that key.
+     *   - Unknown keys -> dropped silently. The strict validator is
+     *     what rejects typos; this normalizer only produces a usable
+     *     shape.
+     *   - Invalid values (NaN, Infinity, non-number, <= 0) -> replaced
+     *     with the default for that key.
+     *   - Values outside [MIN, MAX] -> clamped.
+     *   - Values are rounded to one decimal place.
+     *
+     * Returns a fresh plain object (not frozen).
+     */
+    function normalizeAssessmentWeights(raw) {
+        var result = {};
+        var types = AcademyGrades.VALID_GRADE_TYPES;
+
+        // Seed with defaults for every valid type.
+        for (var i = 0; i < types.length; i++) {
+            result[types[i]] = DEFAULT_ASSESSMENT_WEIGHTS[types[i]];
+        }
+
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+            return result;
+        }
+
+        for (var j = 0; j < types.length; j++) {
+            var validType = types[j];
+            if (!Object.prototype.hasOwnProperty.call(raw, validType)) {
+                continue;
+            }
+
+            var value = Number(raw[validType]);
+            if (!isFinite(value) || value <= 0) {
+                continue;  // keep the default
+            }
+
+            if (value < MIN_ASSESSMENT_WEIGHT) value = MIN_ASSESSMENT_WEIGHT;
+            if (value > MAX_ASSESSMENT_WEIGHT) value = MAX_ASSESSMENT_WEIGHT;
+
+            result[validType] = Math.round(value * 10) / 10;
+        }
+
+        return result;
+    }
+
+    /**
+     * Validate an assessmentWeights map as supplied by a caller.
+     *
+     * STRICTER than normalizeAssessmentWeights:
+     *   - Unknown keys are REJECTED (catches typos like "exams").
+     *   - Out-of-range values are REJECTED, not clamped.
+     *
+     * Missing keys are NOT rejected. A partial map like { exam: 2.5 }
+     * is valid; missing keys fill with defaults during normalization.
+     */
+    function validateAssessmentWeights(raw) {
+        if (raw === undefined || raw === null) {
+            return { valid: true };
+        }
+
+        if (typeof raw !== 'object' || Array.isArray(raw)) {
+            return { valid: false, message: 'Assessment weights must be an object.' };
+        }
+
+        var validTypes = AcademyGrades.VALID_GRADE_TYPES;
+        var keys = Object.keys(raw);
+
+        for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
+
+            if (validTypes.indexOf(key) === -1) {
+                return {
+                    valid: false,
+                    message: 'Unknown assessment type: "' + key + '". ' +
+                        'Valid types are: ' + validTypes.join(', ') + '.'
+                };
+            }
+
+            var value = raw[key];
+
+            if (typeof value !== 'number' || !isFinite(value)) {
+                return {
+                    valid: false,
+                    message: 'Weight for "' + key + '" must be a finite number.'
+                };
+            }
+
+            if (value < MIN_ASSESSMENT_WEIGHT || value > MAX_ASSESSMENT_WEIGHT) {
+                return {
+                    valid: false,
+                    message: 'Weight for "' + key + '" must be between ' +
+                        MIN_ASSESSMENT_WEIGHT + ' and ' + MAX_ASSESSMENT_WEIGHT + '.'
+                };
+            }
+        }
+
+        return { valid: true };
+    }
+
+    /**
+     * Does a discipline's assessmentWeights map equal the default?
+     */
+    function isDefaultAssessmentWeights(weights) {
+        if (!weights || typeof weights !== 'object') {
+            return true;
+        }
+
+        var types = AcademyGrades.VALID_GRADE_TYPES;
+        for (var i = 0; i < types.length; i++) {
+            var type = types[i];
+            if (weights[type] !== DEFAULT_ASSESSMENT_WEIGHTS[type]) {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     // ============================================================
     // DATA STORE ACCESS - INTERNAL
@@ -293,8 +456,8 @@
     //     of a read.
     //
     //   Structure creation happens ONLY inside pipeline mutate()
-    //   callbacks, operating on the appData snapshot the pipeline
-    //   hands in. That keeps reads side-effect free.
+    //   callbacks via ensureDisciplineStore, which operates on the
+    //   appData snapshot the pipeline hands in.
 
     function getDataStore() {
         if (!window.data || typeof window.data !== 'object') {
@@ -391,18 +554,23 @@
 
     /**
      * Internal normalization for reads.
-     * Ensures `gradeScheme` is always present and canonical on
-     * returned copies. Never writes to the live store.
      *
-     * NOTE: The live record itself is NOT modified here. Only the
-     * clone returned to the caller gains a normalized scheme.
+     * Ensures `gradeScheme` and `assessmentWeights` are present and
+     * canonical on the returned copy. The live record itself is NOT
+     * modified here. Only the clone returned to the caller gains the
+     * normalized fields.
+     *
+     * Name is a historical artifact: this function used to only
+     * attach a normalized scheme. It now attaches both, but the name
+     * is retained to avoid churn in the call sites.
      */
-    function attachNormalizedScheme(record) {
+    function attachNormalizedConfig(record) {
         if (!record || typeof record !== 'object') {
             return record;
         }
         var copy = deepClone(record);
         copy.gradeScheme = normalizeGradeScheme(record.gradeScheme);
+        copy.assessmentWeights = normalizeAssessmentWeights(record.assessmentWeights);
         return copy;
     }
 
@@ -466,11 +634,17 @@
             }
         }
 
-        // ---- Grade scheme ----
         if (data.gradeScheme !== undefined) {
             var schemeCheck = validateGradeScheme(data.gradeScheme);
             if (!schemeCheck.valid) {
                 return { valid: false, message: schemeCheck.message };
+            }
+        }
+
+        if (data.assessmentWeights !== undefined) {
+            var weightsCheck = validateAssessmentWeights(data.assessmentWeights);
+            if (!weightsCheck.valid) {
+                return { valid: false, message: weightsCheck.message };
             }
         }
 
@@ -484,17 +658,17 @@
     /**
      * Build a canonical discipline record from raw data.
      *
-     * The `gradeScheme` field is always present on the output. If the
-     * caller did not supply one, the numeric default is used.
+     * `gradeScheme` and `assessmentWeights` are always present on the
+     * output. If the caller did not supply one, the existing one (on
+     * update) or the default (on create) is used.
      *
-     * @param {object} data              - Raw input
-     * @param {string|null} existingId   - ID to reuse (update path)
-     * @param {string|null} existingCreatedAt - createdAt to preserve
-     * @param {object|null} existingScheme    - Scheme to fall back to
-     *                                          when data.gradeScheme is
-     *                                          absent (update path)
+     * @param {object} data                    - Raw input
+     * @param {string|null} existingId         - ID to reuse (update path)
+     * @param {string|null} existingCreatedAt  - createdAt to preserve
+     * @param {object|null} existingScheme     - Scheme fallback (update path)
+     * @param {object|null} existingWeights    - Weights fallback (update path)
      */
-    function buildDisciplineRecord(data, existingId, existingCreatedAt, existingScheme) {
+    function buildDisciplineRecord(data, existingId, existingCreatedAt, existingScheme, existingWeights) {
         var now = new Date().toISOString();
 
         var startWeek = data.startWeek !== undefined
@@ -515,17 +689,24 @@
             ? data.instructorIds.map(function(id) { return String(id).trim(); })
             : [];
 
-        // Resolve grade scheme:
-        //   1. If data carries one, normalize it.
-        //   2. Else if we're updating, reuse the existing scheme.
-        //   3. Else fall back to numeric default.
+        // ---- Resolve grade scheme ----
         var scheme;
         if (data.gradeScheme !== undefined && data.gradeScheme !== null) {
             scheme = normalizeGradeScheme(data.gradeScheme);
         } else if (existingScheme !== undefined && existingScheme !== null) {
             scheme = normalizeGradeScheme(existingScheme);
         } else {
-            scheme = normalizeGradeScheme(null); // → numeric default
+            scheme = normalizeGradeScheme(null); // numeric default
+        }
+
+        // ---- Resolve assessment weights ----
+        var weights;
+        if (data.assessmentWeights !== undefined && data.assessmentWeights !== null) {
+            weights = normalizeAssessmentWeights(data.assessmentWeights);
+        } else if (existingWeights !== undefined && existingWeights !== null) {
+            weights = normalizeAssessmentWeights(existingWeights);
+        } else {
+            weights = normalizeAssessmentWeights(null); // default map
         }
 
         return {
@@ -538,6 +719,7 @@
             weeklyHours: weeklyHours,
             weight: weight,
             gradeScheme: scheme,
+            assessmentWeights: weights,
             createdAt: existingCreatedAt || now,
             updatedAt: now
         };
@@ -754,27 +936,24 @@
 
     /**
      * Create a new discipline.
-     *
-     * @param {object} data - Discipline data, may include `gradeScheme`
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
     function create(data) {
-        // ---- PHASE 1: VALIDATE INPUT ----
+        // ---- VALIDATE INPUT ----
         var validation = validateDisciplineData(data, false);
         if (!validation.valid) {
             return Promise.resolve(failure(validation.message));
         }
 
-        // ---- PHASE 2: CHECK FOR DUPLICATE NAME (pre-flight) ----
+        // ---- CHECK FOR DUPLICATE NAME (pre-flight) ----
         var existing = getDisciplineByNameRecord(data.name);
         if (existing) {
             return Promise.resolve(failure('A discipline with this name already exists.'));
         }
 
-        // ---- PHASE 3: BUILD CANDIDATE ----
+        // ---- BUILD CANDIDATE ----
         var newDiscipline;
         try {
-            newDiscipline = buildDisciplineRecord(data, null, null, null);
+            newDiscipline = buildDisciplineRecord(data, null, null, null, null);
         } catch (e) {
             return Promise.resolve(failure(e.message || 'Failed to build discipline record.'));
         }
@@ -785,13 +964,12 @@
 
         var targetId = newDiscipline.id;
 
-        // ---- PHASE 4: PIPELINE MUTATION ----
+        // ---- PIPELINE MUTATION ----
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
                     return { valid: false, message: 'Application data is not available.' };
                 }
-                // Read the snapshot, not window.data.
                 var curriculum = appData.curriculum;
                 if (curriculum && Array.isArray(curriculum.disciplines)) {
                     var nameLower = newDiscipline.name.toLowerCase();
@@ -817,10 +995,6 @@
 
     /**
      * Update an existing discipline.
-     *
-     * @param {string} id - Discipline ID
-     * @param {object} updates - Updates to apply, may include `gradeScheme`
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
     function update(id, updates) {
         if (!isNonEmptyString(id)) {
@@ -850,7 +1024,7 @@
 
         var hasChanges = false;
 
-        // Name update
+        // Name
         if (updates.name !== undefined) {
             var newName = String(updates.name).trim();
             if (!newName) {
@@ -866,7 +1040,7 @@
             }
         }
 
-        // Type update
+        // Type
         if (updates.type !== undefined) {
             if (VALID_DISCIPLINE_TYPES.indexOf(updates.type) === -1) {
                 return Promise.resolve(failure('Invalid type. Must be one of: ' + VALID_DISCIPLINE_TYPES.join(', ')));
@@ -877,7 +1051,7 @@
             }
         }
 
-        // Instructor IDs update
+        // Instructors
         if (updates.instructorIds !== undefined) {
             if (!Array.isArray(updates.instructorIds)) {
                 return Promise.resolve(failure('Instructor IDs must be an array.'));
@@ -898,7 +1072,7 @@
             }
         }
 
-        // Start week update
+        // Start week
         if (updates.startWeek !== undefined) {
             var startWeek = CalendarValidation.parseWeek(updates.startWeek);
             if (startWeek === null || startWeek < MIN_WEEK || startWeek > MAX_WEEK) {
@@ -910,7 +1084,7 @@
             }
         }
 
-        // End week update
+        // End week
         if (updates.endWeek !== undefined) {
             var endWeek = CalendarValidation.parseWeek(updates.endWeek);
             if (endWeek === null || endWeek < MIN_WEEK || endWeek > MAX_WEEK) {
@@ -922,7 +1096,7 @@
             }
         }
 
-        // Weekly hours update
+        // Weekly hours
         if (updates.weeklyHours !== undefined) {
             var weeklyHours = Number(updates.weeklyHours);
             if (isNaN(weeklyHours) || weeklyHours < MIN_WEEKLY_HOURS || weeklyHours > MAX_WEEKLY_HOURS) {
@@ -934,7 +1108,7 @@
             }
         }
 
-        // Weight update
+        // Weight
         if (updates.weight !== undefined) {
             var weight = Number(updates.weight);
             if (isNaN(weight) || weight < MIN_WEIGHT || weight > MAX_WEIGHT) {
@@ -946,7 +1120,7 @@
             }
         }
 
-        // Grade scheme update
+        // Grade scheme
         if (updates.gradeScheme !== undefined) {
             var schemeCheck = validateGradeScheme(updates.gradeScheme);
             if (!schemeCheck.valid) {
@@ -962,12 +1136,31 @@
             }
         }
 
+        // Assessment weights
+        if (updates.assessmentWeights !== undefined) {
+            var weightsCheck = validateAssessmentWeights(updates.assessmentWeights);
+            if (!weightsCheck.valid) {
+                return Promise.resolve(failure(weightsCheck.message));
+            }
+
+            var newWeights = normalizeAssessmentWeights(updates.assessmentWeights);
+            var oldWeightsJson = JSON.stringify(candidate.assessmentWeights || null);
+            var newWeightsJson = JSON.stringify(newWeights);
+            if (oldWeightsJson !== newWeightsJson) {
+                candidate.assessmentWeights = newWeights;
+                hasChanges = true;
+            }
+        }
+
         if (candidate.startWeek > candidate.endWeek) {
             return Promise.resolve(failure('Start week cannot be after end week.'));
         }
 
         if (!hasChanges) {
-            return Promise.resolve(success({ discipline: attachNormalizedScheme(candidate), changed: false }));
+            return Promise.resolve(success({
+                discipline: attachNormalizedConfig(candidate),
+                changed: false
+            }));
         }
 
         candidate.updatedAt = new Date().toISOString();
@@ -1015,10 +1208,6 @@
      * Delete a discipline permanently.
      *
      * CASCADE: removes all references to the discipline in one transaction.
-     * See the CASCADE SEMANTICS block at the top of this file.
-     *
-     * @param {string} id - Discipline ID
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
     function deleteDiscipline(id) {
         if (!isNonEmptyString(id)) {
@@ -1119,21 +1308,20 @@
     // ============================================================
     //
     // These are the consumer-facing lookups. They return DEEP CLONES
-    // (with a normalized gradeScheme attached) so callers cannot
-    // mutate live state by writing to a returned discipline. Internal
-    // code paths within this module continue to use the
-    // *Internal accessors, which return live references.
+    // with a normalized gradeScheme AND a normalized assessmentWeights
+    // attached. Internal code paths within this module continue to use
+    // the *Internal accessors, which return live references.
 
     function getDiscipline(id) {
         var record = getDisciplineRecord(id);
-        return record ? attachNormalizedScheme(record) : null;
+        return record ? attachNormalizedConfig(record) : null;
     }
 
     function getDisciplines() {
         var records = getDisciplineRecords();
         var result = [];
         for (var i = 0; i < records.length; i++) {
-            result.push(attachNormalizedScheme(records[i]));
+            result.push(attachNormalizedConfig(records[i]));
         }
         return result;
     }
@@ -1148,7 +1336,7 @@
 
         for (var i = 0; i < all.length; i++) {
             if (all[i].type === type) {
-                result.push(attachNormalizedScheme(all[i]));
+                result.push(attachNormalizedConfig(all[i]));
             }
         }
 
@@ -1169,7 +1357,7 @@
             if (d.instructorIds && Array.isArray(d.instructorIds)) {
                 for (var j = 0; j < d.instructorIds.length; j++) {
                     if (String(d.instructorIds[j]) === target) {
-                        result.push(attachNormalizedScheme(d));
+                        result.push(attachNormalizedConfig(d));
                         break;
                     }
                 }
@@ -1191,7 +1379,7 @@
         for (var i = 0; i < all.length; i++) {
             var d = all[i];
             if (d.startWeek <= weekNum && d.endWeek >= weekNum) {
-                result.push(attachNormalizedScheme(d));
+                result.push(attachNormalizedConfig(d));
             }
         }
 
@@ -1205,14 +1393,8 @@
     /**
      * Get disciplines active in the specified week.
      *
-     * WEEK SEMANTICS (Phase 2):
-     *   `currentWeek` is REQUIRED. This function does NOT fall back to
-     *   window.data.currentWeek. Callers that want "the current week"
-     *   must read it from wherever they consider authoritative and
-     *   pass it in explicitly. An invalid or missing week returns [].
-     *
-     * @param {number|string} currentWeek - Week number (1-52)
-     * @returns {array} Array of cloned discipline records
+     * WEEK SEMANTICS: `currentWeek` is REQUIRED. No fallback to
+     * window.data.currentWeek. An invalid or missing week returns [].
      */
     function getActiveDisciplines(currentWeek) {
         var week = CalendarValidation.parseWeek(currentWeek);
@@ -1225,7 +1407,6 @@
 
     /**
      * Get a discipline's grade scheme, normalized.
-     * Convenience helper for callers that only need the scheme.
      * Returns the numeric default if the discipline has no scheme or
      * does not exist.
      */
@@ -1237,20 +1418,33 @@
         return normalizeGradeScheme(record.gradeScheme);
     }
 
+    /**
+     * Get a discipline's assessment weights, normalized.
+     * Returns a fresh copy of the default map if the discipline does
+     * not exist or has no weights.
+     */
+    function getAssessmentWeights(id) {
+        var record = getDisciplineRecord(id);
+        if (!record) {
+            return getDefaultAssessmentWeights();
+        }
+        return normalizeAssessmentWeights(record.assessmentWeights);
+    }
+
+    /**
+     * Get the default assessment weights map.
+     * Fresh copy; safe to mutate.
+     */
+    function getDefaultAssessmentWeightsPublic() {
+        return getDefaultAssessmentWeights();
+    }
+
     // ============================================================
     // BULK OPERATIONS - Via MutationPipeline
     // ============================================================
 
     /**
      * Save multiple disciplines at once.
-     *
-     * PLAN / APPLY: validate each entry, decide create/update/skip,
-     * apply all writes in a single transaction.
-     *
-     * @param {array} disciplinesData - Array of discipline data objects
-     * @param {object} options - Save options
-     * @param {boolean} options.overwrite - Overwrite existing disciplines (default: true)
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
     function saveDisciplines(disciplinesData, options) {
         if (!Array.isArray(disciplinesData) || disciplinesData.length === 0) {
@@ -1290,14 +1484,20 @@
             }
 
             if (existing) {
-                var candidate = buildDisciplineRecord(data, existing.id, existing.createdAt, existing.gradeScheme);
+                var candidate = buildDisciplineRecord(
+                    data,
+                    existing.id,
+                    existing.createdAt,
+                    existing.gradeScheme,
+                    existing.assessmentWeights
+                );
                 if (candidate.startWeek > candidate.endWeek) {
                     errors.push({ index: i, error: 'Start week cannot be after end week.' });
                     continue;
                 }
                 planned.push({ action: 'update', record: candidate, matchId: existing.id });
             } else {
-                var newRecord = buildDisciplineRecord(data, null, null, null);
+                var newRecord = buildDisciplineRecord(data, null, null, null, null);
                 if (newRecord.startWeek > newRecord.endWeek) {
                     errors.push({ index: i, error: 'Start week cannot be after end week.' });
                     continue;
@@ -1403,10 +1603,16 @@
         getAvailableDisciplines: getAvailableDisciplines,
         getActiveDisciplines: getActiveDisciplines,
 
-        // ---- Grade scheme helper ----
+        // ---- Grade scheme helpers ----
         getGradeScheme: getGradeScheme,
-        // NOTE: isNumericScheme is NOT exported here. Use
+        // isNumericScheme is NOT exported here. Callers use
         // AcademyGradeSchemes.isNumericScheme directly.
+
+        // ---- Assessment weight helpers (Phase 3) ----
+        getAssessmentWeights: getAssessmentWeights,
+        getDefaultAssessmentWeights: getDefaultAssessmentWeightsPublic,
+        isDefaultAssessmentWeights: isDefaultAssessmentWeights,
+        getValidAssessmentTypes: getValidAssessmentTypes,
 
         // ---- Internal (LIVE REFERENCES - for AcademyQueries and internal use) ----
         getDisciplineRecord: getDisciplineRecord,
@@ -1423,7 +1629,10 @@
         MIN_WEIGHT: MIN_WEIGHT,
         MAX_WEIGHT: MAX_WEIGHT,
         DEFAULT_WEEKLY_HOURS: DEFAULT_WEEKLY_HOURS,
-        DEFAULT_WEIGHT: DEFAULT_WEIGHT
+        DEFAULT_WEIGHT: DEFAULT_WEIGHT,
+        DEFAULT_ASSESSMENT_WEIGHTS: DEFAULT_ASSESSMENT_WEIGHTS,
+        MIN_ASSESSMENT_WEIGHT: MIN_ASSESSMENT_WEIGHT,
+        MAX_ASSESSMENT_WEIGHT: MAX_ASSESSMENT_WEIGHT
     };
 
     // ============================================================
@@ -1440,6 +1649,8 @@
             'getDisciplinesByInstructor', 'getAvailableDisciplines',
             'getActiveDisciplines',
             'getGradeScheme',
+            'getAssessmentWeights', 'getDefaultAssessmentWeights',
+            'isDefaultAssessmentWeights', 'getValidAssessmentTypes',
             'getDisciplineRecord', 'getDisciplineRecords', 'getDisciplineByNameRecord'
         ];
 
