@@ -2,11 +2,14 @@
  * modules/academy/academy-disciplines.js - Academy Disciplines
  * SINGLE SOURCE OF TRUTH for all discipline/curriculum data and operations
  *
+ * Path: js/modules/academy/academy-disciplines.js
+ *
  * This module is responsible for:
  *   - Discipline CRUD operations (create, update, delete)
  *   - Discipline queries (get by ID, get all, get available)
  *   - Discipline validation
  *   - Instructor assignment for disciplines
+ *   - Grade scheme ownership (stored on the discipline record)
  *
  * IMPORTANT:
  *   - This module OWNS discipline data - it does NOT depend on AcademyQueries
@@ -16,6 +19,17 @@
  *   - Mutations are ATOMIC: if persistence fails, window.data is restored
  *   - This module does NOT call saveData() directly - the pipeline does
  *   - AcademyQueries is the PUBLIC read facade that uses these internal lookups
+ *
+ * GRADE SCHEME SEMANTICS (new in this version):
+ *   - Each discipline carries a `gradeScheme` object.
+ *   - Schemes are FULLY user-editable. Presets (Letter, Pass/Fail, Numeric)
+ *     only seed the bands array. Nothing is derived from the preset id at
+ *     read time.
+ *   - The scheme is a DISPLAY layer. Grades are always stored as percentages.
+ *   - Missing gradeScheme on read → normalized to the numeric default.
+ *     This is a READ-TIME normalization only; nothing is written to disk
+ *     until the user edits the discipline.
+ *   - Validation of the scheme shape is delegated to AcademyGradeSchemes.
  *
  * CASCADE SEMANTICS (deleteDiscipline):
  *   Deleting a discipline is a CASCADE. In a single transaction it:
@@ -46,12 +60,16 @@
  *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
  *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
  *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
+ *   - window.AcademyGradeSchemes (from academy-grade-schemes.js) - MANDATORY
  *
  * USAGE:
  *   var disciplines = window.AcademyDisciplines;
  *
- *   disciplines.create({ name: 'Combat Training', type: 'mandatory' })
- *       .then(function(result) { ... });
+ *   disciplines.create({
+ *       name: 'Combat Training',
+ *       type: 'mandatory',
+ *       gradeScheme: AcademyGradeSchemes.getPreset('letter')
+ *   }).then(function(result) { ... });
  *
  *   disciplines.delete('disc_123').then(function(result) {
  *       // result.data.cascade contains the cascade summary
@@ -95,6 +113,10 @@
         missing.push('CalendarValidation.parseWeek');
     }
 
+    if (!window.AcademyGradeSchemes || typeof window.AcademyGradeSchemes.normalizeScheme !== 'function') {
+        missing.push('AcademyGradeSchemes.normalizeScheme');
+    }
+
     if (missing.length > 0) {
         throw new Error('[AcademyDisciplines] Missing dependencies: ' + missing.join(', '));
     }
@@ -111,6 +133,7 @@
     var MutationPipeline = window.MutationPipeline;
     var CalendarConstants = window.CalendarConstants;
     var CalendarValidation = window.CalendarValidation;
+    var GradeSchemes = window.AcademyGradeSchemes;
 
     // ============================================================
     // CONSTANTS
@@ -162,6 +185,61 @@
 
     function success(data) {
         return { success: true, data: data };
+    }
+
+    // ============================================================
+    // GRADE SCHEME HELPERS
+    // ============================================================
+
+    /**
+     * Normalize a grade scheme to canonical shape.
+     * Missing or malformed → numeric default.
+     * Always returns a frozen, valid scheme.
+     */
+    function normalizeGradeScheme(raw) {
+        return GradeSchemes.normalizeScheme(raw);
+    }
+
+    /**
+     * Validate a grade scheme.
+     * Returns { valid: boolean, message?: string }.
+     *
+     * The caller-facing shape is flatter than the raw validator:
+     * callers get a single message string, not an error array.
+     */
+    function validateGradeScheme(raw) {
+        if (raw === undefined || raw === null) {
+            // Absent scheme → defaults will be applied. Valid.
+            return { valid: true };
+        }
+
+        var result = GradeSchemes.validateScheme(raw);
+        if (result.valid) {
+            return { valid: true };
+        }
+
+        // Build a single human-readable message.
+        var messages = [];
+        for (var i = 0; i < result.errors.length; i++) {
+            if (result.errors[i] && result.errors[i].message) {
+                messages.push(result.errors[i].message);
+            }
+        }
+
+        return {
+            valid: false,
+            message: messages.length > 0
+                ? messages.join(' ')
+                : 'Grade scheme is invalid.'
+        };
+    }
+
+    /**
+     * Does a discipline's scheme equal the numeric default?
+     * Used by the view to decide whether to render a "Numeric" hint.
+     */
+    function isNumericScheme(scheme) {
+        return GradeSchemes.isNumericScheme(scheme);
     }
 
     // ============================================================
@@ -253,6 +331,23 @@
         return null;
     }
 
+    /**
+     * Internal normalization for reads.
+     * Ensures `gradeScheme` is always present and canonical on
+     * returned copies. Never writes to the live store.
+     *
+     * NOTE: The live record itself is NOT modified here. Only the
+     * clone returned to the caller gains a normalized scheme.
+     */
+    function attachNormalizedScheme(record) {
+        if (!record || typeof record !== 'object') {
+            return record;
+        }
+        var copy = deepClone(record);
+        copy.gradeScheme = normalizeGradeScheme(record.gradeScheme);
+        return copy;
+    }
+
     // ============================================================
     // DISCIPLINE VALIDATION
     // ============================================================
@@ -313,6 +408,14 @@
             }
         }
 
+        // ---- Grade scheme ----
+        if (data.gradeScheme !== undefined) {
+            var schemeCheck = validateGradeScheme(data.gradeScheme);
+            if (!schemeCheck.valid) {
+                return { valid: false, message: schemeCheck.message };
+            }
+        }
+
         return { valid: true };
     }
 
@@ -320,7 +423,20 @@
     // INTERNAL CANDIDATE BUILDER
     // ============================================================
 
-    function buildDisciplineRecord(data, existingId, existingCreatedAt) {
+    /**
+     * Build a canonical discipline record from raw data.
+     *
+     * The `gradeScheme` field is always present on the output. If the
+     * caller did not supply one, the numeric default is used.
+     *
+     * @param {object} data              - Raw input
+     * @param {string|null} existingId   - ID to reuse (update path)
+     * @param {string|null} existingCreatedAt - createdAt to preserve
+     * @param {object|null} existingScheme    - Scheme to fall back to
+     *                                          when data.gradeScheme is
+     *                                          absent (update path)
+     */
+    function buildDisciplineRecord(data, existingId, existingCreatedAt, existingScheme) {
         var now = new Date().toISOString();
 
         var startWeek = data.startWeek !== undefined
@@ -341,6 +457,19 @@
             ? data.instructorIds.map(function(id) { return String(id).trim(); })
             : [];
 
+        // Resolve grade scheme:
+        //   1. If data carries one, normalize it.
+        //   2. Else if we're updating, reuse the existing scheme.
+        //   3. Else fall back to numeric default.
+        var scheme;
+        if (data.gradeScheme !== undefined && data.gradeScheme !== null) {
+            scheme = normalizeGradeScheme(data.gradeScheme);
+        } else if (existingScheme !== undefined && existingScheme !== null) {
+            scheme = normalizeGradeScheme(existingScheme);
+        } else {
+            scheme = normalizeGradeScheme(null); // → numeric default
+        }
+
         return {
             id: existingId || generateId(),
             name: String(data.name).trim(),
@@ -350,6 +479,7 @@
             endWeek: endWeek,
             weeklyHours: weeklyHours,
             weight: weight,
+            gradeScheme: scheme,
             createdAt: existingCreatedAt || now,
             updatedAt: now
         };
@@ -359,13 +489,6 @@
     // CASCADE HELPERS - Remove all references to a discipline ID
     // ============================================================
 
-    /**
-     * Strip a discipline ID from all student weekly schedules.
-     * Deletes the discipline ID wherever it appears as a slot value,
-     * then removes empty day and week containers.
-     *
-     * Returns the number of slot values removed.
-     */
     function stripDisciplineFromSchedules(curriculum, disciplineId) {
         var schedules = curriculum.schedules;
         if (!schedules || typeof schedules !== 'object') {
@@ -418,12 +541,6 @@
         return removedCount;
     }
 
-    /**
-     * Strip a discipline ID from all location weekly schedules.
-     * Same shape as student schedules, just keyed by locationId.
-     *
-     * Returns the number of slot values removed.
-     */
     function stripDisciplineFromLocationSchedules(curriculum, disciplineId) {
         var schedules = curriculum.locationSchedules;
         if (!schedules || typeof schedules !== 'object') {
@@ -476,10 +593,6 @@
         return removedCount;
     }
 
-    /**
-     * Remove auto-groups whose disciplineId matches.
-     * Returns the number of groups removed.
-     */
     function stripDisciplineFromAutoGroups(curriculum, disciplineId) {
         var store = curriculum.autoGroups;
         if (!store || typeof store !== 'object') {
@@ -503,22 +616,6 @@
         return keysToRemove.length;
     }
 
-    /**
-     * Prune metadata keys whose target slot no longer exists.
-     *
-     * Metadata keys are composite strings formatted as
-     * `${entityId}_${week}_${day}_${hour}`. The entity is either a
-     * student (in `curriculum.schedules`) or a location (in
-     * `curriculum.locationSchedules`).
-     *
-     * The strategy here is generic: for each metadata key, split out
-     * the entity and coordinates. If the corresponding schedule slot
-     * no longer exists, drop the metadata entry. This avoids hard-
-     * coding the key shape into the discipline cascade — the same
-     * helper can be used by any future cascade that mutates schedules.
-     *
-     * Returns the number of metadata entries pruned.
-     */
     function pruneOrphanedMetadata(curriculum) {
         var metadata = curriculum.metadata;
         if (!metadata || typeof metadata !== 'object') {
@@ -530,10 +627,8 @@
         var keysToRemove = [];
 
         Object.keys(metadata).forEach(function(key) {
-            // Key shape: entityId_week_day_hour
             var parts = String(key).split('_');
             if (parts.length < 4) {
-                // Not a composite key we recognise; leave it alone.
                 return;
             }
 
@@ -544,7 +639,6 @@
 
             var slotExists = false;
 
-            // Try student schedule
             if (schedules[entityId] &&
                 schedules[entityId][week] &&
                 schedules[entityId][week][day] &&
@@ -552,7 +646,6 @@
                 slotExists = true;
             }
 
-            // Try location schedule
             if (!slotExists &&
                 locationSchedules[entityId] &&
                 locationSchedules[entityId][week] &&
@@ -573,10 +666,6 @@
         return keysToRemove.length;
     }
 
-    /**
-     * Remove academy.grades entries whose disciplineId matches.
-     * Returns the number of grades removed.
-     */
     function stripDisciplineFromGrades(appData, disciplineId) {
         if (!appData.academy || !appData.academy.grades ||
             typeof appData.academy.grades !== 'object') {
@@ -608,7 +697,7 @@
     /**
      * Create a new discipline.
      *
-     * @param {object} data - Discipline data
+     * @param {object} data - Discipline data, may include `gradeScheme`
      * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
     function create(data) {
@@ -627,7 +716,7 @@
         // ---- PHASE 3: BUILD CANDIDATE ----
         var newDiscipline;
         try {
-            newDiscipline = buildDisciplineRecord(data, null, null);
+            newDiscipline = buildDisciplineRecord(data, null, null, null);
         } catch (e) {
             return Promise.resolve(failure(e.message || 'Failed to build discipline record.'));
         }
@@ -671,7 +760,7 @@
      * Update an existing discipline.
      *
      * @param {string} id - Discipline ID
-     * @param {object} updates - Updates to apply
+     * @param {object} updates - Updates to apply, may include `gradeScheme`
      * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
     function update(id, updates) {
@@ -740,7 +829,7 @@
                     newInstructors.push(String(updates.instructorIds[j]).trim());
                 }
             }
-            var currentSorted = candidate.instructorIds.slice().sort();
+            var currentSorted = (candidate.instructorIds || []).slice().sort();
             var newSorted = newInstructors.slice().sort();
             var changed = currentSorted.length !== newSorted.length ||
                 currentSorted.some(function(v, idx) { return v !== newSorted[idx]; });
@@ -798,12 +887,28 @@
             }
         }
 
+        // Grade scheme update
+        if (updates.gradeScheme !== undefined) {
+            var schemeCheck = validateGradeScheme(updates.gradeScheme);
+            if (!schemeCheck.valid) {
+                return Promise.resolve(failure(schemeCheck.message));
+            }
+
+            var newScheme = normalizeGradeScheme(updates.gradeScheme);
+            var oldSchemeJson = JSON.stringify(candidate.gradeScheme || null);
+            var newSchemeJson = JSON.stringify(newScheme);
+            if (oldSchemeJson !== newSchemeJson) {
+                candidate.gradeScheme = newScheme;
+                hasChanges = true;
+            }
+        }
+
         if (candidate.startWeek > candidate.endWeek) {
             return Promise.resolve(failure('Start week cannot be after end week.'));
         }
 
         if (!hasChanges) {
-            return Promise.resolve(success({ discipline: existing, changed: false }));
+            return Promise.resolve(success({ discipline: attachNormalizedScheme(candidate), changed: false }));
         }
 
         candidate.updatedAt = new Date().toISOString();
@@ -898,9 +1003,6 @@
                 var groupsRemoved = stripDisciplineFromAutoGroups(curriculum, target);
 
                 // ---- 5. Cascade: prune orphaned metadata ----
-                // Runs AFTER schedules and locationSchedules have been
-                // pruned, so any metadata pointing at a removed slot is
-                // dropped.
                 var metadataPruned = pruneOrphanedMetadata(curriculum);
 
                 // ---- 6. Cascade: remove grades keyed to this discipline ----
@@ -936,16 +1038,19 @@
     // ============================================================
     // QUERY FUNCTIONS - Read-only (synchronous)
     // ============================================================
+    //
+    // All read paths return records with `gradeScheme` normalized.
+    // The live store is not modified by reads.
 
     function getDiscipline(id) {
         var record = getDisciplineRecord(id);
-        return record ? deepClone(record) : null;
+        return record ? attachNormalizedScheme(record) : null;
     }
 
     function getDisciplines() {
         var records = getDisciplineRecords();
         return records.map(function(r) {
-            return deepClone(r);
+            return attachNormalizedScheme(r);
         });
     }
 
@@ -959,7 +1064,7 @@
 
         for (var i = 0; i < all.length; i++) {
             if (all[i].type === type) {
-                result.push(deepClone(all[i]));
+                result.push(attachNormalizedScheme(all[i]));
             }
         }
 
@@ -980,7 +1085,7 @@
             if (d.instructorIds && Array.isArray(d.instructorIds)) {
                 for (var j = 0; j < d.instructorIds.length; j++) {
                     if (String(d.instructorIds[j]) === target) {
-                        result.push(deepClone(d));
+                        result.push(attachNormalizedScheme(d));
                         break;
                     }
                 }
@@ -1002,7 +1107,7 @@
         for (var i = 0; i < all.length; i++) {
             var d = all[i];
             if (d.startWeek <= weekNum && d.endWeek >= weekNum) {
-                result.push(deepClone(d));
+                result.push(attachNormalizedScheme(d));
             }
         }
 
@@ -1021,6 +1126,20 @@
         }
 
         return getAvailableDisciplines(week);
+    }
+
+    /**
+     * Get a discipline's grade scheme, normalized.
+     * Convenience helper for callers that only need the scheme.
+     * Returns the numeric default if the discipline has no scheme or
+     * does not exist.
+     */
+    function getGradeScheme(id) {
+        var record = getDisciplineRecord(id);
+        if (!record) {
+            return normalizeGradeScheme(null);
+        }
+        return normalizeGradeScheme(record.gradeScheme);
     }
 
     // ============================================================
@@ -1076,14 +1195,14 @@
             }
 
             if (existing) {
-                var candidate = buildDisciplineRecord(data, existing.id, existing.createdAt);
+                var candidate = buildDisciplineRecord(data, existing.id, existing.createdAt, existing.gradeScheme);
                 if (candidate.startWeek > candidate.endWeek) {
                     errors.push({ index: i, error: 'Start week cannot be after end week.' });
                     continue;
                 }
                 planned.push({ action: 'update', record: candidate, matchId: existing.id });
             } else {
-                var newRecord = buildDisciplineRecord(data, null, null);
+                var newRecord = buildDisciplineRecord(data, null, null, null);
                 if (newRecord.startWeek > newRecord.endWeek) {
                     errors.push({ index: i, error: 'Start week cannot be after end week.' });
                     continue;
@@ -1189,6 +1308,10 @@
         getAvailableDisciplines: getAvailableDisciplines,
         getActiveDisciplines: getActiveDisciplines,
 
+        // ---- Grade scheme helper ----
+        getGradeScheme: getGradeScheme,
+        isNumericScheme: isNumericScheme,
+
         // ---- Internal (for AcademyQueries) ----
         getDisciplineRecord: getDisciplineRecord,
         getDisciplineRecords: getDisciplineRecords,
@@ -1206,5 +1329,33 @@
         DEFAULT_WEEKLY_HOURS: DEFAULT_WEEKLY_HOURS,
         DEFAULT_WEIGHT: DEFAULT_WEIGHT
     };
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.AcademyDisciplines;
+        var missing = [];
+
+        var required = [
+            'create', 'update', 'delete', 'saveDisciplines',
+            'getDiscipline', 'getDisciplines', 'getDisciplinesByType',
+            'getDisciplinesByInstructor', 'getAvailableDisciplines',
+            'getActiveDisciplines',
+            'getGradeScheme', 'isNumericScheme',
+            'getDisciplineRecord', 'getDisciplineRecords', 'getDisciplineByNameRecord'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        if (missing.length > 0) {
+            console.warn('[AcademyDisciplines] Verification - some exports may be missing:', missing.join(', '));
+        }
+    })();
 
 })();
