@@ -64,7 +64,6 @@
  * DEPENDENCIES:
  *   - window.AcademyQueries (from academy-queries.js) — MANDATORY
  *   - window.AcademySchedule (from academy-schedule.js) — MANDATORY
- *   - window.AcademyConstants (from academy-constants.js) — MANDATORY
  *   - window.CalendarConstants (from calendar-constants.js) — MANDATORY
  *   - window.CalendarValidation (from calendar-validation.js) — MANDATORY
  *   - window.CharacterQueries (from character-queries.js) — MANDATORY
@@ -88,7 +87,6 @@
 
     var AcademyQueries = window.AcademyQueries;
     var AcademySchedule = window.AcademySchedule;
-    var AcademyConstants = window.AcademyConstants;
     var CalendarConstants = window.CalendarConstants;
     var CalendarValidation = window.CalendarValidation;
     var CharacterQueries = window.CharacterQueries;
@@ -113,9 +111,14 @@
     var MIN_CLASS_DURATION = CalendarConstants.MIN_CLASS_DURATION;
     var DEFAULT_WEEK = 1;
 
-    var DEFAULT_MAX_PER_GROUP = AcademyConstants.MAX_TEAM_SIZE || 8;
-    var DEFAULT_MIN_PER_GROUP = AcademyConstants.MIN_TEAM_SIZE || 2;
-    var DEFAULT_TARGET_PER_GROUP = AcademyConstants.DEFAULT_TEAM_SIZE || 4;
+    // Group-size constraints for the distribution algorithm.
+    // These govern how the algorithm partitions students into
+    // working groups for scheduling. They are Academy distribution
+    // concerns, not Team-entity constraints, so they live here
+    // rather than in TeamConstants or AcademyConstants.
+    var DEFAULT_MAX_PER_GROUP = 8;
+    var DEFAULT_MIN_PER_GROUP = 2;
+    var DEFAULT_TARGET_PER_GROUP = 4;
 
     // ============================================================
     // HELPERS
