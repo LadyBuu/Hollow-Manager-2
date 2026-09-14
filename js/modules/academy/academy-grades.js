@@ -20,8 +20,25 @@
  *   - This module does NOT call saveData() directly - the pipeline does
  *   - AcademyQueries is the PUBLIC read facade that uses these internal lookups
  *
+ * READ SAFETY (Phase 2):
+ *   - getAcademyStore() returns null (does NOT create academy.{...}) when
+ *     the store is missing. Reads are side-effect free.
+ *   - Public queries (getStudentGrades, getClassGrades, getDisciplineGrades,
+ *     getWeekGrades, getGrade, getAllGrades) return DEEP CLONES. Callers
+ *     cannot mutate live state by writing to a returned grade.
+ *   - Internal accessors (getGradeRecord, getGradeRecords) keep returning
+ *     LIVE REFERENCES. They are consumed by this module's own mutation
+ *     paths and by AcademyQueries.
+ *   - Pipeline validate() callbacks read from the `appData` argument the
+ *     pipeline supplies, not from window.data via the internal accessors.
+ *     This makes validation consistent with the snapshot the mutation
+ *     will be applied to.
+ *   - ObjectUtils.deepClone is used as the clone primitive. If cloning
+ *     fails, the accessor throws. It does NOT fall back to returning the
+ *     original reference, because that would silently alias live state.
+ *
  * MUTATION CONTRACT:
- *   - create / update / delete / deleteStudentGrades / saveGrades / autoGenerate
+ *   - create / update / delete / deleteStudentGrades / saveGrades
  *     all return Promise<{ success, data?, message? }>
  *   - getStudentGrades / getClassGrades / getDisciplineGrades / getWeekGrades /
  *     getGrade / getAllGrades and all calculate* functions stay synchronous
@@ -166,8 +183,27 @@
         return typeof value === 'number' && isFinite(value);
     }
 
+    /**
+     * Deep clone a value.
+     *
+     * READ SAFETY: this primitive throws if cloning fails. It does NOT
+     * fall back to returning the original reference, because that would
+     * silently alias live state and let callers mutate the store by
+     * writing to a "cloned" result.
+     *
+     * @param {*} value - Value to clone
+     * @returns {*} Deep clone
+     * @throws {Error} If cloning fails
+     */
     function deepClone(value) {
-        return ObjectUtils.deepClone(value);
+        var result = ObjectUtils.deepClone(value);
+        if (result === value && value !== null && typeof value === 'object') {
+            throw new Error(
+                '[AcademyGrades] deepClone returned the original reference. ' +
+                'ObjectUtils.deepClone must return a genuine clone for objects.'
+            );
+        }
+        return result;
     }
 
     function generateId() {
@@ -200,6 +236,16 @@
     // ============================================================
     // DATA STORE ACCESS - INTERNAL (no AcademyQueries dependency)
     // ============================================================
+    //
+    // READ SAFETY:
+    //   - getDataStore() returns null when window.data is missing.
+    //   - getAcademyStore() returns null when window.data.academy is
+    //     missing. It does NOT create academy.{...} as a side effect
+    //     of a read.
+    //
+    //   Structure creation happens ONLY inside pipeline mutate()
+    //   callbacks, operating on the appData snapshot the pipeline
+    //   hands in. That keeps reads side-effect free.
 
     function getDataStore() {
         if (!window.data || typeof window.data !== 'object') {
@@ -215,28 +261,19 @@
         }
 
         if (!data.academy || typeof data.academy !== 'object') {
-            data.academy = {};
+            return null;
         }
 
         return data.academy;
     }
 
-    function ensureGradeStructures() {
-        var academy = getAcademyStore();
-        if (!academy) {
-            return null;
-        }
-
-        if (!academy.grades || typeof academy.grades !== 'object') {
-            academy.grades = {};
-        }
-
-        return academy;
-    }
-
     // ============================================================
-    // INTERNAL GRADE LOOKUP - PRIVATE
+    // INTERNAL GRADE LOOKUP - PRIVATE (LIVE REFERENCES)
     // ============================================================
+    //
+    // These return LIVE REFERENCES. They are consumed by this
+    // module's own mutation paths and by AcademyQueries. The public
+    // read surface (below) wraps them with deepClone.
 
     function getGradeRecord(gradeId) {
         if (!isNonEmptyString(gradeId)) {
@@ -561,7 +598,7 @@
         }
 
         if (!hasChanges) {
-            return Promise.resolve(success({ grade: existing, changed: false }));
+            return Promise.resolve(success({ grade: deepClone(existing), changed: false }));
         }
 
         // Recompute derived fields
@@ -572,9 +609,11 @@
         var targetId = String(gradeId);
 
         return MutationPipeline.performMutation({
-            validate: function() {
-                var current = getGradeRecord(targetId);
-                if (!current) {
+            validate: function(appData) {
+                if (!appData || !appData.academy || !appData.academy.grades) {
+                    return { valid: false, message: 'Grade no longer exists.' };
+                }
+                if (!appData.academy.grades[targetId]) {
                     return { valid: false, message: 'Grade no longer exists.' };
                 }
                 return { valid: true };
@@ -620,8 +659,11 @@
         };
 
         return MutationPipeline.performMutation({
-            validate: function() {
-                if (!getGradeRecord(target)) {
+            validate: function(appData) {
+                if (!appData || !appData.academy || !appData.academy.grades) {
+                    return { valid: false, message: 'Grade no longer exists.' };
+                }
+                if (!appData.academy.grades[target]) {
                     return { valid: false, message: 'Grade no longer exists.' };
                 }
                 return { valid: true };
@@ -698,8 +740,14 @@
     }
 
     // ============================================================
-    // QUERY FUNCTIONS - Read-only (synchronous)
+    // PUBLIC READ SURFACE (CLONES)
     // ============================================================
+    //
+    // These are the consumer-facing lookups. They return DEEP CLONES
+    // (or arrays of clones) so callers cannot mutate live state by
+    // writing to a returned grade. Internal code paths within this
+    // module continue to use the *Internal accessors, which return
+    // live references.
 
     function getStudentGrades(studentId, week) {
         if (!isNonEmptyString(studentId)) {
@@ -730,7 +778,7 @@
             return (a.date || '').localeCompare(b.date || '');
         });
 
-        return result;
+        return result.map(function(g) { return deepClone(g); });
     }
 
     function getClassGrades(classId, week) {
@@ -762,7 +810,7 @@
             return (a.date || '').localeCompare(b.date || '');
         });
 
-        return result;
+        return result.map(function(g) { return deepClone(g); });
     }
 
     function getDisciplineGrades(disciplineId, week) {
@@ -794,7 +842,7 @@
             return (a.date || '').localeCompare(b.date || '');
         });
 
-        return result;
+        return result.map(function(g) { return deepClone(g); });
     }
 
     function getWeekGrades(week, classId) {
@@ -816,7 +864,7 @@
             }
         }
 
-        return result;
+        return result.map(function(g) { return deepClone(g); });
     }
 
     function getGrade(gradeId) {
@@ -825,9 +873,12 @@
     }
 
     function getAllGrades() {
-        return getGradeRecords().map(function(grade) {
-            return deepClone(grade);
-        });
+        var records = getGradeRecords();
+        var result = [];
+        for (var i = 0; i < records.length; i++) {
+            result.push(deepClone(records[i]));
+        }
+        return result;
     }
 
     // ============================================================
@@ -1273,7 +1324,7 @@
         deleteStudentGrades: deleteStudentGrades,
         saveGrades: saveGrades,
 
-        // ---- Queries (synchronous) ----
+        // ---- Public queries (synchronous, CLONES) ----
         getStudentGrades: getStudentGrades,
         getClassGrades: getClassGrades,
         getDisciplineGrades: getDisciplineGrades,
@@ -1289,6 +1340,10 @@
 
         // ---- Cascade helpers (for cross-domain cleanup) ----
         stripCharacterRefs: stripCharacterRefs,
+
+        // ---- Internal (LIVE REFERENCES - for AcademyQueries and internal use) ----
+        getGradeRecord: getGradeRecord,
+        getGradeRecords: getGradeRecords,
 
         // ---- Helpers ----
         isPassing: isPassing,
