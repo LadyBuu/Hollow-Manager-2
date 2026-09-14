@@ -15,22 +15,42 @@
  *   - Container-level event delegation for all views
  *   - Mount/unmount of the inline grades editor after each render
  *   - View model assembly for the Exams view
+ *   - Discipline inline editor: draft state, live preview, save/cancel
  *
  * IMPORTANT:
- *   - RENDER + WIRE - no mutations, no domain logic
+ *   - RENDER + WIRE - no domain mutations, no business logic
  *   - Reads state from AcademyUI
  *   - Reads projections from AcademyAggregator / TournamentAggregator / AcademyQueries
  *   - Delegates rendering to per-view renderers where they exist
  *   - Delegates exam mutations to AcademyTournamentEvents
+ *   - Delegates discipline mutations to AcademyDisciplines
  *   - Uses container-level event delegation (survives innerHTML replacement)
  *   - Uses DomUtils for escaping
+ *
+ * DISCIPLINE EDITOR STATE MACHINE:
+ *   The discipline editor is a mutable draft. There are three modes:
+ *     'empty'  — nothing selected; right panel shows the empty state
+ *     'create' — new discipline form, blank defaults
+ *     'edit'   — existing discipline form, populated from the record
+ *
+ *   The draft lives in module-scoped state:
+ *     _disciplineDraft          — the mutable object being edited
+ *     _disciplineDraftMode      — 'empty' | 'create' | 'edit'
+ *     _disciplineDraftErrors    — { field: message } for inline errors
+ *
+ *   Update strategy:
+ *     - Text inputs: update draft, DO NOT re-render. Preserves cursor.
+ *     - Band label/min inputs: update draft, refresh the preview line
+ *       in place (textContent), DO NOT re-render.
+ *     - Discrete actions (add/remove band, apply preset, save, cancel,
+ *       select row, click "+ Add Discipline"): full re-render.
  *
  * VIEWS:
  *   people       - class + character browsing
  *   tournaments  - one exam per class + week; runs eliminations
  *   weeklyTeams  - academic teams per class and week
  *   rankings     - class rankings for a week
- *   disciplines  - discipline (curriculum) browser
+ *   disciplines  - discipline (curriculum) browser + inline editor
  *   locations    - location browser with schedules
  *
  * DEPENDENCIES:
@@ -41,6 +61,8 @@
  *   - window.DomUtils (MANDATORY)
  *   - window.CalendarConstants (MANDATORY)
  *   - window.AcademyClasses (LAZY - CRUD)
+ *   - window.AcademyDisciplines (LAZY - CRUD)
+ *   - window.AcademyGradeSchemes (LAZY - scheme editing)
  *   - window.NotificationSystem (LAZY)
  *   - window.CharacterDetail (LAZY)
  *   - window.AcademyClassDetail / AcademyCharacterDetail (LAZY)
@@ -697,17 +719,11 @@
         });
     }
 
-    /**
-     * Build the exam view model for a class + week.
-     * At most one exam per class per week. Delegates to
-     * TournamentAggregator for the heavy projection.
-     */
     function buildExamViewModel(classRecord, week) {
         var TQ = window.TournamentQueries;
         var TA = window.TournamentAggregator;
         if (!TQ || !TA) { return null; }
 
-        // Find the exam for this class+week.
         var examRecord = null;
         if (typeof TQ.getExamForClassAndWeek === 'function') {
             examRecord = TQ.getExamForClassAndWeek(classRecord.id, week);
@@ -835,13 +851,6 @@
         };
     }
 
-    /**
-     * Build the eligible pool for the week.
-     *
-     * When no exam exists, the pool is informational: mode is
-     * inferred from the class's academic teams. If the class has any
-     * academic teams, the pool defaults to teams; otherwise characters.
-     */
     function buildExamPool(classRecord, week, examVM) {
         var TeamQ = window.TeamQueries;
         var Matches = window.TournamentMatches;
@@ -864,19 +873,12 @@
             return buildExamPoolWithExam(classRecord, week, examVM, mode);
         }
 
-        // No exam — informational pool.
         if (mode === 'teams') {
             return buildTeamPoolForClass(classRecord, week, {});
         }
         return buildCharacterPoolForClass(classRecord, week, {});
     }
 
-    /**
-     * Pool for a class that already has an exam. Uses
-     * TournamentMatches.getEligibleParticipants when available to
-     * correctly reflect "not eliminated, not already failed."
-     * Then adds the "inExam" flag from the roster.
-     */
     function buildExamPoolWithExam(classRecord, week, examVM, mode) {
         var TQ = window.TournamentQueries;
         var inExamSet = {};
@@ -954,7 +956,6 @@
             if (!team || !team.id) { continue; }
             if (team.type !== 'academic') { continue; }
 
-            // "Available in week": team was active at the given week.
             var active = true;
             var joinW = parseInt(team.startPeriod, 10);
             var leaveW = parseInt(team.endPeriod, 10);
@@ -982,10 +983,16 @@
     }
 
     // ============================================================
-    // DISCIPLINE VIEW
+    // DISCIPLINE VIEW + INLINE EDITOR
     // ============================================================
+    //
+    // The discipline editor is a mutable draft. See DISCIPLINE
+    // EDITOR STATE MACHINE in the file header for the update strategy.
 
     var _selectedDisciplineId = null;
+    var _disciplineDraft = null;         // the mutable draft object
+    var _disciplineDraftMode = 'empty';  // 'empty' | 'create' | 'edit'
+    var _disciplineDraftErrors = {};     // { field: message, bandErrors: { idx: {...} } }
 
     function renderDisciplineView() {
         var Renderer = getDisciplineViewModule();
@@ -1001,24 +1008,16 @@
 
         disciplines = applyDisciplineFilters(disciplines, filters);
 
-        var selected = null;
-        if (_selectedDisciplineId) {
-            for (var i = 0; i < disciplines.length; i++) {
-                if (String(disciplines[i].id) === String(_selectedDisciplineId)) {
-                    selected = buildDisciplineDetailVM(disciplines[i]);
-                    break;
-                }
-            }
-            if (!selected) {
-                _selectedDisciplineId = null;
-            }
-        }
-
+        // Build the sidebar list VM. Always fresh; unaffected by draft.
         var listVM = disciplines.map(buildDisciplineListRowVM);
+
+        // Build the editor VM from the draft.
+        var editorVM = buildDisciplineEditorVM();
 
         return Renderer.renderHTML({
             disciplines: listVM,
-            selected: selected,
+            selected: editorVM,
+            editorMode: _disciplineDraftMode,
             filters: filters,
             total: listVM.length
         });
@@ -1054,10 +1053,175 @@
         };
     }
 
-    function buildDisciplineDetailVM(d) {
-        var vm = buildDisciplineListRowVM(d);
-        vm.description = d.description || '';
-        return vm;
+    /**
+     * Build the editor VM from the current draft and mode.
+     * Returns null when in 'empty' mode.
+     */
+    function buildDisciplineEditorVM() {
+        if (_disciplineDraftMode === 'empty' || !_disciplineDraft) {
+            return null;
+        }
+
+        var draft = _disciplineDraft;
+        var isNew = _disciplineDraftMode === 'create';
+
+        // Available instructors: all characters with instructor career status.
+        var availableInstructors = [];
+        if (CharacterQueries && typeof CharacterQueries.getInstructors === 'function') {
+            var instructors = CharacterQueries.getInstructors() || [];
+            availableInstructors = instructors.map(function(c) {
+                return {
+                    id: c.id,
+                    name: CharacterQueries.getDisplayName(c)
+                };
+            });
+        }
+
+        // Compute the range preview from the current bands.
+        var schemePreview = '';
+        var GradeSchemes = window.AcademyGradeSchemes;
+        if (GradeSchemes && typeof GradeSchemes.getRangeLabel === 'function') {
+            schemePreview = GradeSchemes.getRangeLabel(draft.gradeScheme);
+        }
+
+        // The preset dropdown value: prefer the draft scheme's id, fall
+        // back to the numeric default. 'custom' is a valid id.
+        var schemePresetId = (draft.gradeScheme && draft.gradeScheme.id) || 'numeric';
+
+        // Instructor names for display, indexed parallel to instructorIds.
+        var instructorNames = (draft.instructorIds || []).map(function(id) {
+            return getCharacterDisplayName(id);
+        });
+
+        return {
+            id: isNew ? null : draft.id,
+            name: draft.name,
+            type: draft.type,
+            startWeek: draft.startWeek,
+            endWeek: draft.endWeek,
+            weeklyHours: draft.weeklyHours,
+            weight: draft.weight,
+            instructorIds: draft.instructorIds || [],
+            instructorNames: instructorNames,
+            availableInstructors: availableInstructors,
+            gradeScheme: draft.gradeScheme,
+            schemePresetId: schemePresetId,
+            schemePreview: schemePreview,
+            fieldErrors: _disciplineDraftErrors || {},
+            isNew: isNew
+        };
+    }
+
+    /**
+     * Initialize the draft from an existing discipline record.
+     * Used when the user clicks a row in the sidebar.
+     */
+    function initializeDraftFromDiscipline(disciplineId) {
+        var AcademyDisciplines = window.AcademyDisciplines;
+        var GradeSchemes = window.AcademyGradeSchemes;
+        if (!AcademyDisciplines || !GradeSchemes) {
+            notify('Discipline module not loaded.', 'error');
+            return;
+        }
+
+        var record = AcademyDisciplines.getDiscipline(disciplineId);
+        if (!record) {
+            notify('Discipline not found.', 'error');
+            return;
+        }
+
+        _selectedDisciplineId = String(disciplineId);
+        _disciplineDraftMode = 'edit';
+        _disciplineDraftErrors = {};
+
+        _disciplineDraft = {
+            id: record.id,
+            name: record.name || '',
+            type: record.type || 'mandatory',
+            startWeek: typeof record.startWeek === 'number' ? record.startWeek : 1,
+            endWeek: typeof record.endWeek === 'number' ? record.endWeek : 52,
+            weeklyHours: typeof record.weeklyHours === 'number' ? record.weeklyHours : 1,
+            weight: typeof record.weight === 'number' ? record.weight : 1,
+            instructorIds: Array.isArray(record.instructorIds) ? record.instructorIds.slice() : [],
+            gradeScheme: GradeSchemes.normalizeScheme(record.gradeScheme)
+        };
+    }
+
+    /**
+     * Initialize the draft for a new discipline.
+     * Used when the user clicks "+ Add Discipline".
+     */
+    function initializeNewDraft() {
+        var GradeSchemes = window.AcademyGradeSchemes;
+        if (!GradeSchemes) {
+            notify('Grade schemes module not loaded.', 'error');
+            return;
+        }
+
+        _selectedDisciplineId = null;
+        _disciplineDraftMode = 'create';
+        _disciplineDraftErrors = {};
+
+        _disciplineDraft = {
+            id: null,
+            name: '',
+            type: 'mandatory',
+            startWeek: 1,
+            endWeek: 52,
+            weeklyHours: 1,
+            weight: 1,
+            instructorIds: [],
+            gradeScheme: GradeSchemes.getDefaultScheme()
+        };
+    }
+
+    /**
+     * Clear the draft entirely.
+     */
+    function clearDraft() {
+        _selectedDisciplineId = null;
+        _disciplineDraft = null;
+        _disciplineDraftMode = 'empty';
+        _disciplineDraftErrors = {};
+    }
+
+    /**
+     * Recompute the range preview and update the preview element in
+     * place without a full re-render. Called after band edits.
+     */
+    function updateDisciplinePreviewInPlace() {
+        var GradeSchemes = window.AcademyGradeSchemes;
+        if (!GradeSchemes || !_disciplineDraft) { return; }
+
+        var previewEl = document.querySelector('.academy-discipline-scheme-preview-text');
+        if (!previewEl) { return; }
+
+        previewEl.textContent = GradeSchemes.getRangeLabel(_disciplineDraft.gradeScheme) || '';
+    }
+
+    /**
+     * Apply a preset to the current draft's grade scheme.
+     * Replaces the bands array with the preset's bands, but preserves
+     * the preset's id and label.
+     */
+    function applySchemePreset(presetId) {
+        var GradeSchemes = window.AcademyGradeSchemes;
+        if (!GradeSchemes || !_disciplineDraft) { return; }
+
+        if (presetId === 'custom') {
+            // Custom: keep existing bands untouched, just mark the id.
+            _disciplineDraft.gradeScheme = GradeSchemes.normalizeScheme({
+                id: 'custom',
+                label: _disciplineDraft.gradeScheme.label || 'Custom Scheme',
+                bands: _disciplineDraft.gradeScheme.bands || []
+            });
+            return;
+        }
+
+        var preset = GradeSchemes.getPreset(presetId);
+        if (!preset) { return; }
+
+        _disciplineDraft.gradeScheme = GradeSchemes.normalizeScheme(preset);
     }
 
     // ============================================================
@@ -1578,9 +1742,23 @@
         // ---- Add Discipline button ----
         if (target.closest('#academy-add-discipline-btn')) {
             e.preventDefault();
-            if (window.AcademyCRUDModals) {
-                window.AcademyCRUDModals.openDisciplineForm(null);
-            }
+            initializeNewDraft();
+            refreshView();
+            return;
+        }
+
+        // ---- Discipline editor actions ----
+        var disciplineAction = target.closest(
+            '[data-action="apply-scheme-preset"], ' +
+            '[data-action="add-band"], ' +
+            '[data-action="remove-band"], ' +
+            '[data-action="save-discipline"], ' +
+            '[data-action="cancel-discipline"], ' +
+            '[data-action="delete-discipline"]'
+        );
+        if (disciplineAction) {
+            e.preventDefault();
+            handleDisciplineEditorAction(disciplineAction);
             return;
         }
 
@@ -1636,10 +1814,7 @@
             e.preventDefault();
             var disciplineId = disciplineRow.dataset.disciplineId;
             if (disciplineId) {
-                _selectedDisciplineId =
-                    (String(_selectedDisciplineId) === String(disciplineId))
-                        ? null
-                        : disciplineId;
+                initializeDraftFromDiscipline(disciplineId);
                 refreshView();
             }
             return;
@@ -1690,7 +1865,6 @@
 
         // ---- Class/discipline/location CRUD actions ----
         if (examAction) {
-            // Not an exam action — fall through to generic handlers.
             var action = examAction.dataset.action;
             var charId = examAction.dataset.characterId;
 
@@ -1714,9 +1888,7 @@
 
             if (examAction.dataset.disciplineId) {
                 e.preventDefault();
-                handleDisciplineAction(
-                    action, examAction.dataset.disciplineId
-                );
+                handleDisciplineAction(action, examAction.dataset.disciplineId);
                 return;
             }
 
@@ -1729,6 +1901,92 @@
     }
 
     /**
+     * Handle discipline editor actions (apply preset, add/remove band,
+     * save, cancel, delete).
+     */
+    function handleDisciplineEditorAction(actionEl) {
+        var action = actionEl.dataset.action;
+        var GradeSchemes = window.AcademyGradeSchemes;
+
+        switch (action) {
+            case 'apply-scheme-preset': {
+                if (!_disciplineDraft || !GradeSchemes) { return; }
+                var presetSelect = document.querySelector(
+                    '[data-discipline-field="schemePresetId"]'
+                );
+                var presetId = presetSelect ? presetSelect.value : 'numeric';
+                applySchemePreset(presetId);
+                refreshView();
+                return;
+            }
+
+            case 'add-band': {
+                if (!_disciplineDraft) { return; }
+                var bands = _disciplineDraft.gradeScheme.bands || [];
+                if (bands.length >= (GradeSchemes.MAX_BANDS || 26)) {
+                    notify('Too many bands.', 'error');
+                    return;
+                }
+                bands.push({ label: '', minPercent: 0 });
+                _disciplineDraft.gradeScheme = GradeSchemes.normalizeScheme({
+                    id: _disciplineDraft.gradeScheme.id,
+                    label: _disciplineDraft.gradeScheme.label,
+                    bands: bands
+                });
+                refreshView();
+                return;
+            }
+
+            case 'remove-band': {
+                if (!_disciplineDraft) { return; }
+                var idx = parseInt(actionEl.dataset.bandIndex, 10);
+                if (isNaN(idx)) { return; }
+                var currentBands = _disciplineDraft.gradeScheme.bands || [];
+                if (currentBands.length <= 1) {
+                    notify('A scheme must have at least one band.', 'error');
+                    return;
+                }
+                currentBands.splice(idx, 1);
+                _disciplineDraft.gradeScheme = GradeSchemes.normalizeScheme({
+                    id: _disciplineDraft.gradeScheme.id,
+                    label: _disciplineDraft.gradeScheme.label,
+                    bands: currentBands
+                });
+                refreshView();
+                return;
+            }
+
+            case 'save-discipline': {
+                saveDisciplineDraft();
+                return;
+            }
+
+            case 'cancel-discipline': {
+                if (_disciplineDraftMode === 'edit' && _selectedDisciplineId) {
+                    // Re-read from disk to discard unsaved edits.
+                    initializeDraftFromDiscipline(_selectedDisciplineId);
+                } else {
+                    clearDraft();
+                }
+                refreshView();
+                return;
+            }
+
+            case 'delete-discipline': {
+                var discId = actionEl.dataset.disciplineId;
+                if (discId && window.AcademyCRUDModals &&
+                    typeof window.AcademyCRUDModals.openDisciplineDelete === 'function') {
+                    window.AcademyCRUDModals.openDisciplineDelete(discId);
+                }
+                return;
+            }
+
+            default:
+                return;
+        }
+    }
+
+    /**
      * Handle exam-specific actions. Returns true if handled.
      */
     function _handleExamAction(actionEl, e) {
@@ -1736,7 +1994,6 @@
         var Events = getTournamentEventsModule();
         if (!Events) { return false; }
 
-        // Only handle exam actions here.
         var examActions = [
             'create-exam', 'delete-exam', 'toggle-pool-member',
             'add-round', 'remove-round', 'auto-generate-round',
@@ -1749,12 +2006,6 @@
 
         e.preventDefault();
 
-        var examId = actionEl.dataset.examId || null;
-
-        // Some actions need the current exam ID. Read it from the
-        // rendered context: the top-level exam panel carries it via
-        // the class + week pair. Fall back to the currently selected
-        // exam in this view.
         var currentExamId = _getCurrentExamId();
 
         switch (action) {
@@ -1852,10 +2103,6 @@
         return false;
     }
 
-    /**
-     * Find the exam ID for the currently rendered class+week pair.
-     * Re-reads from TournamentQueries so it's always up to date.
-     */
     function _getCurrentExamId() {
         if (!_selectedExamClassId) { return null; }
         var TQ = window.TournamentQueries;
@@ -1874,6 +2121,21 @@
 
     function handleDelegatedChange(e) {
         var target = e.target;
+
+        // ---- Discipline editor: discrete change fields ----
+        if (target.dataset && target.dataset.disciplineField) {
+            handleDisciplineFieldChange(target);
+            return;
+        }
+
+        // ---- Discipline editor: scheme preset dropdown ----
+        if (target.dataset && target.dataset.bandIndex !== undefined &&
+            target.dataset.bandField === 'label') {
+            // Label changes use 'input' handler, but a change event also
+            // fires on blur. Treat it the same.
+            handleBandFieldChange(target);
+            return;
+        }
 
         // ---- People view ----
         if (target.id === 'academy-class-select') {
@@ -1958,12 +2220,122 @@
     }
 
     // ============================================================
+    // DISCIPLINE FIELD CHANGE HANDLERS
+    // ============================================================
+    //
+    // Text/number inputs update the draft and DO NOT re-render, so the
+    // cursor position is preserved. Only the preview text is refreshed
+    // in place when relevant.
+
+    function handleDisciplineFieldChange(inputEl) {
+        if (!_disciplineDraft) { return; }
+
+        var field = inputEl.dataset.disciplineField;
+        if (!field) { return; }
+
+        switch (field) {
+            case 'name':
+                _disciplineDraft.name = inputEl.value;
+                return;
+
+            case 'type':
+                _disciplineDraft.type = inputEl.value;
+                return;
+
+            case 'startWeek': {
+                var sw = parseInt(inputEl.value, 10);
+                _disciplineDraft.startWeek = isNaN(sw) ? 1 : sw;
+                return;
+            }
+
+            case 'endWeek': {
+                var ew = parseInt(inputEl.value, 10);
+                _disciplineDraft.endWeek = isNaN(ew) ? 52 : ew;
+                return;
+            }
+
+            case 'weeklyHours': {
+                var wh = parseFloat(inputEl.value);
+                _disciplineDraft.weeklyHours = isNaN(wh) ? 1 : wh;
+                return;
+            }
+
+            case 'weight': {
+                var wt = parseFloat(inputEl.value);
+                _disciplineDraft.weight = isNaN(wt) ? 1 : wt;
+                return;
+            }
+
+            case 'instructors': {
+                var selected = [];
+                for (var i = 0; i < inputEl.options.length; i++) {
+                    if (inputEl.options[i].selected && inputEl.options[i].value) {
+                        selected.push(inputEl.options[i].value);
+                    }
+                }
+                _disciplineDraft.instructorIds = selected;
+                return;
+            }
+
+            case 'schemeLabel': {
+                _disciplineDraft.gradeScheme.label = inputEl.value;
+                return;
+            }
+
+            case 'schemePresetId':
+                // Handled on apply-preset button click, not here.
+                return;
+
+            default:
+                return;
+        }
+    }
+
+    function handleBandFieldChange(inputEl) {
+        if (!_disciplineDraft) { return; }
+
+        var idx = parseInt(inputEl.dataset.bandIndex, 10);
+        var field = inputEl.dataset.bandField;
+        if (isNaN(idx) || !field) { return; }
+
+        var bands = _disciplineDraft.gradeScheme.bands;
+        if (!bands || idx < 0 || idx >= bands.length) { return; }
+
+        if (field === 'label') {
+            bands[idx].label = inputEl.value;
+        } else if (field === 'minPercent') {
+            var mp = parseInt(inputEl.value, 10);
+            bands[idx].minPercent = isNaN(mp) ? 0 : mp;
+        }
+
+        // Refresh the range preview in place.
+        updateDisciplinePreviewInPlace();
+    }
+
+    // ============================================================
     // DELEGATED INPUT
     // ============================================================
 
     function handleDelegatedInput(e) {
         var target = e.target;
 
+        // ---- Discipline editor: text/number inputs ----
+        if (target.dataset && target.dataset.disciplineField) {
+            handleDisciplineFieldChange(target);
+            // If the scheme label is being edited, update the preview
+            // only when relevant. The scheme label doesn't affect the
+            // range preview, so no refresh needed here.
+            return;
+        }
+
+        // ---- Discipline editor: band inputs ----
+        if (target.dataset && target.dataset.bandIndex !== undefined &&
+            target.dataset.bandField) {
+            handleBandFieldChange(target);
+            return;
+        }
+
+        // ---- Search debounce (people) ----
         if (target.id === 'academy-people-search') {
             debounceSearch(target.value);
             return;
@@ -2028,6 +2400,10 @@
 
     function handleViewSwitch(viewId) {
         if (!viewId) { return; }
+        // Clear the discipline draft when leaving the disciplines view.
+        if (viewId !== 'disciplines') {
+            clearDraft();
+        }
         if (AcademyUI.setSelectedView(viewId)) {
             refreshView();
         }
@@ -2119,12 +2495,14 @@
             return;
         }
         switch (action) {
-            case 'edit-discipline':
-                CRUD.openDisciplineForm(disciplineId);
-                break;
             case 'delete-discipline':
                 CRUD.openDisciplineDelete(disciplineId);
                 break;
+            // 'edit-discipline' is handled by the discipline editor's
+            // own [data-action="edit-discipline"] path, but the row-click
+            // handler above is the primary mechanism for selecting a
+            // discipline for editing. This branch is retained for any
+            // future deep-link action.
             default:
                 break;
         }
@@ -2155,6 +2533,117 @@
         } else {
             notify('CRUD module not available.', 'error');
         }
+    }
+
+    // ============================================================
+    // DISCIPLINE DRAFT SAVE
+    // ============================================================
+
+    function saveDisciplineDraft() {
+        if (!_disciplineDraft) { return; }
+
+        var AcademyDisciplines = window.AcademyDisciplines;
+        var GradeSchemes = window.AcademyGradeSchemes;
+        if (!AcademyDisciplines || !GradeSchemes) {
+            notify('Discipline module not available.', 'error');
+            return;
+        }
+
+        // Build a normalized scheme for validation and submission.
+        var scheme = GradeSchemes.normalizeScheme(_disciplineDraft.gradeScheme);
+
+        // ---- Client-side validation ----
+        var errors = {};
+
+        if (!_disciplineDraft.name || !_disciplineDraft.name.trim()) {
+            errors.name = 'Name is required.';
+        }
+
+        var sw = parseInt(_disciplineDraft.startWeek, 10);
+        var ew = parseInt(_disciplineDraft.endWeek, 10);
+        if (isNaN(sw) || sw < 1 || sw > 52) {
+            errors.startWeek = 'Start week must be 1\u201352.';
+        }
+        if (isNaN(ew) || ew < 1 || ew > 52) {
+            errors.endWeek = 'End week must be 1\u201352.';
+        }
+        if (!isNaN(sw) && !isNaN(ew) && sw > ew) {
+            errors.endWeek = 'End week cannot be before start week.';
+        }
+
+        var wh = parseFloat(_disciplineDraft.weeklyHours);
+        if (isNaN(wh) || wh < 0.5 || wh > 40) {
+            errors.weeklyHours = 'Weekly hours must be 0.5\u201340.';
+        }
+
+        var wt = parseFloat(_disciplineDraft.weight);
+        if (isNaN(wt) || wt < 0.1 || wt > 10) {
+            errors.weight = 'Weight must be 0.1\u201310.';
+        }
+
+        // ---- Scheme validation ----
+        var schemeCheck = GradeSchemes.validateScheme(scheme);
+        if (!schemeCheck.valid) {
+            errors.bands = schemeCheck.errors.length > 0
+                ? schemeCheck.errors.map(function(err) { return err.message; }).join(' ')
+                : 'Grade scheme is invalid.';
+        }
+
+        if (Object.keys(errors).length > 0) {
+            _disciplineDraftErrors = errors;
+            refreshView();
+            return;
+        }
+
+        // Clear errors before submit.
+        _disciplineDraftErrors = {};
+
+        // ---- Build payload ----
+        var payload = {
+            name: _disciplineDraft.name.trim(),
+            type: _disciplineDraft.type,
+            startWeek: sw,
+            endWeek: ew,
+            weeklyHours: wh,
+            weight: wt,
+            instructorIds: (_disciplineDraft.instructorIds || []).slice(),
+            gradeScheme: scheme
+        };
+
+        var isNew = _disciplineDraftMode === 'create';
+        var targetId = _disciplineDraft.id;
+
+        var promise;
+        if (isNew) {
+            promise = AcademyDisciplines.create(payload);
+        } else {
+            promise = AcademyDisciplines.update(targetId, payload);
+        }
+
+        promise.then(function(result) {
+            if (result && result.success) {
+                // On success, transition the draft into 'edit' mode with
+                // the persisted record. Or clear the draft entirely if
+                // the discipline doesn't exist after save (shouldn't
+                // happen, but be defensive).
+                var savedId = result.data && result.data.id
+                    ? result.data.id
+                    : (result.data && result.data.discipline && result.data.discipline.id
+                        ? result.data.discipline.id
+                        : targetId);
+
+                if (savedId) {
+                    initializeDraftFromDiscipline(savedId);
+                } else {
+                    clearDraft();
+                }
+                refreshView();
+            }
+            // On failure, MutationPipeline already notified.
+        }).catch(function(err) {
+            console.warn('[AcademyView] Discipline save failed:', err);
+            notify('Failed to save discipline.', 'error');
+        });
     }
 
     // ============================================================
