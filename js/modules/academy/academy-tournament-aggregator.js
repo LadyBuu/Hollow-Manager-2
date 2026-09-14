@@ -6,38 +6,63 @@
  *
  * This module is responsible for:
  *   - Building the exam view model for a class + week
- *   - Building the exam pool (characters or teams eligible for the exam)
- *   - Flattening TournamentAggregator's tournament VM into the shape
- *     the Exams view renderer expects
+ *   - Building the exam pool (eligible characters or teams)
  *
  * IMPORTANT:
  *   - Projection builder. No mutations. No persistence. No DOM.
- *   - Composes TournamentQueries + TournamentAggregator + TeamQueries
- *     + CharacterQueries + EliminationQueries + AcademyAggregator.
- *   - Returns Academy-shaped view models. Never exposes external
- *     query APIs directly.
- *   - Never mutates data.
- *   - All functions are PURE with respect to window.data: they read,
- *     they do not write.
+ *   - Composes AcademyAggregator + TournamentQueries + TournamentAggregator
+ *     + TeamQueries + EliminationQueries.
+ *   - Does NOT depend on AcademyQueries. Class list comes from
+ *     AcademyAggregator.getClassListViewModel().
+ *   - Does NOT depend on CharacterQueries. Pool identity comes from
+ *     AcademyAggregator.getClassStudentsViewModel(); elimination
+ *     queries accept IDs directly.
  *
- * RELATIONSHIP TO AcademyTournamentView:
- *   The renderer (AcademyTournamentView) expects a specific view model
- *   shape. This module owns the construction of that shape. The view
- *   does not reach into TournamentAggregator or TeamQueries directly.
+ * EXAM MODE SEMANTICS:
+ *   - When an exam exists, its `mode` field is authoritative.
+ *   - When no exam exists, mode is 'individuals'.
+ *   - Mode is NOT inferred from the presence of academic teams in
+ *     the class. That would be domain inference masquerading as UI
+ *     convenience: "this class has teams, so the next exam must be
+ *     team-based" is not a valid deduction.
  *
- * RELATIONSHIP TO AcademyTournamentEvents:
- *   Events owns mutations. Aggregator owns reads. The two are
- *   separate: Events never calls into Aggregator for display purposes,
- *   and Aggregator never triggers a mutation.
+ * WEEK SEMANTICS:
+ *   - No `week || 1` defaults. Callers must supply a valid week.
+ *     When the week is invalid, the aggregator returns a view model
+ *     with `week: null` and an empty pool. It does not silently
+ *     substitute a default.
+ *
+ * ELIMINATION QUERIES:
+ *   - EliminationQueries.isCharacterEliminatedByWeek accepts either a
+ *     character ID or a character object. This module passes IDs. No
+ *     CharacterQueries round-trip.
+ *   - The elimination query is NOT wrapped in try/catch. If it throws,
+ *     that is a bug the caller should see, not a state we should
+ *     silently misrepresent as "not eliminated".
+ *
+ * POOL MEMBERSHIP:
+ *   - Character pool: students only. Instructors do NOT appear in the
+ *     pool. The class instructor is not a participant in exams, even
+ *     if the class record carries an instructorId.
+ *   - Team pool: persistent academic Team entities from TeamQueries.
+ *     This is the Tournament domain's team concept, distinct from
+ *     academy.weeklyTeams (which is the Academy's week-scoped
+ *     assignment).
+ *
+ * PARTICIPANT DEDUPLICATION:
+ *   - When an exam exists, its participant set is read from the exam
+ *     VM's `participants` array. The VM was already built with
+ *     `includeParticipants: true`. We do NOT call
+ *     TournamentQueries.getParticipants() a second time for the same
+ *     data.
  *
  * DEPENDENCIES:
- *   - window.AcademyAggregator (from academy-aggregator.js) - MANDATORY
- *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
- *   - window.TeamQueries (from team-queries.js) - MANDATORY
- *   - window.TournamentQueries (from tournament-queries.js) - MANDATORY
- *   - window.TournamentAggregator (from tournament-aggregator.js) - MANDATORY
- *   - window.EliminationQueries (from elimination-queries.js) - OPTIONAL
+ *   - window.AcademyAggregator (MANDATORY)
+ *   - window.TeamQueries (MANDATORY)
+ *   - window.TournamentQueries (MANDATORY)
+ *   - window.TournamentAggregator (MANDATORY)
+ *   - window.EliminationQueries (OPTIONAL — the `eliminated` flag
+ *     degrades to false when the module is absent)
  */
 
 (function() {
@@ -53,11 +78,10 @@
     // ============================================================
 
     var AcademyAggregator = window.AcademyAggregator;
-    var AcademyQueries = window.AcademyQueries;
-    var CharacterQueries = window.CharacterQueries;
     var TeamQueries = window.TeamQueries;
     var TournamentQueries = window.TournamentQueries;
     var TournamentAggregator = window.TournamentAggregator;
+    var EliminationQueries = window.EliminationQueries || null;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -67,17 +91,12 @@
         var missing = [];
 
         if (!AcademyAggregator ||
-            typeof AcademyAggregator.getClassViewModel !== 'function') {
-            missing.push('AcademyAggregator.getClassViewModel');
+            typeof AcademyAggregator.getClassListViewModel !== 'function') {
+            missing.push('AcademyAggregator.getClassListViewModel');
         }
-
-        if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
-            missing.push('AcademyQueries.getClasses');
-        }
-
-        if (!CharacterQueries ||
-            typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
+        if (!AcademyAggregator ||
+            typeof AcademyAggregator.getClassStudentsViewModel !== 'function') {
+            missing.push('AcademyAggregator.getClassStudentsViewModel');
         }
 
         if (!TeamQueries || typeof TeamQueries.getTeamsByClass !== 'function') {
@@ -103,44 +122,45 @@
     }
 
     // ============================================================
-    // PUBLIC API - Exams View Model
+    // PUBLIC ENTRY POINT
     // ============================================================
 
     /**
      * Build the full Exams view model.
      *
      * @param {string|null} classId - Currently selected class, or null
-     * @param {number} week - Week number
-     * @returns {object} { classList, classId, className, week, exam, pool }
+     * @param {number} week - Week number (must be valid)
+     * @returns {object} {
+     *   classList: [ { id, name } ],
+     *   classId: string|null,
+     *   className: string|null,
+     *   week: number|null,
+     *   exam: object|null,
+     *   pool: array
+     * }
      */
-    function getExamViewViewModel(classId, week) {
+    function getExamViewModel(classId, week) {
         if (!checkDependencies()) {
-            return {
-                classList: [],
-                classId: null,
-                className: null,
-                week: week || 1,
-                exam: null,
-                pool: []
-            };
+            return emptyViewModel(null);
         }
 
-        // ---- Class list ----
-        var classes = AcademyQueries.getClasses() || [];
-        classes = classes.slice().sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
-        });
+        var weekNum = parseInt(week, 10);
+        if (isNaN(weekNum)) {
+            return emptyViewModel(null);
+        }
 
-        var classListVM = classes.map(function(c) {
+        // ---- Class list from the canonical Academy projection ----
+        var classListFull = AcademyAggregator.getClassListViewModel() || [];
+        var classListVM = classListFull.map(function(c) {
             return { id: c.id, name: c.name };
         });
 
         // ---- Resolve selected class ----
         var selectedClass = null;
         if (classId) {
-            for (var i = 0; i < classes.length; i++) {
-                if (String(classes[i].id) === String(classId)) {
-                    selectedClass = classes[i];
+            for (var i = 0; i < classListVM.length; i++) {
+                if (String(classListVM[i].id) === String(classId)) {
+                    selectedClass = classListVM[i];
                     break;
                 }
             }
@@ -151,23 +171,34 @@
                 classList: classListVM,
                 classId: null,
                 className: null,
-                week: week,
+                week: weekNum,
                 exam: null,
                 pool: []
             };
         }
 
-        // ---- Exam VM + pool ----
-        var examVM = buildExamViewModel(selectedClass, week);
-        var pool = buildExamPool(selectedClass, week, examVM);
+        // ---- Build ----
+        var examVM = buildExamViewModel(selectedClass, weekNum);
+        var pool = buildExamPool(selectedClass, weekNum, examVM);
 
         return {
             classList: classListVM,
             classId: selectedClass.id,
             className: selectedClass.name,
-            week: week,
+            week: weekNum,
             exam: examVM,
             pool: pool
+        };
+    }
+
+    function emptyViewModel(week) {
+        return {
+            classList: [],
+            classId: null,
+            className: null,
+            week: week,
+            exam: null,
+            pool: []
         };
     }
 
@@ -184,7 +215,6 @@
         if (typeof TQ.getExamForClassAndWeek === 'function') {
             examRecord = TQ.getExamForClassAndWeek(classRecord.id, week);
         }
-
         if (!examRecord) { return null; }
 
         var vm = TA.getTournamentViewModel(examRecord.id, {
@@ -194,7 +224,6 @@
             includeFinalPassers: true,
             includeStatistics: false
         });
-
         if (!vm) { return null; }
 
         return {
@@ -207,6 +236,7 @@
             participantCount: vm.participantCount || 0,
             roundCount: vm.roundCount || 0,
             totalRounds: vm.totalRounds || 1,
+            participants: vm.participants || [],
             finalPassers: vm.finalPassers || [],
             finalPasserCount: vm.finalPasserCount || 0,
             rounds: (vm.rounds || []).map(buildExamRoundVM)
@@ -310,35 +340,23 @@
     // ============================================================
     // EXAM POOL
     // ============================================================
+    //
+    // MODE:
+    //   - Exam exists: mode comes from the exam record.
+    //   - No exam: mode is 'individuals'.
+    //   - Mode is NEVER inferred from academic team existence.
+    //
+    // POOL SOURCE:
+    //   - Characters: AcademyAggregator.getClassStudentsViewModel.
+    //     Instructors are excluded. Only actual students.
+    //   - Teams: TeamQueries.getTeamsByClass filtered to academic
+    //     teams. These are persistent Team entities, NOT Academy
+    //     weekly assignments.
 
-    /**
-     * Build the exam pool (eligible participants) for a class + week.
-     *
-     * The pool shows every participant that could be added to the
-     * exam. When an exam exists, each pool item indicates whether it
-     * is already in the exam. When no exam exists, the pool is
-     * informational only.
-     *
-     * @param {object} classRecord - Class record
-     * @param {number} week - Week number
-     * @param {object|null} examVM - Exam VM (may be null)
-     * @returns {array}
-     */
     function buildExamPool(classRecord, week, examVM) {
-        var TeamQ = window.TeamQueries;
-
         var mode = 'individuals';
         if (examVM && examVM.mode) {
             mode = examVM.mode;
-        } else if (TeamQ && typeof TeamQ.getTeamsByClass === 'function') {
-            var teams = TeamQ.getTeamsByClass(classRecord.id) || [];
-            var academicCount = 0;
-            for (var i = 0; i < teams.length; i++) {
-                if (teams[i] && teams[i].type === 'academic') { academicCount++; }
-            }
-            if (academicCount > 0) {
-                mode = 'teams';
-            }
         }
 
         if (examVM) {
@@ -352,13 +370,16 @@
     }
 
     function buildExamPoolWithExam(classRecord, week, examVM, mode) {
-        var TQ = window.TournamentQueries;
         var inExamSet = {};
-        if (TQ && typeof TQ.getParticipants === 'function') {
-            var participants = TQ.getParticipants(examVM.id);
-            for (var i = 0; i < participants.length; i++) {
-                if (participants[i] && participants[i].id) {
-                    inExamSet[String(participants[i].id)] = true;
+
+        // Read the participant set from the exam VM, not from a second
+        // TournamentQueries call. The VM was built with
+        // includeParticipants: true, so vm.participants is authoritative.
+        if (examVM && Array.isArray(examVM.participants)) {
+            for (var i = 0; i < examVM.participants.length; i++) {
+                var p = examVM.participants[i];
+                if (p && p.id) {
+                    inExamSet[String(p.id)] = true;
                 }
             }
         }
@@ -370,42 +391,30 @@
     }
 
     function buildCharacterPoolForClass(classRecord, week, inExamSet) {
-        var classVM = AcademyAggregator.getClassViewModel(classRecord.id, {
-            includeStudents: true,
-            includeTeams: false,
-            includeRankings: false,
-            includeGrades: false,
-            week: week
-        });
+        // Canonical class students projection. Instructors are
+        // excluded by the aggregator. Only students appear here.
+        var students = AcademyAggregator.getClassStudentsViewModel(classRecord.id) || [];
 
-        if (!classVM || !Array.isArray(classVM.students)) {
-            return [];
-        }
-
-        var EQ = window.EliminationQueries;
         var pool = [];
-        for (var i = 0; i < classVM.students.length; i++) {
-            var student = classVM.students[i];
+
+        for (var i = 0; i < students.length; i++) {
+            var student = students[i];
             if (!student || !student.id) { continue; }
 
+            // Elimination query takes an ID. No CharacterQueries
+            // round-trip. No try/catch: if the query is broken, the
+            // caller should see the error, not a silent "not
+            // eliminated".
             var eliminated = false;
-            if (EQ && typeof EQ.isCharacterEliminatedByWeek === 'function') {
-                var char = CharacterQueries.getCharacterById(student.id);
-                if (char) {
-                    try {
-                        eliminated = EQ.isCharacterEliminatedByWeek(char, week) === true;
-                    } catch (e) {
-                        eliminated = false;
-                    }
-                }
+            if (EliminationQueries &&
+                typeof EliminationQueries.isCharacterEliminatedByWeek === 'function') {
+                eliminated = EliminationQueries.isCharacterEliminatedByWeek(student.id, week) === true;
             }
 
             pool.push({
                 id: student.id,
                 name: student.name,
-                subtitle: student.role === 'instructor'
-                    ? 'Instructor'
-                    : (student.status || ''),
+                subtitle: student.status || '',
                 inExam: inExamSet[String(student.id)] === true,
                 eliminated: eliminated
             });
@@ -428,12 +437,15 @@
             if (!team || !team.id) { continue; }
             if (team.type !== 'academic') { continue; }
 
+            // Activity check: prefer the domain predicate when
+            // available. When it is not, do NOT invent a default
+            // period. Treat the team as active — the alternative
+            // (silently dropping teams whose period data is malformed)
+            // is worse than showing them and letting the user decide.
             var active = true;
-            var joinW = parseInt(team.startPeriod, 10);
-            var leaveW = parseInt(team.endPeriod, 10);
-            if (!isNaN(joinW) && joinW > week) { active = false; }
-            if (!isNaN(leaveW) && leaveW < week) { active = false; }
-
+            if (TeamQ && typeof TeamQ.isTeamActiveAtPeriod === 'function') {
+                active = TeamQ.isTeamActiveAtPeriod(team, week) === true;
+            }
             if (!active) { continue; }
 
             var subtitleParts = [];
@@ -459,9 +471,10 @@
     // ============================================================
 
     window.AcademyTournamentAggregator = {
-        getExamViewViewModel: getExamViewViewModel,
+        getExamViewModel: getExamViewModel,
 
-        // Exposed for testing
+        // Exposed for testing / advanced callers. Not part of the
+        // stable API.
         buildExamViewModel: buildExamViewModel,
         buildExamPool: buildExamPool,
         buildCharacterPoolForClass: buildCharacterPoolForClass,
