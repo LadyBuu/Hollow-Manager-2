@@ -6,9 +6,9 @@
  *
  * This module is responsible for:
  *   - Building modal HTML for Class CRUD (add, edit, delete confirm)
- *   - Building modal HTML for Discipline CRUD (add, edit, delete confirm)
  *   - Building modal HTML for Location CRUD (add, edit, delete confirm)
  *   - Building modal HTML for adding a character to a class
+ *   - Building the Discipline delete-confirm modal
  *   - Wiring modal buttons to the corresponding mutation APIs
  *   - Closing the modal on success, notifying on failure
  *
@@ -22,6 +22,12 @@
  *   - All modals use window.Modal (createModal / showModal / closeModal).
  *   - All user-controlled content is escaped via DomUtils.
  *
+ * DISCIPLINE FORM: NOT HERE
+ *   Discipline create/edit is handled inline in AcademyDisciplineView.
+ *   The only discipline modal retained here is the delete-confirm. If
+ *   you ever need a discipline form modal again, add it back explicitly
+ *   rather than reviving the removed paths.
+ *
  * MODAL SHAPE:
  *   Every modal has:
  *     - .modal-content wrapper
@@ -30,12 +36,19 @@
  *     - .form-actions with Cancel + Submit buttons
  *   IDs are stable and unique per modal type, so tests can target them.
  *
+ * MODAL CONTENT CONTRACT:
+ *   Modal.createModal() may return either a bare `.modal` shell or one
+ *   that already contains a `.modal-content`. The openModal helper in
+ *   this file handles both: it reuses an existing `.modal-content` if
+ *   present, and appends one otherwise. That way this file works under
+ *   either version of the Modal utility.
+ *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
  *   - window.Modal (MANDATORY)
  *   - window.NotificationSystem (MANDATORY)
  *   - window.AcademyClasses (MANDATORY)
- *   - window.AcademyDisciplines (MANDATORY)
+ *   - window.AcademyDisciplines (MANDATORY - for delete confirm)
  *   - window.AcademyLocations (MANDATORY)
  *   - window.AcademyQueries (MANDATORY)
  *   - window.CharacterQueries (MANDATORY)
@@ -47,10 +60,9 @@
  *   CRUD.openClassForm('class_123');  // edit
  *   CRUD.openClassDelete('class_123');
  *   CRUD.openAddCharacterToClass('class_123');
- *   CRUD.openDisciplineForm(null);
- *   CRUD.openDisciplineDelete('disc_123');
  *   CRUD.openLocationForm(null);
  *   CRUD.openLocationDelete('loc_123');
+ *   CRUD.openDisciplineDelete('disc_123');
  *
  *   // Called when the modal successfully submits/closes so that the
  *   // view can re-render.
@@ -152,6 +164,33 @@
     // MODAL PLUMBING
     // ============================================================
 
+    /**
+     * Append content to a modal shell.
+     *
+     * Modal.createModal may return a bare `.modal` shell (new contract)
+     * or one that already contains a `.modal-content` (older contract).
+     * This helper handles both:
+     *   - If the shell already has a `.modal-content`, reuse it.
+     *   - Otherwise create one and append it.
+     *   - Set innerHTML on the wrapper.
+     *
+     * The innerHTML assignment is deliberate: it replaces whatever was
+     * inside (including any auto-generated close button, if any) with
+     * the caller's HTML. Every form this module renders includes its
+     * own `.close-modal` button, so we don't lose the ability to close.
+     */
+    function appendModalContent(modal, html) {
+        if (!modal) return;
+
+        var contentEl = modal.querySelector('.modal-content');
+        if (!contentEl) {
+            contentEl = document.createElement('div');
+            contentEl.className = 'modal-content';
+            modal.appendChild(contentEl);
+        }
+        contentEl.innerHTML = html;
+    }
+
     function openModal(className, html, onBind) {
         if (!checkDependencies()) {
             return null;
@@ -163,13 +202,8 @@
             return null;
         }
 
-        // Some Modal implementations wrap content in .modal-content.
-        // Ours expects a raw shell. We build it here.
-        var contentEl = document.createElement('div');
-        contentEl.className = 'modal-content';
-        contentEl.innerHTML = html;
+        appendModalContent(modal, html);
 
-        modal.appendChild(contentEl);
         Modal.modalSetup(modal);
         Modal.showModal(modal);
 
@@ -412,138 +446,14 @@
     }
 
     // ============================================================
-    // DISCIPLINE — FORM HTML
-    // ============================================================
-
-    function buildDisciplineFormHTML(disc) {
-        var isEdit = !!disc;
-        var d = disc || {};
-
-        var Constants = window.AcademyDisciplines || {};
-        var minWeek = (window.CalendarConstants && window.CalendarConstants.MIN_WEEK) || 1;
-        var maxWeek = (window.CalendarConstants && window.CalendarConstants.MAX_WEEK) || 52;
-        var minHours = Constants.MIN_WEEKLY_HOURS || 0.5;
-        var maxHours = Constants.MAX_WEEKLY_HOURS || 40;
-        var minWeight = Constants.MIN_WEIGHT || 0.1;
-        var maxWeight = Constants.MAX_WEIGHT || 10;
-
-        var types = ['mandatory', 'optional'];
-
-        // Instructor candidates
-        var instructors = [];
-        if (window.CharacterQueries && typeof window.CharacterQueries.getInstructors === 'function') {
-            instructors = window.CharacterQueries.getInstructors() || [];
-        }
-        var selectedInstructors = {};
-        if (Array.isArray(d.instructorIds)) {
-            for (var i = 0; i < d.instructorIds.length; i++) {
-                selectedInstructors[String(d.instructorIds[i])] = true;
-            }
-        }
-
-        var html = '';
-        html += '<form id="academy-discipline-form" class="academy-crud-form" data-edit-id="' +
-                    (isEdit ? escapeAttribute(d.id) : '') + '">';
-
-        html += '<div class="modal-header">';
-        html += '<h3>' + (isEdit ? 'Edit Discipline' : 'Create Discipline') + '</h3>';
-        html += '<button type="button" class="close-modal">&times;</button>';
-        html += '</div>';
-
-        html += '<div class="modal-body">';
-
-        // Name
-        html += '<div class="form-group">';
-        html += '<label for="ac-disc-name">Discipline Name *</label>';
-        html += '<input type="text" id="ac-disc-name" class="ac-disc-name" ' +
-                    'value="' + escapeAttribute(d.name || '') + '" required>';
-        html += '</div>';
-
-        // Type
-        html += '<div class="form-group">';
-        html += '<label for="ac-disc-type">Type</label>';
-        html += '<select id="ac-disc-type" class="ac-disc-type">';
-        for (var t = 0; t < types.length; t++) {
-            var type = types[t];
-            var sel = (d.type || 'mandatory') === type ? ' selected' : '';
-            html += '<option value="' + escapeAttribute(type) + '"' + sel + '>' +
-                        escapeHtml(type.charAt(0).toUpperCase() + type.slice(1)) +
-                    '</option>';
-        }
-        html += '</select>';
-        html += '</div>';
-
-        // Start / End weeks
-        html += '<div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
-        html += '<div class="form-group">';
-        html += '<label for="ac-disc-start-week">Start Week</label>';
-        html += '<input type="number" id="ac-disc-start-week" class="ac-disc-start-week" ' +
-                    'value="' + escapeAttribute(String(d.startWeek !== undefined && d.startWeek !== null ? d.startWeek : minWeek)) + '" ' +
-                    'min="' + minWeek + '" max="' + maxWeek + '">';
-        html += '</div>';
-        html += '<div class="form-group">';
-        html += '<label for="ac-disc-end-week">End Week</label>';
-        html += '<input type="number" id="ac-disc-end-week" class="ac-disc-end-week" ' +
-                    'value="' + escapeAttribute(String(d.endWeek !== undefined && d.endWeek !== null ? d.endWeek : maxWeek)) + '" ' +
-                    'min="' + minWeek + '" max="' + maxWeek + '">';
-        html += '</div>';
-        html += '</div>';
-
-        // Weekly hours / weight
-        html += '<div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
-        html += '<div class="form-group">';
-        html += '<label for="ac-disc-weekly-hours">Weekly Hours</label>';
-        html += '<input type="number" step="0.5" id="ac-disc-weekly-hours" class="ac-disc-weekly-hours" ' +
-                    'value="' + escapeAttribute(String(d.weeklyHours !== undefined && d.weeklyHours !== null ? d.weeklyHours : 1)) + '" ' +
-                    'min="' + minHours + '" max="' + maxHours + '">';
-        html += '</div>';
-        html += '<div class="form-group">';
-        html += '<label for="ac-disc-weight">Weight</label>';
-        html += '<input type="number" step="0.1" id="ac-disc-weight" class="ac-disc-weight" ' +
-                    'value="' + escapeAttribute(String(d.weight !== undefined && d.weight !== null ? d.weight : 1)) + '" ' +
-                    'min="' + minWeight + '" max="' + maxWeight + '">';
-        html += '</div>';
-        html += '</div>';
-
-        // Instructors
-        html += '<div class="form-group">';
-        html += '<label for="ac-disc-instructors">Instructors</label>';
-        html += '<select id="ac-disc-instructors" class="ac-disc-instructors" multiple size="6" ' +
-                    'style="width:100%;min-height:120px;">';
-        if (instructors.length === 0) {
-            html += '<option value="" disabled>No instructors available</option>';
-        } else {
-            for (var k = 0; k < instructors.length; k++) {
-                var inst = instructors[k];
-                if (!inst || !inst.id) { continue; }
-                var name = window.CharacterQueries.getDisplayName(inst);
-                var isSel = selectedInstructors[String(inst.id)] ? ' selected' : '';
-                html += '<option value="' + escapeAttribute(inst.id) + '"' + isSel + '>' +
-                            escapeHtml(name) +
-                        '</option>';
-            }
-        }
-        html += '</select>';
-        html += '<p class="field-hint">Ctrl/Cmd-click to select multiple.</p>';
-        html += '</div>';
-
-        // Actions
-        html += '<div class="form-actions">';
-        html += '<button type="button" class="cancel-modal-btn secondary">Cancel</button>';
-        html += '<button type="submit" class="primary">' +
-                    (isEdit ? 'Update' : 'Create') + ' Discipline' +
-                '</button>';
-        html += '</div>';
-
-        html += '</div>';
-        html += '</form>';
-
-        return html;
-    }
-
-    // ============================================================
     // DISCIPLINE — DELETE CONFIRM HTML
     // ============================================================
+    //
+    // Discipline create/edit is handled inline in AcademyDisciplineView.
+    // This delete-confirm modal remains because a confirm dialog is
+    // better served by a modal than by a native confirm() call: it
+    // matches the class and location delete UX, and it can show the
+    // cascade semantics in a way that native confirm() cannot.
 
     function buildDisciplineDeleteHTML(disc) {
         var html = '';
@@ -834,90 +744,13 @@
     }
 
     // ============================================================
-    // OPEN — DISCIPLINE FORM
-    // ============================================================
-
-    function openDisciplineForm(disciplineId) {
-        var disc = null;
-        if (disciplineId && window.AcademyQueries && typeof window.AcademyQueries.getDiscipline === 'function') {
-            disc = window.AcademyQueries.getDiscipline(disciplineId);
-        } else if (disciplineId && window.AcademyDisciplines && typeof window.AcademyDisciplines.getDiscipline === 'function') {
-            disc = window.AcademyDisciplines.getDiscipline(disciplineId);
-        }
-
-        var html = buildDisciplineFormHTML(disc);
-
-        openModal('academy-discipline-form-modal', html, function(modal) {
-            bindCommonModalControls(modal);
-
-            var form = modal.querySelector('#academy-discipline-form');
-            if (!form) { return; }
-
-            form.addEventListener('submit', function(e) {
-                e.preventDefault();
-
-                var nameInput = form.querySelector('.ac-disc-name');
-                var typeInput = form.querySelector('.ac-disc-type');
-                var startInput = form.querySelector('.ac-disc-start-week');
-                var endInput = form.querySelector('.ac-disc-end-week');
-                var hoursInput = form.querySelector('.ac-disc-weekly-hours');
-                var weightInput = form.querySelector('.ac-disc-weight');
-                var instrSelect = form.querySelector('.ac-disc-instructors');
-
-                var name = nameInput ? nameInput.value.trim() : '';
-                if (!name) {
-                    notify('Discipline name is required.', 'error');
-                    return;
-                }
-
-                var instructorIds = [];
-                if (instrSelect) {
-                    for (var i = 0; i < instrSelect.options.length; i++) {
-                        if (instrSelect.options[i].selected && instrSelect.options[i].value) {
-                            instructorIds.push(instrSelect.options[i].value);
-                        }
-                    }
-                }
-
-                var payload = {
-                    name: name,
-                    type: typeInput ? typeInput.value : 'mandatory',
-                    startWeek: startInput ? parseInt(startInput.value, 10) : undefined,
-                    endWeek: endInput ? parseInt(endInput.value, 10) : undefined,
-                    weeklyHours: hoursInput ? parseFloat(hoursInput.value) : undefined,
-                    weight: weightInput ? parseFloat(weightInput.value) : undefined,
-                    instructorIds: instructorIds
-                };
-
-                var AcademyDisciplines = window.AcademyDisciplines;
-                if (!AcademyDisciplines) {
-                    notify('Discipline module not available.', 'error');
-                    return;
-                }
-
-                var promise;
-                if (disc && disc.id) {
-                    promise = AcademyDisciplines.update(disc.id, payload);
-                } else {
-                    promise = AcademyDisciplines.create(payload);
-                }
-
-                promise.then(function(result) {
-                    if (result && result.success) {
-                        closeModal(modal);
-                        notifyChange();
-                    }
-                }).catch(function(err) {
-                    console.warn('[AcademyCRUDModals] Discipline save failed:', err);
-                    notify('Failed to save discipline.', 'error');
-                });
-            });
-        });
-    }
-
-    // ============================================================
     // OPEN — DISCIPLINE DELETE
     // ============================================================
+    //
+    // Discipline create/edit is handled inline in AcademyDisciplineView.
+    // This module only owns the delete-confirm modal. The inline editor
+    // dispatches [data-action="delete-discipline"] which AcademyView
+    // routes to this function.
 
     function openDisciplineDelete(disciplineId) {
         var disc = null;
@@ -926,6 +759,7 @@
         } else if (window.AcademyDisciplines && typeof window.AcademyDisciplines.getDiscipline === 'function') {
             disc = window.AcademyDisciplines.getDiscipline(disciplineId);
         }
+
         if (!disc) {
             notify('Discipline not found.', 'error');
             return;
@@ -1085,8 +919,7 @@
         openClassDelete: openClassDelete,
         openAddCharacterToClass: openAddCharacterToClass,
 
-        // Discipline
-        openDisciplineForm: openDisciplineForm,
+        // Discipline — delete only. Create/edit is inline in the view.
         openDisciplineDelete: openDisciplineDelete,
 
         // Location
@@ -1100,7 +933,6 @@
         buildClassFormHTML: buildClassFormHTML,
         buildClassDeleteHTML: buildClassDeleteHTML,
         buildAddCharacterToClassHTML: buildAddCharacterToClassHTML,
-        buildDisciplineFormHTML: buildDisciplineFormHTML,
         buildDisciplineDeleteHTML: buildDisciplineDeleteHTML,
         buildLocationFormHTML: buildLocationFormHTML,
         buildLocationDeleteHTML: buildLocationDeleteHTML
@@ -1116,7 +948,7 @@
 
         var required = [
             'openClassForm', 'openClassDelete', 'openAddCharacterToClass',
-            'openDisciplineForm', 'openDisciplineDelete',
+            'openDisciplineDelete',
             'openLocationForm', 'openLocationDelete',
             'setOnChangeCallback'
         ];
