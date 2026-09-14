@@ -5883,3 +5883,367 @@ select.academy-discipline-instructors {
         width: 20%;
     }
 }
+
+/* ============================================================
+   ACADEMY CHARACTER DETAIL — TABS + MODE + DISCIPLINES + GROUPS
+   ============================================================
+   Styles for the tabbed character detail panel introduced in
+   AcademyCharacterDetail v2. Covers:
+     - The mode toggle (student / instructor checkbox)
+     - The tab bar
+     - The Main tab's drop-out section
+     - The Disciplines tab (both student and instructor variants)
+     - The Auto-Groups tab and its group blocks
+   All classes are prefixed with academy-character- or
+   academy-instructor- to avoid collisions.
+   ============================================================ */
+
+/* ---------- Mode toggle ---------- */
+
+.academy-character-mode-toggle {
+    margin-top: 8px;
+    padding: 6px 0;
+    border-top: 1px solid var(--border-soft);
+}
+
+.academy-mode-checkbox-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    cursor: pointer;
+    user-select: none;
+}
+
+.academy-mode-checkbox-label:hover {
+    color: var(--text);
+}
+
+.academy-character-mode-checkbox {
+    accent-color: var(--accent);
+    cursor: pointer;
+    width: auto;
+    margin: 0;
+}
+
+.academy-mode-checkbox-text {
+    font-weight: 500;
+}
+
+/* ---------- Tab bar ---------- */
+
+.academy-character-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    margin: 10px 0 12px 0;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+}
+
+.academy-character-tab-btn {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 5px 12px;
+    color: var(--text-dim);
+    font-size: 0.72rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: 0.15s;
+    white-space: nowrap;
+    border-radius: 4px 4px 0 0;
+}
+
+.academy-character-tab-btn:hover {
+    color: var(--text);
+    background: var(--panel-alt);
+}
+
+.academy-character-tab-btn.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+    background: var(--accent-soft);
+    font-weight: 600;
+}
+
+.academy-character-tab-body {
+    min-height: 100px;
+}
+
+/* ---------- Drop Out section (Main tab) ---------- */
+
+.academy-character-dropout-section {
+    padding: 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+    margin-bottom: 10px;
+}
+
+.academy-dropout-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.academy-dropout-btn {
+    font-size: 0.72rem;
+    padding: 4px 12px;
+}
+
+.academy-dropout-hint {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-style: italic;
+    flex: 1;
+    min-width: 150px;
+}
+
+.academy-dropout-status {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    border-left: 3px solid var(--danger);
+    background: var(--danger-soft);
+}
+
+.academy-dropout-status-eliminated {
+    border-left-color: var(--danger);
+}
+
+.academy-dropout-status-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--danger);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.academy-dropout-status-detail {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+}
+
+/* ---------- Disciplines tab (student + instructor) ---------- */
+
+.academy-character-disciplines,
+.academy-character-instructor-disciplines {
+    /* Reuses .academy-character-detail-section spacing */
+}
+
+.academy-character-discipline-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.academy-character-discipline-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    font-size: 0.75rem;
+    transition: background 0.15s;
+}
+
+.academy-character-discipline-row:hover {
+    background: var(--accent-soft);
+}
+
+.academy-character-discipline-name {
+    font-weight: 500;
+    flex: 1;
+    min-width: 0;
+    color: var(--text);
+}
+
+.academy-character-discipline-meta {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-style: italic;
+    white-space: nowrap;
+}
+
+.academy-character-discipline-row button.small {
+    font-size: 0.62rem;
+    padding: 2px 8px;
+    white-space: nowrap;
+}
+
+/* ---------- Instructor discipline rows (clickable) ---------- */
+
+.academy-instructor-discipline-row {
+    cursor: pointer;
+    border-left-color: var(--info);
+}
+
+.academy-instructor-discipline-row:hover {
+    background: var(--info-soft);
+}
+
+/* ---------- Auto-Groups tab ---------- */
+
+.academy-character-auto-groups {
+    /* Reuses .academy-character-detail-section spacing */
+}
+
+.academy-instructor-group {
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-left: 3px solid var(--info);
+    border-radius: 6px;
+    padding: 10px;
+    margin-bottom: 10px;
+}
+
+.academy-instructor-group:last-child {
+    margin-bottom: 0;
+}
+
+.academy-instructor-group-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding-bottom: 8px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-instructor-group-name {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text);
+    flex: 1;
+    min-width: 0;
+}
+
+.academy-instructor-group-count {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+
+.academy-instructor-group-header button.small {
+    font-size: 0.65rem;
+    padding: 3px 10px;
+    white-space: nowrap;
+}
+
+.academy-instructor-group-empty {
+    padding: 6px 4px;
+    font-style: italic;
+    font-size: 0.7rem;
+}
+
+.academy-instructor-group-roster {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.academy-instructor-group-roster-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    background: var(--bg);
+    border-radius: 4px;
+    font-size: 0.72rem;
+}
+
+.academy-instructor-group-roster-name {
+    font-weight: 500;
+    flex: 1;
+    min-width: 0;
+    color: var(--text);
+}
+
+.academy-instructor-group-roster-status {
+    font-size: 0.62rem;
+    color: var(--text-dim);
+    font-style: italic;
+    white-space: nowrap;
+}
+
+.academy-instructor-group-roster-row button.small {
+    font-size: 0.6rem;
+    padding: 2px 8px;
+    white-space: nowrap;
+}
+
+/* ---------- Character notes (Main tab) ---------- */
+
+.academy-character-notes {
+    font-size: 0.75rem;
+    color: var(--text);
+    white-space: pre-wrap;
+    padding: 8px 10px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    margin: 0;
+}
+
+/* ---------- Schedule tab placeholder ---------- */
+
+.academy-character-schedule {
+    /* Reuses .academy-character-detail-section spacing */
+}
+
+/* ---------- Mobile ---------- */
+
+@media (max-width: 600px) {
+    .academy-character-tabs {
+        gap: 1px;
+    }
+
+    .academy-character-tab-btn {
+        font-size: 0.65rem;
+        padding: 4px 8px;
+    }
+
+    .academy-character-discipline-row {
+        flex-wrap: wrap;
+    }
+
+    .academy-character-discipline-row button.small {
+        margin-left: auto;
+    }
+
+    .academy-instructor-group-header {
+        gap: 4px;
+    }
+
+    .academy-instructor-group-header button.small {
+        width: 100%;
+        text-align: center;
+    }
+
+    .academy-instructor-group-roster-row {
+        flex-wrap: wrap;
+    }
+
+    .academy-instructor-group-roster-row button.small {
+        margin-left: auto;
+    }
+
+    .academy-dropout-controls {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .academy-dropout-btn {
+        width: 100%;
+    }
+}
