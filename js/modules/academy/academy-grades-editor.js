@@ -35,6 +35,11 @@
  *   - The add/edit modal shows a live preview of the label as the user
  *     types the score.
  *
+ * MODAL CONTENT CONTRACT:
+ *   Modal.createModal may return a bare `.modal` shell or one that
+ *   already contains a `.modal-content`. Both openers in this file
+ *   reuse an existing wrapper if present, and append one otherwise.
+ *
  * LIFECYCLE:
  *   mount(container, charId, classId, week)  → render + bind
  *   refresh()                                 → re-render only
@@ -214,6 +219,42 @@
         if (percentage >= 80) return 'academy-grade-score academy-grade-score-good';
         if (percentage >= 70) return 'academy-grade-score academy-grade-score-passing';
         return 'academy-grade-score academy-grade-score-failing';
+    }
+
+    /**
+     * Build a preview string for a score under a scheme.
+     * Numeric scheme → '85%'. Non-numeric → '85% (B)'. Empty score
+     * is handled by the caller.
+     */
+    function buildLabelPreview(score, scheme) {
+        if (!isFinite(score)) { return ''; }
+        if (!GradeSchemes.isNumericScheme(scheme)) {
+            var label = GradeSchemes.getLabelForScore(scheme, score);
+            if (label) {
+                return score + '% (' + label + ')';
+            }
+        }
+        return score + '%';
+    }
+
+    // ============================================================
+    // MODAL PLUMBING
+    // ============================================================
+
+    /**
+     * Reuse an existing `.modal-content` or create one. Works with
+     * both the bare-shell and pre-created-wrapper Modal contracts.
+     */
+    function attachModalContent(modal, html) {
+        if (!modal) return;
+
+        var contentEl = modal.querySelector('.modal-content');
+        if (!contentEl) {
+            contentEl = document.createElement('div');
+            contentEl.className = 'modal-content';
+            modal.appendChild(contentEl);
+        }
+        contentEl.innerHTML = html;
     }
 
     // ============================================================
@@ -609,35 +650,12 @@
         html += '</div>';
         html += '</form>';
 
-        // Modal.createModal may return a bare shell or a shell with a
-        // pre-created .modal-content. Handle both.
-        var contentEl = modal.querySelector('.modal-content');
-        if (!contentEl) {
-            contentEl = document.createElement('div');
-            contentEl.className = 'modal-content';
-            modal.appendChild(contentEl);
-        }
-        contentEl.innerHTML = html;
+        attachModalContent(modal, html);
 
         Modal.modalSetup(modal);
         Modal.showModal(modal);
 
         bindGradeFormEvents(modal, existing);
-    }
-
-    /**
-     * Build a preview string for a score under a scheme.
-     * Returns '' for the numeric scheme so the caller can show "—".
-     */
-    function buildLabelPreview(score, scheme) {
-        if (!isFinite(score)) { return ''; }
-        if (!GradeSchemes.isNumericScheme(scheme)) {
-            var label = GradeSchemes.getLabelForScore(scheme, score);
-            if (label) {
-                return score + '% (' + label + ')';
-            }
-        }
-        return score + '%';
     }
 
     function bindGradeFormEvents(modal, existing) {
@@ -801,14 +819,7 @@
         html += '</div>';
         html += '</form>';
 
-        // Handle both modal content contracts.
-        var contentEl = modal.querySelector('.modal-content');
-        if (!contentEl) {
-            contentEl = document.createElement('div');
-            contentEl.className = 'modal-content';
-            modal.appendChild(contentEl);
-        }
-        contentEl.innerHTML = html;
+        attachModalContent(modal, html);
 
         Modal.modalSetup(modal);
         Modal.showModal(modal);
