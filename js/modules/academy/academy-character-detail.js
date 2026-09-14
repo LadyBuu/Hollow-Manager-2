@@ -6,12 +6,14 @@
  *
  * This module is responsible for:
  *   - Rendering the character summary header (name, role badge, status)
- *   - Rendering the character's class membership chips
- *   - Rendering the character's academic stats for the selected week
+ *   - Rendering a mode toggle (Student / Instructor)
+ *   - Rendering a tab bar that changes with the mode
+ *   - Rendering tab panels:
+ *       Student mode:    Main | Disciplines | Grades | Schedule | Teams
+ *       Instructor mode: Main | Disciplines | Schedule | Auto-Groups
  *   - Rendering an elimination warning banner when applicable
- *   - Rendering the character's grades (this week + recent)
- *   - Rendering the character's team memberships
- *   - Rendering the character's ranking snapshot
+ *   - Rendering a Drop Out button on the Main tab (student mode only)
+ *   - Mounting the inline grades editor into the Grades tab
  *   - Rendering an empty state when no character is selected
  *
  * IMPORTANT:
@@ -27,6 +29,19 @@
  *   window.CharacterDetail is already used by the modal in
  *   js/modules/characters/character-detail.js. This module exposes
  *   itself as window.AcademyCharacterDetail.
+ *
+ * MODE SEMANTICS:
+ *   - The panel has two modes: 'student' and 'instructor'.
+ *   - The mode is chosen by the caller (AcademyView reads it from
+ *     AcademyUI.getCharacterMode) and passed in via options.mode.
+ *   - Default when omitted: 'student'.
+ *   - The mode is a display toggle. It does NOT mutate the character.
+ *
+ * TAB SEMANTICS:
+ *   - The active tab is chosen by the caller (AcademyView keeps a
+ *     module-scoped _activeCharacterTab and passes it via options.tab).
+ *   - Default when omitted: 'main'.
+ *   - The renderer does not remember state between calls.
  *
  * ELIMINATION WEEK SEMANTICS:
  *   - getEliminationWeek(charId) returns the earliest week the character
@@ -48,6 +63,8 @@
  *   - window.AcademyQueries (MANDATORY)
  *   - window.DisciplineQueries (MANDATORY)
  *   - window.CalendarConstants (MANDATORY)
+ *   - window.AcademyGroups (LAZY - optional)
+ *   - window.TeamQueries (LAZY - optional)
  *   - window.EliminationQueries (LAZY - optional)
  */
 
@@ -200,44 +217,50 @@
         return role === 'instructor' ? 'Instructor' : 'Trainee';
     }
 
-    function getScoreClass(percentage) {
-        if (typeof percentage !== 'number' || !isFinite(percentage)) {
-            return 'academy-grade-score academy-grade-score-unknown';
-        }
-        if (percentage >= 90) {
-            return 'academy-grade-score academy-grade-score-excellent';
-        }
-        if (percentage >= 80) {
-            return 'academy-grade-score academy-grade-score-good';
-        }
-        if (percentage >= 70) {
-            return 'academy-grade-score academy-grade-score-passing';
-        }
-        return 'academy-grade-score academy-grade-score-failing';
+    // ============================================================
+    // TAB DEFINITIONS
+    // ============================================================
+
+    var STUDENT_TABS = [
+        { id: 'main',        label: 'Main' },
+        { id: 'disciplines', label: 'Disciplines' },
+        { id: 'grades',      label: 'Grades' },
+        { id: 'schedule',    label: 'Schedule' },
+        { id: 'teams',       label: 'Teams' }
+    ];
+
+    var INSTRUCTOR_TABS = [
+        { id: 'main',        label: 'Main' },
+        { id: 'disciplines', label: 'Disciplines' },
+        { id: 'schedule',    label: 'Schedule' },
+        { id: 'autoGroups',  label: 'Auto-Groups' }
+    ];
+
+    var VALID_TABS = {
+        main: true,
+        disciplines: true,
+        grades: true,
+        schedule: true,
+        teams: true,
+        autoGroups: true
+    };
+
+    function getTabsForMode(mode) {
+        return mode === 'instructor' ? INSTRUCTOR_TABS : STUDENT_TABS;
     }
 
-    function getGradePercentage(grade) {
-        if (!grade || typeof grade !== 'object') {
-            return null;
+    function isValidTabForMode(tabId, mode) {
+        if (!VALID_TABS[tabId]) { return false; }
+        var tabs = getTabsForMode(mode);
+        for (var i = 0; i < tabs.length; i++) {
+            if (tabs[i].id === tabId) { return true; }
         }
-        if (typeof grade.percentage === 'number' && isFinite(grade.percentage)) {
-            return grade.percentage;
-        }
-        if (typeof grade.score === 'number' &&
-            typeof grade.maxScore === 'number' &&
-            grade.maxScore > 0) {
-            return Math.round((grade.score / grade.maxScore) * 100);
-        }
-        return null;
+        return false;
     }
 
     // ============================================================
     // ELIMINATION LOOKUP
     // ============================================================
-    //
-    // getEliminationWeek returns the earliest week the character was
-    // eliminated, or null if they were never eliminated. It factors
-    // in both explicit elimination records and the death timeline.
 
     function getCharacterEliminationWeek(char) {
         if (!char || !char.id) {
@@ -275,14 +298,32 @@
         }
     }
 
+    function isCharacterEliminated(char, week) {
+        if (!char) { return false; }
+        var EQ = window.EliminationQueries;
+        if (EQ && typeof EQ.isCharacterEliminatedByWeek === 'function') {
+            try {
+                return EQ.isCharacterEliminatedByWeek(char, week) === true;
+            } catch (e) {
+                return false;
+            }
+        }
+        // Fallback: check the eliminations array directly.
+        if (!Array.isArray(char.eliminations)) { return false; }
+        var weekNum = parseInt(week, 10);
+        if (isNaN(weekNum)) { return false; }
+        for (var i = 0; i < char.eliminations.length; i++) {
+            var w = parseInt(char.eliminations[i].week, 10);
+            if (!isNaN(w) && w <= weekNum) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // ============================================================
     // ELIMINATION WARNING BANNER
     // ============================================================
-    //
-    // Three states:
-    //   - week > eliminationWeek  → RED    "Eliminated in week N"
-    //   - week === eliminationWeek → YELLOW "Eliminated this week"
-    //   - otherwise                → no banner
 
     function renderEliminationWarning(char, week) {
         var eliminationWeek = getCharacterEliminationWeek(char);
@@ -296,7 +337,6 @@
         }
 
         if (displayedWeek < eliminationWeek) {
-            // Character was still active this week.
             return '';
         }
 
@@ -317,7 +357,6 @@
             );
         }
 
-        // displayedWeek > eliminationWeek
         return (
             '<div class="academy-character-detail-warning academy-warning-eliminated">' +
                 '<span class="academy-warning-icon">\u26a0</span>' +
@@ -338,7 +377,7 @@
      *
      * @param {object|null} char - Character object
      * @param {object|null} classVM - Class view model (for role determination)
-     * @param {object} [options] - { week: number }
+     * @param {object} [options] - { week, mode, tab }
      * @returns {string} HTML string
      */
     function renderHTML(char, classVM, options) {
@@ -356,17 +395,48 @@
 
         options = options || {};
         var week = options.week || getCurrentWeek();
+        var mode = (options.mode === 'instructor') ? 'instructor' : 'student';
+        var tab = options.tab || 'main';
+
+        if (!isValidTabForMode(tab, mode)) {
+            tab = 'main';
+        }
+
         var role = getRoleForCharInClass(char, classVM);
 
         var html = '';
         html += '<div class="academy-character-detail" ' +
-                    'data-character-id="' + escapeAttribute(char.id) + '">';
-        html += renderHeader(char, role);
+                    'data-character-id="' + escapeAttribute(char.id) + '" ' +
+                    'data-mode="' + escapeAttribute(mode) + '">';
+        html += renderHeader(char, role, mode);
         html += renderEliminationWarning(char, week);
-        html += renderClassChips(char);
-        html += renderGradesSection(char, week);
-        html += renderRankingSection(char, classVM, week);
-        html += renderTeamsSection(char, week);
+        html += renderTabBar(mode, tab);
+        html += '<div class="academy-character-tab-body">';
+
+        switch (tab) {
+            case 'main':
+                html += renderMainTab(char, classVM, role, week, mode);
+                break;
+            case 'disciplines':
+                html += renderDisciplinesTab(char, mode, week);
+                break;
+            case 'grades':
+                html += renderGradesTab(char, week);
+                break;
+            case 'schedule':
+                html += renderScheduleTab(char, week);
+                break;
+            case 'teams':
+                html += renderTeamsTab(char, week);
+                break;
+            case 'autoGroups':
+                html += renderAutoGroupsTab(char, week);
+                break;
+            default:
+                html += renderMainTab(char, classVM, role, week, mode);
+        }
+
+        html += '</div>';
         html += '</div>';
 
         return html;
@@ -388,7 +458,7 @@
     // HEADER
     // ============================================================
 
-    function renderHeader(char, role) {
+    function renderHeader(char, role, mode) {
         var displayName = CharacterQueries.getDisplayName(char);
         var status = CharacterQueries.getCurrentStatus(char);
 
@@ -431,6 +501,9 @@
 
         html += '</div>';
 
+        // Mode toggle
+        html += renderModeToggle(mode);
+
         // Actions
         html += '<div class="academy-character-detail-actions">';
         html += '<button type="button" class="small primary" ' +
@@ -445,9 +518,73 @@
         return html;
     }
 
+    function renderModeToggle(mode) {
+        var isInstructor = mode === 'instructor';
+
+        var html = '';
+        html += '<div class="academy-character-mode-toggle">';
+        html += '<label class="academy-mode-checkbox-label">';
+        html += '<input type="checkbox" id="academy-character-mode-checkbox" ' +
+                    'class="academy-character-mode-checkbox"' +
+                    (isInstructor ? ' checked' : '') + '>';
+        html += '<span class="academy-mode-checkbox-text">Instructor mode</span>';
+        html += '</label>';
+        html += '</div>';
+        return html;
+    }
+
     // ============================================================
-    // CLASS CHIPS
+    // TAB BAR
     // ============================================================
+
+    function renderTabBar(mode, activeTab) {
+        var tabs = getTabsForMode(mode);
+
+        var html = '';
+        html += '<div class="academy-character-tabs">';
+
+        for (var i = 0; i < tabs.length; i++) {
+            var t = tabs[i];
+            var isActive = t.id === activeTab;
+            html += '<button type="button" ' +
+                        'class="academy-character-tab-btn' +
+                            (isActive ? ' active' : '') + '" ' +
+                        'data-tab="' + escapeAttribute(t.id) + '">' +
+                        escapeHtml(t.label) +
+                    '</button>';
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    // ============================================================
+    // MAIN TAB
+    // ============================================================
+
+    function renderMainTab(char, classVM, role, week, mode) {
+        var html = '';
+
+        // Class chips
+        html += renderClassChips(char);
+
+        // Drop Out button (student mode only)
+        if (mode === 'student') {
+            html += renderDropOutSection(char, week);
+        }
+
+        // Notes / summary
+        if (isNonEmptyString(char.notes)) {
+            html += '<div class="academy-character-detail-section">';
+            html += '<div class="academy-character-detail-section-header">';
+            html += '<h4 class="academy-character-detail-section-title">Notes</h4>';
+            html += '</div>';
+            html += '<p class="academy-character-notes">' + escapeHtml(char.notes) + '</p>';
+            html += '</div>';
+        }
+
+        return html;
+    }
 
     function renderClassChips(char) {
         var classes = AcademyQueries.getCharacterClasses(char);
@@ -478,11 +615,198 @@
         return html;
     }
 
+    function renderDropOutSection(char, week) {
+        var isEliminated = isCharacterEliminated(char, week);
+
+        var html = '';
+        html += '<div class="academy-character-detail-section academy-character-dropout-section">';
+        html += '<div class="academy-character-detail-section-header">';
+        html += '<h4 class="academy-character-detail-section-title">Enrollment</h4>';
+        html += '</div>';
+
+        if (isEliminated) {
+            var elimWeek = getCharacterEliminationWeek(char);
+            var elimReason = getCharacterEliminationReason(char);
+            html += '<div class="academy-dropout-status academy-dropout-status-eliminated">';
+            html += '<span class="academy-dropout-status-label">Eliminated</span>';
+            if (elimWeek !== null) {
+                html += '<span class="academy-dropout-status-detail">Week ' +
+                            escapeHtml(String(elimWeek)) +
+                        '</span>';
+            }
+            if (isNonEmptyString(elimReason) && elimReason !== 'Unknown') {
+                html += '<span class="academy-dropout-status-detail">' +
+                            escapeHtml(elimReason) +
+                        '</span>';
+            }
+            html += '</div>';
+        } else {
+            html += '<div class="academy-dropout-controls">';
+            html += '<button type="button" class="small danger academy-dropout-btn" ' +
+                        'data-action="drop-out-character" ' +
+                        'data-character-id="' + escapeAttribute(char.id) + '">' +
+                        'Drop Out' +
+                    '</button>';
+            html += '<span class="academy-dropout-hint">' +
+                        'Marks this character as eliminated. They remain on the class roster.' +
+                    '</span>';
+            html += '</div>';
+        }
+
+        html += '</div>';
+        return html;
+    }
+
     // ============================================================
-    // GRADES
+    // DISCIPLINES TAB
     // ============================================================
 
-    function renderGradesSection(char, week) {
+    function renderDisciplinesTab(char, mode, week) {
+        if (mode === 'instructor') {
+            return renderInstructorDisciplinesTab(char, week);
+        }
+        return renderStudentDisciplinesTab(char, week);
+    }
+
+    function renderStudentDisciplinesTab(char, week) {
+        var html = '';
+        html += '<div class="academy-character-detail-section academy-character-disciplines">';
+
+        html += '<div class="academy-character-detail-section-header">';
+        html += '<h4 class="academy-character-detail-section-title">Disciplines</h4>';
+        html += '<button type="button" class="small primary" ' +
+                    'data-action="enroll-discipline" ' +
+                    'data-character-id="' + escapeAttribute(char.id) + '">' +
+                    '+ Enroll' +
+                '</button>';
+        html += '</div>';
+
+        var disciplineIds = (CharacterQueries && typeof CharacterQueries.getCharacterDisciplines === 'function')
+            ? CharacterQueries.getCharacterDisciplines(char)
+            : (Array.isArray(char.disciplineIds) ? char.disciplineIds.slice() : []);
+
+        if (disciplineIds.length === 0) {
+            html += '<p class="empty-state small">Not enrolled in any disciplines.</p>';
+            html += '</div>';
+            return html;
+        }
+
+        html += '<div class="academy-character-discipline-list">';
+
+        // Sort by discipline name.
+        var rows = [];
+        for (var i = 0; i < disciplineIds.length; i++) {
+            var did = disciplineIds[i];
+            var name = getDisciplineName(did);
+            rows.push({ id: did, name: name });
+        }
+        rows.sort(function(a, b) {
+            return (a.name || '').localeCompare(b.name || '');
+        });
+
+        for (var r = 0; r < rows.length; r++) {
+            var row = rows[r];
+            html += '<div class="academy-character-discipline-row" ' +
+                        'data-discipline-id="' + escapeAttribute(row.id) + '">';
+            html += '<span class="academy-character-discipline-name">' +
+                        escapeHtml(row.name) +
+                    '</span>';
+            html += '<button type="button" class="small danger" ' +
+                        'data-action="leave-discipline" ' +
+                        'data-character-id="' + escapeAttribute(char.id) + '" ' +
+                        'data-discipline-id="' + escapeAttribute(row.id) + '">' +
+                        'Leave' +
+                    '</button>';
+            html += '</div>';
+        }
+
+        html += '</div>';
+        html += '</div>';
+        return html;
+    }
+
+    function renderInstructorDisciplinesTab(char, week) {
+        var html = '';
+        html += '<div class="academy-character-detail-section academy-character-instructor-disciplines">';
+
+        html += '<div class="academy-character-detail-section-header">';
+        html += '<h4 class="academy-character-detail-section-title">Disciplines I Teach</h4>';
+        html += '</div>';
+
+        // Get groups where this char is the instructor.
+        var AG = window.AcademyGroups;
+        if (!AG || typeof AG.getGroupsByInstructor !== 'function') {
+            html += '<p class="empty-state small">Auto-groups module not available.</p>';
+            html += '</div>';
+            return html;
+        }
+
+        var groupsMap = AG.getGroupsByInstructor(char.id) || {};
+        var groups = [];
+        Object.keys(groupsMap).forEach(function(key) {
+            var g = groupsMap[key];
+            if (g) {
+                groups.push({ key: key, group: g });
+            }
+        });
+
+        if (groups.length === 0) {
+            html += '<p class="empty-state small">Not assigned to teach any disciplines.</p>';
+            html += '</div>';
+            return html;
+        }
+
+        // One row per discipline. If the instructor teaches the same
+        // discipline in multiple groups (different classes), show the
+        // discipline once with a hint of how many groups they have for it.
+        var byDiscipline = {};
+        for (var i = 0; i < groups.length; i++) {
+            var g = groups[i].group;
+            var did = g.disciplineId;
+            if (!did) { continue; }
+            if (!byDiscipline[did]) {
+                byDiscipline[did] = { id: did, groupCount: 0 };
+            }
+            byDiscipline[did].groupCount++;
+        }
+
+        var rows = [];
+        Object.keys(byDiscipline).forEach(function(did) {
+            rows.push({
+                id: did,
+                name: getDisciplineName(did),
+                groupCount: byDiscipline[did].groupCount
+            });
+        });
+        rows.sort(function(a, b) {
+            return (a.name || '').localeCompare(b.name || '');
+        });
+
+        html += '<div class="academy-character-discipline-list">';
+
+        for (var r = 0; r < rows.length; r++) {
+            var row = rows[r];
+            html += '<div class="academy-character-discipline-row academy-instructor-discipline-row" ' +
+                        'data-discipline-id="' + escapeAttribute(row.id) + '">';
+            html += '<span class="academy-character-discipline-name">' +
+                        escapeHtml(row.name) +
+                    '</span>';
+            html += '<span class="academy-character-discipline-meta">' +
+                        row.groupCount + ' group' + (row.groupCount === 1 ? '' : 's') +
+                    '</span>';
+            html += '</div>';
+        }
+
+        html += '</div>';
+        html += '</div>';
+        return html;
+    }
+
+    // ============================================================
+    // GRADES TAB
+    // ============================================================
+
+    function renderGradesTab(char, week) {
         var allGrades = AcademyQueries.getStudentGrades(char.id) || [];
         var summary = AcademyQueries.calculateGradeSummary(allGrades);
 
@@ -498,8 +822,6 @@
         }
         html += '</div>';
 
-        // Host element. AcademyGradesEditor.mount() populates this after
-        // the detail panel is inserted into the DOM.
         html += '<div id="academy-grades-editor-host" ' +
                     'class="academy-grades-editor-host"></div>';
 
@@ -508,87 +830,48 @@
     }
 
     // ============================================================
-    // RANKING
+    // SCHEDULE TAB (placeholder)
     // ============================================================
 
-    function renderRankingSection(char, classVM, week) {
-        if (!classVM || !classVM.id) {
-            return '';
-        }
-
-        var rankings = AcademyQueries.calculateClassRanking(classVM.id, week);
-        if (!Array.isArray(rankings) || rankings.length === 0) {
-            return '';
-        }
-
-        var entry = null;
-        for (var i = 0; i < rankings.length; i++) {
-            if (String(rankings[i].studentId) === String(char.id)) {
-                entry = rankings[i];
-                break;
-            }
-        }
-
-        if (!entry) {
-            return '';
-        }
-
+    function renderScheduleTab(char, week) {
         var html = '';
-        html += '<div class="academy-character-detail-section academy-character-ranking">';
-
+        html += '<div class="academy-character-detail-section academy-character-schedule">';
         html += '<div class="academy-character-detail-section-header">';
-        html += '<h4 class="academy-character-detail-section-title">Ranking</h4>';
+        html += '<h4 class="academy-character-detail-section-title">Schedule</h4>';
         html += '<span class="academy-character-detail-section-subtitle">' +
                     'Week ' + escapeHtml(String(week)) +
                 '</span>';
         html += '</div>';
-
-        html += '<div class="academy-ranking-snapshot">';
-        html += '<div class="academy-ranking-snapshot-item">';
-        html += '<span class="snapshot-label">Rank</span>';
-        html += '<span class="snapshot-value">#' +
-                    escapeHtml(String(entry.rank || '?')) +
-                '</span>';
-        html += '<span class="snapshot-subtext">of ' + rankings.length + '</span>';
+        html += '<p class="empty-state small">Schedule view is coming soon.</p>';
         html += '</div>';
-
-        if (typeof entry.average === 'number') {
-            html += '<div class="academy-ranking-snapshot-item">';
-            html += '<span class="snapshot-label">Average</span>';
-            html += '<span class="snapshot-value">' +
-                        escapeHtml(String(entry.average)) +
-                    '</span>';
-            html += '</div>';
-        }
-
-        if (typeof entry.gradeCount === 'number') {
-            html += '<div class="academy-ranking-snapshot-item">';
-            html += '<span class="snapshot-label">Grades</span>';
-            html += '<span class="snapshot-value">' +
-                        escapeHtml(String(entry.gradeCount)) +
-                    '</span>';
-            html += '</div>';
-        }
-
-        html += '</div>';
-        html += '</div>';
-
         return html;
     }
 
     // ============================================================
-    // TEAMS
+    // TEAMS TAB
     // ============================================================
 
-    function renderTeamsSection(char, week) {
+    function renderTeamsTab(char, week) {
         var TeamQueries = window.TeamQueries;
         if (!TeamQueries || typeof TeamQueries.getTeamsForCharacter !== 'function') {
-            return '';
+            return (
+                '<div class="academy-character-detail-section">' +
+                    '<p class="empty-state small">Team data not available.</p>' +
+                '</div>'
+            );
         }
 
         var teams = TeamQueries.getTeamsForCharacter(char.id, week) || [];
         if (teams.length === 0) {
-            return '';
+            return (
+                '<div class="academy-character-detail-section academy-character-teams">' +
+                    '<div class="academy-character-detail-section-header">' +
+                        '<h4 class="academy-character-detail-section-title">Teams</h4>' +
+                        '<span class="academy-character-detail-section-count">0</span>' +
+                    '</div>' +
+                    '<p class="empty-state small">Not a member of any teams.</p>' +
+                '</div>'
+            );
         }
 
         var html = '';
@@ -627,24 +910,153 @@
     }
 
     // ============================================================
+    // AUTO-GROUPS TAB (instructor mode)
+    // ============================================================
+
+    function renderAutoGroupsTab(char, week) {
+        var AG = window.AcademyGroups;
+        if (!AG || typeof AG.getGroupsByInstructor !== 'function') {
+            return (
+                '<div class="academy-character-detail-section">' +
+                    '<p class="empty-state small">Auto-groups module not available.</p>' +
+                '</div>'
+            );
+        }
+
+        var groupsMap = AG.getGroupsByInstructor(char.id) || {};
+        var groups = [];
+        Object.keys(groupsMap).forEach(function(key) {
+            var g = groupsMap[key];
+            if (g) {
+                groups.push({ key: key, group: g });
+            }
+        });
+
+        if (groups.length === 0) {
+            return (
+                '<div class="academy-character-detail-section academy-character-auto-groups">' +
+                    '<div class="academy-character-detail-section-header">' +
+                        '<h4 class="academy-character-detail-section-title">Auto-Groups</h4>' +
+                        '<span class="academy-character-detail-section-count">0</span>' +
+                    '</div>' +
+                    '<p class="empty-state small">Not managing any groups.</p>' +
+                '</div>'
+            );
+        }
+
+        // Sort groups by discipline name.
+        groups.sort(function(a, b) {
+            var na = getDisciplineName(a.group.disciplineId);
+            var nb = getDisciplineName(b.group.disciplineId);
+            return (na || '').localeCompare(nb || '');
+        });
+
+        var html = '';
+        html += '<div class="academy-character-detail-section academy-character-auto-groups">';
+
+        html += '<div class="academy-character-detail-section-header">';
+        html += '<h4 class="academy-character-detail-section-title">Auto-Groups</h4>';
+        html += '<span class="academy-character-detail-section-count">' + groups.length + '</span>';
+        html += '</div>';
+
+        for (var i = 0; i < groups.length; i++) {
+            html += renderInstructorGroupBlock(char, groups[i].key, groups[i].group, week);
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderInstructorGroupBlock(char, groupKey, group, week) {
+        var disciplineName = getDisciplineName(group.disciplineId);
+        var students = Array.isArray(group.students) ? group.students : [];
+
+        var html = '';
+        html += '<div class="academy-instructor-group" ' +
+                    'data-group-key="' + escapeAttribute(groupKey) + '">';
+
+        // Header
+        html += '<div class="academy-instructor-group-header">';
+        html += '<span class="academy-instructor-group-name">' +
+                    escapeHtml(disciplineName) +
+                '</span>';
+        html += '<span class="academy-instructor-group-count">' +
+                    students.length + ' student' + (students.length === 1 ? '' : 's') +
+                '</span>';
+        html += '<button type="button" class="small primary" ' +
+                    'data-action="add-group-student" ' +
+                    'data-instructor-id="' + escapeAttribute(char.id) + '" ' +
+                    'data-group-key="' + escapeAttribute(groupKey) + '">' +
+                    '+ Add Student' +
+                '</button>';
+        html += '</div>';
+
+        // Roster
+        if (students.length === 0) {
+            html += '<p class="empty-state small academy-instructor-group-empty">' +
+                        'No students in this group yet.' +
+                    '</p>';
+        } else {
+            html += '<div class="academy-instructor-group-roster">';
+            for (var i = 0; i < students.length; i++) {
+                var sid = students[i];
+                var studentName = 'Unknown';
+                var studentStatus = '';
+                if (CharacterQueries && typeof CharacterQueries.getCharacterById === 'function') {
+                    var s = CharacterQueries.getCharacterById(sid);
+                    if (s) {
+                        studentName = CharacterQueries.getDisplayName(s);
+                        studentStatus = CharacterQueries.getCurrentStatus(s);
+                    }
+                }
+
+                html += '<div class="academy-instructor-group-roster-row" ' +
+                            'data-character-id="' + escapeAttribute(sid) + '">';
+                html += '<span class="academy-instructor-group-roster-name">' +
+                            escapeHtml(studentName) +
+                        '</span>';
+                if (isNonEmptyString(studentStatus)) {
+                    html += '<span class="academy-instructor-group-roster-status">' +
+                                escapeHtml(studentStatus) +
+                            '</span>';
+                }
+                html += '<button type="button" class="small danger" ' +
+                            'data-action="remove-group-student" ' +
+                            'data-group-key="' + escapeAttribute(groupKey) + '" ' +
+                            'data-character-id="' + escapeAttribute(sid) + '">' +
+                            'Remove' +
+                        '</button>';
+                html += '</div>';
+            }
+            html += '</div>';
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    // ============================================================
     // GRADES EDITOR MOUNTING
     // ============================================================
-    //
-    // The grades editor is a separate module that mounts into a host
-    // element inside the character detail panel. Because the panel is
-    // re-rendered on every interaction (via innerHTML), the editor
-    // must be re-mounted after each render.
 
     /**
      * Mount the inline grades editor for a character.
      * Called by AcademyView after the detail panel is inserted into
-     * the DOM.
+     * the DOM. Only does anything when the Grades tab is active.
      *
      * @param {string} charId - Character ID
      * @param {object|null} classVM - Class view model (for context)
-     * @param {object} options - { week }
+     * @param {object} options - { week, tab }
      */
     function mountGradesEditor(charId, classVM, options) {
+        options = options || {};
+        var tab = options.tab || 'main';
+
+        // Only mount when the Grades tab is active.
+        if (tab !== 'grades') {
+            return;
+        }
+
         var GE = window.AcademyGradesEditor;
         if (!GE || typeof GE.mount !== 'function') {
             return;
@@ -655,12 +1067,7 @@
             return;
         }
 
-        options = options || {};
         var week = options.week || 1;
-
-        // Grades are class-scoped. If no class is selected, we still
-        // mount so the table renders — the editor will just filter by
-        // whatever class context we pass.
         var classId = classVM && classVM.id ? classVM.id : null;
 
         GE.mount(host, charId, classId, week);
