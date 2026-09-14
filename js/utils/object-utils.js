@@ -15,6 +15,18 @@
  *   - This is the SINGLE SOURCE OF TRUTH for generic cloning
  *   - Database and MutationPipeline use this module
  * 
+ * READ SAFETY CONTRACT:
+ *   - deepClone ALWAYS returns a value that is not === to the input,
+ *     for object inputs. There is no fallback that returns the
+ *     original reference. If every clone strategy fails, deepClone
+ *     throws. This is a hard contract, not a hint.
+ *   - If a future edit ever introduces a fallback that returns the
+ *     original, the explicit identity check below fires and throws.
+ *     This makes the contract self-enforcing.
+ *   - Primitives (null, undefined, number, string, boolean, symbol,
+ *     bigint) are returned as-is. This is safe because primitives are
+ *     copied by value; there is no aliasing.
+ * 
  * DEPENDENCIES:
  *   - None
  * 
@@ -41,6 +53,8 @@
      *   - Falls back to JSON.parse(JSON.stringify()) for compatibility
      *   - Throws an error if cloning fails
      *   - Does NOT return null on failure (distinguishes from cloned null)
+     *   - Does NOT return the original reference on failure. Aliasing
+     *     is treated as a cloning failure, not a graceful degradation.
      * 
      * LIMITATIONS:
      *   - JSON fallback loses: undefined, Date, Map, Set, TypedArrays, etc.
@@ -49,7 +63,7 @@
      * 
      * @param {*} value - Value to clone
      * @returns {*} Cloned value
-     * @throws {Error} If cloning fails
+     * @throws {Error} If cloning fails or if aliasing is detected
      * 
      * USAGE:
      *   try {
@@ -59,7 +73,8 @@
      *   }
      */
     function deepClone(value) {
-        // Primitives: return as-is
+        // Primitives: return as-is. Safe because primitives are
+        // copied by value; there is no aliasing.
         if (value === null || typeof value !== 'object') {
             return value;
         }
@@ -67,15 +82,22 @@
         // Try structuredClone first (modern browsers)
         if (typeof structuredClone === 'function') {
             try {
-                return structuredClone(value);
+                var structured = structuredClone(value);
+                // structuredClone never returns the input reference,
+                // but check anyway to keep the contract self-enforcing.
+                if (structured !== value) {
+                    return structured;
+                }
+                // If we somehow got the same reference, fall through.
             } catch (e) {
                 // Fall through to JSON fallback
             }
         }
 
         // Fallback to JSON
+        var json;
         try {
-            return JSON.parse(JSON.stringify(value));
+            json = JSON.parse(JSON.stringify(value));
         } catch (e) {
             throw new Error(
                 'ObjectUtils.deepClone: Failed to clone value. ' +
@@ -83,6 +105,19 @@
                 'Original error: ' + e.message
             );
         }
+
+        // The JSON round-trip always constructs a new value for object
+        // inputs. If it somehow produced the same reference (which is
+        // impossible for a genuine JSON.parse result), treat it as a
+        // cloning failure rather than silently returning an alias.
+        if (json === value) {
+            throw new Error(
+                'ObjectUtils.deepClone: Clone produced the original reference. ' +
+                'This is a bug — deepClone must never return the input for object inputs.'
+            );
+        }
+
+        return json;
     }
 
     /**
