@@ -25,6 +25,11 @@
  *   - All callbacks are delegated to CharacterEvents
  *   - No direct access to AcademyQueries, TeamQueries, SocialQueries, etc.
  * 
+ * MODAL CONTENT CONTRACT:
+ *   Modal.createModal() returns a BARE `.modal` shell with no children.
+ *   This module is responsible for building its own `.modal-content`
+ *   wrapper. See createModal() below.
+ * 
  * DEPENDENCIES:
  *   - window.CharacterAggregator (from character-aggregator.js) - MANDATORY
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
@@ -218,8 +223,12 @@
         var modal = Modal.createModal('character-detail-modal');
         modal.id = 'character-detail-modal';
 
-        var content = modal.querySelector('.modal-content');
+        // Modal.createModal returns a BARE .modal shell. We build our
+        // own .modal-content wrapper here. See MODAL CONTENT CONTRACT
+        // in the file header.
+        var content = document.createElement('div');
         content.className = 'modal-content wide';
+        modal.appendChild(content);
 
         // Header
         var header = document.createElement('div');
