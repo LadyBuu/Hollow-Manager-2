@@ -29,7 +29,7 @@
  *
  * CLASS MEMBERSHIP (v15+):
  *   - CharacterCRUD does NOT own or originate character.classIds.
- *   - normaliseCharacterData() deliberately does not accept classIds.
+ *     normaliseCharacterData() deliberately does not accept classIds.
  *     This makes the CRUD/membership split structural rather than
  *     conventional: no caller can replace the membership list by
  *     passing classIds through the generic save path.
@@ -39,6 +39,20 @@
  *     removeClassById, addClassByName, removeFromAllClasses).
  *   - Academy roster queries derive from character.classIds; there is
  *     no separate academy.classStudents store after v15.
+ *
+ * DISCIPLINE ENROLLMENT (v16+):
+ *   - character.disciplineIds is the source of truth for "which
+ *     disciplines is this student enrolled in".
+ *   - Enrollment is a DISCIPLINE-level fact, not a group-level one.
+ *     Groups track who is actually scheduled for a discipline's slots.
+ *     A student can be enrolled without being in any group (floating).
+ *   - normaliseCharacterData() DOES accept disciplineIds, because
+ *     enrollment is owned by the CRUD form.
+ *   - createNewCharacter() initialises disciplineIds to [] so new
+ *     characters satisfy the invariant "every character has a
+ *     disciplineIds array".
+ *   - updateExistingCharacter() preserves disciplineIds the same way
+ *     it preserves classIds.
  *
  * DEATH MODEL:
  *   - deathYear is the source of truth for "when does this character die"
@@ -79,17 +93,8 @@
  *    11. Prunes curriculum.metadata keys prefixed with the character ID.
  *    12. Deletes the character entity itself.
  *
- *   Steps 3-8 delegate to stripCharacterRefs() helpers on sibling
- *   modules. If a helper is not available (module not loaded), that
- *   step is skipped silently — the delete still succeeds, just with
- *   fewer cleanups. Consumers of those stores already handle unknown
- *   IDs gracefully (getCharacterById returns null).
- *
- *   Steps 9-11 are handled inline here because curriculum.schedules,
- *   curriculum.restDays, and curriculum.metadata are owned by
- *   ScheduleCore. ScheduleCore's MutationPipeline wrap is deferred;
- *   these inline cleanups will be factored into a
- *   ScheduleCore.stripCharacterRefs helper once that wrap lands.
+ *   Step 12 also discards the character's own disciplineIds array,
+ *   because that array lives on the character record.
  *
  * IMPORTANT:
  *   - No DOM extraction here - form extraction is in character-form.js
@@ -215,10 +220,6 @@
     // WEAPON NORMALISATION
     // ============================================================
 
-    /**
-     * Normalise a single weapon entry. Returns a cleaned object or null
-     * if the entry is unusable (non-object).
-     */
     function normaliseWeapon(weapon) {
         if (!weapon || typeof weapon !== 'object' || Array.isArray(weapon)) {
             return null;
@@ -258,10 +259,6 @@
         };
     }
 
-    /**
-     * Normalise an array of weapons. Drops empty-name entries, caps
-     * the array at MAX_WEAPONS, and ensures uniqueness of ids.
-     */
     function normaliseWeapons(weapons) {
         if (!Array.isArray(weapons)) {
             return [];
@@ -296,10 +293,6 @@
     // CHARACTER VALIDATION - Pure domain validation
     // ============================================================
 
-    /**
-     * Validate character data.
-     * PURE function - no side effects, no state mutation.
-     */
     function validateCharacter(charData) {
         if (!charData.firstName || charData.firstName.trim() === '') {
             return { valid: false, message: 'First name is required.' };
@@ -414,6 +407,23 @@
             }
         }
 
+        // ---- NEW: disciplineIds validation ----
+        // Must be an array of non-empty strings if provided. The array
+        // may be empty. Duplicates are not allowed (silently deduped
+        // during normalisation, but validation rejects obvious garbage
+        // like nested arrays or non-string elements).
+        if (charData.disciplineIds !== undefined) {
+            if (!Array.isArray(charData.disciplineIds)) {
+                return { valid: false, message: 'Discipline IDs must be an array.' };
+            }
+            for (var d = 0; d < charData.disciplineIds.length; d++) {
+                var did = charData.disciplineIds[d];
+                if (typeof did !== 'string' || did.trim() === '') {
+                    return { valid: false, message: 'Discipline ID at index ' + d + ' is invalid.' };
+                }
+            }
+        }
+
         return { valid: true };
     }
 
@@ -434,17 +444,17 @@
      *   - Normalises displayParts into a canonical 5-boolean object
      *   - Derives `deceased` from `deathYear` relative to current year
      *   - Auto-fills `deathAge` from `birthYear` + `deathYear` if missing
+     *   - Normalises `disciplineIds` into a deduplicated string array
      *   - Does NOT touch fields it doesn't know about (those are
      *     preserved on edit via Object.assign in updateExistingCharacter)
      *
      * CLASS MEMBERSHIP (v15+):
      *   - `classIds` is NOT included in the normalised output.
-     *     CharacterCRUD does not own membership. Any `classIds` field
-     *     present on the incoming DTO is deliberately ignored.
-     *   - Membership mutations go through CharacterClasses, which
-     *     mutates `character.classIds` under its own MutationPipeline
-     *     transaction. The generic CRUD save path cannot replace the
-     *     membership list.
+     *     CharacterCRUD does not own membership. See the docstring above.
+     *
+     * DISCIPLINE ENROLLMENT (v16+):
+     *   - `disciplineIds` IS included in the normalised output. The
+     *     CRUD form is the canonical entry point for enrollment.
      */
     function normaliseCharacterData(charData) {
         var data = {};
@@ -504,6 +514,29 @@
             data.graduatingClassInstructor = charData.graduatingClassInstructor === true;
         }
 
+        // ---- NEW: discipline enrollment ----
+        // Normalise to a deduplicated array of trimmed strings. Missing
+        // field → empty array. Malformed entries are dropped silently
+        // (validation already rejected the worst cases upstream).
+        if (charData.disciplineIds !== undefined) {
+            if (Array.isArray(charData.disciplineIds)) {
+                var seen = Object.create(null);
+                var cleaned = [];
+                for (var di = 0; di < charData.disciplineIds.length; di++) {
+                    var raw = charData.disciplineIds[di];
+                    if (typeof raw !== 'string') { continue; }
+                    var trimmed = raw.trim();
+                    if (!trimmed) { continue; }
+                    if (seen[trimmed]) { continue; }
+                    seen[trimmed] = true;
+                    cleaned.push(trimmed);
+                }
+                data.disciplineIds = cleaned;
+            } else {
+                data.disciplineIds = [];
+            }
+        }
+
         // ---- Stats ----
         data.stats = {};
         for (var i = 0; i < STAT_KEYS.length; i++) {
@@ -528,11 +561,11 @@
                 : 10;
             for (var m = 0; m < magicKeys.length; m++) {
                 var mKey = magicKeys[m];
-                var raw = charData.magic && charData.magic[mKey] !== undefined
+                var rawMagic = charData.magic && charData.magic[mKey] !== undefined
                     ? Number(charData.magic[mKey])
                     : 0;
-                if (isNaN(raw)) { raw = 0; }
-                data.magic[mKey] = Math.max(0, Math.min(magicMax, Math.round(raw)));
+                if (isNaN(rawMagic)) { rawMagic = 0; }
+                data.magic[mKey] = Math.max(0, Math.min(magicMax, Math.round(rawMagic)));
             }
         }
 
@@ -578,10 +611,7 @@
         }
 
         // ---- CLASS MEMBERSHIP - DELIBERATELY NOT HANDLED HERE ----
-        // classIds is owned by CharacterClasses. See the docstring above.
-        // Any charData.classIds present is ignored. The field on the
-        // existing character record is preserved by Object.assign in
-        // updateExistingCharacter.
+        // classIds is owned by CharacterClasses. See the docstring.
 
         // ---- Personality ----
         if (charData.personality !== undefined) {
@@ -723,9 +753,12 @@
         var current = data.characters[index];
 
         // Preserve system-managed fields.
-        // classIds is preserved explicitly because normaliseCharacterData
-        // deliberately does not carry it — membership is owned by
-        // CharacterClasses, not by the generic CRUD save path.
+        //   - classIds: owned by CharacterClasses, not the generic CRUD
+        //     save path.
+        //   - disciplineIds: if the DTO didn't include one, keep the
+        //     existing array. If the DTO DID include one, the normalised
+        //     value overwrites via Object.assign below.
+        //   - eliminations / eliminatedWeeks: owned by CharacterEliminations.
         var preserved = {
             id: current.id,
             createdAt: current.createdAt,
@@ -733,6 +766,14 @@
             eliminations: Array.isArray(current.eliminations) ? current.eliminations.slice() : [],
             eliminatedWeeks: Array.isArray(current.eliminatedWeeks) ? current.eliminatedWeeks.slice() : []
         };
+
+        // If the DTO did not supply disciplineIds, preserve the existing
+        // array. If it did, `normalised.disciplineIds` wins.
+        if (normalised.disciplineIds === undefined) {
+            preserved.disciplineIds = Array.isArray(current.disciplineIds)
+                ? current.disciplineIds.slice()
+                : [];
+        }
 
         var updated = Object.assign({}, current, normalised, preserved);
 
@@ -751,12 +792,15 @@
         var newChar = Object.assign({}, normalised, {
             id: id,
 
-            // Class membership: initialised empty. Membership is added
-            // by CharacterClasses under its own MutationPipeline
-            // transaction. The invariant "every character has a classIds
-            // array" is established here, at creation, not deferred to
-            // the next load or the next normalisation pass.
+            // Class membership: initialised empty.
             classIds: [],
+
+            // Discipline enrollment: initialised empty. Membership is
+            // added by the Academy UI via the standard CRUD save path,
+            // which normalises disciplineIds into the record.
+            disciplineIds: Array.isArray(normalised.disciplineIds)
+                ? normalised.disciplineIds
+                : [],
 
             hp: normalised.hp || 0,
             mp: normalised.mp || 0,
@@ -783,26 +827,8 @@
     // Full cascade. See DELETE CASCADE SEMANTICS in the docstring.
     //
     // The mutate body orchestrates twelve cleanup steps. Steps 3-8
-    // delegate to stripCharacterRefs helpers on sibling modules. If a
-    // helper is not available (module not loaded), that step is
-    // skipped silently — the delete still succeeds.
-    //
-    // Steps 9-11 handle curriculum.schedules / restDays / metadata
-    // inline, because those stores are owned by ScheduleCore, whose
-    // MutationPipeline wrap is deferred.
+    // delegate to stripCharacterRefs helpers on sibling modules.
 
-    /**
-     * Strip the character from curriculum.schedules, restDays, and
-     * metadata. Runs inline because these stores are owned by
-     * ScheduleCore, which is not yet pipeline-wrapped.
-     *
-     * Metadata keys are `${entityId}_${week}_${day}_${hour}`. The
-     * entityId for a student is the student ID, so we prune by prefix.
-     *
-     * @param {object} curriculum - curriculum subtree from appData
-     * @param {string} charId - character ID
-     * @returns {object} { scheduleEntriesRemoved, restDaysEntriesRemoved, metadataEntriesPruned }
-     */
     function stripCharacterFromCurriculum(curriculum, charId) {
         var result = {
             scheduleEntriesRemoved: 0,
@@ -816,7 +842,6 @@
 
         var target = String(charId);
 
-        // ---- curriculum.schedules[charId] ----
         if (curriculum.schedules &&
             typeof curriculum.schedules === 'object' &&
             !Array.isArray(curriculum.schedules)) {
@@ -826,7 +851,6 @@
             }
         }
 
-        // ---- curriculum.restDays[charId] ----
         if (curriculum.restDays &&
             typeof curriculum.restDays === 'object' &&
             !Array.isArray(curriculum.restDays)) {
@@ -836,7 +860,6 @@
             }
         }
 
-        // ---- curriculum.metadata (composite keys prefixed by charId) ----
         if (curriculum.metadata &&
             typeof curriculum.metadata === 'object' &&
             !Array.isArray(curriculum.metadata)) {
@@ -895,7 +918,6 @@
                 return { valid: true };
             },
             mutate: function(data) {
-                // Cascade summary, so the log entry can report what happened.
                 var cascade = {
                     teamMembershipsRemoved: 0,
                     weeklyTeamEntriesRemoved: 0,
@@ -908,7 +930,6 @@
                     curriculum: null
                 };
 
-                // ---- STEP 1: Remove from team memberships ----
                 if (Array.isArray(data.teams)) {
                     data.teams.forEach(function(team) {
                         if (!team || !Array.isArray(team.members)) {
@@ -922,7 +943,6 @@
                     });
                 }
 
-                // ---- STEP 2: Remove from academy.weeklyTeams ----
                 if (data.academy &&
                     data.academy.weeklyTeams &&
                     typeof data.academy.weeklyTeams === 'object') {
@@ -945,50 +965,40 @@
                     });
                 }
 
-                // ---- STEP 3: Auto-groups (delegated) ----
                 if (window.AcademyGroups &&
                     typeof window.AcademyGroups.stripCharacterRefs === 'function') {
                     cascade.autoGroups = window.AcademyGroups.stripCharacterRefs(data, targetId);
                 }
 
-                // ---- STEP 4: Grades (delegated) ----
                 if (window.AcademyGrades &&
                     typeof window.AcademyGrades.stripCharacterRefs === 'function') {
                     cascade.grades = window.AcademyGrades.stripCharacterRefs(data, targetId);
                 }
 
-                // ---- STEP 5: Rankings (delegated) ----
                 if (window.AcademyRanking &&
                     typeof window.AcademyRanking.stripCharacterRefs === 'function') {
                     cascade.rankings = window.AcademyRanking.stripCharacterRefs(data, targetId);
                 }
 
-                // ---- STEP 6: Social relationships (delegated) ----
                 if (window.SocialCore &&
                     typeof window.SocialCore.stripCharacterRefs === 'function') {
                     cascade.social = window.SocialCore.stripCharacterRefs(data, targetId);
                 }
 
-                // ---- STEP 7: Mission support personnel (delegated) ----
                 if (window.MissionCore &&
                     typeof window.MissionCore.stripCharacterRefs === 'function') {
                     cascade.missions = window.MissionCore.stripCharacterRefs(data, targetId);
                 }
 
-                // ---- STEP 8: Tournament references (delegated) ----
                 if (window.TournamentCore &&
                     typeof window.TournamentCore.stripCharacterRefs === 'function') {
                     cascade.tournaments = window.TournamentCore.stripCharacterRefs(data, targetId);
                 }
 
-                // ---- STEPS 9-11: Curriculum inline cleanup ----
-                // Schedules, restDays, metadata. Owned by ScheduleCore
-                // (deferred). Handled here for now.
                 if (data.curriculum && typeof data.curriculum === 'object') {
                     cascade.curriculum = stripCharacterFromCurriculum(data.curriculum, targetId);
                 }
 
-                // ---- STEP 12: Delete the character entity ----
                 var found = false;
                 data.characters = data.characters.filter(function(c) {
                     if (c && String(c.id) === targetId) {
@@ -1091,7 +1101,6 @@
             mutate: function(data) {
                 var count = Array.isArray(data.characters) ? data.characters.length : 0;
 
-                // Clear team memberships
                 if (Array.isArray(data.teams)) {
                     data.teams.forEach(function(team) {
                         if (Array.isArray(team.members)) {
@@ -1100,7 +1109,6 @@
                     });
                 }
 
-                // Clear weeklyTeams
                 if (data.academy && data.academy.weeklyTeams &&
                     typeof data.academy.weeklyTeams === 'object') {
                     Object.keys(data.academy.weeklyTeams).forEach(function(classId) {
@@ -1115,24 +1123,6 @@
                         });
                     });
                 }
-
-                // Note: bulk delete intentionally does NOT cascade
-                // through the six stripCharacterRefs helpers. The
-                // rationale:
-                //   - If we're deleting ALL characters, the destination
-                //     stores (auto-groups, grades, rankings, social,
-                //     missions, tournaments) end up empty of references
-                //     anyway; the surviving records would all reference
-                //     non-existent characters.
-                //   - Stripping them one-by-one is O(n) per helper, and
-                //     the aggregate is O(n^2) in the number of characters.
-                //   - Callers who want a clean slate should use the
-                //     domain-specific "delete all" on each store, or
-                //     use database.js's deleteDatabase().
-                //
-                // The curriculum schedules/restDays/metadata are
-                // likewise left in place. They reference character IDs
-                // that no longer exist; the consumers skip them.
 
                 data.characters = [];
                 return { deletedCount: count };
