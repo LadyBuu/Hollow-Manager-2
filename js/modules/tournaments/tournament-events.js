@@ -27,6 +27,14 @@
  *   - No direct DOM manipulation (delegates to Render)
  *   - No direct window.data access
  * 
+ * MODAL CONTENT CONTRACT:
+ *   Modal.createModal() returns a BARE `.modal` shell with no children.
+ *   This module supplies its own `.modal-content` wrapper for every
+ *   modal it opens. The `openModal` helper below checks for an
+ *   existing `.modal-content` on the shell, and only creates one if
+ *   the shell is empty. That makes it work whether `createModal`
+ *   pre-creates a wrapper or not.
+ * 
  * STATUS TRANSITIONS:
  *   - handleSaveTournament updates metadata first, then transitions
  *     status if the dropdown differs from the current status.
@@ -738,11 +746,8 @@
 
         // Build form content
         var content = buildTournamentForm(editId);
-        var contentEl = document.createElement('div');
-        contentEl.className = 'modal-content';
-        contentEl.innerHTML = content;
+        appendModalContent(modal, content);
 
-        modal.appendChild(contentEl);
         Modal.modalSetup(modal);
         Modal.showModal(modal);
 
@@ -971,11 +976,8 @@
         }
 
         var content = buildAddParticipantForm(tournament);
-        var contentEl = document.createElement('div');
-        contentEl.className = 'modal-content';
-        contentEl.innerHTML = content;
+        appendModalContent(modal, content);
 
-        modal.appendChild(contentEl);
         Modal.modalSetup(modal);
         Modal.showModal(modal);
 
@@ -1114,11 +1116,8 @@
         }
 
         var content = buildAddMatchForm(tournament, roundIndex);
-        var contentEl = document.createElement('div');
-        contentEl.className = 'modal-content';
-        contentEl.innerHTML = content;
+        appendModalContent(modal, content);
 
-        modal.appendChild(contentEl);
         Modal.modalSetup(modal);
         Modal.showModal(modal);
 
@@ -1159,11 +1158,8 @@
         }
 
         var content = buildEditMatchForm(tournamentId, roundIndex, match);
-        var contentEl = document.createElement('div');
-        contentEl.className = 'modal-content';
-        contentEl.innerHTML = content;
+        appendModalContent(modal, content);
 
-        modal.appendChild(contentEl);
         Modal.modalSetup(modal);
         Modal.showModal(modal);
 
@@ -1291,11 +1287,8 @@
         }
 
         var content = buildCompleteMatchForm(tournamentId, roundIndex, match);
-        var contentEl = document.createElement('div');
-        contentEl.className = 'modal-content';
-        contentEl.innerHTML = content;
+        appendModalContent(modal, content);
 
-        modal.appendChild(contentEl);
         Modal.modalSetup(modal);
         Modal.showModal(modal);
 
@@ -1367,6 +1360,36 @@
     // ============================================================
     // MODAL HELPERS
     // ============================================================
+
+    /**
+     * Append content to a modal shell.
+     *
+     * Modal.createModal() returns a bare `.modal` shell. This helper
+     * gives every caller a uniform way to fill it:
+     *   - If the shell already has a `.modal-content` (e.g. from an
+     *     older version of Modal.createModal, or from a caller that
+     *     pre-populated it), reuse it.
+     *   - Otherwise, create one and append it.
+     *
+     * The innerHTML assignment is deliberate: it replaces whatever was
+     * inside (including any auto-generated close button, if any) with
+     * the caller's HTML. Every form this module renders includes its
+     * own `.close-modal` button, so we don't lose the ability to close.
+     *
+     * @param {HTMLElement} modal - The modal shell
+     * @param {string} html - The content HTML
+     */
+    function appendModalContent(modal, html) {
+        if (!modal) return;
+
+        var contentEl = modal.querySelector('.modal-content');
+        if (!contentEl) {
+            contentEl = document.createElement('div');
+            contentEl.className = 'modal-content';
+            modal.appendChild(contentEl);
+        }
+        contentEl.innerHTML = html;
+    }
 
     function handleCloseModal(modal) {
         var Modal = getModal();
