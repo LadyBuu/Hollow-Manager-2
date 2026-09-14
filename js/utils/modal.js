@@ -20,6 +20,16 @@
  *   - Accessibility: ARIA attributes, focus management, focus trapping
  *   - Focus management: saves previous focus, restores on close
  * 
+ * CONTENT WRAPPER CONTRACT:
+ *   - createModal() returns a BARE .modal shell. It does NOT pre-create
+ *     a .modal-content element, and it does NOT inject a close button.
+ *   - Every consumer is responsible for appending its own .modal-content
+ *     with its own .close-modal button inside it.
+ *   - This avoids double-wrapped modals: .modal uses display:flex, so
+ *     two sibling .modal-content elements would render side by side.
+ *   - Consumers using modal.innerHTML = ... still work: they replace
+ *     the shell's (empty) contents wholesale.
+ * 
  * HIDDEN CLASS CONTRACT:
  *   - The CSS class `.hidden` has `display: none !important` in style.css
  *   - Modals are often declared with `<div class="modal hidden">`
@@ -38,8 +48,20 @@
  * 
  * USAGE:
  *   var modal = Modal.createModal('my-modal');
+ * 
+ *   var contentEl = document.createElement('div');
+ *   contentEl.className = 'modal-content';
+ *   contentEl.innerHTML =
+ *       '<div class="modal-header">' +
+ *           '<h3>Title</h3>' +
+ *           '<button class="close-modal">&times;</button>' +
+ *       '</div>' +
+ *       '<div class="modal-body">...</div>';
+ *   modal.appendChild(contentEl);
+ * 
  *   Modal.modalSetup(modal, function() { console.log('Closed'); });
  *   Modal.showModal(modal);
+ * 
  *   // Later:
  *   Modal.closeModal(modal);
  */
@@ -226,9 +248,8 @@
                 hideResolvers: [],
                 previousFocus: null,
                 focusableElements: [],
-                isSetup: false,              // legacy aggregate flag (unused)
-                outsideClickSetup: false,    // per-listener idempotency
-                escapeKeySetup: false        // per-listener idempotency
+                outsideClickSetup: false,
+                escapeKeySetup: false
             };
             _modalState.set(modal, state);
         }
@@ -263,9 +284,29 @@
     }
 
     // ============================================================
-    // MODAL HELPERS
+    // MODAL LIFECYCLE
     // ============================================================
 
+    /**
+     * Create a bare modal shell.
+     *
+     * The returned element is a `.modal` overlay with ARIA attributes,
+     * `display: none`, and the `hidden` class. It has NO children.
+     *
+     * The caller is responsible for appending its own `.modal-content`
+     * with whatever markup it needs (including a `.close-modal` button).
+     *
+     * Why no pre-created content wrapper:
+     *   `.modal` is laid out with `display: flex`. If `createModal`
+     *   pre-created an empty `.modal-content` and a consumer appended
+     *   its own `.modal-content`, the two would render side-by-side.
+     *   That was the exact cause of the "two panels" bug in the
+     *   academy CRUD modals. Returning a bare shell eliminates the
+     *   possibility by making it impossible to have two wrappers.
+     *
+     * @param {string} [className] - Optional extra class(es) for the overlay
+     * @returns {HTMLElement} The bare `.modal` element
+     */
     function createModal(className) {
         if (!checkDependencies()) {
             throw new Error('[Modal] Dependencies not available. Cannot create modal.');
@@ -276,23 +317,6 @@
         overlay.classList.add('hidden');
         overlay.setAttribute('role', 'dialog');
         overlay.setAttribute('aria-modal', 'true');
-
-        var content = DomUtils.createDiv('modal-content');
-        content.setAttribute('tabindex', '-1');
-        overlay.appendChild(content);
-
-        var closeBtn = document.createElement('button');
-        closeBtn.className = 'modal-close-btn';
-        closeBtn.setAttribute('aria-label', 'Close modal');
-        closeBtn.textContent = '×';
-        content.appendChild(closeBtn);
-
-        closeBtn.addEventListener('click', function() {
-            var state = _getModalState(overlay);
-            if (state.isShowing) {
-                closeModal(overlay);
-            }
-        });
 
         return overlay;
     }
@@ -654,25 +678,6 @@
                 max-width: 400px;
             }
 
-            .modal .modal-content .modal-close-btn {
-                position: absolute;
-                top: 12px;
-                right: 16px;
-                background: none;
-                border: none;
-                color: var(--text-dim, #888);
-                font-size: 24px;
-                cursor: pointer;
-                padding: 0 4px;
-                line-height: 1;
-                transition: color 0.2s;
-                z-index: 10;
-            }
-
-            .modal .modal-content .modal-close-btn:hover {
-                color: var(--text, #e0e0e0);
-            }
-
             .modal .modal-content .modal-header {
                 margin-bottom: 16px;
                 padding-right: 32px;
@@ -740,12 +745,6 @@
                 .modal .modal-content {
                     padding: 16px;
                     max-height: 95vh;
-                }
-
-                .modal .modal-content .modal-close-btn {
-                    top: 8px;
-                    right: 12px;
-                    font-size: 20px;
                 }
             }
         `;
