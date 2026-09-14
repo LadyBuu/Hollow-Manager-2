@@ -16,6 +16,7 @@
  *   - Mount/unmount of the inline grades editor after each render
  *   - View model assembly for the Exams view
  *   - Discipline inline editor: draft state, live preview, save/cancel
+ *   - Character detail tabs: Student / Instructor modes
  *
  * IMPORTANT:
  *   - RENDER + WIRE - no domain mutations, no business logic
@@ -27,23 +28,17 @@
  *   - Uses container-level event delegation (survives innerHTML replacement)
  *   - Uses DomUtils for escaping
  *
+ * CHARACTER DETAIL STATE:
+ *   The character detail panel has two pieces of state that live here:
+ *     _activeCharacterTab   — 'main' | 'disciplines' | 'grades' | 'schedule' |
+ *                             'teams' | 'autoGroups'
+ *     (mode is read from AcademyUI.getCharacterMode(charId) — persisted)
+ *
+ *   The active tab is module-scoped and reset to 'main' whenever the
+ *   selected character changes.
+ *
  * DISCIPLINE EDITOR STATE MACHINE:
- *   The discipline editor is a mutable draft. There are three modes:
- *     'empty'  — nothing selected; right panel shows the empty state
- *     'create' — new discipline form, blank defaults
- *     'edit'   — existing discipline form, populated from the record
- *
- *   The draft lives in module-scoped state:
- *     _disciplineDraft          — the mutable object being edited
- *     _disciplineDraftMode      — 'empty' | 'create' | 'edit'
- *     _disciplineDraftErrors    — { field: message } for inline errors
- *
- *   Update strategy:
- *     - Text inputs: update draft, DO NOT re-render. Preserves cursor.
- *     - Band label/min inputs: update draft, refresh the preview line
- *       in place (textContent), DO NOT re-render.
- *     - Discrete actions (add/remove band, apply preset, save, cancel,
- *       select row, click "+ Add Discipline"): full re-render.
+ *   See the previous version's docstring. Unchanged.
  *
  * VIEWS:
  *   people       - class + character browsing
@@ -63,6 +58,8 @@
  *   - window.AcademyClasses (LAZY - CRUD)
  *   - window.AcademyDisciplines (LAZY - CRUD)
  *   - window.AcademyGradeSchemes (LAZY - scheme editing)
+ *   - window.CharacterEliminations (LAZY - Drop Out)
+ *   - window.AcademyGroups (LAZY - groups, enrollment)
  *   - window.NotificationSystem (LAZY)
  *   - window.CharacterDetail (LAZY)
  *   - window.AcademyClassDetail / AcademyCharacterDetail (LAZY)
@@ -120,6 +117,12 @@
         }
         if (!AcademyUI || typeof AcademyUI.getRoleFor !== 'function') {
             missing.push('AcademyUI.getRoleFor');
+        }
+        if (!AcademyUI || typeof AcademyUI.getCharacterMode !== 'function') {
+            missing.push('AcademyUI.getCharacterMode');
+        }
+        if (!AcademyUI || typeof AcademyUI.setCharacterMode !== 'function') {
+            missing.push('AcademyUI.setCharacterMode');
         }
 
         if (!AcademyAggregator ||
@@ -249,6 +252,33 @@
     ];
 
     // ============================================================
+    // CHARACTER DETAIL — MODULE STATE
+    // ============================================================
+    //
+    // _activeCharacterTab is scoped to the currently-selected character.
+    // When the character changes, we reset it to 'main'. The mode comes
+    // from AcademyUI (persisted).
+
+    var _activeCharacterTab = 'main';
+    var _lastCharacterId = null;
+
+    function getActiveCharacterTab() {
+        return _activeCharacterTab;
+    }
+
+    function setActiveCharacterTab(tab) {
+        _activeCharacterTab = tab || 'main';
+    }
+
+    function resetCharacterTabIfChanged(charId) {
+        var normalised = charId ? String(charId) : null;
+        if (_lastCharacterId !== normalised) {
+            _lastCharacterId = normalised;
+            _activeCharacterTab = 'main';
+        }
+    }
+
+    // ============================================================
     // RENDER - Top-level entry point
     // ============================================================
 
@@ -286,8 +316,7 @@
         }
 
         // Mount the inline grades editor when the People view rendered
-        // a character detail panel. It's imperative and must be
-        // re-mounted after every innerHTML swap.
+        // a character detail panel on the Grades tab.
         mountGradesEditorIfPresent();
     }
 
@@ -547,8 +576,13 @@
         var html = '<div class="academy-people-detail" id="academy-people-detail">';
 
         if (charId) {
+            // If the selected character changed since last render, reset
+            // the active tab to 'main'.
+            resetCharacterTabIfChanged(charId);
             html += renderCharacterDetailContent(classVM, charId);
         } else {
+            _lastCharacterId = null;
+            _activeCharacterTab = 'main';
             html += renderClassDetailContent(classVM);
         }
 
@@ -584,7 +618,9 @@
         if (CharacterDetail && typeof CharacterDetail.renderHTML === 'function') {
             try {
                 return CharacterDetail.renderHTML(char, classVM, {
-                    week: AcademyUI.getDisplayWeek()
+                    week: AcademyUI.getDisplayWeek(),
+                    mode: AcademyUI.getCharacterMode(charId),
+                    tab: _activeCharacterTab
                 });
             } catch (e) {
                 console.warn('[AcademyView] CharacterDetail.renderHTML failed:', e);
@@ -618,6 +654,12 @@
             return;
         }
 
+        // Only mount when the Grades tab is active.
+        if (_activeCharacterTab !== 'grades') {
+            unmountGradesEditor();
+            return;
+        }
+
         var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
             unmountGradesEditor();
@@ -642,7 +684,8 @@
 
         try {
             CharacterDetail.mountGradesEditor(charId, classVM, {
-                week: AcademyUI.getDisplayWeek()
+                week: AcademyUI.getDisplayWeek(),
+                tab: _activeCharacterTab
             });
         } catch (e) {
             console.warn('[AcademyView] mountGradesEditor failed:', e);
@@ -679,8 +722,6 @@
             return { id: c.id, name: c.name };
         });
 
-        // Default the class selection to People's selected class on
-        // first entry.
         if (!_selectedExamClassId) {
             var peopleClassId = AcademyUI.getSelectedClassId();
             if (peopleClassId) {
@@ -985,14 +1026,11 @@
     // ============================================================
     // DISCIPLINE VIEW + INLINE EDITOR
     // ============================================================
-    //
-    // The discipline editor is a mutable draft. See DISCIPLINE
-    // EDITOR STATE MACHINE in the file header for the update strategy.
 
     var _selectedDisciplineId = null;
-    var _disciplineDraft = null;         // the mutable draft object
-    var _disciplineDraftMode = 'empty';  // 'empty' | 'create' | 'edit'
-    var _disciplineDraftErrors = {};     // { field: message, bandErrors: { idx: {...} } }
+    var _disciplineDraft = null;
+    var _disciplineDraftMode = 'empty';
+    var _disciplineDraftErrors = {};
 
     function renderDisciplineView() {
         var Renderer = getDisciplineViewModule();
@@ -1008,10 +1046,7 @@
 
         disciplines = applyDisciplineFilters(disciplines, filters);
 
-        // Build the sidebar list VM. Always fresh; unaffected by draft.
         var listVM = disciplines.map(buildDisciplineListRowVM);
-
-        // Build the editor VM from the draft.
         var editorVM = buildDisciplineEditorVM();
 
         return Renderer.renderHTML({
@@ -1053,10 +1088,6 @@
         };
     }
 
-    /**
-     * Build the editor VM from the current draft and mode.
-     * Returns null when in 'empty' mode.
-     */
     function buildDisciplineEditorVM() {
         if (_disciplineDraftMode === 'empty' || !_disciplineDraft) {
             return null;
@@ -1065,7 +1096,6 @@
         var draft = _disciplineDraft;
         var isNew = _disciplineDraftMode === 'create';
 
-        // Available instructors: all characters with instructor career status.
         var availableInstructors = [];
         if (CharacterQueries && typeof CharacterQueries.getInstructors === 'function') {
             var instructors = CharacterQueries.getInstructors() || [];
@@ -1077,18 +1107,14 @@
             });
         }
 
-        // Compute the range preview from the current bands.
         var schemePreview = '';
         var GradeSchemes = window.AcademyGradeSchemes;
         if (GradeSchemes && typeof GradeSchemes.getRangeLabel === 'function') {
             schemePreview = GradeSchemes.getRangeLabel(draft.gradeScheme);
         }
 
-        // The preset dropdown value: prefer the draft scheme's id, fall
-        // back to the numeric default. 'custom' is a valid id.
         var schemePresetId = (draft.gradeScheme && draft.gradeScheme.id) || 'numeric';
 
-        // Instructor names for display, indexed parallel to instructorIds.
         var instructorNames = (draft.instructorIds || []).map(function(id) {
             return getCharacterDisplayName(id);
         });
@@ -1112,10 +1138,6 @@
         };
     }
 
-    /**
-     * Initialize the draft from an existing discipline record.
-     * Used when the user clicks a row in the sidebar.
-     */
     function initializeDraftFromDiscipline(disciplineId) {
         var AcademyDisciplines = window.AcademyDisciplines;
         var GradeSchemes = window.AcademyGradeSchemes;
@@ -1147,10 +1169,6 @@
         };
     }
 
-    /**
-     * Initialize the draft for a new discipline.
-     * Used when the user clicks "+ Add Discipline".
-     */
     function initializeNewDraft() {
         var GradeSchemes = window.AcademyGradeSchemes;
         if (!GradeSchemes) {
@@ -1175,9 +1193,6 @@
         };
     }
 
-    /**
-     * Clear the draft entirely.
-     */
     function clearDraft() {
         _selectedDisciplineId = null;
         _disciplineDraft = null;
@@ -1185,10 +1200,6 @@
         _disciplineDraftErrors = {};
     }
 
-    /**
-     * Recompute the range preview and update the preview element in
-     * place without a full re-render. Called after band edits.
-     */
     function updateDisciplinePreviewInPlace() {
         var GradeSchemes = window.AcademyGradeSchemes;
         if (!GradeSchemes || !_disciplineDraft) { return; }
@@ -1199,17 +1210,11 @@
         previewEl.textContent = GradeSchemes.getRangeLabel(_disciplineDraft.gradeScheme) || '';
     }
 
-    /**
-     * Apply a preset to the current draft's grade scheme.
-     * Replaces the bands array with the preset's bands, but preserves
-     * the preset's id and label.
-     */
     function applySchemePreset(presetId) {
         var GradeSchemes = window.AcademyGradeSchemes;
         if (!GradeSchemes || !_disciplineDraft) { return; }
 
         if (presetId === 'custom') {
-            // Custom: keep existing bands untouched, just mark the id.
             _disciplineDraft.gradeScheme = GradeSchemes.normalizeScheme({
                 id: 'custom',
                 label: _disciplineDraft.gradeScheme.label || 'Custom Scheme',
@@ -1771,6 +1776,81 @@
             return;
         }
 
+        // ---- Character detail tab buttons ----
+        var tabBtn = target.closest('.academy-character-tab-btn');
+        if (tabBtn) {
+            e.preventDefault();
+            var tabId = tabBtn.dataset.tab;
+            if (tabId) {
+                setActiveCharacterTab(tabId);
+                refreshView();
+            }
+            return;
+        }
+
+        // ---- Drop Out button ----
+        var dropOutBtn = target.closest('[data-action="drop-out-character"]');
+        if (dropOutBtn) {
+            e.preventDefault();
+            handleDropOut(dropOutBtn.dataset.characterId);
+            return;
+        }
+
+        // ---- Enroll discipline ----
+        var enrollBtn = target.closest('[data-action="enroll-discipline"]');
+        if (enrollBtn) {
+            e.preventDefault();
+            handleEnrollDiscipline(enrollBtn.dataset.characterId);
+            return;
+        }
+
+        // ---- Leave discipline ----
+        var leaveBtn = target.closest('[data-action="leave-discipline"]');
+        if (leaveBtn) {
+            e.preventDefault();
+            handleLeaveDiscipline(
+                leaveBtn.dataset.characterId,
+                leaveBtn.dataset.disciplineId
+            );
+            return;
+        }
+
+        // ---- Instructor discipline row → open the discipline editor ----
+        var instructorDiscRow = target.closest('.academy-instructor-discipline-row');
+        if (instructorDiscRow) {
+            e.preventDefault();
+            var discId = instructorDiscRow.dataset.disciplineId;
+            if (discId) {
+                // Switch the top-level view to Disciplines and load
+                // this discipline into the editor.
+                initializeDraftFromDiscipline(discId);
+                AcademyUI.setSelectedView('disciplines');
+                refreshView();
+            }
+            return;
+        }
+
+        // ---- Add group student ----
+        var addGroupStudentBtn = target.closest('[data-action="add-group-student"]');
+        if (addGroupStudentBtn) {
+            e.preventDefault();
+            handleAddGroupStudent(
+                addGroupStudentBtn.dataset.groupKey
+            );
+            return;
+        }
+
+        // ---- Remove group student ----
+        var removeGroupStudentBtn = target.closest('[data-action="remove-group-student"]');
+        if (removeGroupStudentBtn) {
+            e.preventDefault();
+            handleRemoveGroupStudent(
+                removeGroupStudentBtn.dataset.groupKey,
+                removeGroupStudentBtn.dataset.characterId
+            );
+            return;
+        }
+
         // ---- Exam actions (checked before generic [data-action]) ----
         var examAction = target.closest('[data-action]');
         if (examAction && _handleExamAction(examAction, e)) {
@@ -1900,10 +1980,6 @@
         }
     }
 
-    /**
-     * Handle discipline editor actions (apply preset, add/remove band,
-     * save, cancel, delete).
-     */
     function handleDisciplineEditorAction(actionEl) {
         var action = actionEl.dataset.action;
         var GradeSchemes = window.AcademyGradeSchemes;
@@ -1963,7 +2039,6 @@
 
             case 'cancel-discipline': {
                 if (_disciplineDraftMode === 'edit' && _selectedDisciplineId) {
-                    // Re-read from disk to discard unsaved edits.
                     initializeDraftFromDiscipline(_selectedDisciplineId);
                 } else {
                     clearDraft();
@@ -1986,9 +2061,6 @@
         }
     }
 
-    /**
-     * Handle exam-specific actions. Returns true if handled.
-     */
     function _handleExamAction(actionEl, e) {
         var action = actionEl.dataset.action;
         var Events = getTournamentEventsModule();
@@ -2122,17 +2194,33 @@
     function handleDelegatedChange(e) {
         var target = e.target;
 
+        // ---- Character mode checkbox ----
+        if (target.id === 'academy-character-mode-checkbox') {
+            var charId = AcademyUI.getSelectedCharacterId();
+            if (charId) {
+                var newMode = target.checked ? 'instructor' : 'student';
+                AcademyUI.setCharacterMode(charId, newMode);
+
+                // When switching modes, reset the active tab if the
+                // current tab doesn't exist in the new mode.
+                if (newMode === 'instructor' &&
+                    (_activeCharacterTab === 'grades' || _activeCharacterTab === 'teams')) {
+                    _activeCharacterTab = 'main';
+                }
+                refreshView();
+            }
+            return;
+        }
+
         // ---- Discipline editor: discrete change fields ----
         if (target.dataset && target.dataset.disciplineField) {
             handleDisciplineFieldChange(target);
             return;
         }
 
-        // ---- Discipline editor: scheme preset dropdown ----
+        // ---- Discipline editor: band label change (blur) ----
         if (target.dataset && target.dataset.bandIndex !== undefined &&
             target.dataset.bandField === 'label') {
-            // Label changes use 'input' handler, but a change event also
-            // fires on blur. Treat it the same.
             handleBandFieldChange(target);
             return;
         }
@@ -2219,14 +2307,6 @@
         }
     }
 
-    // ============================================================
-    // DISCIPLINE FIELD CHANGE HANDLERS
-    // ============================================================
-    //
-    // Text/number inputs update the draft and DO NOT re-render, so the
-    // cursor position is preserved. Only the preview text is refreshed
-    // in place when relevant.
-
     function handleDisciplineFieldChange(inputEl) {
         if (!_disciplineDraft) { return; }
 
@@ -2283,7 +2363,6 @@
             }
 
             case 'schemePresetId':
-                // Handled on apply-preset button click, not here.
                 return;
 
             default:
@@ -2308,7 +2387,6 @@
             bands[idx].minPercent = isNaN(mp) ? 0 : mp;
         }
 
-        // Refresh the range preview in place.
         updateDisciplinePreviewInPlace();
     }
 
@@ -2319,23 +2397,17 @@
     function handleDelegatedInput(e) {
         var target = e.target;
 
-        // ---- Discipline editor: text/number inputs ----
         if (target.dataset && target.dataset.disciplineField) {
             handleDisciplineFieldChange(target);
-            // If the scheme label is being edited, update the preview
-            // only when relevant. The scheme label doesn't affect the
-            // range preview, so no refresh needed here.
             return;
         }
 
-        // ---- Discipline editor: band inputs ----
         if (target.dataset && target.dataset.bandIndex !== undefined &&
             target.dataset.bandField) {
             handleBandFieldChange(target);
             return;
         }
 
-        // ---- Search debounce (people) ----
         if (target.id === 'academy-people-search') {
             debounceSearch(target.value);
             return;
@@ -2400,7 +2472,6 @@
 
     function handleViewSwitch(viewId) {
         if (!viewId) { return; }
-        // Clear the discipline draft when leaving the disciplines view.
         if (viewId !== 'disciplines') {
             clearDraft();
         }
@@ -2498,11 +2569,6 @@
             case 'delete-discipline':
                 CRUD.openDisciplineDelete(disciplineId);
                 break;
-            // 'edit-discipline' is handled by the discipline editor's
-            // own [data-action="edit-discipline"] path, but the row-click
-            // handler above is the primary mechanism for selecting a
-            // discipline for editing. This branch is retained for any
-            // future deep-link action.
             default:
                 break;
         }
@@ -2536,6 +2602,302 @@
     }
 
     // ============================================================
+    // CHARACTER DETAIL — NEW HANDLERS
+    // ============================================================
+
+    /**
+     * Drop Out: add a standalone elimination. Does not remove from
+     * classes. The character stays on the class roster.
+     */
+    function handleDropOut(charId) {
+        if (!charId) { return; }
+
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char) {
+            notify('Character not found.', 'error');
+            return;
+        }
+
+        var name = CharacterQueries.getDisplayName(char);
+        if (!confirm('Drop out "' + name + '" from the Academy? They will remain on the class roster as an eliminated character.')) {
+            return;
+        }
+
+        var CE = window.CharacterEliminations;
+        if (!CE || typeof CE.addStandalone !== 'function') {
+            notify('Elimination module not available.', 'error');
+            return;
+        }
+
+        var week = AcademyUI.getDisplayWeek();
+
+        CE.addStandalone(charId, week, 'Dropped out').then(function(result) {
+            if (result && result.success) {
+                refreshView();
+            }
+        }).catch(function(err) {
+            console.warn('[AcademyView] Drop Out failed:', err);
+            notify('Failed to drop out character.', 'error');
+        });
+    }
+
+    /**
+     * Enroll in a discipline.
+     * Opens a picker of disciplines the character is NOT enrolled in.
+     * On pick, appends the discipline ID to character.disciplineIds
+     * via CharacterCRUD.save. This is a discipline-level fact only —
+     * no group membership is created.
+     */
+    function handleEnrollDiscipline(charId) {
+        if (!charId) { return; }
+
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char) {
+            notify('Character not found.', 'error');
+            return;
+        }
+
+        var allDisciplines = AcademyQueries.getDisciplines
+            ? (AcademyQueries.getDisciplines() || [])
+            : [];
+
+        if (allDisciplines.length === 0) {
+            notify('No disciplines exist yet.', 'error');
+            return;
+        }
+
+        // Filter to disciplines the character is NOT already enrolled in.
+        var enrolledIds = {};
+        var current = Array.isArray(char.disciplineIds) ? char.disciplineIds : [];
+        for (var i = 0; i < current.length; i++) {
+            enrolledIds[String(current[i])] = true;
+        }
+
+        var candidates = allDisciplines.filter(function(d) {
+            if (!d || !d.id) { return false; }
+            return !enrolledIds[String(d.id)];
+        });
+
+        candidates.sort(function(a, b) {
+            return (a.name || '').localeCompare(b.name || '');
+        });
+
+        if (candidates.length === 0) {
+            notify('Character is enrolled in all disciplines.', 'info');
+            return;
+        }
+
+        // Build a simple confirmation prompt listing candidates.
+        // (No modal for now; keep this lightweight.)
+        var names = candidates.map(function(d, idx) {
+            return (idx + 1) + '. ' + (d.name || d.id);
+        }).join('\n');
+
+        var input = prompt(
+            'Enroll in which discipline?\n\n' + names + '\n\nEnter the number:',
+            '1'
+        );
+
+        if (input === null) { return; }
+
+        var choice = parseInt(input, 10);
+        if (isNaN(choice) || choice < 1 || choice > candidates.length) {
+            notify('Invalid selection.', 'error');
+            return;
+        }
+
+        var picked = candidates[choice - 1];
+        persistDisciplineEnrollment(charId, picked.id);
+    }
+
+    /**
+     * Leave a discipline: remove its ID from character.disciplineIds.
+     * Does NOT remove the character from any group. Group membership
+     * is derived from schedules and is not touched here.
+     */
+    function handleLeaveDiscipline(charId, disciplineId) {
+        if (!charId || !disciplineId) { return; }
+
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char) {
+            notify('Character not found.', 'error');
+            return;
+        }
+
+        var disciplineName = 'this discipline';
+        var discipline = AcademyQueries.getDiscipline
+            ? AcademyQueries.getDiscipline(disciplineId)
+            : null;
+        if (discipline && discipline.name) {
+            disciplineName = '"' + discipline.name + '"';
+        }
+
+        if (!confirm('Leave ' + disciplineName + '? You can re-enroll later.')) {
+            return;
+        }
+
+        var current = Array.isArray(char.disciplineIds) ? char.disciplineIds.slice() : [];
+        var next = current.filter(function(id) {
+            return String(id) !== String(disciplineId);
+        });
+
+        persistDisciplineEnrollment(charId, null, next);
+    }
+
+    /**
+     * Persist a change to character.disciplineIds.
+     *
+     * Two modes:
+     *   addId present   → append addId to the current array
+     *   nextIds present → replace with nextIds verbatim
+     *
+     * Uses CharacterCRUD.save. That path normalises disciplineIds and
+     * preserves classIds, eliminations, and eliminatedWeeks.
+     */
+    function persistDisciplineEnrollment(charId, addId, nextIds) {
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char) { return; }
+
+        var current = Array.isArray(char.disciplineIds) ? char.disciplineIds.slice() : [];
+        var finalIds;
+
+        if (Array.isArray(nextIds)) {
+            finalIds = nextIds;
+        } else if (addId) {
+            if (current.indexOf(addId) === -1) {
+                current.push(addId);
+            }
+            finalIds = current;
+        } else {
+            finalIds = current;
+        }
+
+        // Build a minimal DTO with only the field we're changing.
+        // CharacterCRUD.save merges into the existing record, so we
+        // don't need to re-send every field.
+        var dto = {
+            _editId: charId,
+            disciplineIds: finalIds
+        };
+
+        // CharacterCRUD.normaliseCharacterData requires firstName and
+        // lastName to be non-empty. Pass through the existing values so
+        // validation passes.
+        dto.firstName = char.firstName || '';
+        dto.lastName = char.lastName || '';
+
+        var CRUD = window.CharacterCRUD;
+        if (!CRUD || typeof CRUD.save !== 'function') {
+            notify('Character CRUD not available.', 'error');
+            return;
+        }
+
+        CRUD.save(dto).then(function(result) {
+            if (result && result.success) {
+                refreshView();
+            }
+        }).catch(function(err) {
+            console.warn('[AcademyView] Enrollment save failed:', err);
+            notify('Failed to update enrollment.', 'error');
+        });
+    }
+
+    /**
+     * Add a student to an auto-group.
+     * Opens a picker of students NOT already in the group.
+     */
+    function handleAddGroupStudent(groupKey) {
+        if (!groupKey) { return; }
+
+        var AG = window.AcademyGroups;
+        if (!AG || typeof AG.getGroupStudents !== 'function') {
+            notify('Auto-groups module not available.', 'error');
+            return;
+        }
+
+        var currentIds = AG.getGroupStudents(groupKey) || [];
+        var currentSet = {};
+        for (var i = 0; i < currentIds.length; i++) {
+            currentSet[String(currentIds[i])] = true;
+        }
+
+        var allChars = CharacterQueries.getCharacters() || [];
+        var candidates = allChars.filter(function(c) {
+            if (!c || !c.id) { return false; }
+            return !currentSet[String(c.id)];
+        });
+
+        candidates.sort(function(a, b) {
+            return CharacterQueries.getDisplayName(a)
+                .localeCompare(CharacterQueries.getDisplayName(b));
+        });
+
+        if (candidates.length === 0) {
+            notify('No eligible students to add.', 'info');
+            return;
+        }
+
+        var names = candidates.map(function(c, idx) {
+            return (idx + 1) + '. ' + CharacterQueries.getDisplayName(c);
+        }).join('\n');
+
+        var input = prompt(
+            'Add which student to this group?\n\n' + names + '\n\nEnter the number:',
+            '1'
+        );
+
+        if (input === null) { return; }
+
+        var choice = parseInt(input, 10);
+        if (isNaN(choice) || choice < 1 || choice > candidates.length) {
+            notify('Invalid selection.', 'error');
+            return;
+        }
+
+        var picked = candidates[choice - 1];
+        AG.addStudentToGroup(groupKey, picked.id).then(function(result) {
+            if (result && result.success) {
+                refreshView();
+            }
+        }).catch(function(err) {
+            console.warn('[AcademyView] Add student to group failed:', err);
+            notify('Failed to add student.', 'error');
+        });
+    }
+
+    /**
+     * Remove a student from an auto-group.
+     */
+    function handleRemoveGroupStudent(groupKey, charId) {
+        if (!groupKey || !charId) { return; }
+
+        var AG = window.AcademyGroups;
+        if (!AG || typeof AG.removeStudentFromGroup !== 'function') {
+            notify('Auto-groups module not available.', 'error');
+            return;
+        }
+
+        var name = 'this student';
+        var char = CharacterQueries.getCharacterById(charId);
+        if (char) {
+            name = '"' + CharacterQueries.getDisplayName(char) + '"';
+        }
+
+        if (!confirm('Remove ' + name + ' from this group?')) {
+            return;
+        }
+
+        AG.removeStudentFromGroup(groupKey, charId).then(function(result) {
+            if (result && result.success) {
+                refreshView();
+            }
+        }).catch(function(err) {
+            console.warn('[AcademyView] Remove student from group failed:', err);
+            notify('Failed to remove student.', 'error');
+        });
+    }
+
+    // ============================================================
     // DISCIPLINE DRAFT SAVE
     // ============================================================
 
@@ -2549,10 +2911,8 @@
             return;
         }
 
-        // Build a normalized scheme for validation and submission.
         var scheme = GradeSchemes.normalizeScheme(_disciplineDraft.gradeScheme);
 
-        // ---- Client-side validation ----
         var errors = {};
 
         if (!_disciplineDraft.name || !_disciplineDraft.name.trim()) {
@@ -2581,7 +2941,6 @@
             errors.weight = 'Weight must be 0.1\u201310.';
         }
 
-        // ---- Scheme validation ----
         var schemeCheck = GradeSchemes.validateScheme(scheme);
         if (!schemeCheck.valid) {
             errors.bands = schemeCheck.errors.length > 0
@@ -2595,10 +2954,8 @@
             return;
         }
 
-        // Clear errors before submit.
         _disciplineDraftErrors = {};
 
-        // ---- Build payload ----
         var payload = {
             name: _disciplineDraft.name.trim(),
             type: _disciplineDraft.type,
@@ -2622,10 +2979,6 @@
 
         promise.then(function(result) {
             if (result && result.success) {
-                // On success, transition the draft into 'edit' mode with
-                // the persisted record. Or clear the draft entirely if
-                // the discipline doesn't exist after save (shouldn't
-                // happen, but be defensive).
                 var savedId = result.data && result.data.id
                     ? result.data.id
                     : (result.data && result.data.discipline && result.data.discipline.id
@@ -2639,7 +2992,6 @@
                 }
                 refreshView();
             }
-            // On failure, MutationPipeline already notified.
         }).catch(function(err) {
             console.warn('[AcademyView] Discipline save failed:', err);
             notify('Failed to save discipline.', 'error');
