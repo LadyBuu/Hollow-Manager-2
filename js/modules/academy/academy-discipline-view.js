@@ -9,6 +9,7 @@
  *   - Rendering the "+ Add Discipline" button at the top of the sidebar
  *   - Rendering the inline discipline editor in the detail panel
  *   - Rendering the grade scheme editor (preset + band table + live preview)
+ *   - Rendering the assessment weights editor (per-type weight inputs)
  *   - Rendering an empty state when no discipline is selected
  *
  * IMPORTANT:
@@ -47,10 +48,33 @@
  *   AcademyView's delegated input listener reads these and updates
  *   a module-scoped draft on AcademyView's side.
  *
- * LIVE PREVIEW:
- *   The view model supplies `schemePreview` — a precomputed string like
- *   "A: 90–100%, B: 80–89%, ...". The renderer just drops it in.
- *   AcademyView recomputes it after every band edit and re-renders.
+ *   LIVE PREVIEW:
+ *     The view model supplies `schemePreview` — a precomputed string
+ *     like "A: 90–100%, B: 80–89%, ...". The renderer just drops it
+ *     in. AcademyView recomputes it after every band edit and
+ *     re-renders.
+ *
+ * ASSESSMENT WEIGHTS EDITOR (Phase 3):
+ *   The weights editor is a simple grid: one numeric input per
+ *   assessment type. Types come from the view model
+ *   (`assessmentTypes`). Weights come from `selected.assessmentWeights`.
+ *
+ *   The renderer emits per-type inputs with stable data attributes:
+ *     data-assessment-weight-type="exam"
+ *   AcademyView's delegated input listener reads these and updates
+ *   the module-scoped draft.
+ *
+ *   A "Reset to Default" button emits:
+ *     data-action="reset-assessment-weights"
+ *   AcademyView's delegated click handler resets the draft's weights
+ *   to the domain default.
+ *
+ *   There is NO live preview for weights. Weight changes affect the
+ *   weighted average; showing a "preview" would require the student's
+ *   actual grades, which the discipline editor does not have access
+ *   to. That's the correct separation: the discipline editor edits
+ *   the discipline's configuration; the grades view displays the
+ *   result.
  *
  * INTERFACE:
  *   AcademyDisciplineView.renderHTML(viewModel) -> string
@@ -82,24 +106,30 @@
  *       weeklyHours:     number,
  *       weight:          number,
  *       instructorIds:   [ ... ],
- *       instructorNames: [ ... ],       // display-only, computed by AcademyView
+ *       instructorNames: [ ... ],       // display-only
+ *       availableInstructors: [ { id, name } ],
+ *
  *       gradeScheme: {
  *         id:    'letter'|'pass_fail'|'numeric'|'custom',
  *         label: string,
  *         bands: [ { label, minPercent } ]
  *       },
- *       schemePresetId:  string,        // dropdown value
- *       schemePreview:   string,        // "A: 90–100%, B: 80–89%, ..."
+ *       schemePresetId:  string,
+ *       schemePreview:   string,
+ *
+ *       assessmentTypes:   [ 'exam', 'assignment', ... ],
+ *       assessmentWeights: { exam: 2.0, assignment: 1.0, ... },
+ *
  *       fieldErrors:     { field: message },  // optional; {} when clean
- *       isNew:           boolean        // true when editorMode === 'create'
+ *       isNew:           boolean
  *     }
  *
  * EVENTS EMITTED (data-* attributes, for AcademyView to bind):
  *   Sidebar:
- *     #academy-add-discipline-btn                (click)
- *     #academy-discipline-search                 (input)
- *     #academy-discipline-type-filter            (change)
- *     .academy-discipline-row [data-discipline-id]  (click)
+ *     #academy-add-discipline-btn                    (click)
+ *     #academy-discipline-search                     (input)
+ *     #academy-discipline-type-filter                (change)
+ *     .academy-discipline-row [data-discipline-id]   (click)
  *
  *   Editor — top-level fields:
  *     [data-discipline-field="name"]
@@ -118,6 +148,10 @@
  *     [data-band-index="N"] [data-band-field="minPercent"] (input)
  *     [data-action="add-band"]                       (click)
  *     [data-action="remove-band"] [data-band-index="N"] (click)
+ *
+ *   Editor — assessment weights:
+ *     [data-assessment-weight-type="exam"]           (input)
+ *     [data-action="reset-assessment-weights"]       (click)
  *
  *   Editor — actions:
  *     [data-action="save-discipline"]                (click)
@@ -173,23 +207,11 @@
     // ============================================================
 
     function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
-        }
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value);
+        return DomUtils.escapeHtml(value);
     }
 
     function escapeAttribute(value) {
-        if (DomUtils && typeof DomUtils.escapeAttribute === 'function') {
-            return DomUtils.escapeAttribute(value);
-        }
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value);
+        return DomUtils.escapeAttribute(value);
     }
 
     // ============================================================
@@ -227,7 +249,7 @@
 
     function formatWeekRange(startWeek, endWeek) {
         var s = isFiniteNumber(startWeek) ? String(startWeek) : '';
-        var e = isFiniteNumber(endWeek)   ? String(endWeek)   : '';
+        var e = isFiniteNumber(endWeek) ? String(endWeek) : '';
         if (s && e) {
             return 'Weeks ' + s + '\u2013' + e;
         }
@@ -240,9 +262,6 @@
         return '';
     }
 
-    /**
-     * Emit an inline error line for a field, or nothing.
-     */
     function renderFieldError(errors, field) {
         if (!errors || typeof errors !== 'object') { return ''; }
         var message = errors[field];
@@ -253,10 +272,6 @@
                 '</p>';
     }
 
-    /**
-     * Add a class to a base class string if a field error exists.
-     * Used to highlight the offending input.
-     */
     function withErrorClass(baseClass, errors, field) {
         if (!errors || typeof errors !== 'object') { return baseClass; }
         if (!isNonEmptyString(errors[field])) { return baseClass; }
@@ -544,6 +559,9 @@
         // ---- Grade scheme ----
         html += renderGradeSchemeSection(d, errors);
 
+        // ---- Assessment weights (Phase 3) ----
+        html += renderAssessmentWeightsSection(d, errors);
+
         // ---- Actions ----
         html += renderEditorActions(d);
 
@@ -551,14 +569,6 @@
     }
 
     function renderInstructorOptions(d) {
-        // The view model carries the full instructor roster via
-        // `availableInstructors` — an array of { id, name }. If absent,
-        // fall back to rendering only the currently-selected ones.
-        //
-        // The fallback is deliberate: it means the renderer never
-        // silently drops a selected instructor just because the roster
-        // wasn't supplied.
-
         var available = Array.isArray(d.availableInstructors)
             ? d.availableInstructors
             : null;
@@ -586,8 +596,8 @@
                         '</option>';
             }
             // Any selected ID not present in the available list is
-            // rendered as a disabled-looking option so the user sees
-            // it but can't accidentally unselect via a stale id.
+            // rendered as a selected option so it is not silently
+            // dropped.
             for (var k = 0; k < selectedIds.length; k++) {
                 var sid = String(selectedIds[k]);
                 if (seen[sid]) { continue; }
@@ -599,7 +609,6 @@
             return html;
         }
 
-        // Fallback: selected-only.
         if (selectedIds.length === 0) {
             return '<option value="" disabled>No instructors available</option>';
         }
@@ -634,7 +643,6 @@
         html += '<h4 class="academy-discipline-editor-section-title">Grade Scheme</h4>';
         html += '</div>';
 
-        // ---- Scheme name + preset row ----
         html += '<div class="academy-discipline-editor-grid">';
 
         html += '<div class="academy-discipline-editor-field">';
@@ -709,7 +717,6 @@
 
         html += '</div>'; // bands
 
-        // ---- Live preview ----
         if (isNonEmptyString(preview)) {
             html += '<div class="academy-discipline-scheme-preview">';
             html += '<span class="academy-discipline-scheme-preview-label">Preview:</span> ';
@@ -729,10 +736,6 @@
             ? String(band.minPercent)
             : '';
 
-        // Per-band error lookup. The view model may supply a
-        // `bandErrors` map keyed by index; if not, no per-band errors
-        // are shown. Field-level error surfacing for bands happens
-        // via the generic `bands` error above.
         var bandErrors = (errors && typeof errors.bandErrors === 'object')
             ? errors.bandErrors
             : {};
@@ -779,6 +782,73 @@
         html += '</td>';
 
         html += '</tr>';
+        return html;
+    }
+
+    // ============================================================
+    // ASSESSMENT WEIGHTS SECTION (Phase 3)
+    // ============================================================
+    //
+    // One numeric input per assessment type. Types come from the view
+    // model. Weights come from selected.assessmentWeights. A "Reset
+    // to Default" button emits data-action="reset-assessment-weights".
+    //
+    // No live preview. The editor edits configuration; it does not
+    // have student grades to preview against.
+
+    function renderAssessmentWeightsSection(d, errors) {
+        var types = Array.isArray(d.assessmentTypes) ? d.assessmentTypes : [];
+        var weights = d.assessmentWeights && typeof d.assessmentWeights === 'object'
+            ? d.assessmentWeights
+            : {};
+
+        var html = '';
+        html += '<div class="academy-discipline-editor-section academy-discipline-weights-section">';
+
+        html += '<div class="academy-discipline-weights-header">';
+        html += '<h4 class="academy-discipline-editor-section-title">Assessment Weights</h4>';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-action="reset-assessment-weights">' +
+                    'Reset to Default' +
+                '</button>';
+        html += '</div>';
+
+        html += '<p class="field-hint academy-discipline-weights-hint">' +
+                    'Each assessment type contributes to a student\'s weighted average ' +
+                    'in proportion to its weight. Weight 1.0 is neutral.' +
+                '</p>';
+
+        if (types.length === 0) {
+            html += '<p class="empty-state small">No assessment types configured.</p>';
+            html += '</div>';
+            return html;
+        }
+
+        html += '<div class="academy-discipline-weights-grid">';
+
+        for (var i = 0; i < types.length; i++) {
+            var type = types[i];
+            if (!isNonEmptyString(type)) { continue; }
+
+            var value = isFiniteNumber(weights[type]) ? weights[type] : '';
+            var label = type.charAt(0).toUpperCase() + type.slice(1);
+
+            html += '<div class="academy-discipline-weights-field">';
+            html += '<label for="academy-discipline-weight-' + escapeAttribute(type) + '">' +
+                        escapeHtml(label) +
+                    '</label>';
+            html += '<input type="number" ' +
+                        'id="academy-discipline-weight-' + escapeAttribute(type) + '" ' +
+                        'class="academy-discipline-input academy-discipline-weight-input" ' +
+                        'data-assessment-weight-type="' + escapeAttribute(type) + '" ' +
+                        'value="' + escapeAttribute(safeString(value)) + '" ' +
+                        'min="0.1" max="10" step="0.1">';
+            html += '</div>';
+        }
+
+        html += '</div>'; // grid
+        html += '</div>'; // section
+
         return html;
     }
 
