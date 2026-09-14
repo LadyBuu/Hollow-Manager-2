@@ -1,1017 +1,556 @@
+// ============================================================
+// WEEKLY TEAMS VIEW MODEL
+// ============================================================
+//
+// Moved from academy-view.js. Owns the construction of the Weekly
+// Teams view model: team list rows, team detail, member rows.
+//
+// The view (AcademyWeeklyTeamsView) expects this exact shape. The
+// view does not reach into TeamQueries directly.
+
 /**
- * modules/academy/academy-aggregator.js - Academy Aggregator
- * Cross-domain projection builder for the Academy domain
- * 
- * This module provides:
- *   - getClassViewModel - Class detail with students, teams, rankings
- *   - getStudentViewModel - Student detail with grades, ranking, schedule
- *   - getInstructorViewModel - Instructor detail with schedule, groups
- *   - getClassListViewModel - Class list with student and team counts
- *   - getRankingViewModel - Ordered ranking list for a class and week
- *   - getLocationViewModel - Location detail with schedule
- * 
- * IMPORTANT:
- *   - Projection builder, not a query registry
- *   - Composes AcademyQueries + CharacterQueries + TeamQueries + CalendarQueries
- *   - Returns Academy-shaped view models
- *   - Never exposes external query APIs directly
- *   - Never mutates data
- *   - No UI dependencies
- *   - No passthrough methods
- * 
- * CLASS MEMBERSHIP MODEL (v15+):
- *   - Class rosters are DERIVED from character.classIds[], not read from
- *     a separate roster store.
- *   - The class INSTRUCTOR is tracked separately on class.instructorId.
- *     Instructors are NOT automatically written into character.classIds;
- *     the aggregator stitches the instructor into the roster for display.
- *   - This means a class view always shows its instructor, even if the
- *     instructor has no explicit roster entry.
- * 
- * ROSTER ORDERING:
- *   - The class roster is sorted trainees-first, then instructors,
- *     alphabetical by display name within each group.
- *   - This is the canonical order for the People view.
- * 
- * RETURN SHAPE NOTE:
- *   AcademyQueries.getClassStudents(classId) returns full character
- *   OBJECTS by default. This module relies on that behaviour.
- * 
- * DEPENDENCIES:
- *   - window.AcademyQueries (from shared/queries/academy-queries.js) - MANDATORY
- *   - window.CharacterQueries (from shared/queries/character-queries.js) - MANDATORY
- *   - window.TeamQueries (from shared/queries/team-queries.js) - MANDATORY
- *   - window.CalendarQueries (from shared/queries/calendar-queries.js) - MANDATORY
- *   - window.TeamConstants (from team-constants.js) - MANDATORY
- *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
- * 
- * USAGE:
- *   var vm = AcademyAggregator.getClassViewModel('class_123', { week: 5 });
- *   var list = AcademyAggregator.getClassListViewModel({ week: 5 });
- *   var student = AcademyAggregator.getStudentViewModel('char_456', { week: 5 });
+ * Build the full Weekly Teams view model for a class + week.
+ *
+ * @param {string|null} classId - Currently selected class, or null
+ * @param {number} week - Week number
+ * @param {string|null} selectedTeamId - Currently expanded team, or null
+ * @returns {object} { classList, classId, className, week, teams,
+ *                     selectedTeamId, selectedTeam }
  */
+function getWeeklyTeamsViewViewModel(classId, week, selectedTeamId) {
+    // ---- Class list ----
+    var classes = AcademyQueries.getClasses() || [];
+    classes = classes.slice().sort(function(a, b) {
+        return (a.name || '').localeCompare(b.name || '');
+    });
 
-(function() {
-    'use strict';
+    var classListVM = classes.map(function(c) {
+        return { id: c.id, name: c.name };
+    });
 
-    if (window.__academyAggregatorLoaded) {
-        return;
-    }
-    window.__academyAggregatorLoaded = true;
-
-    // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
-    // ============================================================
-
-    var AcademyQueries = window.AcademyQueries;
-    var CharacterQueries = window.CharacterQueries;
-    var TeamQueries = window.TeamQueries;
-    var CalendarQueries = window.CalendarQueries;
-    var TeamConstants = window.TeamConstants;
-    var CalendarConstants = window.CalendarConstants;
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-
-    function checkDependencies() {
-        var missing = [];
-
-        if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
-            missing.push('AcademyQueries.getClass');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
-            missing.push('AcademyQueries.getClasses');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getClassStudents !== 'function') {
-            missing.push('AcademyQueries.getClassStudents');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getStudentGrades !== 'function') {
-            missing.push('AcademyQueries.getStudentGrades');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.calculateClassRanking !== 'function') {
-            missing.push('AcademyQueries.calculateClassRanking');
-        }
-
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-            missing.push('CharacterQueries.getDisplayName');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getCurrentStatus !== 'function') {
-            missing.push('CharacterQueries.getCurrentStatus');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterAge !== 'function') {
-            missing.push('CharacterQueries.getCharacterAge');
-        }
-
-        if (!TeamQueries || typeof TeamQueries.getTeamsByClass !== 'function') {
-            missing.push('TeamQueries.getTeamsByClass');
-        }
-        if (!TeamQueries || typeof TeamQueries.getTeamName !== 'function') {
-            missing.push('TeamQueries.getTeamName');
-        }
-        if (!TeamQueries || typeof TeamQueries.getActiveTeamMembers !== 'function') {
-            missing.push('TeamQueries.getActiveTeamMembers');
-        }
-
-        if (!CalendarQueries || typeof CalendarQueries.getStudentSchedule !== 'function') {
-            missing.push('CalendarQueries.getStudentSchedule');
-        }
-        if (!CalendarQueries || typeof CalendarQueries.getStudentClasses !== 'function') {
-            missing.push('CalendarQueries.getStudentClasses');
-        }
-
-        if (!TeamConstants || typeof TeamConstants.getTypeLabel !== 'function') {
-            missing.push('TeamConstants.getTypeLabel');
-        }
-
-        if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
-            missing.push('CalendarConstants.MIN_WEEK');
-        }
-
-        if (missing.length > 0) {
-            console.warn('[AcademyAggregator] Missing dependencies:', missing.join(', '));
-            return false;
-        }
-
-        return true;
-    }
-
-    checkDependencies();
-
-    // ============================================================
-    // CONSTANTS
-    // ============================================================
-
-    var MIN_WEEK = CalendarConstants.MIN_WEEK;
-    var MAX_WEEK = CalendarConstants.MAX_WEEK;
-    var DEFAULT_WEEK = 1;
-
-    // ============================================================
-    // HELPERS
-    // ============================================================
-
-    function getCurrentWeek() {
-        var data = window.data || {};
-        var week = data.currentWeek;
-        if (typeof week === 'number' && week >= MIN_WEEK && week <= MAX_WEEK) {
-            return week;
-        }
-        return DEFAULT_WEEK;
-    }
-
-    function getCharacterDisplayName(charId) {
-        if (!charId) {
-            return 'Unknown';
-        }
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
-            return 'Unknown';
-        }
-        return CharacterQueries.getDisplayName(char);
-    }
-
-    function getCharacterStatus(charId) {
-        if (!charId) {
-            return '';
-        }
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
-            return '';
-        }
-        return CharacterQueries.getCurrentStatus(char);
-    }
-
-    function getCharacterAge(charId) {
-        if (!charId) {
-            return '';
-        }
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
-            return '';
-        }
-        return CharacterQueries.getCharacterAge(char);
-    }
-
-    function getCharacterDeceased(charId) {
-        if (!charId) {
-            return false;
-        }
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
-            return false;
-        }
-        return char.deceased || false;
-    }
-
-    function getTeamName(teamId) {
-        if (!teamId) {
-            return 'Unassigned';
-        }
-        return TeamQueries.getTeamName(teamId);
-    }
-
-    function getTeamTypeLabel(type) {
-        return TeamConstants.getTypeLabel(type);
-    }
-
-    function getTeamPeriodLabel(type) {
-        return TeamConstants.getPeriodLabel(type);
-    }
-
-    function getTeamPeriodBounds(type) {
-        return TeamConstants.getPeriodBounds(type);
-    }
-
-    // ============================================================
-    // CLASS VIEW MODEL
-    // ============================================================
-
-    /**
-     * Get a complete view model for a class.
-     * Combines class data with students, teams, and rankings.
-     * 
-     * The student list is DERIVED through AcademyQueries.getClassStudents,
-     * which reads character.classIds. The class instructor (if any) is
-     * stitched in via class.instructorId — instructors are not required
-     * to be in character.classIds.
-     * 
-     * Each student entry carries a `role` field:
-     *   'instructor' if class.instructorId === char.id
-     *   'trainee' otherwise
-     * 
-     * The roster is sorted trainees-first, then instructors,
-     * alphabetical within each group.
-     * 
-     * @param {string} classId - Class ID
-     * @param {object} options - Options
-     * @param {number} options.week - Week number (default: current)
-     * @param {boolean} options.includeStudents - Include student details (default: true)
-     * @param {boolean} options.includeTeams - Include team details (default: true)
-     * @param {boolean} options.includeRankings - Include ranking details (default: true)
-     * @param {boolean} options.includeGrades - Include grade summaries (default: false)
-     * @returns {object|null} Class view model or null
-     */
-    function getClassViewModel(classId, options) {
-        if (!classId) {
-            return null;
-        }
-
-        options = options || {};
-        var week = options.week || getCurrentWeek();
-        var includeStudents = options.includeStudents !== false;
-        var includeTeams = options.includeTeams !== false;
-        var includeRankings = options.includeRankings !== false;
-        var includeGrades = options.includeGrades === true;
-
-        var cls = AcademyQueries.getClass(classId);
-        if (!cls) {
-            return null;
-        }
-
-        var viewModel = {
-            id: cls.id,
-            name: cls.name,
-            status: cls.status || 'active',
-            year: cls.year || null,
-            description: cls.description || '',
-            instructorId: cls.instructorId || null,
-            instructorName: cls.instructorId ? getCharacterDisplayName(cls.instructorId) : 'Not assigned',
-            createdAt: cls.createdAt || '',
-            week: week
-        };
-
-        // ---- Students ----
-        // Roster is derived from character.classIds via AcademyQueries.
-        // The instructor is stitched in if not already present.
-        if (includeStudents) {
-            var rawStudents = AcademyQueries.getClassStudents(classId);
-
-            // Ensure the instructor appears in the roster even if not in
-            // character.classIds. The instructor is a class member by
-            // virtue of class.instructorId, not by classIds.
-            if (cls.instructorId) {
-                var instructorAlreadyPresent = false;
-                for (var s = 0; s < rawStudents.length; s++) {
-                    if (rawStudents[s] && String(rawStudents[s].id) === String(cls.instructorId)) {
-                        instructorAlreadyPresent = true;
-                        break;
-                    }
-                }
-
-                if (!instructorAlreadyPresent) {
-                    var instructorChar = CharacterQueries.getCharacterById(cls.instructorId);
-                    if (instructorChar) {
-                        rawStudents = rawStudents.concat([instructorChar]);
-                    }
-                }
-            }
-
-            var studentViewModels = rawStudents.map(function(char) {
-                if (!char || typeof char !== 'object') {
-                    return null;
-                }
-
-                var isInstructor = cls.instructorId &&
-                    String(cls.instructorId) === String(char.id);
-
-                return {
-                    id: char.id,
-                    name: CharacterQueries.getDisplayName(char),
-                    status: CharacterQueries.getCurrentStatus(char),
-                    age: CharacterQueries.getCharacterAge(char),
-                    deceased: char.deceased || false,
-                    classIds: char.classIds || [],
-                    role: isInstructor ? 'instructor' : 'trainee'
-                };
-            }).filter(function(s) {
-                return s !== null;
-            });
-
-            // Sort: trainees first, then instructors.
-            // Within each group, alphabetical by display name.
-            studentViewModels.sort(function(a, b) {
-                if (a.role !== b.role) {
-                    return a.role === 'trainee' ? -1 : 1;
-                }
-                return a.name.localeCompare(b.name);
-            });
-
-            viewModel.students = studentViewModels;
-            viewModel.studentCount = studentViewModels.length;
-            viewModel.enrolledCount = studentViewModels.length;
-            viewModel.traineeCount = studentViewModels.filter(function(s) {
-                return s.role === 'trainee';
-            }).length;
-            viewModel.instructorCount = studentViewModels.filter(function(s) {
-                return s.role === 'instructor';
-            }).length;
-
-            // ---- Grades ----
-            if (includeGrades) {
-                var gradeSummaries = [];
-                for (var j = 0; j < studentViewModels.length; j++) {
-                    var grades = AcademyQueries.getStudentGrades(studentViewModels[j].id, week);
-                    var summary = AcademyQueries.calculateGradeSummary(grades);
-                    gradeSummaries.push({
-                        studentId: studentViewModels[j].id,
-                        studentName: studentViewModels[j].name,
-                        role: studentViewModels[j].role,
-                        gradeCount: grades.length,
-                        average: summary.average,
-                        passing: summary.passing,
-                        failing: summary.failing,
-                        passRate: summary.passRate
-                    });
-                }
-                viewModel.gradeSummaries = gradeSummaries;
+    // ---- Resolve selected class ----
+    var selectedClass = null;
+    if (classId) {
+        for (var i = 0; i < classes.length; i++) {
+            if (String(classes[i].id) === String(classId)) {
+                selectedClass = classes[i];
+                break;
             }
         }
-
-        // ---- Teams ----
-        if (includeTeams) {
-            var teams = TeamQueries.getTeamsByClass(classId);
-
-            var teamViewModels = teams.map(function(team) {
-                var members = TeamQueries.getActiveTeamMembers(team, week);
-                var memberViewModels = members.map(function(member) {
-                    return {
-                        characterId: member.characterId,
-                        name: getCharacterDisplayName(member.characterId),
-                        role: member.role || 'Member',
-                        joinPeriod: member.joinPeriod || '',
-                        leavePeriod: member.leavePeriod || ''
-                    };
-                });
-
-                return {
-                    id: team.id,
-                    name: team.name,
-                    type: team.type,
-                    typeLabel: getTeamTypeLabel(team.type),
-                    periodLabel: getTeamPeriodLabel(team.type),
-                    teamNumber: team.teamNumber || '',
-                    status: team.status || 'active',
-                    members: memberViewModels,
-                    memberCount: memberViewModels.length,
-                    periodDisplay: TeamQueries.getTeamPeriodDisplay(team)
-                };
-            });
-
-            viewModel.teams = teamViewModels;
-            viewModel.teamCount = teamViewModels.length;
-        }
-
-        // ---- Rankings ----
-        if (includeRankings) {
-            var rankingData = AcademyQueries.calculateClassRanking(classId, week);
-
-            var rankingViewModels = rankingData.map(function(entry) {
-                return {
-                    studentId: entry.studentId,
-                    studentName: entry.name || getCharacterDisplayName(entry.studentId),
-                    rank: entry.rank,
-                    average: entry.average,
-                    gradeCount: entry.gradeCount || 0
-                };
-            });
-
-            viewModel.rankings = rankingViewModels;
-            viewModel.rankingCount = rankingViewModels.length;
-            viewModel.rankingWeek = week;
-        }
-
-        return viewModel;
     }
 
-    // ============================================================
-    // STUDENT VIEW MODEL
-    // ============================================================
-
-    /**
-     * Get a complete view model for a student.
-     * Combines student data with grades, ranking, and schedule.
-     * 
-     * @param {string} studentId - Student ID
-     * @param {object} options - Options
-     * @param {number} options.week - Week number (default: current)
-     * @param {boolean} options.includeGrades - Include grades (default: true)
-     * @param {boolean} options.includeRanking - Include ranking (default: true)
-     * @param {boolean} options.includeSchedule - Include schedule (default: true)
-     * @param {boolean} options.includeClasses - Include classes (default: true)
-     * @returns {object|null} Student view model or null
-     */
-    function getStudentViewModel(studentId, options) {
-        if (!studentId) {
-            return null;
-        }
-
-        options = options || {};
-        var week = options.week || getCurrentWeek();
-        var includeGrades = options.includeGrades !== false;
-        var includeRanking = options.includeRanking !== false;
-        var includeSchedule = options.includeSchedule !== false;
-        var includeClasses = options.includeClasses !== false;
-
-        var student = CharacterQueries.getCharacterById(studentId);
-        if (!student) {
-            return null;
-        }
-
-        var viewModel = {
-            id: student.id,
-            name: CharacterQueries.getDisplayName(student),
-            fullName: CharacterQueries.getFullName(student),
-            status: CharacterQueries.getCurrentStatus(student),
-            age: CharacterQueries.getCharacterAge(student),
-            deceased: student.deceased || false,
-            birthYear: student.birthYear || '',
-            gender: student.gender || '',
-            week: week
-        };
-
-        // ---- Classes ----
-        if (includeClasses) {
-            var classes = AcademyQueries.getCharacterClasses(student);
-            viewModel.classes = classes.map(function(cls) {
-                return {
-                    id: cls.id,
-                    name: cls.name,
-                    status: cls.status || 'active'
-                };
-            });
-            viewModel.classNames = classes.map(function(cls) {
-                return cls.name;
-            });
-            viewModel.classCount = classes.length;
-        }
-
-        // ---- Grades ----
-        if (includeGrades) {
-            var grades = AcademyQueries.getStudentGrades(studentId, week);
-            var gradeSummary = AcademyQueries.calculateGradeSummary(grades);
-            var gpa = AcademyQueries.calculateStudentGPA(studentId, week);
-
-            viewModel.grades = grades.map(function(g) {
-                return {
-                    disciplineId: g.disciplineId,
-                    disciplineName: g.disciplineName || 'Unknown',
-                    week: g.week,
-                    score: g.score,
-                    maxScore: g.maxScore || 100,
-                    percentage: g.percentage || 0,
-                    passing: g.passing || false,
-                    type: g.type || 'assignment',
-                    weight: g.weight || 1.0,
-                    notes: g.notes || ''
-                };
-            });
-
-            viewModel.gradeCount = grades.length;
-            viewModel.gradeSummary = {
-                average: gradeSummary.average,
-                weightedAverage: gradeSummary.weightedAverage,
-                passRate: gradeSummary.passRate,
-                passing: gradeSummary.passing,
-                failing: gradeSummary.failing
-            };
-            viewModel.gpa = gpa;
-        }
-
-        // ---- Ranking ----
-        if (includeRanking) {
-            var studentClasses = AcademyQueries.getCharacterClasses(student);
-            var ranking = null;
-            var classRanking = null;
-
-            for (var i = 0; i < studentClasses.length; i++) {
-                var cls = studentClasses[i];
-                var classRankings = AcademyQueries.calculateClassRanking(cls.id, week);
-                for (var j = 0; j < classRankings.length; j++) {
-                    if (String(classRankings[j].studentId) === String(studentId)) {
-                        ranking = classRankings[j];
-                        classRanking = {
-                            classId: cls.id,
-                            className: cls.name,
-                            totalStudents: classRankings.length
-                        };
-                        break;
-                    }
-                }
-                if (ranking) {
-                    break;
-                }
-            }
-
-            viewModel.ranking = ranking ? {
-                rank: ranking.rank,
-                average: ranking.average,
-                gradeCount: ranking.gradeCount || 0,
-                classId: classRanking ? classRanking.classId : null,
-                className: classRanking ? classRanking.className : null,
-                totalStudents: classRanking ? classRanking.totalStudents : 0
-            } : null;
-        }
-
-        // ---- Schedule ----
-        if (includeSchedule) {
-            var schedule = CalendarQueries.getStudentSchedule(studentId, week);
-            var classes = CalendarQueries.getStudentClasses(studentId, week);
-
-            var scheduleEntries = [];
-            for (var day in schedule) {
-                if (!Object.prototype.hasOwnProperty.call(schedule, day)) {
-                    continue;
-                }
-                var dayNum = parseInt(day, 10);
-                if (isNaN(dayNum)) {
-                    continue;
-                }
-                var daySchedule = schedule[day];
-                if (!daySchedule || typeof daySchedule !== 'object') {
-                    continue;
-                }
-
-                for (var hour in daySchedule) {
-                    if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
-                        continue;
-                    }
-                    var hourNum = parseInt(hour, 10);
-                    if (isNaN(hourNum)) {
-                        continue;
-                    }
-                    var disciplineId = daySchedule[hour];
-                    if (!disciplineId) {
-                        continue;
-                    }
-
-                    var details = null;
-                    for (var k = 0; k < classes.length; k++) {
-                        if (classes[k].day === dayNum && classes[k].hour === hourNum) {
-                            details = classes[k];
-                            break;
-                        }
-                    }
-
-                    scheduleEntries.push({
-                        day: dayNum,
-                        hour: hourNum,
-                        disciplineId: disciplineId,
-                        disciplineName: details ? details.disciplineName : 'Unknown',
-                        duration: details ? details.duration || 1 : 1,
-                        label: details ? details.label || '' : '',
-                        groupLabel: details ? details.groupLabel || '' : '',
-                        instructorId: details ? details.instructorId : null,
-                        instructorName: details ? details.instructorName : ''
-                    });
-                }
-            }
-
-            scheduleEntries.sort(function(a, b) {
-                if (a.day !== b.day) {
-                    return a.day - b.day;
-                }
-                return a.hour - b.hour;
-            });
-
-            viewModel.schedule = scheduleEntries;
-            viewModel.scheduleCount = scheduleEntries.length;
-            viewModel.scheduleWeek = week;
-        }
-
-        return viewModel;
-    }
-
-    // ============================================================
-    // INSTRUCTOR VIEW MODEL
-    // ============================================================
-
-    /**
-     * Get a complete view model for an instructor.
-     * Combines instructor data with schedule and groups.
-     * 
-     * @param {string} instructorId - Instructor ID
-     * @param {object} options - Options
-     * @param {number} options.week - Week number (default: current)
-     * @param {boolean} options.includeSchedule - Include schedule (default: true)
-     * @param {boolean} options.includeGroups - Include auto-groups (default: false)
-     * @returns {object|null} Instructor view model or null
-     */
-    function getInstructorViewModel(instructorId, options) {
-        if (!instructorId) {
-            return null;
-        }
-
-        options = options || {};
-        var week = options.week || getCurrentWeek();
-        var includeSchedule = options.includeSchedule !== false;
-        var includeGroups = options.includeGroups === true;
-
-        var instructor = CharacterQueries.getCharacterById(instructorId);
-        if (!instructor) {
-            return null;
-        }
-
-        var viewModel = {
-            id: instructor.id,
-            name: CharacterQueries.getDisplayName(instructor),
-            fullName: CharacterQueries.getFullName(instructor),
-            status: CharacterQueries.getCurrentStatus(instructor),
-            age: CharacterQueries.getCharacterAge(instructor),
-            deceased: instructor.deceased || false,
-            week: week
-        };
-
-        // ---- Schedule ----
-        if (includeSchedule) {
-            var schedule = CalendarQueries.getInstructorSchedule ?
-                CalendarQueries.getInstructorSchedule(instructorId, week) : {};
-
-            var scheduleEntries = [];
-            for (var day in schedule) {
-                if (!Object.prototype.hasOwnProperty.call(schedule, day)) {
-                    continue;
-                }
-                var dayNum = parseInt(day, 10);
-                if (isNaN(dayNum)) {
-                    continue;
-                }
-                var daySchedule = schedule[day];
-                if (!daySchedule || typeof daySchedule !== 'object') {
-                    continue;
-                }
-
-                for (var hour in daySchedule) {
-                    if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
-                        continue;
-                    }
-                    var hourNum = parseInt(hour, 10);
-                    if (isNaN(hourNum)) {
-                        continue;
-                    }
-                    var slot = daySchedule[hour];
-                    if (!slot) {
-                        continue;
-                    }
-
-                    scheduleEntries.push({
-                        day: dayNum,
-                        hour: hourNum,
-                        disciplineId: slot.disciplineId || null,
-                        disciplineName: slot.disciplineName || 'Unknown',
-                        duration: slot.duration || 1,
-                        label: slot.label || '',
-                        groupLabel: slot.groupLabel || '',
-                        students: slot.students ? slot.students.length : 0
-                    });
-                }
-            }
-
-            scheduleEntries.sort(function(a, b) {
-                if (a.day !== b.day) {
-                    return a.day - b.day;
-                }
-                return a.hour - b.hour;
-            });
-
-            viewModel.schedule = scheduleEntries;
-            viewModel.scheduleCount = scheduleEntries.length;
-            viewModel.scheduleWeek = week;
-        }
-
-        // ---- Auto-Groups ----
-        if (includeGroups) {
-            var groups = [];
-            if (window.AcademyGroups && typeof window.AcademyGroups.getGroupsByInstructor === 'function') {
-                var groupData = window.AcademyGroups.getGroupsByInstructor(instructorId);
-                for (var key in groupData) {
-                    if (Object.prototype.hasOwnProperty.call(groupData, key)) {
-                        var group = groupData[key];
-                        groups.push({
-                            key: key,
-                            disciplineId: group.disciplineId || null,
-                            disciplineName: group.disciplineName || 'Unknown',
-                            students: group.students || [],
-                            studentCount: (group.students || []).length,
-                            slots: group.slots || [],
-                            slotCount: (group.slots || []).length
-                        });
-                    }
-                }
-            }
-
-            viewModel.groups = groups;
-            viewModel.groupCount = groups.length;
-        }
-
-        return viewModel;
-    }
-
-    // ============================================================
-    // CLASS LIST VIEW MODEL
-    // ============================================================
-
-    /**
-     * Get a view model for a list of classes.
-     * Collection-level projection with student and team counts.
-     * 
-     * Student counts are derived through AcademyQueries.getClassStudents,
-     * which reads character.classIds.
-     * 
-     * @param {object} options - Options
-     * @param {string} options.status - Status filter ('active', 'archived', 'graduated')
-     * @param {number} options.week - Week number (default: current)
-     * @param {string} options.search - Search by name
-     * @param {string} options.sort - Sort field ('name', 'studentCount', 'teamCount')
-     * @param {string} options.sortDirection - 'asc' or 'desc'
-     * @returns {object} { classes: Array, total: number, filtered: number }
-     */
-    function getClassListViewModel(options) {
-        options = options || {};
-        var status = options.status || null;
-        var week = options.week || getCurrentWeek();
-        var search = options.search || '';
-        var sort = options.sort || 'name';
-        var sortDirection = options.sortDirection || 'asc';
-
-        var classes = AcademyQueries.getClasses(status);
-
-        if (search) {
-            var lowerSearch = search.toLowerCase();
-            classes = classes.filter(function(cls) {
-                return cls.name && cls.name.toLowerCase().indexOf(lowerSearch) !== -1;
-            });
-        }
-
-        var listItems = classes.map(function(cls) {
-            var studentCount = AcademyQueries.getClassStudents(cls.id).length;
-            var teams = TeamQueries.getTeamsByClass(cls.id);
-            var teamCount = teams.length;
-
-            return {
-                id: cls.id,
-                name: cls.name,
-                status: cls.status || 'active',
-                year: cls.year || null,
-                studentCount: studentCount,
-                teamCount: teamCount,
-                instructorId: cls.instructorId || null,
-                instructorName: cls.instructorId ? getCharacterDisplayName(cls.instructorId) : 'Not assigned',
-                createdAt: cls.createdAt || '',
-                _class: cls
-            };
-        });
-
-        var total = listItems.length;
-
-        listItems.sort(function(a, b) {
-            var aVal, bVal;
-
-            switch (sort) {
-                case 'name':
-                    aVal = a.name || '';
-                    bVal = b.name || '';
-                    break;
-                case 'studentCount':
-                    aVal = a.studentCount;
-                    bVal = b.studentCount;
-                    break;
-                case 'teamCount':
-                    aVal = a.teamCount;
-                    bVal = b.teamCount;
-                    break;
-                case 'status':
-                    var statusOrder = { 'active': 0, 'archived': 1, 'graduated': 2 };
-                    aVal = statusOrder[a.status] || 999;
-                    bVal = statusOrder[b.status] || 999;
-                    break;
-                default:
-                    aVal = a.name || '';
-                    bVal = b.name || '';
-            }
-
-            if (typeof aVal === 'string') {
-                var result = aVal.localeCompare(bVal);
-                return sortDirection === 'desc' ? -result : result;
-            }
-
-            if (aVal < bVal) {
-                return sortDirection === 'desc' ? 1 : -1;
-            }
-            if (aVal > bVal) {
-                return sortDirection === 'desc' ? -1 : 1;
-            }
-            return 0;
-        });
-
+    if (!selectedClass) {
         return {
-            classes: listItems,
-            total: total,
-            filtered: listItems.length
+            classList: classListVM,
+            classId: null,
+            className: null,
+            week: week,
+            teams: [],
+            selectedTeamId: null,
+            selectedTeam: null
         };
     }
 
-    // ============================================================
-    // RANKING VIEW MODEL
-    // ============================================================
+    // ---- Teams list ----
+    var teams = buildWeeklyTeamsList(selectedClass, week);
 
-    /**
-     * Get an ordered ranking view model for a class and week.
-     * 
-     * @param {string} classId - Class ID
-     * @param {number} week - Week number (default: current)
-     * @param {object} options - Options
-     * @param {boolean} options.includeStudentNames - Resolve display names (default: true)
-     * @returns {object|null} Ranking view model or null
-     */
-    function getRankingViewModel(classId, week, options) {
-        if (!classId) {
-            return null;
-        }
-
-        options = options || {};
-        var includeStudentNames = options.includeStudentNames !== false;
-        var weekNum = week || getCurrentWeek();
-
-        var cls = AcademyQueries.getClass(classId);
-        if (!cls) {
-            return null;
-        }
-
-        var rawRankings = AcademyQueries.calculateClassRanking(classId, weekNum);
-
-        var entries = rawRankings.map(function(entry) {
-            return {
-                studentId: entry.studentId,
-                studentName: includeStudentNames
-                    ? (entry.name || getCharacterDisplayName(entry.studentId))
-                    : null,
-                rank: entry.rank,
-                average: entry.average,
-                gradeCount: entry.gradeCount || 0
-            };
-        });
-
-        entries.sort(function(a, b) {
-            return (a.rank || 999) - (b.rank || 999);
-        });
-
-        return {
-            classId: cls.id,
-            className: cls.name,
-            week: weekNum,
-            count: entries.length,
-            entries: entries
-        };
-    }
-
-    // ============================================================
-    // LOCATION VIEW MODEL
-    // ============================================================
-
-    /**
-     * Get a view model for a location with its schedule for a week.
-     * 
-     * @param {string} locationId - Location ID
-     * @param {number} week - Week number (default: current)
-     * @param {object} options - Options
-     * @param {boolean} options.includeSchedule - Include schedule (default: true)
-     * @returns {object|null} Location view model or null
-     */
-    function getLocationViewModel(locationId, week, options) {
-        if (!locationId) {
-            return null;
-        }
-
-        options = options || {};
-        var includeSchedule = options.includeSchedule !== false;
-        var weekNum = week || getCurrentWeek();
-
-        var loc = AcademyQueries.getLocation(locationId);
-        if (!loc) {
-            return null;
-        }
-
-        var viewModel = {
-            id: loc.id,
-            name: loc.name,
-            type: loc.type || 'other',
-            capacity: loc.capacity || null,
-            week: weekNum
-        };
-
-        if (includeSchedule) {
-            var rawSchedule = CalendarQueries.getLocationSchedule ?
-                CalendarQueries.getLocationSchedule(locationId, weekNum) : {};
-
-            var scheduleEntries = [];
-            for (var day in rawSchedule) {
-                if (!Object.prototype.hasOwnProperty.call(rawSchedule, day)) {
-                    continue;
-                }
-                var dayNum = parseInt(day, 10);
-                if (isNaN(dayNum)) {
-                    continue;
-                }
-                var daySchedule = rawSchedule[day];
-                if (!daySchedule || typeof daySchedule !== 'object') {
-                    continue;
-                }
-
-                for (var hour in daySchedule) {
-                    if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
-                        continue;
-                    }
-                    var hourNum = parseInt(hour, 10);
-                    if (isNaN(hourNum)) {
-                        continue;
-                    }
-                    var disciplineId = daySchedule[hour];
-                    if (!disciplineId) {
-                        continue;
-                    }
-
-                    var discipline = AcademyQueries.getDiscipline
-                        ? AcademyQueries.getDiscipline(disciplineId)
-                        : null;
-
-                    scheduleEntries.push({
-                        day: dayNum,
-                        hour: hourNum,
-                        disciplineId: disciplineId,
-                        disciplineName: discipline ? discipline.name : 'Unknown'
-                    });
-                }
+    // ---- Selected team detail ----
+    var selectedTeamVM = null;
+    var resolvedSelectedTeamId = null;
+    if (selectedTeamId) {
+        for (var j = 0; j < teams.length; j++) {
+            if (String(teams[j].id) === String(selectedTeamId)) {
+                selectedTeamVM = buildWeeklyTeamDetail(teams[j]._team, week);
+                resolvedSelectedTeamId = teams[j].id;
+                break;
             }
-
-            scheduleEntries.sort(function(a, b) {
-                if (a.day !== b.day) {
-                    return a.day - b.day;
-                }
-                return a.hour - b.hour;
-            });
-
-            viewModel.schedule = scheduleEntries;
-            viewModel.scheduleCount = scheduleEntries.length;
         }
-
-        return viewModel;
     }
 
-    // ============================================================
-    // EXPOSE
-    // ============================================================
+    var teamsVM = teams.map(function(t) {
+        return {
+            id: t.id,
+            name: t.name,
+            type: t.type,
+            typeLabel: t.typeLabel,
+            periodLabel: t.periodLabel,
+            periodDisplay: t.periodDisplay,
+            memberCount: t.memberCount,
+            activeMemberCount: t.activeMemberCount,
+            status: t.status
+        };
+    });
 
-    window.AcademyAggregator = {
-        // Projections
-        getClassViewModel: getClassViewModel,
-        getStudentViewModel: getStudentViewModel,
-        getInstructorViewModel: getInstructorViewModel,
-        getClassListViewModel: getClassListViewModel,
-        getRankingViewModel: getRankingViewModel,
-        getLocationViewModel: getLocationViewModel
+    return {
+        classList: classListVM,
+        classId: selectedClass.id,
+        className: selectedClass.name,
+        week: week,
+        teams: teamsVM,
+        selectedTeamId: resolvedSelectedTeamId,
+        selectedTeam: selectedTeamVM
     };
+}
 
-})();
+/**
+ * Build the weekly teams list for a class.
+ * Internal: consumed by getWeeklyTeamsViewViewModel. Exposed for tests.
+ */
+function buildWeeklyTeamsList(classRecord, week) {
+    var TeamQ = window.TeamQueries;
+    if (!TeamQ || typeof TeamQ.getTeamsByClass !== 'function') {
+        return [];
+    }
+
+    var raw = TeamQ.getTeamsByClass(classRecord.id) || [];
+    if (!Array.isArray(raw)) { return []; }
+
+    var items = [];
+
+    for (var i = 0; i < raw.length; i++) {
+        var team = raw[i];
+        if (!team || !team.id) { continue; }
+        if (team.type !== 'academic') { continue; }
+
+        var activeMembers = buildTeamMembersVM(team, week).filter(function(m) {
+            return m.activeAtPeriod;
+        });
+
+        items.push({
+            id: team.id,
+            name: team.name || 'Unnamed Team',
+            type: team.type,
+            typeLabel: getTeamTypeLabel(team.type),
+            periodLabel: getTeamPeriodLabel(team.type),
+            periodDisplay: getTeamPeriodDisplay(team),
+            memberCount: Array.isArray(team.members) ? team.members.length : 0,
+            activeMemberCount: activeMembers.length,
+            status: team.status || 'active',
+            temporaryMission: team.temporaryMission || null,
+            _team: team
+        });
+    }
+
+    items.sort(function(a, b) {
+        return (a.name || '').localeCompare(b.name || '');
+    });
+
+    return items;
+}
+
+function buildWeeklyTeamDetail(team, week) {
+    if (!team) { return null; }
+
+    var members = buildTeamMembersVM(team, week);
+
+    return {
+        id: team.id,
+        name: team.name || 'Unnamed Team',
+        type: team.type,
+        typeLabel: getTeamTypeLabel(team.type),
+        periodLabel: getTeamPeriodLabel(team.type),
+        periodDisplay: getTeamPeriodDisplay(team),
+        status: team.status || 'active',
+        temporaryMission: team.temporaryMission || null,
+        members: members,
+        activeMemberCount: members.filter(function(m) {
+            return m.activeAtPeriod;
+        }).length
+    };
+}
+
+function buildTeamMembersVM(team, week) {
+    if (!team || !Array.isArray(team.members)) { return []; }
+
+    var periodNum = parseInt(week, 10);
+    if (isNaN(periodNum) || periodNum < 1) { periodNum = 1; }
+
+    var result = [];
+
+    for (var i = 0; i < team.members.length; i++) {
+        var member = team.members[i];
+        if (!member || !member.characterId) { continue; }
+
+        var char = CharacterQueries.getCharacterById(member.characterId);
+        var name = char ? CharacterQueries.getDisplayName(char) : 'Unknown';
+        var status = char ? CharacterQueries.getCurrentStatus(char) : '';
+        var age = char ? CharacterQueries.getCharacterAge(char) : '';
+        var deceased = char ? (char.deceased === true) : false;
+
+        var joinNum = parseInt(member.joinPeriod, 10);
+        var leaveNum = parseInt(member.leavePeriod, 10);
+        var hasJoin = member.joinPeriod !== undefined &&
+            member.joinPeriod !== null && member.joinPeriod !== '';
+        var hasLeave = member.leavePeriod !== undefined &&
+            member.leavePeriod !== null && member.leavePeriod !== '';
+        var joined = !hasJoin || (!isNaN(joinNum) && joinNum <= periodNum);
+        var notLeft = !hasLeave || (!isNaN(leaveNum) && leaveNum >= periodNum);
+        var activeAtPeriod = joined && notLeft;
+
+        result.push({
+            characterId: member.characterId,
+            name: name,
+            status: status,
+            age: age,
+            deceased: deceased,
+            role: member.role || 'Member',
+            joinPeriod: member.joinPeriod || '',
+            leavePeriod: member.leavePeriod || '',
+            activeAtPeriod: activeAtPeriod
+        });
+    }
+
+    result.sort(function(a, b) {
+        if (a.activeAtPeriod && !b.activeAtPeriod) { return -1; }
+        if (!a.activeAtPeriod && b.activeAtPeriod) { return 1; }
+        return a.name.localeCompare(b.name);
+    });
+
+    return result;
+}
+
+function getTeamTypeLabel(type) {
+    if (window.TeamConstants &&
+        typeof window.TeamConstants.getTypeLabel === 'function') {
+        return window.TeamConstants.getTypeLabel(type);
+    }
+    if (type === 'academic') { return 'Academic'; }
+    if (type === 'professional') { return 'Professional'; }
+    if (type === 'temporary') { return 'Temporary'; }
+    if (type === 'civilian') { return 'Civilian'; }
+    return 'Team';
+}
+
+function getTeamPeriodLabel(type) {
+    if (window.TeamConstants &&
+        typeof window.TeamConstants.getPeriodLabel === 'function') {
+        return window.TeamConstants.getPeriodLabel(type);
+    }
+    if (type === 'academic') { return 'Week'; }
+    return 'Year';
+}
+
+function getTeamPeriodDisplay(team) {
+    if (window.TeamQueries &&
+        typeof window.TeamQueries.getTeamPeriodDisplay === 'function') {
+        return window.TeamQueries.getTeamPeriodDisplay(team);
+    }
+    return '';
+}
+
+// ============================================================
+// LOCATION VIEW MODEL
+// ============================================================
+//
+// Moved from academy-view.js. The Location view renderer
+// (AcademyLocationView) expects this exact shape. The list VM and
+// the schedule VM are both built here.
+
+/**
+ * Build the full Location view model for a week.
+ *
+ * @param {object} filters - { type, search }
+ * @param {number} week - Week number
+ * @param {string|null} selectedLocationId - Currently selected location
+ * @returns {object} { locations, selected, filters, week, scheduleWeek, total }
+ */
+function getLocationViewViewModel(filters, week, selectedLocationId) {
+    filters = filters || {};
+
+    var locations = AcademyQueries.getLocations
+        ? AcademyQueries.getLocations()
+        : [];
+
+    locations = applyLocationFilters(locations, filters);
+
+    var selected = null;
+    if (selectedLocationId) {
+        for (var i = 0; i < locations.length; i++) {
+            if (String(locations[i].id) === String(selectedLocationId)) {
+                selected = buildLocationDetailVM(locations[i], week);
+                break;
+            }
+        }
+    }
+
+    var listVM = locations.map(function(l) {
+        return buildLocationListRowVM(l, week);
+    });
+
+    return {
+        locations: listVM,
+        selected: selected,
+        filters: filters,
+        week: week,
+        scheduleWeek: week,
+        total: listVM.length
+    };
+}
+
+function applyLocationFilters(locations, filters) {
+    var type = filters.type || 'all';
+    var search = (filters.search || '').toLowerCase().trim();
+
+    return locations.filter(function(l) {
+        if (!l || !l.id) { return false; }
+        if (type !== 'all' && l.type !== type) { return false; }
+        if (search && (l.name || '').toLowerCase().indexOf(search) === -1) {
+            return false;
+        }
+        return true;
+    });
+}
+
+function buildLocationListRowVM(l, week) {
+    var schedule = getLocationScheduleForWeek(l.id, week);
+    return {
+        id: l.id,
+        name: l.name,
+        type: l.type,
+        capacity: l.capacity,
+        scheduleCount: schedule.length
+    };
+}
+
+function buildLocationDetailVM(l, week) {
+    var schedule = getLocationScheduleForWeek(l.id, week);
+    return {
+        id: l.id,
+        name: l.name,
+        type: l.type,
+        capacity: l.capacity,
+        schedule: schedule
+    };
+}
+
+function getLocationScheduleForWeek(locationId, week) {
+    if (!locationId || !week) { return []; }
+
+    var CQ = window.CalendarQueries;
+    if (!CQ || typeof CQ.getLocationSchedule !== 'function') {
+        return [];
+    }
+
+    var raw = CQ.getLocationSchedule(locationId, week);
+    if (!raw || typeof raw !== 'object') { return []; }
+
+    var entries = [];
+    var disciplineCache = {};
+
+    for (var dayKey in raw) {
+        if (!Object.prototype.hasOwnProperty.call(raw, dayKey)) { continue; }
+        var dayNum = parseInt(dayKey, 10);
+        if (isNaN(dayNum)) { continue; }
+        var daySchedule = raw[dayKey];
+        if (!daySchedule || typeof daySchedule !== 'object') { continue; }
+
+        for (var hourKey in daySchedule) {
+            if (!Object.prototype.hasOwnProperty.call(daySchedule, hourKey)) {
+                continue;
+            }
+            var hourNum = parseInt(hourKey, 10);
+            if (isNaN(hourNum)) { continue; }
+            var disciplineId = daySchedule[hourKey];
+            if (!disciplineId) { continue; }
+
+            var metadata = null;
+            if (typeof CQ.getSlotMetadata === 'function') {
+                metadata = CQ.getSlotMetadata(locationId, week, dayNum, hourNum);
+            }
+
+            var disciplineName = disciplineCache[disciplineId];
+            if (disciplineName === undefined) {
+                disciplineName = resolveDisciplineName(disciplineId);
+                disciplineCache[disciplineId] = disciplineName;
+            }
+
+            entries.push({
+                day: dayNum,
+                hour: hourNum,
+                disciplineId: disciplineId,
+                disciplineName: disciplineName,
+                duration: metadata && metadata.duration ? metadata.duration : 1,
+                label: metadata && metadata.label ? metadata.label : ''
+            });
+        }
+    }
+
+    entries.sort(function(a, b) {
+        if (a.day !== b.day) { return a.day - b.day; }
+        return a.hour - b.hour;
+    });
+
+    return entries;
+}
+
+function resolveDisciplineName(disciplineId) {
+    var DiscQ = window.DisciplineQueries;
+    if (DiscQ && typeof DiscQ.getDiscipline === 'function') {
+        var d = DiscQ.getDiscipline(disciplineId);
+        if (d && d.name) { return d.name; }
+    }
+    return 'Unknown';
+}
+
+// ============================================================
+// RANKING VIEW MODEL
+// ============================================================
+//
+// Moved from academy-view.js. Builds the ranked entries list the
+// Ranking view renderer consumes.
+
+/**
+ * Build the full Ranking view model for a class + week.
+ *
+ * @param {string|null} classId - Currently selected class, or null
+ * @param {number} week - Week number
+ * @returns {object} { classList, classId, className, week, entries, total }
+ */
+function getRankingViewViewModel(classId, week) {
+    // ---- Class list ----
+    var classes = AcademyQueries.getClasses() || [];
+    classes = classes.slice().sort(function(a, b) {
+        return (a.name || '').localeCompare(b.name || '');
+    });
+
+    var classListVM = classes.map(function(c) {
+        return { id: c.id, name: c.name };
+    });
+
+    // ---- Resolve selected class ----
+    var selectedClass = null;
+    if (classId) {
+        for (var i = 0; i < classes.length; i++) {
+            if (String(classes[i].id) === String(classId)) {
+                selectedClass = classes[i];
+                break;
+            }
+        }
+    }
+
+    if (!selectedClass) {
+        return {
+            classList: classListVM,
+            classId: null,
+            className: null,
+            week: week,
+            entries: [],
+            total: 0
+        };
+    }
+
+    var entries = buildRankingEntries(selectedClass, week);
+
+    return {
+        classList: classListVM,
+        classId: selectedClass.id,
+        className: selectedClass.name,
+        week: week,
+        entries: entries,
+        total: entries.length
+    };
+}
+
+function buildRankingEntries(classRecord, week) {
+    if (!AcademyQueries ||
+        typeof AcademyQueries.calculateClassRanking !== 'function') {
+        return [];
+    }
+
+    var raw = AcademyQueries.calculateClassRanking(classRecord.id, week) || [];
+    if (!Array.isArray(raw)) { return []; }
+
+    var instructorId = classRecord.instructorId
+        ? String(classRecord.instructorId)
+        : null;
+
+    var entries = raw.map(function(e) {
+        if (!e) { return null; }
+        var studentId = e.studentId ? String(e.studentId) : '';
+        return {
+            studentId: studentId,
+            studentName: e.name || e.studentName ||
+                getCharacterDisplayName(studentId),
+            rank: e.rank,
+            average: e.average,
+            gradeCount: e.gradeCount || 0,
+            isInstructor: instructorId !== null &&
+                studentId === instructorId
+        };
+    }).filter(function(e) { return e !== null; });
+
+    entries.sort(function(a, b) {
+        var ra = typeof a.rank === 'number' ? a.rank : 999;
+        var rb = typeof b.rank === 'number' ? b.rank : 999;
+        return ra - rb;
+    });
+
+    return entries;
+}
+
+// ============================================================
+// DISCIPLINE LIST VIEW MODEL
+// ============================================================
+//
+// Moved from academy-view.js. Builds the discipline list rows the
+// Discipline view renderer consumes in its sidebar.
+//
+// NOTE: The inline discipline editor draft state remains in
+// academy-view.js for now. It will be extracted in a follow-up
+// pass. This function only builds the list rows.
+
+/**
+ * Build the discipline list rows for the Discipline view sidebar.
+ *
+ * @param {object} filters - { type, search }
+ * @returns {object} { disciplines, filters, total }
+ */
+function getDisciplineListViewModel(filters) {
+    filters = filters || {};
+
+    var disciplines = AcademyQueries.getDisciplines
+        ? AcademyQueries.getDisciplines()
+        : [];
+
+    disciplines = applyDisciplineFilters(disciplines, filters);
+
+    var listVM = disciplines.map(function(d) {
+        return buildDisciplineListRowVM(d);
+    });
+
+    return {
+        disciplines: listVM,
+        filters: filters,
+        total: listVM.length
+    };
+}
+
+function applyDisciplineFilters(disciplines, filters) {
+    var type = filters.type || 'all';
+    var search = (filters.search || '').toLowerCase().trim();
+
+    return disciplines.filter(function(d) {
+        if (!d || !d.id) { return false; }
+        if (type !== 'all' && d.type !== type) { return false; }
+        if (search && (d.name || '').toLowerCase().indexOf(search) === -1) {
+            return false;
+        }
+        return true;
+    });
+}
+
+function buildDisciplineListRowVM(d) {
+    return {
+        id: d.id,
+        name: d.name,
+        type: d.type,
+        startWeek: d.startWeek,
+        endWeek: d.endWeek,
+        weeklyHours: d.weeklyHours,
+        weight: d.weight,
+        instructorIds: d.instructorIds || [],
+        instructorNames: (d.instructorIds || []).map(function(id) {
+            return getCharacterDisplayName(id);
+        })
+    };
+}
