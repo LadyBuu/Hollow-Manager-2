@@ -20,6 +20,13 @@
  *       First Nickname Middle Last (Alias)
  *   - Otherwise fall back to char.nameFormat (legacy)
  * 
+ * DISCIPLINE ENROLLMENT:
+ *   - character.disciplineIds is the source of truth for enrollment.
+ *   - It may be missing on legacy records; getCharacterDisciplines()
+ *     treats a missing field as an empty enrollment list.
+ *   - Enrollment is a DISCIPLINE-level fact. Group membership is
+ *     separate and is tracked on the group's students array.
+ * 
  * DEPENDENCIES:
  *   - window.data (canonical state)
  */
@@ -177,19 +184,6 @@
     // DEATH QUERIES
     // ============================================================
 
-    /**
-     * Check if a character is dead as of a given year (and week).
-     * 
-     * Rules:
-     *   - No deathYear → always alive
-     *   - deathYear set → dead from that year onward
-     *   - deathYear + deathWeek set + same year → dead from that week onward
-     * 
-     * @param {object} char - Character object
-     * @param {number} [year] - Year to check (defaults to current)
-     * @param {number} [week] - Week to check (defaults to current)
-     * @returns {boolean} True if the character is dead as of that year/week
-     */
     function isDeceased(char, year, week) {
         if (!char || typeof char !== 'object') { return false; }
 
@@ -208,7 +202,6 @@
         if (checkYear < deathYear) { return false; }
         if (checkYear > deathYear) { return true; }
 
-        // Same year - check week if available
         var deathWeekRaw = char.deathWeek;
         if (deathWeekRaw === undefined || deathWeekRaw === null || String(deathWeekRaw).trim() === '') {
             return true;
@@ -224,25 +217,10 @@
         return checkWeek >= deathWeek;
     }
 
-    /**
-     * Inverse of isDeceased.
-     * 
-     * @param {object} char - Character object
-     * @param {number} [year] - Year to check (defaults to current)
-     * @param {number} [week] - Week to check (defaults to current)
-     * @returns {boolean} True if the character is alive as of that year/week
-     */
     function isAlive(char, year, week) {
         return !isDeceased(char, year, week);
     }
 
-    /**
-     * Check if a character has a death record (regardless of current year).
-     * Useful for form editing: "has the user declared this character dead?"
-     * 
-     * @param {object} char - Character object
-     * @returns {boolean} True if the character has a deathYear
-     */
     function hasDeathRecord(char) {
         if (!char || typeof char !== 'object') { return false; }
         var deathYearRaw = char.deathYear;
@@ -255,17 +233,6 @@
     // AGE
     // ============================================================
 
-    /**
-     * Calculate the age of a character as of a given year.
-     * 
-     * If the character is dead as of the given year, age is derived
-     * from deathYear (preferred) or explicit deathAge.
-     * If alive, age is birthYear to checkYear.
-     * 
-     * @param {object} char - Character object
-     * @param {number} [year] - Year to compute age for (defaults to current)
-     * @returns {number|null} Age in years or null if undeterminable
-     */
     function calculateAge(char, year) {
         if (!char || typeof char !== 'object') { return null; }
 
@@ -278,7 +245,6 @@
 
         if (birthYear > checkYear) { return null; }
 
-        // If dead as of the check year, use death-derived age
         if (isDeceased(char, checkYear)) {
             var deathAge = parseInt(char.deathAge, 10);
             if (!isNaN(deathAge)) { return deathAge; }
@@ -304,12 +270,6 @@
     // STATUS
     // ============================================================
 
-    /**
-     * Get the character's current career status.
-     * NOTE: This does NOT consult isDeceased. A dead instructor is still
-     * an instructor by career. Callers that want "alive and instructing"
-     * should combine this with isAlive().
-     */
     function getCurrentStatus(char) {
         if (!char || !char.careerStatus || char.careerStatus.length === 0) {
             return 'Civilian';
@@ -372,12 +332,6 @@
 
     function getCharacters() { return getCharacterData().slice(); }
 
-    /**
-     * Get all students.
-     * NOTE: Does NOT filter by alive/dead. A student who is currently dead
-     * is still a student by career. Callers that want "alive students"
-     * should filter with isAlive().
-     */
     function getStudents() {
         var chars = getCharacterData();
         var result = [];
@@ -390,10 +344,6 @@
         });
     }
 
-    /**
-     * Get all instructors.
-     * NOTE: Does NOT filter by alive/dead. See getStudents() note.
-     */
     function getInstructors() {
         var chars = getCharacterData();
         var result = [];
@@ -449,6 +399,48 @@
     }
 
     // ============================================================
+    // DISCIPLINE ENROLLMENT (v16+)
+    // ============================================================
+    //
+    // character.disciplineIds is the source of truth for enrollment.
+    // Legacy records may be missing the field; callers get [] in that
+    // case. Enrollment is a DISCIPLINE-level fact — group membership
+    // is tracked separately on each group's students array.
+
+    /**
+     * Get the discipline IDs a character is enrolled in.
+     * Returns a fresh array. Never returns null. Never returns the
+     * live array from the character record.
+     *
+     * @param {object} char - Character object
+     * @returns {array} Array of discipline IDs
+     */
+    function getCharacterDisciplines(char) {
+        if (!char || typeof char !== 'object') { return []; }
+        if (!Array.isArray(char.disciplineIds)) { return []; }
+        return char.disciplineIds.slice();
+    }
+
+    /**
+     * Is the character enrolled in a specific discipline?
+     *
+     * @param {object} char - Character object
+     * @param {string} disciplineId - Discipline ID
+     * @returns {boolean} True if enrolled
+     */
+    function isEnrolledInDiscipline(char, disciplineId) {
+        if (!char || !disciplineId) { return false; }
+        if (!Array.isArray(char.disciplineIds)) { return false; }
+        var target = String(disciplineId);
+        for (var i = 0; i < char.disciplineIds.length; i++) {
+            if (String(char.disciplineIds[i]) === target) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -488,7 +480,11 @@
         getNonCivilianCharacters: getNonCivilianCharacters,
 
         // Stats
-        getCharacterStats: getCharacterStats
+        getCharacterStats: getCharacterStats,
+
+        // Discipline enrollment
+        getCharacterDisciplines: getCharacterDisciplines,
+        isEnrolledInDiscipline: isEnrolledInDiscipline
     };
 
 })();
