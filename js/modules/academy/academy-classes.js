@@ -32,6 +32,22 @@
  *     all class-scoped data (weeklyTeams, grades, rankings) in a single
  *     MutationPipeline transaction.
  *
+ * READ SAFETY (Phase 2):
+ *   - getAcademyStore() returns null (does NOT create academy.{...}) when
+ *     the store is missing. Reads are side-effect free.
+ *   - Public lookups (getClass, getClasses, getClassesByStatus,
+ *     getClassByName, getDisplayName, getCharacterClassNames,
+ *     getCharacterClasses) return DEEP CLONES. Callers cannot mutate
+ *     live state by writing to a returned object.
+ *   - Internal lookups (getClassInternal, getClassesInternal, ...) keep
+ *     returning LIVE REFERENCES. They are consumed by this module's own
+ *     mutation paths and by AcademyQueries. They are not part of the
+ *     public read surface.
+ *   - Pipeline validate() callbacks read from the `appData` argument the
+ *     pipeline supplies, not from window.data via the internal getters.
+ *     This makes validation consistent with the snapshot the mutation
+ *     will be applied to.
+ *
  * YEAR SEMANTICS:
  *   - Years are UNBOUNDED positive integers.
  *   - There is no MIN_YEAR or MAX_YEAR.
@@ -53,7 +69,7 @@
  *   var result = classes.update('class_123', { name: 'New Name' });
  *   var result = classes.delete('class_123');
  *
- *   // Lookups (used by AcademyQueries)
+ *   // Lookups (used by AcademyQueries) - return clones
  *   var cls = classes.getClass('class_123');
  *   var all = classes.getClasses();
  *   var byName = classes.getClassByName('Class of 2026');
@@ -160,6 +176,16 @@
     // ============================================================
     // DATA STORE ACCESS - INTERNAL
     // ============================================================
+    //
+    // READ SAFETY:
+    //   - getDataStore() returns null when window.data is missing.
+    //   - getAcademyStore() returns null when window.data.academy is
+    //     missing. It does NOT create academy.{...} as a side effect
+    //     of a read.
+    //
+    //   Structure creation happens ONLY inside pipeline mutate()
+    //   callbacks, operating on the appData snapshot the pipeline
+    //   hands in. That keeps reads side-effect free.
 
     function getDataStore() {
         if (!window.data || typeof window.data !== 'object') {
@@ -175,38 +201,22 @@
         }
 
         if (!data.academy || typeof data.academy !== 'object') {
-            data.academy = {};
+            return null;
         }
 
         return data.academy;
     }
 
-    /**
-     * Ensure the class entity structure exists.
-     *
-     * NOTE: This does NOT create or touch academy.classStudents. That
-     * structure is gone as of v15. Class membership is derived from
-     * character.classIds.
-     */
-    function ensureClassStructures() {
-        var academy = getAcademyStore();
-        if (!academy) {
-            return null;
-        }
-
-        if (!academy.graduatingClasses || typeof academy.graduatingClasses !== 'object' || Array.isArray(academy.graduatingClasses)) {
-            academy.graduatingClasses = {};
-        }
-
-        return academy;
-    }
-
     // ============================================================
-    // INTERNAL CLASS LOOKUP - PRIVATE
+    // INTERNAL CLASS LOOKUP - PRIVATE (LIVE REFERENCES)
     // ============================================================
     // These are the CANONICAL class ENTITY lookup functions. They
     // read from academy.graduatingClasses, which is unaffected by
     // the v15 membership change.
+    //
+    // They return LIVE REFERENCES. Callers inside this module's
+    // mutation paths and AcademyQueries' derive functions use them.
+    // The public read surface (see below) wraps them with deepClone.
 
     /**
      * Get a class record by ID (internal).
@@ -330,11 +340,14 @@
     }
 
     // ============================================================
-    // CHARACTER ↔ CLASS - READ PATH
+    // CHARACTER ↔ CLASS - READ PATH (INTERNAL)
     // ============================================================
     // These read character.classIds directly. This is the canonical
     // membership relationship. There is no separate roster store to
     // read from, so there is nothing to keep in sync.
+    //
+    // They return LIVE REFERENCES to class records. The public
+    // surface wraps them with deepClone.
 
     /**
      * Get character class names (internal).
@@ -374,7 +387,7 @@
      * Reads from character.classIds.
      *
      * @param {object} character - Character object with classIds
-     * @returns {array} Array of class objects
+     * @returns {array} Array of class objects (live references)
      */
     function getCharacterClassesInternal(character) {
         if (!character || typeof character !== 'object') {
@@ -455,7 +468,7 @@
 
         var trimmedName = String(name).trim();
 
-        // Check for duplicate name
+        // Check for duplicate name (pre-flight, against live store)
         var existing = getClassByNameInternal(trimmedName);
         if (existing) {
             return Promise.resolve(failure('A class with this name already exists.'));
@@ -492,10 +505,20 @@
 
         // ---- PHASE 3: MUTATION PIPELINE ----
         return MutationPipeline.performMutation({
-            validate: function() {
-                var current = getClassByNameInternal(trimmedName);
-                if (current) {
-                    return { valid: false, message: 'A class with this name already exists.' };
+            validate: function(appData) {
+                // Read against the pipeline snapshot, not window.data.
+                if (!appData || !appData.academy || !appData.academy.graduatingClasses) {
+                    return { valid: true };
+                }
+                var target = trimmedName.toLowerCase();
+                var store = appData.academy.graduatingClasses;
+                for (var id in store) {
+                    if (Object.prototype.hasOwnProperty.call(store, id)) {
+                        var cls = store[id];
+                        if (cls && cls.name && String(cls.name).toLowerCase().trim() === target) {
+                            return { valid: false, message: 'A class with this name already exists.' };
+                        }
+                    }
                 }
                 return { valid: true };
             },
@@ -598,9 +621,11 @@
 
         // ---- PHASE 4: MUTATION PIPELINE ----
         return MutationPipeline.performMutation({
-            validate: function() {
-                var current = getClassInternal(target);
-                if (!current) {
+            validate: function(appData) {
+                if (!appData || !appData.academy || !appData.academy.graduatingClasses) {
+                    return { valid: false, message: 'Class no longer exists.' };
+                }
+                if (!appData.academy.graduatingClasses[target]) {
                     return { valid: false, message: 'Class no longer exists.' };
                 }
                 return { valid: true };
@@ -658,9 +683,11 @@
 
         // ---- PHASE 2: MUTATION PIPELINE ----
         return MutationPipeline.performMutation({
-            validate: function() {
-                var current = getClassInternal(target);
-                if (!current) {
+            validate: function(appData) {
+                if (!appData || !appData.academy || !appData.academy.graduatingClasses) {
+                    return { valid: false, message: 'Class no longer exists.' };
+                }
+                if (!appData.academy.graduatingClasses[target]) {
                     return { valid: false, message: 'Class no longer exists.' };
                 }
                 return { valid: true };
@@ -795,50 +822,67 @@
     }
 
     // ============================================================
-    // PUBLIC INTERNAL LOOKUP (for AcademyQueries)
+    // PUBLIC READ SURFACE (CLONES)
     // ============================================================
+    //
+    // These are the consumer-facing lookups. They return DEEP CLONES
+    // so callers cannot mutate live state by writing to a returned
+    // object. Internal code paths within this module continue to use
+    // the *Internal variants, which return live references.
 
     /**
-     * Get a class by ID (internal).
+     * Get a class by ID.
      *
      * @param {string} classId - Class ID
-     * @returns {object|null} Class object or null
+     * @returns {object|null} Cloned class object or null
      */
     function getClass(classId) {
-        return getClassInternal(classId);
+        var record = getClassInternal(classId);
+        return record ? deepClone(record) : null;
     }
 
     /**
-     * Get all classes (internal).
+     * Get all classes.
      *
-     * @returns {array} Array of class objects
+     * @returns {array} Array of cloned class objects
      */
     function getClasses() {
-        return getClassesInternal();
+        var records = getClassesInternal();
+        var result = [];
+        for (var i = 0; i < records.length; i++) {
+            result.push(deepClone(records[i]));
+        }
+        return result;
     }
 
     /**
-     * Get classes by status (internal).
+     * Get classes by status.
      *
      * @param {string} status - Status filter
-     * @returns {array} Array of class objects
+     * @returns {array} Array of cloned class objects
      */
     function getClassesByStatus(status) {
-        return getClassesByStatusInternal(status);
+        var records = getClassesByStatusInternal(status);
+        var result = [];
+        for (var i = 0; i < records.length; i++) {
+            result.push(deepClone(records[i]));
+        }
+        return result;
     }
 
     /**
-     * Get class by name (internal).
+     * Get class by name.
      *
      * @param {string} name - Class name
-     * @returns {object|null} Class object or null
+     * @returns {object|null} Cloned class object or null
      */
     function getClassByName(name) {
-        return getClassByNameInternal(name);
+        var record = getClassByNameInternal(name);
+        return record ? deepClone(record) : null;
     }
 
     /**
-     * Get class display name (internal).
+     * Get class display name.
      *
      * @param {string} classId - Class ID
      * @returns {string} Class display name
@@ -852,7 +896,7 @@
      * Reads from character.classIds.
      *
      * @param {object} character - Character object
-     * @returns {array} Array of class names
+     * @returns {array} Array of class names (strings, already safe)
      */
     function getCharacterClassNames(character) {
         return getCharacterClassNamesInternal(character);
@@ -863,10 +907,15 @@
      * Reads from character.classIds.
      *
      * @param {object} character - Character object
-     * @returns {array} Array of class objects
+     * @returns {array} Array of cloned class objects
      */
     function getCharacterClassesFor(character) {
-        return getCharacterClassesInternal(character);
+        var records = getCharacterClassesInternal(character);
+        var result = [];
+        for (var i = 0; i < records.length; i++) {
+            result.push(deepClone(records[i]));
+        }
+        return result;
     }
 
     // ============================================================
@@ -883,7 +932,7 @@
         addStudent: addStudent,
         removeStudent: removeStudent,
 
-        // ---- Lookups (for AcademyQueries) ----
+        // ---- Public lookups (CLONES - safe to mutate the result) ----
         getClass: getClass,
         getClasses: getClasses,
         getClassesByStatus: getClassesByStatus,
@@ -892,7 +941,7 @@
         getCharacterClassNames: getCharacterClassNames,
         getCharacterClasses: getCharacterClassesFor,
 
-        // ---- Internal (low-level, for AcademyQueries) ----
+        // ---- Internal (LIVE REFERENCES - for AcademyQueries and internal use) ----
         getClassInternal: getClassInternal,
         getClassesInternal: getClassesInternal,
         getClassesByStatusInternal: getClassesByStatusInternal,
