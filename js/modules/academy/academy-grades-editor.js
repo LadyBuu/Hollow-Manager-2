@@ -9,6 +9,8 @@
  *   - Wiring per-row Edit / Delete buttons
  *   - Wiring the Add Grade form
  *   - Delegating to AcademyGrades for all mutations
+ *   - Converting percentages to the discipline's grading scheme label
+ *     for display (percentage remains the source of truth)
  *
  * IMPORTANT:
  *   - RENDER + WIRE - all mutations go through AcademyGrades.
@@ -22,6 +24,17 @@
  *   - The class context (classId) is fixed when the editor is rendered.
  *     Changing class must re-mount.
  *
+ * GRADE SCHEME SEMANTICS:
+ *   - Grades are stored as percentages (score + maxScore). The scheme
+ *     is a DISPLAY layer only.
+ *   - Non-numeric schemes render as "85% (B)". Numeric schemes render
+ *     as "85%".
+ *   - The scheme used is the one attached to the grade's discipline.
+ *     If a discipline has no scheme (legacy data), the numeric default
+ *     applies and no suffix is shown.
+ *   - The add/edit modal shows a live preview of the label as the user
+ *     types the score.
+ *
  * LIFECYCLE:
  *   mount(container, charId, classId, week)  → render + bind
  *   refresh()                                 → re-render only
@@ -31,6 +44,8 @@
  *   - window.DomUtils (MANDATORY)
  *   - window.AcademyGrades (MANDATORY)
  *   - window.AcademyQueries (MANDATORY)
+ *   - window.AcademyDisciplines (MANDATORY)
+ *   - window.AcademyGradeSchemes (MANDATORY)
  *   - window.CharacterQueries (MANDATORY)
  *   - window.DisciplineQueries (MANDATORY)
  *   - window.NotificationSystem (MANDATORY)
@@ -57,6 +72,8 @@
     var DomUtils = window.DomUtils;
     var AcademyGrades = window.AcademyGrades;
     var AcademyQueries = window.AcademyQueries;
+    var AcademyDisciplines = window.AcademyDisciplines;
+    var GradeSchemes = window.AcademyGradeSchemes;
     var CharacterQueries = window.CharacterQueries;
     var DisciplineQueries = window.DisciplineQueries;
     var NotificationSystem = window.NotificationSystem;
@@ -83,6 +100,18 @@
         }
         if (!AcademyGrades || typeof AcademyGrades.delete !== 'function') {
             missing.push('AcademyGrades.delete');
+        }
+        if (!AcademyDisciplines || typeof AcademyDisciplines.getDiscipline !== 'function') {
+            missing.push('AcademyDisciplines.getDiscipline');
+        }
+        if (!AcademyDisciplines || typeof AcademyDisciplines.getGradeScheme !== 'function') {
+            missing.push('AcademyDisciplines.getGradeScheme');
+        }
+        if (!GradeSchemes || typeof GradeSchemes.getGradeDisplay !== 'function') {
+            missing.push('AcademyGradeSchemes.getGradeDisplay');
+        }
+        if (!GradeSchemes || typeof GradeSchemes.getLabelForScore !== 'function') {
+            missing.push('AcademyGradeSchemes.getLabelForScore');
         }
         if (!DisciplineQueries || typeof DisciplineQueries.getDiscipline !== 'function') {
             missing.push('DisciplineQueries.getDiscipline');
@@ -140,6 +169,43 @@
         return d && d.name ? d.name : 'Unknown';
     }
 
+    /**
+     * Look up a discipline's grade scheme. Returns the normalized
+     * numeric default when the discipline is missing or has no scheme.
+     * Never returns null.
+     */
+    function getSchemeForDiscipline(disciplineId) {
+        if (!disciplineId) {
+            return GradeSchemes.normalizeScheme(null);
+        }
+        return AcademyDisciplines.getGradeScheme(disciplineId);
+    }
+
+    /**
+     * Get the numeric percentage of a grade. Prefers the cached
+     * `percentage` field, falls back to score/maxScore.
+     */
+    function getGradePercentage(grade) {
+        if (!grade) { return null; }
+        if (isFiniteNumber(grade.percentage)) { return grade.percentage; }
+        if (isFiniteNumber(grade.score) && isFiniteNumber(grade.maxScore) && grade.maxScore > 0) {
+            return Math.round((grade.score / grade.maxScore) * 100);
+        }
+        return null;
+    }
+
+    /**
+     * Format a grade's score for display, using the discipline's scheme.
+     *   - Numeric scheme: '85%'
+     *   - Letter/PF/etc:  '85% (B)'
+     *   - Missing score:  '—'
+     */
+    function formatScoreDisplay(grade, scheme) {
+        var pct = getGradePercentage(grade);
+        if (pct === null) { return '\u2014'; }
+        return GradeSchemes.getGradeDisplay(scheme, pct);
+    }
+
     function getScoreClass(percentage) {
         if (!isFiniteNumber(percentage)) {
             return 'academy-grade-score academy-grade-score-unknown';
@@ -148,15 +214,6 @@
         if (percentage >= 80) return 'academy-grade-score academy-grade-score-good';
         if (percentage >= 70) return 'academy-grade-score academy-grade-score-passing';
         return 'academy-grade-score academy-grade-score-failing';
-    }
-
-    function getGradePercentage(grade) {
-        if (!grade) { return null; }
-        if (isFiniteNumber(grade.percentage)) { return grade.percentage; }
-        if (isFiniteNumber(grade.score) && isFiniteNumber(grade.maxScore) && grade.maxScore > 0) {
-            return Math.round((grade.score / grade.maxScore) * 100);
-        }
-        return null;
     }
 
     // ============================================================
@@ -268,8 +325,6 @@
         if (!_state.container) { return; }
 
         var charId = _state.charId;
-        var classId = _state.classId;
-        var week = _state.week;
 
         // Fetch all grades for this student; the editor shows all weeks
         // and class-scopes the add/edit form.
@@ -330,9 +385,13 @@
 
     function renderGradeRow(grade) {
         var percentage = getGradePercentage(grade);
-        var percentageLabel = percentage !== null ? String(percentage) + '%' : '\u2014';
         var scoreClass = getScoreClass(percentage);
         var disciplineName = getDisciplineName(grade.disciplineId);
+
+        // Look up the scheme for this discipline and format the score.
+        var scheme = getSchemeForDiscipline(grade.disciplineId);
+        var scoreDisplay = formatScoreDisplay(grade, scheme);
+
         var typeLabel = isNonEmptyString(grade.type) ? grade.type : 'assignment';
         var weekLabel = grade.week !== undefined && grade.week !== null
             ? String(grade.week)
@@ -348,7 +407,7 @@
         html += '<td class="weight-col">' + escapeHtml(weightLabel) + '</td>';
         html += '<td class="score-col">' +
                     '<span class="' + scoreClass + '">' +
-                        escapeHtml(percentageLabel) +
+                        escapeHtml(scoreDisplay) +
                     '</span>' +
                 '</td>';
         html += '<td class="actions-col">';
@@ -430,6 +489,18 @@
             return;
         }
 
+        // Determine the initial scheme based on the current discipline
+        // (edit mode) or the first available discipline (create mode).
+        var initialDisciplineId = g.disciplineId || (disciplines[0] ? disciplines[0].id : null);
+        var initialScheme = getSchemeForDiscipline(initialDisciplineId);
+
+        // Seed the initial score and preview.
+        var initialScore = (g.score !== undefined && g.score !== null) ? g.score : '';
+        var initialPreview = '';
+        if (initialScore !== '' && !isNaN(parseFloat(initialScore))) {
+            initialPreview = buildLabelPreview(parseFloat(initialScore), initialScheme);
+        }
+
         var html = '';
         html += '<form id="academy-grade-form" data-edit-id="' +
                     (isEdit ? escapeAttribute(existing.id) : '') + '">';
@@ -484,7 +555,7 @@
         html += '<div class="form-group">';
         html += '<label for="ag-score-input">Score *</label>';
         html += '<input type="number" step="0.1" id="ag-score-input" class="ag-score-input" ' +
-                    'value="' + escapeAttribute(g.score !== undefined && g.score !== null ? String(g.score) : '') + '" ' +
+                    'value="' + escapeAttribute(initialScore) + '" ' +
                     'min="0" required>';
         html += '</div>';
         html += '<div class="form-group">';
@@ -493,6 +564,14 @@
                     'value="' + escapeAttribute(g.maxScore !== undefined && g.maxScore !== null ? String(g.maxScore) : '100') + '" ' +
                     'min="1">';
         html += '</div>';
+        html += '</div>';
+
+        // Live label preview
+        html += '<div class="form-group ag-grade-preview-group">';
+        html += '<span class="ag-grade-preview-label">Converted:</span> ';
+        html += '<span id="ag-grade-preview" class="ag-grade-preview">' +
+                    escapeHtml(initialPreview || '\u2014') +
+                '</span>';
         html += '</div>';
 
         // Weight
@@ -530,15 +609,35 @@
         html += '</div>';
         html += '</form>';
 
-        var contentEl = document.createElement('div');
-        contentEl.className = 'modal-content';
+        // Modal.createModal may return a bare shell or a shell with a
+        // pre-created .modal-content. Handle both.
+        var contentEl = modal.querySelector('.modal-content');
+        if (!contentEl) {
+            contentEl = document.createElement('div');
+            contentEl.className = 'modal-content';
+            modal.appendChild(contentEl);
+        }
         contentEl.innerHTML = html;
-        modal.appendChild(contentEl);
 
         Modal.modalSetup(modal);
         Modal.showModal(modal);
 
         bindGradeFormEvents(modal, existing);
+    }
+
+    /**
+     * Build a preview string for a score under a scheme.
+     * Returns '' for the numeric scheme so the caller can show "—".
+     */
+    function buildLabelPreview(score, scheme) {
+        if (!isFinite(score)) { return ''; }
+        if (!GradeSchemes.isNumericScheme(scheme)) {
+            var label = GradeSchemes.getLabelForScore(scheme, score);
+            if (label) {
+                return score + '% (' + label + ')';
+            }
+        }
+        return score + '%';
     }
 
     function bindGradeFormEvents(modal, existing) {
@@ -568,13 +667,44 @@
         var form = modal.querySelector('#academy-grade-form');
         if (!form) { return; }
 
+        var discInput = form.querySelector('.ag-disc-select');
+        var scoreInput = form.querySelector('.ag-score-input');
+        var previewEl = form.querySelector('#ag-grade-preview');
+
+        /**
+         * Recompute and display the converted label. Called on score
+         * change and on discipline change.
+         */
+        function updatePreview() {
+            if (!previewEl) { return; }
+
+            var discId = discInput ? discInput.value : '';
+            var scheme = getSchemeForDiscipline(discId);
+
+            var rawScore = scoreInput ? scoreInput.value : '';
+            var score = parseFloat(rawScore);
+
+            if (rawScore === '' || isNaN(score)) {
+                previewEl.textContent = '\u2014';
+                return;
+            }
+
+            var preview = buildLabelPreview(score, scheme);
+            previewEl.textContent = preview || '\u2014';
+        }
+
+        if (scoreInput) {
+            scoreInput.addEventListener('input', updatePreview);
+        }
+        if (discInput) {
+            discInput.addEventListener('change', updatePreview);
+        }
+
         form.addEventListener('submit', function(e) {
             e.preventDefault();
 
-            var discInput = form.querySelector('.ag-disc-select');
             var typeInput = form.querySelector('.ag-type-select');
             var weekInput = form.querySelector('.ag-week-input');
-            var scoreInput = form.querySelector('.ag-score-input');
             var maxInput = form.querySelector('.ag-max-score-input');
             var weightInput = form.querySelector('.ag-weight-input');
             var dateInput = form.querySelector('.ag-date-input');
@@ -642,7 +772,8 @@
         }
 
         var disciplineName = getDisciplineName(grade.disciplineId);
-        var percentage = getGradePercentage(grade);
+        var scheme = getSchemeForDiscipline(grade.disciplineId);
+        var scoreDisplay = formatScoreDisplay(grade, scheme);
 
         var modal = Modal.createModal('academy-grade-delete-modal');
         if (!modal) {
@@ -660,8 +791,8 @@
         html += '<p>Delete this grade?</p>';
         html += '<p class="text-dim" style="font-size:0.8rem;">';
         html += escapeHtml(disciplineName) +
-                ' — Week ' + escapeHtml(String(grade.week)) +
-                (percentage !== null ? ' — ' + escapeHtml(String(percentage)) + '%' : '');
+                ' \u2014 Week ' + escapeHtml(String(grade.week)) +
+                ' \u2014 ' + escapeHtml(scoreDisplay);
         html += '</p>';
         html += '<div class="form-actions">';
         html += '<button type="button" class="cancel-modal-btn secondary">Cancel</button>';
@@ -670,10 +801,14 @@
         html += '</div>';
         html += '</form>';
 
-        var contentEl = document.createElement('div');
-        contentEl.className = 'modal-content';
+        // Handle both modal content contracts.
+        var contentEl = modal.querySelector('.modal-content');
+        if (!contentEl) {
+            contentEl = document.createElement('div');
+            contentEl.className = 'modal-content';
+            modal.appendChild(contentEl);
+        }
         contentEl.innerHTML = html;
-        modal.appendChild(contentEl);
 
         Modal.modalSetup(modal);
         Modal.showModal(modal);
