@@ -10,6 +10,8 @@
  *   - Validating scheme objects (bands sorted, unique labels, minPercent in range)
  *   - Converting a percentage to a band label for display
  *   - Producing a human-readable range preview for the discipline editor
+ *   - Providing passing semantics (default threshold or scheme-aware)
+ *   - Providing letter-grade semantics (default letter map or scheme-aware)
  *
  * IMPORTANT:
  *   - PURE. No DOM, no persistence, no queries. Constants + functions only.
@@ -37,6 +39,26 @@
  *   - The lowest band MUST have minPercent === 0 so every score matches.
  *   - Bands must have unique labels (case-sensitive).
  *
+ * PASSING SEMANTICS:
+ *   - isPassing(score, scheme):
+ *       * If scheme is provided AND is not the numeric scheme, uses the
+ *         scheme's bands to determine passing. A score passes if its
+ *         matching band's minPercent is >= the scheme's "lowest passing
+ *         band" threshold. The lowest passing band is the last band in
+ *         the scheme whose label is not in a fail-label set.
+ *       * If scheme is not provided, uses PASSING_THRESHOLD (70).
+ *       * If scheme is the numeric scheme, uses PASSING_THRESHOLD.
+ *   - FAIL_LABELS: labels considered failing by convention. Used to
+ *     determine the lowest passing band. Defaults to ['F', 'Fail'].
+ *     Users can rename bands, so this is heuristic — callers who need
+ *     exact control should read bands directly.
+ *
+ * LETTER GRADE SEMANTICS:
+ *   - getLetterGrade(score, scheme):
+ *       * If scheme is provided AND is not the numeric scheme, returns
+ *         the matching band's label (as both label and description).
+ *       * Otherwise, falls back to LETTER_GRADES (A/B/C/D/F at 90/80/70/60/0).
+ *
  * DEPENDENCIES:
  *   - None (self-contained)
  *
@@ -45,7 +67,9 @@
  *   var preset = S.getPreset('letter');
  *   var scheme = S.normalizeScheme(rawScheme);
  *   var label = S.getLabelForScore(scheme, 87);       // → 'B'
- *   var preview = S.getRangeLabel(scheme);             // → 'A: 90–100, B: 80–89, ...'
+ *   var preview = S.getRangeLabel(scheme);             // → 'A: 90–100%, B: 80–89%, ...'
+ *   var passed = S.isPassing(87, scheme);              // → true
+ *   var letter = S.getLetterGrade(87, scheme);         // → { label: 'B', description: 'B' }
  */
 
 (function() {
@@ -69,6 +93,25 @@
     var MAX_BANDS = 26;
     var MAX_LABEL_LENGTH = 12;
     var MAX_SCHEME_LABEL_LENGTH = 40;
+
+    // ---- Passing ----
+    var PASSING_THRESHOLD = 70;
+
+    // Labels considered failing by convention. Used by isPassing to
+    // locate the "lowest passing band" in a custom scheme. Case-sensitive
+    // matching against the scheme's band labels.
+    var FAIL_LABELS = Object.freeze(['F', 'Fail']);
+
+    // ---- Letter-grade fallback map ----
+    // Used by getLetterGrade when no scheme is provided. This is the
+    // canonical default; schemes override it.
+    var LETTER_GRADES = Object.freeze([
+        { min: 90, label: 'A', description: 'Excellent' },
+        { min: 80, label: 'B', description: 'Good' },
+        { min: 70, label: 'C', description: 'Satisfactory' },
+        { min: 60, label: 'D', description: 'Below Average' },
+        { min: 0,  label: 'F', description: 'Failing' }
+    ]);
 
     // ============================================================
     // PRESETS
@@ -144,14 +187,6 @@
         try { return JSON.parse(JSON.stringify(value)); } catch (_) { return value; }
     }
 
-    function clampPercent(value) {
-        var num = parseInt(value, 10);
-        if (isNaN(num)) { return MIN_PERCENT; }
-        if (num < MIN_PERCENT) { return MIN_PERCENT; }
-        if (num > MAX_PERCENT) { return MAX_PERCENT; }
-        return num;
-    }
-
     // ============================================================
     // DEFAULTS
     // ============================================================
@@ -187,7 +222,6 @@
     // ============================================================
 
     function getPresets() {
-        // Return clones so callers can't mutate the canonical presets.
         var result = [];
         for (var i = 0; i < PRESETS.length; i++) {
             result.push(deepClone(PRESETS[i]));
@@ -496,7 +530,7 @@
      */
     function getGradeDisplay(scheme, percentage) {
         var pct = Math.round(Number(percentage));
-        if (!isFinite(pct)) { return '—'; }
+        if (!isFinite(pct)) { return '\u2014'; }
         if (pct < MIN_PERCENT) { pct = MIN_PERCENT; }
         if (pct > MAX_PERCENT) { pct = MAX_PERCENT; }
 
@@ -511,6 +545,138 @@
         }
 
         return pctStr + ' (' + band.label + ')';
+    }
+
+    // ============================================================
+    // PASSING SEMANTICS
+    // ============================================================
+
+    /**
+     * Get the lowest passing band's minPercent for a scheme.
+     *
+     * A "passing band" is any band whose label is not in FAIL_LABELS.
+     * The lowest passing band is the one with the smallest minPercent
+     * that is still considered passing.
+     *
+     * Returns null when:
+     *   - scheme is missing or numeric
+     *   - all bands are fail-labelled
+     *
+     * This is heuristic. Users can rename bands. If exact control is
+     * needed, callers should inspect scheme.bands directly.
+     */
+    function getLowestPassingBand(scheme) {
+        if (!isObject(scheme) || !Array.isArray(scheme.bands)) {
+            return null;
+        }
+        if (isNumericScheme(scheme)) {
+            return null;
+        }
+
+        var lowest = null;
+        for (var i = 0; i < scheme.bands.length; i++) {
+            var band = scheme.bands[i];
+            if (!band || !isNonEmptyString(band.label)) { continue; }
+            if (typeof band.minPercent !== 'number') { continue; }
+
+            // Skip fail-labelled bands
+            var isFail = FAIL_LABELS.indexOf(band.label) !== -1;
+            if (isFail) { continue; }
+
+            if (!lowest || band.minPercent < lowest.minPercent) {
+                lowest = band;
+            }
+        }
+        return lowest;
+    }
+
+    /**
+     * Determine whether a score passes.
+     *
+     * SEMANTICS:
+     *   - If scheme is provided and is NOT numeric:
+     *       * Compute the lowest passing band's threshold.
+     *       * Score passes iff its percentage >= that threshold.
+     *   - Otherwise (scheme missing, or numeric):
+     *       * Score passes iff percentage >= PASSING_THRESHOLD (70).
+     *
+     * @param {number} score - Percentage (0-100)
+     * @param {object|null} scheme - Optional scheme
+     * @returns {boolean} True if passing
+     */
+    function isPassing(score, scheme) {
+        var pct = Number(score);
+        if (!isFinite(pct)) { return false; }
+        if (pct < MIN_PERCENT) { pct = MIN_PERCENT; }
+        if (pct > MAX_PERCENT) { pct = MAX_PERCENT; }
+
+        if (isObject(scheme) && !isNumericScheme(scheme)) {
+            var lowestPassing = getLowestPassingBand(scheme);
+            if (lowestPassing && typeof lowestPassing.minPercent === 'number') {
+                return pct >= lowestPassing.minPercent;
+            }
+            // No passing band in the scheme (all fail). Nothing passes.
+            return false;
+        }
+
+        return pct >= PASSING_THRESHOLD;
+    }
+
+    // ============================================================
+    // LETTER-GRADE SEMANTICS
+    // ============================================================
+
+    /**
+     * Get the letter grade for a score.
+     *
+     * SEMANTICS:
+     *   - If scheme is provided and is NOT numeric:
+     *       * Returns the matching band's label as both label and
+     *         description. Description is intentionally identical
+     *         because schemes only carry labels.
+     *   - Otherwise:
+     *       * Uses LETTER_GRADES (A=90, B=80, C=70, D=60, F=0).
+     *
+     * Return shape:
+     *   { label: string, description: string }
+     *
+     * Callers that need "is this score passing under this scheme"
+     * should use isPassing instead.
+     *
+     * @param {number} score - Percentage (0-100)
+     * @param {object|null} scheme - Optional scheme
+     * @returns {object} { label, description }
+     */
+    function getLetterGrade(score, scheme) {
+        var pct = Number(score);
+        if (!isFinite(pct)) {
+            return { label: '?', description: 'Invalid' };
+        }
+        if (pct < MIN_PERCENT) { pct = MIN_PERCENT; }
+        if (pct > MAX_PERCENT) { pct = MAX_PERCENT; }
+
+        // Scheme-based path
+        if (isObject(scheme) && !isNumericScheme(scheme)) {
+            var band = getBandForScore(scheme, pct);
+            if (band && isNonEmptyString(band.label)) {
+                return {
+                    label: band.label,
+                    description: band.label
+                };
+            }
+        }
+
+        // Fallback: LETTER_GRADES
+        for (var i = 0; i < LETTER_GRADES.length; i++) {
+            if (pct >= LETTER_GRADES[i].min) {
+                return {
+                    label: LETTER_GRADES[i].label,
+                    description: LETTER_GRADES[i].description
+                };
+            }
+        }
+
+        return { label: 'F', description: 'Failing' };
     }
 
     // ============================================================
@@ -540,7 +706,7 @@
             if (lower === upper) {
                 rangeStr = String(lower) + '%';
             } else {
-                rangeStr = lower + '–' + upper + '%';
+                rangeStr = lower + '\u2013' + upper + '%';
             }
 
             parts.push(band.label + ': ' + rangeStr);
@@ -588,6 +754,11 @@
         MAX_LABEL_LENGTH: MAX_LABEL_LENGTH,
         MAX_SCHEME_LABEL_LENGTH: MAX_SCHEME_LABEL_LENGTH,
 
+        // Passing + letter-grade defaults
+        PASSING_THRESHOLD: PASSING_THRESHOLD,
+        FAIL_LABELS: FAIL_LABELS,
+        LETTER_GRADES: LETTER_GRADES,
+
         // Presets (read-only)
         PRESETS: PRESETS_PUBLIC,
 
@@ -612,6 +783,13 @@
         getLabelForScore: getLabelForScore,
         getGradeDisplay: getGradeDisplay,
 
+        // Passing
+        getLowestPassingBand: getLowestPassingBand,
+        isPassing: isPassing,
+
+        // Letter grade
+        getLetterGrade: getLetterGrade,
+
         // Display helpers
         getRangeLabel: getRangeLabel,
         getBandLabels: getBandLabels
@@ -631,6 +809,7 @@
             'getDefaultScheme', 'isNumericScheme',
             'validateScheme', 'isValidScheme', 'normalizeScheme',
             'getBandForScore', 'getLabelForScore', 'getGradeDisplay',
+            'getLowestPassingBand', 'isPassing', 'getLetterGrade',
             'getRangeLabel', 'getBandLabels'
         ];
 
