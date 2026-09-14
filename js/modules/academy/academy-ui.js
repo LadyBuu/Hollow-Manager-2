@@ -10,6 +10,7 @@
  *   - State restoration on load
  *   - Filter state per view
  *   - Derived role computation for a character in a graduating class
+ *   - Per-character display mode (student vs instructor)
  * 
  * IMPORTANT:
  *   - UI STATE ONLY - no domain data, no mutations
@@ -27,6 +28,7 @@
  *   displayWeek:       shared week selector value (1..52)
  *   filters.people:    { search, role, status }
  *   expandedIds:       map of expanded UI element IDs
+ *   characterModes:    map of charId -> 'student' | 'instructor'
  * 
  * ROLE SEMANTICS:
  *   - A character's role is defined RELATIVE TO A GRADUATING CLASS.
@@ -37,6 +39,16 @@
  *   - Role is DERIVED, not stored. Use getRoleFor(charId, classId).
  *   - There is no selectedRole field. The role follows from the
  *     (character, class) pair.
+ * 
+ * CHARACTER MODE SEMANTICS:
+ *   - The character detail panel has two display modes:
+ *       'student'    — show Student tabs (Disciplines, Grades, Schedule, Teams)
+ *       'instructor' — show Instructor tabs (Disciplines, Schedule, Auto-Groups)
+ *   - The mode is a UI preference per character, persisted here.
+ *   - It is NOT a mutation of the character record. It does not touch
+ *     career status, class membership, or group membership.
+ *   - Default for any character with no stored entry is 'student'.
+ *   - Callers should always go through getCharacterMode / setCharacterMode.
  * 
  * TRANSITION RULES:
  *   - selectClass(classId):
@@ -72,6 +84,8 @@
  *   UI.selectCharacter('char_456');
  *   var role = UI.getRoleFor('char_456', 'class_123');
  *   var week = UI.getDisplayWeek();
+ *   var mode = UI.getCharacterMode('char_456');
+ *   UI.setCharacterMode('char_456', 'instructor');
  */
 
 (function() {
@@ -105,6 +119,9 @@
     var VALID_STATUS_FILTERS = ['active', 'eliminated', 'deceased', 'all'];
     var DEFAULT_STATUS_FILTER = 'active';
 
+    var VALID_CHARACTER_MODES = ['student', 'instructor'];
+    var DEFAULT_CHARACTER_MODE = 'student';
+
     var MIN_WEEK = 1;
     var MAX_WEEK = 52;
     var DEFAULT_WEEK = 1;
@@ -125,7 +142,8 @@
                 status: DEFAULT_STATUS_FILTER
             }
         },
-        expandedIds: {}
+        expandedIds: {},
+        characterModes: {}
     };
 
     // ============================================================
@@ -138,7 +156,7 @@
     // STORAGE
     // ============================================================
 
-    var STORAGE_KEY = 'academy_ui_state_v2';
+    var STORAGE_KEY = 'academy_ui_state_v3';
 
     // ============================================================
     // STATE INITIALIZATION
@@ -162,6 +180,10 @@
 
     function isValidStatusFilter(value) {
         return VALID_STATUS_FILTERS.indexOf(value) !== -1;
+    }
+
+    function isValidCharacterMode(mode) {
+        return VALID_CHARACTER_MODES.indexOf(mode) !== -1;
     }
 
     function isValidWeek(week) {
@@ -189,6 +211,7 @@
      *   - Missing fields get defaults
      *   - Enum values are validated
      *   - Numbers are in range
+     *   - characterModes map contains only valid modes
      */
     function mergeWithDefaults(parsed) {
         var merged = getDefaultState();
@@ -236,6 +259,22 @@
             }
         }
 
+        // ---- characterModes ----
+        // Only accept string charIds mapped to valid mode strings.
+        // Drop anything else silently.
+        if (parsed.characterModes && typeof parsed.characterModes === 'object') {
+            var modeKeys = Object.keys(parsed.characterModes);
+            for (var j = 0; j < modeKeys.length; j++) {
+                var charId = modeKeys[j];
+                var mode = parsed.characterModes[charId];
+                if (typeof charId === 'string' && isValidCharacterMode(mode)) {
+                    // Normalise the key to a string (in case it came back
+                    // as something weird from JSON parsing).
+                    merged.characterModes[String(charId)] = mode;
+                }
+            }
+        }
+
         return merged;
     }
 
@@ -253,12 +292,6 @@
     // ============================================================
     // LAZY ACCESS TO ACADEMY QUERIES
     // ============================================================
-    // 
-    // getRoleFor needs to inspect the class record to determine
-    // whether a character is the instructor. We use AcademyQueries
-    // if it is loaded; otherwise we fall back to reading window.data
-    // directly. This keeps the module usable at load time before
-    // AcademyQueries is present.
 
     function getAcademyQueries() {
         return window.AcademyQueries || null;
@@ -356,8 +389,6 @@
      * 
      * Returns:
      *   'instructor' — the character is the class's instructor
-     *                  (class.instructorIds includes charId, or
-     *                  legacy class.instructorId === charId)
      *   'trainee'    — any other case where the class exists
      *   null         — the class does not exist
      * 
@@ -497,8 +528,6 @@
         var oldClassId = _state.selectedClassId;
         _state.selectedClassId = normalised;
 
-        // If a character was selected, keep it only if the character is
-        // a member of the new class or its instructor.
         if (_state.selectedCharacterId && normalised) {
             var stillMember = isCharacterInClass(_state.selectedCharacterId, normalised);
             var isInstructor = false;
@@ -515,8 +544,6 @@
             }
         }
 
-        // Clearing the class (classId === null) also clears the
-        // character selection, since there's no longer a context for it.
         if (!normalised) {
             _state.selectedCharacterId = null;
         }
@@ -545,9 +572,6 @@
             return;
         }
 
-        // Character selection is always allowed, even if the character
-        // is not a member of the selected class. The detail panel
-        // renders an empty state if they aren't.
         _state.selectedCharacterId = normalised;
 
         saveState();
@@ -580,6 +604,96 @@
     }
 
     // ============================================================
+    // PUBLIC API - Character Mode
+    // ============================================================
+
+    /**
+     * Get the display mode for a character.
+     * Returns 'student' when no explicit mode has been set.
+     *
+     * @param {string} charId - Character ID
+     * @returns {'student'|'instructor'}
+     */
+    function getCharacterMode(charId) {
+        if (!_state) {
+            _state = getDefaultState();
+        }
+        if (!charId) {
+            return DEFAULT_CHARACTER_MODE;
+        }
+        var stored = _state.characterModes[String(charId)];
+        if (isValidCharacterMode(stored)) {
+            return stored;
+        }
+        return DEFAULT_CHARACTER_MODE;
+    }
+
+    /**
+     * Set the display mode for a character.
+     * Persisted across sessions (sessionStorage).
+     *
+     * @param {string} charId - Character ID
+     * @param {'student'|'instructor'} mode - Target mode
+     * @returns {boolean} True if the value was accepted
+     */
+    function setCharacterMode(charId, mode) {
+        if (!_state) {
+            _state = getDefaultState();
+        }
+        if (!charId) {
+            return false;
+        }
+        if (!isValidCharacterMode(mode)) {
+            return false;
+        }
+        if (!_state.characterModes || typeof _state.characterModes !== 'object') {
+            _state.characterModes = {};
+        }
+        var key = String(charId);
+        if (_state.characterModes[key] === mode) {
+            return true;
+        }
+        _state.characterModes[key] = mode;
+        saveState();
+        return true;
+    }
+
+    /**
+     * Convenience: flip the mode for a character.
+     * Returns the new mode.
+     *
+     * @param {string} charId - Character ID
+     * @returns {'student'|'instructor'} The new mode
+     */
+    function toggleCharacterMode(charId) {
+        var current = getCharacterMode(charId);
+        var next = current === 'student' ? 'instructor' : 'student';
+        setCharacterMode(charId, next);
+        return next;
+    }
+
+    /**
+     * Clear the stored mode for a character, reverting to the default.
+     * Useful for testing. Not exposed prominently.
+     *
+     * @param {string} charId - Character ID
+     */
+    function clearCharacterMode(charId) {
+        if (!_state || !charId) { return; }
+        if (!_state.characterModes) { return; }
+        delete _state.characterModes[String(charId)];
+        saveState();
+    }
+
+    function getValidCharacterModes() {
+        return VALID_CHARACTER_MODES.slice();
+    }
+
+    function isValidCharacterModePublic(mode) {
+        return isValidCharacterMode(mode);
+    }
+
+    // ============================================================
     // PUBLIC API - Filters
     // ============================================================
 
@@ -601,7 +715,6 @@
             return;
         }
 
-        // Views are lazily added to the filters map.
         if (!_state.filters[view]) {
             _state.filters[view] = {};
         }
@@ -638,7 +751,6 @@
             return;
         }
 
-        // Reset only to defaults we know about.
         if (view === 'people') {
             _state.filters.people = {
                 search: '',
@@ -733,8 +845,6 @@
         }
         if (type === 'class') {
             _state.selectedClassId = null;
-            // Clearing the class also clears the character, since
-            // there's no longer a context for it.
             _state.selectedCharacterId = null;
         } else if (type === 'character') {
             _state.selectedCharacterId = null;
@@ -766,47 +876,24 @@
     // ============================================================
     // DEPRECATED ALIASES - Backward compatibility during transition
     // ============================================================
-    // 
-    // These exist so that class-tab.js, student-tab.js, faculty-tab.js
-    // continue to work while we migrate to the People shell. They map
-    // to the new state model and will be removed once the tabs are
-    // deleted in Phase 12.
 
-    /**
-     * @deprecated Use getSelectedView() instead.
-     */
     function getActiveTab() {
-        // The old API used 'class' | 'student' | 'faculty'.
-        // All of them map to the 'people' view in the new model.
         return 'class';
     }
 
-    /**
-     * @deprecated Use setSelectedView() instead.
-     */
     function setActiveTab(tab) {
-        // Any tab argument maps to 'people'.
         setSelectedView('people');
         return true;
     }
 
-    /**
-     * @deprecated Use isValidView() instead.
-     */
     function isValidTab(tab) {
         return tab === 'class' || tab === 'student' || tab === 'faculty';
     }
 
-    /**
-     * @deprecated Use getValidViews() instead.
-     */
     function getValidTabs() {
         return ['class', 'student', 'faculty'];
     }
 
-    /**
-     * @deprecated Use getSelectedCharacterId() instead.
-     */
     function getSelectedStudentId() {
         var charId = getSelectedCharacterId();
         if (!charId) {
@@ -820,16 +907,10 @@
         return role === 'trainee' ? charId : null;
     }
 
-    /**
-     * @deprecated Use selectCharacter() instead.
-     */
     function selectStudent(studentId) {
         selectCharacter(studentId);
     }
 
-    /**
-     * @deprecated Use getSelectedCharacterId() instead.
-     */
     function getSelectedInstructorId() {
         var charId = getSelectedCharacterId();
         if (!charId) {
@@ -843,9 +924,6 @@
         return role === 'instructor' ? charId : null;
     }
 
-    /**
-     * @deprecated Use selectCharacter() instead.
-     */
     function selectInstructor(instructorId) {
         selectCharacter(instructorId);
     }
@@ -886,6 +964,14 @@
         getDisplayWeek: getDisplayWeek,
         setDisplayWeek: setDisplayWeek,
 
+        // Character mode
+        getCharacterMode: getCharacterMode,
+        setCharacterMode: setCharacterMode,
+        toggleCharacterMode: toggleCharacterMode,
+        clearCharacterMode: clearCharacterMode,
+        getValidCharacterModes: getValidCharacterModes,
+        isValidCharacterMode: isValidCharacterModePublic,
+
         // Filters
         getFilter: getFilter,
         setFilter: setFilter,
@@ -914,6 +1000,8 @@
         VALID_VIEWS: VALID_VIEWS,
         VALID_ROLE_FILTERS: VALID_ROLE_FILTERS,
         VALID_STATUS_FILTERS: VALID_STATUS_FILTERS,
+        VALID_CHARACTER_MODES: VALID_CHARACTER_MODES,
+        DEFAULT_CHARACTER_MODE: DEFAULT_CHARACTER_MODE,
 
         // Deprecated aliases (removed in Phase 12)
         getActiveTab: getActiveTab,
