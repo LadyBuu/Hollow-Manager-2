@@ -20,7 +20,30 @@
  *   - This module does NOT call saveData() directly - the pipeline does
  *   - AcademyQueries is the PUBLIC read facade that uses these internal lookups
  *
- * GRADE SCHEME SEMANTICS (new in this version):
+ * READ SAFETY (Phase 2):
+ *   - getCurriculum() returns null (does NOT create curriculum.{...}) when
+ *     the store is missing. Reads are side-effect free.
+ *   - Public queries (getDiscipline, getDisciplines, getDisciplinesByType,
+ *     getDisciplinesByInstructor, getAvailableDisciplines, getActiveDisciplines)
+ *     return DEEP CLONES. Callers cannot mutate live state by writing to a
+ *     returned discipline.
+ *   - Internal accessors (getDisciplineRecord, getDisciplineRecords,
+ *     getDisciplineByNameRecord) keep returning LIVE REFERENCES. They are
+ *     consumed by this module's own mutation paths, the cascade helpers, and
+ *     AcademyQueries.
+ *   - Pipeline validate() callbacks read from the `appData` argument the
+ *     pipeline supplies, not from window.data via the internal accessors.
+ *   - ObjectUtils.deepClone is used as the clone primitive. If cloning
+ *     fails, the accessor throws. It does NOT fall back to returning the
+ *     original reference, because that would silently alias live state.
+ *
+ * WEEK SEMANTICS:
+ *   - getActiveDisciplines(week) requires a valid week. It does NOT fall
+ *     back to window.data.currentWeek. Callers that want "current week"
+ *     must read it themselves and pass it explicitly. This removes the
+ *     module's hidden dependency on global state.
+ *
+ * GRADE SCHEME SEMANTICS:
  *   - Each discipline carries a `gradeScheme` object.
  *   - Schemes are FULLY user-editable. Presets (Letter, Pass/Fail, Numeric)
  *     only seed the bands array. Nothing is derived from the preset id at
@@ -30,6 +53,8 @@
  *     This is a READ-TIME normalization only; nothing is written to disk
  *     until the user edits the discipline.
  *   - Validation of the scheme shape is delegated to AcademyGradeSchemes.
+ *   - isNumericScheme is NOT re-exported here. Callers use
+ *     AcademyGradeSchemes.isNumericScheme directly.
  *
  * CASCADE SEMANTICS (deleteDiscipline):
  *   Deleting a discipline is a CASCADE. In a single transaction it:
@@ -171,8 +196,27 @@
         return typeof value === 'number' && isFinite(value);
     }
 
+    /**
+     * Deep clone a value.
+     *
+     * READ SAFETY: this primitive throws if cloning fails. It does NOT
+     * fall back to returning the original reference, because that would
+     * silently alias live state and let callers mutate the store by
+     * writing to a "cloned" result.
+     *
+     * @param {*} value - Value to clone
+     * @returns {*} Deep clone
+     * @throws {Error} If cloning fails
+     */
     function deepClone(value) {
-        return ObjectUtils.deepClone(value);
+        var result = ObjectUtils.deepClone(value);
+        if (result === value && value !== null && typeof value === 'object') {
+            throw new Error(
+                '[AcademyDisciplines] deepClone returned the original reference. ' +
+                'ObjectUtils.deepClone must return a genuine clone for objects.'
+            );
+        }
+        return result;
     }
 
     function generateId() {
@@ -234,17 +278,23 @@
         };
     }
 
-    /**
-     * Does a discipline's scheme equal the numeric default?
-     * Used by the view to decide whether to render a "Numeric" hint.
-     */
-    function isNumericScheme(scheme) {
-        return GradeSchemes.isNumericScheme(scheme);
-    }
+    // NOTE: isNumericScheme is NOT re-exported here. It was a passthrough
+    // to GradeSchemes.isNumericScheme. Callers should use
+    // AcademyGradeSchemes.isNumericScheme directly.
 
     // ============================================================
     // DATA STORE ACCESS - INTERNAL
     // ============================================================
+    //
+    // READ SAFETY:
+    //   - getDataStore() returns null when window.data is missing.
+    //   - getCurriculum() returns null when window.data.curriculum is
+    //     missing. It does NOT create curriculum.{...} as a side effect
+    //     of a read.
+    //
+    //   Structure creation happens ONLY inside pipeline mutate()
+    //   callbacks, operating on the appData snapshot the pipeline
+    //   hands in. That keeps reads side-effect free.
 
     function getDataStore() {
         if (!window.data || typeof window.data !== 'object') {
@@ -261,6 +311,10 @@
         return data.curriculum;
     }
 
+    /**
+     * Ensure the discipline store exists on the given appData snapshot.
+     * Only called from inside pipeline mutate() callbacks.
+     */
     function ensureDisciplineStore(appData) {
         if (!appData.curriculum || typeof appData.curriculum !== 'object') {
             appData.curriculum = {};
@@ -272,8 +326,12 @@
     }
 
     // ============================================================
-    // INTERNAL DISCIPLINE LOOKUP - PRIVATE
+    // INTERNAL DISCIPLINE LOOKUP - PRIVATE (LIVE REFERENCES)
     // ============================================================
+    //
+    // These return LIVE REFERENCES. They are consumed by this module's
+    // own mutation paths, the cascade helpers, and AcademyQueries.
+    // The public read surface (below) wraps them with deepClone.
 
     function getDisciplineRecord(id) {
         if (!isNonEmptyString(id)) {
@@ -733,6 +791,7 @@
                 if (!appData || typeof appData !== 'object') {
                     return { valid: false, message: 'Application data is not available.' };
                 }
+                // Read the snapshot, not window.data.
                 var curriculum = appData.curriculum;
                 if (curriculum && Array.isArray(curriculum.disciplines)) {
                     var nameLower = newDiscipline.name.toLowerCase();
@@ -915,8 +974,18 @@
         var targetId = String(id);
 
         return MutationPipeline.performMutation({
-            validate: function() {
-                if (!getDisciplineRecord(targetId)) {
+            validate: function(appData) {
+                if (!appData || !appData.curriculum || !Array.isArray(appData.curriculum.disciplines)) {
+                    return { valid: false, message: 'Discipline no longer exists.' };
+                }
+                var found = false;
+                for (var i = 0; i < appData.curriculum.disciplines.length; i++) {
+                    if (String(appData.curriculum.disciplines[i].id) === targetId) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
                     return { valid: false, message: 'Discipline no longer exists.' };
                 }
                 return { valid: true };
@@ -968,8 +1037,18 @@
         };
 
         return MutationPipeline.performMutation({
-            validate: function() {
-                if (!getDisciplineRecord(target)) {
+            validate: function(appData) {
+                if (!appData || !appData.curriculum || !Array.isArray(appData.curriculum.disciplines)) {
+                    return { valid: false, message: 'Discipline no longer exists.' };
+                }
+                var found = false;
+                for (var i = 0; i < appData.curriculum.disciplines.length; i++) {
+                    if (String(appData.curriculum.disciplines[i].id) === target) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
                     return { valid: false, message: 'Discipline no longer exists.' };
                 }
                 return { valid: true };
@@ -1036,11 +1115,14 @@
     }
 
     // ============================================================
-    // QUERY FUNCTIONS - Read-only (synchronous)
+    // PUBLIC READ SURFACE (CLONES)
     // ============================================================
     //
-    // All read paths return records with `gradeScheme` normalized.
-    // The live store is not modified by reads.
+    // These are the consumer-facing lookups. They return DEEP CLONES
+    // (with a normalized gradeScheme attached) so callers cannot
+    // mutate live state by writing to a returned discipline. Internal
+    // code paths within this module continue to use the
+    // *Internal accessors, which return live references.
 
     function getDiscipline(id) {
         var record = getDisciplineRecord(id);
@@ -1049,9 +1131,11 @@
 
     function getDisciplines() {
         var records = getDisciplineRecords();
-        return records.map(function(r) {
-            return attachNormalizedScheme(r);
-        });
+        var result = [];
+        for (var i = 0; i < records.length; i++) {
+            result.push(attachNormalizedScheme(records[i]));
+        }
+        return result;
     }
 
     function getDisciplinesByType(type) {
@@ -1118,11 +1202,22 @@
         return result;
     }
 
+    /**
+     * Get disciplines active in the specified week.
+     *
+     * WEEK SEMANTICS (Phase 2):
+     *   `currentWeek` is REQUIRED. This function does NOT fall back to
+     *   window.data.currentWeek. Callers that want "the current week"
+     *   must read it from wherever they consider authoritative and
+     *   pass it in explicitly. An invalid or missing week returns [].
+     *
+     * @param {number|string} currentWeek - Week number (1-52)
+     * @returns {array} Array of cloned discipline records
+     */
     function getActiveDisciplines(currentWeek) {
-        var week = currentWeek !== undefined ? CalendarValidation.parseWeek(currentWeek) : null;
+        var week = CalendarValidation.parseWeek(currentWeek);
         if (week === null) {
-            var data = getDataStore();
-            week = (data && data.currentWeek) || MIN_WEEK;
+            return [];
         }
 
         return getAvailableDisciplines(week);
@@ -1300,7 +1395,7 @@
         delete: deleteDiscipline,
         saveDisciplines: saveDisciplines,
 
-        // ---- Queries (synchronous) ----
+        // ---- Public queries (synchronous, CLONES) ----
         getDiscipline: getDiscipline,
         getDisciplines: getDisciplines,
         getDisciplinesByType: getDisciplinesByType,
@@ -1310,9 +1405,10 @@
 
         // ---- Grade scheme helper ----
         getGradeScheme: getGradeScheme,
-        isNumericScheme: isNumericScheme,
+        // NOTE: isNumericScheme is NOT exported here. Use
+        // AcademyGradeSchemes.isNumericScheme directly.
 
-        // ---- Internal (for AcademyQueries) ----
+        // ---- Internal (LIVE REFERENCES - for AcademyQueries and internal use) ----
         getDisciplineRecord: getDisciplineRecord,
         getDisciplineRecords: getDisciplineRecords,
         getDisciplineByNameRecord: getDisciplineByNameRecord,
@@ -1343,7 +1439,7 @@
             'getDiscipline', 'getDisciplines', 'getDisciplinesByType',
             'getDisciplinesByInstructor', 'getAvailableDisciplines',
             'getActiveDisciplines',
-            'getGradeScheme', 'isNumericScheme',
+            'getGradeScheme',
             'getDisciplineRecord', 'getDisciplineRecords', 'getDisciplineByNameRecord'
         ];
 
