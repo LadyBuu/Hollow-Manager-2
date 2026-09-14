@@ -22,6 +22,25 @@
  *   - This module does NOT call saveData() directly - the pipeline does
  *   - AcademyQueries is the PUBLIC read facade that uses these internal lookups
  *
+ * READ SAFETY (Phase 2):
+ *   - getAcademyStore() returns null (does NOT create academy.{...}) when
+ *     the store is missing. Reads are side-effect free.
+ *   - Public queries (getClassRankings, getStudentRank, getRankingsWithDetails,
+ *     getRankings, getRanking) return DEEP CLONES. Callers cannot mutate
+ *     live state by writing to a returned ranking.
+ *   - Internal accessors (getRankingRecord, getRankingRecords,
+ *     getClassRankingsInternal, getStudentRankInternal) keep returning LIVE
+ *     REFERENCES. They are consumed by this module's own mutation paths
+ *     and by AcademyQueries.
+ *   - Pipeline validate() callbacks read from the `appData` argument the
+ *     pipeline supplies, not from window.data via the internal accessors.
+ *   - Post-mutation reads inside mutate() callbacks read from the appData
+ *     snapshot, not from window.data. This makes the returned data
+ *     consistent with what was actually written.
+ *   - ObjectUtils.deepClone is used as the clone primitive. If cloning
+ *     fails, the accessor throws. It does NOT fall back to returning the
+ *     original reference, because that would silently alias live state.
+ *
  * MUTATION CONTRACT:
  *   - create / update / delete / deleteClassRankings / autoGenerate / saveRankings
  *     all return Promise<{ success, data?, message? }>
@@ -176,8 +195,27 @@
         return typeof value === 'number' && isFinite(value);
     }
 
+    /**
+     * Deep clone a value.
+     *
+     * READ SAFETY: this primitive throws if cloning fails. It does NOT
+     * fall back to returning the original reference, because that would
+     * silently alias live state and let callers mutate the store by
+     * writing to a "cloned" result.
+     *
+     * @param {*} value - Value to clone
+     * @returns {*} Deep clone
+     * @throws {Error} If cloning fails
+     */
     function deepClone(value) {
-        return ObjectUtils.deepClone(value);
+        var result = ObjectUtils.deepClone(value);
+        if (result === value && value !== null && typeof value === 'object') {
+            throw new Error(
+                '[AcademyRanking] deepClone returned the original reference. ' +
+                'ObjectUtils.deepClone must return a genuine clone for objects.'
+            );
+        }
+        return result;
     }
 
     function generateId() {
@@ -206,6 +244,16 @@
     // ============================================================
     // DATA STORE ACCESS - INTERNAL (no AcademyQueries dependency)
     // ============================================================
+    //
+    // READ SAFETY:
+    //   - getDataStore() returns null when window.data is missing.
+    //   - getAcademyStore() returns null when window.data.academy is
+    //     missing. It does NOT create academy.{...} as a side effect
+    //     of a read.
+    //
+    //   Structure creation happens ONLY inside pipeline mutate()
+    //   callbacks, operating on the appData snapshot the pipeline
+    //   hands in. That keeps reads side-effect free.
 
     function getDataStore() {
         if (!window.data || typeof window.data !== 'object') {
@@ -221,28 +269,19 @@
         }
 
         if (!data.academy || typeof data.academy !== 'object') {
-            data.academy = {};
+            return null;
         }
 
         return data.academy;
     }
 
-    function ensureRankingStructures() {
-        var academy = getAcademyStore();
-        if (!academy) {
-            return null;
-        }
-
-        if (!academy.rankings || typeof academy.rankings !== 'object') {
-            academy.rankings = {};
-        }
-
-        return academy;
-    }
-
     // ============================================================
-    // INTERNAL RANKING LOOKUP - PRIVATE
+    // INTERNAL RANKING LOOKUP - PRIVATE (LIVE REFERENCES)
     // ============================================================
+    //
+    // These return LIVE REFERENCES. They are consumed by this
+    // module's own mutation paths and by AcademyQueries. The public
+    // read surface (below) wraps them with deepClone.
 
     function getRankingRecord(rankId) {
         if (!isNonEmptyString(rankId)) {
@@ -328,6 +367,46 @@
         }
 
         return null;
+    }
+
+    // ============================================================
+    // INTERNAL SNAPSHOT LOOKUP
+    // ============================================================
+    //
+    // These read from an appData snapshot rather than window.data.
+    // They exist so post-mutation reads inside pipeline mutate()
+    // callbacks stay consistent with the transaction that just ran.
+
+    function getClassRankingsFromSnapshot(appData, classId, weekNum) {
+        if (!appData || !appData.academy || !appData.academy.rankings) {
+            return [];
+        }
+
+        var rankings = appData.academy.rankings;
+        var targetClass = String(classId);
+        var result = [];
+
+        for (var id in rankings) {
+            if (Object.prototype.hasOwnProperty.call(rankings, id)) {
+                var rank = rankings[id];
+                if (!rank) {
+                    continue;
+                }
+                if (String(rank.classId) !== targetClass) {
+                    continue;
+                }
+                if (rank.week !== weekNum) {
+                    continue;
+                }
+                result.push(deepClone(rank));
+            }
+        }
+
+        result.sort(function(a, b) {
+            return (a.rank || 999) - (b.rank || 999);
+        });
+
+        return result;
     }
 
     // ============================================================
@@ -597,15 +676,18 @@
         }
 
         if (!hasChanges) {
-            return Promise.resolve(success({ ranking: existing, changed: false }));
+            return Promise.resolve(success({ ranking: deepClone(existing), changed: false }));
         }
 
         candidate.updatedAt = new Date().toISOString();
         var targetId = String(rankId);
 
         return MutationPipeline.performMutation({
-            validate: function() {
-                if (!getRankingRecord(targetId)) {
+            validate: function(appData) {
+                if (!appData || !appData.academy || !appData.academy.rankings) {
+                    return { valid: false, message: 'Ranking no longer exists.' };
+                }
+                if (!appData.academy.rankings[targetId]) {
                     return { valid: false, message: 'Ranking no longer exists.' };
                 }
                 return { valid: true };
@@ -652,8 +734,11 @@
         };
 
         return MutationPipeline.performMutation({
-            validate: function() {
-                if (!getRankingRecord(target)) {
+            validate: function(appData) {
+                if (!appData || !appData.academy || !appData.academy.rankings) {
+                    return { valid: false, message: 'Ranking no longer exists.' };
+                }
+                if (!appData.academy.rankings[target]) {
                     return { valid: false, message: 'Ranking no longer exists.' };
                 }
                 return { valid: true };
@@ -737,30 +822,38 @@
     }
 
     // ============================================================
-    // QUERY FUNCTIONS - Read-only (synchronous)
+    // PUBLIC READ SURFACE (CLONES)
     // ============================================================
+    //
+    // These are the consumer-facing lookups. They return DEEP CLONES
+    // (or arrays of clones) so callers cannot mutate live state by
+    // writing to a returned ranking. Internal code paths within this
+    // module continue to use the *Internal accessors, which return
+    // live references.
 
     function getClassRankings(classId, week, includeStudentDetails) {
         var rankings = getClassRankingsInternal(classId, week);
 
         if (!includeStudentDetails) {
-            return rankings.map(function(rank) {
-                return deepClone(rank);
-            });
+            var result = [];
+            for (var i = 0; i < rankings.length; i++) {
+                result.push(deepClone(rankings[i]));
+            }
+            return result;
         }
 
-        var result = [];
-        for (var i = 0; i < rankings.length; i++) {
-            var rank = deepClone(rankings[i]);
+        var enriched = [];
+        for (var j = 0; j < rankings.length; j++) {
+            var rank = deepClone(rankings[j]);
             var student = CharacterQueries.getCharacterById(rank.studentId);
             if (student) {
                 rank.studentName = CharacterQueries.getDisplayName(student);
                 rank.student = student;
             }
-            result.push(rank);
+            enriched.push(rank);
         }
 
-        return result;
+        return enriched;
     }
 
     function getStudentRank(classId, studentId, week, includeDetails) {
@@ -804,9 +897,11 @@
 
     function getRankings(classId, week) {
         var records = getRankingRecords(classId, week);
-        return records.map(function(rank) {
-            return deepClone(rank);
-        });
+        var result = [];
+        for (var i = 0; i < records.length; i++) {
+            result.push(deepClone(records[i]));
+        }
+        return result;
     }
 
     function getRanking(rankId) {
@@ -915,6 +1010,12 @@
      *   3. Plan ALL writes (create/update/skip) without touching
      *      window.data.
      *   4. Apply all planned writes in a SINGLE pipeline transaction.
+     *
+     * POST-MUTATION READ:
+     *   The rankings returned in `data.rankings` are read from the
+     *   appData snapshot after the mutation has been applied to it.
+     *   They reflect what was actually written in this transaction,
+     *   not whatever state window.data happens to be in.
      *
      * @param {string} classId - Class ID
      * @param {number} week - Week number
@@ -1031,6 +1132,10 @@
                     }
                 }
 
+                // Post-mutation read: read from the snapshot we just
+                // mutated, not from window.data.
+                var finalRankings = getClassRankingsFromSnapshot(appData, classId, weekNum);
+
                 return {
                     classId: classId,
                     week: weekNum,
@@ -1038,7 +1143,7 @@
                     created: created,
                     updated: updated,
                     skipped: skipped,
-                    rankings: getClassRankingsInternal(classId, weekNum)
+                    rankings: finalRankings
                 };
             },
             logMessage: 'Generated rankings for class ' + classId + ', week ' + weekNum,
@@ -1241,7 +1346,7 @@
         autoGenerate: autoGenerate,
         saveRankings: saveRankings,
 
-        // ---- Queries (synchronous) ----
+        // ---- Public queries (synchronous, CLONES) ----
         getClassRankings: getClassRankings,
         getStudentRank: getStudentRank,
         getRankingsWithDetails: getRankingsWithDetails,
@@ -1256,10 +1361,11 @@
         // ---- Cascade helpers (for cross-domain cleanup) ----
         stripCharacterRefs: stripCharacterRefs,
 
-        // ---- Internal (for AcademyQueries) ----
+        // ---- Internal (LIVE REFERENCES - for AcademyQueries and internal use) ----
         getClassRankingsInternal: getClassRankingsInternal,
         getStudentRankInternal: getStudentRankInternal,
         getRankingRecords: getRankingRecords,
+        getRankingRecord: getRankingRecord,
 
         // ---- Constants ----
         MIN_WEEK: MIN_WEEK,
