@@ -2,32 +2,38 @@
  * modules/characters/character-elimination-view.js - Character Elimination View
  * Renders tournament and standalone eliminations for characters
  * Path: js/modules/characters/character-elimination-view.js
- * 
+ *
  * This module is responsible for:
  *   - Rendering tournament eliminations
  *   - Rendering standalone eliminations
  *   - Displaying elimination status
  *   - Managing elimination UI state
- * 
+ *
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no persistence
  *   - No direct window.data access - uses CharacterQueries for character data
- *   - Uses TournamentQueries for tournament lookup (simple read)
+ *   - Uses TournamentQueries.getTournament for tournament lookup (simple read)
  *   - Uses DomUtils for safe DOM operations
  *   - All user-controlled content uses textContent
  *   - No event binding here (delegated to CharacterEvents)
- * 
+ *
+ * TOURNAMENT LOOKUP:
+ *   TournamentQueries exposes getTournament(id). The older
+ *   getTournamentById(id) name does not exist and has never existed
+ *   in the current TournamentQueries module. Callers must use
+ *   getTournament. A missing tournament returns 'Unknown Tournament'.
+ *
  * DEPENDENCIES:
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.TournamentQueries (from tournament-queries.js) - MANDATORY
  *   - window.DomUtils (from dom-utils.js) - MANDATORY
  *   - window.CalendarConstants (from constants.js) - MANDATORY
- * 
+ *
  * USAGE:
  *   var EV = window.CharacterEliminationView;
- *   EV.renderTournamentEliminations(char);
- *   EV.renderStandaloneEliminations(char);
- *   EV.renderEliminationStatus(char, week);
+ *   EV.renderTournamentEliminations(char, container);
+ *   EV.renderStandaloneEliminations(char, container);
+ *   EV.renderEliminationStatus(char, week, container);
  */
 
 (function() {
@@ -68,8 +74,8 @@
             missing.push('CharacterQueries.getDisplayName');
         }
 
-        if (!TournamentQueries || typeof TournamentQueries.getTournamentById !== 'function') {
-            missing.push('TournamentQueries.getTournamentById');
+        if (!TournamentQueries || typeof TournamentQueries.getTournament !== 'function') {
+            missing.push('TournamentQueries.getTournament');
         }
 
         if (!DomUtils || typeof DomUtils.createElement !== 'function') {
@@ -238,13 +244,37 @@
         return 'Unknown';
     }
 
+    /**
+     * Resolve a tournament ID to its display name.
+     *
+     * Uses TournamentQueries.getTournament. Returns 'Unknown Tournament'
+     * when the ID is missing, the query is unavailable, or the
+     * tournament does not exist.
+     *
+     * @param {string} tournamentId
+     * @returns {string}
+     */
     function getTournamentName(tournamentId) {
         if (!tournamentId) {
             return 'Unknown Tournament';
         }
 
-        // Simple read: TournamentQueries.getTournamentById() directly
-        var tourn = TournamentQueries.getTournamentById(tournamentId);
+        if (!TournamentQueries || typeof TournamentQueries.getTournament !== 'function') {
+            return 'Unknown Tournament';
+        }
+
+        var tourn = null;
+        try {
+            tourn = TournamentQueries.getTournament(tournamentId);
+        } catch (e) {
+            console.warn(
+                '[CharacterEliminationView] getTournament failed:',
+                tournamentId,
+                e
+            );
+            return 'Unknown Tournament';
+        }
+
         if (tourn) {
             return tourn.name || 'Unknown Tournament';
         }
@@ -267,26 +297,29 @@
         container.textContent = '';
 
         if (!char) {
-            var empty = createEmptyState('No character selected');
-            container.appendChild(empty);
+            container.appendChild(createEmptyState('No character selected'));
             return;
         }
 
         var tournElims = getTournamentEliminations(char);
 
         if (tournElims.length === 0) {
-            var empty = createEmptyState('No tournament eliminations recorded.');
-            container.appendChild(empty);
+            container.appendChild(
+                createEmptyState('No tournament eliminations recorded.')
+            );
             return;
         }
 
         tournElims.forEach(function(elim) {
-            // Simple read: TournamentQueries.getTournamentById() directly
             var tournName = getTournamentName(elim.tournamentId);
 
             var div = document.createElement('div');
             div.className = 'tournament-elimination-entry';
-            div.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:var(--info-soft);border-radius:4px;margin-bottom:2px;border-left:3px solid var(--info);';
+            div.style.cssText =
+                'display:flex;justify-content:space-between;' +
+                'align-items:center;padding:4px 8px;' +
+                'background:var(--info-soft);border-radius:4px;' +
+                'margin-bottom:2px;border-left:3px solid var(--info);';
 
             var span = document.createElement('span');
             span.style.cssText = 'font-size:0.75rem;';
@@ -295,8 +328,9 @@
             strong.textContent = tournName;
             span.appendChild(strong);
 
-            var weekText = document.createTextNode(' - Week ' + elim.week);
-            span.appendChild(weekText);
+            span.appendChild(
+                document.createTextNode(' - Week ' + elim.week)
+            );
 
             if (elim.reason) {
                 var reasonSpan = document.createElement('span');
@@ -324,44 +358,53 @@
         container.textContent = '';
 
         if (!char) {
-            var empty = createEmptyState('No character selected');
-            container.appendChild(empty);
+            container.appendChild(createEmptyState('No character selected'));
             return;
         }
 
         var standaloneItems = getStandaloneEliminations(char);
 
         if (standaloneItems.length === 0) {
-            var empty = createEmptyState('No standalone eliminations recorded.');
-            container.appendChild(empty);
+            container.appendChild(
+                createEmptyState('No standalone eliminations recorded.')
+            );
             return;
         }
 
         standaloneItems.forEach(function(elim) {
             var div = document.createElement('div');
             div.className = 'standalone-elimination-entry';
-            div.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:var(--warning-soft);border-radius:4px;margin-bottom:2px;border-left:3px solid var(--warning);';
+            div.style.cssText =
+                'display:flex;justify-content:space-between;' +
+                'align-items:center;padding:4px 8px;' +
+                'background:var(--warning-soft);border-radius:4px;' +
+                'margin-bottom:2px;border-left:3px solid var(--warning);';
             div.dataset.eliminationId = elim.id;
 
             var span = document.createElement('span');
             span.style.cssText = 'font-size:0.75rem;';
 
-            var weekText = document.createTextNode('Week ' + elim.week);
-            span.appendChild(weekText);
+            span.appendChild(
+                document.createTextNode('Week ' + elim.week)
+            );
 
             if (elim.reason) {
-                var reasonSpan = document.createTextNode(' - ' + elim.reason);
-                span.appendChild(reasonSpan);
+                span.appendChild(
+                    document.createTextNode(' - ' + elim.reason)
+                );
             }
 
             var labelSpan = document.createElement('span');
-            labelSpan.style.cssText = 'color:var(--warning);font-size:0.6rem;margin-left:4px;';
+            labelSpan.style.cssText =
+                'color:var(--warning);font-size:0.6rem;margin-left:4px;';
             labelSpan.textContent = '[Standalone]';
             span.appendChild(labelSpan);
 
             var button = document.createElement('button');
             button.className = 'remove-standalone-elim small';
-            button.style.cssText = 'background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 4px;';
+            button.style.cssText =
+                'background:none;border:none;color:var(--danger);' +
+                'cursor:pointer;font-size:0.6rem;padding:0 4px;';
             button.dataset.id = elim.id;
             button.textContent = '\u2715';
             button.setAttribute('aria-label', 'Remove elimination');
@@ -387,8 +430,7 @@
         container.textContent = '';
 
         if (!char) {
-            var empty = createEmptyState('No character selected');
-            container.appendChild(empty);
+            container.appendChild(createEmptyState('No character selected'));
             return;
         }
 
@@ -398,8 +440,11 @@
         var reason = getEliminationReason(char);
 
         var div = document.createElement('div');
-        div.style.cssText = 'padding:6px 10px;background:var(--bg);border-radius:4px;border-left:3px solid ' +
-            (isEliminated ? 'var(--danger)' : 'var(--accent)') + ';font-size:0.75rem;';
+        div.style.cssText =
+            'padding:6px 10px;background:var(--bg);border-radius:4px;' +
+            'border-left:3px solid ' +
+            (isEliminated ? 'var(--danger)' : 'var(--accent)') +
+            ';font-size:0.75rem;';
 
         if (isEliminated) {
             var icon = document.createElement('span');
@@ -407,33 +452,34 @@
             icon.style.cssText = 'color:var(--danger);';
             div.appendChild(icon);
 
-            var text = document.createTextNode('Eliminated');
-            div.appendChild(text);
+            div.appendChild(document.createTextNode('Eliminated'));
 
             if (elimWeek !== null) {
                 var weekSpan = document.createElement('span');
-                weekSpan.style.cssText = 'color:var(--text-dim);font-size:0.65rem;margin-left:4px;';
+                weekSpan.style.cssText =
+                    'color:var(--text-dim);font-size:0.65rem;margin-left:4px;';
                 weekSpan.textContent = ' (Week ' + elimWeek + ')';
                 div.appendChild(weekSpan);
             }
 
             if (reason && reason !== 'Unknown') {
                 var reasonSpan = document.createElement('span');
-                reasonSpan.style.cssText = 'color:var(--text-dim);font-size:0.65rem;margin-left:4px;';
+                reasonSpan.style.cssText =
+                    'color:var(--text-dim);font-size:0.65rem;margin-left:4px;';
                 reasonSpan.textContent = ' - ' + reason;
                 div.appendChild(reasonSpan);
             }
         } else {
-            var icon = document.createElement('span');
-            icon.textContent = '\u2713 ';
-            icon.style.cssText = 'color:var(--accent);';
-            div.appendChild(icon);
+            var okIcon = document.createElement('span');
+            okIcon.textContent = '\u2713 ';
+            okIcon.style.cssText = 'color:var(--accent);';
+            div.appendChild(okIcon);
 
-            var text = document.createTextNode('Not eliminated');
-            div.appendChild(text);
+            div.appendChild(document.createTextNode('Not eliminated'));
 
             var statusSpan = document.createElement('span');
-            statusSpan.style.cssText = 'color:var(--text-dim);font-size:0.65rem;margin-left:4px;';
+            statusSpan.style.cssText =
+                'color:var(--text-dim);font-size:0.65rem;margin-left:4px;';
             statusSpan.textContent = '(Week ' + weekNum + ')';
             div.appendChild(statusSpan);
         }
@@ -474,14 +520,18 @@
         weekInput.min = MIN_WEEK;
         weekInput.max = MAX_WEEK;
         weekInput.value = defaultWeek;
-        weekInput.style.cssText = 'width:60px;padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
+        weekInput.style.cssText =
+            'width:60px;padding:4px 6px;background:var(--bg);' +
+            'border:1px solid var(--border);color:var(--text);' +
+            'border-radius:4px;font-size:0.7rem;';
         weekWrapper.appendChild(weekInput);
 
         container.appendChild(weekWrapper);
 
         // Reason field
         var reasonWrapper = document.createElement('div');
-        reasonWrapper.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:4px;';
+        reasonWrapper.style.cssText =
+            'display:flex;align-items:center;gap:8px;margin-top:4px;';
 
         var reasonLabel = document.createElement('label');
         reasonLabel.textContent = 'Reason:';
@@ -493,7 +543,10 @@
         reasonInput.id = 'standalone-elim-reason';
         reasonInput.placeholder = 'e.g., Dropped out';
         reasonInput.value = defaultReason;
-        reasonInput.style.cssText = 'flex:1;padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
+        reasonInput.style.cssText =
+            'flex:1;padding:4px 6px;background:var(--bg);' +
+            'border:1px solid var(--border);color:var(--text);' +
+            'border-radius:4px;font-size:0.7rem;';
         reasonWrapper.appendChild(reasonInput);
 
         container.appendChild(reasonWrapper);
@@ -520,7 +573,8 @@
     function createEmptyState(message) {
         var el = document.createElement('p');
         el.className = 'empty-state';
-        el.style.cssText = 'padding:6px;font-size:0.75rem;color:var(--text-dim);';
+        el.style.cssText =
+            'padding:6px;font-size:0.75rem;color:var(--text-dim);';
         el.textContent = message || 'None';
         return el;
     }
