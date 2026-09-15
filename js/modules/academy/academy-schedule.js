@@ -17,7 +17,7 @@
  *   - Invalid inputs are REJECTED (operation returns null/false)
  *   - This module does NOT call saveData()
  *
- * WRITE vs READ CONTRACT (v2 — Session D2):
+ * WRITE vs READ CONTRACT:
  *   - WRITE operations return Promise<{ success, data?, message? }>.
  *     They delegate to the provider's Promise-based methods, which
  *     route through MutationPipeline. Persistence, rollback, and
@@ -28,20 +28,25 @@
  *   - Callers MUST treat writes as Promises. Do not test
  *     `if (result.success)` on a write — test it on the resolved
  *     value: `result.then(r => { if (r.success) ... })`.
- *   - The provider is the single boundary. If the provider returns
- *     a Promise for a write, this module returns a Promise for that
- *     write. If the provider returns a value synchronously for a
- *     read, this module returns synchronously for that read.
  *
- * WHY THE SPLIT:
- *   - ScheduleCore was rewritten in Session D1 to route every
- *     mutation through MutationPipeline. Those mutations are now
- *     Promise-based. Reads never went through the pipeline and
- *     remain synchronous.
- *   - This module does not wrap reads in Promises, because doing
- *     so would break every UI consumer that reads schedules
- *     synchronously (the calendar grid, the aggregator, the
- *     attendance views).
+ * NO CURRENT-WEEK FALLBACK:
+ *   Reads and writes REQUIRE a valid week. When the week is invalid,
+ *   reads return empty results (not week 1 data), and writes are
+ *   rejected. Callers that want the "current week" behavior fetch
+ *   window.data.currentWeek themselves and pass it in. This module
+ *   does not silently substitute a default.
+ *
+ * NO ENRICHMENT:
+ *   This module does not resolve discipline names or instructor
+ *   names. Schedule entries are returned with raw IDs. Callers that
+ *   need display enrichment compose the returned data with
+ *   AcademyDisciplines and CharacterQueries themselves, or via
+ *   AcademyAggregator.
+ *
+ *   Rationale: this module is the scheduling boundary. Pulling
+ *   AcademyDisciplines or CharacterQueries into it couples the
+ *   schedule layer to the entity layer for display reasons. The
+ *   aggregator is where that composition belongs.
  *
  * PROVIDER INTERFACE:
  *   The provider MUST expose the following methods.
@@ -79,16 +84,18 @@
  * getStudentClasses SEMANTICS:
  *   - Returns ONE entry per occupied slot. A class that spans hours
  *     9, 10, 11 appears as three entries (one per hour).
- *   - This matches what StudentCalendarUI and the CalendarAggregator
- *     expect for grid rendering.
+ *   - Each entry carries day, hour, disciplineId, duration, label,
+ *     groupLabel, and instructorId from metadata. It does NOT carry
+ *     disciplineName or instructorName — enrichment is the caller's
+ *     concern.
+ *   - This matches what the CalendarAggregator produces for grid
+ *     rendering, minus the display-name enrichment.
  *
  * DEPENDENCIES:
- *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
  *   - window.AcademyConstants (from academy-constants.js) - MANDATORY
  *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
  *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
- *   - window.DisciplineQueries (from discipline-queries.js) - MANDATORY
+ *   - window.CalendarProvider (via configure()) - MANDATORY
  */
 
 (function() {
@@ -103,12 +110,9 @@
     // DEPENDENCY IMPORTS
     // ============================================================
 
-    var AcademyQueries = window.AcademyQueries;
     var AcademyConstants = window.AcademyConstants;
     var CalendarConstants = window.CalendarConstants;
     var CalendarValidation = window.CalendarValidation;
-    var CharacterQueries = window.CharacterQueries;
-    var DisciplineQueries = window.DisciplineQueries;
 
     // ============================================================
     // CONSTANTS
@@ -124,7 +128,6 @@
     var CALENDAR_END_HOUR = CalendarConstants.CALENDAR_END_HOUR;
     var MAX_DURATION = CalendarConstants.MAX_CLASS_DURATION;
     var MIN_CLASS_DURATION = CalendarConstants.MIN_CLASS_DURATION;
-    var DEFAULT_WEEK = 1;
 
     // ============================================================
     // INJECTED DEPENDENCIES
@@ -196,10 +199,6 @@
     function checkDependencies() {
         var missing = [];
 
-        if (!AcademyQueries || typeof AcademyQueries.getAvailableDisciplines !== 'function') {
-            missing.push('AcademyQueries.getAvailableDisciplines');
-        }
-
         if (!AcademyConstants) {
             missing.push('AcademyConstants');
         }
@@ -219,14 +218,6 @@
         }
         if (!CalendarValidation || typeof CalendarValidation.parseDuration !== 'function') {
             missing.push('CalendarValidation.parseDuration');
-        }
-
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
-        }
-
-        if (!DisciplineQueries || typeof DisciplineQueries.getDiscipline !== 'function') {
-            missing.push('DisciplineQueries.getDiscipline');
         }
 
         if (!_calendarProvider) {
@@ -265,13 +256,6 @@
         return CalendarValidation.parseDuration(duration);
     }
 
-    function getCurrentWeek() {
-        if (window.data && typeof window.data.currentWeek === 'number') {
-            return window.data.currentWeek;
-        }
-        return DEFAULT_WEEK;
-    }
-
     function failure(message) {
         return { success: false, message: message };
     }
@@ -282,17 +266,6 @@
 
     /**
      * Coerce a provider write result to a Promise.
-     *
-     * If the provider already returns a Promise, pass it through.
-     * If the provider returns a raw value (e.g. a synchronous
-     * { success, data, message } from a legacy path), wrap it.
-     * If the provider throws synchronously, catch and reject.
-     *
-     * This keeps the caller-facing contract uniform: writes ALWAYS
-     * resolve to { success, data?, message? }.
-     *
-     * @param {function} fn - Zero-arg thunk that calls the provider
-     * @returns {Promise<object>}
      */
     function asPromise(fn) {
         try {
@@ -315,10 +288,8 @@
     // by walking the schedule's occupied slots and calling
     // getSlotMetadata for each.
     //
-    // The reconstruction is bounded by the entity's own schedule
-    // (typically tens of slots at most), so the extra provider calls
-    // are cheap. It avoids having to add a new required method to
-    // the provider interface.
+    // The reconstruction is bounded by the entity's own schedule, so
+    // the extra provider calls are cheap.
     //
     // @param {string} entityId - Student ID or location ID
     // @param {number} weekNum - Week number
@@ -372,12 +343,20 @@
     // ============================================================
     // STUDENT SCHEDULE - READ OPERATIONS (synchronous)
     // ============================================================
+    //
+    // READS DO NOT FALL BACK TO CURRENT WEEK.
+    //   - If the week is invalid, they return empty.
+    //   - Callers fetch window.data.currentWeek themselves.
+    //
+    // READS DO NOT ENRICH WITH DISPLAY NAMES.
+    //   - Schedule entries carry disciplineId and instructorId.
+    //   - Callers compose with AcademyDisciplines / CharacterQueries.
 
     /**
-     * Get a student's schedule for a specific week.
+     * Get a student's raw schedule for a specific week.
      *
      * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
+     * @param {number|string} week - Week number (required)
      * @returns {object} Schedule object { day: { hour: disciplineId } }
      */
     function getStudentSchedule(studentId, week) {
@@ -391,23 +370,25 @@
 
         var weekNum = parseWeek(week);
         if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            weekNum = getCurrentWeek();
+            return {};
         }
 
         return _calendarProvider.getStudentSchedule(studentId, weekNum);
     }
 
     /**
-     * Get a student's classes for a specific week (with details).
+     * Get a student's classes for a specific week.
      *
      * SEMANTICS:
      *   Returns ONE entry per occupied slot. A multi-hour class appears
-     *   as N entries, one per hour. This matches what the calendar
-     *   grid renderer expects.
+     *   as N entries, one per hour. Each entry carries:
+     *     day, hour, disciplineId, duration, label, groupLabel, instructorId
+     *   but NOT disciplineName or instructorName. Enrichment is the
+     *   caller's concern.
      *
      * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
-     * @returns {array} Array of class detail objects
+     * @param {number|string} week - Week number (required)
+     * @returns {array} Array of class detail objects with raw IDs
      */
     function getStudentClasses(studentId, week) {
         if (!checkDependencies()) {
@@ -420,7 +401,7 @@
 
         var weekNum = parseWeek(week);
         if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            weekNum = getCurrentWeek();
+            return [];
         }
 
         var schedule = _calendarProvider.getStudentSchedule(studentId, weekNum);
@@ -468,26 +449,16 @@
                 }
 
                 var metadata = _calendarProvider.getSlotMetadata(studentId, weekNum, dayNum, hourNum);
-                var discipline = DisciplineQueries.getDiscipline(disciplineId);
                 var instructorId = metadata ? metadata.instructorId : null;
-                var instructorName = '';
-                if (instructorId) {
-                    var instructor = CharacterQueries.getCharacterById(instructorId);
-                    if (instructor) {
-                        instructorName = CharacterQueries.getDisplayName(instructor);
-                    }
-                }
 
                 classes.push({
                     day: dayNum,
                     hour: hourNum,
                     disciplineId: disciplineId,
-                    disciplineName: discipline ? discipline.name : 'Unknown',
-                    duration: metadata ? metadata.duration || 1 : 1,
-                    label: metadata ? metadata.label || '' : '',
-                    groupLabel: metadata ? metadata.groupLabel || '' : '',
+                    duration: metadata && typeof metadata.duration === 'number' ? metadata.duration : 1,
+                    label: metadata && typeof metadata.label === 'string' ? metadata.label : '',
+                    groupLabel: metadata && typeof metadata.groupLabel === 'string' ? metadata.groupLabel : '',
                     instructorId: instructorId,
-                    instructorName: instructorName,
                     isContinuation: false
                 });
             }
@@ -506,8 +477,11 @@
     /**
      * Get class details for a specific slot.
      *
+     * Returns the same shape as a single entry from getStudentClasses.
+     * Does NOT enrich with display names.
+     *
      * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
+     * @param {number|string} week - Week number (required)
      * @param {number|string} day - Day number (1-7)
      * @param {number|string} hour - Hour number
      * @returns {object|null} Class details or null
@@ -536,15 +510,7 @@
 
         var disciplineId = schedule[dayNum][hourNum];
         var metadata = _calendarProvider.getSlotMetadata(studentId, weekNum, dayNum, hourNum);
-        var discipline = DisciplineQueries.getDiscipline(disciplineId);
         var instructorId = metadata ? metadata.instructorId : null;
-        var instructorName = '';
-        if (instructorId) {
-            var instructor = CharacterQueries.getCharacterById(instructorId);
-            if (instructor) {
-                instructorName = CharacterQueries.getDisplayName(instructor);
-            }
-        }
 
         return {
             studentId: studentId,
@@ -552,12 +518,10 @@
             day: dayNum,
             hour: hourNum,
             disciplineId: disciplineId,
-            disciplineName: discipline ? discipline.name : 'Unknown',
-            duration: metadata ? metadata.duration || 1 : 1,
-            label: metadata ? metadata.label || '' : '',
-            groupLabel: metadata ? metadata.groupLabel || '' : '',
+            duration: metadata && typeof metadata.duration === 'number' ? metadata.duration : 1,
+            label: metadata && typeof metadata.label === 'string' ? metadata.label : '',
+            groupLabel: metadata && typeof metadata.groupLabel === 'string' ? metadata.groupLabel : '',
             instructorId: instructorId,
-            instructorName: instructorName,
             isContinuation: false
         };
     }
@@ -565,8 +529,15 @@
     /**
      * Get weekly usage statistics for a student.
      *
+     * Reads the raw schedule directly to avoid double-counting. A
+     * class that spans three hours is one entry per hour in the raw
+     * schedule, and each entry contributes exactly its slot to the
+     * total. The previous version reconstructed this from
+     * getStudentClasses, which returned per-hour entries too, but
+     * summed duration again — a multi-hour class was counted twice.
+     *
      * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
+     * @param {number|string} week - Week number (required)
      * @returns {object} { total, byDiscipline }
      */
     function getStudentWeeklyUsage(studentId, week) {
@@ -580,27 +551,38 @@
 
         var weekNum = parseWeek(week);
         if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            weekNum = getCurrentWeek();
+            return { total: 0, byDiscipline: {} };
         }
 
-        var classes = getStudentClasses(studentId, weekNum);
+        var schedule = _calendarProvider.getStudentSchedule(studentId, weekNum);
         var total = 0;
         var byDiscipline = {};
 
-        for (var i = 0; i < classes.length; i++) {
-            var cls = classes[i];
-            var duration = cls.duration || 1;
-            total += duration;
-
-            var id = cls.disciplineId;
-            if (!byDiscipline[id]) {
-                byDiscipline[id] = {
-                    disciplineId: id,
-                    disciplineName: cls.disciplineName || 'Unknown',
-                    hours: 0
-                };
+        for (var day in schedule) {
+            if (!Object.prototype.hasOwnProperty.call(schedule, day)) {
+                continue;
             }
-            byDiscipline[id].hours += duration;
+            var daySchedule = schedule[day];
+            if (!daySchedule || typeof daySchedule !== 'object') {
+                continue;
+            }
+            for (var hour in daySchedule) {
+                if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
+                    continue;
+                }
+                var disciplineId = daySchedule[hour];
+                if (!disciplineId) {
+                    continue;
+                }
+                total += 1;
+                if (!byDiscipline[disciplineId]) {
+                    byDiscipline[disciplineId] = {
+                        disciplineId: disciplineId,
+                        hours: 0
+                    };
+                }
+                byDiscipline[disciplineId].hours += 1;
+            }
         }
 
         return {
@@ -615,23 +597,12 @@
 
     /**
      * Set a student's schedule slot.
-     * Validates inputs then delegates to CalendarProvider.
-     *
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
-     * @param {number|string} day - Day number (1-7)
-     * @param {number|string} hour - Hour number
-     * @param {string} disciplineId - Discipline ID
-     * @param {number|string} duration - Duration in hours
-     * @param {object} metadata - Additional metadata (instructor, label, etc.)
-     * @returns {Promise<{ success: boolean, message?: string, data?: object }>}
      */
     function setStudentScheduleClass(studentId, week, day, hour, disciplineId, duration, metadata) {
         if (!checkDependencies()) {
             return Promise.resolve(failure('Dependencies not available.'));
         }
 
-        // ---- PHASE 1: VALIDATE ----
         if (!isNonEmptyString(studentId)) {
             return Promise.resolve(failure('Student ID is required.'));
         }
@@ -664,13 +635,12 @@
             return Promise.resolve(failure('Class extends beyond the end of the day.'));
         }
 
-        // ---- PHASE 2: CHECK FOR CONFLICTS (sync read) ----
+        // Check for conflicts before delegating.
         var schedule = _calendarProvider.getStudentSchedule(studentId, weekNum);
         if (_calendarProvider.hasConflict(schedule, dayNum, hourNum, durationNum)) {
             return Promise.resolve(failure('Student already has a class during this time.'));
         }
 
-        // ---- PHASE 3: DELEGATE TO CALENDAR ----
         return asPromise(function() {
             return _calendarProvider.setStudentSlot(
                 studentId,
@@ -693,16 +663,6 @@
         });
     }
 
-    /**
-     * Remove a student's schedule slot.
-     *
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
-     * @param {number|string} day - Day number (1-7)
-     * @param {number|string} hour - Hour number
-     * @param {number|string} duration - Optional duration (if not provided, uses metadata)
-     * @returns {Promise<{ success: boolean, message?: string, data?: object }>}
-     */
     function removeStudentScheduleClass(studentId, week, day, hour, duration) {
         if (!checkDependencies()) {
             return Promise.resolve(failure('Dependencies not available.'));
@@ -741,13 +701,6 @@
         });
     }
 
-    /**
-     * Clear a student's entire schedule for a week.
-     *
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
-     * @returns {Promise<{ success: boolean, message?: string, data?: object }>}
-     */
     function clearStudentSchedule(studentId, week) {
         if (!checkDependencies()) {
             return Promise.resolve(failure('Dependencies not available.'));
@@ -776,18 +729,6 @@
         });
     }
 
-    /**
-     * Duplicate a student's schedule from one week to another.
-     *
-     * NOTE: The provider's duplicateStudentSchedule is expected to
-     * copy the schedule, rest days, and metadata in one transaction.
-     * See ScheduleCore.duplicateStudentSchedule for the semantics.
-     *
-     * @param {string} studentId - Student ID
-     * @param {number|string} fromWeek - Source week
-     * @param {number|string} toWeek - Target week
-     * @returns {Promise<{ success: boolean, message?: string, data?: object }>}
-     */
     function duplicateStudentSchedule(studentId, fromWeek, toWeek) {
         if (!checkDependencies()) {
             return Promise.resolve(failure('Dependencies not available.'));
@@ -830,13 +771,6 @@
     // REST DAYS - READS (synchronous)
     // ============================================================
 
-    /**
-     * Get a student's rest days for a specific week.
-     *
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
-     * @returns {array} Array of rest day numbers
-     */
     function getStudentRestDays(studentId, week) {
         if (!checkDependencies()) {
             return [];
@@ -848,7 +782,7 @@
 
         var weekNum = parseWeek(week);
         if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            weekNum = getCurrentWeek();
+            return [];
         }
 
         return _calendarProvider.getStudentRestDays(studentId, weekNum);
@@ -858,14 +792,6 @@
     // REST DAYS - WRITES (Promise-based)
     // ============================================================
 
-    /**
-     * Set a student's rest days for a week.
-     *
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
-     * @param {array} days - Array of day numbers (1-7)
-     * @returns {Promise<{ success: boolean, message?: string, data?: object }>}
-     */
     function setStudentRestDays(studentId, week, days) {
         if (!checkDependencies()) {
             return Promise.resolve(failure('Dependencies not available.'));
@@ -905,13 +831,6 @@
         });
     }
 
-    /**
-     * Clear a student's rest days for a week.
-     *
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
-     * @returns {Promise<{ success: boolean, message?: string, data?: object }>}
-     */
     function clearStudentRestDays(studentId, week) {
         if (!checkDependencies()) {
             return Promise.resolve(failure('Dependencies not available.'));
@@ -944,16 +863,6 @@
     // CONFLICT DETECTION (synchronous, pure)
     // ============================================================
 
-    /**
-     * Check if a student has a schedule conflict.
-     *
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
-     * @param {number|string} day - Day number (1-7)
-     * @param {number|string} hour - Hour number
-     * @param {number|string} duration - Duration in hours
-     * @returns {boolean} True if there is a conflict
-     */
     function hasStudentScheduleConflict(studentId, week, day, hour, duration) {
         if (!checkDependencies()) {
             return true;
@@ -976,14 +885,6 @@
         return _calendarProvider.hasConflict(schedule, dayNum, hourNum, durationNum);
     }
 
-    /**
-     * Check if a day is a rest day for a student.
-     *
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
-     * @param {number|string} day - Day number (1-7)
-     * @returns {boolean} True if the day is a rest day
-     */
     function isStudentRestDay(studentId, week, day) {
         if (!checkDependencies()) {
             return false;
@@ -1019,38 +920,16 @@
         return details ? details.instructorId : null;
     }
 
-    function getClassInstructorName(studentId, week, day, hour) {
-        var details = getClassDetails(studentId, week, day, hour);
-        if (!details || !details.instructorId) {
-            return 'Not assigned';
-        }
-        return details.instructorName || 'Not assigned';
-    }
-
     function getClassDuration(studentId, week, day, hour) {
         var details = getClassDetails(studentId, week, day, hour);
-        return details ? details.duration || 1 : 1;
+        return details ? details.duration : 1;
     }
 
     function getClassLabel(studentId, week, day, hour) {
         var details = getClassDetails(studentId, week, day, hour);
-        return details ? details.label || '' : '';
+        return details ? details.label : '';
     }
 
-    /**
-     * Find the start hour of a class that may span multiple hours.
-     *
-     * The provider's findClassStart contract expects the FULL
-     * metadata map (keyed `${entityId}_${week}_${day}_${hour}`), not a
-     * single-entry object. This function reconstructs the full map
-     * from the student's own schedule before delegating.
-     *
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
-     * @param {number|string} day - Day number (1-7)
-     * @param {number|string} hour - Hour number within the class
-     * @returns {number|null} Start hour or null
-     */
     function findClassStartHour(studentId, week, day, hour) {
         if (!checkDependencies()) {
             return null;
@@ -1097,14 +976,18 @@
      * SLOTS are applied SEQUENTIALLY. If any write fails, subsequent
      * writes are skipped and the failure is reported in `errors`.
      * Successful writes before the failure remain applied — there is
-     * no cross-slot transaction here. If you need all-or-nothing
-     * across multiple slots, you need a bulk pipeline operation in
-     * ScheduleCore, not this fan-out loop.
+     * no cross-slot transaction here.
+     *
+     * CONFLICT CHECKING:
+     *   The conflict check for each slot reads the CURRENT schedule
+     *   from the provider. Because writes are sequential, later
+     *   slots in the same batch see the effects of earlier ones.
+     *   That is the correct behavior for a batch that might include
+     *   two slots for the same student.
      *
      * @param {array} slots - Array of slot objects
      * @param {object} options - Save options
-     * @param {boolean} options.overwrite - Overwrite existing slots
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
+     * @returns {Promise<{ success, data?, message? }>}
      */
     function saveScheduleSlots(slots, options) {
         if (!checkDependencies()) {
@@ -1127,8 +1010,6 @@
         var succeeded = 0;
 
         // Pre-flight: validate the entire batch before running any writes.
-        // We don't want to partially apply if most of the input is
-        // malformed.
         var validated = [];
         for (var i = 0; i < slots.length; i++) {
             var slot = slots[i];
@@ -1158,10 +1039,10 @@
             }));
         }
 
-        // Sequential write chain. Each `.then` returns either a
-        // resolved result or a rejected one; we catch per-slot so a
-        // single failure does not abort the whole chain unless we
-        // choose to stop. Here, we continue so the report is complete.
+        // Sequential write chain. Each slot is applied via
+        // setStudentScheduleClass, which reads the current schedule
+        // from the provider for its conflict check. Because the
+        // chain is sequential, later slots see earlier writes.
         var chain = Promise.resolve();
 
         validated.forEach(function(item) {
@@ -1175,7 +1056,13 @@
                     return;
                 }
 
-                var schedule = _calendarProvider.getStudentSchedule(slot.studentId, slot.week);
+                var weekNum = parseWeek(slot.week);
+                if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
+                    errors.push({ index: item.index, error: 'Invalid week.' });
+                    return;
+                }
+
+                var schedule = _calendarProvider.getStudentSchedule(slot.studentId, weekNum);
                 var exists = schedule[dayNum] && schedule[dayNum][hourNum];
 
                 if (exists && !overwrite) {
@@ -1257,7 +1144,6 @@
 
         // ---- Class Metadata (synchronous) ----
         getClassInstructor: getClassInstructor,
-        getClassInstructorName: getClassInstructorName,
         getClassDuration: getClassDuration,
         getClassLabel: getClassLabel,
         findClassStartHour: findClassStartHour,
@@ -1276,8 +1162,7 @@
         CALENDAR_START_HOUR: CALENDAR_START_HOUR,
         CALENDAR_END_HOUR: CALENDAR_END_HOUR,
         MAX_DURATION: MAX_DURATION,
-        MIN_CLASS_DURATION: MIN_CLASS_DURATION,
-        DEFAULT_WEEK: DEFAULT_WEEK
+        MIN_CLASS_DURATION: MIN_CLASS_DURATION
     };
 
 })();
