@@ -59,12 +59,10 @@
  *   - window.DomUtils
  *
  * DEPENDENCIES (OPTIONAL, used by modal builders):
- *   - window.TournamentQueries — for the pool and match fallbacks
- *   - window.AcademyTournamentAggregator — for display names
- *   - window.CharacterQueries  — for display names when the
- *     aggregator is absent
- *   - window.TeamQueries       — for team names when the aggregator
- *     is absent
+ *   - window.TournamentQueries
+ *   - window.AcademyTournamentAggregator
+ *   - window.CharacterQueries
+ *   - window.TeamQueries
  *
  * USAGE:
  *   var html = AcademyTournamentView.renderHTML(vm);
@@ -943,12 +941,6 @@
     // ============================================================
     // MODAL HELPERS - Eligible participants (isolated fallback)
     // ============================================================
-    //
-    // The aggregator will eventually supply a dedicated VM for each
-    // modal's candidate list. Until then, this helper reads from
-    // TournamentQueries and TournamentMatches directly. It is the
-    // ONLY domain read in this module, and it is confined to the
-    // modal builders that need candidate lists.
 
     function getEligibleParticipantsForModal(examId, roundId) {
         var Queries = getTournamentQueries();
@@ -1312,17 +1304,6 @@
         return html;
     }
 
-    /**
-     * Pair picker.
-     *
-     * Renders three selects (slot-1, slot-2, slot-3) and a "+ Add"
-     * button that emits data-action="exam-pair-add". The pair rows
-     * appended to .at-pair-list are the responsibility of AcademyView's
-     * exam-pair-add handler. Each row must carry:
-     *   - class .at-pair-row
-     *   - data-pair = JSON-stringified array of participant IDs
-     *   - a .at-pair-remove button emitting data-action="exam-pair-remove"
-     */
     function renderPairPicker(examId, roundId) {
         var eligible = getEligibleParticipantsForModal(examId, roundId);
 
@@ -1357,7 +1338,9 @@
             for (var i = 0; i < eligible.length; i++) {
                 var id = eligible[i];
                 html += '<option value="' + escapeAttribute(id) + '">' +
-                            escapeHtml(getParticipantDisplayName(id, 'individuals')) +
+                            escapeHtml(
+                                getParticipantDisplayName(id, 'individuals')
+                            ) +
                         '</option>';
             }
             html += '</select>';
@@ -1744,7 +1727,8 @@
             html += renderResultSelect('team_result_' + teamId, teamCurrent);
             html += '</div>';
 
-            var team = (TeamQueries && typeof TeamQueries.getTeamById === 'function')
+            var team = (TeamQueries &&
+                typeof TeamQueries.getTeamById === 'function')
                 ? TeamQueries.getTeamById(teamId)
                 : null;
 
@@ -1867,10 +1851,8 @@
     // ============================================================
 
     window.AcademyTournamentView = {
-        // Main renderer
         renderHTML: renderHTML,
 
-        // Modal builders
         buildCreateExamModalHTML: buildCreateExamModalHTML,
         buildDeleteExamModalHTML: buildDeleteExamModalHTML,
         buildAddRoundModalHTML: buildAddRoundModalHTML,
@@ -1881,7 +1863,6 @@
         buildCompleteMatchModalHTML: buildCompleteMatchModalHTML,
         buildRemoveMatchModalHTML: buildRemoveMatchModalHTML,
 
-        // Form collectors
         collectCreateExamForm: collectCreateExamForm,
         collectAddRoundForm: collectAddRoundForm,
         collectAutoGenerateRoundForm: collectAutoGenerateRoundForm,
