@@ -18,9 +18,17 @@
  *   - Validation. Every collector returns raw field values; the
  *     domain validates.
  *
+ * PAIR-PICKER CONTRACT:
+ *   The pair picker emits a "+ Add" button with data-action="exam-pair-add".
+ *   AcademyView handles the click: it reads the three selects, validates
+ *   distinctness, and appends a .at-pair-row to .at-pair-list with
+ *   data-pair set to a JSON-stringified array of participant IDs.
+ *   Each row carries a .at-pair-remove button that emits
+ *   data-action="exam-pair-remove". The collector reads the rows.
+ *
  * IMPORTANT:
- *   - RENDER ONLY. No mutations. The one domain read (pool
- *     fallback) is documented and isolated.
+ *   - RENDER ONLY. No mutations. The one domain read (pool fallback)
+ *     is documented and isolated.
  *   - Uses DomUtils for escaping (MANDATORY, no fallback).
  *   - Returns HTML strings. Never touches the DOM.
  *
@@ -309,7 +317,7 @@
     }
 
     // ============================================================
-    // POOL PANEL - Left side
+    // POOL PANEL
     // ============================================================
 
     function renderPoolPanel(vm) {
@@ -416,7 +424,7 @@
     }
 
     // ============================================================
-    // EXAM PANEL - Right side
+    // EXAM PANEL
     // ============================================================
 
     function renderExamPanel(vm) {
@@ -965,9 +973,6 @@
             return pool;
         }
 
-        // Exclude participants already placed in a match within this
-        // round. The round ID is expected to be resolvable by
-        // TournamentQueries.getRound(examId, roundId).
         if (typeof Queries.getRound !== 'function') {
             return pool;
         }
@@ -1191,8 +1196,6 @@
     // ============================================================
 
     function buildRemoveRoundModalHTML(options) {
-        options = options || {};
-
         var html = '';
         html += '<form id="at-remove-round-form">';
         html += renderModalHeader('Remove Round');
@@ -1309,6 +1312,17 @@
         return html;
     }
 
+    /**
+     * Pair picker.
+     *
+     * Renders three selects (slot-1, slot-2, slot-3) and a "+ Add"
+     * button that emits data-action="exam-pair-add". The pair rows
+     * appended to .at-pair-list are the responsibility of AcademyView's
+     * exam-pair-add handler. Each row must carry:
+     *   - class .at-pair-row
+     *   - data-pair = JSON-stringified array of participant IDs
+     *   - a .at-pair-remove button emitting data-action="exam-pair-remove"
+     */
     function renderPairPicker(examId, roundId) {
         var eligible = getEligibleParticipantsForModal(examId, roundId);
 
@@ -1332,10 +1346,13 @@
         html += '<div class="at-pair-inputs">';
 
         for (var slot = 1; slot <= 3; slot++) {
+            var slotAttr = 'data-pair-slot="' + slot + '"';
             var selectClass = 'at-pair-select at-pair-select-' + slot;
-            html += '<select class="' + selectClass + '">';
+            html += '<select class="' + selectClass + '" ' + slotAttr + '>';
             html += '<option value="">' +
-                        (slot === 3 ? '(optional 3rd)' : 'Select participant...') +
+                        (slot === 3
+                            ? '(optional 3rd)'
+                            : 'Select participant...') +
                     '</option>';
             for (var i = 0; i < eligible.length; i++) {
                 var id = eligible[i];
@@ -1346,7 +1363,8 @@
             html += '</select>';
         }
 
-        html += '<button type="button" class="small secondary at-pair-add">' +
+        html += '<button type="button" class="small secondary at-pair-add" ' +
+                    'data-action="exam-pair-add">' +
                     '+ Add' +
                 '</button>';
         html += '</div>';
@@ -1398,15 +1416,11 @@
         var exam = Queries ? Queries.getTournament(examId) : null;
         var mode = exam ? exam.mode : 'individuals';
 
-        // Determine whether this round is a pair exam. If we cannot
-        // resolve the round, default to group exam behavior.
         var isPairExam = false;
-        var matchType = 'group_exam';
         if (Queries && typeof Queries.getRound === 'function') {
             var round = Queries.getRound(examId, roundId);
             if (round) {
                 isPairExam = round.isPairExam === true;
-                matchType = round.matchType || 'group_exam';
             }
         }
 
@@ -1459,7 +1473,7 @@
 
         return {
             participants: collectPickerSelections(form),
-            matchType: null, // domain resolves from round
+            matchType: null,
             isPairExam: false
         };
     }
@@ -1518,12 +1532,6 @@
     }
 
     function renderEditParticipantPicker(examId, roundId, mode, currentIds) {
-        var Queries = getTournamentQueries();
-
-        // For an edit, the current participants must remain selectable
-        // even if they would otherwise be excluded by the "already in
-        // a match this round" filter. Combine the eligible pool with
-        // the current participants.
         var eligible = getEligibleParticipantsForModal(examId, roundId);
 
         var combined = {};
@@ -1839,7 +1847,6 @@
     // ============================================================
 
     function buildRemoveMatchModalHTML(options) {
-        options = options || {};
         var html = '';
         html += '<form id="at-remove-match-form">';
         html += renderModalHeader('Remove Match');
