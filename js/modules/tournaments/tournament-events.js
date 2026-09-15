@@ -2,7 +2,7 @@
  * modules/tournaments/tournament-events.js - Tournament Events
  * Event orchestration for the tournament module
  * Path: js/modules/tournaments/tournament-events.js
- * 
+ *
  * This module provides:
  *   - init - Bind all event listeners
  *   - destroy - Clean up all event listeners
@@ -14,11 +14,12 @@
  *   - Status transition handlers
  *   - Filter and view mode event handlers
  *   - Modal event handlers
- * 
+ *
  * IMPORTANT:
  *   - Orchestrates UI interactions - THIN layer
- *   - Calls TournamentCore for tournament/round/status mutations
- *   - Calls TournamentMatches for match mutations
+ *   - Calls TournamentCore for tournament/round/status mutations.
+ *     TournamentCore is Promise-based; every mutation is chained.
+ *   - Calls TournamentMatches for match mutations. Also Promise-based.
  *   - Calls TournamentAggregator for data projections
  *   - Calls TournamentUI for state management
  *   - Uses NotificationSystem for notifications
@@ -26,15 +27,14 @@
  *   - No direct data mutation
  *   - No direct DOM manipulation (delegates to Render)
  *   - No direct window.data access
- * 
- * MODAL CONTENT CONTRACT:
- *   Modal.createModal() returns a BARE `.modal` shell with no children.
- *   This module supplies its own `.modal-content` wrapper for every
- *   modal it opens. The `openModal` helper below checks for an
- *   existing `.modal-content` on the shell, and only creates one if
- *   the shell is empty. That makes it work whether `createModal`
- *   pre-creates a wrapper or not.
- * 
+ *   - No direct saveData() calls — MutationPipeline owns persistence
+ *
+ * MUTATION CONTRACT:
+ *   All TournamentCore and TournamentMatches mutations resolve to
+ *   { success, data?, message? }. This module chains `.then()` on
+ *   each and reacts on success. On failure, the pipeline has already
+ *   notified the user; this module does not double-notify.
+ *
  * STATUS TRANSITIONS:
  *   - handleSaveTournament updates metadata first, then transitions
  *     status if the dropdown differs from the current status.
@@ -43,7 +43,12 @@
  *     rejected by domain prerequisites.
  *   - If metadata succeeds but status fails, the user is warned and
  *     the metadata update stands.
- * 
+ *
+ * MODAL CONTENT CONTRACT:
+ *   Modal.createModal() returns a BARE `.modal` shell with no
+ *   children. This module supplies its own `.modal-content` wrapper
+ *   for every modal it opens.
+ *
  * DEPENDENCIES:
  *   - window.TournamentUI (from tournaments-ui.js) - MANDATORY
  *   - window.TournamentAggregator (from tournament-aggregator.js) - MANDATORY
@@ -57,11 +62,10 @@
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.TeamQueries (from team-queries.js) - MANDATORY
  *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
- * 
+ *
  * USAGE:
  *   var TE = window.TournamentEvents;
  *   TE.init(container);
- *   // Later:
  *   TE.destroy();
  */
 
@@ -300,7 +304,6 @@
         _container = container;
         removeAllEventListeners();
 
-        // Bind all events
         bindContainerEvents(container);
 
         _initialized = true;
@@ -318,28 +321,13 @@
     // ============================================================
 
     function bindContainerEvents(container) {
-        // ---- Tournament list ----
         bindTournamentListEvents(container);
-
-        // ---- Tournament CRUD ----
         bindTournamentCrudEvents(container);
-
-        // ---- Participant events ----
         bindParticipantEvents(container);
-
-        // ---- Round events ----
         bindRoundEvents(container);
-
-        // ---- Match events ----
         bindMatchEvents(container);
-
-        // ---- Tournament completion ----
         bindCompletionEvents(container);
-
-        // ---- Filter events ----
         bindFilterEvents(container);
-
-        // ---- View mode events ----
         bindViewModeEvents(container);
     }
 
@@ -348,13 +336,11 @@
     // ============================================================
 
     function bindTournamentListEvents(container) {
-        // Click on tournament item
         container.addEventListener('click', function(e) {
             var item = e.target.closest('.tournament-item, .list-item.tourn-item');
             if (!item) {
                 return;
             }
-            // Ignore clicks on buttons
             if (e.target.closest('button')) {
                 return;
             }
@@ -364,7 +350,6 @@
             }
         });
 
-        // Delegate for view button
         delegate('.view-tournament-btn, .view-tournament', 'click', function(e, target) {
             var id = target.dataset.id;
             if (id) {
@@ -372,7 +357,6 @@
             }
         });
 
-        // Delegate for close detail
         delegate('.close-tournament-detail', 'click', function() {
             handleCloseDetail();
         });
@@ -383,7 +367,6 @@
     // ============================================================
 
     function bindTournamentCrudEvents(container) {
-        // Add tournament
         var addBtn = container.querySelector('#add-tournament-btn, .add-tournament-btn');
         if (addBtn) {
             addEventListener(addBtn, 'click', function() {
@@ -391,7 +374,6 @@
             });
         }
 
-        // Edit tournament (delegated)
         delegate('.edit-tournament-btn, .edit-tournament', 'click', function(e, target) {
             var id = target.dataset.id;
             if (id) {
@@ -399,7 +381,6 @@
             }
         });
 
-        // Delete tournament (delegated)
         delegate('.delete-tournament-btn, .delete-tournament', 'click', function(e, target) {
             var id = target.dataset.id;
             if (id && confirm('Delete this tournament permanently?')) {
@@ -407,7 +388,6 @@
             }
         });
 
-        // Tournament form submit
         var form = container.querySelector('#tournament-form, .tournament-form');
         if (form) {
             addEventListener(form, 'submit', function(e) {
@@ -416,7 +396,6 @@
             });
         }
 
-        // Form cancel
         var cancelBtn = container.querySelector('.cancel-form-btn, #cancel-tournament-form');
         if (cancelBtn) {
             addEventListener(cancelBtn, 'click', function() {
@@ -424,7 +403,6 @@
             });
         }
 
-        // Modal close buttons
         var closeBtns = container.querySelectorAll('.close-modal, .modal-close-btn');
         for (var i = 0; i < closeBtns.length; i++) {
             addEventListener(closeBtns[i], 'click', function(e) {
@@ -435,10 +413,9 @@
             });
         }
 
-        // Modal overlay click
         var modals = container.querySelectorAll('.modal');
-        for (var i = 0; i < modals.length; i++) {
-            addEventListener(modals[i], 'click', function(e) {
+        for (var j = 0; j < modals.length; j++) {
+            addEventListener(modals[j], 'click', function(e) {
                 if (e.target === this) {
                     handleCloseModal(this);
                 }
@@ -451,7 +428,6 @@
     // ============================================================
 
     function bindParticipantEvents(container) {
-        // Add participant
         delegate('.add-participant-btn', 'click', function(e, target) {
             var tournamentId = target.dataset.tournamentId || target.dataset.id;
             if (tournamentId) {
@@ -459,7 +435,6 @@
             }
         });
 
-        // Remove participant
         delegate('.remove-participant-btn', 'click', function(e, target) {
             var tournamentId = target.dataset.tournamentId || target.dataset.id;
             var participantId = target.dataset.participantId || target.dataset.id;
@@ -468,7 +443,6 @@
             }
         });
 
-        // Add participant form submit
         var addParticipantForm = container.querySelector('#add-participant-form');
         if (addParticipantForm) {
             addEventListener(addParticipantForm, 'submit', function(e) {
@@ -483,7 +457,6 @@
     // ============================================================
 
     function bindRoundEvents(container) {
-        // Add round
         delegate('.add-round-btn, .create-round-btn', 'click', function(e, target) {
             var tournamentId = target.dataset.tournamentId || target.dataset.id;
             if (tournamentId) {
@@ -491,7 +464,6 @@
             }
         });
 
-        // Remove round
         delegate('.remove-round-btn, .delete-round-btn', 'click', function(e, target) {
             var tournamentId = target.dataset.tournamentId || target.dataset.id;
             var roundIndex = parseInt(target.dataset.roundIndex, 10);
@@ -500,8 +472,7 @@
             }
         });
 
-        // Edit round (placeholder)
-        delegate('.edit-round-btn', 'click', function(e, target) {
+        delegate('.edit-round-btn', 'click', function() {
             notify('Round editing not yet implemented.', 'info');
         });
     }
@@ -511,7 +482,6 @@
     // ============================================================
 
     function bindMatchEvents(container) {
-        // Add match
         delegate('.add-match-btn', 'click', function(e, target) {
             var tournamentId = target.dataset.tournamentId || target.dataset.id;
             var roundIndex = parseInt(target.dataset.roundIndex, 10);
@@ -520,7 +490,6 @@
             }
         });
 
-        // Edit match
         delegate('.edit-match-btn', 'click', function(e, target) {
             var tournamentId = target.dataset.tournamentId || target.dataset.id;
             var matchId = target.dataset.matchId;
@@ -530,7 +499,6 @@
             }
         });
 
-        // Delete match
         delegate('.delete-match-btn, .remove-match-btn', 'click', function(e, target) {
             var tournamentId = target.dataset.tournamentId || target.dataset.id;
             var matchId = target.dataset.matchId;
@@ -540,7 +508,6 @@
             }
         });
 
-        // Complete match
         delegate('.complete-match-btn', 'click', function(e, target) {
             var tournamentId = target.dataset.tournamentId || target.dataset.id;
             var matchId = target.dataset.matchId;
@@ -550,7 +517,6 @@
             }
         });
 
-        // Match form submit
         var matchForm = container.querySelector('#match-form, .match-form');
         if (matchForm) {
             addEventListener(matchForm, 'submit', function(e) {
@@ -559,7 +525,6 @@
             });
         }
 
-        // Complete match form submit
         var completeMatchForm = container.querySelector('#complete-match-form');
         if (completeMatchForm) {
             addEventListener(completeMatchForm, 'submit', function(e) {
@@ -574,7 +539,6 @@
     // ============================================================
 
     function bindCompletionEvents(container) {
-        // Complete tournament
         delegate('.complete-tournament-btn', 'click', function(e, target) {
             var tournamentId = target.dataset.tournamentId || target.dataset.id;
             if (tournamentId && confirm('Complete this tournament?')) {
@@ -588,7 +552,6 @@
     // ============================================================
 
     function bindFilterEvents(container) {
-        // Status filter
         var statusFilter = container.querySelector('#tournament-status-filter, .tournament-status-filter');
         if (statusFilter) {
             addEventListener(statusFilter, 'change', function() {
@@ -600,7 +563,6 @@
             });
         }
 
-        // Search filter
         var searchFilter = container.querySelector('#tournament-search-filter, .tournament-search-filter');
         if (searchFilter) {
             addEventListener(searchFilter, 'input', function() {
@@ -612,7 +574,6 @@
             });
         }
 
-        // Mode filter
         var modeFilter = container.querySelector('#tournament-mode-filter, .tournament-mode-filter');
         if (modeFilter) {
             addEventListener(modeFilter, 'change', function() {
@@ -624,7 +585,6 @@
             });
         }
 
-        // Clear filters
         var clearBtn = container.querySelector('#clear-tournament-filters, .clear-tournament-filters');
         if (clearBtn) {
             addEventListener(clearBtn, 'click', function() {
@@ -734,24 +694,20 @@
             return;
         }
 
-        // Set modal state
         UI.setModalState('tournament-form', { editId: editId });
 
-        // Create and show modal
         var modal = Modal.createModal('tournament-form-modal');
         if (!modal) {
             notify('Failed to create modal.', 'error');
             return;
         }
 
-        // Build form content
         var content = buildTournamentForm(editId);
         appendModalContent(modal, content);
 
         Modal.modalSetup(modal);
         Modal.showModal(modal);
 
-        // Bind form events for this modal
         bindFormEvents(modal, editId);
     }
 
@@ -771,23 +727,18 @@
 
     /**
      * Save a tournament (create or update).
-     * 
-     * UPDATE ORDERING:
-     *   1. Read the current status BEFORE any mutation.
-     *   2. Apply the metadata update (name, mode, weeks, totalRounds,
-     *      graduatingClassId, classFilterEnabled).
-     *   3. If the status dropdown differs from the current status,
-     *      attempt a transition.
-     * 
-     * This ordering is deliberate. Metadata updates are permitted
-     * under the current lifecycle rules; status transitions may be
-     * rejected by domain prerequisites. If metadata succeeds but the
-     * transition fails, the metadata update stands and the user is
-     * warned.
-     * 
-     * The status dropdown offers only allowed transitions, so a
-     * rejected transition here means a domain prerequisite failed
-     * (e.g. trying to start a tournament with 0 participants).
+     *
+     * MUTATION PATH:
+     *   Both createTournament and updateTournament return Promises
+     *   that resolve to { success, data?, message? }.
+     *
+     *   On create success, the modal closes and the view refreshes.
+     *   On update success, if the status dropdown differs from the
+     *   current status, a follow-up transitionStatus Promise runs.
+     *   Both outcomes are handled in the update chain.
+     *
+     *   On failure, the pipeline has already notified. This handler
+     *   does not double-notify.
      */
     function handleSaveTournament(form) {
         var Core = getTournamentCore();
@@ -825,7 +776,7 @@
         // CREATE PATH
         // ============================================================
         if (!editId) {
-            var createResult = Core.createTournament({
+            Core.createTournament({
                 name: name,
                 mode: mode,
                 startWeek: startWeek,
@@ -834,17 +785,16 @@
                 graduatingClassId: graduatingClassId,
                 classFilterEnabled: classFilterEnabledValue,
                 status: selectedStatus || 'draft'
-            });
-
-            if (!createResult) {
+            }).then(function(result) {
+                if (result && result.success) {
+                    handleCloseForm();
+                    refreshUI();
+                }
+                // On failure, pipeline already notified.
+            }).catch(function(err) {
+                console.warn('[TournamentEvents] createTournament failed:', err);
                 notify('Failed to create tournament.', 'error');
-                return;
-            }
-
-            notify('Tournament created successfully.', 'success');
-            handleCloseForm();
-            refreshUI();
-            triggerPersistence();
+            });
             return;
         }
 
@@ -867,7 +817,7 @@
         var statusChangeRequested = selectedStatus &&
             selectedStatus !== currentStatus;
 
-        var updateResult = Core.updateTournament(editId, {
+        Core.updateTournament(editId, {
             name: name,
             mode: mode,
             startWeek: startWeek,
@@ -875,46 +825,42 @@
             totalRounds: totalRounds,
             graduatingClassId: graduatingClassId,
             classFilterEnabled: classFilterEnabledValue
-        });
+        }).then(function(updateResult) {
+            if (!updateResult || !updateResult.success) {
+                // Metadata update failed. Pipeline already notified.
+                return;
+            }
 
-        if (!updateResult) {
+            // Metadata update succeeded. Now handle the status change
+            // if one was requested.
+
+            if (!statusChangeRequested) {
+                handleCloseForm();
+                refreshUI();
+                return;
+            }
+
+            return Core.transitionStatus(editId, selectedStatus).then(function(transitionResult) {
+                if (transitionResult && transitionResult.success) {
+                    handleCloseForm();
+                    refreshUI();
+                    return;
+                }
+
+                // Metadata was updated, but the status change was
+                // rejected. Report both outcomes.
+                notify(
+                    'Tournament details were updated, but the status could not be changed to "' +
+                    selectedStatus + '". Check that prerequisites are met.',
+                    'warning'
+                );
+                handleCloseForm();
+                refreshUI();
+            });
+        }).catch(function(err) {
+            console.warn('[TournamentEvents] updateTournament failed:', err);
             notify('Failed to update tournament.', 'error');
-            return;
-        }
-
-        // Metadata update succeeded. Now handle the status change, if any.
-
-        if (!statusChangeRequested) {
-            notify('Tournament updated successfully.', 'success');
-            handleCloseForm();
-            refreshUI();
-            triggerPersistence();
-            return;
-        }
-
-        // ============================================================
-        // STATUS TRANSITION
-        // ============================================================
-        var transitionResult = Core.transitionStatus(editId, selectedStatus);
-
-        if (!transitionResult) {
-            // Metadata was updated, but the status change was rejected.
-            // Report both outcomes so the user understands the state.
-            notify(
-                'Tournament details were updated, but the status could not be changed to "' +
-                selectedStatus + '". Check that prerequisites are met.',
-                'warning'
-            );
-            handleCloseForm();
-            refreshUI();
-            triggerPersistence();
-            return;
-        }
-
-        notify('Tournament updated successfully.', 'success');
-        handleCloseForm();
-        refreshUI();
-        triggerPersistence();
+        });
     }
 
     function handleDeleteTournament(tournamentId) {
@@ -924,18 +870,19 @@
             return;
         }
 
-        var result = Core.deleteTournament(tournamentId);
-        if (result) {
-            notify('Tournament deleted successfully.', 'success');
-            var UI = getTournamentUI();
-            if (UI && UI.getSelectedTournamentId() === tournamentId) {
-                UI.setSelectedTournamentId(null);
+        Core.deleteTournament(tournamentId).then(function(result) {
+            if (result && result.success) {
+                var UI = getTournamentUI();
+                if (UI && UI.getSelectedTournamentId() === tournamentId) {
+                    UI.setSelectedTournamentId(null);
+                }
+                refreshUI();
             }
-            refreshUI();
-            triggerPersistence();
-        } else {
+            // On failure, pipeline already notified.
+        }).catch(function(err) {
+            console.warn('[TournamentEvents] deleteTournament failed:', err);
             notify('Failed to delete tournament.', 'error');
-        }
+        });
     }
 
     // ============================================================
@@ -1008,19 +955,19 @@
             return;
         }
 
-        var result = Core.addParticipant(tournamentId, {
+        Core.addParticipant(tournamentId, {
             id: participantId,
             type: participantType
-        });
-
-        if (result) {
-            notify('Participant added successfully.', 'success');
-            handleCloseModal(document.querySelector('#add-participant-modal'));
-            refreshUI();
-            triggerPersistence();
-        } else {
+        }).then(function(result) {
+            if (result && result.success) {
+                handleCloseModal(document.querySelector('#add-participant-modal'));
+                refreshUI();
+            }
+            // On failure, pipeline already notified.
+        }).catch(function(err) {
+            console.warn('[TournamentEvents] addParticipant failed:', err);
             notify('Failed to add participant.', 'error');
-        }
+        });
     }
 
     function handleRemoveParticipant(tournamentId, participantId) {
@@ -1030,14 +977,15 @@
             return;
         }
 
-        var result = Core.removeParticipant(tournamentId, participantId);
-        if (result) {
-            notify('Participant removed successfully.', 'success');
-            refreshUI();
-            triggerPersistence();
-        } else {
+        Core.removeParticipant(tournamentId, participantId).then(function(result) {
+            if (result && result.success) {
+                refreshUI();
+            }
+            // On failure, pipeline already notified.
+        }).catch(function(err) {
+            console.warn('[TournamentEvents] removeParticipant failed:', err);
             notify('Failed to remove participant.', 'error');
-        }
+        });
     }
 
     // ============================================================
@@ -1051,14 +999,15 @@
             return;
         }
 
-        var result = Core.addRound(tournamentId);
-        if (result) {
-            notify('Round added successfully.', 'success');
-            refreshUI();
-            triggerPersistence();
-        } else {
+        Core.addRound(tournamentId).then(function(result) {
+            if (result && result.success) {
+                refreshUI();
+            }
+            // On failure, pipeline already notified.
+        }).catch(function(err) {
+            console.warn('[TournamentEvents] addRound failed:', err);
             notify('Failed to add round.', 'error');
-        }
+        });
     }
 
     function handleRemoveRound(tournamentId, roundIndex) {
@@ -1068,14 +1017,15 @@
             return;
         }
 
-        var result = Core.removeRound(tournamentId, roundIndex);
-        if (result) {
-            notify('Round removed successfully.', 'success');
-            refreshUI();
-            triggerPersistence();
-        } else {
+        Core.removeRound(tournamentId, roundIndex).then(function(result) {
+            if (result && result.success) {
+                refreshUI();
+            }
+            // On failure, pipeline already notified.
+        }).catch(function(err) {
+            console.warn('[TournamentEvents] removeRound failed:', err);
             notify('Failed to remove round.', 'error');
-        }
+        });
     }
 
     // ============================================================
@@ -1200,32 +1150,29 @@
             return;
         }
 
-        var resultPromise;
+        var promise;
         if (matchId) {
-            resultPromise = Matches.updateMatch(tournamentId, roundIndex, matchId, {
+            promise = Matches.updateMatch(tournamentId, roundIndex, matchId, {
                 participants: [participant1, participant2],
                 type: matchType
             });
         } else {
-            resultPromise = Matches.createMatch(tournamentId, roundIndex, {
+            promise = Matches.createMatch(tournamentId, roundIndex, {
                 participants: [participant1, participant2],
                 type: matchType
             });
         }
 
-        // TournamentMatches methods return Promises (MutationPipeline)
-        Promise.resolve(resultPromise).then(function(result) {
+        Promise.resolve(promise).then(function(result) {
             if (result && result.success) {
                 var msg = matchId ? 'Match updated successfully.' : 'Match added successfully.';
                 notify(msg, 'success');
                 handleCloseModal(document.querySelector('#add-match-modal, #edit-match-modal'));
                 refreshUI();
-                triggerPersistence();
-            } else {
-                var errorMsg = result && result.message ? result.message : 'Failed to save match.';
-                notify(errorMsg, 'error');
             }
-        }).catch(function() {
+            // On failure, pipeline already notified.
+        }).catch(function(err) {
+            console.warn('[TournamentEvents] saveMatch failed:', err);
             notify('Failed to save match.', 'error');
         });
     }
@@ -1240,15 +1187,12 @@
         Promise.resolve(Matches.removeMatch(tournamentId, roundIndex, matchId))
             .then(function(result) {
                 if (result && result.success) {
-                    notify('Match deleted successfully.', 'success');
                     refreshUI();
-                    triggerPersistence();
-                } else {
-                    var errorMsg = result && result.message ? result.message : 'Failed to delete match.';
-                    notify(errorMsg, 'error');
                 }
+                // On failure, pipeline already notified.
             })
-            .catch(function() {
+            .catch(function(err) {
+                console.warn('[TournamentEvents] deleteMatch failed:', err);
                 notify('Failed to delete match.', 'error');
             });
     }
@@ -1326,12 +1270,10 @@
                 notify('Match completed successfully.', 'success');
                 handleCloseModal(document.querySelector('#complete-match-modal'));
                 refreshUI();
-                triggerPersistence();
-            } else {
-                var errorMsg = result && result.message ? result.message : 'Failed to complete match.';
-                notify(errorMsg, 'error');
             }
-        }).catch(function() {
+            // On failure, pipeline already notified.
+        }).catch(function(err) {
+            console.warn('[TournamentEvents] completeMatch failed:', err);
             notify('Failed to complete match.', 'error');
         });
     }
@@ -1347,38 +1289,21 @@
             return;
         }
 
-        var result = Core.completeTournament(tournamentId);
-        if (result) {
-            notify('Tournament completed successfully.', 'success');
-            refreshUI();
-            triggerPersistence();
-        } else {
-            notify('Failed to complete tournament. Check that all rounds are complete and a winner exists.', 'error');
-        }
+        Core.completeTournament(tournamentId).then(function(result) {
+            if (result && result.success) {
+                refreshUI();
+            }
+            // On failure, pipeline already notified.
+        }).catch(function(err) {
+            console.warn('[TournamentEvents] completeTournament failed:', err);
+            notify('Failed to complete tournament.', 'error');
+        });
     }
 
     // ============================================================
     // MODAL HELPERS
     // ============================================================
 
-    /**
-     * Append content to a modal shell.
-     *
-     * Modal.createModal() returns a bare `.modal` shell. This helper
-     * gives every caller a uniform way to fill it:
-     *   - If the shell already has a `.modal-content` (e.g. from an
-     *     older version of Modal.createModal, or from a caller that
-     *     pre-populated it), reuse it.
-     *   - Otherwise, create one and append it.
-     *
-     * The innerHTML assignment is deliberate: it replaces whatever was
-     * inside (including any auto-generated close button, if any) with
-     * the caller's HTML. Every form this module renders includes its
-     * own `.close-modal` button, so we don't lose the ability to close.
-     *
-     * @param {HTMLElement} modal - The modal shell
-     * @param {string} html - The content HTML
-     */
     function appendModalContent(modal, html) {
         if (!modal) return;
 
@@ -1403,31 +1328,9 @@
     }
 
     // ============================================================
-    // PERSISTENCE
-    // ============================================================
-
-    function triggerPersistence() {
-        if (typeof window.saveData === 'function') {
-            window.saveData().catch(function() {
-                notify('Changes applied in memory, but failed to persist.', 'error');
-            });
-        }
-    }
-
-    // ============================================================
     // FORM BUILDERS
     // ============================================================
 
-    /**
-     * Build the tournament form.
-     * 
-     * STATUS DROPDOWN:
-     *   - On create:  offers all valid statuses (default: draft).
-     *   - On edit:    offers only the allowed transitions from the
-     *                 current status. A completed tournament offers
-     *                 no transitions, so the dropdown is rendered
-     *                 disabled with a single option.
-     */
     function buildTournamentForm(editId) {
         var Queries = getTournamentQueries();
         var Core = getTournamentCore();
@@ -1442,7 +1345,6 @@
 
         var modes = ['teams', 'individuals'];
 
-        // Status options depend on edit vs. create.
         var statusOptions = [];
         var currentStatusLabel = null;
         var statusDisabled = false;
@@ -1450,8 +1352,6 @@
         if (isEdit && Core && typeof Core.getAllowedTransitions === 'function') {
             var allowed = Core.getAllowedTransitions(editId);
 
-            // Show the current status as the selected option, plus
-            // each allowed transition.
             currentStatusLabel = t.status || 'draft';
             statusOptions.push({
                 value: currentStatusLabel,
@@ -1465,12 +1365,10 @@
                 });
             }
 
-            // A terminal status has no transitions; disable the dropdown.
             if (allowed.length === 0) {
                 statusDisabled = true;
             }
         } else {
-            // Create path, or Core not available. Offer all statuses.
             statusOptions = [
                 { value: 'draft', label: 'Draft' },
                 { value: 'active', label: 'Active' },
@@ -1486,59 +1384,55 @@
         html += '</div>';
         html += '<div class="modal-body">';
 
-        // Name
         html += '<div class="form-group">';
-        html += '<label>Tournament Name *</label>';
+        html += '<label for="tournament-name">Tournament Name *</label>';
         html += '<input type="text" id="tournament-name" class="tournament-name" value="' + escapeHtml(t.name || '') + '" required>';
         html += '</div>';
 
-        // Mode
         html += '<div class="form-group">';
-        html += '<label>Mode</label>';
+        html += '<label for="tournament-mode">Mode</label>';
         html += '<select id="tournament-mode" class="tournament-mode">';
-        for (var i = 0; i < modes.length; i++) {
-            var mode = modes[i];
-            var selected = t.mode === mode ? ' selected' : '';
-            html += '<option value="' + escapeHtml(mode) + '"' + selected + '>' + escapeHtml(mode.charAt(0).toUpperCase() + mode.slice(1)) + '</option>';
+        for (var m = 0; m < modes.length; m++) {
+            var mode = modes[m];
+            var modeSelected = t.mode === mode ? ' selected' : '';
+            html += '<option value="' + escapeHtml(mode) + '"' + modeSelected + '>' + escapeHtml(mode.charAt(0).toUpperCase() + mode.slice(1)) + '</option>';
         }
         html += '</select>';
         html += '</div>';
 
-        // Week range
         html += '<div class="form-row">';
         html += '<div class="form-group">';
-        html += '<label>Start Week</label>';
+        html += '<label for="tournament-start-week">Start Week</label>';
         html += '<input type="number" id="tournament-start-week" class="tournament-start-week" value="' + escapeHtml(t.startWeek || 1) + '" min="1" max="52">';
         html += '</div>';
         html += '<div class="form-group">';
-        html += '<label>End Week</label>';
+        html += '<label for="tournament-end-week">End Week</label>';
         html += '<input type="number" id="tournament-end-week" class="tournament-end-week" value="' + escapeHtml(t.endWeek || 52) + '" min="1" max="52">';
         html += '</div>';
         html += '</div>';
 
-        // Total rounds
         html += '<div class="form-group">';
-        html += '<label>Total Rounds</label>';
+        html += '<label for="tournament-total-rounds">Total Rounds</label>';
         html += '<input type="number" id="tournament-total-rounds" class="tournament-total-rounds" value="' + escapeHtml(t.totalRounds || 1) + '" min="1">';
         html += '</div>';
 
-        // Graduating class
         html += '<div class="form-group">';
-        html += '<label>Graduating Class</label>';
+        html += '<label for="tournament-class">Graduating Class</label>';
         html += '<select id="tournament-class" class="tournament-class">';
         html += '<option value="">None</option>';
 
         var AcademyQueries = getAcademyQueries();
-        var classes = AcademyQueries ? AcademyQueries.getClasses() : [];
-        for (var i = 0; i < classes.length; i++) {
-            var cls = classes[i];
-            var selected = t.graduatingClassId && String(cls.id) === String(t.graduatingClassId) ? ' selected' : '';
-            html += '<option value="' + escapeHtml(cls.id) + '"' + selected + '>' + escapeHtml(cls.name || cls.id) + '</option>';
+        var classes = AcademyQueries && typeof AcademyQueries.getClasses === 'function'
+            ? AcademyQueries.getClasses()
+            : [];
+        for (var c = 0; c < classes.length; c++) {
+            var cls = classes[c];
+            var classSelected = t.graduatingClassId && String(cls.id) === String(t.graduatingClassId) ? ' selected' : '';
+            html += '<option value="' + escapeHtml(cls.id) + '"' + classSelected + '>' + escapeHtml(cls.name || cls.id) + '</option>';
         }
         html += '</select>';
         html += '</div>';
 
-        // Class filter
         var filterChecked = t.classFilterEnabled !== false;
         html += '<div class="form-group">';
         html += '<div style="display:flex;align-items:center;gap:6px;">';
@@ -1547,16 +1441,15 @@
         html += '</div>';
         html += '</div>';
 
-        // Status
         html += '<div class="form-group">';
-        html += '<label>Status</label>';
+        html += '<label for="tournament-status">Status</label>';
         html += '<select id="tournament-status" class="tournament-status"' + (statusDisabled ? ' disabled' : '') + '>';
-        for (var i = 0; i < statusOptions.length; i++) {
-            var opt = statusOptions[i];
-            var selected = isEdit
+        for (var s = 0; s < statusOptions.length; s++) {
+            var opt = statusOptions[s];
+            var statusSelected = isEdit
                 ? (opt.value === (t.status || 'draft') ? ' selected' : '')
                 : (opt.value === 'draft' ? ' selected' : '');
-            html += '<option value="' + escapeHtml(opt.value) + '"' + selected + '>' + escapeHtml(opt.label) + '</option>';
+            html += '<option value="' + escapeHtml(opt.value) + '"' + statusSelected + '>' + escapeHtml(opt.label) + '</option>';
         }
         html += '</select>';
         if (statusDisabled) {
@@ -1564,7 +1457,6 @@
         }
         html += '</div>';
 
-        // Actions
         html += '<div class="form-actions">';
         html += '<button type="button" class="cancel-form-btn secondary">Cancel</button>';
         html += '<button type="submit" class="primary">' + (isEdit ? 'Update' : 'Create') + ' Tournament</button>';
@@ -1589,20 +1481,18 @@
         html += '</div>';
         html += '<div class="modal-body">';
 
-        // Participant type
         var canonicalType = tournament.mode === 'teams' ? 'team' : 'character';
         var typeLabel = canonicalType === 'team' ? 'Team' : 'Character';
 
         html += '<div class="form-group">';
-        html += '<label>Type</label>';
+        html += '<label for="participant-type-select">Type</label>';
         html += '<select id="participant-type-select" class="participant-type-select">';
         html += '<option value="' + escapeHtml(canonicalType) + '">' + escapeHtml(typeLabel) + '</option>';
         html += '</select>';
         html += '</div>';
 
-        // Participant select
         html += '<div class="form-group">';
-        html += '<label>Select ' + escapeHtml(typeLabel) + '</label>';
+        html += '<label for="participant-select">Select ' + escapeHtml(typeLabel) + '</label>';
         html += '<select id="participant-select" class="participant-select" required>';
         html += '<option value="">Select...</option>';
 
@@ -1621,9 +1511,11 @@
                 }
             }
         } else if (canonicalType === 'team' && TeamQueries) {
-            var allTeams = TeamQueries.getAllActiveTeams() || [];
-            for (var i = 0; i < allTeams.length; i++) {
-                var team = allTeams[i];
+            var allTeams = typeof TeamQueries.getAllActiveTeams === 'function'
+                ? TeamQueries.getAllActiveTeams()
+                : [];
+            for (var j = 0; j < allTeams.length; j++) {
+                var team = allTeams[j];
                 if (team) {
                     participants.push({
                         id: team.id,
@@ -1634,15 +1526,14 @@
             }
         }
 
-        // Filter out existing participants
         var existingParticipants = Queries ? Queries.getParticipants(tournament.id) : [];
         var existingIds = {};
-        for (var i = 0; i < existingParticipants.length; i++) {
-            existingIds[String(existingParticipants[i].id)] = true;
+        for (var k = 0; k < existingParticipants.length; k++) {
+            existingIds[String(existingParticipants[k].id)] = true;
         }
 
-        for (var i = 0; i < participants.length; i++) {
-            var p = participants[i];
+        for (var l = 0; l < participants.length; l++) {
+            var p = participants[l];
             if (!existingIds[String(p.id)]) {
                 html += '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.name) + '</option>';
             }
@@ -1673,20 +1564,18 @@
         html += '</div>';
         html += '<div class="modal-body">';
 
-        // Match type
         html += '<div class="form-group">';
-        html += '<label>Match Type</label>';
+        html += '<label for="match-type">Match Type</label>';
         html += '<select id="match-type" class="match-type">';
         html += '<option value="standard">Standard</option>';
         html += '<option value="group_exam">Group Exam</option>';
         html += '</select>';
         html += '</div>';
 
-        // Participants
         var activeParticipants = Queries ? Queries.getActiveParticipants(tournament.id) : [];
 
         html += '<div class="form-group">';
-        html += '<label>Participant 1</label>';
+        html += '<label for="match-participant-1">Participant 1</label>';
         html += '<select id="match-participant-1" class="match-participant-1" required>';
         html += '<option value="">Select...</option>';
         for (var i = 0; i < activeParticipants.length; i++) {
@@ -1698,13 +1587,13 @@
         html += '</div>';
 
         html += '<div class="form-group">';
-        html += '<label>Participant 2</label>';
+        html += '<label for="match-participant-2">Participant 2</label>';
         html += '<select id="match-participant-2" class="match-participant-2" required>';
         html += '<option value="">Select...</option>';
-        for (var i = 0; i < activeParticipants.length; i++) {
-            var p = activeParticipants[i];
-            var name = getParticipantDisplayName(tournament.id, p.id);
-            html += '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(name) + '</option>';
+        for (var j = 0; j < activeParticipants.length; j++) {
+            var p2 = activeParticipants[j];
+            var name2 = getParticipantDisplayName(tournament.id, p2.id);
+            html += '<option value="' + escapeHtml(p2.id) + '">' + escapeHtml(name2) + '</option>';
         }
         html += '</select>';
         html += '</div>';
@@ -1731,20 +1620,18 @@
         html += '</div>';
         html += '<div class="modal-body">';
 
-        // Match type
         html += '<div class="form-group">';
-        html += '<label>Match Type</label>';
+        html += '<label for="match-type">Match Type</label>';
         html += '<select id="match-type" class="match-type">';
         html += '<option value="standard"' + (match.type === 'standard' ? ' selected' : '') + '>Standard</option>';
         html += '<option value="group_exam"' + (match.type === 'group_exam' ? ' selected' : '') + '>Group Exam</option>';
         html += '</select>';
         html += '</div>';
 
-        // Participants
         var activeParticipants = Queries ? Queries.getActiveParticipants(tournamentId) : [];
 
         html += '<div class="form-group">';
-        html += '<label>Participant 1</label>';
+        html += '<label for="match-participant-1">Participant 1</label>';
         html += '<select id="match-participant-1" class="match-participant-1" required>';
         html += '<option value="">Select...</option>';
         for (var i = 0; i < activeParticipants.length; i++) {
@@ -1757,14 +1644,14 @@
         html += '</div>';
 
         html += '<div class="form-group">';
-        html += '<label>Participant 2</label>';
+        html += '<label for="match-participant-2">Participant 2</label>';
         html += '<select id="match-participant-2" class="match-participant-2" required>';
         html += '<option value="">Select...</option>';
-        for (var i = 0; i < activeParticipants.length; i++) {
-            var p = activeParticipants[i];
-            var name = getParticipantDisplayName(tournamentId, p.id);
-            var selected = match.participants && String(match.participants[1]) === String(p.id) ? ' selected' : '';
-            html += '<option value="' + escapeHtml(p.id) + '"' + selected + '>' + escapeHtml(name) + '</option>';
+        for (var j = 0; j < activeParticipants.length; j++) {
+            var p2 = activeParticipants[j];
+            var name2 = getParticipantDisplayName(tournamentId, p2.id);
+            var selected2 = match.participants && String(match.participants[1]) === String(p2.id) ? ' selected' : '';
+            html += '<option value="' + escapeHtml(p2.id) + '"' + selected2 + '>' + escapeHtml(name2) + '</option>';
         }
         html += '</select>';
         html += '</div>';
@@ -1791,9 +1678,8 @@
 
         html += '<p class="match-info">Select the winner for this match.</p>';
 
-        // Winner select
         html += '<div class="form-group">';
-        html += '<label>Winner</label>';
+        html += '<label for="match-winner-select">Winner</label>';
         html += '<select id="match-winner-select" class="match-winner-select" required>';
         html += '<option value="">Select winner...</option>';
         if (match.participants) {
@@ -1830,7 +1716,6 @@
     // ============================================================
 
     function bindFormEvents(modal, editId) {
-        // Cancel button
         var cancelBtn = modal.querySelector('.cancel-form-btn');
         if (cancelBtn) {
             addEventListener(cancelBtn, 'click', function() {
@@ -1838,15 +1723,12 @@
             });
         }
 
-        // Close button
         var closeBtn = modal.querySelector('.close-modal');
         if (closeBtn) {
             addEventListener(closeBtn, 'click', function() {
                 handleCloseForm();
             });
         }
-
-        // Form submit is handled by the form's submit event
     }
 
     function bindAddParticipantEvents(modal, tournamentId) {
@@ -1864,7 +1746,6 @@
             });
         }
 
-        // Store tournamentId in form
         var form = modal.querySelector('#add-participant-form');
         if (form) {
             form.dataset.tournamentId = tournamentId;
@@ -1886,7 +1767,6 @@
             });
         }
 
-        // Store data in form
         var form = modal.querySelector('#add-match-form');
         if (form) {
             form.dataset.tournamentId = tournamentId;
@@ -1909,7 +1789,6 @@
             });
         }
 
-        // Store data in form
         var form = modal.querySelector('#edit-match-form');
         if (form) {
             form.dataset.tournamentId = tournamentId;
@@ -1933,7 +1812,6 @@
             });
         }
 
-        // Store data in form
         var form = modal.querySelector('#complete-match-form');
         if (form) {
             form.dataset.tournamentId = tournamentId;
