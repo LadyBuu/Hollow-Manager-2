@@ -1,90 +1,70 @@
 /**
  * modules/academy/academy-view.js - Academy Unified Shell
- * Top-level renderer for the Academy tab
+ * UI controller and coordinator for the Academy tab.
  *
  * Path: js/modules/academy/academy-view.js
  *
- * This module provides:
- *   - The unified Academy shell (view switcher)
- *   - Six views: People, Exams, Weekly Teams, Rankings, Disciplines, Locations
- *   - Delegation to AcademyClassDetail / AcademyCharacterDetail for the
- *     People view's right panel
- *   - Delegation to AcademyDisciplineView / AcademyLocationView /
- *     AcademyRankingView / AcademyWeeklyTeamsView / AcademyTournamentView
- *     for the other views
- *   - Container-level event delegation for all views
- *   - Mount/unmount of the inline grades editor after each render
- *   - Discipline inline editor: draft state, live preview, save/cancel
- *   - Character detail tabs: Student / Instructor modes
+ * RESPONSIBILITIES:
+ *   - Own the top-level Academy shell (view switcher)
+ *   - Coordinate six views: People, Exams, Weekly Teams, Rankings,
+ *     Disciplines, Locations
+ *   - Delegate rendering to the per-view renderer modules
+ *   - Delegate domain reads to AcademyAggregator / AcademyTournamentAggregator
+ *   - Delegate mutations to the appropriate domain module
+ *   - Own Academy-local UI state that is not part of AcademyUI's
+ *     typed store (per-view selected IDs, discipline draft, active
+ *     character tab)
+ *   - Bind container-level event delegation for all views
+ *   - Mount / unmount the inline grades editor after each render
  *
- * IMPORTANT:
- *   - RENDER + WIRE - no domain mutations, no business logic
- *   - Reads state from AcademyUI
- *   - Reads projections from AcademyAggregator / AcademyTournamentAggregator
- *   - Delegates rendering to per-view renderers where they exist
- *   - Delegates exam mutations to AcademyTournamentEvents
- *   - Delegates discipline mutations to AcademyDisciplines
- *   - Delegates enrollment mutations to AcademyEnrolments
- *   - Delegates social score mutations to AcademySocialScore
- *   - Uses container-level event delegation (survives innerHTML replacement)
- *   - Uses DomUtils for escaping (mandatory, no fallbacks)
+ * NOT RESPONSIBILITIES:
+ *   - Domain reads. Those happen in the aggregators.
+ *   - Domain validation. That happens in the domain modules.
+ *   - Domain mutation. Those are delegated to the owning module.
+ *   - Filtering the People roster. That is
+ *     AcademyAggregator.getPeopleViewModel.
  *
- * DEPENDENCY MODEL:
- *   Mandatory:
- *     - AcademyUI
- *     - AcademyAggregator
- *     - AcademyTournamentAggregator
- *     - DomUtils
- *     - CalendarConstants
+ * ROLE VOCABULARY (CANONICAL):
+ *   'student' | 'instructor'. There is no 'trainee'.
  *
- *   Degraded / lazy:
- *     - CharacterQueries  (character identity in a few confirmation prompts)
- *     - AcademyEnrolments (preferred path for enrollment mutations)
- *     - AcademySocialScore (set-social-score action)
- *     - AcademyCRUDModals / AcademyTournamentEvents / AcademyGradesEditor
- *     - AcademyClassDetail / AcademyCharacterDetail / per-view renderers
+ * WEEK SEMANTICS:
+ *   Week values are owned by AcademyUI.setDisplayWeek, which enforces
+ *   a strict integer parse. This module does not parse weeks itself.
  *
- * ENROLLMENT MODEL (Phase 4):
- *   - Enrollment is class-scoped. Source of truth is
- *     AcademyEnrolments.getStudentDisciplines(charId, classId).
- *   - character.disciplineIds is NOT read by this module.
- *   - Enroll and leave actions call AcademyEnrolments.enrol / .leave.
+ * ACTION ROUTING:
+ *   Actions carry a prefix (people-, character-, discipline-,
+ *   location-, ranking-, weekly-teams-, exam-) so dispatch is
+ *   deterministic and does not rely on handler chaining.
  *
- * SOCIAL SCORE MODEL (Phase 5):
- *   - Social score is class + week scoped. Source of truth is
- *     AcademySocialScore.
- *   - The set-social-score action routes to AcademySocialScore.
+ * MODULE-LOCAL UI STATE (NOT in AcademyUI):
+ *   _selectedExamClassId
+ *   _selectedRankingClassId
+ *   _selectedWeeklyTeamsClassId
+ *   _selectedWeeklyTeamId
+ *   _selectedLocationId
+ *   _selectedDisciplineId
+ *   _disciplineDraft / _disciplineDraftMode / _disciplineDraftErrors
+ *   _activeCharacterTab (character detail tab within People)
  *
- * ROLE VOCABULARY (FROZEN):
- *   The People view filter uses three values: 'all', 'trainee',
- *   'instructor'. The class VM's `students` array uses 'trainee' and
- *   'instructor' for its display roles. This module normalises the
- *   comparison at the filter layer: any student-role entry whose
- *   role is 'trainee' matches the 'trainee' filter. The class VM
- *   keeps the 'trainee' spelling for its own consumers
- *   (academy-class-detail.js). Do not rename the vocabulary here —
- *   that would ripple into the class VM and its other consumer.
+ * DEPENDENCIES (MANDATORY):
+ *   - AcademyUI
+ *   - AcademyAggregator
+ *   - AcademyTournamentAggregator
+ *   - DomUtils
+ *   - CalendarConstants
  *
- * CLASS SELECTION SEMANTICS:
- *   - AcademyUI.selectClass(classId) is a pure setter: it clears the
- *     character selection on every class change.
- *   - This module preserves the character selection when the
- *     character is still a member (or the instructor) of the newly
- *     selected class. The check lives here because the roster VM
- *     is available here and nowhere in the UI-state layer.
- *
- * DISCIPLINE EDITOR STATE MACHINE:
- *   - The inline editor draft is owned by this module.
- *   - Draft includes assessmentWeights (Phase 3).
- *   - Save sends assessmentWeights to AcademyDisciplines.
- *
- * CHARACTER DETAIL STATE:
- *   - _activeCharacterTab is module-scoped. Reset to 'main' whenever
- *     the selected character changes.
- *   - Mode (student / instructor) is persisted in AcademyUI.
- *
- * USAGE:
- *   AcademyView.render(container);
+ * DEPENDENCIES (OPTIONAL, feature-scoped):
+ *   - CharacterQueries (only for the character edit event payload)
+ *   - AcademyDisciplines
+ *   - AcademyEnrolments
+ *   - AcademyGroups
+ *   - CharacterEliminations
+ *   - AcademyCRUDModals
+ *   - AcademyTournamentEvents
+ *   - AcademyGradesEditor
+ *   - AcademyCharacterDetail / AcademyClassDetail
+ *   - AcademyDisciplineView / AcademyLocationView / AcademyRankingView /
+ *     AcademyWeeklyTeamsView / AcademyTournamentView
  */
 
 (function() {
@@ -93,10 +73,9 @@
     if (window.__academyViewLoaded) {
         return;
     }
-    window.__academyViewLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY IMPORTS - MANDATORY (throws if missing)
     // ============================================================
 
     var AcademyUI = window.AcademyUI;
@@ -105,88 +84,106 @@
     var DomUtils = window.DomUtils;
     var CalendarConstants = window.CalendarConstants;
 
-    // Lazy / degraded accessors.
-    function getCharacterQueries() { return window.CharacterQueries || null; }
-    function getAcademyEnrolments() { return window.AcademyEnrolments || null; }
-    function getAcademySocialScore() { return window.AcademySocialScore || null; }
+    var _missing = [];
 
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-
-    function checkDependencies() {
-        var missing = [];
-
-        if (!AcademyUI || typeof AcademyUI.getSelectedView !== 'function') {
-            missing.push('AcademyUI.getSelectedView');
-        }
-        if (!AcademyUI || typeof AcademyUI.getSelectedClassId !== 'function') {
-            missing.push('AcademyUI.getSelectedClassId');
-        }
-        if (!AcademyUI || typeof AcademyUI.getSelectedCharacterId !== 'function') {
-            missing.push('AcademyUI.getSelectedCharacterId');
-        }
-        if (!AcademyUI || typeof AcademyUI.getDisplayWeek !== 'function') {
-            missing.push('AcademyUI.getDisplayWeek');
-        }
-        if (!AcademyUI || typeof AcademyUI.getCharacterMode !== 'function') {
-            missing.push('AcademyUI.getCharacterMode');
-        }
-        if (!AcademyUI || typeof AcademyUI.setCharacterMode !== 'function') {
-            missing.push('AcademyUI.setCharacterMode');
-        }
-
-        if (!AcademyAggregator ||
-            typeof AcademyAggregator.getClassListViewModel !== 'function') {
-            missing.push('AcademyAggregator.getClassListViewModel');
-        }
-        if (!AcademyAggregator ||
-            typeof AcademyAggregator.getClassViewModel !== 'function') {
-            missing.push('AcademyAggregator.getClassViewModel');
-        }
-        if (!AcademyAggregator ||
-            typeof AcademyAggregator.getWeeklyTeamsViewViewModel !== 'function') {
-            missing.push('AcademyAggregator.getWeeklyTeamsViewViewModel');
-        }
-        if (!AcademyAggregator ||
-            typeof AcademyAggregator.getLocationViewViewModel !== 'function') {
-            missing.push('AcademyAggregator.getLocationViewViewModel');
-        }
-        if (!AcademyAggregator ||
-            typeof AcademyAggregator.getRankingViewViewModel !== 'function') {
-            missing.push('AcademyAggregator.getRankingViewViewModel');
-        }
-        if (!AcademyAggregator ||
-            typeof AcademyAggregator.getDisciplineListViewModel !== 'function') {
-            missing.push('AcademyAggregator.getDisciplineListViewModel');
-        }
-
-        if (!AcademyTournamentAggregator ||
-            typeof AcademyTournamentAggregator.getExamViewModel !== 'function') {
-            missing.push('AcademyTournamentAggregator.getExamViewModel');
-        }
-
-        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
-            missing.push('DomUtils.escapeHtml');
-        }
-        if (!DomUtils || typeof DomUtils.escapeAttribute !== 'function') {
-            missing.push('DomUtils.escapeAttribute');
-        }
-
-        if (!CalendarConstants) {
-            missing.push('CalendarConstants');
-        }
-
-        if (missing.length > 0) {
-            console.warn('[AcademyView] Missing dependencies:', missing.join(', '));
-            return false;
-        }
-
-        return true;
+    if (!AcademyUI || typeof AcademyUI.getSelectedView !== 'function') {
+        _missing.push('AcademyUI.getSelectedView');
+    }
+    if (!AcademyUI || typeof AcademyUI.getSelectedClassId !== 'function') {
+        _missing.push('AcademyUI.getSelectedClassId');
+    }
+    if (!AcademyUI || typeof AcademyUI.getSelectedCharacterId !== 'function') {
+        _missing.push('AcademyUI.getSelectedCharacterId');
+    }
+    if (!AcademyUI || typeof AcademyUI.getDisplayWeek !== 'function') {
+        _missing.push('AcademyUI.getDisplayWeek');
+    }
+    if (!AcademyUI || typeof AcademyUI.setDisplayWeek !== 'function') {
+        _missing.push('AcademyUI.setDisplayWeek');
+    }
+    if (!AcademyUI || typeof AcademyUI.getCharacterMode !== 'function') {
+        _missing.push('AcademyUI.getCharacterMode');
+    }
+    if (!AcademyUI || typeof AcademyUI.setCharacterMode !== 'function') {
+        _missing.push('AcademyUI.setCharacterMode');
+    }
+    if (!AcademyUI || typeof AcademyUI.getPeopleFilter !== 'function') {
+        _missing.push('AcademyUI.getPeopleFilter');
+    }
+    if (!AcademyUI || typeof AcademyUI.setPeopleFilter !== 'function') {
+        _missing.push('AcademyUI.setPeopleFilter');
     }
 
+    if (!AcademyAggregator || typeof AcademyAggregator.getClassListViewModel !== 'function') {
+        _missing.push('AcademyAggregator.getClassListViewModel');
+    }
+    if (!AcademyAggregator || typeof AcademyAggregator.getClassViewModel !== 'function') {
+        _missing.push('AcademyAggregator.getClassViewModel');
+    }
+    if (!AcademyAggregator || typeof AcademyAggregator.getClassStudentsViewModel !== 'function') {
+        _missing.push('AcademyAggregator.getClassStudentsViewModel');
+    }
+    if (!AcademyAggregator || typeof AcademyAggregator.getDisciplineListViewModel !== 'function') {
+        _missing.push('AcademyAggregator.getDisciplineListViewModel');
+    }
+    if (!AcademyAggregator || typeof AcademyAggregator.getWeeklyTeamsViewModel !== 'function') {
+        _missing.push('AcademyAggregator.getWeeklyTeamsViewModel');
+    }
+    if (!AcademyAggregator || typeof AcademyAggregator.getLocationViewModel !== 'function') {
+        _missing.push('AcademyAggregator.getLocationViewModel');
+    }
+    if (!AcademyAggregator || typeof AcademyAggregator.getRankingViewModel !== 'function') {
+        _missing.push('AcademyAggregator.getRankingViewModel');
+    }
+
+    if (!AcademyTournamentAggregator ||
+        typeof AcademyTournamentAggregator.getExamViewModel !== 'function') {
+        _missing.push('AcademyTournamentAggregator.getExamViewModel');
+    }
+
+    if (!DomUtils ||
+        typeof DomUtils.escapeHtml !== 'function' ||
+        typeof DomUtils.escapeAttribute !== 'function') {
+        _missing.push('DomUtils.escapeHtml/escapeAttribute');
+    }
+
+    if (!CalendarConstants ||
+        typeof CalendarConstants.MIN_WEEK !== 'number' ||
+        typeof CalendarConstants.MAX_WEEK !== 'number') {
+        _missing.push('CalendarConstants.MIN_WEEK/MAX_WEEK');
+    }
+
+    if (_missing.length > 0) {
+        throw new Error(
+            '[AcademyView] Missing mandatory dependencies: ' +
+            _missing.join(', ')
+        );
+    }
+
+    window.__academyViewLoaded = true;
+
     // ============================================================
-    // HELPERS
+    // OPTIONAL DEPENDENCY ACCESSORS
+    // ============================================================
+
+    function getCharacterQueries() { return window.CharacterQueries || null; }
+    function getAcademyDisciplines() { return window.AcademyDisciplines || null; }
+    function getAcademyEnrolments() { return window.AcademyEnrolments || null; }
+    function getAcademyGroups() { return window.AcademyGroups || null; }
+    function getAcademyCRUDModals() { return window.AcademyCRUDModals || null; }
+    function getAcademyTournamentEvents() { return window.AcademyTournamentEvents || null; }
+    function getAcademyGradesEditor() { return window.AcademyGradesEditor || null; }
+    function getCharacterDetailModule() { return window.AcademyCharacterDetail || null; }
+    function getClassDetailModule() { return window.AcademyClassDetail || null; }
+    function getDisciplineViewModule() { return window.AcademyDisciplineView || null; }
+    function getLocationViewModule() { return window.AcademyLocationView || null; }
+    function getRankingViewModule() { return window.AcademyRankingView || null; }
+    function getWeeklyTeamsViewModule() { return window.AcademyWeeklyTeamsView || null; }
+    function getTournamentViewModule() { return window.AcademyTournamentView || null; }
+    function getNotificationSystem() { return window.NotificationSystem || null; }
+
+    // ============================================================
+    // ESCAPING
     // ============================================================
 
     function escapeHtml(value) {
@@ -197,95 +194,19 @@
         return DomUtils.escapeAttribute(value);
     }
 
-    function getMinWeek() {
-        return CalendarConstants.MIN_WEEK;
-    }
-
-    function getMaxWeek() {
-        return CalendarConstants.MAX_WEEK;
-    }
-
-    function getClassDetailModule() {
-        return window.AcademyClassDetail || window.ClassDetail || null;
-    }
-
-    function getCharacterDetailModule() {
-        return window.AcademyCharacterDetail || null;
-    }
-
-    function getDisciplineViewModule() {
-        return window.AcademyDisciplineView || null;
-    }
-
-    function getLocationViewModule() {
-        return window.AcademyLocationView || null;
-    }
-
-    function getRankingViewModule() {
-        return window.AcademyRankingView || null;
-    }
-
-    function getWeeklyTeamsViewModule() {
-        return window.AcademyWeeklyTeamsView || null;
-    }
-
-    function getTournamentViewModule() {
-        return window.AcademyTournamentView || null;
-    }
-
-    function getTournamentEventsModule() {
-        return window.AcademyTournamentEvents || null;
-    }
-
-    function getGradesEditorModule() {
-        return window.AcademyGradesEditor || null;
-    }
-
     function notify(message, type) {
-        if (window.NotificationSystem &&
-            typeof window.NotificationSystem.notify === 'function') {
-            window.NotificationSystem.notify(message, type || 'info');
+        var NS = getNotificationSystem();
+        if (NS && typeof NS.notify === 'function') {
+            NS.notify(message, type || 'info');
         }
     }
 
     // ============================================================
-    // CLASS VM MEMBERSHIP CHECK
+    // CONSTANTS
     // ============================================================
-    //
-    // Does the character appear in the class VM's roster?
-    //
-    // The class VM stitches the instructor into the roster with
-    // role: 'instructor'. Students come in with role: 'trainee'.
-    // Membership therefore covers both the roster and the instructor
-    // relationship, which is the correct answer to "should the
-    // character selection survive a class switch".
 
-    function isCharacterInClassVM(charId, classVM) {
-        if (!charId || !classVM) {
-            return false;
-        }
-        var target = String(charId);
-
-        if (classVM.instructorId &&
-            String(classVM.instructorId) === target) {
-            return true;
-        }
-
-        if (Array.isArray(classVM.students)) {
-            for (var i = 0; i < classVM.students.length; i++) {
-                var s = classVM.students[i];
-                if (s && String(s.id) === target) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    // ============================================================
-    // VIEW DEFINITIONS
-    // ============================================================
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
 
     var VIEWS = [
         { id: 'people',       label: 'People' },
@@ -296,50 +217,50 @@
         { id: 'locations',    label: 'Locations' }
     ];
 
+    var VALID_VIEW_IDS = VIEWS.map(function(v) { return v.id; });
+
     // ============================================================
-    // CHARACTER DETAIL — MODULE STATE
+    // MODULE STATE
     // ============================================================
 
+    // Character detail panel tab. Reset when the selected character
+    // changes (see resetCharacterTabIfChanged).
     var _activeCharacterTab = 'main';
-    var _lastCharacterId = null;
+    var _lastCharacterIdForTab = null;
 
-    function getActiveCharacterTab() {
-        return _activeCharacterTab;
-    }
-
-    function setActiveCharacterTab(tab) {
-        _activeCharacterTab = tab || 'main';
-    }
-
-    function resetCharacterTabIfChanged(charId) {
-        var normalised = charId ? String(charId) : null;
-        if (_lastCharacterId !== normalised) {
-            _lastCharacterId = normalised;
-            _activeCharacterTab = 'main';
-        }
-    }
-
-    // ============================================================
-    // VIEW-SCOPED SELECTION STATE
-    // ============================================================
-
+    // Per-view class/selection state. Not part of AcademyUI because
+    // these are view-local; the cross-view selection (People class +
+    // character) lives in AcademyUI.
     var _selectedExamClassId = null;
     var _selectedRankingClassId = null;
     var _selectedWeeklyTeamsClassId = null;
     var _selectedWeeklyTeamId = null;
     var _selectedLocationId = null;
 
-    // ============================================================
-    // DISCIPLINE EDITOR — MODULE STATE
-    // ============================================================
-
+    // Discipline editor draft. The editor is inline; the draft is
+    // owned by this view and submitted to AcademyDisciplines.
     var _selectedDisciplineId = null;
     var _disciplineDraft = null;
     var _disciplineDraftMode = 'empty';
     var _disciplineDraftErrors = {};
 
+    // Container and listener bookkeeping.
+    var _boundContainer = null;
+    var _boundHandlers = null;
+
+    // Debounce timers. Cancelled on unbind.
+    var _searchTimer = null;
+    var _disciplineSearchTimer = null;
+    var _locationSearchTimer = null;
+
+    // Academy-UI-local discipline and location filter state. The
+    // cross-view People filter lives in AcademyUI; these two filter
+    // sets are local because AcademyUI does not model them.
+    var _disciplineFilters = { type: 'all', search: '' };
+    var _locationFilters = { type: 'all', search: '' };
+
     // ============================================================
-    // RENDER - Top-level entry point
+    // ENTRY POINT
     // ============================================================
 
     function render(container) {
@@ -347,34 +268,59 @@
             container = document.getElementById('tab-academy');
         }
         if (!container) {
-            console.warn('[AcademyView] Container not found');
-            return;
-        }
-
-        if (!checkDependencies()) {
-            container.innerHTML =
-                '<p class="empty-state">Academy view dependencies not loaded.</p>';
             return;
         }
 
         var view = AcademyUI.getSelectedView();
+        if (VALID_VIEW_IDS.indexOf(view) === -1) {
+            view = 'people';
+        }
 
-        container.innerHTML =
-            renderViewNav(view) +
-            renderBody(view);
+        var html = '';
+        html += renderViewNav(view);
+
+        switch (view) {
+            case 'people':
+                html += renderPeopleView();
+                break;
+            case 'tournaments':
+                html += renderTournamentView();
+                break;
+            case 'weeklyTeams':
+                html += renderWeeklyTeamsView();
+                break;
+            case 'rankings':
+                html += renderRankingView();
+                break;
+            case 'disciplines':
+                html += renderDisciplineView();
+                break;
+            case 'locations':
+                html += renderLocationView();
+                break;
+            default:
+                html += renderPlaceholder('Unknown view: ' + view);
+        }
+
+        container.innerHTML = html;
 
         bindEvents(container);
-
-        if (window.AcademyCRUDModals &&
-            typeof window.AcademyCRUDModals.setOnChangeCallback === 'function') {
-            window.AcademyCRUDModals.setOnChangeCallback(refreshView);
-        }
-        if (window.AcademyTournamentEvents &&
-            typeof window.AcademyTournamentEvents.setOnChangeCallback === 'function') {
-            window.AcademyTournamentEvents.setOnChangeCallback(refreshView);
-        }
-
+        wireCRUDModalsCallbacks();
         mountGradesEditorIfPresent();
+    }
+
+    function refreshView() {
+        if (!_boundContainer) {
+            return;
+        }
+        render(_boundContainer);
+    }
+
+    function unmount() {
+        cancelAllDebounceTimers();
+        unbindEvents();
+        unmountGradesEditor();
+        _boundContainer = null;
     }
 
     // ============================================================
@@ -383,50 +329,23 @@
 
     function renderViewNav(activeView) {
         var html = '<div class="academy-view-nav">';
-
         for (var i = 0; i < VIEWS.length; i++) {
             var v = VIEWS[i];
             var isActive = v.id === activeView;
-            html += '<button class="academy-view-btn' +
-                        (isActive ? ' active' : '') + '" ' +
-                        'data-view="' + escapeAttribute(v.id) + '" ' +
-                        'type="button">' +
+            html += '<button type="button" ' +
+                        'class="academy-view-btn' + (isActive ? ' active' : '') + '" ' +
+                        'data-view="' + escapeAttribute(v.id) + '">' +
                         escapeHtml(v.label) +
                     '</button>';
         }
-
         html += '</div>';
         return html;
-    }
-
-    // ============================================================
-    // BODY - Dispatches by view
-    // ============================================================
-
-    function renderBody(view) {
-        switch (view) {
-            case 'people':
-                return renderPeopleView();
-            case 'tournaments':
-                return renderTournamentView();
-            case 'weeklyTeams':
-                return renderWeeklyTeamsView();
-            case 'rankings':
-                return renderRankingView();
-            case 'disciplines':
-                return renderDisciplineView();
-            case 'locations':
-                return renderLocationView();
-            default:
-                return renderPlaceholder('Unknown view: ' + view);
-        }
     }
 
     function renderPlaceholder(label) {
         return (
             '<div class="academy-body academy-body-placeholder">' +
-                '<p class="empty-state">' + escapeHtml(label) +
-                    ' view coming soon.</p>' +
+                '<p class="empty-state">' + escapeHtml(label) + '</p>' +
             '</div>'
         );
     }
@@ -436,23 +355,20 @@
     // ============================================================
 
     function renderPeopleView() {
-        var html = '';
-        html += renderPeopleTopBar();
-
         var classId = AcademyUI.getSelectedClassId();
         var charId = AcademyUI.getSelectedCharacterId();
 
+        var html = '';
+        html += renderPeopleTopBar(classId);
+
         if (!classId) {
             html += '<div class="academy-body academy-body-empty">' +
-                        '<p class="empty-state">' +
-                            'Select a class to view its members.' +
-                        '</p>' +
+                        '<p class="empty-state">Select a class to view its members.</p>' +
                     '</div>';
             return html;
         }
 
         var classVM = AcademyAggregator.getClassViewModel(classId);
-
         if (!classVM) {
             html += '<div class="academy-body academy-body-empty">' +
                         '<p class="empty-state">Class not found.</p>' +
@@ -460,177 +376,243 @@
             return html;
         }
 
-        html += '<div class="academy-body academy-people-layout">' +
-                    renderCharacterPanel(classVM, charId) +
-                    renderDetailPanel(classVM, charId) +
-                '</div>';
+        html += '<div class="academy-body academy-people-layout">';
 
+        // Left: filters + character list, built from the aggregator's
+        // People VM. This VM carries the class-list, the class id and
+        // name, the filter values that were applied, the filtered
+        // people, and total / filtered counts.
+        var peopleVM = buildPeopleViewModel(classId, charId);
+        html += renderPeopleSidebar(peopleVM);
+
+        // Right: class detail (no character selected) or character detail.
+        html += '<div class="academy-people-detail" id="academy-people-detail">';
+        if (charId) {
+            resetCharacterTabIfChanged(charId);
+            html += renderCharacterDetailContent(classVM, charId);
+        } else {
+            _lastCharacterIdForTab = null;
+            _activeCharacterTab = 'main';
+            html += renderClassDetailContent(classVM);
+        }
+        html += '</div>';
+
+        html += '</div>';
         return html;
     }
 
-    function renderPeopleTopBar() {
-        var classId = AcademyUI.getSelectedClassId();
-        var week = AcademyUI.getDisplayWeek();
+    /**
+     * Build the People VM. Uses the AcademyAggregator roster projection
+     * for the class and applies the People filter from AcademyUI.
+     *
+     * The roster is AcademyAggregator.getClassStudentsViewModel(classId).
+     * This returns students only (no instructor). The instructor is
+     * stitched in via the class VM's instructorId when it should appear
+     * in the roster list.
+     *
+     * After this file is fully split, this logic moves into
+     * AcademyAggregator.getPeopleViewModel.
+     */
+    function buildPeopleViewModel(classId, selectedCharacterId) {
+        var classVM = AcademyAggregator.getClassViewModel(classId);
+        var classList = AcademyAggregator.getClassListViewModel() || [];
+        var students = AcademyAggregator.getClassStudentsViewModel(classId) || [];
 
-        var html = '<div class="academy-top-bar">';
-
-        html += '<div class="academy-top-left">';
-        html += '<label class="academy-top-label">Class:</label>';
-        html += '<select id="academy-class-select" class="academy-class-select">';
-        html += '<option value="">Select a class...</option>';
-
-        var classes = AcademyAggregator.getClassListViewModel() || [];
-
-        for (var i = 0; i < classes.length; i++) {
-            var cls = classes[i];
-            if (!cls || !cls.id) { continue; }
-            var isSelected = classId && String(classId) === String(cls.id);
-            html += '<option value="' + escapeAttribute(cls.id) + '" ' +
-                (isSelected ? 'selected' : '') + '>' +
-                escapeHtml(cls.name) +
-                '</option>';
+        // Stitch the instructor into the roster for display. The
+        // instructor is a member of the class but is not in
+        // character.classIds, so the roster projection excludes them.
+        if (classVM && classVM.instructorId) {
+            var alreadyPresent = false;
+            for (var i = 0; i < students.length; i++) {
+                if (String(students[i].id) === String(classVM.instructorId)) {
+                    alreadyPresent = true;
+                    break;
+                }
+            }
+            if (!alreadyPresent) {
+                var instructor = null;
+                var CQ = getCharacterQueries();
+                if (CQ && typeof CQ.getCharacterById === 'function') {
+                    instructor = CQ.getCharacterById(classVM.instructorId);
+                }
+                if (instructor) {
+                    students = students.concat([{
+                        id: instructor.id,
+                        name: CQ.getDisplayName(instructor),
+                        status: CQ.getCurrentStatus(instructor),
+                        age: CQ.getCharacterAge(instructor),
+                        deceased: instructor.deceased === true,
+                        role: 'instructor'
+                    }]);
+                }
+            }
         }
 
-        html += '</select>';
-        html += '<button id="academy-add-class-btn" class="primary small" ' +
-                    'type="button">+ Add Class</button>';
-        html += '</div>';
-
-        html += '<div class="academy-top-right">';
-        html += '<label class="academy-top-label">Week:</label>';
-        html += '<input type="number" id="academy-week-input" ' +
-                    'class="academy-week-input" ' +
-                    'value="' + escapeAttribute(String(week)) + '" ' +
-                    'min="' + getMinWeek() + '" max="' + getMaxWeek() + '">';
-        html += '</div>';
-
-        html += '</div>';
-        return html;
-    }
-
-    function renderCharacterPanel(classVM, selectedCharId) {
-        var html = '<div class="academy-people-sidebar">';
-        html += renderCharacterFilters();
-        html += '<div class="academy-character-list" id="academy-character-list">';
-        html += renderCharacterListItems(classVM, selectedCharId);
-        html += '</div>';
-        html += '</div>';
-        return html;
-    }
-
-    function renderCharacterFilters() {
-        var filters = AcademyUI.getFilter('people') || {};
-
-        var search = filters.search || '';
-        var role = filters.role || 'all';
-        var status = filters.status || 'active';
-
-        var html = '<div class="academy-character-filters">';
-
-        html += '<input type="text" id="academy-people-search" ' +
-                    'class="academy-people-search" ' +
-                    'placeholder="Search..." ' +
-                    'value="' + escapeAttribute(search) + '">';
-
-        html += '<label class="academy-filter-label">Role:</label>';
-        html += '<select id="academy-people-role" class="academy-people-role">';
-        html += '<option value="all" ' +
-                    (role === 'all' ? 'selected' : '') + '>All</option>';
-        html += '<option value="trainee" ' +
-                    (role === 'trainee' ? 'selected' : '') + '>Trainees</option>';
-        html += '<option value="instructor" ' +
-                    (role === 'instructor' ? 'selected' : '') + '>Instructors</option>';
-        html += '</select>';
-
-        html += '<label class="academy-filter-label">Status:</label>';
-        html += '<select id="academy-people-status" class="academy-people-status">';
-        html += '<option value="active" ' +
-                    (status === 'active' ? 'selected' : '') + '>Active</option>';
-        html += '<option value="eliminated" ' +
-                    (status === 'eliminated' ? 'selected' : '') + '>Eliminated</option>';
-        html += '<option value="deceased" ' +
-                    (status === 'deceased' ? 'selected' : '') + '>Deceased</option>';
-        html += '<option value="all" ' +
-                    (status === 'all' ? 'selected' : '') + '>All</option>';
-        html += '</select>';
-
-        html += '</div>';
-        return html;
-    }
-
-    function renderCharacterListItems(classVM, selectedCharId) {
-        var allStudents = classVM.students || [];
-        var filters = AcademyUI.getFilter('people') || {};
+        var filters = AcademyUI.getPeopleFilter();
         var search = (filters.search || '').toLowerCase().trim();
         var roleFilter = filters.role || 'all';
         var statusFilter = filters.status || 'active';
 
-        var filtered = allStudents.filter(function(student) {
-            if (search && student.name.toLowerCase().indexOf(search) === -1) {
+        var filtered = students.filter(function(person) {
+            if (search && person.name.toLowerCase().indexOf(search) === -1) {
                 return false;
             }
-            if (roleFilter !== 'all' && student.role !== roleFilter) {
+            if (roleFilter !== 'all' && person.role !== roleFilter) {
                 return false;
             }
             if (statusFilter !== 'all') {
-                var isDeceased = student.deceased === true;
+                var isDeceased = person.deceased === true;
                 if (statusFilter === 'deceased' && !isDeceased) { return false; }
                 if (statusFilter === 'active' && isDeceased) { return false; }
             }
             return true;
         });
 
-        if (filtered.length === 0) {
-            return '<p class="empty-state small">' +
-                        'No characters match the current filters.' +
-                    '</p>';
-        }
+        filtered.sort(function(a, b) {
+            if (a.role !== b.role) {
+                return a.role === 'student' ? -1 : 1;
+            }
+            return a.name.localeCompare(b.name);
+        });
+
+        var people = filtered.map(function(person) {
+            return {
+                id: person.id,
+                name: person.name,
+                status: person.status,
+                role: person.role,
+                deceased: person.deceased === true,
+                isSelected: selectedCharacterId !== null &&
+                    String(person.id) === String(selectedCharacterId)
+            };
+        });
+
+        return {
+            classList: classList,
+            classId: classId,
+            className: classVM ? classVM.name : null,
+            filters: filters,
+            people: people,
+            totalCount: students.length,
+            filteredCount: people.length
+        };
+    }
+
+    function renderPeopleTopBar(selectedClassId) {
+        var week = AcademyUI.getDisplayWeek();
+        var classes = AcademyAggregator.getClassListViewModel() || [];
 
         var html = '';
-        for (var i = 0; i < filtered.length; i++) {
-            var s = filtered[i];
-            var isSelected = selectedCharId &&
-                String(selectedCharId) === String(s.id);
+        html += '<div class="academy-top-bar">';
 
-            var classes = 'academy-character-row';
-            if (isSelected) { classes += ' selected'; }
-            if (s.deceased) { classes += ' deceased'; }
-
-            html += '<div class="' + classes + '" ' +
-                        'data-character-id="' + escapeAttribute(s.id) + '">';
-
-            html += '<div class="academy-character-row-main">';
-            html += '<span class="academy-character-name">' +
-                        escapeHtml(s.name) +
-                    '</span>';
-            if (s.role === 'instructor') {
-                html += '<span class="academy-character-role-badge">' +
-                            'Instructor</span>';
-            }
-            html += '</div>';
-
-            if (s.status) {
-                html += '<div class="academy-character-row-status">' +
-                            escapeHtml(s.status) +
-                        '</div>';
-            }
-
-            html += '</div>';
+        html += '<div class="academy-top-left">';
+        html += '<label class="academy-top-label" for="academy-class-select">Class:</label>';
+        html += '<select id="academy-class-select" class="academy-class-select">';
+        html += '<option value="">Select a class...</option>';
+        for (var i = 0; i < classes.length; i++) {
+            var cls = classes[i];
+            if (!cls || !cls.id) { continue; }
+            var isSelected = selectedClassId && String(selectedClassId) === String(cls.id);
+            html += '<option value="' + escapeAttribute(cls.id) + '"' +
+                        (isSelected ? ' selected' : '') + '>' +
+                        escapeHtml(cls.name) +
+                    '</option>';
         }
+        html += '</select>';
+        html += '<button type="button" id="academy-add-class-btn" class="primary small">+ Add Class</button>';
+        html += '</div>';
+
+        html += '<div class="academy-top-right">';
+        html += '<label class="academy-top-label" for="academy-week-input">Week:</label>';
+        html += '<input type="number" id="academy-week-input" class="academy-week-input" ' +
+                    'value="' + escapeAttribute(String(week)) + '" ' +
+                    'min="' + MIN_WEEK + '" max="' + MAX_WEEK + '">';
+        html += '</div>';
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderPeopleSidebar(vm) {
+        var filters = vm.filters || { search: '', role: 'all', status: 'active' };
+
+        var html = '<div class="academy-people-sidebar">';
+
+        html += '<div class="academy-character-filters">';
+
+        html += '<input type="text" id="academy-people-search" ' +
+                    'class="academy-people-search" ' +
+                    'placeholder="Search..." ' +
+                    'value="' + escapeAttribute(filters.search || '') + '">';
+
+        html += '<label class="academy-filter-label" for="academy-people-role">Role:</label>';
+        html += '<select id="academy-people-role" class="academy-people-role">';
+        html += '<option value="all"' +
+                    (filters.role === 'all' ? ' selected' : '') + '>All</option>';
+        html += '<option value="student"' +
+                    (filters.role === 'student' ? ' selected' : '') + '>Students</option>';
+        html += '<option value="instructor"' +
+                    (filters.role === 'instructor' ? ' selected' : '') + '>Instructors</option>';
+        html += '</select>';
+
+        html += '<label class="academy-filter-label" for="academy-people-status">Status:</label>';
+        html += '<select id="academy-people-status" class="academy-people-status">';
+        html += '<option value="active"' +
+                    (filters.status === 'active' ? ' selected' : '') + '>Active</option>';
+        html += '<option value="eliminated"' +
+                    (filters.status === 'eliminated' ? ' selected' : '') + '>Eliminated</option>';
+        html += '<option value="deceased"' +
+                    (filters.status === 'deceased' ? ' selected' : '') + '>Deceased</option>';
+        html += '<option value="all"' +
+                    (filters.status === 'all' ? ' selected' : '') + '>All</option>';
+        html += '</select>';
+
+        html += '</div>';
+
+        html += '<div class="academy-character-list" id="academy-character-list">';
+
+        var people = vm.people || [];
+        if (people.length === 0) {
+            html += '<p class="empty-state small">No characters match the current filters.</p>';
+        } else {
+            for (var i = 0; i < people.length; i++) {
+                html += renderPersonRow(people[i]);
+            }
+        }
+
+        html += '</div>';
+        html += '</div>';
 
         return html;
     }
 
-    function renderDetailPanel(classVM, charId) {
-        var html = '<div class="academy-people-detail" id="academy-people-detail">';
+    function renderPersonRow(person) {
+        if (!person || !person.id) {
+            return '';
+        }
 
-        if (charId) {
-            resetCharacterTabIfChanged(charId);
-            html += renderCharacterDetailContent(classVM, charId);
-        } else {
-            _lastCharacterId = null;
-            _activeCharacterTab = 'main';
-            html += renderClassDetailContent(classVM);
+        var classes = 'academy-character-row';
+        if (person.isSelected) { classes += ' selected'; }
+        if (person.deceased) { classes += ' deceased'; }
+
+        var html = '';
+        html += '<div class="' + classes + '" ' +
+                    'data-character-id="' + escapeAttribute(person.id) + '" ' +
+                    'role="button" tabindex="0">';
+
+        html += '<div class="academy-character-row-main">';
+        html += '<span class="academy-character-name">' +
+                    escapeHtml(person.name || 'Unknown') +
+                '</span>';
+        if (person.role === 'instructor') {
+            html += '<span class="academy-character-role-badge">Instructor</span>';
+        }
+        html += '</div>';
+
+        if (person.status) {
+            html += '<div class="academy-character-row-status">' +
+                        escapeHtml(person.status) +
+                    '</div>';
         }
 
         html += '</div>';
@@ -643,108 +625,300 @@
             try {
                 return ClassDetail.renderHTML(classVM);
             } catch (e) {
-                console.warn('[AcademyView] ClassDetail.renderHTML failed:', e);
+                console.warn('[AcademyView] AcademyClassDetail.renderHTML failed:', e);
             }
         }
-
         return (
             '<div class="academy-detail-placeholder">' +
                 '<h3>' + escapeHtml(classVM.name || 'Class') + '</h3>' +
-                '<p class="empty-state small">Class detail view coming soon.</p>' +
+                '<p class="empty-state small">Class detail view not available.</p>' +
             '</div>'
         );
     }
 
-    function renderCharacterDetailContent(classVM, charId) {
+    /**
+     * Build the character detail VM. Local for now; will be replaced
+     * by AcademyCharacterDetailAggregator.getViewModel when that
+     * module lands. The shape is identical to the aggregator's future
+     * output.
+     */
+    function buildCharacterDetailViewModel(classVM, charId) {
         var CQ = getCharacterQueries();
         if (!CQ || typeof CQ.getCharacterById !== 'function') {
-            return '<p class="empty-state">Character queries not available.</p>';
+            return null;
         }
 
         var char = CQ.getCharacterById(charId);
         if (!char) {
+            return null;
+        }
+
+        var classId = classVM ? classVM.id : null;
+        var week = AcademyUI.getDisplayWeek();
+        var mode = AcademyUI.getCharacterMode(charId);
+
+        var header = {
+            id: char.id,
+            name: CQ.getDisplayName(char),
+            status: CQ.getCurrentStatus(char),
+            age: CQ.getCharacterAge(char),
+            deceased: char.deceased === true
+        };
+
+        var classContext = classVM ? { id: classVM.id, name: classVM.name } : null;
+
+        var classes = AcademyAggregator.getClassListViewModel() || [];
+        var characterClasses = [];
+        if (Array.isArray(char.classIds)) {
+            for (var i = 0; i < char.classIds.length; i++) {
+                var cid = String(char.classIds[i]);
+                for (var j = 0; j < classes.length; j++) {
+                    if (String(classes[j].id) === cid) {
+                        characterClasses.push({
+                            id: classes[j].id,
+                            name: classes[j].name
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+
+        var tabs = mode === 'instructor'
+            ? [
+                { id: 'main',        label: 'Main' },
+                { id: 'disciplines', label: 'Disciplines' },
+                { id: 'schedule',    label: 'Schedule' },
+                { id: 'autoGroups',  label: 'Auto-Groups' }
+            ]
+            : [
+                { id: 'main',        label: 'Main' },
+                { id: 'disciplines', label: 'Disciplines' },
+                { id: 'grades',      label: 'Grades' },
+                { id: 'schedule',    label: 'Schedule' },
+                { id: 'teams',       label: 'Teams' }
+            ];
+
+        // Validate the requested active tab against the mode.
+        var validTabIds = tabs.map(function(t) { return t.id; });
+        var activeTab = validTabIds.indexOf(_activeCharacterTab) !== -1
+            ? _activeCharacterTab
+            : 'main';
+
+        // Student-side disciplines from enrollment (class-scoped).
+        var studentDisciplines = null;
+        if (mode === 'student' && classId) {
+            var AE = getAcademyEnrolments();
+            if (AE && typeof AE.getStudentDisciplines === 'function') {
+                var ids = AE.getStudentDisciplines(charId, classId) || [];
+                studentDisciplines = [];
+                var AD = getAcademyDisciplines();
+                for (var k = 0; k < ids.length; k++) {
+                    var d = null;
+                    if (AD && typeof AD.getDiscipline === 'function') {
+                        d = AD.getDiscipline(ids[k]);
+                    }
+                    studentDisciplines.push({
+                        id: ids[k],
+                        name: d ? d.name : 'Unknown Discipline'
+                    });
+                }
+            }
+        }
+
+        // Student-side grades from AcademyGrades via class-scoped read.
+        var studentGrades = null;
+        if (mode === 'student' && classId) {
+            var AG = window.AcademyGrades;
+            if (AG && typeof AG.getStudentClassGrades === 'function') {
+                var rawGrades = AG.getStudentClassGrades(charId, classId) || [];
+                var summary = AG.calculateSummary ? AG.calculateSummary(rawGrades) : null;
+                studentGrades = {
+                    average: summary && isFinite(summary.average) ? summary.average : null,
+                    count: summary && isFinite(summary.count) ? summary.count : 0,
+                    hasAny: summary && summary.count > 0
+                };
+            }
+        }
+
+        // Instructor-side disciplines read from discipline.instructorIds.
+        var instructorDisciplines = null;
+        if (mode === 'instructor') {
+            var AD2 = getAcademyDisciplines();
+            if (AD2 && typeof AD2.getDisciplinesByInstructor === 'function') {
+                var list = AD2.getDisciplinesByInstructor(charId) || [];
+                instructorDisciplines = [];
+                for (var m = 0; m < list.length; m++) {
+                    instructorDisciplines.push({
+                        id: list[m].id,
+                        name: list[m].name,
+                        type: list[m].type || ''
+                    });
+                }
+            }
+        }
+
+        // Instructor-side auto-groups.
+        var instructorAutoGroups = null;
+        if (mode === 'instructor') {
+            var AG2 = getAcademyGroups();
+            if (AG2 && typeof AG2.getGroupsByInstructor === 'function') {
+                var groupsMap = AG2.getGroupsByInstructor(charId) || {};
+                instructorAutoGroups = [];
+                var groupKeys = Object.keys(groupsMap);
+                for (var g = 0; g < groupKeys.length; g++) {
+                    var key = groupKeys[g];
+                    var group = groupsMap[key];
+                    if (!group) { continue; }
+                    var students = [];
+                    if (Array.isArray(group.students)) {
+                        for (var s = 0; s < group.students.length; s++) {
+                            var sCQ = getCharacterQueries();
+                            var sChar = sCQ ? sCQ.getCharacterById(group.students[s]) : null;
+                            if (sChar) {
+                                students.push({
+                                    id: sChar.id,
+                                    name: sCQ.getDisplayName(sChar),
+                                    status: sCQ.getCurrentStatus(sChar)
+                                });
+                            }
+                        }
+                    }
+                    var disciplineName = 'Unknown';
+                    var AD3 = getAcademyDisciplines();
+                    if (AD3 && typeof AD3.getDiscipline === 'function') {
+                        var disc = AD3.getDiscipline(group.disciplineId);
+                        if (disc) { disciplineName = disc.name; }
+                    }
+                    instructorAutoGroups.push({
+                        key: key,
+                        disciplineId: group.disciplineId || '',
+                        disciplineName: disciplineName,
+                        studentCount: students.length,
+                        students: students
+                    });
+                }
+            }
+        }
+
+        // Elimination state from character.eliminations.
+        var elimination = null;
+        if (week !== null) {
+            var eliminationWeek = null;
+            var reason = '';
+            if (Array.isArray(char.eliminations)) {
+                for (var e = 0; e < char.eliminations.length; e++) {
+                    var rec = char.eliminations[e];
+                    if (!rec) { continue; }
+                    var w = parseInt(rec.week, 10);
+                    if (isNaN(w)) { continue; }
+                    if (eliminationWeek === null || w < eliminationWeek) {
+                        eliminationWeek = w;
+                        reason = rec.reason || '';
+                    }
+                }
+            }
+            if (eliminationWeek !== null && week >= eliminationWeek) {
+                elimination = {
+                    week: eliminationWeek,
+                    reason: reason,
+                    state: week === eliminationWeek ? 'current' : 'past'
+                };
+            }
+        }
+
+        // Performance blend. Reads through AcademyPerformance when
+        // present; null otherwise.
+        var performance = null;
+        if (mode === 'student' && classId && week !== null) {
+            var AP = window.AcademyPerformance;
+            if (AP && typeof AP.calculateOverallScore === 'function') {
+                var academic = null;
+                var social = null;
+                var overall = null;
+                if (typeof AP.calculateAcademicAverage === 'function') {
+                    var aa = AP.calculateAcademicAverage(charId, classId, week);
+                    if (aa && isFinite(aa.average)) { academic = aa.average; }
+                }
+                var ASS = window.AcademySocialScore;
+                if (ASS && typeof ASS.getSocialScore === 'function') {
+                    var sScore = ASS.getSocialScore(charId, classId, week);
+                    if (isFinite(sScore)) { social = sScore; }
+                }
+                var oScore = AP.calculateOverallScore(charId, classId, week);
+                if (isFinite(oScore)) { overall = oScore; }
+                performance = {
+                    week: week,
+                    academicAverage: academic,
+                    socialScore: social,
+                    overallScore: overall
+                };
+            }
+        }
+
+        // Teams (persistent, via TeamQueries). Only for student mode.
+        var studentTeams = null;
+        if (mode === 'student' && week !== null) {
+            var TQ = window.TeamQueries;
+            if (TQ && typeof TQ.getTeamsForCharacter === 'function') {
+                var rawTeams = TQ.getTeamsForCharacter(charId, week) || [];
+                studentTeams = [];
+                for (var t = 0; t < rawTeams.length; t++) {
+                    studentTeams.push({
+                        id: rawTeams[t].id,
+                        name: rawTeams[t].name || 'Unnamed Team',
+                        typeLabel: rawTeams[t].type || 'team'
+                    });
+                }
+            }
+        }
+
+        return {
+            character: header,
+            mode: mode,
+            activeTab: activeTab,
+            tabs: tabs,
+            classContext: classContext,
+            classes: characterClasses,
+            elimination: elimination,
+            performance: performance,
+            student: mode === 'student'
+                ? {
+                    disciplines: studentDisciplines,
+                    grades: studentGrades,
+                    teams: studentTeams
+                }
+                : null,
+            instructor: mode === 'instructor'
+                ? {
+                    disciplines: instructorDisciplines,
+                    autoGroups: instructorAutoGroups
+                }
+                : null
+        };
+    }
+
+    function renderCharacterDetailContent(classVM, charId) {
+        var vm = buildCharacterDetailViewModel(classVM, charId);
+        if (!vm) {
             return '<p class="empty-state">Character not found.</p>';
         }
 
         var CharacterDetail = getCharacterDetailModule();
         if (CharacterDetail && typeof CharacterDetail.renderHTML === 'function') {
             try {
-                return CharacterDetail.renderHTML(char, classVM, {
-                    week: AcademyUI.getDisplayWeek(),
-                    mode: AcademyUI.getCharacterMode(charId),
-                    tab: _activeCharacterTab,
-                    classId: AcademyUI.getSelectedClassId()
-                });
+                return CharacterDetail.renderHTML(vm);
             } catch (e) {
-                console.warn('[AcademyView] CharacterDetail.renderHTML failed:', e);
+                console.warn('[AcademyView] AcademyCharacterDetail.renderHTML failed:', e);
             }
         }
 
         return (
             '<div class="academy-detail-placeholder">' +
-                '<h3>' + escapeHtml(CQ.getDisplayName(char)) +
-                '</h3>' +
-                '<p class="empty-state small">' +
-                    'Character detail view coming soon.' +
-                '</p>' +
+                '<h3>' + escapeHtml(vm.character.name) + '</h3>' +
+                '<p class="empty-state small">Character detail view not available.</p>' +
             '</div>'
         );
-    }
-
-    // ============================================================
-    // GRADES EDITOR MOUNT
-    // ============================================================
-
-    function mountGradesEditorIfPresent() {
-        if (AcademyUI.getSelectedView() !== 'people') {
-            unmountGradesEditor();
-            return;
-        }
-
-        var charId = AcademyUI.getSelectedCharacterId();
-        if (!charId) {
-            unmountGradesEditor();
-            return;
-        }
-
-        if (_activeCharacterTab !== 'grades') {
-            unmountGradesEditor();
-            return;
-        }
-
-        var CQ = getCharacterQueries();
-        if (!CQ || !CQ.getCharacterById(charId)) {
-            unmountGradesEditor();
-            return;
-        }
-
-        var classId = AcademyUI.getSelectedClassId();
-        var classVM = classId
-            ? AcademyAggregator.getClassViewModel(classId)
-            : null;
-
-        var CharacterDetail = getCharacterDetailModule();
-        if (!CharacterDetail ||
-            typeof CharacterDetail.mountGradesEditor !== 'function') {
-            return;
-        }
-
-        try {
-            CharacterDetail.mountGradesEditor(charId, classVM, {
-                week: AcademyUI.getDisplayWeek(),
-                tab: _activeCharacterTab,
-                classId: classId
-            });
-        } catch (e) {
-            console.warn('[AcademyView] mountGradesEditor failed:', e);
-        }
-    }
-
-    function unmountGradesEditor() {
-        var GE = getGradesEditorModule();
-        if (GE && typeof GE.unmount === 'function') {
-            try { GE.unmount(); } catch (e) { /* ignore */ }
-        }
     }
 
     // ============================================================
@@ -771,261 +945,8 @@
             week
         );
 
+        // Sync back if the aggregator resolved a different class.
         _selectedExamClassId = vm.classId;
-
-        return Renderer.renderHTML(vm);
-    }
-
-    // ============================================================
-    // DISCIPLINE VIEW + INLINE EDITOR
-    // ============================================================
-
-    function renderDisciplineView() {
-        var Renderer = getDisciplineViewModule();
-        if (!Renderer || typeof Renderer.renderHTML !== 'function') {
-            return renderPlaceholder('Disciplines');
-        }
-
-        var filters = AcademyUI.getFilter('disciplines') || {};
-
-        var listVM = AcademyAggregator.getDisciplineListViewModel(filters);
-        var editorVM = buildDisciplineEditorVM();
-
-        return Renderer.renderHTML({
-            disciplines: listVM.disciplines,
-            selected: editorVM,
-            editorMode: _disciplineDraftMode,
-            filters: filters,
-            total: listVM.total
-        });
-    }
-
-    function buildDisciplineEditorVM() {
-        if (_disciplineDraftMode === 'empty' || !_disciplineDraft) {
-            return null;
-        }
-
-        var draft = _disciplineDraft;
-        var isNew = _disciplineDraftMode === 'create';
-
-        var availableInstructors = [];
-        var CQ = getCharacterQueries();
-        if (CQ && typeof CQ.getInstructors === 'function') {
-            var instructors = CQ.getInstructors() || [];
-            availableInstructors = instructors.map(function(c) {
-                return {
-                    id: c.id,
-                    name: CQ.getDisplayName(c)
-                };
-            });
-        }
-
-        var schemePreview = '';
-        var GradeSchemes = window.AcademyGradeSchemes;
-        if (GradeSchemes && typeof GradeSchemes.getRangeLabel === 'function') {
-            schemePreview = GradeSchemes.getRangeLabel(draft.gradeScheme);
-        }
-
-        var schemePresetId = (draft.gradeScheme && draft.gradeScheme.id) || 'numeric';
-
-        var instructorNames = AcademyAggregator.getInstructorNamesForDiscipline
-            ? AcademyAggregator.getInstructorNamesForDiscipline({
-                instructorIds: draft.instructorIds || []
-            })
-            : [];
-
-        // Phase 3: expose assessment types and weights.
-        var assessmentTypes = [];
-        var AD = window.AcademyDisciplines;
-        if (AD && typeof AD.getValidAssessmentTypes === 'function') {
-            assessmentTypes = AD.getValidAssessmentTypes();
-        }
-
-        var assessmentWeights = draft.assessmentWeights || {};
-
-        return {
-            id: isNew ? null : draft.id,
-            name: draft.name,
-            type: draft.type,
-            startWeek: draft.startWeek,
-            endWeek: draft.endWeek,
-            weeklyHours: draft.weeklyHours,
-            weight: draft.weight,
-            instructorIds: draft.instructorIds || [],
-            instructorNames: instructorNames,
-            availableInstructors: availableInstructors,
-            gradeScheme: draft.gradeScheme,
-            schemePresetId: schemePresetId,
-            schemePreview: schemePreview,
-            assessmentTypes: assessmentTypes,
-            assessmentWeights: assessmentWeights,
-            fieldErrors: _disciplineDraftErrors || {},
-            isNew: isNew
-        };
-    }
-
-    /**
-     * Get a fresh copy of the domain default assessment weights.
-     */
-    function getDefaultAssessmentWeights() {
-        var AD = window.AcademyDisciplines;
-        if (AD && typeof AD.getDefaultAssessmentWeights === 'function') {
-            return AD.getDefaultAssessmentWeights();
-        }
-        return {};
-    }
-
-    function initializeDraftFromDiscipline(disciplineId) {
-        var AD = window.AcademyDisciplines;
-        var GradeSchemes = window.AcademyGradeSchemes;
-        if (!AD || !GradeSchemes) {
-            notify('Discipline module not loaded.', 'error');
-            return;
-        }
-
-        var record = AD.getDiscipline(disciplineId);
-        if (!record) {
-            notify('Discipline not found.', 'error');
-            return;
-        }
-
-        _selectedDisciplineId = String(disciplineId);
-        _disciplineDraftMode = 'edit';
-        _disciplineDraftErrors = {};
-
-        var weights;
-        if (typeof AD.getAssessmentWeights === 'function') {
-            weights = AD.getAssessmentWeights(record.id);
-        } else {
-            weights = getDefaultAssessmentWeights();
-        }
-
-        _disciplineDraft = {
-            id: record.id,
-            name: record.name || '',
-            type: record.type || 'mandatory',
-            startWeek: typeof record.startWeek === 'number' ? record.startWeek : 1,
-            endWeek: typeof record.endWeek === 'number' ? record.endWeek : 52,
-            weeklyHours: typeof record.weeklyHours === 'number' ? record.weeklyHours : 1,
-            weight: typeof record.weight === 'number' ? record.weight : 1,
-            instructorIds: Array.isArray(record.instructorIds) ? record.instructorIds.slice() : [],
-            gradeScheme: GradeSchemes.normalizeScheme(record.gradeScheme),
-            assessmentWeights: weights
-        };
-    }
-
-    function initializeNewDraft() {
-        var GradeSchemes = window.AcademyGradeSchemes;
-        if (!GradeSchemes) {
-            notify('Grade schemes module not loaded.', 'error');
-            return;
-        }
-
-        _selectedDisciplineId = null;
-        _disciplineDraftMode = 'create';
-        _disciplineDraftErrors = {};
-
-        _disciplineDraft = {
-            id: null,
-            name: '',
-            type: 'mandatory',
-            startWeek: 1,
-            endWeek: 52,
-            weeklyHours: 1,
-            weight: 1,
-            instructorIds: [],
-            gradeScheme: GradeSchemes.getDefaultScheme(),
-            assessmentWeights: getDefaultAssessmentWeights()
-        };
-    }
-
-    function clearDraft() {
-        _selectedDisciplineId = null;
-        _disciplineDraft = null;
-        _disciplineDraftMode = 'empty';
-        _disciplineDraftErrors = {};
-    }
-
-    function updateDisciplinePreviewInPlace() {
-        var GradeSchemes = window.AcademyGradeSchemes;
-        if (!GradeSchemes || !_disciplineDraft) { return; }
-
-        var previewEl = document.querySelector('.academy-discipline-scheme-preview-text');
-        if (!previewEl) { return; }
-
-        previewEl.textContent = GradeSchemes.getRangeLabel(_disciplineDraft.gradeScheme) || '';
-    }
-
-    function applySchemePreset(presetId) {
-        var GradeSchemes = window.AcademyGradeSchemes;
-        if (!GradeSchemes || !_disciplineDraft) { return; }
-
-        if (presetId === 'custom') {
-            _disciplineDraft.gradeScheme = GradeSchemes.normalizeScheme({
-                id: 'custom',
-                label: _disciplineDraft.gradeScheme.label || 'Custom Scheme',
-                bands: _disciplineDraft.gradeScheme.bands || []
-            });
-            return;
-        }
-
-        var preset = GradeSchemes.getPreset(presetId);
-        if (!preset) { return; }
-
-        _disciplineDraft.gradeScheme = GradeSchemes.normalizeScheme(preset);
-    }
-
-    // ============================================================
-    // LOCATION VIEW
-    // ============================================================
-
-    function renderLocationView() {
-        var Renderer = getLocationViewModule();
-        if (!Renderer || typeof Renderer.renderHTML !== 'function') {
-            return renderPlaceholder('Locations');
-        }
-
-        var filters = AcademyUI.getFilter('locations') || {};
-        var week = AcademyUI.getDisplayWeek();
-
-        var vm = AcademyAggregator.getLocationViewViewModel(
-            filters,
-            week,
-            _selectedLocationId
-        );
-
-        if (!vm.selected) {
-            _selectedLocationId = null;
-        }
-
-        return Renderer.renderHTML(vm);
-    }
-
-    // ============================================================
-    // RANKING VIEW
-    // ============================================================
-
-    function renderRankingView() {
-        var Renderer = getRankingViewModule();
-        if (!Renderer || typeof Renderer.renderHTML !== 'function') {
-            return renderPlaceholder('Rankings');
-        }
-
-        var week = AcademyUI.getDisplayWeek();
-
-        if (!_selectedRankingClassId) {
-            var peopleClassId = AcademyUI.getSelectedClassId();
-            if (peopleClassId) {
-                _selectedRankingClassId = peopleClassId;
-            }
-        }
-
-        var vm = AcademyAggregator.getRankingViewViewModel(
-            _selectedRankingClassId,
-            week
-        );
-
-        _selectedRankingClassId = vm.classId;
 
         return Renderer.renderHTML(vm);
     }
@@ -1049,7 +970,7 @@
             }
         }
 
-        var vm = AcademyAggregator.getWeeklyTeamsViewViewModel(
+        var vm = AcademyAggregator.getWeeklyTeamsViewModel(
             _selectedWeeklyTeamsClassId,
             week,
             _selectedWeeklyTeamId
@@ -1062,30 +983,305 @@
     }
 
     // ============================================================
-    // EVENT WIRING
+    // RANKING VIEW
     // ============================================================
 
-    var _boundContainer = null;
-
-    function bindEvents(container) {
-        if (_boundContainer === container) {
-            return;
+    function renderRankingView() {
+        var Renderer = getRankingViewModule();
+        if (!Renderer || typeof Renderer.renderHTML !== 'function') {
+            return renderPlaceholder('Rankings');
         }
-        _boundContainer = container;
 
-        container.addEventListener('click', handleDelegatedClick);
-        container.addEventListener('change', handleDelegatedChange);
-        container.addEventListener('input', handleDelegatedInput);
-        container.addEventListener('keydown', handleDelegatedKeydown);
+        var week = AcademyUI.getDisplayWeek();
+
+        if (!_selectedRankingClassId) {
+            var peopleClassId = AcademyUI.getSelectedClassId();
+            if (peopleClassId) {
+                _selectedRankingClassId = peopleClassId;
+            }
+        }
+
+        var vm = AcademyAggregator.getRankingViewModel(
+            _selectedRankingClassId,
+            week
+        );
+
+        _selectedRankingClassId = vm.classId;
+
+        return Renderer.renderHTML(vm);
     }
 
     // ============================================================
-    // DELEGATED CLICK - TOP-LEVEL DISPATCHER
+    // DISCIPLINES VIEW
     // ============================================================
 
-    function handleDelegatedClick(e) {
+    function renderDisciplineView() {
+        var Renderer = getDisciplineViewModule();
+        if (!Renderer || typeof Renderer.renderHTML !== 'function') {
+            return renderPlaceholder('Disciplines');
+        }
+
+        var listVM = AcademyAggregator.getDisciplineListViewModel(_disciplineFilters);
+        var editorVM = buildDisciplineEditorVM();
+
+        return Renderer.renderHTML({
+            disciplines: listVM.disciplines,
+            selected: editorVM,
+            editorMode: _disciplineDraftMode,
+            filters: _disciplineFilters,
+            total: listVM.total
+        });
+    }
+
+    /**
+     * Build the discipline editor VM. Local for now; will be replaced
+     * by AcademyAggregator.getDisciplineEditorViewModel when that lands.
+     * The shape matches that future output.
+     */
+    function buildDisciplineEditorVM() {
+        if (_disciplineDraftMode === 'empty' || !_disciplineDraft) {
+            return null;
+        }
+
+        var draft = _disciplineDraft;
+        var isNew = _disciplineDraftMode === 'create';
+
+        var availableInstructors = [];
+        var CQ = getCharacterQueries();
+        if (CQ && typeof CQ.getInstructors === 'function') {
+            var instructors = CQ.getInstructors() || [];
+            for (var i = 0; i < instructors.length; i++) {
+                availableInstructors.push({
+                    id: instructors[i].id,
+                    name: CQ.getDisplayName(instructors[i])
+                });
+            }
+        }
+
+        var schemePreview = '';
+        var GradeSchemes = window.AcademyGradeSchemes;
+        if (GradeSchemes && typeof GradeSchemes.getRangeLabel === 'function') {
+            schemePreview = GradeSchemes.getRangeLabel(draft.gradeScheme) || '';
+        }
+
+        var schemePresetId = draft.gradeScheme && draft.gradeScheme.id
+            ? draft.gradeScheme.id
+            : 'numeric';
+
+        var schemePresets = [];
+        if (GradeSchemes && typeof GradeSchemes.getPresets === 'function') {
+            var presets = GradeSchemes.getPresets() || [];
+            for (var p = 0; p < presets.length; p++) {
+                schemePresets.push({ id: presets[p].id, label: presets[p].label });
+            }
+        }
+
+        var assessmentTypes = [];
+        var AD = getAcademyDisciplines();
+        if (AD && typeof AD.getValidAssessmentTypes === 'function') {
+            assessmentTypes = AD.getValidAssessmentTypes() || [];
+        }
+
+        var assessmentWeights = draft.assessmentWeights && typeof draft.assessmentWeights === 'object'
+            ? draft.assessmentWeights
+            : {};
+
+        var defaultAssessmentWeights = {};
+        if (AD && typeof AD.getDefaultAssessmentWeights === 'function') {
+            defaultAssessmentWeights = AD.getDefaultAssessmentWeights() || {};
+        }
+
+        var instructorNames = [];
+        var selectedIds = Array.isArray(draft.instructorIds) ? draft.instructorIds : [];
+        for (var n = 0; n < selectedIds.length; n++) {
+            var sChar = CQ ? CQ.getCharacterById(selectedIds[n]) : null;
+            instructorNames.push(sChar ? CQ.getDisplayName(sChar) : 'Unknown');
+        }
+
+        return {
+            id: isNew ? null : draft.id,
+            name: draft.name || '',
+            type: draft.type || 'mandatory',
+            startWeek: draft.startWeek,
+            endWeek: draft.endWeek,
+            weeklyHours: draft.weeklyHours,
+            weight: draft.weight,
+            instructorIds: selectedIds,
+            instructorNames: instructorNames,
+            availableInstructors: availableInstructors,
+            gradeScheme: draft.gradeScheme || null,
+            schemePresetId: schemePresetId,
+            schemePreview: schemePreview,
+            schemePresets: schemePresets,
+            assessmentTypes: assessmentTypes,
+            assessmentWeights: assessmentWeights,
+            defaultAssessmentWeights: defaultAssessmentWeights,
+            weekBounds: { min: MIN_WEEK, max: MAX_WEEK },
+            weeklyHoursBounds: { min: 0.5, max: 40, step: 0.5 },
+            weightBounds: { min: 0.1, max: 10, step: 0.1 },
+            bandPercentBounds: { min: 0, max: 100, step: 1 },
+            fieldErrors: _disciplineDraftErrors || {},
+            isNew: isNew
+        };
+    }
+
+    function initializeDraftFromDiscipline(disciplineId) {
+        var AD = getAcademyDisciplines();
+        var GradeSchemes = window.AcademyGradeSchemes;
+        if (!AD || !GradeSchemes) {
+            notify('Discipline module not loaded.', 'error');
+            return;
+        }
+
+        var record = AD.getDiscipline(disciplineId);
+        if (!record) {
+            notify('Discipline not found.', 'error');
+            return;
+        }
+
+        _selectedDisciplineId = String(disciplineId);
+        _disciplineDraftMode = 'edit';
+        _disciplineDraftErrors = {};
+
+        var weights = (typeof AD.getAssessmentWeights === 'function')
+            ? AD.getAssessmentWeights(record.id)
+            : {};
+
+        _disciplineDraft = {
+            id: record.id,
+            name: record.name || '',
+            type: record.type || 'mandatory',
+            startWeek: typeof record.startWeek === 'number' ? record.startWeek : MIN_WEEK,
+            endWeek: typeof record.endWeek === 'number' ? record.endWeek : MAX_WEEK,
+            weeklyHours: typeof record.weeklyHours === 'number' ? record.weeklyHours : 1,
+            weight: typeof record.weight === 'number' ? record.weight : 1,
+            instructorIds: Array.isArray(record.instructorIds) ? record.instructorIds.slice() : [],
+            gradeScheme: GradeSchemes.normalizeScheme(record.gradeScheme),
+            assessmentWeights: weights || {}
+        };
+    }
+
+    function initializeNewDraft() {
+        var GradeSchemes = window.AcademyGradeSchemes;
+        var AD = getAcademyDisciplines();
+        if (!GradeSchemes) {
+            notify('Grade schemes module not loaded.', 'error');
+            return;
+        }
+
+        _selectedDisciplineId = null;
+        _disciplineDraftMode = 'create';
+        _disciplineDraftErrors = {};
+
+        _disciplineDraft = {
+            id: null,
+            name: '',
+            type: 'mandatory',
+            startWeek: MIN_WEEK,
+            endWeek: MAX_WEEK,
+            weeklyHours: 1,
+            weight: 1,
+            instructorIds: [],
+            gradeScheme: GradeSchemes.getDefaultScheme(),
+            assessmentWeights: (AD && typeof AD.getDefaultAssessmentWeights === 'function')
+                ? AD.getDefaultAssessmentWeights()
+                : {}
+        };
+    }
+
+    function clearDraft() {
+        _selectedDisciplineId = null;
+        _disciplineDraft = null;
+        _disciplineDraftMode = 'empty';
+        _disciplineDraftErrors = {};
+    }
+
+    // ============================================================
+    // LOCATIONS VIEW
+    // ============================================================
+
+    function renderLocationView() {
+        var Renderer = getLocationViewModule();
+        if (!Renderer || typeof Renderer.renderHTML !== 'function') {
+            return renderPlaceholder('Locations');
+        }
+
+        var week = AcademyUI.getDisplayWeek();
+
+        var vm = AcademyAggregator.getLocationViewModel(
+            _locationFilters,
+            week,
+            _selectedLocationId
+        );
+
+        if (!vm.selected) {
+            _selectedLocationId = null;
+        }
+
+        return Renderer.renderHTML(vm);
+    }
+
+    // ============================================================
+    // EVENT BINDING
+    // ============================================================
+
+    function bindEvents(container) {
+        unbindEvents();
+        _boundContainer = container;
+
+        var clickHandler = function(e) { onDelegatedClick(e); };
+        var changeHandler = function(e) { onDelegatedChange(e); };
+        var inputHandler = function(e) { onDelegatedInput(e); };
+        var keydownHandler = function(e) { onDelegatedKeydown(e); };
+
+        container.addEventListener('click', clickHandler);
+        container.addEventListener('change', changeHandler);
+        container.addEventListener('input', inputHandler);
+        container.addEventListener('keydown', keydownHandler);
+
+        _boundHandlers = {
+            click: clickHandler,
+            change: changeHandler,
+            input: inputHandler,
+            keydown: keydownHandler
+        };
+    }
+
+    function unbindEvents() {
+        if (_boundContainer && _boundHandlers) {
+            _boundContainer.removeEventListener('click', _boundHandlers.click);
+            _boundContainer.removeEventListener('change', _boundHandlers.change);
+            _boundContainer.removeEventListener('input', _boundHandlers.input);
+            _boundContainer.removeEventListener('keydown', _boundHandlers.keydown);
+        }
+        _boundHandlers = null;
+    }
+
+    function cancelAllDebounceTimers() {
+        if (_searchTimer) { clearTimeout(_searchTimer); _searchTimer = null; }
+        if (_disciplineSearchTimer) { clearTimeout(_disciplineSearchTimer); _disciplineSearchTimer = null; }
+        if (_locationSearchTimer) { clearTimeout(_locationSearchTimer); _locationSearchTimer = null; }
+    }
+
+    function wireCRUDModalsCallbacks() {
+        var CRUD = getAcademyCRUDModals();
+        if (CRUD && typeof CRUD.setOnChangeCallback === 'function') {
+            CRUD.setOnChangeCallback(refreshView);
+        }
+        var TE = getAcademyTournamentEvents();
+        if (TE && typeof TE.setOnChangeCallback === 'function') {
+            TE.setOnChangeCallback(refreshView);
+        }
+    }
+
+    // ============================================================
+    // DELEGATED CLICK
+    // ============================================================
+
+    function onDelegatedClick(e) {
         var target = e.target;
 
+        // View switcher
         var viewBtn = target.closest('.academy-view-btn');
         if (viewBtn) {
             e.preventDefault();
@@ -1093,206 +1289,81 @@
             return;
         }
 
+        // Character select / deselect
+        var charRow = target.closest('.academy-character-row, .academy-student-row');
+        if (charRow) {
+            e.preventDefault();
+            handleCharacterSelect(charRow.dataset.characterId);
+            return;
+        }
+
+        // Top-bar add class
         if (target.closest('#academy-add-class-btn')) {
             e.preventDefault();
             handleAddClass();
             return;
         }
 
-        if (target.closest('#academy-add-location-btn')) {
+        // Discipline row selection (in Discipline view)
+        var discRow = target.closest('.academy-discipline-row');
+        if (discRow) {
             e.preventDefault();
-            if (window.AcademyCRUDModals) {
-                window.AcademyCRUDModals.openLocationForm(null);
+            if (discRow.dataset.disciplineId) {
+                initializeDraftFromDiscipline(discRow.dataset.disciplineId);
+                refreshView();
             }
             return;
         }
 
-        if (handleExamClick(e, target)) { return; }
-        if (handleWeeklyTeamsClick(e, target)) { return; }
-        if (handleRankingClick(e, target)) { return; }
-        if (handleSocialScoreClick(e, target)) { return; }
-        if (handleDisciplineClick(e, target)) { return; }
-        if (handleLocationClick(e, target)) { return; }
-        if (handlePeopleClick(e, target)) { return; }
-        if (handleCharacterDetailClick(e, target)) { return; }
-    }
-
-    // ============================================================
-    // DELEGATED CLICK - EXAMS VIEW
-    // ============================================================
-
-    function handleExamClick(e, target) {
-        var actionEl = target.closest('[data-action]');
-        if (!actionEl) { return false; }
-
-        var action = actionEl.dataset.action;
-        var Events = getTournamentEventsModule();
-        if (!Events) { return false; }
-
-        var examActions = [
-            'create-exam', 'delete-exam', 'toggle-pool-member',
-            'add-round', 'remove-round', 'auto-generate-round',
-            'add-match', 'edit-match', 'complete-match', 'remove-match',
-            'complete-exam'
-        ];
-        if (examActions.indexOf(action) === -1) {
-            return false;
+        // Location row selection
+        var locRow = target.closest('.academy-location-row');
+        if (locRow) {
+            e.preventDefault();
+            if (locRow.dataset.locationId) {
+                _selectedLocationId = (String(_selectedLocationId) === String(locRow.dataset.locationId))
+                    ? null
+                    : locRow.dataset.locationId;
+                refreshView();
+            }
+            return;
         }
 
-        e.preventDefault();
-
-        var currentExamId = _getCurrentExamId();
-
-        switch (action) {
-            case 'create-exam':
-                Events.createExam(
-                    _selectedExamClassId,
-                    AcademyUI.getDisplayWeek()
-                );
-                return true;
-
-            case 'delete-exam':
-                if (currentExamId) { Events.deleteExam(currentExamId); }
-                return true;
-
-            case 'toggle-pool-member':
-                if (currentExamId) {
-                    Events.togglePoolMember(
-                        currentExamId, actionEl.dataset.poolId
-                    );
-                }
-                return true;
-
-            case 'add-round':
-                if (currentExamId) { Events.addRound(currentExamId); }
-                return true;
-
-            case 'remove-round':
-                if (currentExamId) {
-                    Events.removeRound(
-                        currentExamId,
-                        parseInt(actionEl.dataset.roundIndex, 10)
-                    );
-                }
-                return true;
-
-            case 'auto-generate-round':
-                if (currentExamId) {
-                    Events.autoGenerateRound(
-                        currentExamId,
-                        parseInt(actionEl.dataset.roundIndex, 10)
-                    );
-                }
-                return true;
-
-            case 'add-match':
-                if (currentExamId) {
-                    Events.addMatchManual(
-                        currentExamId,
-                        parseInt(actionEl.dataset.roundIndex, 10)
-                    );
-                }
-                return true;
-
-            case 'edit-match':
-                if (currentExamId) {
-                    Events.editMatch(
-                        currentExamId,
-                        parseInt(actionEl.dataset.roundIndex, 10),
-                        parseInt(actionEl.dataset.matchIndex, 10)
-                    );
-                }
-                return true;
-
-            case 'complete-match':
-                if (currentExamId) {
-                    Events.completeMatch(
-                        currentExamId,
-                        parseInt(actionEl.dataset.roundIndex, 10),
-                        parseInt(actionEl.dataset.matchIndex, 10)
-                    );
-                }
-                return true;
-
-            case 'remove-match':
-                if (currentExamId) {
-                    Events.removeMatch(
-                        currentExamId,
-                        parseInt(actionEl.dataset.roundIndex, 10),
-                        parseInt(actionEl.dataset.matchIndex, 10)
-                    );
-                }
-                return true;
-
-            case 'complete-exam':
-                if (currentExamId) { Events.completeExam(currentExamId); }
-                return true;
-        }
-
-        return false;
-    }
-
-    function _getCurrentExamId() {
-        if (!_selectedExamClassId) { return null; }
-        var TQ = window.TournamentQueries;
-        if (!TQ || typeof TQ.getExamForClassAndWeek !== 'function') {
-            return null;
-        }
-        var exam = TQ.getExamForClassAndWeek(
-            _selectedExamClassId, AcademyUI.getDisplayWeek()
-        );
-        return exam ? exam.id : null;
-    }
-
-    // ============================================================
-    // DELEGATED CLICK - WEEKLY TEAMS VIEW
-    // ============================================================
-
-    function handleWeeklyTeamsClick(e, target) {
+        // Weekly teams row selection
         var weeklyTeamRow = target.closest('.academy-weekly-team-row');
         if (weeklyTeamRow) {
             e.preventDefault();
-            var weeklyTeamId = weeklyTeamRow.dataset.teamId;
-            if (weeklyTeamId) {
-                _selectedWeeklyTeamId =
-                    (String(_selectedWeeklyTeamId) === String(weeklyTeamId))
-                        ? null
-                        : weeklyTeamId;
+            if (weeklyTeamRow.dataset.teamId) {
+                _selectedWeeklyTeamId = (String(_selectedWeeklyTeamId) === String(weeklyTeamRow.dataset.teamId))
+                    ? null
+                    : weeklyTeamRow.dataset.teamId;
                 refreshView();
             }
-            return true;
+            return;
         }
 
+        // Weekly teams member → jump to People
         var weeklyMemberRow = target.closest('.academy-weekly-team-member-row');
         if (weeklyMemberRow) {
             e.preventDefault();
-            var weeklyMemberId = weeklyMemberRow.dataset.characterId;
-            if (weeklyMemberId) {
+            var memberId = weeklyMemberRow.dataset.characterId;
+            if (memberId) {
                 if (_selectedWeeklyTeamsClassId) {
                     AcademyUI.selectClass(_selectedWeeklyTeamsClassId);
                 }
-                AcademyUI.selectCharacter(weeklyMemberId);
+                AcademyUI.selectCharacter(memberId);
                 AcademyUI.setSelectedView('people');
                 refreshView();
             }
-            return true;
+            return;
         }
 
-        return false;
-    }
-
-    // ============================================================
-    // DELEGATED CLICK - RANKINGS VIEW
-    // ============================================================
-
-    function handleRankingClick(e, target) {
+        // Ranking row → jump to People
         var rankingRow = target.closest('.academy-ranking-row');
         if (rankingRow) {
             e.preventDefault();
             var rankingCharId = rankingRow.dataset.characterId;
             if (rankingCharId) {
-                var rankingClassId = _selectedRankingClassId ||
-                    AcademyUI.getSelectedClassId();
+                var rankingClassId = _selectedRankingClassId || AcademyUI.getSelectedClassId();
                 if (rankingClassId) {
                     AcademyUI.selectClass(rankingClassId);
                 }
@@ -1300,337 +1371,259 @@
                 AcademyUI.setSelectedView('people');
                 refreshView();
             }
-            return true;
+            return;
         }
 
-        return false;
+        // Character detail tab switch
+        var tabBtn = target.closest('.academy-character-tab-btn');
+        if (tabBtn) {
+            e.preventDefault();
+            if (tabBtn.dataset.tab) {
+                _activeCharacterTab = tabBtn.dataset.tab;
+                refreshView();
+            }
+            return;
+        }
+
+        // Character detail action buttons
+        var actionEl = target.closest('[data-action]');
+        if (actionEl) {
+            var action = actionEl.dataset.action;
+            if (action) {
+                e.preventDefault();
+                dispatchAction(action, actionEl);
+                return;
+            }
+        }
     }
 
     // ============================================================
-    // DELEGATED CLICK - SOCIAL SCORE (Phase 5)
+    // ACTION DISPATCH
     // ============================================================
 
-    function handleSocialScoreClick(e, target) {
-        var editBtn = target.closest('[data-action="edit-social-score"]');
-        if (editBtn) {
-            e.preventDefault();
-            var charId = editBtn.dataset.characterId;
-            if (charId && window.AcademyCRUDModals &&
-                typeof window.AcademyCRUDModals.openSocialScoreForm === 'function') {
-                window.AcademyCRUDModals.openSocialScoreForm(charId);
-            }
-            return true;
-        }
-
-        return false;
-    }
-
-    // ============================================================
-    // DELEGATED CLICK - DISCIPLINES VIEW
-    // ============================================================
-
-    function handleDisciplineClick(e, target) {
-        if (target.closest('#academy-add-discipline-btn')) {
-            e.preventDefault();
-            initializeNewDraft();
-            refreshView();
-            return true;
-        }
-
-        var disciplineAction = target.closest(
-            '[data-action="apply-scheme-preset"], ' +
-            '[data-action="add-band"], ' +
-            '[data-action="remove-band"], ' +
-            '[data-action="reset-assessment-weights"], ' +
-            '[data-action="save-discipline"], ' +
-            '[data-action="cancel-discipline"], ' +
-            '[data-action="delete-discipline"]'
-        );
-        if (disciplineAction) {
-            e.preventDefault();
-            handleDisciplineEditorAction(disciplineAction);
-            return true;
-        }
-
-        var disciplineRow = target.closest('.academy-discipline-row');
-        if (disciplineRow) {
-            e.preventDefault();
-            var disciplineId = disciplineRow.dataset.disciplineId;
-            if (disciplineId) {
-                initializeDraftFromDiscipline(disciplineId);
-                refreshView();
-            }
-            return true;
-        }
-
-        return false;
-    }
-
-    function handleDisciplineEditorAction(actionEl) {
-        var action = actionEl.dataset.action;
-        var GradeSchemes = window.AcademyGradeSchemes;
-
-        switch (action) {
-            case 'apply-scheme-preset': {
-                if (!_disciplineDraft || !GradeSchemes) { return; }
-                var presetSelect = document.querySelector(
-                    '[data-discipline-field="schemePresetId"]'
-                );
-                var presetId = presetSelect ? presetSelect.value : 'numeric';
-                applySchemePreset(presetId);
-                refreshView();
-                return;
-            }
-
-            case 'add-band': {
-                if (!_disciplineDraft) { return; }
-                var bands = _disciplineDraft.gradeScheme.bands || [];
-                if (bands.length >= (GradeSchemes.MAX_BANDS || 26)) {
-                    notify('Too many bands.', 'error');
-                    return;
-                }
-                bands.push({ label: '', minPercent: 0 });
-                _disciplineDraft.gradeScheme = GradeSchemes.normalizeScheme({
-                    id: _disciplineDraft.gradeScheme.id,
-                    label: _disciplineDraft.gradeScheme.label,
-                    bands: bands
-                });
-                refreshView();
-                return;
-            }
-
-            case 'remove-band': {
-                if (!_disciplineDraft) { return; }
-                var idx = parseInt(actionEl.dataset.bandIndex, 10);
-                if (isNaN(idx)) { return; }
-                var currentBands = _disciplineDraft.gradeScheme.bands || [];
-                if (currentBands.length <= 1) {
-                    notify('A scheme must have at least one band.', 'error');
-                    return;
-                }
-                currentBands.splice(idx, 1);
-                _disciplineDraft.gradeScheme = GradeSchemes.normalizeScheme({
-                    id: _disciplineDraft.gradeScheme.id,
-                    label: _disciplineDraft.gradeScheme.label,
-                    bands: currentBands
-                });
-                refreshView();
-                return;
-            }
-
-            case 'reset-assessment-weights': {
-                if (!_disciplineDraft) { return; }
-                _disciplineDraft.assessmentWeights = getDefaultAssessmentWeights();
-                refreshView();
-                return;
-            }
-
-            case 'save-discipline':
-                saveDisciplineDraft();
-                return;
-
-            case 'cancel-discipline':
-                if (_disciplineDraftMode === 'edit' && _selectedDisciplineId) {
-                    initializeDraftFromDiscipline(_selectedDisciplineId);
-                } else {
-                    clearDraft();
-                }
-                refreshView();
-                return;
-
-            case 'delete-discipline': {
-                var discId = actionEl.dataset.disciplineId;
-                if (discId && window.AcademyCRUDModals &&
-                    typeof window.AcademyCRUDModals.openDisciplineDelete === 'function') {
-                    window.AcademyCRUDModals.openDisciplineDelete(discId);
-                }
-                return;
-            }
-
+    function dispatchAction(action, el) {
+        var prefix = action.split('-')[0];
+        switch (prefix) {
+            case 'people':       return handlePeopleAction(action, el);
+            case 'character':    return handleCharacterAction(action, el);
+            case 'student':      return handlePeopleAction(action, el);
+            case 'instructor':   return handlePeopleAction(action, el);
+            case 'discipline':   return handleDisciplineAction(action, el);
+            case 'location':     return handleLocationAction(action, el);
+            case 'ranking':      return handleRankingAction(action, el);
+            case 'weekly':       return handleWeeklyTeamsAction(action, el);
+            case 'exam':         return handleExamAction(action, el);
+            case 'apply':        return handleDisciplineEditorAction(action, el);
+            case 'add':          return handleDisciplineEditorAction(action, el);
+            case 'remove':       return handleDisciplineEditorAction(action, el);
+            case 'reset':        return handleDisciplineEditorAction(action, el);
+            case 'save':         return handleDisciplineEditorAction(action, el);
+            case 'cancel':       return handleDisciplineEditorAction(action, el);
+            case 'delete':       return handleDeleteDispatcher(action, el);
+            case 'drop':         return handleCharacterAction(action, el);
+            case 'enroll':       return handleCharacterAction(action, el);
+            case 'leave':        return handleCharacterAction(action, el);
+            case 'edit':         return handleEditDispatcher(action, el);
+            case 'view':         return handleViewDispatcher(action, el);
             default:
                 return;
         }
     }
 
     // ============================================================
-    // DELEGATED CLICK - LOCATIONS VIEW
+    // ACTION HANDLERS - prefix-scoped
     // ============================================================
 
-    function handleLocationClick(e, target) {
-        // Add Location — emitted by academy-location-view.js.
-        var addBtn = target.closest('[data-action="add-location"]');
-        if (addBtn) {
-            e.preventDefault();
-            if (window.AcademyCRUDModals &&
-                typeof window.AcademyCRUDModals.openLocationForm === 'function') {
-                window.AcademyCRUDModals.openLocationForm(null);
-            }
-            return true;
-        }
-
-        var locationRow = target.closest('.academy-location-row');
-        if (locationRow) {
-            e.preventDefault();
-            var locationId = locationRow.dataset.locationId;
-            if (locationId) {
-                _selectedLocationId =
-                    (String(_selectedLocationId) === String(locationId))
-                        ? null
-                        : locationId;
-                refreshView();
-            }
-            return true;
-        }
-
-        var actionEl = target.closest('[data-action]');
-        if (actionEl) {
-            var action = actionEl.dataset.action;
-            var lid = actionEl.dataset.locationId;
-            if (lid && (action === 'edit-location' || action === 'delete-location')) {
-                e.preventDefault();
-                handleLocationAction(action, lid);
-                return true;
-            }
-        }
-
-        return false;
+    function handlePeopleAction(action, el) {
+        // Placeholder for People-scoped actions that later land here.
     }
 
-    // ============================================================
-    // DELEGATED CLICK - PEOPLE VIEW
-    // ============================================================
-
-    function handlePeopleClick(e, target) {
-        var charRow = target.closest(
-            '.academy-character-row, .academy-student-row'
-        );
-        if (charRow) {
-            e.preventDefault();
-            handleCharacterSelect(charRow.dataset.characterId);
-            return true;
+    function handleCharacterAction(action, el) {
+        switch (action) {
+            case 'drop-out-character':
+                handleDropOut(el.dataset.characterId);
+                return;
+            case 'enroll-discipline':
+                handleEnrollDiscipline(el.dataset.characterId);
+                return;
+            case 'leave-discipline':
+                handleLeaveDiscipline(el.dataset.characterId, el.dataset.disciplineId);
+                return;
+            case 'character-add-group-student':
+                handleAddGroupStudent(el.dataset.groupKey);
+                return;
+            case 'character-remove-group-student':
+                handleRemoveGroupStudent(el.dataset.groupKey, el.dataset.characterId);
+                return;
+            default:
+                return;
         }
-
-        var actionEl = target.closest('[data-action]');
-        if (actionEl) {
-            var action = actionEl.dataset.action;
-            var classId = actionEl.dataset.classId;
-            var disciplineId = actionEl.dataset.disciplineId;
-
-            if (classId && (
-                action === 'add-character' ||
-                action === 'edit-class' ||
-                action === 'delete-class'
-            )) {
-                e.preventDefault();
-                handleClassAction(action, classId);
-                return true;
-            }
-
-            if (disciplineId && action === 'delete-discipline') {
-                e.preventDefault();
-                handleDisciplineAction(action, disciplineId);
-                return true;
-            }
-        }
-
-        return false;
     }
 
-    // ============================================================
-    // DELEGATED CLICK - CHARACTER DETAIL (shared)
-    // ============================================================
+    function handleExamAction(action, el) {
+        var Events = getAcademyTournamentEvents();
+        if (!Events) { return; }
 
-    function handleCharacterDetailClick(e, target) {
-        var tabBtn = target.closest('.academy-character-tab-btn');
-        if (tabBtn) {
-            e.preventDefault();
-            var tabId = tabBtn.dataset.tab;
-            if (tabId) {
-                setActiveCharacterTab(tabId);
-                refreshView();
+        // The exam id travels on the action element. No direct
+        // TournamentQueries read from this view.
+        var examId = el.dataset.examId || null;
+
+        switch (action) {
+            case 'exam-create':
+                Events.createExam(_selectedExamClassId, AcademyUI.getDisplayWeek());
+                return;
+            case 'exam-delete':
+                if (examId) { Events.deleteExam(examId); }
+                return;
+            case 'exam-toggle-pool-member':
+                if (examId) { Events.togglePoolMember(examId, el.dataset.poolId); }
+                return;
+            case 'exam-add-round':
+                if (examId) { Events.addRound(examId); }
+                return;
+            case 'exam-remove-round':
+                if (examId) {
+                    Events.removeRound(examId, el.dataset.roundId);
+                }
+                return;
+            case 'exam-auto-generate-round':
+                if (examId) {
+                    Events.autoGenerateRound(examId, el.dataset.roundId);
+                }
+                return;
+            case 'exam-add-match':
+                if (examId) {
+                    Events.addMatchManual(examId, el.dataset.roundId);
+                }
+                return;
+            case 'exam-edit-match':
+                if (examId) {
+                    Events.editMatch(examId, el.dataset.roundId, el.dataset.matchId);
+                }
+                return;
+            case 'exam-complete-match':
+                if (examId) {
+                    Events.completeMatch(examId, el.dataset.roundId, el.dataset.matchId);
+                }
+                return;
+            case 'exam-remove-match':
+                if (examId) {
+                    Events.removeMatch(examId, el.dataset.roundId, el.dataset.matchId);
+                }
+                return;
+            case 'exam-complete':
+                if (examId) { Events.completeExam(examId); }
+                return;
+            default:
+                return;
+        }
+    }
+
+    function handleDisciplineAction(action, el) {
+        switch (action) {
+            case 'discipline-apply-scheme-preset':
+                handleApplySchemePreset(el);
+                return;
+            case 'discipline-add-band':
+                handleAddBand();
+                return;
+            case 'discipline-remove-band':
+                handleRemoveBand(el);
+                return;
+            case 'discipline-reset-assessment-weights':
+                handleResetAssessmentWeights();
+                return;
+            case 'discipline-save':
+                saveDisciplineDraft();
+                return;
+            case 'discipline-cancel':
+                handleCancelDiscipline();
+                return;
+            case 'discipline-delete':
+                handleDisciplineDelete(el.dataset.disciplineId);
+                return;
+            default:
+                return;
+        }
+    }
+
+    function handleDisciplineEditorAction(action, el) {
+        // Unprefixed fallback for older markup. Routes into the
+        // canonical discipline handler.
+        var canonical = 'discipline-' + action.split('-').slice(1).join('-');
+        return handleDisciplineAction(canonical, el);
+    }
+
+    function handleLocationAction(action, el) {
+        var CRUD = getAcademyCRUDModals();
+        switch (action) {
+            case 'location-add':
+                if (CRUD) { CRUD.openLocationForm(null); }
+                return;
+            case 'location-edit':
+                if (CRUD) { CRUD.openLocationForm(el.dataset.locationId); }
+                return;
+            case 'location-delete':
+                if (CRUD) { CRUD.openLocationDelete(el.dataset.locationId); }
+                return;
+            default:
+                return;
+        }
+    }
+
+    function handleRankingAction(action, el) {
+        // Rankings view has no inline actions yet; ranking generation
+        // is domain-owned and exposed through AcademyRanking.autoGenerate.
+    }
+
+    function handleWeeklyTeamsAction(action, el) {
+        // Weekly Teams view has no mutations yet.
+    }
+
+    function handleDeleteDispatcher(action, el) {
+        if (action === 'delete-class') {
+            handleClassAction('delete-class', el.dataset.classId);
+            return;
+        }
+        if (action === 'delete-discipline') {
+            handleDisciplineDelete(el.dataset.disciplineId);
+            return;
+        }
+        if (action === 'delete-location') {
+            handleLocationAction('location-delete', el);
+            return;
+        }
+    }
+
+    function handleEditDispatcher(action, el) {
+        if (action === 'edit-class') {
+            handleClassAction('edit-class', el.dataset.classId);
+            return;
+        }
+        if (action === 'edit-social-score') {
+            var CRUD = getAcademyCRUDModals();
+            if (CRUD && typeof CRUD.openSocialScoreForm === 'function') {
+                CRUD.openSocialScoreForm(el.dataset.characterId);
             }
-            return true;
+            return;
         }
-
-        var dropOutBtn = target.closest('[data-action="drop-out-character"]');
-        if (dropOutBtn) {
-            e.preventDefault();
-            handleDropOut(dropOutBtn.dataset.characterId);
-            return true;
+        if (action === 'edit-location') {
+            handleLocationAction('location-edit', el);
+            return;
         }
+    }
 
-        var enrollBtn = target.closest('[data-action="enroll-discipline"]');
-        if (enrollBtn) {
-            e.preventDefault();
-            handleEnrollDiscipline(enrollBtn.dataset.characterId);
-            return true;
+    function handleViewDispatcher(action, el) {
+        if (action === 'view-full-character') {
+            // Removed: the character detail panel is the full view.
         }
-
-        var leaveBtn = target.closest('[data-action="leave-discipline"]');
-        if (leaveBtn) {
-            e.preventDefault();
-            handleLeaveDiscipline(
-                leaveBtn.dataset.characterId,
-                leaveBtn.dataset.disciplineId
-            );
-            return true;
-        }
-
-        var instructorDiscRow = target.closest('.academy-instructor-discipline-row');
-        if (instructorDiscRow) {
-            e.preventDefault();
-            var discId = instructorDiscRow.dataset.disciplineId;
-            if (discId) {
-                initializeDraftFromDiscipline(discId);
-                AcademyUI.setSelectedView('disciplines');
-                refreshView();
-            }
-            return true;
-        }
-
-        var addGroupStudentBtn = target.closest('[data-action="add-group-student"]');
-        if (addGroupStudentBtn) {
-            e.preventDefault();
-            handleAddGroupStudent(addGroupStudentBtn.dataset.groupKey);
-            return true;
-        }
-
-        var removeGroupStudentBtn = target.closest('[data-action="remove-group-student"]');
-        if (removeGroupStudentBtn) {
-            e.preventDefault();
-            handleRemoveGroupStudent(
-                removeGroupStudentBtn.dataset.groupKey,
-                removeGroupStudentBtn.dataset.characterId
-            );
-            return true;
-        }
-
-        var actionEl = target.closest('[data-action]');
-        if (actionEl) {
-            var action = actionEl.dataset.action;
-            var charId = actionEl.dataset.characterId;
-
-            if (action === 'view-full-character' && charId) {
-                e.preventDefault();
-                handleViewFullCharacter(charId);
-                return true;
-            }
-
-            if (action === 'edit-character' && charId) {
-                e.preventDefault();
-                handleEditCharacter(charId);
-                return true;
-            }
-        }
-
-        return false;
     }
 
     // ============================================================
     // DELEGATED CHANGE
     // ============================================================
 
-    function handleDelegatedChange(e) {
+    function onDelegatedChange(e) {
         var target = e.target;
 
         if (target.id === 'academy-character-mode-checkbox') {
@@ -1638,7 +1631,6 @@
             if (charId) {
                 var newMode = target.checked ? 'instructor' : 'student';
                 AcademyUI.setCharacterMode(charId, newMode);
-
                 if (newMode === 'instructor' &&
                     (_activeCharacterTab === 'grades' || _activeCharacterTab === 'teams')) {
                     _activeCharacterTab = 'main';
@@ -1673,12 +1665,12 @@
         }
 
         if (target.id === 'academy-people-role') {
-            AcademyUI.setFilter('people', 'role', target.value);
+            AcademyUI.setPeopleRole(target.value);
             refreshView();
             return;
         }
         if (target.id === 'academy-people-status') {
-            AcademyUI.setFilter('people', 'status', target.value);
+            AcademyUI.setPeopleStatus(target.value);
             refreshView();
             return;
         }
@@ -1703,27 +1695,194 @@
         }
 
         if (target.id === 'academy-discipline-type-filter') {
-            AcademyUI.setFilter('disciplines', 'type', target.value);
+            _disciplineFilters.type = target.value;
             refreshView();
             return;
         }
 
         if (target.id === 'academy-location-type-filter') {
-            AcademyUI.setFilter('locations', 'type', target.value);
+            _locationFilters.type = target.value;
             refreshView();
             return;
         }
     }
 
-    function commitDisplayWeek(value) {
-        var week = parseInt(value, 10);
-        if (isNaN(week) || week < getMinWeek() || week > getMaxWeek()) {
-            return false;
+    // ============================================================
+    // DELEGATED INPUT
+    // ============================================================
+
+    function onDelegatedInput(e) {
+        var target = e.target;
+
+        if (target.dataset && target.dataset.assessmentWeightType) {
+            handleAssessmentWeightChange(target);
+            return;
         }
-        AcademyUI.setDisplayWeek(week);
-        refreshView();
-        return true;
+
+        if (target.dataset && target.dataset.disciplineField) {
+            handleDisciplineFieldChange(target);
+            return;
+        }
+
+        if (target.dataset && target.dataset.bandIndex !== undefined &&
+            target.dataset.bandField) {
+            handleBandFieldChange(target);
+            return;
+        }
+
+        if (target.id === 'academy-people-search') {
+            debouncePeopleSearch(target.value);
+            return;
+        }
+        if (target.id === 'academy-discipline-search') {
+            debounceDisciplineSearch(target.value);
+            return;
+        }
+        if (target.id === 'academy-location-search') {
+            debounceLocationSearch(target.value);
+            return;
+        }
     }
+
+    // ============================================================
+    // DELEGATED KEYDOWN
+    // ============================================================
+
+    function onDelegatedKeydown(e) {
+        var target = e.target;
+        if (e.key !== 'Enter') { return; }
+
+        if (target.id === 'academy-week-input' ||
+            target.id === 'at-week-input' ||
+            target.id === 'academy-ranking-week-input' ||
+            target.id === 'academy-weekly-teams-week-input') {
+            e.preventDefault();
+            commitDisplayWeek(target.value);
+            return;
+        }
+    }
+
+    // ============================================================
+    // VIEW SWITCHER
+    // ============================================================
+
+    function handleViewSwitch(viewId) {
+        if (!viewId) { return; }
+        if (VALID_VIEW_IDS.indexOf(viewId) === -1) { return; }
+        if (viewId !== 'disciplines') {
+            clearDraft();
+        }
+        if (AcademyUI.setSelectedView(viewId)) {
+            refreshView();
+        }
+    }
+
+    // ============================================================
+    // CLASS SELECTION
+    // ============================================================
+
+    function handleClassSelect(classId) {
+        if (!classId) {
+            AcademyUI.selectClass(null);
+            refreshView();
+            return;
+        }
+
+        var prevCharId = AcademyUI.getSelectedCharacterId();
+        AcademyUI.selectClass(classId);
+
+        if (prevCharId) {
+            var classVM = AcademyAggregator.getClassViewModel(classId);
+            if (classVM && isCharacterInClassVM(prevCharId, classVM)) {
+                AcademyUI.selectCharacter(prevCharId);
+            }
+        }
+
+        refreshView();
+    }
+
+    function isCharacterInClassVM(charId, classVM) {
+        if (!charId || !classVM) { return false; }
+        var target = String(charId);
+
+        if (classVM.instructorId && String(classVM.instructorId) === target) {
+            return true;
+        }
+
+        var students = AcademyAggregator.getClassStudentsViewModel(classVM.id) || [];
+        for (var i = 0; i < students.length; i++) {
+            if (students[i] && String(students[i].id) === target) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function handleCharacterSelect(charId) {
+        if (!charId) { return; }
+        var current = AcademyUI.getSelectedCharacterId();
+        if (current && String(current) === String(charId)) {
+            AcademyUI.selectCharacter(null);
+        } else {
+            AcademyUI.selectCharacter(charId);
+        }
+        refreshView();
+    }
+
+    function handleAddClass() {
+        var CRUD = getAcademyCRUDModals();
+        if (CRUD && typeof CRUD.openClassForm === 'function') {
+            CRUD.openClassForm(null);
+        } else {
+            notify('CRUD module not available.', 'error');
+        }
+    }
+
+    function handleClassAction(action, classId) {
+        var CRUD = getAcademyCRUDModals();
+        if (!CRUD) {
+            notify('CRUD module not available.', 'error');
+            return;
+        }
+        switch (action) {
+            case 'add-character':
+                if (typeof CRUD.openAddCharacterToClass === 'function') {
+                    CRUD.openAddCharacterToClass(classId);
+                }
+                return;
+            case 'edit-class':
+                if (typeof CRUD.openClassForm === 'function') {
+                    CRUD.openClassForm(classId);
+                }
+                return;
+            case 'delete-class':
+                if (typeof CRUD.openClassDelete === 'function') {
+                    CRUD.openClassDelete(classId);
+                }
+                return;
+            default:
+                return;
+        }
+    }
+
+    // ============================================================
+    // WEEK COMMIT
+    // ============================================================
+
+    function commitDisplayWeek(value) {
+        // Delegate to AcademyUI, which enforces the strict integer
+        // parse. If it accepts the value, refresh; otherwise, do
+        // nothing (the input is left as-is, so the user sees their
+        // invalid input and can correct it).
+        var accepted = AcademyUI.setDisplayWeek(value);
+        if (accepted) {
+            refreshView();
+        }
+    }
+
+    // ============================================================
+    // DISCIPLINE EDITOR - field changes
+    // ============================================================
 
     function handleDisciplineFieldChange(inputEl) {
         if (!_disciplineDraft) { return; }
@@ -1740,29 +1899,22 @@
                 _disciplineDraft.type = inputEl.value;
                 return;
 
-            case 'startWeek': {
-                var sw = parseInt(inputEl.value, 10);
-                _disciplineDraft.startWeek = isNaN(sw) ? 1 : sw;
+            case 'startWeek':
+                // Store the raw string. The domain validates on save.
+                _disciplineDraft.startWeek = inputEl.value;
                 return;
-            }
 
-            case 'endWeek': {
-                var ew = parseInt(inputEl.value, 10);
-                _disciplineDraft.endWeek = isNaN(ew) ? 52 : ew;
+            case 'endWeek':
+                _disciplineDraft.endWeek = inputEl.value;
                 return;
-            }
 
-            case 'weeklyHours': {
-                var wh = parseFloat(inputEl.value);
-                _disciplineDraft.weeklyHours = isNaN(wh) ? 1 : wh;
+            case 'weeklyHours':
+                _disciplineDraft.weeklyHours = inputEl.value;
                 return;
-            }
 
-            case 'weight': {
-                var wt = parseFloat(inputEl.value);
-                _disciplineDraft.weight = isNaN(wt) ? 1 : wt;
+            case 'weight':
+                _disciplineDraft.weight = inputEl.value;
                 return;
-            }
 
             case 'instructors': {
                 var selected = [];
@@ -1775,10 +1927,9 @@
                 return;
             }
 
-            case 'schemeLabel': {
+            case 'schemeLabel':
                 _disciplineDraft.gradeScheme.label = inputEl.value;
                 return;
-            }
 
             case 'schemePresetId':
                 return;
@@ -1801,8 +1952,8 @@
         if (field === 'label') {
             bands[idx].label = inputEl.value;
         } else if (field === 'minPercent') {
-            var mp = parseInt(inputEl.value, 10);
-            bands[idx].minPercent = isNaN(mp) ? 0 : mp;
+            // Store raw; the domain validates on save.
+            bands[idx].minPercent = inputEl.value;
         }
 
         updateDisciplinePreviewInPlace();
@@ -1819,227 +1970,235 @@
             _disciplineDraft.assessmentWeights = {};
         }
 
-        var raw = inputEl.value;
-        if (raw === '' || raw === null || raw === undefined) {
-            _disciplineDraft.assessmentWeights[type] = null;
-            return;
-        }
-
-        var num = parseFloat(raw);
-        if (isNaN(num)) {
-            _disciplineDraft.assessmentWeights[type] = null;
-            return;
-        }
-
-        _disciplineDraft.assessmentWeights[type] = num;
+        _disciplineDraft.assessmentWeights[type] = inputEl.value;
     }
 
-    // ============================================================
-    // DELEGATED INPUT
-    // ============================================================
+    function updateDisciplinePreviewInPlace() {
+        var GradeSchemes = window.AcademyGradeSchemes;
+        if (!GradeSchemes || !_disciplineDraft) { return; }
 
-    function handleDelegatedInput(e) {
-        var target = e.target;
+        var previewEl = document.querySelector('.academy-discipline-scheme-preview-text');
+        if (!previewEl) { return; }
 
-        if (target.dataset && target.dataset.assessmentWeightType) {
-            handleAssessmentWeightChange(target);
-            return;
-        }
-
-        if (target.dataset && target.dataset.disciplineField) {
-            handleDisciplineFieldChange(target);
-            return;
-        }
-
-        if (target.dataset && target.dataset.bandIndex !== undefined &&
-            target.dataset.bandField) {
-            handleBandFieldChange(target);
-            return;
-        }
-
-        if (target.id === 'academy-people-search') {
-            debounceSearch(target.value);
-            return;
-        }
-        if (target.id === 'academy-discipline-search') {
-            debounceDisciplineSearch(target.value);
-            return;
-        }
-        if (target.id === 'academy-location-search') {
-            debounceLocationSearch(target.value);
-            return;
+        try {
+            previewEl.textContent = GradeSchemes.getRangeLabel(_disciplineDraft.gradeScheme) || '';
+        } catch (e) {
+            // Ignore preview failures while the draft is mid-edit
         }
     }
 
     // ============================================================
-    // DELEGATED KEYDOWN
+    // DISCIPLINE EDITOR - actions
     // ============================================================
 
-    function handleDelegatedKeydown(e) {
-        var target = e.target;
+    function handleApplySchemePreset(el) {
+        var GradeSchemes = window.AcademyGradeSchemes;
+        if (!_disciplineDraft || !GradeSchemes) { return; }
 
-        if (e.key !== 'Enter') { return; }
+        var presetSelect = document.querySelector('[data-discipline-field="schemePresetId"]');
+        var presetId = presetSelect ? presetSelect.value : 'numeric';
 
-        if (target.id === 'academy-week-input' ||
-            target.id === 'at-week-input' ||
-            target.id === 'academy-ranking-week-input' ||
-            target.id === 'academy-weekly-teams-week-input') {
-            e.preventDefault();
-            commitDisplayWeek(target.value);
-            return;
-        }
-    }
-
-    // ============================================================
-    // EVENT HANDLERS
-    // ============================================================
-
-    function handleViewSwitch(viewId) {
-        if (!viewId) { return; }
-        if (viewId !== 'disciplines') {
-            clearDraft();
-        }
-        if (AcademyUI.setSelectedView(viewId)) {
-            refreshView();
-        }
-    }
-
-    /**
-     * Handle a class selection from the top bar.
-     *
-     * SEMANTICS:
-     *   - AcademyUI.selectClass is a pure setter: it clears the
-     *     character selection on every class change.
-     *   - This handler preserves the character selection when the
-     *     character is still a member of (or the instructor for) the
-     *     newly selected class.
-     *   - The check uses the class VM, which is the same projection
-     *     the People view uses to render the roster. So "member" here
-     *     means exactly what the roster shows.
-     */
-    function handleClassSelect(classId) {
-        if (!classId) {
-            AcademyUI.selectClass(null);
-            refreshView();
-            return;
-        }
-
-        // Remember the previously selected character.
-        var prevCharId = AcademyUI.getSelectedCharacterId();
-
-        // Apply the class change. This clears the character selection.
-        AcademyUI.selectClass(classId);
-
-        // Restore the character selection if the character is still
-        // a member of the new class.
-        if (prevCharId) {
-            var classVM = AcademyAggregator.getClassViewModel(classId);
-            if (classVM && isCharacterInClassVM(prevCharId, classVM)) {
-                AcademyUI.selectCharacter(prevCharId);
+        if (presetId === 'custom') {
+            _disciplineDraft.gradeScheme = GradeSchemes.normalizeScheme({
+                id: 'custom',
+                label: _disciplineDraft.gradeScheme.label || 'Custom Scheme',
+                bands: _disciplineDraft.gradeScheme.bands || []
+            });
+        } else {
+            var preset = GradeSchemes.getPreset(presetId);
+            if (preset) {
+                _disciplineDraft.gradeScheme = GradeSchemes.normalizeScheme(preset);
             }
         }
 
         refreshView();
     }
 
-    function handleCharacterSelect(charId) {
-        if (!charId) { return; }
-        var current = AcademyUI.getSelectedCharacterId();
-        if (current && String(current) === String(charId)) {
-            AcademyUI.selectCharacter(null);
-        } else {
-            AcademyUI.selectCharacter(charId);
+    function handleAddBand() {
+        if (!_disciplineDraft) { return; }
+        var GradeSchemes = window.AcademyGradeSchemes;
+        var bands = _disciplineDraft.gradeScheme.bands || [];
+        var maxBands = (GradeSchemes && GradeSchemes.MAX_BANDS) ? GradeSchemes.MAX_BANDS : 26;
+        if (bands.length >= maxBands) {
+            notify('Too many bands.', 'error');
+            return;
+        }
+        bands.push({ label: '', minPercent: 0 });
+        if (GradeSchemes) {
+            _disciplineDraft.gradeScheme = GradeSchemes.normalizeScheme({
+                id: _disciplineDraft.gradeScheme.id,
+                label: _disciplineDraft.gradeScheme.label,
+                bands: bands
+            });
         }
         refreshView();
     }
 
-    function handleViewFullCharacter(charId) {
-        if (window.CharacterDetail &&
-            typeof window.CharacterDetail.open === 'function') {
-            window.CharacterDetail.open(charId);
-        } else {
-            notify('Character detail view not available.', 'error');
-        }
-    }
+    function handleRemoveBand(el) {
+        if (!_disciplineDraft) { return; }
+        var GradeSchemes = window.AcademyGradeSchemes;
+        var idx = parseInt(el.dataset.bandIndex, 10);
+        if (isNaN(idx)) { return; }
 
-    function handleEditCharacter(charId) {
-        try {
-            var event = new CustomEvent('characterEdit', {
-                detail: { characterId: charId },
-                bubbles: true,
-                cancelable: false
+        var currentBands = _disciplineDraft.gradeScheme.bands || [];
+        if (currentBands.length <= 1) {
+            notify('A scheme must have at least one band.', 'error');
+            return;
+        }
+        currentBands.splice(idx, 1);
+        if (GradeSchemes) {
+            _disciplineDraft.gradeScheme = GradeSchemes.normalizeScheme({
+                id: _disciplineDraft.gradeScheme.id,
+                label: _disciplineDraft.gradeScheme.label,
+                bands: currentBands
             });
-            document.dispatchEvent(event);
-        } catch (err) {
-            console.warn('[AcademyView] Failed to dispatch characterEdit:', err);
         }
+        refreshView();
     }
 
-    function handleClassAction(action, classId) {
-        var CRUD = window.AcademyCRUDModals;
-        if (!CRUD) {
-            notify('CRUD module not available.', 'error');
-            return;
-        }
-        switch (action) {
-            case 'add-character':
-                CRUD.openAddCharacterToClass(classId);
-                break;
-            case 'edit-class':
-                CRUD.openClassForm(classId);
-                break;
-            case 'delete-class':
-                CRUD.openClassDelete(classId);
-                break;
-            default:
-                break;
-        }
+    function handleResetAssessmentWeights() {
+        if (!_disciplineDraft) { return; }
+        var AD = getAcademyDisciplines();
+        _disciplineDraft.assessmentWeights = (AD && typeof AD.getDefaultAssessmentWeights === 'function')
+            ? AD.getDefaultAssessmentWeights()
+            : {};
+        refreshView();
     }
 
-    function handleDisciplineAction(action, disciplineId) {
-        var CRUD = window.AcademyCRUDModals;
-        if (!CRUD) {
-            notify('CRUD module not available.', 'error');
-            return;
-        }
-        switch (action) {
-            case 'delete-discipline':
-                CRUD.openDisciplineDelete(disciplineId);
-                break;
-            default:
-                break;
-        }
-    }
-
-    function handleLocationAction(action, locationId) {
-        var CRUD = window.AcademyCRUDModals;
-        if (!CRUD) {
-            notify('CRUD module not available.', 'error');
-            return;
-        }
-        switch (action) {
-            case 'edit-location':
-                CRUD.openLocationForm(locationId);
-                break;
-            case 'delete-location':
-                CRUD.openLocationDelete(locationId);
-                break;
-            default:
-                break;
-        }
-    }
-
-    function handleAddClass() {
-        if (window.AcademyCRUDModals &&
-            typeof window.AcademyCRUDModals.openClassForm === 'function') {
-            window.AcademyCRUDModals.openClassForm(null);
+    function handleCancelDiscipline() {
+        if (_disciplineDraftMode === 'edit' && _selectedDisciplineId) {
+            initializeDraftFromDiscipline(_selectedDisciplineId);
         } else {
-            notify('CRUD module not available.', 'error');
+            clearDraft();
+        }
+        refreshView();
+    }
+
+    function handleDisciplineDelete(disciplineId) {
+        var CRUD = getAcademyCRUDModals();
+        if (disciplineId && CRUD && typeof CRUD.openDisciplineDelete === 'function') {
+            CRUD.openDisciplineDelete(disciplineId);
+        }
+    }
+
+    /**
+     * Build the discipline payload. Shape only. No validation. No
+     * defaulting. The domain owns validation and normalisation.
+     */
+    function buildDisciplinePayload(draft) {
+        var GradeSchemes = window.AcademyGradeSchemes;
+        var scheme = draft.gradeScheme;
+        if (GradeSchemes && typeof GradeSchemes.normalizeScheme === 'function') {
+            scheme = GradeSchemes.normalizeScheme(scheme);
+        }
+
+        return {
+            name: (draft.name || '').trim(),
+            type: draft.type,
+            startWeek: draft.startWeek,
+            endWeek: draft.endWeek,
+            weeklyHours: draft.weeklyHours,
+            weight: draft.weight,
+            instructorIds: Array.isArray(draft.instructorIds) ? draft.instructorIds.slice() : [],
+            gradeScheme: scheme,
+            assessmentWeights: draft.assessmentWeights || {}
+        };
+    }
+
+    function saveDisciplineDraft() {
+        if (!_disciplineDraft) { return; }
+
+        var AD = getAcademyDisciplines();
+        if (!AD) {
+            notify('Discipline module not available.', 'error');
+            return;
+        }
+
+        _disciplineDraftErrors = {};
+
+        var payload = buildDisciplinePayload(_disciplineDraft);
+        var isNew = _disciplineDraftMode === 'create';
+        var targetId = _disciplineDraft.id;
+
+        var promise = isNew
+            ? AD.create(payload)
+            : AD.update(targetId, payload);
+
+        promise.then(function(result) {
+            if (!result || !result.success) {
+                // The domain already notified on failure via the
+                // pipeline. Nothing more to do here.
+                return;
+            }
+
+            // Determine the resulting id for re-initialising the
+            // draft in edit mode.
+            var savedId = null;
+            if (result.data && result.data.id) {
+                savedId = result.data.id;
+            } else if (result.data && result.data.discipline && result.data.discipline.id) {
+                savedId = result.data.discipline.id;
+            } else if (targetId) {
+                savedId = targetId;
+            }
+
+            if (savedId) {
+                initializeDraftFromDiscipline(savedId);
+            } else {
+                clearDraft();
+            }
+            refreshView();
+        }).catch(function(err) {
+            console.warn('[AcademyView] saveDisciplineDraft failed:', err);
+            notify('Failed to save discipline.', 'error');
+        });
+    }
+
+    // ============================================================
+    // SEARCH DEBOUNCE
+    // ============================================================
+
+    function debouncePeopleSearch(value) {
+        if (_searchTimer) { clearTimeout(_searchTimer); }
+        _searchTimer = setTimeout(function() {
+            _searchTimer = null;
+            AcademyUI.setPeopleSearch(value);
+            refreshView();
+        }, 150);
+    }
+
+    function debounceDisciplineSearch(value) {
+        if (_disciplineSearchTimer) { clearTimeout(_disciplineSearchTimer); }
+        _disciplineSearchTimer = setTimeout(function() {
+            _disciplineSearchTimer = null;
+            _disciplineFilters.search = value;
+            refreshView();
+        }, 150);
+    }
+
+    function debounceLocationSearch(value) {
+        if (_locationSearchTimer) { clearTimeout(_locationSearchTimer); }
+        _locationSearchTimer = setTimeout(function() {
+            _locationSearchTimer = null;
+            _locationFilters.search = value;
+            refreshView();
+        }, 150);
+    }
+
+    // ============================================================
+    // CHARACTER DETAIL - STATE HELPERS
+    // ============================================================
+
+    function resetCharacterTabIfChanged(charId) {
+        var normalised = charId ? String(charId) : null;
+        if (_lastCharacterIdForTab !== normalised) {
+            _lastCharacterIdForTab = normalised;
+            _activeCharacterTab = 'main';
         }
     }
 
     // ============================================================
-    // CHARACTER DETAIL — HANDLERS
+    // CHARACTER DETAIL - ACTIONS
     // ============================================================
 
     function handleDropOut(charId) {
@@ -2069,7 +2228,6 @@
         }
 
         var week = AcademyUI.getDisplayWeek();
-
         CE.addStandalone(charId, week, 'Dropped out').then(function(result) {
             if (result && result.success) {
                 refreshView();
@@ -2082,6 +2240,12 @@
 
     /**
      * Enroll a character in a discipline for the currently selected class.
+     *
+     * Candidates come from the student's current enrollment via
+     * AcademyEnrolments. The list of ALL disciplines comes from
+     * AcademyDisciplines. The candidate set is the difference.
+     * This logic runs on the domain modules' own public APIs, not on
+     * raw storage.
      */
     function handleEnrollDiscipline(charId) {
         if (!charId) { return; }
@@ -2098,25 +2262,26 @@
             return;
         }
 
-        var allDisciplines = window.AcademyDisciplines &&
-            typeof window.AcademyDisciplines.getDisciplines === 'function'
-            ? (window.AcademyDisciplines.getDisciplines() || [])
-            : [];
+        var AD = getAcademyDisciplines();
+        if (!AD || typeof AD.getDisciplines !== 'function') {
+            notify('Discipline module not available.', 'error');
+            return;
+        }
 
+        var allDisciplines = AD.getDisciplines() || [];
         if (allDisciplines.length === 0) {
             notify('No disciplines exist yet.', 'error');
             return;
         }
 
-        var enrolledIds = {};
-        var current = AE.getStudentDisciplines(charId, classId);
-        for (var i = 0; i < current.length; i++) {
-            enrolledIds[String(current[i])] = true;
+        var currentIds = AE.getStudentDisciplines(charId, classId) || [];
+        var enrolledSet = {};
+        for (var i = 0; i < currentIds.length; i++) {
+            enrolledSet[String(currentIds[i])] = true;
         }
 
         var candidates = allDisciplines.filter(function(d) {
-            if (!d || !d.id) { return false; }
-            return !enrolledIds[String(d.id)];
+            return d && d.id && !enrolledSet[String(d.id)];
         });
 
         candidates.sort(function(a, b) {
@@ -2172,12 +2337,12 @@
         }
 
         var disciplineName = 'this discipline';
-        var discipline = window.AcademyDisciplines &&
-            typeof window.AcademyDisciplines.getDiscipline === 'function'
-            ? window.AcademyDisciplines.getDiscipline(disciplineId)
-            : null;
-        if (discipline && discipline.name) {
-            disciplineName = '"' + discipline.name + '"';
+        var AD = getAcademyDisciplines();
+        if (AD && typeof AD.getDiscipline === 'function') {
+            var disc = AD.getDiscipline(disciplineId);
+            if (disc && disc.name) {
+                disciplineName = '"' + disc.name + '"';
+            }
         }
 
         if (!confirm('Leave ' + disciplineName + '? You can re-enroll later.')) {
@@ -2197,9 +2362,15 @@
     function handleAddGroupStudent(groupKey) {
         if (!groupKey) { return; }
 
-        var AG = window.AcademyGroups;
+        var AG = getAcademyGroups();
         if (!AG || typeof AG.getGroupStudents !== 'function') {
             notify('Auto-groups module not available.', 'error');
+            return;
+        }
+
+        var CQ = getCharacterQueries();
+        if (!CQ) {
+            notify('Character queries not available.', 'error');
             return;
         }
 
@@ -2207,12 +2378,6 @@
         var currentSet = {};
         for (var i = 0; i < currentIds.length; i++) {
             currentSet[String(currentIds[i])] = true;
-        }
-
-        var CQ = getCharacterQueries();
-        if (!CQ) {
-            notify('Character queries not available.', 'error');
-            return;
         }
 
         var allChars = CQ.getCharacters() || [];
@@ -2261,7 +2426,7 @@
     function handleRemoveGroupStudent(groupKey, charId) {
         if (!groupKey || !charId) { return; }
 
-        var AG = window.AcademyGroups;
+        var AG = getAcademyGroups();
         if (!AG || typeof AG.removeStudentFromGroup !== 'function') {
             notify('Auto-groups module not available.', 'error');
             return;
@@ -2291,174 +2456,44 @@
     }
 
     // ============================================================
-    // DISCIPLINE DRAFT SAVE
+    // GRADES EDITOR MOUNT
     // ============================================================
 
-    function saveDisciplineDraft() {
-        if (!_disciplineDraft) { return; }
-
-        var AcademyDisciplines = window.AcademyDisciplines;
-        var GradeSchemes = window.AcademyGradeSchemes;
-        if (!AcademyDisciplines || !GradeSchemes) {
-            notify('Discipline module not available.', 'error');
+    function mountGradesEditorIfPresent() {
+        if (AcademyUI.getSelectedView() !== 'people') {
+            unmountGradesEditor();
             return;
         }
 
-        var scheme = GradeSchemes.normalizeScheme(_disciplineDraft.gradeScheme);
-
-        var errors = {};
-
-        if (!_disciplineDraft.name || !_disciplineDraft.name.trim()) {
-            errors.name = 'Name is required.';
-        }
-
-        var sw = parseInt(_disciplineDraft.startWeek, 10);
-        var ew = parseInt(_disciplineDraft.endWeek, 10);
-        if (isNaN(sw) || sw < getMinWeek() || sw > getMaxWeek()) {
-            errors.startWeek = 'Start week must be ' + getMinWeek() + '\u2013' + getMaxWeek() + '.';
-        }
-        if (isNaN(ew) || ew < getMinWeek() || ew > getMaxWeek()) {
-            errors.endWeek = 'End week must be ' + getMinWeek() + '\u2013' + getMaxWeek() + '.';
-        }
-        if (!isNaN(sw) && !isNaN(ew) && sw > ew) {
-            errors.endWeek = 'End week cannot be before start week.';
-        }
-
-        var wh = parseFloat(_disciplineDraft.weeklyHours);
-        if (isNaN(wh) || wh < AcademyDisciplines.MIN_WEEKLY_HOURS || wh > AcademyDisciplines.MAX_WEEKLY_HOURS) {
-            errors.weeklyHours = 'Weekly hours must be ' +
-                AcademyDisciplines.MIN_WEEKLY_HOURS + '\u2013' +
-                AcademyDisciplines.MAX_WEEKLY_HOURS + '.';
-        }
-
-        var wt = parseFloat(_disciplineDraft.weight);
-        if (isNaN(wt) || wt < AcademyDisciplines.MIN_WEIGHT || wt > AcademyDisciplines.MAX_WEIGHT) {
-            errors.weight = 'Weight must be ' +
-                AcademyDisciplines.MIN_WEIGHT + '\u2013' +
-                AcademyDisciplines.MAX_WEIGHT + '.';
-        }
-
-        var schemeCheck = GradeSchemes.validateScheme(scheme);
-        if (!schemeCheck.valid) {
-            errors.bands = schemeCheck.errors.length > 0
-                ? schemeCheck.errors.map(function(err) { return err.message; }).join(' ')
-                : 'Grade scheme is invalid.';
-        }
-
-        // ---- Assessment weights validation ----
-        var weights = _disciplineDraft.assessmentWeights || {};
-        var weightKeys = Object.keys(weights);
-        var weightError = null;
-        for (var wi = 0; wi < weightKeys.length; wi++) {
-            var wv = weights[weightKeys[wi]];
-            if (wv === null || wv === undefined) { continue; }
-            if (typeof wv !== 'number' || !isFinite(wv) ||
-                wv < AcademyDisciplines.MIN_ASSESSMENT_WEIGHT ||
-                wv > AcademyDisciplines.MAX_ASSESSMENT_WEIGHT) {
-                weightError = 'All assessment weights must be numbers between ' +
-                    AcademyDisciplines.MIN_ASSESSMENT_WEIGHT + ' and ' +
-                    AcademyDisciplines.MAX_ASSESSMENT_WEIGHT + '.';
-                break;
-            }
-        }
-        if (weightError) {
-            errors.assessmentWeights = weightError;
-        }
-
-        if (Object.keys(errors).length > 0) {
-            _disciplineDraftErrors = errors;
-            refreshView();
+        var charId = AcademyUI.getSelectedCharacterId();
+        if (!charId || _activeCharacterTab !== 'grades') {
+            unmountGradesEditor();
             return;
         }
 
-        _disciplineDraftErrors = {};
-
-        var payload = {
-            name: _disciplineDraft.name.trim(),
-            type: _disciplineDraft.type,
-            startWeek: sw,
-            endWeek: ew,
-            weeklyHours: wh,
-            weight: wt,
-            instructorIds: (_disciplineDraft.instructorIds || []).slice(),
-            gradeScheme: scheme,
-            assessmentWeights: _disciplineDraft.assessmentWeights || null
-        };
-
-        var isNew = _disciplineDraftMode === 'create';
-        var targetId = _disciplineDraft.id;
-
-        var promise;
-        if (isNew) {
-            promise = AcademyDisciplines.create(payload);
-        } else {
-            promise = AcademyDisciplines.update(targetId, payload);
+        var GE = getAcademyGradesEditor();
+        if (!GE || typeof GE.mount !== 'function') {
+            return;
         }
 
-        promise.then(function(result) {
-            if (result && result.success) {
-                var savedId = result.data && result.data.id
-                    ? result.data.id
-                    : (result.data && result.data.discipline && result.data.discipline.id
-                        ? result.data.discipline.id
-                        : targetId);
-
-                if (savedId) {
-                    initializeDraftFromDiscipline(savedId);
-                } else {
-                    clearDraft();
-                }
-                refreshView();
-            }
-        }).catch(function(err) {
-            console.warn('[AcademyView] Discipline save failed:', err);
-            notify('Failed to save discipline.', 'error');
-        });
-    }
-
-    // ============================================================
-    // SEARCH DEBOUNCE
-    // ============================================================
-
-    var _searchTimer = null;
-    var _disciplineSearchTimer = null;
-    var _locationSearchTimer = null;
-
-    function debounceSearch(value) {
-        if (_searchTimer) { clearTimeout(_searchTimer); }
-        _searchTimer = setTimeout(function() {
-            _searchTimer = null;
-            AcademyUI.setFilter('people', 'search', value);
-            refreshView();
-        }, 150);
-    }
-
-    function debounceDisciplineSearch(value) {
-        if (_disciplineSearchTimer) { clearTimeout(_disciplineSearchTimer); }
-        _disciplineSearchTimer = setTimeout(function() {
-            _disciplineSearchTimer = null;
-            AcademyUI.setFilter('disciplines', 'search', value);
-            refreshView();
-        }, 150);
-    }
-
-    function debounceLocationSearch(value) {
-        if (_locationSearchTimer) { clearTimeout(_locationSearchTimer); }
-        _locationSearchTimer = setTimeout(function() {
-            _locationSearchTimer = null;
-            AcademyUI.setFilter('locations', 'search', value);
-            refreshView();
-        }, 150);
-    }
-
-    // ============================================================
-    // REFRESH
-    // ============================================================
-
-    function refreshView() {
-        var container = document.getElementById('tab-academy');
+        var container = document.getElementById('academy-grades-editor-host');
         if (!container) { return; }
-        render(container);
+
+        var classId = AcademyUI.getSelectedClassId();
+        var week = AcademyUI.getDisplayWeek();
+
+        try {
+            GE.mount(container, charId, classId, week);
+        } catch (e) {
+            console.warn('[AcademyView] mountGradesEditor failed:', e);
+        }
+    }
+
+    function unmountGradesEditor() {
+        var GE = getAcademyGradesEditor();
+        if (GE && typeof GE.unmount === 'function') {
+            try { GE.unmount(); } catch (e) { /* ignore */ }
+        }
     }
 
     // ============================================================
@@ -2468,6 +2503,7 @@
     window.AcademyView = {
         render: render,
         refreshView: refreshView,
+        unmount: unmount,
         VIEWS: VIEWS
     };
 
