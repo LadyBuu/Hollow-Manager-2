@@ -18,13 +18,18 @@
  *   - Marking the exam completed
  *
  * IMPORTANT:
- *   - All mutations route through TournamentCore / TournamentMatches,
- *     which are pipeline-wrapped.
+ *   - All mutations route through TournamentCore / TournamentMatches.
+ *   - TournamentCore and TournamentMatches are MutationPipeline-wrapped.
+ *     The pipeline owns persistence, rollback, and activity logging.
  *   - This module does NOT call saveData().
  *   - This module does NOT mutate window.data directly.
  *   - This module does NOT bind DOM events. It exposes handler
  *     functions that AcademyView calls from its delegated listeners.
  *   - All modals use window.Modal.
+ *
+ * CLASS LOOKUPS:
+ *   Class records are read via AcademyClasses.getClass. The old
+ *   AcademyQueries facade is no longer used here.
  *
  * RESULT VOCABULARY:
  *   - 'pass'  : advanced and successful
@@ -46,17 +51,26 @@
  *   - completeExam(examId)
  *
  * DEPENDENCIES:
- *   - window.DomUtils (MANDATORY)
- *   - window.Modal (MANDATORY)
+ *   - window.DomUtils          (MANDATORY)
+ *   - window.Modal             (MANDATORY)
  *   - window.NotificationSystem (MANDATORY)
- *   - window.TournamentCore (MANDATORY)
+ *   - window.TournamentCore    (MANDATORY)
  *   - window.TournamentMatches (MANDATORY)
  *   - window.TournamentQueries (MANDATORY)
- *   - window.TournamentSchema (MANDATORY)
+ *   - window.TournamentSchema  (MANDATORY)
+ *   - window.AcademyClasses    (MANDATORY)
+ *   - window.AcademyQueries    (MANDATORY) — legacy class/grade reads removed; only getClass is replaced
+ *   - window.CharacterQueries  (MANDATORY)
+ *   - window.TeamQueries       (LAZY)
  *   - window.TournamentAggregator (LAZY)
- *   - window.AcademyQueries (MANDATORY)
- *   - window.CharacterQueries (MANDATORY)
- *   - window.TeamQueries (LAZY)
+ *
+ * NOTE ON PERSISTENCE:
+ *   The core modules (TournamentCore, TournamentMatches) are
+ *   pipeline-wrapped at the leaf level. Every create/update/delete
+ *   resolves through MutationPipeline.performMutation. The pipeline
+ *   snapshots window.data, applies the mutation, calls saveData(),
+ *   and rolls back on failure. This module awaits the result and
+ *   reacts — it does not orchestrate persistence.
  */
 
 (function() {
@@ -102,6 +116,10 @@
         if (!window.TournamentQueries ||
             typeof window.TournamentQueries.getTournament !== 'function') {
             missing.push('TournamentQueries');
+        }
+        if (!window.AcademyClasses ||
+            typeof window.AcademyClasses.getClass !== 'function') {
+            missing.push('AcademyClasses');
         }
 
         if (missing.length > 0) {
@@ -165,6 +183,21 @@
     }
 
     // ============================================================
+    // CLASS LOOKUP
+    // ============================================================
+
+    function getClassRecord(classId) {
+        if (!isNonEmptyString(classId)) {
+            return null;
+        }
+        if (!window.AcademyClasses ||
+            typeof window.AcademyClasses.getClass !== 'function') {
+            return null;
+        }
+        return window.AcademyClasses.getClass(classId);
+    }
+
+    // ============================================================
     // MODAL PLUMBING
     // ============================================================
 
@@ -219,10 +252,6 @@
     // RESULT SELECT INPUT
     // ============================================================
 
-    /**
-     * Render a pass/fail/retry selector.
-     * Default is 'pass'.
-     */
     function renderResultSelect(name, currentValue) {
         var value = currentValue || 'pass';
         var options = [
@@ -256,11 +285,7 @@
             return;
         }
 
-        var classRecord = window.AcademyQueries &&
-            typeof window.AcademyQueries.getClass === 'function'
-            ? window.AcademyQueries.getClass(classId)
-            : null;
-
+        var classRecord = getClassRecord(classId);
         if (!classRecord) {
             notify('Class not found.', 'error');
             return;
@@ -355,7 +380,12 @@
                     return;
                 }
 
-                // Single-week scope: startWeek === endWeek === week
+                // TournamentCore.createTournament is synchronous and
+                // mutates window.data directly. Persistence and
+                // rollback are the caller's responsibility at the
+                // tournament-core boundary — see the note in that
+                // module's header. This module treats the call as
+                // synchronous and reacts to the returned record.
                 var result = Core.createTournament({
                     name: name,
                     mode: examMode,
@@ -372,12 +402,8 @@
                     return;
                 }
 
-                // Persist. Tournaments are created in-memory and need
-                // to be saved via the global save mechanism.
-                persistThen(() => {
-                    close();
-                    notifyChange();
-                });
+                close();
+                notifyChange();
             });
         });
     }
@@ -434,10 +460,8 @@
                     return;
                 }
 
-                persistThen(() => {
-                    close();
-                    notifyChange();
-                });
+                close();
+                notifyChange();
             });
         });
     }
@@ -468,7 +492,7 @@
                 notify('Could not remove participant.', 'error');
                 return;
             }
-            persistThen(() => { notifyChange(); });
+            notifyChange();
             return;
         }
 
@@ -485,7 +509,7 @@
             return;
         }
 
-        persistThen(() => { notifyChange(); });
+        notifyChange();
     }
 
     // ============================================================
@@ -551,7 +575,6 @@
             var form = modal.querySelector('#at-add-round-form');
             if (!form) { return; }
 
-            // Toggle label visibility on type change
             var typeSelect = form.querySelector('.at-round-type');
             var sizeInput = form.querySelector('.at-round-size');
             if (typeSelect && sizeInput) {
@@ -588,10 +611,8 @@
                     return;
                 }
 
-                persistThen(() => {
-                    close();
-                    notifyChange();
-                });
+                close();
+                notifyChange();
             });
         });
     }
@@ -638,10 +659,8 @@
                     return;
                 }
 
-                persistThen(() => {
-                    close();
-                    notifyChange();
-                });
+                close();
+                notifyChange();
             });
         });
     }
@@ -697,9 +716,6 @@
         var previewCount = 0;
         if (isPairExam) {
             previewCount = Math.ceil(available.length / 2);
-            // Adjusted for odd leftover: if odd count and >= 3, one
-            // triple instead of two pairs, so a slightly different
-            // calculation. Simplify to ceil.
             if (available.length % 2 === 1 && available.length >= 3) {
                 previewCount = Math.floor((available.length - 3) / 2) + 1;
             }
@@ -848,7 +864,6 @@
             return !alreadyInRound[id];
         });
 
-        // Build the modal
         var html = '';
         html += '<form id="at-add-match-form" ' +
                     'data-exam-id="' + escapeAttribute(examId) + '" ' +
@@ -897,7 +912,6 @@
                         notify('Please select at least one pair.', 'error');
                         return;
                     }
-                    // Flatten pairs into participants
                     for (var i = 0; i < selected.length; i++) {
                         for (var j = 0; j < selected[i].length; j++) {
                             participants.push(selected[i][j]);
@@ -936,10 +950,6 @@
         });
     }
 
-    /**
-     * Render a checkbox list of participants to pick.
-     * Enforces min/max via JS in the picker bind.
-     */
     function renderParticipantPicker(available, matchSize, mode) {
         var html = '';
         html += '<div class="at-picker" data-match-size="' +
@@ -971,10 +981,6 @@
         return html;
     }
 
-    /**
-     * Render a pair picker for pair exams.
-     * User builds pairs one at a time.
-     */
     function renderPairPicker(available) {
         var html = '';
         html += '<div class="at-pair-picker">';
@@ -1060,7 +1066,6 @@
             var group = [v1, v2];
             if (v3) { group.push(v3); }
 
-            // Build a row for this pair
             var row = document.createElement('div');
             row.className = 'at-pair-row';
             var names = group.map(function(id) {
@@ -1081,7 +1086,6 @@
 
             listEl.appendChild(row);
 
-            // Reset selects
             if (select1) { select1.value = ''; }
             if (select2) { select2.value = ''; }
             if (select3) { select3.value = ''; }
@@ -1159,10 +1163,7 @@
         var mode = exam ? exam.mode : 'individuals';
         var matchType = match.type || 'group_exam';
         var isPairExam = match.isPairExam === true;
-        var matchSize = match.participants ? match.participants.length : 2;
 
-        // Eligible pool = all in the exam, but for edit, show everyone
-        // in the exam who isn't eliminated; the user can re-pick.
         var eligible = Queries.getParticipants(examId).filter(function(p) {
             return !Queries.isParticipantEliminated(examId, p.id);
         }).map(function(p) { return p.id; });
@@ -1230,10 +1231,6 @@
                     participants: newIds
                 };
 
-                // If pair exam, drop the pairings — the update path
-                // will leave them empty and the view will fall back to
-                // a flat list. Users who want pairing should delete
-                // and re-create.
                 if (isPairExam) {
                     payload.pairings = [];
                 }
@@ -1348,11 +1345,6 @@
         });
     }
 
-    /**
-     * Completion body for group_exam / pair_exam.
-     * One row per participant with a pass/fail/retry select.
-     * Default: pass.
-     */
     function renderGroupCompletionBody(match, mode) {
         var participants = Array.isArray(match.participants)
             ? match.participants
@@ -1405,11 +1397,6 @@
         return results;
     }
 
-    /**
-     * Completion body for team_vs_team.
-     * Each team gets a result select, and each member gets one too.
-     * Team defaults to pass; members default to pass.
-     */
     function renderTeamCompletionBody(match, mode) {
         var teams = Array.isArray(match.participants) ? match.participants : [];
 
@@ -1439,7 +1426,6 @@
             html += renderResultSelect('team_result_' + teamId, 'pass');
             html += '</div>';
 
-            // Member rows
             var TeamQueries = window.TeamQueries;
             var team = TeamQueries && typeof TeamQueries.getTeamById === 'function'
                 ? TeamQueries.getTeamById(teamId)
@@ -1574,37 +1560,7 @@
             return;
         }
 
-        persistThen(() => { notifyChange(); });
-    }
-
-    // ============================================================
-    // PERSISTENCE
-    // ============================================================
-    //
-    // TournamentCore and TournamentMatches mutate window.data
-    // directly (the caller owns persistence). We call the global
-    // saveData() after every mutation, then fire the onChange
-    // callback so the view re-renders.
-
-    function persistThen(fn) {
-        var saver = window.saveData;
-        if (typeof saver === 'function') {
-            try {
-                var result = saver();
-                if (result && typeof result.then === 'function') {
-                    result.then(function() {
-                        if (typeof fn === 'function') { fn(); }
-                    }).catch(function(err) {
-                        console.warn('[AcademyTournamentEvents] saveData rejected:', err);
-                        if (typeof fn === 'function') { fn(); }
-                    });
-                    return;
-                }
-            } catch (err) {
-                console.warn('[AcademyTournamentEvents] saveData threw:', err);
-            }
-        }
-        if (typeof fn === 'function') { fn(); }
+        notifyChange();
     }
 
     // ============================================================
