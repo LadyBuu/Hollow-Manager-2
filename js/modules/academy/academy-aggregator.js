@@ -36,11 +36,23 @@
  *   - CharacterQueries       (character identity, display, status, age)
  *   - TeamQueries            (persistent Team entities)
  *   - TeamConstants          (type labels, period labels)
+ *   - TeamAggregator         (period-display strings; lazy) -- see
+ *                            PERIOD DISPLAY OWNERSHIP below
  *
  * OPTIONAL DEPENDENCIES (degrade to [] when absent):
  *   - AcademyWeeklyTeams     (week-scoped team assignments)
  *   - AcademyRanking         (ranking projection)
  *   - CalendarAggregator     (location / student schedule VM)
+ *
+ * PERIOD DISPLAY OWNERSHIP:
+ *   Team period display strings ("Wk 3 - Wk 14", "2025 - 2027", etc.)
+ *   are owned by TeamAggregator.getTeamPeriodDisplay. They used to live
+ *   on TeamQueries and were moved out because they are presentation
+ *   strings, not query results. TeamAggregator loads after
+ *   AcademyAggregator in the bootstrap order, so this module accesses
+ *   it lazily via getTeamAggregator() and degrades to '-' when it is
+ *   not yet available. That is the ONLY reason a lazy accessor is used
+ *   here; every other Team dependency goes through TeamQueries directly.
  *
  * REMOVED DEPENDENCIES:
  *   - AcademyQueries. This aggregator used to route reads through
@@ -133,13 +145,15 @@
         if (!TeamQueries || typeof TeamQueries.getActiveTeamMembers !== 'function') {
             missing.push('TeamQueries.getActiveTeamMembers');
         }
-        if (!TeamQueries || typeof TeamQueries.getTeamPeriodDisplay !== 'function') {
-            missing.push('TeamQueries.getTeamPeriodDisplay');
-        }
 
         if (!TeamConstants) {
             missing.push('TeamConstants');
         }
+
+        // NOTE: TeamQueries.getTeamPeriodDisplay is NOT checked here.
+        // Period display strings live on TeamAggregator, which loads
+        // after this module. See PERIOD DISPLAY OWNERSHIP in the
+        // header, and getTeamPeriodDisplay() below.
 
         if (missing.length > 0) {
             console.warn('[AcademyAggregator] Missing dependencies:', missing.join(', '));
@@ -169,6 +183,15 @@
 
     function getCalendarAggregator() {
         return window.CalendarAggregator || null;
+    }
+
+    /**
+     * Team period display is owned by TeamAggregator. It loads after
+     * this aggregator in the bootstrap order, so we access it lazily.
+     * When absent, callers degrade to '-' for the period display.
+     */
+    function getTeamAggregator() {
+        return window.TeamAggregator || null;
     }
 
     // ============================================================
@@ -232,6 +255,26 @@
 
     function getTeamPeriodLabel(type) {
         return TeamConstants.getPeriodLabel(type);
+    }
+
+    /**
+     * Format a team's period range for display.
+     *
+     * Delegates to TeamAggregator when available. Returns '-' when
+     * the aggregator has not loaded yet (this only happens during
+     * the brief window between AcademyAggregator's load and
+     * TeamAggregator's load; every projection that uses this helper
+     * is called long after both have loaded).
+     *
+     * @param {object} team
+     * @returns {string}
+     */
+    function getTeamPeriodDisplay(team) {
+        var TA = getTeamAggregator();
+        if (TA && typeof TA.getTeamPeriodDisplay === 'function') {
+            return TA.getTeamPeriodDisplay(team);
+        }
+        return '-';
     }
 
     // ============================================================
@@ -465,7 +508,7 @@
                     status: team.status || 'active',
                     members: memberViewModels,
                     memberCount: memberViewModels.length,
-                    periodDisplay: TeamQueries.getTeamPeriodDisplay(team)
+                    periodDisplay: getTeamPeriodDisplay(team)  // lazy accessor
                 };
             });
 
@@ -697,7 +740,7 @@
                 type: team.type,
                 typeLabel: TeamConstants.getTypeLabel(team.type),
                 periodLabel: TeamConstants.getPeriodLabel(team.type),
-                periodDisplay: TeamQueries.getTeamPeriodDisplay(team),
+                periodDisplay: getTeamPeriodDisplay(team),  // lazy accessor
                 memberCount: memberIds.length,
                 activeMemberCount: memberIds.length,
                 status: team.status || 'active',
@@ -727,7 +770,7 @@
             type: team.type,
             typeLabel: TeamConstants.getTypeLabel(team.type),
             periodLabel: TeamConstants.getPeriodLabel(team.type),
-            periodDisplay: TeamQueries.getTeamPeriodDisplay(team),
+            periodDisplay: getTeamPeriodDisplay(team),  // lazy accessor
             status: team.status || 'active',
             temporaryMission: team.temporaryMission || null,
             members: members,
@@ -783,10 +826,6 @@
 
     function getLocationViewViewModel(filters, week, selectedLocationId) {
         filters = filters || {};
-
-        var locations = AcademyDisciplines && AcademyDisciplines.getDisciplines
-            ? null
-            : null;
 
         // Locations come from AcademyLocations, which is loaded by
         // index.js. We access it lazily because this aggregator does
