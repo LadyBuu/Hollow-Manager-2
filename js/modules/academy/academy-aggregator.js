@@ -4,81 +4,59 @@
  *
  * Path: js/modules/academy/academy-aggregator.js
  *
- * This module provides the view models consumed by AcademyView and
- * AcademyTournamentAggregator:
+ * PROJECTIONS:
+ *   Classes:
+ *     getClassListViewModel()
+ *     getClassViewModel(classId)
+ *     getClassStudentsViewModel(classId)
  *
- *   Core projections:
- *     - getClassViewModel(classId, options)
- *     - getStudentViewModel(studentId, options)
- *     - getInstructorViewModel(instructorId, options)
- *     - getClassListViewModel()
- *     - getClassStudentsViewModel(classId)
- *     - getRankingViewModel(classId, week)
- *     - getLocationViewModel(locationId, week)
+ *   People:
+ *     getPeopleViewModel(classId, options)
  *
- *   View models for AcademyView:
- *     - getWeeklyTeamsViewViewModel(classId, week, selectedTeamId)
- *     - getLocationViewViewModel(filters, week, selectedLocationId)
- *     - getRankingViewViewModel(classId, week)
- *     - getDisciplineListViewModel(filters)
+ *   Characters:
+ *     getStudentViewModel(studentId, options)
+ *     getInstructorViewModel(instructorId, options)
+ *
+ *   Disciplines:
+ *     getDisciplineListViewModel(filters)
+ *     getDisciplineEditorViewModel(options)
+ *     getInstructorNamesForDiscipline(discipline)
+ *
+ *   Rankings:
+ *     getRankingViewModel(classId, week)
+ *
+ *   Locations:
+ *     getLocationViewModel(filters, week, selectedLocationId)
+ *
+ *   Weekly Teams:
+ *     getWeeklyTeamsViewModel(classId, week, selectedTeamId)
  *
  * IMPORTANT:
- *   - Projection builder, not a query registry.
+ *   - Projection builder. Never mutates. No UI dependencies.
  *   - Composes domain modules. Never walks raw storage.
- *   - Never exposes domain query APIs directly.
- *   - Never mutates data.
- *   - No UI dependencies.
- *   - No passthrough methods.
+ *   - No fallback values for missing domain data. When a source is
+ *     absent, the projection returns null or an empty collection.
+ *     Never invents a default (no `week || 1`, no `totalRounds || 1`).
+ *   - The class VM is deliberately small (header fields only).
+ *     Rosters, teams, and rankings live in their own projections.
  *
- * DEPENDENCY GRAPH:
- *   - AcademyClasses         (class entities, roster derivation source)
- *   - AcademyDisciplines     (discipline entities + instructor names)
- *   - CharacterQueries       (character identity, display, status, age)
- *   - TeamQueries            (persistent Team entities)
- *   - TeamConstants          (type labels, period labels)
- *   - TeamAggregator         (period-display strings; lazy) -- see
- *                            PERIOD DISPLAY OWNERSHIP below
+ * ROLE VOCABULARY:
+ *   Canonical role values are 'student' and 'instructor'. There is no
+ *   'trainee' anywhere in this module.
  *
- * OPTIONAL DEPENDENCIES (degrade to [] when absent):
- *   - AcademyWeeklyTeams     (week-scoped team assignments)
- *   - AcademyRanking         (ranking projection)
- *   - CalendarAggregator     (location / student schedule VM)
+ * DEPENDENCIES:
+ *   - AcademyClasses       (class entities)
+ *   - AcademyDisciplines   (discipline entities)
+ *   - CharacterQueries     (character identity)
+ *   - TeamQueries          (persistent Team entities)
+ *   - TeamConstants        (team type/period labels)
  *
- * PERIOD DISPLAY OWNERSHIP:
- *   Team period display strings ("Wk 3 - Wk 14", "2025 - 2027", etc.)
- *   are owned by TeamAggregator.getTeamPeriodDisplay. They used to live
- *   on TeamQueries and were moved out because they are presentation
- *   strings, not query results. TeamAggregator loads after
- *   AcademyAggregator in the bootstrap order, so this module accesses
- *   it lazily via getTeamAggregator() and degrades to '-' when it is
- *   not yet available. That is the ONLY reason a lazy accessor is used
- *   here; every other Team dependency goes through TeamQueries directly.
- *
- * REMOVED DEPENDENCIES:
- *   - AcademyQueries. This aggregator used to route reads through
- *     AcademyQueries, which was itself a facade over the domain
- *     modules. With the domain modules now exposing their own read
- *     APIs, the facade is no longer needed. Every read in this file
- *     goes to the domain owner.
- *
- * CLASS MEMBERSHIP MODEL (v15+):
- *   - Character.classIds is the source of truth for class membership.
- *   - The class roster is DERIVED: characters whose classIds include
- *     classId.
- *   - The class INSTRUCTOR (class.instructorId) is tracked separately
- *     and is NOT automatically written into character.classIds.
- *   - getClassViewModel stitches the instructor into the roster for
- *     display.
- *   - getClassStudentsViewModel does NOT include the instructor.
- *
- * ROSTER ORDERING:
- *   - Class VM roster: trainees first, then instructors, alphabetical
- *     within each group.
- *   - Class students VM: alphabetical by name. Instructors excluded.
- *
- * RETURN SHAPE NOTE:
- *   - All public entry points return plain objects and arrays. No
- *     live references escape.
+ *   - TeamAggregator       (period-display strings; lazy)
+ *   - AcademyWeeklyTeams   (week-scoped assignments; lazy)
+ *   - AcademyRanking       (ranking projection; lazy)
+ *   - CalendarAggregator   (schedule projections; lazy)
+ *   - AcademyEnrolments    (enrolment read for discipline editor VM; lazy)
+ *   - AcademyGrades        (grade read for discipline editor VM; lazy)
  */
 
 (function() {
@@ -90,7 +68,7 @@
     window.__academyAggregatorLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY
+    // MANDATORY DEPENDENCIES
     // ============================================================
 
     var AcademyClasses = window.AcademyClasses;
@@ -100,78 +78,65 @@
     var TeamConstants = window.TeamConstants;
 
     // ============================================================
-    // DEPENDENCY CHECK
+    // MANDATORY DEPENDENCY CHECK
     // ============================================================
 
-    function checkDependencies() {
-        var missing = [];
+    var _missing = [];
 
-        if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function') {
-            missing.push('AcademyClasses.getClass');
-        }
-        if (!AcademyClasses || typeof AcademyClasses.getClasses !== 'function') {
-            missing.push('AcademyClasses.getClasses');
-        }
-
-        if (!AcademyDisciplines || typeof AcademyDisciplines.getDisciplines !== 'function') {
-            missing.push('AcademyDisciplines.getDisciplines');
-        }
-        if (!AcademyDisciplines || typeof AcademyDisciplines.getDiscipline !== 'function') {
-            missing.push('AcademyDisciplines.getDiscipline');
-        }
-
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-            missing.push('CharacterQueries.getDisplayName');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getCurrentStatus !== 'function') {
-            missing.push('CharacterQueries.getCurrentStatus');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterAge !== 'function') {
-            missing.push('CharacterQueries.getCharacterAge');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getCharacters !== 'function') {
-            missing.push('CharacterQueries.getCharacters');
-        }
-
-        if (!TeamQueries || typeof TeamQueries.getTeamsByClass !== 'function') {
-            missing.push('TeamQueries.getTeamsByClass');
-        }
-        if (!TeamQueries || typeof TeamQueries.getTeamName !== 'function') {
-            missing.push('TeamQueries.getTeamName');
-        }
-        if (!TeamQueries || typeof TeamQueries.getActiveTeamMembers !== 'function') {
-            missing.push('TeamQueries.getActiveTeamMembers');
-        }
-
-        if (!TeamConstants) {
-            missing.push('TeamConstants');
-        }
-
-        // NOTE: TeamQueries.getTeamPeriodDisplay is NOT checked here.
-        // Period display strings live on TeamAggregator, which loads
-        // after this module. See PERIOD DISPLAY OWNERSHIP in the
-        // header, and getTeamPeriodDisplay() below.
-
-        if (missing.length > 0) {
-            console.warn('[AcademyAggregator] Missing dependencies:', missing.join(', '));
-            return false;
-        }
-
-        return true;
+    if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function') {
+        _missing.push('AcademyClasses.getClass');
+    }
+    if (!AcademyClasses || typeof AcademyClasses.getClasses !== 'function') {
+        _missing.push('AcademyClasses.getClasses');
+    }
+    if (!AcademyDisciplines || typeof AcademyDisciplines.getDisciplines !== 'function') {
+        _missing.push('AcademyDisciplines.getDisciplines');
+    }
+    if (!AcademyDisciplines || typeof AcademyDisciplines.getDiscipline !== 'function') {
+        _missing.push('AcademyDisciplines.getDiscipline');
+    }
+    if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+        _missing.push('CharacterQueries.getCharacterById');
+    }
+    if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+        _missing.push('CharacterQueries.getDisplayName');
+    }
+    if (!CharacterQueries || typeof CharacterQueries.getCurrentStatus !== 'function') {
+        _missing.push('CharacterQueries.getCurrentStatus');
+    }
+    if (!CharacterQueries || typeof CharacterQueries.getCharacterAge !== 'function') {
+        _missing.push('CharacterQueries.getCharacterAge');
+    }
+    if (!CharacterQueries || typeof CharacterQueries.getCharacters !== 'function') {
+        _missing.push('CharacterQueries.getCharacters');
+    }
+    if (!TeamQueries || typeof TeamQueries.getTeamsByClass !== 'function') {
+        _missing.push('TeamQueries.getTeamsByClass');
+    }
+    if (!TeamQueries || typeof TeamQueries.getTeamName !== 'function') {
+        _missing.push('TeamQueries.getTeamName');
+    }
+    if (!TeamQueries || typeof TeamQueries.getActiveTeamMembers !== 'function') {
+        _missing.push('TeamQueries.getActiveTeamMembers');
+    }
+    if (!TeamConstants) {
+        _missing.push('TeamConstants');
     }
 
-    checkDependencies();
+    if (_missing.length > 0) {
+        throw new Error(
+            '[AcademyAggregator] Missing mandatory dependencies: ' +
+            _missing.join(', ')
+        );
+    }
 
     // ============================================================
     // LAZY OPTIONAL DEPENDENCIES
     // ============================================================
-    //
-    // These modules may load after this aggregator. They are read at
-    // call time, not at module-load time. When absent, the calling
-    // projection degrades to [] rather than throwing.
+
+    function getTeamAggregator() {
+        return window.TeamAggregator || null;
+    }
 
     function getAcademyWeeklyTeams() {
         return window.AcademyWeeklyTeams || null;
@@ -185,68 +150,35 @@
         return window.CalendarAggregator || null;
     }
 
-    /**
-     * Team period display is owned by TeamAggregator. It loads after
-     * this aggregator in the bootstrap order, so we access it lazily.
-     * When absent, callers degrade to '-' for the period display.
-     */
-    function getTeamAggregator() {
-        return window.TeamAggregator || null;
+    function getAcademyEnrolments() {
+        return window.AcademyEnrolments || null;
+    }
+
+    function getAcademyGrades() {
+        return window.AcademyGrades || null;
+    }
+
+    function getGradeSchemes() {
+        return window.AcademyGradeSchemes || null;
     }
 
     // ============================================================
     // SMALL HELPERS
     // ============================================================
 
+    function isNonEmptyString(value) {
+        return typeof value === 'string' && value.trim() !== '';
+    }
+
+    function isFiniteNumber(value) {
+        return typeof value === 'number' && isFinite(value);
+    }
+
     function getCharacterDisplayName(charId) {
-        if (!charId) {
-            return 'Unknown';
-        }
+        if (!charId) { return 'Unknown'; }
         var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
-            return 'Unknown';
-        }
+        if (!char) { return 'Unknown'; }
         return CharacterQueries.getDisplayName(char);
-    }
-
-    function getCharacterStatus(charId) {
-        if (!charId) {
-            return '';
-        }
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
-            return '';
-        }
-        return CharacterQueries.getCurrentStatus(char);
-    }
-
-    function getCharacterAge(charId) {
-        if (!charId) {
-            return '';
-        }
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
-            return '';
-        }
-        return CharacterQueries.getCharacterAge(char);
-    }
-
-    function getCharacterDeceased(charId) {
-        if (!charId) {
-            return false;
-        }
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
-            return false;
-        }
-        return char.deceased === true;
-    }
-
-    function getTeamName(teamId) {
-        if (!teamId) {
-            return 'Unassigned';
-        }
-        return TeamQueries.getTeamName(teamId);
     }
 
     function getTeamTypeLabel(type) {
@@ -257,18 +189,6 @@
         return TeamConstants.getPeriodLabel(type);
     }
 
-    /**
-     * Format a team's period range for display.
-     *
-     * Delegates to TeamAggregator when available. Returns '-' when
-     * the aggregator has not loaded yet (this only happens during
-     * the brief window between AcademyAggregator's load and
-     * TeamAggregator's load; every projection that uses this helper
-     * is called long after both have loaded).
-     *
-     * @param {object} team
-     * @returns {string}
-     */
     function getTeamPeriodDisplay(team) {
         var TA = getTeamAggregator();
         if (TA && typeof TA.getTeamPeriodDisplay === 'function') {
@@ -278,11 +198,8 @@
     }
 
     // ============================================================
-    // CANONICAL CLASS LIST
+    // CLASS LIST
     // ============================================================
-    //
-    // Every view that needs a class list goes through this. The result
-    // is sorted alphabetically by name.
 
     function getClassListViewModel() {
         var classes = AcademyClasses.getClasses() || [];
@@ -301,22 +218,17 @@
     }
 
     // ============================================================
-    // CLASS STUDENTS PROJECTION
+    // CLASS STUDENTS
     // ============================================================
     //
-    // The students of a class. Instructors are excluded by design.
-    // The class roster is derived from character.classIds. Sorting is
-    // alphabetical by display name.
+    // Roster derivation: characters whose classIds include classId.
+    // The class INSTRUCTOR is excluded by design.
 
     function getClassStudentsViewModel(classId) {
-        if (!classId) {
-            return [];
-        }
+        if (!classId) { return []; }
 
         var cls = AcademyClasses.getClass(classId);
-        if (!cls) {
-            return [];
-        }
+        if (!cls) { return []; }
 
         var all = CharacterQueries.getCharacters() || [];
         var target = String(classId);
@@ -325,11 +237,8 @@
 
         for (var i = 0; i < all.length; i++) {
             var c = all[i];
-            if (!c || !c.id) {
-                continue;
-            }
+            if (!c || !c.id) { continue; }
 
-            // Instructors are not students.
             if (instructorId && String(c.id) === instructorId) {
                 continue;
             }
@@ -342,9 +251,7 @@
                     break;
                 }
             }
-            if (!found) {
-                continue;
-            }
+            if (!found) { continue; }
 
             result.push({
                 id: c.id,
@@ -367,202 +274,171 @@
     // CLASS VIEW MODEL
     // ============================================================
     //
-    // Full class detail with the roster (students + instructor),
-    // optionally teams, rankings, and grades.
-    //
-    // The instructor is stitched into the roster for display. They are
-    // not in character.classIds and should not be treated as one.
+    // Deliberately small. Header fields only. Rosters, teams, and
+    // rankings are separate projections.
 
-    function getClassViewModel(classId, options) {
-        if (!classId) {
-            return null;
-        }
-
-        options = options || {};
-        var week = options.week || null;
-        var includeStudents = options.includeStudents !== false;
-        var includeTeams = options.includeTeams !== false;
-        var includeRankings = options.includeRankings !== false;
-        var includeGrades = options.includeGrades === true;
+    function getClassViewModel(classId) {
+        if (!classId) { return null; }
 
         var cls = AcademyClasses.getClass(classId);
-        if (!cls) {
-            return null;
-        }
+        if (!cls) { return null; }
 
-        var viewModel = {
+        return {
             id: cls.id,
-            name: cls.name,
+            name: cls.name || 'Unnamed Class',
             status: cls.status || 'active',
             year: cls.year || null,
             description: cls.description || '',
             instructorId: cls.instructorId || null,
-            instructorName: cls.instructorId ? getCharacterDisplayName(cls.instructorId) : 'Not assigned',
-            createdAt: cls.createdAt || '',
-            week: week
+            instructorName: cls.instructorId
+                ? getCharacterDisplayName(cls.instructorId)
+                : 'Not assigned',
+            createdAt: cls.createdAt || ''
         };
-
-        if (includeStudents) {
-            var students = getClassStudentsViewModel(classId);
-
-            // Stitch the instructor into the roster for display.
-            if (cls.instructorId) {
-                var alreadyPresent = false;
-                for (var s = 0; s < students.length; s++) {
-                    if (String(students[s].id) === String(cls.instructorId)) {
-                        alreadyPresent = true;
-                        break;
-                    }
-                }
-                if (!alreadyPresent) {
-                    var instructorChar = CharacterQueries.getCharacterById(cls.instructorId);
-                    if (instructorChar) {
-                        students = students.concat([{
-                            id: instructorChar.id,
-                            name: CharacterQueries.getDisplayName(instructorChar),
-                            status: CharacterQueries.getCurrentStatus(instructorChar),
-                            age: CharacterQueries.getCharacterAge(instructorChar),
-                            deceased: instructorChar.deceased === true,
-                            role: 'instructor'
-                        }]);
-                    }
-                }
-            }
-
-            // Class VM roster: trainees (students) first, then
-            // instructors, alphabetical within each group. The
-            // class VM uses `trainee` as the internal role for
-            // students to preserve backward compatibility with
-            // existing consumers of this projection. The students
-            // projection above uses `student`.
-            students = students.map(function(s) {
-                return {
-                    id: s.id,
-                    name: s.name,
-                    status: s.status,
-                    age: s.age,
-                    deceased: s.deceased,
-                    classIds: [],
-                    role: s.role === 'instructor' ? 'instructor' : 'trainee'
-                };
-            });
-
-            students.sort(function(a, b) {
-                if (a.role !== b.role) {
-                    return a.role === 'trainee' ? -1 : 1;
-                }
-                return a.name.localeCompare(b.name);
-            });
-
-            viewModel.students = students;
-            viewModel.studentCount = students.length;
-            viewModel.enrolledCount = students.length;
-            viewModel.traineeCount = students.filter(function(s) {
-                return s.role === 'trainee';
-            }).length;
-            viewModel.instructorCount = students.filter(function(s) {
-                return s.role === 'instructor';
-            }).length;
-
-            if (includeGrades) {
-                var gradeSummaries = [];
-                for (var g = 0; g < students.length; g++) {
-                    var summary = {
-                        studentId: students[g].id,
-                        studentName: students[g].name,
-                        role: students[g].role,
-                        gradeCount: 0,
-                        average: 0,
-                        passing: 0,
-                        failing: 0,
-                        passRate: 0
-                    };
-                    gradeSummaries.push(summary);
-                }
-                viewModel.gradeSummaries = gradeSummaries;
-            }
-        }
-
-        if (includeTeams) {
-            var teams = TeamQueries.getTeamsByClass(classId) || [];
-
-            var teamViewModels = teams.map(function(team) {
-                var members = TeamQueries.getActiveTeamMembers(team, week || 1);
-                var memberViewModels = members.map(function(member) {
-                    return {
-                        characterId: member.characterId,
-                        name: getCharacterDisplayName(member.characterId),
-                        role: member.role || 'Member',
-                        joinPeriod: member.joinPeriod || '',
-                        leavePeriod: member.leavePeriod || ''
-                    };
-                });
-
-                return {
-                    id: team.id,
-                    name: team.name,
-                    type: team.type,
-                    typeLabel: getTeamTypeLabel(team.type),
-                    periodLabel: getTeamPeriodLabel(team.type),
-                    teamNumber: team.teamNumber || '',
-                    status: team.status || 'active',
-                    members: memberViewModels,
-                    memberCount: memberViewModels.length,
-                    periodDisplay: getTeamPeriodDisplay(team)  // lazy accessor
-                };
-            });
-
-            viewModel.teams = teamViewModels;
-            viewModel.teamCount = teamViewModels.length;
-        }
-
-        if (includeRankings && week) {
-            var Ranking = getAcademyRanking();
-            var rankingVMs = [];
-            if (Ranking && typeof Ranking.getClassRankings === 'function') {
-                var rankings = Ranking.getClassRankings(classId, week, true) || [];
-                rankingVMs = rankings.map(function(entry) {
-                    return {
-                        studentId: entry.studentId,
-                        studentName: entry.studentName || entry.name || getCharacterDisplayName(entry.studentId),
-                        rank: entry.rank,
-                        academicAverage: entry.academicAverage !== undefined ? entry.academicAverage : entry.averageScore,
-                        socialScore: entry.socialScore !== undefined ? entry.socialScore : null,
-                        overallScore: entry.overallScore !== undefined ? entry.overallScore : entry.averageScore,
-                        gradeCount: entry.gradeCount || 0
-                    };
-                });
-            }
-
-            viewModel.rankings = rankingVMs;
-            viewModel.rankingCount = rankingVMs.length;
-            viewModel.rankingWeek = week;
-        }
-
-        return viewModel;
     }
 
     // ============================================================
-    // STUDENT VIEW MODEL
+    // PEOPLE VIEW MODEL
+    // ============================================================
+    //
+    // Composes the class roster and applies People filters.
+    //
+    // The People layout uses the class VM's roster (students +
+    // instructor) and filters it by search, role, and status.
+    //
+    // ROLE VOCABULARY: 'student' | 'instructor'.
+
+    function getPeopleViewModel(classId, options) {
+        options = options || {};
+
+        var filters = options.filters && typeof options.filters === 'object'
+            ? options.filters
+            : { search: '', role: 'all', status: 'active' };
+
+        var selectedCharacterId = isNonEmptyString(options.selectedCharacterId)
+            ? String(options.selectedCharacterId)
+            : null;
+
+        var classList = getClassListViewModel();
+
+        var selectedClass = null;
+        if (isNonEmptyString(classId)) {
+            for (var i = 0; i < classList.length; i++) {
+                if (String(classList[i].id) === String(classId)) {
+                    selectedClass = classList[i];
+                    break;
+                }
+            }
+        }
+
+        if (!selectedClass) {
+            return {
+                classList: classList,
+                classId: null,
+                className: null,
+                filters: filters,
+                people: [],
+                totalCount: 0,
+                filteredCount: 0
+            };
+        }
+
+        // Build the roster: students from classIds, then instructor
+        // stitched in for display.
+        var students = getClassStudentsViewModel(selectedClass.id);
+
+        var cls = AcademyClasses.getClass(selectedClass.id);
+        if (cls && cls.instructorId) {
+            var alreadyPresent = false;
+            for (var s = 0; s < students.length; s++) {
+                if (String(students[s].id) === String(cls.instructorId)) {
+                    alreadyPresent = true;
+                    break;
+                }
+            }
+            if (!alreadyPresent) {
+                var instructorChar = CharacterQueries.getCharacterById(cls.instructorId);
+                if (instructorChar) {
+                    students = students.concat([{
+                        id: instructorChar.id,
+                        name: CharacterQueries.getDisplayName(instructorChar),
+                        status: CharacterQueries.getCurrentStatus(instructorChar),
+                        age: CharacterQueries.getCharacterAge(instructorChar),
+                        deceased: instructorChar.deceased === true,
+                        role: 'instructor'
+                    }]);
+                }
+            }
+        }
+
+        var search = (filters.search || '').toLowerCase().trim();
+        var roleFilter = filters.role || 'all';
+        var statusFilter = filters.status || 'active';
+
+        var filtered = students.filter(function(person) {
+            if (search && person.name.toLowerCase().indexOf(search) === -1) {
+                return false;
+            }
+            if (roleFilter !== 'all' && person.role !== roleFilter) {
+                return false;
+            }
+            if (statusFilter !== 'all') {
+                var isDeceased = person.deceased === true;
+                if (statusFilter === 'deceased' && !isDeceased) { return false; }
+                if (statusFilter === 'active' && isDeceased) { return false; }
+            }
+            return true;
+        });
+
+        filtered.sort(function(a, b) {
+            if (a.role !== b.role) {
+                return a.role === 'student' ? -1 : 1;
+            }
+            return a.name.localeCompare(b.name);
+        });
+
+        var people = filtered.map(function(person) {
+            return {
+                id: person.id,
+                name: person.name,
+                status: person.status,
+                role: person.role,
+                deceased: person.deceased === true,
+                isSelected: selectedCharacterId !== null &&
+                    String(person.id) === selectedCharacterId
+            };
+        });
+
+        return {
+            classList: classList,
+            classId: selectedClass.id,
+            className: selectedClass.name,
+            filters: filters,
+            people: people,
+            totalCount: students.length,
+            filteredCount: people.length
+        };
+    }
+
+    // ============================================================
+    // CHARACTER PROJECTIONS
     // ============================================================
 
     function getStudentViewModel(studentId, options) {
-        if (!studentId) {
-            return null;
-        }
+        if (!studentId) { return null; }
 
         options = options || {};
-        var week = options.week || null;
+        var week = options.week !== undefined ? options.week : null;
 
         var student = CharacterQueries.getCharacterById(studentId);
-        if (!student) {
-            return null;
-        }
+        if (!student) { return null; }
 
-        var viewModel = {
+        var classes = AcademyClasses.getCharacterClasses(student) || [];
+
+        return {
             id: student.id,
             name: CharacterQueries.getDisplayName(student),
-            fullName: CharacterQueries.getFullName
+            fullName: typeof CharacterQueries.getFullName === 'function'
                 ? CharacterQueries.getFullName(student)
                 : CharacterQueries.getDisplayName(student),
             status: CharacterQueries.getCurrentStatus(student),
@@ -570,40 +446,26 @@
             deceased: student.deceased === true,
             birthYear: student.birthYear || '',
             gender: student.gender || '',
-            week: week
+            week: week,
+            classes: classes.map(function(cls) {
+                return {
+                    id: cls.id,
+                    name: cls.name || 'Unnamed Class',
+                    status: cls.status || 'active'
+                };
+            }),
+            classCount: classes.length
         };
-
-        var classes = AcademyClasses.getCharacterClasses
-            ? AcademyClasses.getCharacterClasses(student)
-            : [];
-        viewModel.classes = classes.map(function(cls) {
-            return {
-                id: cls.id,
-                name: cls.name,
-                status: cls.status || 'active'
-            };
-        });
-        viewModel.classCount = viewModel.classes.length;
-
-        return viewModel;
     }
 
-    // ============================================================
-    // INSTRUCTOR VIEW MODEL
-    // ============================================================
-
     function getInstructorViewModel(instructorId, options) {
-        if (!instructorId) {
-            return null;
-        }
+        if (!instructorId) { return null; }
 
         options = options || {};
-        var week = options.week || null;
+        var week = options.week !== undefined ? options.week : null;
 
         var instructor = CharacterQueries.getCharacterById(instructorId);
-        if (!instructor) {
-            return null;
-        }
+        if (!instructor) { return null; }
 
         return {
             id: instructor.id,
@@ -616,43 +478,173 @@
     }
 
     // ============================================================
-    // DISCIPLINE HELPERS
+    // DISCIPLINE LIST
     // ============================================================
 
     function getInstructorNamesForDiscipline(discipline) {
-        if (!discipline) {
-            return [];
-        }
+        if (!discipline) { return []; }
         var ids = Array.isArray(discipline.instructorIds) ? discipline.instructorIds : [];
         return ids.map(function(id) {
-            var char = CharacterQueries.getCharacterById(id);
-            if (!char) {
-                return 'Unknown';
-            }
-            return CharacterQueries.getDisplayName(char);
+            return getCharacterDisplayName(id);
         });
     }
 
-    // ============================================================
-    // WEEKLY TEAMS VIEW MODEL
-    // ============================================================
-    //
-    // Weekly Teams is Academy-owned and week-scoped. Source:
-    // AcademyWeeklyTeams.getWeeklyTeams(classId, week). This is NOT
-    // persistent Team entity membership.
-    //
-    // When AcademyWeeklyTeams is absent, the assignments map is empty,
-    // so the view renders teams with zero members. That's a truthful
-    // representation of "assignments have not been made yet".
+    function getDisciplineListViewModel(filters) {
+        filters = filters || {};
 
-    function getWeeklyTeamsViewViewModel(classId, week, selectedTeamId) {
-        var classListVM = getClassListViewModel();
+        var disciplines = AcademyDisciplines.getDisciplines() || [];
+        var type = filters.type || 'all';
+        var search = (filters.search || '').toLowerCase().trim();
+
+        var filtered = disciplines.filter(function(d) {
+            if (!d || !d.id) { return false; }
+            if (type !== 'all' && d.type !== type) { return false; }
+            if (search && (d.name || '').toLowerCase().indexOf(search) === -1) {
+                return false;
+            }
+            return true;
+        });
+
+        var listVM = filtered.map(function(d) {
+            return {
+                id: d.id,
+                name: d.name,
+                type: d.type,
+                startWeek: d.startWeek,
+                endWeek: d.endWeek,
+                weeklyHours: d.weeklyHours,
+                weight: d.weight,
+                instructorIds: Array.isArray(d.instructorIds) ? d.instructorIds.slice() : [],
+                instructorNames: getInstructorNamesForDiscipline(d)
+            };
+        });
+
+        return {
+            disciplines: listVM,
+            filters: filters,
+            total: listVM.length
+        };
+    }
+
+    // ============================================================
+    // DISCIPLINE EDITOR VIEW MODEL
+    // ============================================================
+    //
+    // Builds the editor VM for the inline discipline editor. Consumes:
+    //   - the current draft (owned by AcademyView)
+    //   - the instructor list from CharacterQueries
+    //   - the grade scheme presets and validators from AcademyGradeSchemes
+    //   - the assessment type list and defaults from AcademyDisciplines
+    //
+    // The renderer (AcademyDisciplineView) consumes the result directly.
+    // AcademyView does not perform domain reads.
+
+    function getDisciplineEditorViewModel(options) {
+        options = options || {};
+
+        var draft = options.draft;
+        if (!draft) {
+            return null;
+        }
+
+        var isNew = options.isNew === true;
+        var errors = options.errors && typeof options.errors === 'object'
+            ? options.errors
+            : {};
+
+        // Instructors for the picker.
+        var availableInstructors = [];
+        if (typeof CharacterQueries.getInstructors === 'function') {
+            var instructors = CharacterQueries.getInstructors() || [];
+            availableInstructors = instructors.map(function(c) {
+                return {
+                    id: c.id,
+                    name: CharacterQueries.getDisplayName(c)
+                };
+            });
+        }
+
+        // Grade scheme preview and preset id.
+        var GradeSchemes = getGradeSchemes();
+        var schemePreview = '';
+        var schemePresetId = 'numeric';
+        var schemePresets = [
+            { id: 'letter',    label: 'Letter Grade' },
+            { id: 'pass_fail', label: 'Pass / Fail' },
+            { id: 'numeric',   label: 'Numeric' },
+            { id: 'custom',    label: 'Custom' }
+        ];
+
+        if (GradeSchemes) {
+            if (typeof GradeSchemes.getRangeLabel === 'function') {
+                schemePreview = GradeSchemes.getRangeLabel(draft.gradeScheme) || '';
+            }
+            if (typeof GradeSchemes.getPresets === 'function') {
+                var presets = GradeSchemes.getPresets() || [];
+                schemePresets = presets.map(function(p) {
+                    return { id: p.id, label: p.label };
+                });
+            }
+        }
+
+        if (draft.gradeScheme && typeof draft.gradeScheme.id === 'string') {
+            schemePresetId = draft.gradeScheme.id;
+        }
+
+        // Assessment types and weights.
+        var assessmentTypes = [];
+        var defaultAssessmentWeights = {};
+        if (typeof AcademyDisciplines.getValidAssessmentTypes === 'function') {
+            assessmentTypes = AcademyDisciplines.getValidAssessmentTypes() || [];
+        }
+        if (typeof AcademyDisciplines.getDefaultAssessmentWeights === 'function') {
+            defaultAssessmentWeights = AcademyDisciplines.getDefaultAssessmentWeights() || {};
+        }
+
+        var assessmentWeights = draft.assessmentWeights && typeof draft.assessmentWeights === 'object'
+            ? draft.assessmentWeights
+            : defaultAssessmentWeights;
+
+        // Instructor names for the currently selected instructors.
+        var instructorNames = getInstructorNamesForDiscipline({
+            instructorIds: Array.isArray(draft.instructorIds) ? draft.instructorIds : []
+        });
+
+        return {
+            id: isNew ? null : draft.id,
+            name: draft.name || '',
+            type: draft.type || 'mandatory',
+            startWeek: typeof draft.startWeek === 'number' ? draft.startWeek : 1,
+            endWeek: typeof draft.endWeek === 'number' ? draft.endWeek : 52,
+            weeklyHours: typeof draft.weeklyHours === 'number' ? draft.weeklyHours : 1,
+            weight: typeof draft.weight === 'number' ? draft.weight : 1,
+            instructorIds: Array.isArray(draft.instructorIds) ? draft.instructorIds.slice() : [],
+            instructorNames: instructorNames,
+            availableInstructors: availableInstructors,
+            gradeScheme: draft.gradeScheme || null,
+            schemePresetId: schemePresetId,
+            schemePreview: schemePreview,
+            schemePresets: schemePresets,
+            assessmentTypes: assessmentTypes,
+            assessmentWeights: assessmentWeights,
+            defaultAssessmentWeights: defaultAssessmentWeights,
+            fieldErrors: errors,
+            isNew: isNew
+        };
+    }
+
+    // ============================================================
+    // RANKING VIEW MODEL
+    // ============================================================
+
+    function getRankingViewModel(classId, week) {
+        var classList = getClassListViewModel();
 
         var selectedClass = null;
         if (classId) {
-            for (var i = 0; i < classListVM.length; i++) {
-                if (String(classListVM[i].id) === String(classId)) {
-                    selectedClass = classListVM[i];
+            for (var i = 0; i < classList.length; i++) {
+                if (String(classList[i].id) === String(classId)) {
+                    selectedClass = classList[i];
                     break;
                 }
             }
@@ -660,182 +652,85 @@
 
         if (!selectedClass) {
             return {
-                classList: classListVM,
+                classes: classList,
                 classId: null,
                 className: null,
                 week: week,
-                teams: [],
-                selectedTeamId: null,
-                selectedTeam: null
+                entries: [],
+                total: 0
             };
         }
 
-        var assignments = {};
-        var AWT = getAcademyWeeklyTeams();
-        if (AWT && typeof AWT.getWeeklyTeams === 'function') {
-            assignments = AWT.getWeeklyTeams(selectedClass.id, week) || {};
-        }
-
-        var teams = buildWeeklyTeamsList(selectedClass, week, assignments);
-
-        var selectedTeamVM = null;
-        var resolvedSelectedTeamId = null;
-        if (selectedTeamId) {
-            for (var j = 0; j < teams.length; j++) {
-                if (String(teams[j].id) === String(selectedTeamId)) {
-                    selectedTeamVM = buildWeeklyTeamDetail(teams[j]._team, week, assignments);
-                    resolvedSelectedTeamId = teams[j].id;
-                    break;
-                }
-            }
-        }
-
-        var teamsVM = teams.map(function(t) {
-            return {
-                id: t.id,
-                name: t.name,
-                type: t.type,
-                typeLabel: t.typeLabel,
-                periodLabel: t.periodLabel,
-                periodDisplay: t.periodDisplay,
-                memberCount: t.memberCount,
-                activeMemberCount: t.activeMemberCount,
-                status: t.status
-            };
-        });
+        var entries = buildRankingEntries(selectedClass.id, week);
 
         return {
-            classList: classListVM,
+            classes: classList,
             classId: selectedClass.id,
             className: selectedClass.name,
             week: week,
-            teams: teamsVM,
-            selectedTeamId: resolvedSelectedTeamId,
-            selectedTeam: selectedTeamVM
+            entries: entries,
+            total: entries.length
         };
     }
 
-    function buildWeeklyTeamsList(classRecord, week, assignments) {
-        if (!TeamQueries || typeof TeamQueries.getTeamsByClass !== 'function') {
+    function buildRankingEntries(classId, week) {
+        var Ranking = getAcademyRanking();
+        if (!Ranking || typeof Ranking.getClassRankings !== 'function') {
             return [];
         }
 
-        var raw = TeamQueries.getTeamsByClass(classRecord.id) || [];
-        if (!Array.isArray(raw)) {
+        var ranked;
+        try {
+            ranked = Ranking.getClassRankings(classId, week, false) || [];
+        } catch (e) {
             return [];
         }
 
-        var items = [];
-
-        for (var i = 0; i < raw.length; i++) {
-            var team = raw[i];
-            if (!team || !team.id) { continue; }
-            if (team.type !== 'academic') { continue; }
-
-            var memberIds = assignments[String(team.id)] || [];
-
-            items.push({
-                id: team.id,
-                name: team.name || 'Unnamed Team',
-                type: team.type,
-                typeLabel: TeamConstants.getTypeLabel(team.type),
-                periodLabel: TeamConstants.getPeriodLabel(team.type),
-                periodDisplay: getTeamPeriodDisplay(team),  // lazy accessor
-                memberCount: memberIds.length,
-                activeMemberCount: memberIds.length,
-                status: team.status || 'active',
-                _team: team,
-                _memberIds: memberIds
-            });
-        }
-
-        items.sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
+        var entries = ranked.map(function(r) {
+            return {
+                studentId: r.studentId,
+                studentName: r.studentName || getCharacterDisplayName(r.studentId),
+                rank: r.rank,
+                academicAverage: r.academicAverage !== undefined ? r.academicAverage : null,
+                socialScore: r.socialScore !== undefined ? r.socialScore : null,
+                overallScore: r.overallScore !== undefined ? r.overallScore : null,
+                average: isFiniteNumber(r.overallScore)
+                    ? r.overallScore
+                    : (isFiniteNumber(r.academicAverage) ? r.academicAverage : null),
+                gradeCount: typeof r.gradeCount === 'number' ? r.gradeCount : 0
+            };
         });
 
-        return items;
-    }
-
-    function buildWeeklyTeamDetail(team, week, assignments) {
-        if (!team) {
-            return null;
-        }
-
-        var memberIds = assignments[String(team.id)] || [];
-        var members = buildTeamMembersVM(memberIds);
-
-        return {
-            id: team.id,
-            name: team.name || 'Unnamed Team',
-            type: team.type,
-            typeLabel: TeamConstants.getTypeLabel(team.type),
-            periodLabel: TeamConstants.getPeriodLabel(team.type),
-            periodDisplay: getTeamPeriodDisplay(team),  // lazy accessor
-            status: team.status || 'active',
-            temporaryMission: team.temporaryMission || null,
-            members: members,
-            activeMemberCount: members.length
-        };
-    }
-
-    function buildTeamMembersVM(memberIds) {
-        if (!Array.isArray(memberIds)) {
-            return [];
-        }
-
-        var result = [];
-
-        for (var i = 0; i < memberIds.length; i++) {
-            var charId = memberIds[i];
-            if (!charId) { continue; }
-
-            var char = CharacterQueries.getCharacterById(charId);
-            var name = char ? CharacterQueries.getDisplayName(char) : 'Unknown';
-            var status = char ? CharacterQueries.getCurrentStatus(char) : '';
-            var age = char ? CharacterQueries.getCharacterAge(char) : '';
-            var deceased = char ? (char.deceased === true) : false;
-
-            result.push({
-                characterId: charId,
-                name: name,
-                status: status,
-                age: age,
-                deceased: deceased,
-                role: 'Member',
-                activeAtPeriod: true
-            });
-        }
-
-        result.sort(function(a, b) {
-            return a.name.localeCompare(b.name);
+        entries.sort(function(a, b) {
+            return (a.rank || 999999) - (b.rank || 999999);
         });
 
-        return result;
+        return entries;
     }
 
     // ============================================================
     // LOCATION VIEW MODEL
     // ============================================================
-    //
-    // Location schedule comes from CalendarAggregator. Academy does
-    // not walk raw Calendar storage.
-    //
-    // Duration is null when the Calendar projection has no metadata
-    // for a slot. Consumers should render null as "unknown", not as
-    // "one hour".
 
-    function getLocationViewViewModel(filters, week, selectedLocationId) {
+    function getLocationViewModel(filters, week, selectedLocationId) {
         filters = filters || {};
 
-        // Locations come from AcademyLocations, which is loaded by
-        // index.js. We access it lazily because this aggregator does
-        // not have a hard dependency on it.
         var AcademyLocations = window.AcademyLocations;
         var allLocations = AcademyLocations && typeof AcademyLocations.getLocations === 'function'
             ? (AcademyLocations.getLocations() || [])
             : [];
 
-        var filtered = applyLocationFilters(allLocations, filters);
+        var type = filters.type || 'all';
+        var search = (filters.search || '').toLowerCase().trim();
+
+        var filtered = allLocations.filter(function(l) {
+            if (!l || !l.id) { return false; }
+            if (type !== 'all' && l.type !== type) { return false; }
+            if (search && (l.name || '').toLowerCase().indexOf(search) === -1) {
+                return false;
+            }
+            return true;
+        });
 
         var selected = null;
         if (selectedLocationId) {
@@ -856,77 +751,59 @@
             selected: selected,
             filters: filters,
             week: week,
-            scheduleWeek: week,
             total: listVM.length
         };
     }
 
-    function applyLocationFilters(locations, filters) {
-        var type = filters.type || 'all';
-        var search = (filters.search || '').toLowerCase().trim();
-
-        return locations.filter(function(l) {
-            if (!l || !l.id) { return false; }
-            if (type !== 'all' && l.type !== type) { return false; }
-            if (search && (l.name || '').toLowerCase().indexOf(search) === -1) {
-                return false;
-            }
-            return true;
-        });
-    }
-
-    function buildLocationListRowVM(l, week) {
-        var schedule = getLocationScheduleForWeek(l.id, week);
+    function buildLocationListRowVM(location, week) {
+        var schedule = getLocationScheduleForWeek(location.id, week);
         return {
-            id: l.id,
-            name: l.name,
-            type: l.type,
-            capacity: l.capacity,
+            id: location.id,
+            name: location.name,
+            type: location.type,
+            capacity: location.capacity !== undefined ? location.capacity : null,
             scheduleCount: schedule.length
         };
     }
 
-    function buildLocationDetailVM(l, week) {
-        var schedule = getLocationScheduleForWeek(l.id, week);
+    function buildLocationDetailVM(location, week) {
+        var schedule = getLocationScheduleForWeek(location.id, week);
         return {
-            id: l.id,
-            name: l.name,
-            type: l.type,
-            capacity: l.capacity,
+            id: location.id,
+            name: location.name,
+            type: location.type,
+            capacity: location.capacity !== undefined ? location.capacity : null,
             schedule: schedule
         };
     }
 
     function getLocationScheduleForWeek(locationId, week) {
-        if (!locationId || !week) {
+        if (!locationId || week === undefined || week === null) {
             return [];
         }
         var CA = getCalendarAggregator();
         if (!CA || typeof CA.getLocationScheduleViewModel !== 'function') {
             return [];
         }
-        return CA.getLocationScheduleViewModel(locationId, week) || [];
+        try {
+            return CA.getLocationScheduleViewModel(locationId, week) || [];
+        } catch (e) {
+            return [];
+        }
     }
 
     // ============================================================
-    // RANKING VIEW MODEL
+    // WEEKLY TEAMS VIEW MODEL
     // ============================================================
-    //
-    // Ranking consumes AcademyRanking's projection. This module does
-    // NOT calculate rankings.
-    //
-    // The projection carries academicAverage, socialScore, and
-    // overallScore. `average` is deliberately absent: at this point
-    // "average" is ambiguous (academic? discipline? overall?).
 
-    function getRankingViewViewModel(classId, week) {
-        var classListVM = getClassListViewModel();
+    function getWeeklyTeamsViewModel(classId, week, selectedTeamId) {
+        var classList = getClassListViewModel();
 
         var selectedClass = null;
         if (classId) {
-            for (var i = 0; i < classListVM.length; i++) {
-                if (String(classListVM[i].id) === String(classId)) {
-                    selectedClass = classListVM[i];
+            for (var i = 0; i < classList.length; i++) {
+                if (String(classList[i].id) === String(classId)) {
+                    selectedClass = classList[i];
                     break;
                 }
             }
@@ -934,105 +811,166 @@
 
         if (!selectedClass) {
             return {
-                classList: classListVM,
+                classes: classList,
                 classId: null,
                 className: null,
                 week: week,
-                entries: [],
-                total: 0
+                teams: [],
+                selectedTeamId: null,
+                selectedTeam: null
             };
         }
 
-        var entries = buildRankingEntries(selectedClass, week);
+        var assignments = {};
+        var AWT = getAcademyWeeklyTeams();
+        if (AWT && typeof AWT.getWeeklyTeams === 'function') {
+            try {
+                assignments = AWT.getWeeklyTeams(selectedClass.id, week) || {};
+            } catch (e) {
+                assignments = {};
+            }
+        }
+
+        var teams = buildWeeklyTeamsList(selectedClass.id, week, assignments);
+
+        var selectedTeamVM = null;
+        var resolvedSelectedTeamId = null;
+        if (selectedTeamId) {
+            for (var j = 0; j < teams.length; j++) {
+                if (String(teams[j].id) === String(selectedTeamId)) {
+                    selectedTeamVM = buildWeeklyTeamDetail(teams[j]._team, assignments);
+                    resolvedSelectedTeamId = teams[j].id;
+                    break;
+                }
+            }
+        }
+
+        var teamsVM = teams.map(function(t) {
+            return {
+                id: t.id,
+                name: t.name,
+                type: t.type,
+                typeLabel: t.typeLabel,
+                status: t.status,
+                periodLabel: t.periodLabel,
+                periodDisplay: t.periodDisplay,
+                memberCount: t.memberCount
+            };
+        });
 
         return {
-            classList: classListVM,
+            classes: classList,
             classId: selectedClass.id,
             className: selectedClass.name,
             week: week,
-            entries: entries,
-            total: entries.length
+            teams: teamsVM,
+            selectedTeamId: resolvedSelectedTeamId,
+            selectedTeam: selectedTeamVM
         };
     }
 
-    function buildRankingEntries(classRecord, week) {
-        var Ranking = getAcademyRanking();
-        if (!Ranking || typeof Ranking.getClassRankings !== 'function') {
+    function buildWeeklyTeamsList(classId, week, assignments) {
+        if (!TeamQueries || typeof TeamQueries.getTeamsByClass !== 'function') {
             return [];
         }
 
-        var ranked = Ranking.getClassRankings(classRecord.id, week, false) || [];
+        var raw = TeamQueries.getTeamsByClass(classId) || [];
+        if (!Array.isArray(raw)) {
+            return [];
+        }
 
-        var entries = ranked.map(function(r) {
-            return {
-                studentId: r.studentId,
-                studentName: r.studentName || getCharacterDisplayName(r.studentId),
-                rank: r.rank,
-                academicAverage: r.academicAverage !== undefined
-                    ? r.academicAverage
-                    : r.averageScore,
-                socialScore: r.socialScore !== undefined ? r.socialScore : null,
-                overallScore: r.overallScore !== undefined
-                    ? r.overallScore
-                    : r.averageScore,
-                gradeCount: r.gradeCount || 0
-            };
+        var items = [];
+
+        for (var i = 0; i < raw.length; i++) {
+            var team = raw[i];
+            if (!team || !team.id) { continue; }
+            if (team.type !== 'academic') { continue; }
+
+            var memberIds = Array.isArray(assignments[String(team.id)])
+                ? assignments[String(team.id)]
+                : [];
+
+            items.push({
+                id: team.id,
+                name: team.name || 'Unnamed Team',
+                type: team.type,
+                typeLabel: TeamConstants.getTypeLabel(team.type),
+                status: team.status || 'active',
+                periodLabel: TeamConstants.getPeriodLabel(team.type),
+                periodDisplay: getTeamPeriodDisplay(team),
+                memberCount: memberIds.length,
+                _team: team,
+                _memberIds: memberIds
+            });
+        }
+
+        items.sort(function(a, b) {
+            return (a.name || '').localeCompare(b.name || '');
         });
 
-        entries.sort(function(a, b) {
-            return (a.rank || 999) - (b.rank || 999);
-        });
-
-        return entries;
+        return items;
     }
 
-    // ============================================================
-    // DISCIPLINE LIST VIEW MODEL
-    // ============================================================
+    function buildWeeklyTeamDetail(team, assignments) {
+        if (!team) { return null; }
 
-    function getDisciplineListViewModel(filters) {
-        filters = filters || {};
+        var memberIds = Array.isArray(assignments[String(team.id)])
+            ? assignments[String(team.id)]
+            : [];
 
-        var disciplines = AcademyDisciplines.getDisciplines() || [];
-        disciplines = applyDisciplineFilters(disciplines, filters);
-
-        var listVM = disciplines.map(function(d) {
-            return buildDisciplineListRowVM(d);
-        });
+        var members = buildTeamMembersVM(memberIds);
 
         return {
-            disciplines: listVM,
-            filters: filters,
-            total: listVM.length
+            id: team.id,
+            name: team.name || 'Unnamed Team',
+            type: team.type,
+            typeLabel: TeamConstants.getTypeLabel(team.type),
+            status: team.status || 'active',
+            periodLabel: TeamConstants.getPeriodLabel(team.type),
+            periodDisplay: getTeamPeriodDisplay(team),
+            temporaryMission: team.temporaryMission || null,
+            memberCount: members.length,
+            members: members
         };
     }
 
-    function applyDisciplineFilters(disciplines, filters) {
-        var type = filters.type || 'all';
-        var search = (filters.search || '').toLowerCase().trim();
+    function buildTeamMembersVM(memberIds) {
+        if (!Array.isArray(memberIds)) {
+            return [];
+        }
 
-        return disciplines.filter(function(d) {
-            if (!d || !d.id) { return false; }
-            if (type !== 'all' && d.type !== type) { return false; }
-            if (search && (d.name || '').toLowerCase().indexOf(search) === -1) {
-                return false;
+        var result = [];
+
+        for (var i = 0; i < memberIds.length; i++) {
+            var charId = memberIds[i];
+            if (!charId) { continue; }
+
+            var char = CharacterQueries.getCharacterById(charId);
+            if (!char) {
+                result.push({
+                    characterId: charId,
+                    name: 'Unknown',
+                    role: 'Member',
+                    age: '',
+                    statusLabel: ''
+                });
+                continue;
             }
-            return true;
-        });
-    }
 
-    function buildDisciplineListRowVM(d) {
-        return {
-            id: d.id,
-            name: d.name,
-            type: d.type,
-            startWeek: d.startWeek,
-            endWeek: d.endWeek,
-            weeklyHours: d.weeklyHours,
-            weight: d.weight,
-            instructorIds: d.instructorIds || [],
-            instructorNames: getInstructorNamesForDiscipline(d)
-        };
+            result.push({
+                characterId: charId,
+                name: CharacterQueries.getDisplayName(char),
+                role: 'Member',
+                age: CharacterQueries.getCharacterAge(char),
+                statusLabel: char.deceased === true ? 'Deceased' : 'Active'
+            });
+        }
+
+        result.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
+
+        return result;
     }
 
     // ============================================================
@@ -1040,69 +978,31 @@
     // ============================================================
 
     window.AcademyAggregator = {
-        // Core class projections
-        getClassViewModel: getClassViewModel,
+        // Class projections
         getClassListViewModel: getClassListViewModel,
+        getClassViewModel: getClassViewModel,
         getClassStudentsViewModel: getClassStudentsViewModel,
+
+        // People
+        getPeopleViewModel: getPeopleViewModel,
 
         // Character projections
         getStudentViewModel: getStudentViewModel,
         getInstructorViewModel: getInstructorViewModel,
 
-        // Ranking projection (legacy shape)
-        getRankingViewViewModel: getRankingViewViewModel,
-        buildRankingEntries: buildRankingEntries,
-
-        // Location projection (legacy shape)
-        getLocationViewViewModel: getLocationViewViewModel,
-
-        // Weekly Teams projection
-        getWeeklyTeamsViewViewModel: getWeeklyTeamsViewViewModel,
-
-        // Discipline list projection
+        // Discipline projections
         getDisciplineListViewModel: getDisciplineListViewModel,
+        getDisciplineEditorViewModel: getDisciplineEditorViewModel,
         getInstructorNamesForDiscipline: getInstructorNamesForDiscipline,
 
-        // Exposed for testing / advanced use
-        buildWeeklyTeamsList: buildWeeklyTeamsList,
-        buildWeeklyTeamDetail: buildWeeklyTeamDetail,
-        buildTeamMembersVM: buildTeamMembersVM,
-        buildLocationListRowVM: buildLocationListRowVM,
-        buildLocationDetailVM: buildLocationDetailVM,
-        getLocationScheduleForWeek: getLocationScheduleForWeek,
-        buildDisciplineListRowVM: buildDisciplineListRowVM
+        // Ranking
+        getRankingViewModel: getRankingViewModel,
+
+        // Location
+        getLocationViewModel: getLocationViewModel,
+
+        // Weekly teams
+        getWeeklyTeamsViewModel: getWeeklyTeamsViewModel
     };
-
-    // ============================================================
-    // VERIFICATION
-    // ============================================================
-
-    (function verify() {
-        var exports = window.AcademyAggregator;
-        var missing = [];
-
-        var required = [
-            'getClassViewModel',
-            'getClassListViewModel',
-            'getClassStudentsViewModel',
-            'getStudentViewModel',
-            'getInstructorViewModel',
-            'getRankingViewViewModel',
-            'getLocationViewViewModel',
-            'getWeeklyTeamsViewViewModel',
-            'getDisciplineListViewModel',
-            'getInstructorNamesForDiscipline'
-        ];
-
-        for (var i = 0; i < required.length; i++) {
-            if (typeof exports[required[i]] !== 'function') {
-                missing.push(required[i]);
-            }
-        }
-
-        if (missing.length > 0) {
-            console.warn('[AcademyAggregator] Verification - some exports may be missing:', missing.join(', '));
-        }
-    })();
 
 })();
