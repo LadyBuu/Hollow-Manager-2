@@ -4,12 +4,10 @@
  *
  * Path: js/modules/academy/academy-character-detail.js
  *
- * The VM is produced by AcademyView (currently via its local
- * buildCharacterDetailViewModel; later via
- * AcademyCharacterDetailAggregator.getViewModel). This module is a
- * renderer: it takes a VM, returns HTML, and does nothing else.
- * Every domain-derived value in the output is already present on
- * the VM.
+ * The VM is produced by AcademyCharacterDetailAggregator.getViewModel.
+ * This module is a renderer: it takes a VM, returns HTML, and does
+ * nothing else. Every domain-derived value in the output is already
+ * present on the VM.
  *
  * NAME COLLISION:
  *   window.CharacterDetail is the modal in
@@ -17,9 +15,17 @@
  *   itself as window.AcademyCharacterDetail.
  *
  * GRADES EDITOR:
- *   The Grades tab renders an empty host element. Mounting the inline
- *   grades editor into that host is a controller-lifecycle concern
- *   and lives in AcademyView, not here.
+ *   The Grades tab renders an empty host element
+ *   (#academy-grades-editor-host). Mounting the inline grades editor
+ *   into that host is a controller-lifecycle concern and lives in
+ *   AcademyView, not here.
+ *
+ * SCHEDULE GRID:
+ *   The Schedule tab renders an empty host element
+ *   (#academy-schedule-host). Mounting the CalendarRenderer grid into
+ *   that host is a controller-lifecycle concern and lives in
+ *   AcademyView's mountScheduleGridIfPresent(), not here. The renderer
+ *   only emits the host; the Academy view injects the grid.
  *
  * TABS:
  *   The tabs come from vm.tabs. The active tab comes from
@@ -95,8 +101,7 @@
      * Render the character detail panel.
      *
      * @param {object|null} viewModel - VM from
-     *   AcademyView.buildCharacterDetailViewModel (or, later,
-     *   AcademyCharacterDetailAggregator.getViewModel)
+     *   AcademyCharacterDetailAggregator.getViewModel
      * @returns {string} HTML string
      */
     function renderHTML(viewModel) {
@@ -650,11 +655,20 @@
     // ============================================================
     // SCHEDULE TAB
     // ============================================================
+    //
+    // The panel renders an empty host element. AcademyView's
+    // mountScheduleGridIfPresent() reads the host, gets a grid VM from
+    // AcademyCharacterDetailAggregator.getScheduleGridViewModel, and
+    // injects the rendered grid via CalendarRenderer.renderGrid.
+    //
+    // The host is a plain container. The Academy view decides whether
+    // to render the grid into it; the renderer only emits the anchor.
 
     function renderScheduleTab(vm) {
         var html = '';
         html += '<div class="academy-character-detail-section ' +
                     'academy-character-schedule">';
+
         html += '<div class="academy-character-detail-section-header">';
         html += '<h4 class="academy-character-detail-section-title">Schedule</h4>';
 
@@ -666,9 +680,11 @@
         }
 
         html += '</div>';
-        html += '<p class="empty-state small">' +
-                    'Schedule view is coming soon.' +
-                '</p>';
+
+        // Host element. Academy view populates this with the grid.
+        html += '<div id="academy-schedule-host" ' +
+                    'class="academy-schedule-host"></div>';
+
         html += '</div>';
         return html;
     }
