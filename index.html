@@ -68,6 +68,14 @@
 
     <!-- ============================================================
          SHARED CONSTANTS
+         ============================================================
+         Load order within this section matters:
+
+           - tournament-schema.js is loaded here (not in the
+             tournament block) because tournament-constants.js reads
+             the schema's enum arrays at load time. If the schema
+             loads later, tournament-constants falls back to local
+             lists and warns on every page load.
          ============================================================ -->
     <script src="js/modules/shared/constants.js"></script>
     <script src="js/modules/shared/calendar-constants.js"></script>
@@ -76,6 +84,8 @@
     <script src="js/modules/shared/magic-constants.js"></script>
     <script src="js/modules/shared/social-constants.js"></script>
     <script src="js/modules/shared/team-constants.js"></script>
+
+    <script src="js/modules/tournaments/tournament-schema.js"></script>
     <script src="js/modules/shared/tournament-constants.js"></script>
 
     <script src="js/utils/calendar-validation.js"></script>
@@ -127,6 +137,10 @@
              AcademySocialScore are cross-cutting.
            - AcademyAutoGroupsRead must load before AcademyGroups
              (the read aliases delegate to it at call time).
+           - AcademyWeeklyTeams (week-scoped assignment data) must
+             load before AcademyAggregator, which reads it for the
+             Weekly Teams view model. AcademyModule's mount-time
+             dependency check requires it.
          ============================================================ -->
     <script src="js/modules/academy/academy-grade-schemes.js"></script>
     <script src="js/modules/academy/academy-classes.js"></script>
@@ -140,7 +154,9 @@
     <script src="js/modules/academy/academy-social-score.js"></script>
     <script src="js/modules/academy/academy-performance.js"></script>
 
-    <script src="js/modules/shared/queries/academy-auto-groups-read.js"></script>
+    <!-- AcademyAutoGroupsRead lives in the academy folder (not in
+         shared/queries). It must load before academy-groups.js. -->
+    <script src="js/modules/academy/academy-auto-groups-read.js"></script>
     <script src="js/modules/academy/academy-groups.js"></script>
 
     <script src="js/modules/academy/academy-ranking.js"></script>
@@ -149,6 +165,12 @@
 
     <script src="js/modules/academy/academy-schedule.js"></script>
     <script src="js/modules/academy/academy-distribute.js"></script>
+
+    <!-- Week-scoped assignment data. Required by AcademyModule's
+         mount-time dependency check and by AcademyAggregator for
+         the Weekly Teams view model. -->
+    <script src="js/modules/academy/academy-weekly-teams.js"></script>
+
     <script src="js/modules/academy/academy-aggregator.js"></script>
     <script src="js/modules/academy/academy-ui.js"></script>
 
@@ -191,11 +213,13 @@
     <!-- ============================================================
          TOURNAMENT DOMAIN
          ============================================================
+         tournament-schema.js has already loaded in the SHARED
+         CONSTANTS block. The remaining tournament files load here.
+
          Must load before the Academy view shell:
          academy-tournament-aggregator captures TournamentAggregator
          eagerly at IIFE time.
          ============================================================ -->
-    <script src="js/modules/tournaments/tournament-schema.js"></script>
     <script src="js/modules/tournaments/tournament-lifecycle.js"></script>
     <script src="js/modules/tournaments/tournament-rules.js"></script>
     <script src="js/modules/tournaments/tournament-matches.js"></script>
@@ -222,12 +246,6 @@
     <script src="js/modules/academy/academy-location-view.js"></script>
     <script src="js/modules/academy/academy-ranking-view.js"></script>
 
-    <!-- Weekly Teams VIEW.
-         The week-scoped DATA module (window.AcademyWeeklyTeams) is a
-         separate file. If it is not loaded, the Weekly Teams view
-         renders empty teams and AcademyAggregator logs a warning
-         about the missing optional dependency. Add its script tag
-         here once its path is confirmed. -->
     <script src="js/modules/academy/academy-weekly-teams-view.js"></script>
 
     <script src="js/modules/academy/academy-tournament-view.js"></script>
@@ -240,9 +258,13 @@
     <!-- ============================================================
          TEAM DOMAIN
          ============================================================
+         Team constants and team queries live in the shared modules.
+         They were already loaded above:
+           js/modules/shared/team-constants.js
+           js/modules/shared/queries/team-queries.js
+
          Load order within this section matters:
 
-           - TeamQueries depends on TeamConstants.
            - TeamAggregator depends on TeamQueries, TeamConstants,
              CharacterQueries, AcademyQueries.
            - TeamRender depends on DomUtils only.
@@ -251,12 +273,7 @@
            - TeamCore depends on TeamConstants, IdUtils,
              MutationPipeline, ObjectUtils.
            - teams/index.js depends on all of the above.
-
-         team-rankings.js has been removed; its functions live on
-         team-queries.js.
          ============================================================ -->
-    <script src="js/modules/teams/team-constants.js"></script>
-    <script src="js/modules/teams/team-queries.js"></script>
     <script src="js/modules/teams/team-aggregator.js"></script>
     <script src="js/modules/teams/team-ui.js"></script>
     <script src="js/modules/teams/team-render.js"></script>
