@@ -25,30 +25,43 @@
  *   - setState(key, value) and updateState(updates) — generic escape
  *     hatches that bypassed every invariant.
  *   - getFilter(view) / setFilter(view, key, value) / updateFilter —
- *     replaced by People-specific filter API.
- *   - Public init() — the module initialises once on load.
+ *     replaced by the People-specific filter API.
+ *   - Public init() — the module initialises once on load. Callers
+ *     that need a fresh state call resetState().
  *   - Role derivation helpers — UI state does not resolve domain roles.
  *   - 'trainee' role filter value — canonical role vocabulary is
  *     'student' | 'instructor'.
  *
- * ROLE VOCABULARY:
+ * ROLE VOCABULARY (CANONICAL):
  *   The People view filter uses three values:
  *     'all' | 'student' | 'instructor'
  *   The Academy class VM's roster carries the same 'student' or
  *   'instructor' spelling. There is no 'trainee' anywhere.
  *
- * STATE MODEL:
- *   selectedView:        'people' | 'tournaments' | 'weeklyTeams' |
- *                        'rankings' | 'disciplines' | 'locations'
- *   selectedClassId:     graduating class ID
- *   selectedCharacterId: character ID
- *   displayWeek:         integer in [1, 52]
- *   filters.people:      { search, role, status }
- *   expandedIds:         map of expanded UI element IDs
- *   characterModes:      map of charId -> 'student' | 'instructor'
+ * CLASS SELECTION SEMANTICS:
+ *   selectClass(classId) is a pure setter. It clears the selected
+ *   character on every class change. Callers that want to preserve
+ *   the character selection when the character is still a member of
+ *   the newly selected class must restore it themselves after calling
+ *   selectClass. This module has no opinion about class membership.
+ *
+ * WEEK SEMANTICS:
+ *   setDisplayWeek accepts:
+ *     - a plain number that is an integer in [MIN_WEEK, MAX_WEEK]
+ *     - a string that is a pure digit sequence ("5", "42") whose
+ *       numeric value is an integer in [MIN_WEEK, MAX_WEEK]
+ *   It rejects:
+ *     - floats ("5.5", 5.5)
+ *     - strings with trailing characters ("12garbage", "12 ")
+ *     - negative values, zero
+ *     - NaN, Infinity
+ *     - out-of-range values
+ *   No silent coercion. The caller sees `false` for rejected input
+ *   and can decide what to do (typically: leave the input element
+ *   as-is so the user sees their mistake).
  *
  * DEPENDENCIES:
- *   - None.
+ *   - window.CalendarConstants (MIN_WEEK, MAX_WEEK) — MANDATORY
  *
  * USAGE:
  *   AcademyUI.getSelectedView();
@@ -67,11 +80,31 @@
     if (window.__academyUILoaded) {
         return;
     }
+
+    // ============================================================
+    // MANDATORY DEPENDENCY
+    // ============================================================
+
+    var CalendarConstants = window.CalendarConstants;
+
+    if (!CalendarConstants ||
+        typeof CalendarConstants.MIN_WEEK !== 'number' ||
+        typeof CalendarConstants.MAX_WEEK !== 'number') {
+        throw new Error(
+            '[AcademyUI] Missing mandatory dependency: ' +
+            'CalendarConstants.MIN_WEEK / MAX_WEEK'
+        );
+    }
+
     window.__academyUILoaded = true;
 
     // ============================================================
-    // CONSTANTS
+    // CONSTANTS - frozen
     // ============================================================
+
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
+    var DEFAULT_WEEK = MIN_WEEK;
 
     var VALID_VIEWS = Object.freeze([
         'people',
@@ -92,16 +125,16 @@
     var VALID_CHARACTER_MODES = Object.freeze(['student', 'instructor']);
     var DEFAULT_CHARACTER_MODE = 'student';
 
-    var MIN_WEEK = 1;
-    var MAX_WEEK = 52;
-    var DEFAULT_WEEK = 1;
-
     // ============================================================
     // DEFAULT STATE
     // ============================================================
     //
-    // Single canonical definition. `_state` is initialised from a
+    // Single canonical definition. _state is initialised from a
     // fresh clone of this template; resetState() also returns to it.
+    //
+    // The public DEFAULT_STATE export is a frozen clone of the same
+    // template, so a caller cannot corrupt the template by mutating
+    // the published copy.
 
     function createDefaultState() {
         return {
@@ -120,18 +153,6 @@
             characterModes: {}
         };
     }
-
-    // ============================================================
-    // LIVE STATE
-    // ============================================================
-
-    var _state = null;
-
-    // ============================================================
-    // STORAGE
-    // ============================================================
-
-    var STORAGE_KEY = 'academy_ui_state_v3';
 
     // ============================================================
     // VALIDATION HELPERS
@@ -157,10 +178,12 @@
      * Strict integer parse for weeks.
      *
      * Accepts:
-     *   - numbers that are integers
-     *   - strings matching /^\d+$/
+     *   - numbers that are integers in range
+     *   - strings that are pure digit sequences whose numeric value is
+     *     an integer in range
      *
-     * Rejects everything else. No silent coercion of "12garbage" to 12.
+     * Rejects everything else. There is no silent coercion of
+     * "12garbage" to 12.
      *
      * @returns {number|null}
      */
@@ -168,22 +191,41 @@
         if (value === undefined || value === null) {
             return null;
         }
+
         if (typeof value === 'number') {
-            if (!Number.isInteger(value)) { return null; }
-            if (value < MIN_WEEK || value > MAX_WEEK) { return null; }
+            if (!Number.isInteger(value)) {
+                return null;
+            }
+            if (value < MIN_WEEK || value > MAX_WEEK) {
+                return null;
+            }
             return value;
         }
+
         if (typeof value === 'string') {
             var trimmed = value.trim();
-            if (!/^\d+$/.test(trimmed)) { return null; }
+            if (trimmed === '' || !/^\d+$/.test(trimmed)) {
+                return null;
+            }
             var n = Number(trimmed);
-            if (!Number.isInteger(n)) { return null; }
-            if (n < MIN_WEEK || n > MAX_WEEK) { return null; }
+            if (!Number.isInteger(n)) {
+                return null;
+            }
+            if (n < MIN_WEEK || n > MAX_WEEK) {
+                return null;
+            }
             return n;
         }
+
         return null;
     }
 
+    /**
+     * Normalise an ID-like value to a string or null.
+     *
+     * Rejects objects and arrays. Accepts strings and numbers.
+     * Empty-string and whitespace-only strings become null.
+     */
     function normaliseId(value) {
         if (value === null || value === undefined || value === '') {
             return null;
@@ -196,16 +238,22 @@
     }
 
     // ============================================================
-    // LOAD / SAVE
+    // STORAGE
     // ============================================================
+
+    var STORAGE_KEY = 'academy_ui_state_v3';
 
     function loadState() {
         var defaults = createDefaultState();
         try {
             var saved = sessionStorage.getItem(STORAGE_KEY);
-            if (!saved) { return defaults; }
+            if (!saved) {
+                return defaults;
+            }
             var parsed = JSON.parse(saved);
-            if (!parsed || typeof parsed !== 'object') { return defaults; }
+            if (!parsed || typeof parsed !== 'object') {
+                return defaults;
+            }
             return mergeWithDefaults(parsed, defaults);
         } catch (e) {
             return defaults;
@@ -216,7 +264,10 @@
      * Merge persisted state with defaults.
      *
      * Only known fields are accepted. Invalid values fall back to the
-     * default. Unknown fields are dropped.
+     * default. Unknown fields are dropped. This is what makes the
+     * migration from 'trainee' to 'student' clean: session state
+     * carrying role: 'trainee' is rejected and replaced with the
+     * default.
      */
     function mergeWithDefaults(parsed, defaults) {
         var merged = defaults;
@@ -255,7 +306,9 @@
             }
         }
 
-        if (parsed.expandedIds && typeof parsed.expandedIds === 'object' && !Array.isArray(parsed.expandedIds)) {
+        if (parsed.expandedIds &&
+            typeof parsed.expandedIds === 'object' &&
+            !Array.isArray(parsed.expandedIds)) {
             var keys = Object.keys(parsed.expandedIds);
             for (var i = 0; i < keys.length; i++) {
                 if (parsed.expandedIds[keys[i]]) {
@@ -264,7 +317,9 @@
             }
         }
 
-        if (parsed.characterModes && typeof parsed.characterModes === 'object' && !Array.isArray(parsed.characterModes)) {
+        if (parsed.characterModes &&
+            typeof parsed.characterModes === 'object' &&
+            !Array.isArray(parsed.characterModes)) {
             var modeKeys = Object.keys(parsed.characterModes);
             for (var j = 0; j < modeKeys.length; j++) {
                 var id = modeKeys[j];
@@ -283,23 +338,56 @@
         try {
             sessionStorage.setItem(STORAGE_KEY, JSON.stringify(_state));
         } catch (e) {
-            // Ignore storage errors.
+            // Storage full or unavailable — ignore.
         }
     }
+
+    // ============================================================
+    // LIVE STATE
+    // ============================================================
+
+    var _state = loadState();
 
     // ============================================================
     // LIFECYCLE
     // ============================================================
 
-    function ensureState() {
-        if (!_state) {
-            _state = createDefaultState();
-        }
-    }
-
+    /**
+     * Reset to defaults.
+     *
+     * The only lifecycle mutator. Public because tests use it and
+     * because callers occasionally want a hard reset (e.g. logout).
+     * Not needed for normal operation; the module initialises on
+     * load.
+     */
     function resetState() {
         _state = createDefaultState();
         saveState();
+    }
+
+    /**
+     * Get a deep clone of the entire state.
+     *
+     * Used by academy/index.js's public API. The clone means a caller
+     * cannot mutate the live state by holding onto the returned
+     * object.
+     */
+    function getState() {
+        return {
+            selectedView: _state.selectedView,
+            selectedClassId: _state.selectedClassId,
+            selectedCharacterId: _state.selectedCharacterId,
+            displayWeek: _state.displayWeek,
+            filters: {
+                people: {
+                    search: _state.filters.people.search,
+                    role: _state.filters.people.role,
+                    status: _state.filters.people.status
+                }
+            },
+            expandedIds: Object.assign({}, _state.expandedIds),
+            characterModes: Object.assign({}, _state.characterModes)
+        };
     }
 
     // ============================================================
@@ -307,12 +395,10 @@
     // ============================================================
 
     function getSelectedView() {
-        ensureState();
         return _state.selectedView;
     }
 
     function setSelectedView(view) {
-        ensureState();
         if (!isValidView(view)) {
             return false;
         }
@@ -336,7 +422,6 @@
     // ============================================================
 
     function getSelectedClassId() {
-        ensureState();
         return _state.selectedClassId;
     }
 
@@ -352,7 +437,6 @@
      *     and decides).
      */
     function selectClass(classId) {
-        ensureState();
         var normalised = normaliseId(classId);
         if (normalised === _state.selectedClassId) {
             return;
@@ -367,12 +451,10 @@
     // ============================================================
 
     function getSelectedCharacterId() {
-        ensureState();
         return _state.selectedCharacterId;
     }
 
     function selectCharacter(charId) {
-        ensureState();
         var normalised = normaliseId(charId);
         if (normalised === _state.selectedCharacterId) {
             return;
@@ -386,19 +468,17 @@
     // ============================================================
 
     function getDisplayWeek() {
-        ensureState();
         return _state.displayWeek;
     }
 
     /**
      * Set the display week.
      *
-     * @param {number|string} week - Integer 1-52. Strings must be pure
-     *   digit sequences.
+     * @param {number|string} week - Integer in [MIN_WEEK, MAX_WEEK],
+     *   or a pure digit string whose integer value is in range.
      * @returns {boolean} true if the value was accepted
      */
     function setDisplayWeek(week) {
-        ensureState();
         var n = parseWeekStrict(week);
         if (n === null) {
             return false;
@@ -416,7 +496,6 @@
     // ============================================================
 
     function getCharacterMode(charId) {
-        ensureState();
         var id = normaliseId(charId);
         if (id === null) {
             return DEFAULT_CHARACTER_MODE;
@@ -429,7 +508,6 @@
     }
 
     function setCharacterMode(charId, mode) {
-        ensureState();
         var id = normaliseId(charId);
         if (id === null) { return false; }
         if (!isValidCharacterMode(mode)) { return false; }
@@ -441,6 +519,10 @@
         return true;
     }
 
+    /**
+     * Toggle the character's mode between 'student' and 'instructor'.
+     * Returns the mode the character is in AFTER the toggle.
+     */
     function toggleCharacterMode(charId) {
         var current = getCharacterMode(charId);
         var next = current === 'student' ? 'instructor' : 'student';
@@ -449,7 +531,6 @@
     }
 
     function clearCharacterMode(charId) {
-        ensureState();
         var id = normaliseId(charId);
         if (id === null) { return; }
         if (!Object.prototype.hasOwnProperty.call(_state.characterModes, id)) {
@@ -470,7 +551,6 @@
     // Typed API. No generic getFilter/setFilter escape hatches.
 
     function getPeopleFilter() {
-        ensureState();
         return {
             search: _state.filters.people.search,
             role: _state.filters.people.role,
@@ -482,14 +562,13 @@
      * Set the entire People filter atomically.
      *
      * Partial updates are allowed: any field not present in `updates`
-     * keeps its current value. Each present field must be valid, or the
-     * whole call is rejected.
+     * keeps its current value. Each present field must be valid, or
+     * the whole call is rejected and no field is updated.
      *
      * @param {object} updates - { search?, role?, status? }
      * @returns {boolean} true if the update was accepted
      */
     function setPeopleFilter(updates) {
-        ensureState();
         if (!updates || typeof updates !== 'object') {
             return false;
         }
@@ -540,7 +619,6 @@
     }
 
     function resetPeopleFilter() {
-        ensureState();
         _state.filters.people = {
             search: '',
             role: DEFAULT_ROLE_FILTER,
@@ -554,13 +632,11 @@
     // ============================================================
 
     function isExpanded(id) {
-        ensureState();
         if (!id) { return false; }
         return _state.expandedIds[id] === true;
     }
 
     function setExpanded(id, expanded) {
-        ensureState();
         if (!id) { return; }
         var key = String(id);
         var currentlyExpanded = _state.expandedIds[key] === true;
@@ -577,7 +653,6 @@
     }
 
     function toggleExpanded(id) {
-        ensureState();
         if (!id) { return false; }
         var key = String(id);
         var currentlyExpanded = _state.expandedIds[key] === true;
@@ -591,12 +666,10 @@
     }
 
     function getExpandedIds() {
-        ensureState();
         return Object.assign({}, _state.expandedIds);
     }
 
     function clearExpanded() {
-        ensureState();
         _state.expandedIds = {};
         saveState();
     }
@@ -606,7 +679,6 @@
     // ============================================================
 
     function clearSelection(type) {
-        ensureState();
         if (type === 'class') {
             _state.selectedClassId = null;
             _state.selectedCharacterId = null;
@@ -622,7 +694,6 @@
     }
 
     function clearSelections() {
-        ensureState();
         _state.selectedClassId = null;
         _state.selectedCharacterId = null;
         saveState();
@@ -649,20 +720,16 @@
     }
 
     // ============================================================
-    // INITIALISATION
-    // ============================================================
-
-    // The module loads its state once. The public API does not expose
-    // init(); callers who need to reset use resetState().
-    _state = loadState();
-
-    // ============================================================
     // EXPOSE
     // ============================================================
+
+    // Public DEFAULT_STATE is a frozen clone of the template.
+    var DEFAULT_STATE_PUBLIC = Object.freeze(createDefaultState());
 
     window.AcademyUI = {
         // Lifecycle
         resetState: resetState,
+        getState: getState,
 
         // Views
         getSelectedView: getSelectedView,
@@ -718,7 +785,8 @@
         VALID_ROLE_FILTERS: VALID_ROLE_FILTERS,
         VALID_STATUS_FILTERS: VALID_STATUS_FILTERS,
         VALID_CHARACTER_MODES: VALID_CHARACTER_MODES,
-        DEFAULT_CHARACTER_MODE: DEFAULT_CHARACTER_MODE
+        DEFAULT_CHARACTER_MODE: DEFAULT_CHARACTER_MODE,
+        DEFAULT_STATE: DEFAULT_STATE_PUBLIC
     };
 
 })();
