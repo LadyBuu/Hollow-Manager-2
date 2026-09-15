@@ -5,43 +5,75 @@
  * Path: js/modules/academy/academy-location-view.js
  *
  * This module is responsible for:
- *   - Rendering the location list (with type/capacity filters)
+ *   - Rendering the location list with type/search filters
  *   - Rendering the location detail panel (type, capacity, schedule)
  *   - Rendering an empty state when no location is selected
  *
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no domain logic
  *   - Does NOT fetch data. Does NOT call AcademyLocations directly.
- *   - Receives a view model from AcademyAggregator
+ *   - Receives a view model from AcademyAggregator.
  *   - Does NOT bind events. Buttons and rows emit data-* attributes
  *     that AcademyView's delegated container listeners resolve.
- *   - Uses DomUtils for escaping.
+ *   - Uses DomUtils for escaping (mandatory, no fallbacks).
  *   - Returns an HTML string.
  *
  * INTERFACE:
  *   AcademyLocationView.renderHTML(viewModel) -> string
  *
  *   viewModel is the shape produced by
- *   AcademyView.renderLocationView():
+ *   AcademyAggregator.getLocationViewViewModel(filters, week, selectedLocationId):
  *     {
- *       locations: [ { id, name, type, typeLabel, capacity,
- *                      scheduleCount, scheduleWeek } ],
- *       selected:  { ...same shape..., schedule: [ { day, hour, disciplineId, disciplineName, duration, label } ] } | null,
- *       filters:   { type, search },
- *       total:     number
+ *       locations:   [ <rowVM> ],
+ *       selected:    <detailVM> | null,
+ *       filters:     { type, search },
+ *       week:        number,
+ *       scheduleWeek: number,
+ *       total:       number
  *     }
  *
- *   If selected is null, the right panel renders a placeholder.
+ *   rowVM:
+ *     {
+ *       id:            string,
+ *       name:          string,
+ *       type:          string,
+ *       typeLabel:     string,     // optional; derived from `type` when absent
+ *       capacity:      number | null,
+ *       scheduleCount: number
+ *     }
+ *
+ *   detailVM:
+ *     {
+ *       id:         string,
+ *       name:       string,
+ *       type:       string,
+ *       typeLabel:  string,        // optional; derived from `type` when absent
+ *       capacity:   number | null,
+ *       schedule:   [ <slotVM> ]
+ *     }
+ *
+ *   slotVM:
+ *     {
+ *       day:            number,    // 1-7
+ *       hour:           number,    // 0-23
+ *       disciplineId:   string,
+ *       disciplineName: string,
+ *       duration:       number | null,
+ *       label:          string
+ *     }
+ *
+ *   If `selected` is null, the right panel renders a placeholder.
  *
  * EVENTS EMITTED (via data-* attributes, for AcademyView to bind):
- *   - .academy-location-row [data-location-id]
- *   - #academy-location-type-filter (change)
- *   - #academy-location-search (input)
- *   - [data-action="edit-location"] with [data-location-id]
- *   - [data-action="delete-location"] with [data-location-id]
+ *   - .academy-location-row [data-location-id]           (click)
+ *   - #academy-location-type-filter                      (change)
+ *   - #academy-location-search                           (input)
+ *   - [data-action="add-location"]                       (click)
+ *   - [data-action="edit-location"]   [data-location-id] (click)
+ *   - [data-action="delete-location"] [data-location-id] (click)
  *
  * DEPENDENCIES:
- *   - window.DomUtils (MANDATORY)
+ *   - window.DomUtils          (MANDATORY)
  *   - window.CalendarConstants (MANDATORY) - day/hour labels
  *
  * USAGE:
@@ -90,27 +122,15 @@
     }
 
     // ============================================================
-    // ESCAPING HELPERS
+    // ESCAPING HELPERS - Mandatory, no fallbacks
     // ============================================================
 
     function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
-        }
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value);
+        return DomUtils.escapeHtml(value);
     }
 
     function escapeAttribute(value) {
-        if (DomUtils && typeof DomUtils.escapeAttribute === 'function') {
-            return DomUtils.escapeAttribute(value);
-        }
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value);
+        return DomUtils.escapeAttribute(value);
     }
 
     // ============================================================
@@ -125,8 +145,10 @@
         return typeof value === 'number' && isFinite(value);
     }
 
+    // Type labels are the VM's responsibility. This view only derives a
+    // fallback when the VM omits `typeLabel` so it can still render
+    // something sensible for an unknown type string.
     function getLocationTypeBadgeClass(type) {
-        // One class per known type so CSS can colour-code.
         switch (type) {
             case 'classroom':   return 'academy-location-type-badge academy-location-type-classroom';
             case 'lab':         return 'academy-location-type-badge academy-location-type-lab';
@@ -140,11 +162,18 @@
         }
     }
 
-    function getLocationTypeLabel(type) {
+    function deriveTypeLabel(type) {
         if (!isNonEmptyString(type)) {
             return 'Other';
         }
         return type.charAt(0).toUpperCase() + type.slice(1);
+    }
+
+    function resolveTypeLabel(row) {
+        if (isNonEmptyString(row.typeLabel)) {
+            return row.typeLabel;
+        }
+        return deriveTypeLabel(row.type);
     }
 
     function getDayName(dayNum) {
@@ -162,16 +191,24 @@
         return String(hourNum) + ':00';
     }
 
+    function formatDuration(value) {
+        if (!isFiniteNumber(value)) {
+            return '\u2014';
+        }
+        return String(value) + 'h';
+    }
+
+    function formatCapacity(value) {
+        if (!isFiniteNumber(value) || value <= 0) {
+            return '';
+        }
+        return String(value);
+    }
+
     // ============================================================
     // RENDER - Top-level entry point
     // ============================================================
 
-    /**
-     * Render the location view.
-     *
-     * @param {object|null} viewModel - { locations, selected, filters, total }
-     * @returns {string} HTML string
-     */
     function renderHTML(viewModel) {
         if (!checkDependencies()) {
             return (
@@ -189,7 +226,7 @@
         return (
             '<div class="academy-body academy-location-layout">' +
                 renderListPanel(locations, filters) +
-                renderDetailPanel(selected, vm.scheduleWeek) +
+                renderDetailPanel(selected, vm.scheduleWeek || vm.week) +
             '</div>'
         );
     }
@@ -201,11 +238,21 @@
     function renderListPanel(locations, filters) {
         var html = '<div class="academy-location-sidebar">';
 
+        html += renderListActions();
         html += renderListFilters(filters);
         html += renderListItems(locations);
 
         html += '</div>';
         return html;
+    }
+
+    function renderListActions() {
+        return (
+            '<button type="button" class="primary small academy-add-location-btn" ' +
+                'data-action="add-location">' +
+                '+ Add Location' +
+            '</button>'
+        );
     }
 
     function renderListFilters(filters) {
@@ -260,6 +307,7 @@
 
     function renderListRow(l) {
         var badgeClass = getLocationTypeBadgeClass(l.type);
+        var typeLabel = resolveTypeLabel(l);
 
         var html = '';
         html += '<div class="academy-location-row" ' +
@@ -268,12 +316,13 @@
 
         html += '<div class="academy-location-row-main">';
         html += '<span class="academy-location-name">' + escapeHtml(l.name || 'Unnamed Location') + '</span>';
-        html += '<span class="' + badgeClass + '">' + escapeHtml(getLocationTypeLabel(l.type)) + '</span>';
+        html += '<span class="' + badgeClass + '">' + escapeHtml(typeLabel) + '</span>';
         html += '</div>';
 
         var meta = [];
-        if (isFiniteNumber(l.capacity) && l.capacity > 0) {
-            meta.push('Capacity: ' + escapeHtml(String(l.capacity)));
+        var capacity = formatCapacity(l.capacity);
+        if (capacity) {
+            meta.push('Capacity: ' + escapeHtml(capacity));
         }
         if (isFiniteNumber(l.scheduleCount) && l.scheduleCount > 0) {
             meta.push(escapeHtml(String(l.scheduleCount)) + ' scheduled');
@@ -314,6 +363,7 @@
 
     function renderDetailContent(l, week) {
         var badgeClass = getLocationTypeBadgeClass(l.type);
+        var typeLabel = resolveTypeLabel(l);
 
         var html = '';
 
@@ -325,16 +375,17 @@
                     escapeHtml(l.name || 'Unnamed Location') +
                 '</h3>';
         html += '<span class="' + badgeClass + '">' +
-                    escapeHtml(getLocationTypeLabel(l.type)) +
+                    escapeHtml(typeLabel) +
                 '</span>';
         html += '</div>';
 
         html += '<div class="academy-location-detail-meta">';
 
-        if (isFiniteNumber(l.capacity) && l.capacity > 0) {
+        var capacity = formatCapacity(l.capacity);
+        if (capacity) {
             html += '<span class="academy-location-detail-meta-item">' +
                         '<span class="meta-label">Capacity:</span> ' +
-                        escapeHtml(String(l.capacity)) +
+                        escapeHtml(capacity) +
                     '</span>';
         } else {
             html += '<span class="academy-location-detail-meta-item academy-meta-muted">' +
@@ -433,7 +484,7 @@
         var dayName = getDayName(entry.day);
         var hourDisplay = formatHour(entry.hour);
         var disciplineName = entry.disciplineName || 'Unknown';
-        var duration = isFiniteNumber(entry.duration) ? entry.duration : 1;
+        var durationDisplay = formatDuration(entry.duration);
         var label = isNonEmptyString(entry.label) ? entry.label : '';
 
         var html = '<tr class="academy-location-schedule-row">';
@@ -444,7 +495,7 @@
             html += ' <span class="academy-location-schedule-label">[' + escapeHtml(label) + ']</span>';
         }
         html += '</td>';
-        html += '<td class="duration-col">' + escapeHtml(String(duration)) + 'h</td>';
+        html += '<td class="duration-col">' + escapeHtml(durationDisplay) + '</td>';
         html += '</tr>';
 
         return html;
