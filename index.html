@@ -216,6 +216,12 @@
          tournament-schema.js has already loaded in the SHARED
          CONSTANTS block. The remaining tournament files load here.
 
+         The four UI-layer files (tournament-render.js,
+         tournament-ui.js, tournament-events.js, tournaments/index.js)
+         have been removed. They powered the standalone Tournaments
+         tab, which does not exist. The Academy-embedded Exams view
+         uses the domain layer below and its own view shell files.
+
          Must load before the Academy view shell:
          academy-tournament-aggregator captures TournamentAggregator
          eagerly at IIFE time.
@@ -225,12 +231,8 @@
     <script src="js/modules/tournaments/tournament-matches.js"></script>
     <script src="js/modules/tournaments/tournament-core.js"></script>
     <script src="js/modules/tournaments/tournament-aggregator.js"></script>
-    <script src="js/modules/tournaments/tournament-render.js"></script>
-    <script src="js/modules/tournaments/tournament-ui.js"></script>
-    <script src="js/modules/tournaments/tournament-events.js"></script>
     <script src="js/modules/tournaments/tournament-elimination-workflow.js"></script>
     <script src="js/modules/tournaments/tournament-repair.js"></script>
-    <script src="js/modules/tournaments/index.js"></script>
 
     <!-- ============================================================
          ACADEMY VIEW SHELL
@@ -238,7 +240,11 @@
          Loads last among the Academy-adjacent blocks because view
          modules capture AcademyAggregator, AcademyTournamentAggregator,
          and CharacterClasses eagerly at IIFE time.
+
+         The character-detail aggregator must load before
+         academy-view.js, which requires it at load time.
          ============================================================ -->
+    <script src="js/modules/academy/academy-character-detail-aggregator.js"></script>
     <script src="js/modules/academy/academy-class-detail.js"></script>
     <script src="js/modules/academy/academy-grades-editor.js"></script>
     <script src="js/modules/academy/academy-character-detail.js"></script>
