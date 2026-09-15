@@ -13,8 +13,8 @@
  *   - Class roster derivation. AcademyQueries derives rosters from
  *     character.classIds.
  *   - Character ↔ class relationship mutations. Those are owned by
- *     CharacterClasses (addToClass / removeClassById / addClassByName /
- *     removeFromAllClasses).
+ *     CharacterClasses.
+ *   - Cross-domain cascade cleanup. That is owned by AcademyCascade.
  *
  * IMPORTANT (v15+):
  *   - This module OWNS class ENTITIES, not membership.
@@ -25,28 +25,28 @@
  *     classId. AcademyQueries owns that derivation.
  *   - This module's legacy membership methods (addStudent, removeStudent)
  *     are thin DELEGATORS to CharacterClasses. They exist for backwards
- *     compatibility during the Academy UI rework and will be removed
- *     once the old class-tab.js / student-tab.js are deleted in Phase 12.
- *   - Class deletion is a CASCADE. It removes the class entity, strips
- *     the classId from every character that references it, and removes
- *     all class-scoped data (weeklyTeams, grades, rankings) in a single
- *     MutationPipeline transaction.
+ *     compatibility during the Academy UI rework.
  *
  * READ SAFETY (Phase 2):
  *   - getAcademyStore() returns null (does NOT create academy.{...}) when
  *     the store is missing. Reads are side-effect free.
- *   - Public lookups (getClass, getClasses, getClassesByStatus,
- *     getClassByName, getDisplayName, getCharacterClassNames,
- *     getCharacterClasses) return DEEP CLONES. Callers cannot mutate
- *     live state by writing to a returned object.
- *   - Internal lookups (getClassInternal, getClassesInternal, ...) keep
- *     returning LIVE REFERENCES. They are consumed by this module's own
- *     mutation paths and by AcademyQueries. They are not part of the
- *     public read surface.
- *   - Pipeline validate() callbacks read from the `appData` argument the
- *     pipeline supplies, not from window.data via the internal getters.
- *     This makes validation consistent with the snapshot the mutation
- *     will be applied to.
+ *   - Public lookups return DEEP CLONES.
+ *   - Internal lookups return LIVE REFERENCES.
+ *   - Pipeline validate() callbacks read from the `appData` argument.
+ *   - ObjectUtils.deepClone throws if cloning fails or if the clone
+ *     aliases the input.
+ *
+ * DELETE CASCADE (Phase 8):
+ *   Deleting a class is a CASCADE. In a single MutationPipeline
+ *   transaction it:
+ *     1. Strips the classId from every character's classIds array.
+ *        (Character-side concern; kept inline.)
+ *     2. Deletes the class entity from academy.graduatingClasses.
+ *     3. Cross-domain cleanup: enrolments, grades, rankings, social
+ *        scores, weekly teams. Delegated to AcademyCascade.classDeleted.
+ *
+ *   The cascade is atomic: if the mutation fails, the entire snapshot
+ *   is restored. No partial cleanup.
  *
  * YEAR SEMANTICS:
  *   - Years are UNBOUNDED positive integers.
@@ -60,21 +60,25 @@
  *   - window.ValidationUtils (from validation-utils.js) - MANDATORY
  *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
  *   - window.CharacterClasses (from character-classes.js) - LAZY
+ *   - window.AcademyCascade (from academy-cascade.js) - LAZY
+ *     When present, cross-domain cleanup on delete routes through it.
+ *     When absent, cross-domain cleanup is skipped (the cascade
+ *     coordinator is the single owner of the "what needs cleanup"
+ *     list; the alternative is inline duplication, which is what the
+ *     coordinator exists to eliminate).
  *
  * USAGE:
  *   var classes = window.AcademyClasses;
  *
- *   // Entity CRUD
  *   var result = classes.create('Class of 2026');
  *   var result = classes.update('class_123', { name: 'New Name' });
  *   var result = classes.delete('class_123');
  *
- *   // Lookups (used by AcademyQueries) - return clones
  *   var cls = classes.getClass('class_123');
  *   var all = classes.getClasses();
  *   var byName = classes.getClassByName('Class of 2026');
  *
- *   // DEPRECATED membership delegates — use CharacterClasses directly
+ *   // DEPRECATED membership delegates
  *   var result = classes.addStudent('class_123', 'student_456');
  *   var result = classes.removeStudent('class_123', 'student_456');
  */
@@ -82,7 +86,6 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__academyClassesLoaded) {
         return;
     }
@@ -125,17 +128,15 @@
     var MutationPipeline = window.MutationPipeline;
 
     // ============================================================
-    // LAZY LOADING HELPER
+    // LAZY LOADING HELPERS
     // ============================================================
-    // CharacterClasses loads at a different time than this module
-    // depending on the script order. Resolve it lazily at call time.
-    //
-    // NOTE: CharacterQueries is no longer needed by this module. Its
-    // only caller was deriveRosterIds, which was removed along with
-    // the deprecated getClassStudents stub.
 
     function getCharacterClasses() {
         return window.CharacterClasses || null;
+    }
+
+    function getAcademyCascade() {
+        return window.AcademyCascade || null;
     }
 
     // ============================================================
@@ -158,7 +159,14 @@
     }
 
     function deepClone(value) {
-        return ObjectUtils.deepClone(value);
+        var result = ObjectUtils.deepClone(value);
+        if (result === value && value !== null && typeof value === 'object') {
+            throw new Error(
+                '[AcademyClasses] deepClone returned the original reference. ' +
+                'ObjectUtils.deepClone must return a genuine clone for objects.'
+            );
+        }
+        return result;
     }
 
     function generateId() {
@@ -176,16 +184,6 @@
     // ============================================================
     // DATA STORE ACCESS - INTERNAL
     // ============================================================
-    //
-    // READ SAFETY:
-    //   - getDataStore() returns null when window.data is missing.
-    //   - getAcademyStore() returns null when window.data.academy is
-    //     missing. It does NOT create academy.{...} as a side effect
-    //     of a read.
-    //
-    //   Structure creation happens ONLY inside pipeline mutate()
-    //   callbacks, operating on the appData snapshot the pipeline
-    //   hands in. That keeps reads side-effect free.
 
     function getDataStore() {
         if (!window.data || typeof window.data !== 'object') {
@@ -210,21 +208,7 @@
     // ============================================================
     // INTERNAL CLASS LOOKUP - PRIVATE (LIVE REFERENCES)
     // ============================================================
-    // These are the CANONICAL class ENTITY lookup functions. They
-    // read from academy.graduatingClasses, which is unaffected by
-    // the v15 membership change.
-    //
-    // They return LIVE REFERENCES. Callers inside this module's
-    // mutation paths and AcademyQueries' derive functions use them.
-    // The public read surface (see below) wraps them with deepClone.
 
-    /**
-     * Get a class record by ID (internal).
-     * Returns a LIVE reference - do not mutate directly.
-     *
-     * @param {string} classId - Class ID
-     * @returns {object|null} Class object or null
-     */
     function getClassInternal(classId) {
         if (!isNonEmptyString(classId)) {
             return null;
@@ -239,12 +223,6 @@
         return academy.graduatingClasses[target] || null;
     }
 
-    /**
-     * Get all class records (internal).
-     * Returns an array of class objects (live references).
-     *
-     * @returns {array} Array of class objects
-     */
     function getClassesInternal() {
         var academy = getAcademyStore();
         if (!academy || !academy.graduatingClasses) {
@@ -264,12 +242,6 @@
         return result;
     }
 
-    /**
-     * Get class records by status (internal).
-     *
-     * @param {string} status - Status filter ('active', 'archived', 'graduated')
-     * @returns {array} Array of class objects
-     */
     function getClassesByStatusInternal(status) {
         if (!isNonEmptyString(status)) {
             return getClassesInternal();
@@ -287,21 +259,10 @@
         return result;
     }
 
-    /**
-     * Get active class records (internal).
-     *
-     * @returns {array} Array of active class objects
-     */
     function getActiveClassesInternal() {
         return getClassesByStatusInternal('active');
     }
 
-    /**
-     * Get a class by name (internal, case-insensitive).
-     *
-     * @param {string} name - Class name
-     * @returns {object|null} Class object or null
-     */
     function getClassByNameInternal(name) {
         if (!isNonEmptyString(name)) {
             return null;
@@ -320,12 +281,6 @@
         return null;
     }
 
-    /**
-     * Get class display name (internal).
-     *
-     * @param {string} classId - Class ID
-     * @returns {string} Class display name or 'Unknown Class'
-     */
     function getClassDisplayNameInternal(classId) {
         if (!isNonEmptyString(classId)) {
             return 'Unknown Class';
@@ -342,20 +297,7 @@
     // ============================================================
     // CHARACTER ↔ CLASS - READ PATH (INTERNAL)
     // ============================================================
-    // These read character.classIds directly. This is the canonical
-    // membership relationship. There is no separate roster store to
-    // read from, so there is nothing to keep in sync.
-    //
-    // They return LIVE REFERENCES to class records. The public
-    // surface wraps them with deepClone.
 
-    /**
-     * Get character class names (internal).
-     * Reads from character.classIds.
-     *
-     * @param {object} character - Character object with classIds
-     * @returns {array} Array of class names
-     */
     function getCharacterClassNamesInternal(character) {
         if (!character || typeof character !== 'object') {
             return [];
@@ -382,13 +324,6 @@
         return names;
     }
 
-    /**
-     * Get character classes (internal).
-     * Reads from character.classIds.
-     *
-     * @param {object} character - Character object with classIds
-     * @returns {array} Array of class objects (live references)
-     */
     function getCharacterClassesInternal(character) {
         if (!character || typeof character !== 'object') {
             return [];
@@ -419,15 +354,6 @@
     // YEAR VALIDATION
     // ============================================================
 
-    /**
-     * Validate a year value for a class.
-     *
-     * Years are UNBOUNDED positive integers. A null value is also
-     * accepted (means "year not specified").
-     *
-     * @param {*} value - Year value to validate
-     * @returns {object} { valid: boolean, value: number|null, message?: string }
-     */
     function validateYearValue(value) {
         if (value === undefined || value === null || value === '') {
             return { valid: true, value: null };
@@ -451,24 +377,14 @@
 
     /**
      * Create a new class.
-     *
-     * @param {string} name - Class name
-     * @param {object} options - Optional configuration
-     * @param {string} options.status - Status ('active', 'archived', 'graduated')
-     * @param {number} options.year - Graduation year (any positive integer)
-     * @param {string} options.description - Class description
-     * @param {string} options.instructorId - Instructor ID
-     * @returns {Promise<object>} { success: boolean, data?: object, message?: string }
      */
     function create(name, options) {
-        // ---- PHASE 1: VALIDATE INPUT ----
         if (!isNonEmptyString(name)) {
             return Promise.resolve(failure('Class name is required.'));
         }
 
         var trimmedName = String(name).trim();
 
-        // Check for duplicate name (pre-flight, against live store)
         var existing = getClassByNameInternal(trimmedName);
         if (existing) {
             return Promise.resolve(failure('A class with this name already exists.'));
@@ -476,19 +392,16 @@
 
         options = options || {};
 
-        // Validate status
         var status = options.status || DEFAULT_STATUS;
         if (VALID_STATUSES.indexOf(status) === -1) {
             return Promise.resolve(failure('Invalid status. Must be one of: ' + VALID_STATUSES.join(', ')));
         }
 
-        // Validate year (unbounded positive integer or null)
         var yearResult = validateYearValue(options.year);
         if (!yearResult.valid) {
             return Promise.resolve(failure(yearResult.message));
         }
 
-        // ---- PHASE 2: BUILD CLASS OBJECT ----
         var now = new Date().toISOString();
         var classId = generateId();
 
@@ -503,10 +416,8 @@
             updatedAt: now
         };
 
-        // ---- PHASE 3: MUTATION PIPELINE ----
         return MutationPipeline.performMutation({
             validate: function(appData) {
-                // Read against the pipeline snapshot, not window.data.
                 if (!appData || !appData.academy || !appData.academy.graduatingClasses) {
                     return { valid: true };
                 }
@@ -546,13 +457,8 @@
 
     /**
      * Update an existing class.
-     *
-     * @param {string} classId - Class ID
-     * @param {object} updates - Updates to apply
-     * @returns {Promise<object>} { success: boolean, data?: object, message?: string }
      */
     function update(classId, updates) {
-        // ---- PHASE 1: VALIDATE INPUT ----
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
         }
@@ -561,7 +467,6 @@
             return Promise.resolve(failure('Updates are required.'));
         }
 
-        // ---- PHASE 2: VERIFY EXISTING ----
         var target = String(classId);
         var existing = getClassInternal(target);
 
@@ -569,13 +474,11 @@
             return Promise.resolve(failure('Class not found.'));
         }
 
-        // ---- PHASE 3: VALIDATE UPDATES ----
         var candidate = deepClone(existing);
         if (candidate === null) {
             return Promise.resolve(failure('Failed to clone class data.'));
         }
 
-        // Name update validation
         if (updates.name !== undefined) {
             if (!isNonEmptyString(updates.name)) {
                 return Promise.resolve(failure('Class name cannot be empty.'));
@@ -590,7 +493,6 @@
             }
         }
 
-        // Status update validation
         if (updates.status !== undefined) {
             if (VALID_STATUSES.indexOf(updates.status) === -1) {
                 return Promise.resolve(failure('Invalid status. Must be one of: ' + VALID_STATUSES.join(', ')));
@@ -598,7 +500,6 @@
             candidate.status = updates.status;
         }
 
-        // Year update validation (unbounded positive integer or null)
         if (updates.year !== undefined) {
             var yearResult = validateYearValue(updates.year);
             if (!yearResult.valid) {
@@ -607,19 +508,16 @@
             candidate.year = yearResult.value;
         }
 
-        // Description update
         if (updates.description !== undefined) {
             candidate.description = updates.description || '';
         }
 
-        // Instructor update
         if (updates.instructorId !== undefined) {
             candidate.instructorId = updates.instructorId || null;
         }
 
         candidate.updatedAt = new Date().toISOString();
 
-        // ---- PHASE 4: MUTATION PIPELINE ----
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || !appData.academy || !appData.academy.graduatingClasses) {
@@ -651,23 +549,20 @@
     /**
      * Delete a class permanently.
      *
-     * This is a CASCADE operation. In a single MutationPipeline
-     * transaction it:
-     *   1. Deletes the class entity from academy.graduatingClasses.
-     *   2. Removes classId from every character's classIds array.
-     *   3. Removes academy.weeklyTeams[classId] (all weeks, all teams).
-     *   4. Removes grades keyed to this class (academy.grades).
-     *   5. Removes rankings keyed to this class (academy.rankings).
+     * CASCADE. In a single transaction it:
+     *   1. Strips the classId from every character's classIds array.
+     *   2. Deletes the class entity from academy.graduatingClasses.
+     *   3. Delegates cross-domain cleanup (enrolments, grades,
+     *      rankings, social scores, weekly teams) to
+     *      AcademyCascade.classDeleted.
      *
-     * Rationale: after deletion, any surviving reference to the class
-     * would be unreachable data. Removing it in the same transaction
-     * avoids both orphaned references and partial-cascade states.
-     *
-     * @param {string} classId - Class ID
-     * @returns {Promise<object>} { success: boolean, data?: object, message?: string }
+     * The character-side strip is inline because AcademyClasses owns
+     * the class-membership relationship on the character side. The
+     * cross-domain parts are delegated so that adding a new
+     * class-keyed store means updating one file (the coordinator),
+     * not every delete path.
      */
     function deleteClass(classId) {
-        // ---- PHASE 1: VALIDATE INPUT ----
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
         }
@@ -681,7 +576,6 @@
 
         var className = existing.name;
 
-        // ---- PHASE 2: MUTATION PIPELINE ----
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || !appData.academy || !appData.academy.graduatingClasses) {
@@ -700,10 +594,7 @@
                     throw new Error('Class not found in data store.');
                 }
 
-                // ---- 1. Delete the class entity ----
-                delete data.academy.graduatingClasses[target];
-
-                // ---- 2. Strip classId from every character ----
+                // ---- 1. Strip classId from every character ----
                 var affectedCharacters = 0;
                 if (Array.isArray(data.characters)) {
                     for (var i = 0; i < data.characters.length; i++) {
@@ -721,38 +612,14 @@
                     }
                 }
 
-                // ---- 3. Delete weeklyTeams for this class ----
-                if (data.academy.weeklyTeams &&
-                    typeof data.academy.weeklyTeams === 'object') {
-                    delete data.academy.weeklyTeams[target];
-                }
+                // ---- 2. Delete the class entity ----
+                delete data.academy.graduatingClasses[target];
 
-                // ---- 4. Delete grades keyed to this class ----
-                var removedGrades = 0;
-                if (data.academy.grades &&
-                    typeof data.academy.grades === 'object') {
-                    var gradeIds = Object.keys(data.academy.grades);
-                    for (var g = 0; g < gradeIds.length; g++) {
-                        var grade = data.academy.grades[gradeIds[g]];
-                        if (grade && String(grade.classId) === target) {
-                            delete data.academy.grades[gradeIds[g]];
-                            removedGrades++;
-                        }
-                    }
-                }
-
-                // ---- 5. Delete rankings keyed to this class ----
-                var removedRankings = 0;
-                if (data.academy.rankings &&
-                    typeof data.academy.rankings === 'object') {
-                    var rankIds = Object.keys(data.academy.rankings);
-                    for (var r = 0; r < rankIds.length; r++) {
-                        var rank = data.academy.rankings[rankIds[r]];
-                        if (rank && String(rank.classId) === target) {
-                            delete data.academy.rankings[rankIds[r]];
-                            removedRankings++;
-                        }
-                    }
+                // ---- 3. Cross-domain cascade ----
+                var cascade = null;
+                var Cascade = getAcademyCascade();
+                if (Cascade && typeof Cascade.classDeleted === 'function') {
+                    cascade = Cascade.classDeleted(data, target);
                 }
 
                 return {
@@ -760,12 +627,30 @@
                     classId: target,
                     className: className,
                     affectedCharacters: affectedCharacters,
-                    removedGrades: removedGrades,
-                    removedRankings: removedRankings
+                    academyCascade: cascade
                 };
             },
             logMessage: function(result) {
-                return 'Deleted class: ' + result.className;
+                var parts = [];
+                if (result.affectedCharacters > 0) {
+                    parts.push(result.affectedCharacters + ' character(s) unassigned');
+                }
+
+                if (result.academyCascade) {
+                    var Cascade = getAcademyCascade();
+                    if (Cascade && typeof Cascade.formatSummary === 'function') {
+                        var summary = Cascade.formatSummary(result.academyCascade);
+                        if (summary) {
+                            parts.push(summary.replace(/^\(|\)$/g, ''));
+                        }
+                    }
+                }
+
+                var suffix = parts.length > 0
+                    ? ' (' + parts.join(', ') + ')'
+                    : '';
+
+                return 'Deleted class: ' + result.className + suffix;
             },
             successMessage: 'Class deleted successfully!',
             failureMessage: 'Failed to delete class.'
@@ -775,27 +660,12 @@
     // ============================================================
     // MEMBERSHIP - DEPRECATED DELEGATORS
     // ============================================================
-    // These functions exist only for backwards compatibility while the
-    // Academy UI is being reworked. They delegate to CharacterClasses,
-    // which is the canonical membership mutation path.
     //
-    // New code should call CharacterClasses directly. These delegates
-    // will be removed once the old class-tab.js / student-tab.js are
-    // deleted in Phase 12.
-    //
-    // NOTE: removeStudentFromAllClasses was removed because it had zero
-    // callers. CharacterClasses.removeFromAllClasses is the canonical
-    // entry point for that operation.
+    // These functions exist only for backwards compatibility while
+    // the Academy UI is being reworked. They delegate to
+    // CharacterClasses, which is the canonical membership mutation
+    // path.
 
-    /**
-     * Add a student to a class.
-     *
-     * @deprecated Use CharacterClasses.addToClass instead.
-     *
-     * @param {string} classId - Class ID
-     * @param {string} studentId - Student ID
-     * @returns {Promise<object>} { success: boolean, data?: object, message?: string }
-     */
     function addStudent(classId, studentId) {
         var CharacterClasses = getCharacterClasses();
         if (!CharacterClasses || typeof CharacterClasses.addToClass !== 'function') {
@@ -804,15 +674,6 @@
         return CharacterClasses.addToClass(studentId, classId);
     }
 
-    /**
-     * Remove a student from a class.
-     *
-     * @deprecated Use CharacterClasses.removeClassById instead.
-     *
-     * @param {string} classId - Class ID
-     * @param {string} studentId - Student ID
-     * @returns {Promise<object>} { success: boolean, data?: object, message?: string }
-     */
     function removeStudent(classId, studentId) {
         var CharacterClasses = getCharacterClasses();
         if (!CharacterClasses || typeof CharacterClasses.removeClassById !== 'function') {
@@ -824,28 +685,12 @@
     // ============================================================
     // PUBLIC READ SURFACE (CLONES)
     // ============================================================
-    //
-    // These are the consumer-facing lookups. They return DEEP CLONES
-    // so callers cannot mutate live state by writing to a returned
-    // object. Internal code paths within this module continue to use
-    // the *Internal variants, which return live references.
 
-    /**
-     * Get a class by ID.
-     *
-     * @param {string} classId - Class ID
-     * @returns {object|null} Cloned class object or null
-     */
     function getClass(classId) {
         var record = getClassInternal(classId);
         return record ? deepClone(record) : null;
     }
 
-    /**
-     * Get all classes.
-     *
-     * @returns {array} Array of cloned class objects
-     */
     function getClasses() {
         var records = getClassesInternal();
         var result = [];
@@ -855,12 +700,6 @@
         return result;
     }
 
-    /**
-     * Get classes by status.
-     *
-     * @param {string} status - Status filter
-     * @returns {array} Array of cloned class objects
-     */
     function getClassesByStatus(status) {
         var records = getClassesByStatusInternal(status);
         var result = [];
@@ -870,45 +709,19 @@
         return result;
     }
 
-    /**
-     * Get class by name.
-     *
-     * @param {string} name - Class name
-     * @returns {object|null} Cloned class object or null
-     */
     function getClassByName(name) {
         var record = getClassByNameInternal(name);
         return record ? deepClone(record) : null;
     }
 
-    /**
-     * Get class display name.
-     *
-     * @param {string} classId - Class ID
-     * @returns {string} Class display name
-     */
     function getDisplayName(classId) {
         return getClassDisplayNameInternal(classId);
     }
 
-    /**
-     * Get character class names.
-     * Reads from character.classIds.
-     *
-     * @param {object} character - Character object
-     * @returns {array} Array of class names (strings, already safe)
-     */
     function getCharacterClassNames(character) {
         return getCharacterClassNamesInternal(character);
     }
 
-    /**
-     * Get character classes.
-     * Reads from character.classIds.
-     *
-     * @param {object} character - Character object
-     * @returns {array} Array of cloned class objects
-     */
     function getCharacterClassesFor(character) {
         var records = getCharacterClassesInternal(character);
         var result = [];
@@ -923,7 +736,7 @@
     // ============================================================
 
     window.AcademyClasses = {
-        // ---- Class Entity CRUD (public) ----
+        // ---- Class Entity CRUD ----
         create: create,
         update: update,
         delete: deleteClass,
@@ -932,7 +745,7 @@
         addStudent: addStudent,
         removeStudent: removeStudent,
 
-        // ---- Public lookups (CLONES - safe to mutate the result) ----
+        // ---- Public lookups (CLONES) ----
         getClass: getClass,
         getClasses: getClasses,
         getClassesByStatus: getClassesByStatus,
@@ -941,7 +754,7 @@
         getCharacterClassNames: getCharacterClassNames,
         getCharacterClasses: getCharacterClassesFor,
 
-        // ---- Internal (LIVE REFERENCES - for AcademyQueries and internal use) ----
+        // ---- Internal (LIVE REFERENCES) ----
         getClassInternal: getClassInternal,
         getClassesInternal: getClassesInternal,
         getClassesByStatusInternal: getClassesByStatusInternal,
