@@ -20,8 +20,29 @@
  *   - Does NOT fetch data. Receives a view model from AcademyView.
  *   - Does NOT bind events. Emits data-* attributes that AcademyView's
  *     delegated container listeners resolve.
- *   - Uses DomUtils for escaping.
+ *   - Uses DomUtils for escaping (mandatory, no fallbacks).
  *   - Returns an HTML string.
+ *
+ * LABEL SEMANTICS:
+ *   - Where a label describes a specific form control, it is a
+ *     <label for="..."> bound to that control's id.
+ *   - Where the text sits beside a control but is not bound to it
+ *     (e.g. a "Week:" caption next to a number input), it is a
+ *     <span class="academy-top-label">. Using <label> without a
+ *     `for` and without a wrapped control was a screen-reader
+ *     problem; it is fixed here.
+ *
+ * VM LABELS:
+ *   The view reads display text from the view model whenever the VM
+ *   provides it:
+ *     - exam.statusLabel            (falls back to exam.status)
+ *     - exam.modeLabel              (falls back to a derived label)
+ *     - round.statusLabel           (falls back to round.status)
+ *     - match.statusLabel           (falls back to match.status)
+ *     - match.typeLabel             (falls back to a derived label)
+ *   The view does NOT re-map enum strings to display strings. That
+ *   mapping belongs to the aggregator. If the VM omits a label, the
+ *   view renders the raw value, which is the truthful fallback.
  *
  * RESULT VOCABULARY:
  *   - 'pass'  : advanced and successful
@@ -140,23 +161,15 @@
     }
 
     // ============================================================
-    // ESCAPING HELPERS
+    // ESCAPING HELPERS - Mandatory, no fallbacks
     // ============================================================
 
     function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
-        }
-        if (value === undefined || value === null) { return ''; }
-        return String(value);
+        return DomUtils.escapeHtml(value);
     }
 
     function escapeAttribute(value) {
-        if (DomUtils && typeof DomUtils.escapeAttribute === 'function') {
-            return DomUtils.escapeAttribute(value);
-        }
-        if (value === undefined || value === null) { return ''; }
-        return String(value);
+        return DomUtils.escapeAttribute(value);
     }
 
     // ============================================================
@@ -196,6 +209,10 @@
         return 'at-team at-team-pending';
     }
 
+    // Renders an outcome badge from the participant or team VM's
+    // outcomeDisplay object. The VM supplies text, class, and label.
+    // If the VM omits outcomeDisplay, we render a neutral "?" badge
+    // rather than inventing a value.
     function renderOutcomeBadge(vm) {
         if (!vm || !vm.outcomeDisplay) {
             return '<span class="at-outcome-badge at-outcome-unknown">?</span>';
@@ -203,9 +220,53 @@
         var display = vm.outcomeDisplay;
         var cls = 'at-outcome-badge ' +
             (display.class || 'outcome-unknown');
-        return '<span class="' + escapeAttribute(cls) + '">' +
-                    escapeHtml(display.label || '?') +
+        var label = isNonEmptyString(display.label) ? display.label : '?';
+        var text = isNonEmptyString(display.text) ? display.text : label;
+        return '<span class="' + escapeAttribute(cls) + '" title="' +
+                    escapeAttribute(label) + '">' +
+                    escapeHtml(text) +
                 '</span>';
+    }
+
+    // Resolve exam status display text. VM first, raw fallback.
+    function resolveExamStatusLabel(exam) {
+        if (!exam) { return ''; }
+        if (isNonEmptyString(exam.statusLabel)) { return exam.statusLabel; }
+        return exam.status || 'unknown';
+    }
+
+    // Resolve exam mode display text. VM first, derived fallback.
+    function resolveExamModeLabel(exam) {
+        if (!exam) { return ''; }
+        if (isNonEmptyString(exam.modeLabel)) { return exam.modeLabel; }
+        if (exam.mode === 'teams') { return 'Teams'; }
+        if (exam.mode === 'individuals') { return 'Individuals'; }
+        return '';
+    }
+
+    // Resolve round status display text. VM first, raw fallback.
+    function resolveRoundStatusLabel(round) {
+        if (!round) { return ''; }
+        if (isNonEmptyString(round.statusLabel)) { return round.statusLabel; }
+        return round.status || 'pending';
+    }
+
+    // Resolve match status display text. VM first, raw fallback.
+    function resolveMatchStatusLabel(match) {
+        if (!match) { return ''; }
+        if (isNonEmptyString(match.statusLabel)) { return match.statusLabel; }
+        return match.status || 'pending';
+    }
+
+    // Resolve match type display text. VM first, derived fallback.
+    function resolveMatchTypeLabel(match) {
+        if (!match) { return ''; }
+        if (isNonEmptyString(match.typeLabel)) { return match.typeLabel; }
+        if (match.isPairExam) { return 'Pair Exam'; }
+        if (match.type === 'team_vs_team') { return 'Team Match'; }
+        if (match.type === 'group_exam') { return 'Group Exam'; }
+        if (match.type === 'standard') { return 'Standard'; }
+        return match.type || '';
     }
 
     // ============================================================
@@ -257,8 +318,9 @@
         var html = '';
         html += '<div class="academy-exams-top-bar">';
 
+        // Class select. The <label> is bound to the select via `for`.
         html += '<div class="academy-exams-top-left">';
-        html += '<label class="academy-top-label">Class:</label>';
+        html += '<label class="academy-top-label" for="at-class-select">Class:</label>';
         html += '<select id="at-class-select" class="academy-class-select">';
         html += '<option value="">Select a class...</option>';
         for (var i = 0; i < classes.length; i++) {
@@ -274,8 +336,9 @@
         html += '</select>';
         html += '</div>';
 
+        // Week input. The <label> is bound to the input via `for`.
         html += '<div class="academy-exams-top-right">';
-        html += '<label class="academy-top-label">Week:</label>';
+        html += '<label class="academy-top-label" for="at-week-input">Week:</label>';
         html += '<input type="number" id="at-week-input" class="academy-week-input" ' +
             'value="' + escapeAttribute(String(week || 1)) + '" ' +
             'min="1" max="52">';
@@ -303,10 +366,13 @@
         if (exam) {
             if (exam.mode === 'teams') {
                 title = 'Teams This Week';
-                modeLabel = 'Team exam';
             } else if (exam.mode === 'individuals') {
                 title = 'Characters This Week';
-                modeLabel = 'Individual exam';
+            }
+            // Read the mode label from the VM rather than re-deriving.
+            modeLabel = resolveExamModeLabel(exam);
+            if (modeLabel) {
+                modeLabel = modeLabel + ' exam';
             }
         }
 
@@ -429,6 +495,8 @@
 
     function renderExamHeader(exam, week) {
         var statusClass = getExamStatusClass(exam.status);
+        var statusLabel = resolveExamStatusLabel(exam);
+        var modeLabel = resolveExamModeLabel(exam);
 
         var html = '';
         html += '<div class="academy-exams-detail-header">';
@@ -439,11 +507,11 @@
                     escapeHtml(exam.name || 'Exam') +
                 '</h3>';
         html += '<span class="' + statusClass + '">' +
-                    escapeHtml(exam.statusLabel || exam.status || 'unknown') +
+                    escapeHtml(statusLabel) +
                 '</span>';
-        if (isNonEmptyString(exam.modeLabel)) {
+        if (modeLabel) {
             html += '<span class="at-mode-badge">' +
-                        escapeHtml(exam.modeLabel) +
+                        escapeHtml(modeLabel) +
                     '</span>';
         }
         html += '</div>';
@@ -522,6 +590,7 @@
         if (!round) { return ''; }
 
         var isExamComplete = exam.status === 'completed';
+        var statusLabel = resolveRoundStatusLabel(round);
 
         var html = '';
         html += '<div class="at-round" ' +
@@ -532,13 +601,26 @@
         html += '<div class="at-round-title">';
         html += '<strong>Round ' + escapeHtml(String(round.roundNumber)) + '</strong>';
 
+        // Match-type badge. Prefer the VM's matchTypeLabel; fall back
+        // to a derived label using the round's flags.
+        var matchTypeLabel = isNonEmptyString(round.matchTypeLabel)
+            ? round.matchTypeLabel
+            : (round.isPairExam
+                ? 'Pair Exam'
+                : (round.matchType === 'team_vs_team'
+                    ? 'Team Match'
+                    : 'Group Exam'));
+
+        var matchTypeClass = 'at-round-type';
         if (round.isPairExam) {
-            html += ' <span class="at-round-type at-round-pair">Pair Exam</span>';
+            matchTypeClass += ' at-round-pair';
         } else if (round.matchType === 'team_vs_team') {
-            html += ' <span class="at-round-type at-round-team">Team Match</span>';
-        } else {
-            html += ' <span class="at-round-type">Group Exam</span>';
+            matchTypeClass += ' at-round-team';
         }
+
+        html += ' <span class="' + matchTypeClass + '">' +
+                    escapeHtml(matchTypeLabel) +
+                '</span>';
 
         if (isFiniteNumber(round.matchSize) && round.matchSize > 0) {
             html += ' <span class="at-round-size">' +
@@ -598,6 +680,7 @@
         if (!match) { return ''; }
 
         var isEditable = !isExamComplete && !match.isComplete;
+        var statusLabel = resolveMatchStatusLabel(match);
 
         var html = '';
         html += '<div class="at-match" ' +
@@ -618,7 +701,7 @@
 
         html += '<span class="at-match-status at-match-status-' +
                     escapeAttribute(match.status || 'pending') + '">' +
-                    escapeHtml(match.statusLabel || match.status || 'pending') +
+                    escapeHtml(statusLabel) +
                 '</span>';
 
         if (isEditable) {
@@ -649,9 +732,7 @@
         return html;
     }
 
-    /**
-     * Group exam body: flat list of participants with pass/fail/retry.
-     */
+    // Group exam body: flat list of participants with pass/fail/retry.
     function renderGroupExamBody(match) {
         var participants = Array.isArray(match.participants) ? match.participants : [];
 
@@ -668,9 +749,7 @@
         return html;
     }
 
-    /**
-     * Pair exam body: grouped pairs, with pass/fail/retry badges.
-     */
+    // Pair exam body: grouped pairs, with pass/fail/retry badges.
     function renderPairExamBody(match) {
         var pairings = Array.isArray(match.pairings) ? match.pairings : [];
 
@@ -695,10 +774,8 @@
         return html;
     }
 
-    /**
-     * Team match body: each team with its team-level result and
-     * member sub-rows.
-     */
+    // Team match body: each team with its team-level result and
+    // member sub-rows.
     function renderTeamMatchBody(match) {
         var teams = Array.isArray(match.teams) ? match.teams : [];
 
@@ -764,9 +841,7 @@
         return html;
     }
 
-    /**
-     * Standard single participant row for group/pair exams.
-     */
+    // Standard single participant row for group/pair exams.
     function renderParticipantRow(participant) {
         if (!participant) { return ''; }
 
