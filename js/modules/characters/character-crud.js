@@ -30,29 +30,30 @@
  * CLASS MEMBERSHIP (v15+):
  *   - CharacterCRUD does NOT own or originate character.classIds.
  *     normaliseCharacterData() deliberately does not accept classIds.
- *     This makes the CRUD/membership split structural rather than
- *     conventional: no caller can replace the membership list by
- *     passing classIds through the generic save path.
+ *     This makes the CRUD/membership split structural: no caller can
+ *     replace the membership list by passing classIds through the
+ *     generic save path.
  *   - createNewCharacter() initialises classIds to [] so new characters
  *     satisfy the invariant "every character has a classIds array".
- *   - Membership mutations live in CharacterClasses (addToClass,
- *     removeClassById, addClassByName, removeFromAllClasses).
+ *   - Membership mutations live in CharacterClasses.
  *   - Academy roster queries derive from character.classIds; there is
  *     no separate academy.classStudents store after v15.
  *
  * DISCIPLINE ENROLLMENT (v16+):
- *   - character.disciplineIds is the source of truth for "which
- *     disciplines is this student enrolled in".
- *   - Enrollment is a DISCIPLINE-level fact, not a group-level one.
- *     Groups track who is actually scheduled for a discipline's slots.
- *     A student can be enrolled without being in any group (floating).
- *   - normaliseCharacterData() DOES accept disciplineIds, because
- *     enrollment is owned by the CRUD form.
- *   - createNewCharacter() initialises disciplineIds to [] so new
- *     characters satisfy the invariant "every character has a
- *     disciplineIds array".
- *   - updateExistingCharacter() preserves disciplineIds the same way
- *     it preserves classIds.
+ *   - CharacterCRUD does NOT own or originate discipline enrollment.
+ *     normaliseCharacterData() deliberately does not accept
+ *     disciplineIds.
+ *   - Enrollment is CLASS-SCOPED and lives at
+ *     academy.enrolments[classId][charId] = [disciplineId].
+ *   - Enrollment mutations live in AcademyEnrolments.
+ *   - createNewCharacter() does NOT initialise disciplineIds. The
+ *     field is not part of the character record.
+ *   - updateExistingCharacter() does NOT preserve disciplineIds. If a
+ *     legacy character record still carries the field, it is left in
+ *     place by the Object.assign in updateExistingCharacter (because
+ *     `current` carries it and `normalised` does not overwrite it),
+ *     but nothing reads it. It will disappear naturally as records
+ *     are edited, or it can be pruned by a future migration.
  *
  * DEATH MODEL:
  *   - deathYear is the source of truth for "when does this character die"
@@ -78,23 +79,26 @@
  * DELETE CASCADE SEMANTICS:
  *   Deleting a character is a CASCADE. In a single transaction it:
  *     1. Removes the character from every team's members list.
- *     2. Removes the character from academy.weeklyTeams.
- *     3. Strips curriculum.autoGroups references (instructor + students)
- *        via AcademyGroups.stripCharacterRefs.
- *     4. Removes academy.grades records via AcademyGrades.stripCharacterRefs.
- *     5. Removes academy.rankings records via AcademyRanking.stripCharacterRefs.
- *     6. Removes social relationships via SocialCore.stripCharacterRefs.
- *     7. Removes mission support-personnel references via
- *        MissionCore.stripCharacterRefs.
- *     8. Removes tournament participant / elimination / winner / match
- *        references via TournamentCore.stripCharacterRefs.
- *     9. Removes curriculum.schedules[charId] (the student's own schedule).
- *    10. Removes curriculum.restDays[charId].
- *    11. Prunes curriculum.metadata keys prefixed with the character ID.
- *    12. Deletes the character entity itself.
+ *     2. Removes the character from academy.weeklyTeams (this used to
+ *        be inline; now routed through AcademyCascade).
+ *     3. Strips curriculum.autoGroups references (instructor + students).
+ *     4. Removes academy.grades records.
+ *     5. Removes academy.rankings records.
+ *     6. Removes academy.enrolments entries (class-scoped).
+ *     7. Removes academy.socialScores entries.
+ *     8. Removes social relationships.
+ *     9. Removes mission support-personnel references.
+ *    10. Removes tournament participant / elimination / winner / match
+ *        references.
+ *    11. Removes curriculum.schedules[charId].
+ *    12. Removes curriculum.restDays[charId].
+ *    13. Prunes curriculum.metadata keys prefixed with the character ID.
+ *    14. Deletes the character entity itself.
  *
- *   Step 12 also discards the character's own disciplineIds array,
- *   because that array lives on the character record.
+ *   Steps 2–10 are delegated to AcademyCascade.characterDeleted.
+ *   Step 1 and steps 11–13 stay inline, because they touch character-
+ *   adjacent stores (team entity rosters and curriculum) that are not
+ *   academy-domain concerns.
  *
  * IMPORTANT:
  *   - No DOM extraction here - form extraction is in character-form.js
@@ -111,12 +115,11 @@
  *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
  *   - window.IdUtils (from id-utils.js) - MANDATORY
  *   - window.CharacterConstants (from character-constants.js) - MANDATORY
- *   - window.AcademyGroups (lazy) - optional
- *   - window.AcademyGrades (lazy) - optional
- *   - window.AcademyRanking (lazy) - optional
- *   - window.SocialCore (lazy) - optional
- *   - window.MissionCore (lazy) - optional
- *   - window.TournamentCore (lazy) - optional
+ *   - window.AcademyCascade (from academy-cascade.js) - LAZY (optional)
+ *     When present, cross-domain cleanup routes through it. When
+ *     absent, the corresponding cleanup is skipped. The cascade
+ *     coordinator is the single owner of the "what needs to be
+ *     cleaned up when a character is deleted" list.
  */
 
 (function() {
@@ -214,6 +217,10 @@
         var deathYear = parseInt(data.deathYear, 10);
         if (isNaN(deathYear)) { return false; }
         return deathYear <= getCurrentYear();
+    }
+
+    function getAcademyCascade() {
+        return window.AcademyCascade || null;
     }
 
     // ============================================================
@@ -407,23 +414,6 @@
             }
         }
 
-        // ---- NEW: disciplineIds validation ----
-        // Must be an array of non-empty strings if provided. The array
-        // may be empty. Duplicates are not allowed (silently deduped
-        // during normalisation, but validation rejects obvious garbage
-        // like nested arrays or non-string elements).
-        if (charData.disciplineIds !== undefined) {
-            if (!Array.isArray(charData.disciplineIds)) {
-                return { valid: false, message: 'Discipline IDs must be an array.' };
-            }
-            for (var d = 0; d < charData.disciplineIds.length; d++) {
-                var did = charData.disciplineIds[d];
-                if (typeof did !== 'string' || did.trim() === '') {
-                    return { valid: false, message: 'Discipline ID at index ' + d + ' is invalid.' };
-                }
-            }
-        }
-
         return { valid: true };
     }
 
@@ -444,7 +434,6 @@
      *   - Normalises displayParts into a canonical 5-boolean object
      *   - Derives `deceased` from `deathYear` relative to current year
      *   - Auto-fills `deathAge` from `birthYear` + `deathYear` if missing
-     *   - Normalises `disciplineIds` into a deduplicated string array
      *   - Does NOT touch fields it doesn't know about (those are
      *     preserved on edit via Object.assign in updateExistingCharacter)
      *
@@ -453,8 +442,10 @@
      *     CharacterCRUD does not own membership. See the docstring above.
      *
      * DISCIPLINE ENROLLMENT (v16+):
-     *   - `disciplineIds` IS included in the normalised output. The
-     *     CRUD form is the canonical entry point for enrollment.
+     *   - `disciplineIds` is NOT included in the normalised output.
+     *     Enrollment is class-scoped and lives at
+     *     academy.enrolments[classId][charId]. CharacterCRUD does not
+     *     own it. See the docstring above.
      */
     function normaliseCharacterData(charData) {
         var data = {};
@@ -514,28 +505,8 @@
             data.graduatingClassInstructor = charData.graduatingClassInstructor === true;
         }
 
-        // ---- NEW: discipline enrollment ----
-        // Normalise to a deduplicated array of trimmed strings. Missing
-        // field → empty array. Malformed entries are dropped silently
-        // (validation already rejected the worst cases upstream).
-        if (charData.disciplineIds !== undefined) {
-            if (Array.isArray(charData.disciplineIds)) {
-                var seen = Object.create(null);
-                var cleaned = [];
-                for (var di = 0; di < charData.disciplineIds.length; di++) {
-                    var raw = charData.disciplineIds[di];
-                    if (typeof raw !== 'string') { continue; }
-                    var trimmed = raw.trim();
-                    if (!trimmed) { continue; }
-                    if (seen[trimmed]) { continue; }
-                    seen[trimmed] = true;
-                    cleaned.push(trimmed);
-                }
-                data.disciplineIds = cleaned;
-            } else {
-                data.disciplineIds = [];
-            }
-        }
+        // NOTE: disciplineIds is deliberately NOT normalised here.
+        // Enrollment is owned by AcademyEnrolments.
 
         // ---- Stats ----
         data.stats = {};
@@ -611,7 +582,6 @@
         }
 
         // ---- CLASS MEMBERSHIP - DELIBERATELY NOT HANDLED HERE ----
-        // classIds is owned by CharacterClasses. See the docstring.
 
         // ---- Personality ----
         if (charData.personality !== undefined) {
@@ -753,12 +723,11 @@
         var current = data.characters[index];
 
         // Preserve system-managed fields.
-        //   - classIds: owned by CharacterClasses, not the generic CRUD
-        //     save path.
-        //   - disciplineIds: if the DTO didn't include one, keep the
-        //     existing array. If the DTO DID include one, the normalised
-        //     value overwrites via Object.assign below.
+        //   - classIds: owned by CharacterClasses.
         //   - eliminations / eliminatedWeeks: owned by CharacterEliminations.
+        //   - disciplineIds: legacy field. If present on the record, it
+        //     is preserved verbatim, but nothing reads it. See the
+        //     DISCIPLINE ENROLLMENT block in the docstring.
         var preserved = {
             id: current.id,
             createdAt: current.createdAt,
@@ -767,12 +736,8 @@
             eliminatedWeeks: Array.isArray(current.eliminatedWeeks) ? current.eliminatedWeeks.slice() : []
         };
 
-        // If the DTO did not supply disciplineIds, preserve the existing
-        // array. If it did, `normalised.disciplineIds` wins.
-        if (normalised.disciplineIds === undefined) {
-            preserved.disciplineIds = Array.isArray(current.disciplineIds)
-                ? current.disciplineIds.slice()
-                : [];
+        if (Array.isArray(current.disciplineIds)) {
+            preserved.disciplineIds = current.disciplineIds.slice();
         }
 
         var updated = Object.assign({}, current, normalised, preserved);
@@ -794,13 +759,6 @@
 
             // Class membership: initialised empty.
             classIds: [],
-
-            // Discipline enrollment: initialised empty. Membership is
-            // added by the Academy UI via the standard CRUD save path,
-            // which normalises disciplineIds into the record.
-            disciplineIds: Array.isArray(normalised.disciplineIds)
-                ? normalised.disciplineIds
-                : [],
 
             hp: normalised.hp || 0,
             mp: normalised.mp || 0,
@@ -824,10 +782,12 @@
     // DELETE CHARACTER - Uses MutationPipeline
     // ============================================================
     //
-    // Full cascade. See DELETE CASCADE SEMANTICS in the docstring.
-    //
-    // The mutate body orchestrates twelve cleanup steps. Steps 3-8
-    // delegate to stripCharacterRefs helpers on sibling modules.
+    // Cascade orchestration:
+    //   - Cross-domain cleanup (enrolments, grades, rankings, social
+    //     scores, weekly teams, auto-groups, social, missions,
+    //     tournaments) routes through AcademyCascade.characterDeleted.
+    //   - Character-side cleanup (team entity rosters, curriculum
+    //     schedules / rest days / metadata) stays inline.
 
     function stripCharacterFromCurriculum(curriculum, charId) {
         var result = {
@@ -920,16 +880,12 @@
             mutate: function(data) {
                 var cascade = {
                     teamMembershipsRemoved: 0,
-                    weeklyTeamEntriesRemoved: 0,
-                    autoGroups: null,
-                    grades: null,
-                    rankings: null,
-                    social: null,
-                    missions: null,
-                    tournaments: null,
-                    curriculum: null
+                    curriculum: null,
+                    academyCascade: null
                 };
 
+                // ---- Character-side: team entity rosters ----
+                // Persistent Team entities keep a members array.
                 if (Array.isArray(data.teams)) {
                     data.teams.forEach(function(team) {
                         if (!team || !Array.isArray(team.members)) {
@@ -943,62 +899,21 @@
                     });
                 }
 
-                if (data.academy &&
-                    data.academy.weeklyTeams &&
-                    typeof data.academy.weeklyTeams === 'object') {
-                    Object.keys(data.academy.weeklyTeams).forEach(function(classId) {
-                        var byWeek = data.academy.weeklyTeams[classId];
-                        if (!byWeek || typeof byWeek !== 'object') { return; }
-                        Object.keys(byWeek).forEach(function(weekKey) {
-                            var byTeam = byWeek[weekKey];
-                            if (!byTeam || typeof byTeam !== 'object') { return; }
-                            Object.keys(byTeam).forEach(function(teamId) {
-                                var members = byTeam[teamId];
-                                if (!Array.isArray(members)) { return; }
-                                var before = members.length;
-                                byTeam[teamId] = members.filter(function(memberId) {
-                                    return String(memberId) !== targetId;
-                                });
-                                cascade.weeklyTeamEntriesRemoved += before - byTeam[teamId].length;
-                            });
-                        });
-                    });
+                // ---- Cross-domain: academy cascade ----
+                // Routes through AcademyCascade.characterDeleted. This
+                // handles enrolments, grades, rankings, social scores,
+                // weekly teams, auto-groups, social, missions, tournaments.
+                var Cascade = getAcademyCascade();
+                if (Cascade && typeof Cascade.characterDeleted === 'function') {
+                    cascade.academyCascade = Cascade.characterDeleted(data, targetId);
                 }
 
-                if (window.AcademyGroups &&
-                    typeof window.AcademyGroups.stripCharacterRefs === 'function') {
-                    cascade.autoGroups = window.AcademyGroups.stripCharacterRefs(data, targetId);
-                }
-
-                if (window.AcademyGrades &&
-                    typeof window.AcademyGrades.stripCharacterRefs === 'function') {
-                    cascade.grades = window.AcademyGrades.stripCharacterRefs(data, targetId);
-                }
-
-                if (window.AcademyRanking &&
-                    typeof window.AcademyRanking.stripCharacterRefs === 'function') {
-                    cascade.rankings = window.AcademyRanking.stripCharacterRefs(data, targetId);
-                }
-
-                if (window.SocialCore &&
-                    typeof window.SocialCore.stripCharacterRefs === 'function') {
-                    cascade.social = window.SocialCore.stripCharacterRefs(data, targetId);
-                }
-
-                if (window.MissionCore &&
-                    typeof window.MissionCore.stripCharacterRefs === 'function') {
-                    cascade.missions = window.MissionCore.stripCharacterRefs(data, targetId);
-                }
-
-                if (window.TournamentCore &&
-                    typeof window.TournamentCore.stripCharacterRefs === 'function') {
-                    cascade.tournaments = window.TournamentCore.stripCharacterRefs(data, targetId);
-                }
-
+                // ---- Character-side: curriculum ----
                 if (data.curriculum && typeof data.curriculum === 'object') {
                     cascade.curriculum = stripCharacterFromCurriculum(data.curriculum, targetId);
                 }
 
+                // ---- Remove the character entity itself ----
                 var found = false;
                 data.characters = data.characters.filter(function(c) {
                     if (c && String(c.id) === targetId) {
@@ -1024,40 +939,25 @@
                 if (c.teamMembershipsRemoved > 0) {
                     details.push(c.teamMembershipsRemoved + ' team membership(s)');
                 }
-                if (c.weeklyTeamEntriesRemoved > 0) {
-                    details.push(c.weeklyTeamEntriesRemoved + ' weekly team entry/ies');
+
+                if (c.academyCascade) {
+                    var Cascade = getAcademyCascade();
+                    if (Cascade && typeof Cascade.formatSummary === 'function') {
+                        var summary = Cascade.formatSummary(c.academyCascade);
+                        if (summary) {
+                            details.push(summary.replace(/^\(|\)$/g, ''));
+                        }
+                    }
                 }
-                if (c.autoGroups) {
-                    var ag = c.autoGroups.instructorGroupsRemoved + c.autoGroups.studentMembershipsRemoved;
-                    if (ag > 0) { details.push(ag + ' auto-group reference(s)'); }
-                }
-                if (c.grades && c.grades.gradesRemoved > 0) {
-                    details.push(c.grades.gradesRemoved + ' grade(s)');
-                }
-                if (c.rankings && c.rankings.rankingsRemoved > 0) {
-                    details.push(c.rankings.rankingsRemoved + ' ranking(s)');
-                }
-                if (c.social && c.social.relationshipsRemoved > 0) {
-                    details.push(c.social.relationshipsRemoved + ' relationship(s)');
-                }
-                if (c.missions && c.missions.supportEntriesRemoved > 0) {
-                    details.push(c.missions.supportEntriesRemoved + ' mission reference(s)');
-                }
-                if (c.tournaments) {
-                    var t = c.tournaments;
-                    var tTotal = t.participantRecordsRemoved +
-                                 t.eliminationRecordsRemoved +
-                                 t.winnerRecordsCleared +
-                                 t.matchParticipantSlotsRemoved +
-                                 t.matchesPruned;
-                    if (tTotal > 0) { details.push(tTotal + ' tournament reference(s)'); }
-                }
+
                 if (c.curriculum) {
                     var cur = c.curriculum;
                     var curTotal = cur.scheduleEntriesRemoved +
                                    cur.restDaysEntriesRemoved +
                                    cur.metadataEntriesPruned;
-                    if (curTotal > 0) { details.push(curTotal + ' curriculum reference(s)'); }
+                    if (curTotal > 0) {
+                        details.push(curTotal + ' curriculum reference(s)');
+                    }
                 }
 
                 var suffix = details.length > 0
@@ -1101,6 +1001,7 @@
             mutate: function(data) {
                 var count = Array.isArray(data.characters) ? data.characters.length : 0;
 
+                // Clear team entity rosters.
                 if (Array.isArray(data.teams)) {
                     data.teams.forEach(function(team) {
                         if (Array.isArray(team.members)) {
@@ -1109,22 +1010,9 @@
                     });
                 }
 
-                if (data.academy && data.academy.weeklyTeams &&
-                    typeof data.academy.weeklyTeams === 'object') {
-                    Object.keys(data.academy.weeklyTeams).forEach(function(classId) {
-                        var byWeek = data.academy.weeklyTeams[classId];
-                        if (!byWeek || typeof byWeek !== 'object') { return; }
-                        Object.keys(byWeek).forEach(function(weekKey) {
-                            var byTeam = byWeek[weekKey];
-                            if (!byTeam || typeof byTeam !== 'object') { return; }
-                            Object.keys(byTeam).forEach(function(teamId) {
-                                byTeam[teamId] = [];
-                            });
-                        });
-                    });
-                }
-
+                // Clear the character array.
                 data.characters = [];
+
                 return { deletedCount: count };
             },
             logMessage: function(result) {
