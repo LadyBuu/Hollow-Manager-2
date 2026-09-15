@@ -9,8 +9,8 @@
  *   - Coordinate six views: People, Exams, Weekly Teams, Rankings,
  *     Disciplines, Locations
  *   - Delegate rendering to the per-view renderer modules
- *   - Delegate domain reads to AcademyAggregator / AcademyTournamentAggregator
- *     / AcademyCharacterDetailAggregator
+ *   - Delegate domain reads to AcademyAggregator /
+ *     AcademyTournamentAggregator / AcademyCharacterDetailAggregator
  *   - Delegate mutations to the appropriate domain module
  *   - Own Academy-local UI state that is not part of AcademyUI's
  *     typed store (per-view selected IDs, discipline draft, active
@@ -19,6 +19,9 @@
  *   - Mount / unmount the inline grades editor after each render
  *   - Handle exam pair-picker DOM mutations (exam-pair-add /
  *     exam-pair-remove)
+ *   - Handle Weekly Teams create/delete via TeamCore
+ *   - Handle CalendarRenderer grid mounting for the character
+ *     detail panel's Schedule tab
  *
  * NOT RESPONSIBILITIES:
  *   - Domain reads. Those happen in the aggregators.
@@ -70,6 +73,11 @@
  *   - AcademyCharacterDetail / AcademyClassDetail
  *   - AcademyDisciplineView / AcademyLocationView / AcademyRankingView /
  *     AcademyWeeklyTeamsView / AcademyTournamentView
+ *   - CalendarRenderer
+ *   - TeamCore
+ *   - TeamQueries
+ *   - Modal
+ *   - NotificationSystem
  */
 
 (function() {
@@ -192,6 +200,10 @@
     function getWeeklyTeamsViewModule() { return window.AcademyWeeklyTeamsView || null; }
     function getTournamentViewModule() { return window.AcademyTournamentView || null; }
     function getNotificationSystem() { return window.NotificationSystem || null; }
+    function getCalendarRenderer() { return window.CalendarRenderer || null; }
+    function getTeamCore() { return window.TeamCore || null; }
+    function getTeamQueries() { return window.TeamQueries || null; }
+    function getModal() { return window.Modal || null; }
 
     // ============================================================
     // ESCAPING
@@ -306,6 +318,7 @@
         bindEvents(container);
         wireCRUDModalsCallbacks();
         mountGradesEditorIfPresent();
+        mountScheduleGridIfPresent();
     }
 
     function refreshView() {
@@ -319,6 +332,7 @@
         cancelAllDebounceTimers();
         unbindEvents();
         unmountGradesEditor();
+        unmountScheduleGrid();
         _boundContainer = null;
     }
 
@@ -1092,7 +1106,10 @@
 
     function handleExamAction(action, el) {
         var Events = getAcademyTournamentEvents();
-        if (!Events) { return; }
+        if (!Events) {
+            notify('Exams module not loaded.', 'error');
+            return;
+        }
 
         if (action === 'exam-pair-add') {
             handlePairAdd(el);
@@ -1305,9 +1322,194 @@
         // Rankings view has no inline actions yet.
     }
 
+    // ============================================================
+    // WEEKLY TEAMS ACTION HANDLERS
+    // ============================================================
+    //
+    // The Weekly Teams view emits four actions:
+    //   weekly-teams-create-team
+    //   weekly-teams-auto-distribute
+    //   weekly-teams-delete-team
+    //   weekly-teams-manage-members
+    //
+    // Create-team and delete-team are simple:
+    //   - create-team: build the modal from AcademyWeeklyTeamsView,
+    //     wire submit to TeamCore.createTeam with type 'academic',
+    //     refresh on success.
+    //   - delete-team: confirm, then TeamCore.deleteTeam, then refresh.
+    //
+    // Auto-distribute and manage-members are deferred: auto-distribute
+    // needs a multi-team workflow (create N teams, then write the
+    // weekly assignment map), and manage-members needs an Academy-local
+    // member modal because TeamEvents' member modal depends on TeamUI
+    // state that isn't the Academy's concern.
+
     function handleWeeklyTeamsAction(action, el) {
-        // Weekly Teams view has no inline actions yet.
+        switch (action) {
+            case 'weekly-teams-create-team':
+                openWeeklyTeamForm();
+                return;
+            case 'weekly-teams-delete-team':
+                handleWeeklyTeamDelete(el.dataset.teamId);
+                return;
+            case 'weekly-teams-auto-distribute':
+                notify('Auto-Distribute is not yet available.', 'info');
+                return;
+            case 'weekly-teams-manage-members':
+                notify('Manage Members is not yet available.', 'info');
+                return;
+            default:
+                return;
+        }
     }
+
+    function openWeeklyTeamForm() {
+        var View = getWeeklyTeamsViewModule();
+        var TeamCore = getTeamCore();
+        var TeamQ = getTeamQueries();
+        var Modal = getModal();
+
+        if (!View || typeof View.buildCreateTeamModalHTML !== 'function') {
+            notify('Weekly Teams view not available.', 'error');
+            return;
+        }
+        if (!TeamCore || typeof TeamCore.createTeam !== 'function') {
+            notify('Team module not available.', 'error');
+            return;
+        }
+        if (!Modal || typeof Modal.createModal !== 'function') {
+            notify('Modal module not available.', 'error');
+            return;
+        }
+
+        if (!_selectedWeeklyTeamsClassId) {
+            notify('Select a class first.', 'error');
+            return;
+        }
+
+        var week = AcademyUI.getDisplayWeek();
+        var className = 'Unnamed Class';
+        var classes = AcademyAggregator.getClassListViewModel() || [];
+        for (var i = 0; i < classes.length; i++) {
+            if (String(classes[i].id) === String(_selectedWeeklyTeamsClassId)) {
+                className = classes[i].name;
+                break;
+            }
+        }
+
+        var html = View.buildCreateTeamModalHTML({
+            classId: _selectedWeeklyTeamsClassId,
+            className: className,
+            week: week
+        });
+
+        var modal = Modal.createModal('academy-weekly-team-modal');
+        var contentEl = document.createElement('div');
+        contentEl.className = 'modal-content';
+        contentEl.innerHTML = html;
+        modal.appendChild(contentEl);
+        Modal.modalSetup(modal);
+        Modal.showModal(modal);
+
+        var close = function() {
+            try {
+                if (typeof Modal.hideModal === 'function') {
+                    Modal.hideModal(modal);
+                } else if (typeof Modal.closeModal === 'function') {
+                    Modal.closeModal(modal);
+                }
+            } catch (e) {
+                console.warn('[AcademyView] weekly team modal close failed:', e);
+            }
+            if (modal.parentNode) {
+                modal.parentNode.removeChild(modal);
+            }
+        };
+
+        var closeBtn = modal.querySelector('.close-modal');
+        if (closeBtn) { closeBtn.addEventListener('click', close); }
+
+        var cancelBtn = modal.querySelector('.cancel-modal-btn');
+        if (cancelBtn) { cancelBtn.addEventListener('click', close); }
+
+        modal.addEventListener('click', function(ev) {
+            if (ev.target === modal) { close(); }
+        });
+
+        var form = modal.querySelector('#weekly-teams-create-team-form');
+        if (!form) { return; }
+
+        form.addEventListener('submit', function(ev) {
+            ev.preventDefault();
+
+            var payload = (typeof View.collectCreateTeamForm === 'function')
+                ? View.collectCreateTeamForm(form)
+                : null;
+
+            if (!payload || !payload.name) {
+                notify('Team name is required.', 'error');
+                return;
+            }
+
+            TeamCore.createTeam({
+                name: payload.name,
+                type: 'academic',
+                classId: _selectedWeeklyTeamsClassId,
+                startPeriod: payload.startPeriod || String(week),
+                endPeriod: payload.endPeriod || '',
+                teamNumber: payload.teamNumber || '',
+                status: 'active'
+            }).then(function(result) {
+                if (result && result.success) {
+                    close();
+                    refreshView();
+                }
+                // On failure, pipeline already notified.
+            }).catch(function(err) {
+                console.warn('[AcademyView] createTeam failed:', err);
+                notify('Failed to create team.', 'error');
+            });
+        });
+    }
+
+    function handleWeeklyTeamDelete(teamId) {
+        if (!teamId) { return; }
+
+        var TeamCore = getTeamCore();
+        if (!TeamCore || typeof TeamCore.deleteTeam !== 'function') {
+            notify('Team module not available.', 'error');
+            return;
+        }
+
+        var name = 'this team';
+        var TeamQ = getTeamQueries();
+        if (TeamQ && typeof TeamQ.getTeamById === 'function') {
+            var team = TeamQ.getTeamById(teamId);
+            if (team && team.name) {
+                name = '"' + team.name + '"';
+            }
+        }
+
+        if (!confirm('Delete ' + name + '?')) {
+            return;
+        }
+
+        TeamCore.deleteTeam(teamId).then(function(result) {
+            if (result && result.success) {
+                if (String(_selectedWeeklyTeamId) === String(teamId)) {
+                    _selectedWeeklyTeamId = null;
+                }
+                refreshView();
+            }
+        }).catch(function(err) {
+            console.warn('[AcademyView] deleteTeam failed:', err);
+            notify('Failed to delete team.', 'error');
+        });
+    }
+
+    // ============================================================
+    // DISPATCHERS - delete / edit / view
+    // ============================================================
 
     function handleDeleteDispatcher(action, el) {
         if (action === 'delete-class') {
@@ -2232,6 +2434,98 @@
         var GE = getAcademyGradesEditor();
         if (GE && typeof GE.unmount === 'function') {
             try { GE.unmount(); } catch (e) { /* ignore */ }
+        }
+    }
+
+    // ============================================================
+    // SCHEDULE GRID MOUNT
+    // ============================================================
+    //
+    // When the character detail panel's Schedule tab is active, the
+    // panel renders an empty host element (#academy-schedule-host).
+    // This method asks the aggregator for a schedule VM and hands it
+    // to CalendarRenderer.renderGrid, which produces the same grid
+    // the Calendar tab uses.
+    //
+    // READ-ONLY: the grid is rendered without edit affordances. The
+    // Calendar tab owns schedule edits. Empty slots are rendered as
+    // static (no click handler), so the grid is inert.
+
+    function mountScheduleGridIfPresent() {
+        if (AcademyUI.getSelectedView() !== 'people') {
+            unmountScheduleGrid();
+            return;
+        }
+
+        var charId = AcademyUI.getSelectedCharacterId();
+        if (!charId || _activeCharacterTab !== 'schedule') {
+            unmountScheduleGrid();
+            return;
+        }
+
+        var host = document.getElementById('academy-schedule-host');
+        if (!host) { return; }
+
+        var Renderer = getCalendarRenderer();
+        if (!Renderer || typeof Renderer.renderGrid !== 'function') {
+            host.innerHTML = '<p class="empty-state small">' +
+                'Calendar renderer not available.' +
+                '</p>';
+            return;
+        }
+
+        var week = AcademyUI.getDisplayWeek();
+
+        // Build a grid VM. The aggregator's method is preferred; if
+        // it isn't available (older build), fall back to the
+        // AcademySchedule reads directly.
+        var gridVM = null;
+        if (typeof AcademyCharacterDetailAggregator.getScheduleGridViewModel === 'function') {
+            gridVM = AcademyCharacterDetailAggregator.getScheduleGridViewModel(
+                charId, week
+            );
+        }
+
+        if (!gridVM) {
+            host.innerHTML = '<p class="empty-state small">' +
+                'Schedule data not available.' +
+                '</p>';
+            return;
+        }
+
+        // The renderer expects { schedule, restDays, entityName,
+        // modeLabel, showEmptySlots, showRestDays, hours }.
+        // showEmptySlots=false renders a static grid with no "+"
+        // markers, which is what we want for a read-only view.
+        var renderState = {
+            selectedId: charId,
+            week: week
+        };
+
+        var renderVM = {
+            schedule: gridVM.schedule,
+            restDays: gridVM.restDays,
+            entityName: gridVM.entityName,
+            modeLabel: gridVM.modeLabel,
+            showEmptySlots: false,
+            showRestDays: true,
+            hours: gridVM.hours
+        };
+
+        try {
+            host.innerHTML = Renderer.renderGrid(renderState, renderVM);
+        } catch (e) {
+            console.warn('[AcademyView] renderGrid failed:', e);
+            host.innerHTML = '<p class="empty-state small">' +
+                'Failed to render schedule grid.' +
+                '</p>';
+        }
+    }
+
+    function unmountScheduleGrid() {
+        var host = document.getElementById('academy-schedule-host');
+        if (host) {
+            host.innerHTML = '';
         }
     }
 
