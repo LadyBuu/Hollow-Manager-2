@@ -780,27 +780,4 @@
         getViewModel: getViewModel
     };
 
-    // ============================================================
-    // VERIFICATION
-    // ============================================================
-
-    (function verify() {
-        var exports = window.AcademyCharacterDetailAggregator;
-        var required = ['getViewModel'];
-        var missingFns = [];
-
-        for (var i = 0; i < required.length; i++) {
-            if (typeof exports[required[i]] !== 'function') {
-                missingFns.push(required[i]);
-            }
-        }
-
-        if (missingFns.length > 0) {
-            console.warn(
-                '[AcademyCharacterDetailAggregator] Verification - missing exports: ' +
-                missingFns.join(', ')
-            );
-        }
-    })();
-
 })();
