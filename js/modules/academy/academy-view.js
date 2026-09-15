@@ -24,8 +24,6 @@
  *   - Domain reads. Those happen in the aggregators.
  *   - Domain validation. That happens in the domain modules.
  *   - Domain mutation. Those are delegated to the owning module.
- *   - Filtering the People roster. That is
- *     AcademyAggregator.getPeopleViewModel.
  *
  * ROLE VOCABULARY (CANONICAL):
  *   'student' | 'instructor'. There is no 'trainee'.
@@ -34,6 +32,16 @@
  *   Week values are owned by AcademyUI.setDisplayWeek, which enforces
  *   a strict integer parse. This module does not parse weeks itself.
  *
+ * PER-VIEW SELECTION SEMANTICS:
+ *   Each cross-view selection (_selectedExamClassId,
+ *   _selectedRankingClassId, _selectedWeeklyTeamsClassId) is
+ *   preserved across renders. When the view has no selection, it
+ *   seeds from the People view's selected class. When the aggregator
+ *   resolves a real class, the local value is synced back. When the
+ *   aggregator resolves null (no class), the local value is left as
+ *   it was, so the picker does not lose its selection on the next
+ *   render.
+ *
  * ACTION ROUTING:
  *   Actions carry a prefix (people-, character-, discipline-,
  *   location-, ranking-, weekly-teams-, exam-) so dispatch is
@@ -41,16 +49,6 @@
  *
  *   exam-pair-add and exam-pair-remove are handled inline in
  *   handleExamAction. They mutate modal DOM, not domain state.
- *
- * MODULE-LOCAL UI STATE (NOT in AcademyUI):
- *   _selectedExamClassId
- *   _selectedRankingClassId
- *   _selectedWeeklyTeamsClassId
- *   _selectedWeeklyTeamId
- *   _selectedLocationId
- *   _selectedDisciplineId
- *   _disciplineDraft / _disciplineDraftMode / _disciplineDraftErrors
- *   _activeCharacterTab (character detail tab within People)
  *
  * DEPENDENCIES (MANDATORY):
  *   - AcademyUI
@@ -61,7 +59,7 @@
  *   - CalendarConstants
  *
  * DEPENDENCIES (OPTIONAL, feature-scoped):
- *   - CharacterQueries (character identity in a few confirmation prompts)
+ *   - CharacterQueries
  *   - AcademyDisciplines
  *   - AcademyEnrolments
  *   - AcademyGroups
@@ -82,7 +80,7 @@
     }
 
     // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY
+    // MANDATORY DEPENDENCIES
     // ============================================================
 
     var AcademyUI = window.AcademyUI;
@@ -549,13 +547,17 @@
             try {
                 return ClassDetail.renderHTML(classVM);
             } catch (e) {
-                console.warn('[AcademyView] AcademyClassDetail.renderHTML failed:', e);
+                console.warn(
+                    '[AcademyView] AcademyClassDetail.renderHTML failed:', e
+                );
             }
         }
         return (
             '<div class="academy-detail-placeholder">' +
                 '<h3>' + escapeHtml(classVM.name || 'Class') + '</h3>' +
-                '<p class="empty-state small">Class detail view not available.</p>' +
+                '<p class="empty-state small">' +
+                    'Class detail view not available.' +
+                '</p>' +
             '</div>'
         );
     }
@@ -582,7 +584,8 @@
                 return CharacterDetail.renderHTML(vm);
             } catch (e) {
                 console.warn(
-                    '[AcademyView] AcademyCharacterDetail.renderHTML failed:', e
+                    '[AcademyView] AcademyCharacterDetail.renderHTML failed:',
+                    e
                 );
             }
         }
@@ -609,6 +612,8 @@
 
         var week = AcademyUI.getDisplayWeek();
 
+        // Seed from the People view's selected class when we have no
+        // local selection yet.
         if (!_selectedExamClassId) {
             var peopleClassId = AcademyUI.getSelectedClassId();
             if (peopleClassId) {
@@ -621,7 +626,12 @@
             week
         );
 
-        _selectedExamClassId = vm.classId;
+        // Only sync back when the aggregator resolved a real class.
+        // Preserving null otherwise keeps the picker's selection
+        // stable across renders.
+        if (vm.classId) {
+            _selectedExamClassId = vm.classId;
+        }
 
         return Renderer.renderHTML(vm);
     }
@@ -651,7 +661,9 @@
             _selectedWeeklyTeamId
         );
 
-        _selectedWeeklyTeamsClassId = vm.classId;
+        if (vm.classId) {
+            _selectedWeeklyTeamsClassId = vm.classId;
+        }
         _selectedWeeklyTeamId = vm.selectedTeamId;
 
         return Renderer.renderHTML(vm);
@@ -681,7 +693,9 @@
             week
         );
 
-        _selectedRankingClassId = vm.classId;
+        if (vm.classId) {
+            _selectedRankingClassId = vm.classId;
+        }
 
         return Renderer.renderHTML(vm);
     }
@@ -696,7 +710,9 @@
             return renderPlaceholder('Disciplines');
         }
 
-        var listVM = AcademyAggregator.getDisciplineListViewModel(_disciplineFilters);
+        var listVM = AcademyAggregator.getDisciplineListViewModel(
+            _disciplineFilters
+        );
         var editorVM = buildDisciplineEditorVM();
 
         return Renderer.renderHTML({
@@ -785,7 +801,8 @@
             weight: 1,
             instructorIds: [],
             gradeScheme: GradeSchemes.getDefaultScheme(),
-            assessmentWeights: (AD && typeof AD.getDefaultAssessmentWeights === 'function')
+            assessmentWeights: (AD &&
+                typeof AD.getDefaultAssessmentWeights === 'function')
                 ? AD.getDefaultAssessmentWeights()
                 : {}
         };
@@ -926,7 +943,8 @@
             e.preventDefault();
             if (locRow.dataset.locationId) {
                 _selectedLocationId =
-                    (String(_selectedLocationId) === String(locRow.dataset.locationId))
+                    (String(_selectedLocationId) ===
+                        String(locRow.dataset.locationId))
                         ? null
                         : locRow.dataset.locationId;
                 refreshView();
@@ -1076,8 +1094,6 @@
         var Events = getAcademyTournamentEvents();
         if (!Events) { return; }
 
-        // exam-pair-add and exam-pair-remove do not go through the
-        // events module — they mutate modal DOM state, not domain state.
         if (action === 'exam-pair-add') {
             handlePairAdd(el);
             return;
@@ -1108,7 +1124,9 @@
                 if (examId) { Events.addRound(examId); }
                 return;
             case 'exam-remove-round':
-                if (examId) { Events.removeRound(examId, el.dataset.roundId); }
+                if (examId) {
+                    Events.removeRound(examId, el.dataset.roundId);
+                }
                 return;
             case 'exam-auto-generate-round':
                 if (examId) {
@@ -1157,11 +1175,6 @@
 
     /**
      * Handle the "+ Add" button in the tournament pair picker.
-     *
-     * Reads the three selects inside the same form, validates that at
-     * least two are selected and that all selected values are
-     * distinct, then appends a .at-pair-row to the .at-pair-list with
-     * data-pair set to a JSON-stringified array of participant IDs.
      */
     function handlePairAdd(btn) {
         var form = btn.closest('form');
@@ -1192,7 +1205,8 @@
         if (!list) { return; }
 
         var View = getTournamentViewModule();
-        var resolver = (View && typeof View.getParticipantDisplayNameForPool === 'function')
+        var resolver = (View &&
+            typeof View.getParticipantDisplayNameForPool === 'function')
             ? View.getParticipantDisplayNameForPool
             : null;
         var CQ = getCharacterQueries();
@@ -1228,9 +1242,6 @@
         if (slot3) { slot3.value = ''; }
     }
 
-    /**
-     * Remove a pair row that was appended by handlePairAdd.
-     */
     function handlePairRemove(btn) {
         var row = btn.closest('.at-pair-row');
         if (!row) { return; }
@@ -1295,7 +1306,7 @@
     }
 
     function handleWeeklyTeamsAction(action, el) {
-        // Weekly Teams view has no mutations yet.
+        // Weekly Teams view has no inline actions yet.
     }
 
     function handleDeleteDispatcher(action, el) {
@@ -1314,6 +1325,10 @@
     }
 
     function handleEditDispatcher(action, el) {
+        if (action === 'edit-class-add-character') {
+            handleClassAction('add-character', el.dataset.classId);
+            return;
+        }
         if (action === 'edit-class') {
             handleClassAction('edit-class', el.dataset.classId);
             return;
@@ -1528,11 +1543,14 @@
         if (!charId || !classVM) { return false; }
         var target = String(charId);
 
-        if (classVM.instructorId && String(classVM.instructorId) === target) {
+        if (classVM.instructorId &&
+            String(classVM.instructorId) === target) {
             return true;
         }
 
-        var students = AcademyAggregator.getClassStudentsViewModel(classVM.id) || [];
+        var students = AcademyAggregator.getClassStudentsViewModel(
+            classVM.id
+        ) || [];
         for (var i = 0; i < students.length; i++) {
             if (students[i] && String(students[i].id) === target) {
                 return true;
@@ -1724,7 +1742,8 @@
         if (presetId === 'custom') {
             _disciplineDraft.gradeScheme = GradeSchemes.normalizeScheme({
                 id: 'custom',
-                label: _disciplineDraft.gradeScheme.label || 'Custom Scheme',
+                label: _disciplineDraft.gradeScheme.label ||
+                    'Custom Scheme',
                 bands: _disciplineDraft.gradeScheme.bands || []
             });
         } else {
@@ -1812,7 +1831,8 @@
     function buildDisciplinePayload(draft) {
         var GradeSchemes = window.AcademyGradeSchemes;
         var scheme = draft.gradeScheme;
-        if (GradeSchemes && typeof GradeSchemes.normalizeScheme === 'function') {
+        if (GradeSchemes &&
+            typeof GradeSchemes.normalizeScheme === 'function') {
             scheme = GradeSchemes.normalizeScheme(scheme);
         }
 
