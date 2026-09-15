@@ -13,50 +13,39 @@
  *   - Assessment weight ownership (stored on the discipline record)
  *
  * IMPORTANT:
- *   - This module OWNS discipline data - it does NOT depend on AcademyQueries
- *   - All MUTATIONS go through MutationPipeline (persistence, rollback, logging)
- *   - All READS are synchronous and side-effect free
- *   - Invalid inputs are REJECTED (mutation resolves with { success: false })
- *   - Mutations are ATOMIC: if persistence fails, window.data is restored
- *   - This module does NOT call saveData() directly - the pipeline does
- *   - AcademyQueries is the PUBLIC read facade that uses these internal lookups
+ *   - This module OWNS discipline data - it does NOT depend on AcademyQueries.
+ *   - All MUTATIONS go through MutationPipeline.
+ *   - All READS are synchronous and side-effect free.
+ *   - Invalid inputs are REJECTED (mutation resolves with { success: false }).
+ *   - Mutations are ATOMIC: if persistence fails, window.data is restored.
+ *   - This module does NOT call saveData() directly - the pipeline does.
  *
  * READ SAFETY (Phase 2):
- *   - getCurriculum() returns null (does NOT create curriculum.{...}) when
- *     the store is missing. Reads are side-effect free.
- *   - Public queries return DEEP CLONES with normalized gradeScheme and
- *     assessmentWeights attached. Callers cannot mutate live state.
- *   - Internal accessors (getDisciplineRecord, getDisciplineRecords,
- *     getDisciplineByNameRecord) return LIVE REFERENCES. They are consumed
- *     by this module's own mutation paths, the cascade helpers, and
- *     AcademyQueries.
- *   - Pipeline validate() callbacks read from the `appData` argument the
- *     pipeline supplies, not from window.data via the internal accessors.
- *   - ObjectUtils.deepClone throws if cloning fails or if the clone is the
- *     original reference. Aliasing is a bug, not a graceful degradation.
+ *   - getCurriculum() returns null when the store is missing. Reads
+ *     are side-effect free.
+ *   - Public queries return DEEP CLONES with normalized gradeScheme
+ *     and assessmentWeights attached.
+ *   - Internal accessors return LIVE REFERENCES.
+ *   - Pipeline validate() callbacks read from the `appData` argument.
+ *   - ObjectUtils.deepClone throws if cloning fails or if the clone
+ *     aliases the input.
  *
  * WEEK SEMANTICS:
- *   - getActiveDisciplines(week) requires a valid week. It does NOT fall
- *     back to window.data.currentWeek. Callers that want "current week"
- *     must read it themselves and pass it explicitly.
+ *   - getActiveDisciplines(week) requires a valid week. It does NOT
+ *     fall back to window.data.currentWeek.
  *
  * GRADE SCHEME SEMANTICS:
  *   - Each discipline carries a `gradeScheme` object.
- *   - Schemes are FULLY user-editable. Presets only seed the bands array.
- *   - The scheme is a DISPLAY layer. Grades are always stored as percentages.
+ *   - Schemes are FULLY user-editable. Presets only seed the bands.
  *   - Missing gradeScheme on read → normalized to the numeric default.
- *     This is a READ-TIME normalization only; nothing is written to disk
- *     until the user edits the discipline.
- *   - Validation of the scheme shape is delegated to AcademyGradeSchemes.
- *   - isNumericScheme is NOT re-exported here. Callers use
- *     AcademyGradeSchemes.isNumericScheme directly.
+ *     Read-time normalization only; nothing is written to disk until
+ *     the user edits the discipline.
  *
  * ASSESSMENT WEIGHTS SEMANTICS (Phase 3):
- *   - Each discipline carries an `assessmentWeights` object: a map from
- *     assessment type to a positive weight.
+ *   - Each discipline carries an `assessmentWeights` object: a map
+ *     from assessment type to a positive weight.
  *   - Weight is a property of the ASSESSMENT TYPE within a discipline,
- *     not of the individual grade record. The performance layer reads
- *     this map to compute weighted averages.
+ *     not of the individual grade record.
  *   - Canonical shape:
  *       {
  *         exam:          number > 0,
@@ -66,15 +55,13 @@
  *         project:       number > 0,
  *         final:         number > 0
  *       }
- *   - All six keys are always present on a normalized map. Zero is not a
- *     valid weight - a zero-weight assessment contributes nothing.
- *   - Missing assessmentWeights on read → normalized to the default map.
- *     Read-time normalization only; nothing is written to disk until the
- *     user edits the discipline.
+ *   - All six keys are always present on a normalized map. Zero is
+ *     not a valid weight.
+ *   - Missing assessmentWeights on read → normalized to the default.
+ *     Read-time normalization only.
  *   - The set of valid keys is owned by AcademyGrades.VALID_GRADE_TYPES.
- *     It is not duplicated here.
  *
- * CASCADE SEMANTICS (deleteDiscipline):
+ * DELETE CASCADE (Phase 8):
  *   Deleting a discipline is a CASCADE. In a single transaction it:
  *     1. Deletes the discipline from curriculum.disciplines.
  *     2. Removes auto-groups whose disciplineId matches.
@@ -82,9 +69,15 @@
  *     4. Strips the discipline ID from every location weekly schedule.
  *     5. Prunes metadata keys whose target slot no longer exists.
  *     6. Deletes grades keyed to this discipline.
- *   Rationale: after deletion, any surviving reference would be
- *   unreachable data. Cleaning in the same transaction avoids both
- *   orphaned references and partial-cascade states.
+ *     7. Cross-domain cleanup: removes the disciplineId from every
+ *        student's enrolment list. Delegated to
+ *        AcademyCascade.disciplineDeleted.
+ *
+ *   Steps 2–6 stay inline: they operate on curriculum-internal
+ *   structures that AcademyDisciplines owns.
+ *   Step 7 is delegated so that future enrollment-related stores
+ *   (per-course enrollment, etc.) can be handled by the coordinator
+ *   without touching this file.
  *
  * MUTATION CONTRACT:
  *   - create / update / delete / saveDisciplines all return
@@ -104,9 +97,10 @@
  *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
  *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  *   - window.AcademyGradeSchemes (from academy-grade-schemes.js) - MANDATORY
- *   - window.AcademyGrades (from academy-grades.js) - MANDATORY (for
- *     VALID_GRADE_TYPES; AcademyGrades does not depend on this module,
- *     so there is no cycle)
+ *   - window.AcademyGrades (from academy-grades.js) - MANDATORY
+ *     (for VALID_GRADE_TYPES; AcademyGrades does not depend on this
+ *     module, so there is no cycle)
+ *   - window.AcademyCascade (from academy-cascade.js) - LAZY
  *
  * USAGE:
  *   var disciplines = window.AcademyDisciplines;
@@ -188,6 +182,14 @@
     var AcademyGrades = window.AcademyGrades;
 
     // ============================================================
+    // LAZY DEPENDENCIES
+    // ============================================================
+
+    function getAcademyCascade() {
+        return window.AcademyCascade || null;
+    }
+
+    // ============================================================
     // CONSTANTS
     // ============================================================
 
@@ -207,7 +209,7 @@
     var MAX_WEIGHT = 10;
     var DEFAULT_WEIGHT = 1;
 
-    // ---- Assessment weights (Phase 3) ----
+    // ---- Assessment weights ----
 
     var MIN_ASSESSMENT_WEIGHT = 0.1;
     var MAX_ASSESSMENT_WEIGHT = 10;
@@ -237,12 +239,6 @@
         return typeof value === 'number' && isFinite(value);
     }
 
-    /**
-     * Deep clone a value.
-     *
-     * READ SAFETY: throws if cloning fails or if the clone is the
-     * original reference. Aliasing is a bug, not a graceful degradation.
-     */
     function deepClone(value) {
         var result = ObjectUtils.deepClone(value);
         if (result === value && value !== null && typeof value === 'object') {
@@ -299,9 +295,6 @@
         };
     }
 
-    // NOTE: isNumericScheme is deliberately NOT re-exported here.
-    // Callers use AcademyGradeSchemes.isNumericScheme directly.
-
     // ============================================================
     // ASSESSMENT WEIGHT HELPERS (Phase 3)
     // ============================================================
@@ -310,9 +303,6 @@
         return AcademyGrades.VALID_GRADE_TYPES.slice();
     }
 
-    /**
-     * Get a fresh, unfrozen copy of the default assessment weights map.
-     */
     function getDefaultAssessmentWeights() {
         var copy = {};
         var types = AcademyGrades.VALID_GRADE_TYPES;
@@ -323,27 +313,10 @@
         return copy;
     }
 
-    /**
-     * Normalize an assessmentWeights map to canonical shape.
-     *
-     * SEMANTICS:
-     *   - Missing or malformed input -> returns the default map.
-     *   - Missing keys -> filled with the default value for that key.
-     *   - Unknown keys -> dropped silently. The strict validator is
-     *     what rejects typos; this normalizer only produces a usable
-     *     shape.
-     *   - Invalid values (NaN, Infinity, non-number, <= 0) -> replaced
-     *     with the default for that key.
-     *   - Values outside [MIN, MAX] -> clamped.
-     *   - Values are rounded to one decimal place.
-     *
-     * Returns a fresh plain object (not frozen).
-     */
     function normalizeAssessmentWeights(raw) {
         var result = {};
         var types = AcademyGrades.VALID_GRADE_TYPES;
 
-        // Seed with defaults for every valid type.
         for (var i = 0; i < types.length; i++) {
             result[types[i]] = DEFAULT_ASSESSMENT_WEIGHTS[types[i]];
         }
@@ -360,7 +333,7 @@
 
             var value = Number(raw[validType]);
             if (!isFinite(value) || value <= 0) {
-                continue;  // keep the default
+                continue;
             }
 
             if (value < MIN_ASSESSMENT_WEIGHT) value = MIN_ASSESSMENT_WEIGHT;
@@ -372,16 +345,6 @@
         return result;
     }
 
-    /**
-     * Validate an assessmentWeights map as supplied by a caller.
-     *
-     * STRICTER than normalizeAssessmentWeights:
-     *   - Unknown keys are REJECTED (catches typos like "exams").
-     *   - Out-of-range values are REJECTED, not clamped.
-     *
-     * Missing keys are NOT rejected. A partial map like { exam: 2.5 }
-     * is valid; missing keys fill with defaults during normalization.
-     */
     function validateAssessmentWeights(raw) {
         if (raw === undefined || raw === null) {
             return { valid: true };
@@ -426,9 +389,6 @@
         return { valid: true };
     }
 
-    /**
-     * Does a discipline's assessmentWeights map equal the default?
-     */
     function isDefaultAssessmentWeights(weights) {
         if (!weights || typeof weights !== 'object') {
             return true;
@@ -448,16 +408,6 @@
     // ============================================================
     // DATA STORE ACCESS - INTERNAL
     // ============================================================
-    //
-    // READ SAFETY:
-    //   - getDataStore() returns null when window.data is missing.
-    //   - getCurriculum() returns null when window.data.curriculum is
-    //     missing. It does NOT create curriculum.{...} as a side effect
-    //     of a read.
-    //
-    //   Structure creation happens ONLY inside pipeline mutate()
-    //   callbacks via ensureDisciplineStore, which operates on the
-    //   appData snapshot the pipeline hands in.
 
     function getDataStore() {
         if (!window.data || typeof window.data !== 'object') {
@@ -474,10 +424,6 @@
         return data.curriculum;
     }
 
-    /**
-     * Ensure the discipline store exists on the given appData snapshot.
-     * Only called from inside pipeline mutate() callbacks.
-     */
     function ensureDisciplineStore(appData) {
         if (!appData.curriculum || typeof appData.curriculum !== 'object') {
             appData.curriculum = {};
@@ -491,10 +437,6 @@
     // ============================================================
     // INTERNAL DISCIPLINE LOOKUP - PRIVATE (LIVE REFERENCES)
     // ============================================================
-    //
-    // These return LIVE REFERENCES. They are consumed by this module's
-    // own mutation paths, the cascade helpers, and AcademyQueries.
-    // The public read surface (below) wraps them with deepClone.
 
     function getDisciplineRecord(id) {
         if (!isNonEmptyString(id)) {
@@ -554,15 +496,8 @@
 
     /**
      * Internal normalization for reads.
-     *
      * Ensures `gradeScheme` and `assessmentWeights` are present and
-     * canonical on the returned copy. The live record itself is NOT
-     * modified here. Only the clone returned to the caller gains the
-     * normalized fields.
-     *
-     * Name is a historical artifact: this function used to only
-     * attach a normalized scheme. It now attaches both, but the name
-     * is retained to avoid churn in the call sites.
+     * canonical on the returned copy. The live record is not modified.
      */
     function attachNormalizedConfig(record) {
         if (!record || typeof record !== 'object') {
@@ -655,19 +590,6 @@
     // INTERNAL CANDIDATE BUILDER
     // ============================================================
 
-    /**
-     * Build a canonical discipline record from raw data.
-     *
-     * `gradeScheme` and `assessmentWeights` are always present on the
-     * output. If the caller did not supply one, the existing one (on
-     * update) or the default (on create) is used.
-     *
-     * @param {object} data                    - Raw input
-     * @param {string|null} existingId         - ID to reuse (update path)
-     * @param {string|null} existingCreatedAt  - createdAt to preserve
-     * @param {object|null} existingScheme     - Scheme fallback (update path)
-     * @param {object|null} existingWeights    - Weights fallback (update path)
-     */
     function buildDisciplineRecord(data, existingId, existingCreatedAt, existingScheme, existingWeights) {
         var now = new Date().toISOString();
 
@@ -689,24 +611,22 @@
             ? data.instructorIds.map(function(id) { return String(id).trim(); })
             : [];
 
-        // ---- Resolve grade scheme ----
         var scheme;
         if (data.gradeScheme !== undefined && data.gradeScheme !== null) {
             scheme = normalizeGradeScheme(data.gradeScheme);
         } else if (existingScheme !== undefined && existingScheme !== null) {
             scheme = normalizeGradeScheme(existingScheme);
         } else {
-            scheme = normalizeGradeScheme(null); // numeric default
+            scheme = normalizeGradeScheme(null);
         }
 
-        // ---- Resolve assessment weights ----
         var weights;
         if (data.assessmentWeights !== undefined && data.assessmentWeights !== null) {
             weights = normalizeAssessmentWeights(data.assessmentWeights);
         } else if (existingWeights !== undefined && existingWeights !== null) {
             weights = normalizeAssessmentWeights(existingWeights);
         } else {
-            weights = normalizeAssessmentWeights(null); // default map
+            weights = normalizeAssessmentWeights(null);
         }
 
         return {
@@ -726,8 +646,12 @@
     }
 
     // ============================================================
-    // CASCADE HELPERS - Remove all references to a discipline ID
+    // CASCADE HELPERS - Curriculum-internal cleanup
     // ============================================================
+    //
+    // These operate on curriculum.* structures that AcademyDisciplines
+    // owns. Cross-domain cleanup (enrolments) is delegated to
+    // AcademyCascade.disciplineDeleted.
 
     function stripDisciplineFromSchedules(curriculum, disciplineId) {
         var schedules = curriculum.schedules;
@@ -931,26 +855,23 @@
     }
 
     // ============================================================
-    // PUBLIC API - DISCIPLINE CRUD (Promise-based)
+    // PUBLIC API - DISCIPLINE CRUD
     // ============================================================
 
     /**
      * Create a new discipline.
      */
     function create(data) {
-        // ---- VALIDATE INPUT ----
         var validation = validateDisciplineData(data, false);
         if (!validation.valid) {
             return Promise.resolve(failure(validation.message));
         }
 
-        // ---- CHECK FOR DUPLICATE NAME (pre-flight) ----
         var existing = getDisciplineByNameRecord(data.name);
         if (existing) {
             return Promise.resolve(failure('A discipline with this name already exists.'));
         }
 
-        // ---- BUILD CANDIDATE ----
         var newDiscipline;
         try {
             newDiscipline = buildDisciplineRecord(data, null, null, null, null);
@@ -964,7 +885,6 @@
 
         var targetId = newDiscipline.id;
 
-        // ---- PIPELINE MUTATION ----
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
@@ -1010,13 +930,11 @@
             return Promise.resolve(failure('Discipline not found.'));
         }
 
-        // ---- VALIDATE UPDATES ----
         var validation = validateDisciplineData(updates, true);
         if (!validation.valid) {
             return Promise.resolve(failure(validation.message));
         }
 
-        // ---- BUILD CANDIDATE ----
         var candidate = deepClone(existing);
         if (candidate === null) {
             return Promise.resolve(failure('Failed to clone discipline data.'));
@@ -1207,7 +1125,19 @@
     /**
      * Delete a discipline permanently.
      *
-     * CASCADE: removes all references to the discipline in one transaction.
+     * CASCADE. In a single transaction it:
+     *   1. Deletes the discipline entity.
+     *   2. Strips the discipline from student schedules.
+     *   3. Strips the discipline from location schedules.
+     *   4. Removes auto-groups whose disciplineId matches.
+     *   5. Prunes orphaned metadata.
+     *   6. Removes grades keyed to this discipline.
+     *   7. Cross-domain: removes the disciplineId from every student's
+     *      enrolment list. Delegated to
+     *      AcademyCascade.disciplineDeleted.
+     *
+     * Steps 2–6 stay inline: curriculum-internal concerns that
+     * AcademyDisciplines owns. Step 7 is delegated.
      */
     function deleteDiscipline(id) {
         if (!isNonEmptyString(id)) {
@@ -1257,45 +1187,59 @@
                 }
                 disciplines.splice(idx, 1);
 
-                // ---- 2. Ensure curriculum structure exists for cascade ----
+                // ---- 2. Ensure curriculum structure exists ----
                 if (!appData.curriculum || typeof appData.curriculum !== 'object') {
                     appData.curriculum = {};
                 }
                 var curriculum = appData.curriculum;
 
-                // ---- 3. Cascade: strip discipline from schedules ----
+                // ---- 3. Curriculum-internal cleanup ----
                 var scheduleSlotsRemoved = stripDisciplineFromSchedules(curriculum, target);
                 var locationSlotsRemoved = stripDisciplineFromLocationSchedules(curriculum, target);
-
-                // ---- 4. Cascade: remove matching auto-groups ----
                 var groupsRemoved = stripDisciplineFromAutoGroups(curriculum, target);
-
-                // ---- 5. Cascade: prune orphaned metadata ----
                 var metadataPruned = pruneOrphanedMetadata(curriculum);
-
-                // ---- 6. Cascade: remove grades keyed to this discipline ----
                 var gradesRemoved = stripDisciplineFromGrades(appData, target);
+
+                // ---- 4. Cross-domain cascade ----
+                var cascade = null;
+                var Cascade = getAcademyCascade();
+                if (Cascade && typeof Cascade.disciplineDeleted === 'function') {
+                    cascade = Cascade.disciplineDeleted(appData, target);
+                }
 
                 return {
                     deleted: true,
                     discipline: disciplineInfo,
-                    cascade: {
+                    curriculum: {
                         scheduleSlotsRemoved: scheduleSlotsRemoved,
                         locationSlotsRemoved: locationSlotsRemoved,
                         autoGroupsRemoved: groupsRemoved,
                         metadataEntriesPruned: metadataPruned,
                         gradesRemoved: gradesRemoved
-                    }
+                    },
+                    academyCascade: cascade
                 };
             },
             logMessage: function(result) {
-                var c = result.cascade;
-                var extra = [];
-                if (c.scheduleSlotsRemoved > 0) extra.push(c.scheduleSlotsRemoved + ' slot(s)');
-                if (c.locationSlotsRemoved > 0) extra.push(c.locationSlotsRemoved + ' location slot(s)');
-                if (c.autoGroupsRemoved > 0) extra.push(c.autoGroupsRemoved + ' group(s)');
-                if (c.gradesRemoved > 0) extra.push(c.gradesRemoved + ' grade(s)');
-                var suffix = extra.length > 0 ? ' (' + extra.join(', ') + ')' : '';
+                var parts = [];
+
+                var c = result.curriculum || {};
+                if (c.scheduleSlotsRemoved > 0) parts.push(c.scheduleSlotsRemoved + ' slot(s)');
+                if (c.locationSlotsRemoved > 0) parts.push(c.locationSlotsRemoved + ' location slot(s)');
+                if (c.autoGroupsRemoved > 0) parts.push(c.autoGroupsRemoved + ' group(s)');
+                if (c.gradesRemoved > 0) parts.push(c.gradesRemoved + ' grade(s)');
+
+                if (result.academyCascade) {
+                    var Cascade = getAcademyCascade();
+                    if (Cascade && typeof Cascade.formatSummary === 'function') {
+                        var summary = Cascade.formatSummary(result.academyCascade);
+                        if (summary) {
+                            parts.push(summary.replace(/^\(|\)$/g, ''));
+                        }
+                    }
+                }
+
+                var suffix = parts.length > 0 ? ' (' + parts.join(', ') + ')' : '';
                 return 'Deleted discipline: ' + existing.name + suffix;
             },
             successMessage: 'Discipline deleted successfully!',
@@ -1306,11 +1250,6 @@
     // ============================================================
     // PUBLIC READ SURFACE (CLONES)
     // ============================================================
-    //
-    // These are the consumer-facing lookups. They return DEEP CLONES
-    // with a normalized gradeScheme AND a normalized assessmentWeights
-    // attached. Internal code paths within this module continue to use
-    // the *Internal accessors, which return live references.
 
     function getDiscipline(id) {
         var record = getDisciplineRecord(id);
@@ -1394,7 +1333,7 @@
      * Get disciplines active in the specified week.
      *
      * WEEK SEMANTICS: `currentWeek` is REQUIRED. No fallback to
-     * window.data.currentWeek. An invalid or missing week returns [].
+     * window.data.currentWeek.
      */
     function getActiveDisciplines(currentWeek) {
         var week = CalendarValidation.parseWeek(currentWeek);
@@ -1405,11 +1344,6 @@
         return getAvailableDisciplines(week);
     }
 
-    /**
-     * Get a discipline's grade scheme, normalized.
-     * Returns the numeric default if the discipline has no scheme or
-     * does not exist.
-     */
     function getGradeScheme(id) {
         var record = getDisciplineRecord(id);
         if (!record) {
@@ -1418,11 +1352,6 @@
         return normalizeGradeScheme(record.gradeScheme);
     }
 
-    /**
-     * Get a discipline's assessment weights, normalized.
-     * Returns a fresh copy of the default map if the discipline does
-     * not exist or has no weights.
-     */
     function getAssessmentWeights(id) {
         var record = getDisciplineRecord(id);
         if (!record) {
@@ -1431,10 +1360,6 @@
         return normalizeAssessmentWeights(record.assessmentWeights);
     }
 
-    /**
-     * Get the default assessment weights map.
-     * Fresh copy; safe to mutate.
-     */
     function getDefaultAssessmentWeightsPublic() {
         return getDefaultAssessmentWeights();
     }
@@ -1443,9 +1368,6 @@
     // BULK OPERATIONS - Via MutationPipeline
     // ============================================================
 
-    /**
-     * Save multiple disciplines at once.
-     */
     function saveDisciplines(disciplinesData, options) {
         if (!Array.isArray(disciplinesData) || disciplinesData.length === 0) {
             return Promise.resolve(failure('Discipline data array is required.'));
@@ -1454,7 +1376,6 @@
         options = options || {};
         var overwrite = options.overwrite !== false;
 
-        // ---- PLAN ----
         var planned = [];
         var errors = [];
 
@@ -1521,7 +1442,6 @@
             }));
         }
 
-        // ---- APPLY ----
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
@@ -1589,13 +1509,13 @@
     // ============================================================
 
     window.AcademyDisciplines = {
-        // ---- Mutations (Promise-based) ----
+        // ---- Mutations ----
         create: create,
         update: update,
         delete: deleteDiscipline,
         saveDisciplines: saveDisciplines,
 
-        // ---- Public queries (synchronous, CLONES) ----
+        // ---- Public queries ----
         getDiscipline: getDiscipline,
         getDisciplines: getDisciplines,
         getDisciplinesByType: getDisciplinesByType,
@@ -1605,16 +1525,14 @@
 
         // ---- Grade scheme helpers ----
         getGradeScheme: getGradeScheme,
-        // isNumericScheme is NOT exported here. Callers use
-        // AcademyGradeSchemes.isNumericScheme directly.
 
-        // ---- Assessment weight helpers (Phase 3) ----
+        // ---- Assessment weight helpers ----
         getAssessmentWeights: getAssessmentWeights,
         getDefaultAssessmentWeights: getDefaultAssessmentWeightsPublic,
         isDefaultAssessmentWeights: isDefaultAssessmentWeights,
         getValidAssessmentTypes: getValidAssessmentTypes,
 
-        // ---- Internal (LIVE REFERENCES - for AcademyQueries and internal use) ----
+        // ---- Internal ----
         getDisciplineRecord: getDisciplineRecord,
         getDisciplineRecords: getDisciplineRecords,
         getDisciplineByNameRecord: getDisciplineByNameRecord,
