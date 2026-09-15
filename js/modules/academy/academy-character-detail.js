@@ -37,16 +37,33 @@
  *   itself as window.AcademyCharacterDetail.
  *
  * ENROLLMENT MODEL (Phase 4):
- *   - The Disciplines tab reads enrollment from AcademyEnrolments.
- *     Enrollment is CLASS-SCOPED: getStudentDisciplines(charId, classId).
+ *   - The Disciplines tab (STUDENT MODE) reads enrollment from
+ *     AcademyEnrolments. Enrollment is CLASS-SCOPED:
+ *     getStudentDisciplines(charId, classId).
  *   - The classId is provided via options.classId by AcademyView.
  *   - When options.classId is absent, the Disciplines tab renders an
  *     empty state asking the user to select a class.
  *   - character.disciplineIds is NOT read.
  *
- * GRADES MODEL (Phase 3):
+ * INSTRUCTOR DISCIPLINES MODEL:
+ *   - The Disciplines tab (INSTRUCTOR MODE) reads from
+ *     AcademyDisciplines.getDisciplinesByInstructor(instructorId),
+ *     which reads `discipline.instructorIds[]`. This is what the
+ *     discipline editor writes.
+ *   - The Auto-Groups tab reads from AcademyGroups, which reads
+ *     autoGroups. Auto-groups are a distinct concept: the instructor's
+ *     grouped students for a discipline.
+ *   - Both tabs are shown in instructor mode and describe complementary
+ *     relationships:
+ *       Disciplines = what the instructor is assigned to teach
+ *       Auto-Groups = which student groups they run
+ *   - Reading disciplines from auto-groups would be wrong: assignment
+ *     is not the same as grouping, and an assigned instructor with no
+ *     group would appear to have no disciplines.
+ *
+ * GRADE-VIEW MODEL:
  *   - Grades are CLASS-SCOPED. The Grades tab shows only the grades
- *     for the currently selected class, via
+ *     for the currently selected class via
  *     AcademyGrades.getStudentClassGrades(charId, classId).
  *   - When options.classId is absent, the Grades tab renders the
  *     same empty state as the Disciplines tab.
@@ -63,7 +80,13 @@
  *   - The mode is chosen by the caller (AcademyView reads it from
  *     AcademyUI.getCharacterMode and passes it via options.mode).
  *   - Default when omitted: 'student'.
- *   - The mode is a display toggle. It does NOT mutate the character.
+ *   - The mode is a DISPLAY toggle. It does NOT mutate the character.
+ *   - The role BADGE follows the mode, not the class roster. When the
+ *     user flips the toggle to instructor, the badge reads "Instructor"
+ *     even if the class roster would say otherwise. This matches the
+ *     user's mental model of "I am viewing this character as an
+ *     instructor right now". The class roster remains authoritative
+ *     for the People list and any other class-scoped projection.
  *
  * TAB SEMANTICS:
  *   - The active tab is chosen by the caller (AcademyView keeps a
@@ -491,21 +514,37 @@
     // ============================================================
     // HEADER
     // ============================================================
+    //
+    // The role BADGE follows the MODE, not the class-derived role.
+    //
+    // Rationale: the mode toggle is the user's assertion about how
+    // they want to view this character. When they flip it to
+    // Instructor, they are explicitly saying "treat this character
+    // as an instructor for this panel". The badge should match that
+    // assertion. The class roster (classVM.students[].role) remains
+    // authoritative for the People list and for any other
+    // class-scoped projection; the badge here is a display element
+    // scoped to this panel.
+    //
+    // The `role` parameter is retained because the caller computes it
+    // and we may want to display it elsewhere later (e.g. as a
+    // secondary hint when the class role disagrees with the mode).
 
     function renderHeader(char, role, mode) {
         var displayName = CharacterQueries.getDisplayName(char);
         var status = CharacterQueries.getCurrentStatus(char);
+
+        // Badge follows the mode, not the class role.
+        var displayRole = mode === 'instructor' ? 'instructor' : 'trainee';
 
         var html = '';
         html += '<div class="academy-character-detail-header">';
 
         html += '<div class="academy-character-detail-title-row">';
         html += '<h3 class="academy-character-detail-title">' + escapeHtml(displayName) + '</h3>';
-        if (role) {
-            html += '<span class="' + getRoleBadgeClass(role) + '">' +
-                        escapeHtml(getRoleLabel(role)) +
-                    '</span>';
-        }
+        html += '<span class="' + getRoleBadgeClass(displayRole) + '">' +
+                    escapeHtml(getRoleLabel(displayRole)) +
+                '</span>';
         html += '</div>';
 
         html += '<div class="academy-character-detail-meta">';
@@ -534,14 +573,6 @@
         html += '</div>';
 
         html += renderModeToggle(mode);
-
-        html += '<div class="academy-character-detail-actions">';
-        html += '<button type="button" class="small primary" ' +
-                    'data-action="view-full-character" ' +
-                    'data-character-id="' + escapeAttribute(char.id) + '">' +
-                    'View Full Profile' +
-                '</button>';
-        html += '</div>';
 
         html += '</div>';
 
@@ -903,9 +934,24 @@
     /**
      * Instructor Disciplines tab.
      *
-     * Reads the instructor's groups via AcademyGroups' read aliases,
-     * which delegate to AcademyAutoGroupsRead. Groups represent the
-     * instructor's teaching assignments per discipline.
+     * Reads the instructor's ASSIGNED disciplines from
+     * AcademyDisciplines.getDisciplinesByInstructor(instructorId),
+     * which reads `discipline.instructorIds[]`. That is the
+     * canonical assignment relationship, written by the discipline
+     * editor.
+     *
+     * This is NOT the same as the Auto-Groups tab. Auto-groups are
+     * the instructor's grouped students, read separately from
+     * AcademyGroups. A discipline assignment and an auto-group are
+     * independent facts:
+     *   - An instructor can be assigned to a discipline without
+     *     having created any group yet.
+     *   - An auto-group can outlive a discipline assignment if the
+     *     discipline editor is changed.
+     *
+     * Reading disciplines from auto-groups would hide instructors
+     * who are assigned but not yet grouping, which is exactly what
+     * the previous implementation did.
      */
     function renderInstructorDisciplinesTab(char, week) {
         var html = '';
@@ -915,64 +961,48 @@
         html += '<h4 class="academy-character-detail-section-title">Disciplines I Teach</h4>';
         html += '</div>';
 
-        var AG = getAcademyGroups();
-        if (!AG || typeof AG.getGroupsByInstructor !== 'function') {
-            html += '<p class="empty-state small">Auto-groups module not available.</p>';
+        if (!AcademyDisciplines || typeof AcademyDisciplines.getDisciplinesByInstructor !== 'function') {
+            html += '<p class="empty-state small">' +
+                        'Discipline module not available.' +
+                    '</p>';
             html += '</div>';
             return html;
         }
 
-        var groupsMap = AG.getGroupsByInstructor(char.id) || {};
-        var groups = [];
-        Object.keys(groupsMap).forEach(function(key) {
-            var g = groupsMap[key];
-            if (g) {
-                groups.push({ key: key, group: g });
-            }
-        });
+        var disciplines = AcademyDisciplines.getDisciplinesByInstructor(char.id) || [];
 
-        if (groups.length === 0) {
-            html += '<p class="empty-state small">Not assigned to teach any disciplines.</p>';
+        if (disciplines.length === 0) {
+            html += '<p class="empty-state small">' +
+                        'Not assigned to teach any disciplines.' +
+                    '</p>';
             html += '</div>';
             return html;
         }
 
-        // Aggregate by discipline.
-        var byDiscipline = {};
-        for (var i = 0; i < groups.length; i++) {
-            var g = groups[i].group;
-            var did = g.disciplineId;
-            if (!did) { continue; }
-            if (!byDiscipline[did]) {
-                byDiscipline[did] = { id: did, groupCount: 0 };
-            }
-            byDiscipline[did].groupCount++;
-        }
-
-        var rows = [];
-        Object.keys(byDiscipline).forEach(function(did) {
-            rows.push({
-                id: did,
-                name: getDisciplineName(did),
-                groupCount: byDiscipline[did].groupCount
-            });
-        });
-        rows.sort(function(a, b) {
+        // Sort alphabetically for stable output.
+        disciplines = disciplines.slice().sort(function(a, b) {
             return (a.name || '').localeCompare(b.name || '');
         });
 
         html += '<div class="academy-character-discipline-list">';
 
-        for (var r = 0; r < rows.length; r++) {
-            var row = rows[r];
+        for (var i = 0; i < disciplines.length; i++) {
+            var d = disciplines[i];
+            if (!d || !d.id) { continue; }
+
             html += '<div class="academy-character-discipline-row academy-instructor-discipline-row" ' +
-                        'data-discipline-id="' + escapeAttribute(row.id) + '">';
+                        'data-discipline-id="' + escapeAttribute(d.id) + '">';
             html += '<span class="academy-character-discipline-name">' +
-                        escapeHtml(row.name) +
+                        escapeHtml(d.name || 'Unnamed Discipline') +
                     '</span>';
-            html += '<span class="academy-character-discipline-meta">' +
-                        row.groupCount + ' group' + (row.groupCount === 1 ? '' : 's') +
-                    '</span>';
+
+            // Show the discipline type as a small meta hint.
+            if (isNonEmptyString(d.type)) {
+                html += '<span class="academy-character-discipline-meta">' +
+                            escapeHtml(d.type) +
+                        '</span>';
+            }
+
             html += '</div>';
         }
 
@@ -1108,6 +1138,13 @@
     // ============================================================
     // AUTO-GROUPS TAB (instructor mode)
     // ============================================================
+    //
+    // Auto-groups are the instructor's grouped students, per
+    // discipline. This is a DIFFERENT relationship from discipline
+    // assignment (see renderInstructorDisciplinesTab). An instructor
+    // may be assigned to a discipline without having created any
+    // groups yet, and may have groups that were created before the
+    // discipline assignment was changed.
 
     function renderAutoGroupsTab(char, week) {
         var AG = getAcademyGroups();
