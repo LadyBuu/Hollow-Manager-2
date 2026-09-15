@@ -8,8 +8,7 @@
  *   - Registering with TabManager
  *   - Assembling the characterProvider and injecting it into TeamCore
  *   - Handing the container to TeamEvents for interaction wiring
- *   - Coordinating the initial render through TeamAggregator and
- *     TeamRender
+ *   - Coordinating the initial render through the canonical path
  *   - Exposing the public Teams API
  *
  * ARCHITECTURE:
@@ -18,9 +17,9 @@
  *     1. Ensures dependencies are loaded.
  *     2. Ensures TeamCore is configured.
  *     3. Ensures TeamUI is initialized.
- *     4. Asks TeamAggregator for a page VM.
- *     5. Asks TeamRender to render the VM into the container.
- *     6. Asks TeamEvents to bind interactions to the container.
+ *     4. Ensures the application year is available.
+ *     5. Hands the container to TeamEvents.
+ *     6. Calls TeamEvents.refreshUI as the single render path.
  *
  *   Do not add per-feature logic here. If a modal opens, it opens
  *   from TeamEvents. If a VM is projected, it comes from
@@ -37,11 +36,11 @@
  *     ↓
  *   TeamUI.init()
  *     ↓
- *   TeamAggregator.getTeamPageViewModel()
+ *   getEffectivePeriod()      (fast fail if year unavailable)
  *     ↓
- *   TeamRender.renderContainer()  → container.innerHTML
+ *   TeamEvents.init(container)
  *     ↓
- *   TeamEvents.init(container)    (binds interactions)
+ *   TeamEvents.refreshUI()    (single render path)
  *     ↓
  *   dispatchReady()
  *
@@ -49,12 +48,11 @@
  *   - Years are UNBOUNDED positive integers.
  *   - There is no MIN_YEAR or MAX_YEAR.
  *   - The current application year comes from window.data.currentYear.
- *     If it is missing or malformed, the entry point does not invent a
- *     value. It returns null; the mount path treats that as a data
- *     readiness problem.
- *   - The Gregorian current year (new Date().getFullYear()) is NEVER
- *     used as a fallback. The application year is world state, not
- *     wall-clock state.
+ *     If it is missing or malformed, the entry point does not invent
+ *     a value. getEffectivePeriod returns null, and mountTeams
+ *     renders a data-unavailable message.
+ *   - new Date().getFullYear() is NEVER used as a fallback. The
+ *     application year is world state, not wall-clock state.
  *
  * PERSISTENCE:
  *   - The entry point does not call saveData.
@@ -70,8 +68,9 @@
  *   - window.TeamAggregator
  *   - window.TeamQueries
  *   - window.NotificationSystem
- *   - window.DataLoader (optional; readiness hook is skipped when
- *                        absent)
+ *
+ * OPTIONAL:
+ *   - window.DataLoader (readiness hook is skipped when absent)
  *
  * USAGE:
  *   The module self-registers with TabManager. External callers use:
@@ -107,14 +106,20 @@
     // DEPENDENCY CHECK
     // ============================================================
     //
-    // Only checks what THIS module invokes. Sub-modules validate their
-    // own dependencies.
+    // Only checks what THIS module invokes. Sub-modules validate
+    // their own dependencies.
 
     function checkDependencies() {
         var missing = [];
 
         if (!TabManager || typeof TabManager.register !== 'function') {
             missing.push('TabManager.register');
+        }
+        if (!TabManager || typeof TabManager.getCurrentTab !== 'function') {
+            missing.push('TabManager.getCurrentTab');
+        }
+        if (!TabManager || typeof TabManager.switchTo !== 'function') {
+            missing.push('TabManager.switchTo');
         }
 
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
@@ -131,6 +136,9 @@
         if (!TeamEvents || typeof TeamEvents.destroy !== 'function') {
             missing.push('TeamEvents.destroy');
         }
+        if (!TeamEvents || typeof TeamEvents.refreshUI !== 'function') {
+            missing.push('TeamEvents.refreshUI');
+        }
 
         if (!TeamUI || typeof TeamUI.init !== 'function') {
             missing.push('TeamUI.init');
@@ -140,6 +148,9 @@
         }
         if (!TeamUI || typeof TeamUI.getExpandedTeamId !== 'function') {
             missing.push('TeamUI.getExpandedTeamId');
+        }
+        if (!TeamUI || typeof TeamUI.getFilter !== 'function') {
+            missing.push('TeamUI.getFilter');
         }
 
         if (!TeamRender || typeof TeamRender.renderContainer !== 'function') {
@@ -182,8 +193,8 @@
     /**
      * Get the current application year.
      *
-     * STRICT: returns null when window.data.currentYear is missing or
-     * malformed. Does NOT fall back to the Gregorian year.
+     * STRICT: returns null when window.data.currentYear is missing
+     * or malformed. Does NOT fall back to the Gregorian year.
      *
      * @returns {number|null}
      */
@@ -198,9 +209,9 @@
     /**
      * Get the effective period for a tab.
      *
-     * The filter state is read from TeamUI. When no explicit filter
-     * is set, the current application year is used. If neither is
-     * available, returns null; callers handle the null case.
+     * Reads persisted filter state from TeamUI. When no explicit
+     * filter is set, the current application year is used. If
+     * neither is available, returns null.
      *
      * @param {string} tab
      * @returns {number|null}
@@ -221,7 +232,7 @@
 
     /**
      * Assemble and inject the character provider into TeamCore.
-     * Must run before any mutation. Idempotent.
+     * Idempotent.
      *
      * @returns {boolean}
      */
@@ -258,7 +269,7 @@
     }
 
     // ============================================================
-    // MOUNT
+    // MOUNT / UNMOUNT
     // ============================================================
 
     function mountTeams(container) {
@@ -292,48 +303,28 @@
 
         _container = container;
 
-        // ---- 1. Initialize UI state ----
+        // 1. Initialize UI state.
         TeamUI.init();
 
-        // ---- 2. Build the page view model ----
+        // 2. Fast fail: the application year must be available. The
+        //    Teams tab cannot decide which period's teams to show
+        //    without it.
         var currentTab = TeamUI.getCurrentTab();
-        var period = getEffectivePeriod(currentTab);
-
-        if (period === null) {
+        if (getEffectivePeriod(currentTab) === null) {
             container.innerHTML = '<p class="empty-state">' +
                 'Application year is unavailable. Please check the data.' +
             '</p>';
             return;
         }
 
-        var expandedTeamId = TeamUI.getExpandedTeamId();
-
-        var pageVM = TeamAggregator.getTeamPageViewModel({
-            type: currentTab,
-            period: period,
-            expandedTeamId: expandedTeamId
-        });
-
-        // If the aggregator resolved a different expanded team ID
-        // (a stale ID invalidated against the filtered list), sync
-        // it back to UI state.
-        if (pageVM.expandedTeamId !== expandedTeamId) {
-            TeamUI.setExpandedTeamId(pageVM.expandedTeamId);
-        }
-
-        // ---- 3. Render ----
-        container.innerHTML = TeamRender.renderContainer(pageVM);
-
-        // ---- 4. Bind events ----
+        // 3. Bind events. TeamEvents.init attaches delegated
+        //    listeners to the container; it does not render.
         TeamEvents.init(container);
 
-        // ---- 5. Populate the filter bar (TeamEvents does it) ----
-        // The filter bar slot is present in the container. Populate
-        // it by asking TeamEvents to refresh; the refresh re-renders
-        // the filter bar as a side effect.
-        if (typeof TeamEvents.refreshUI === 'function') {
-            TeamEvents.refreshUI();
-        }
+        // 4. Single render path. refreshUI builds a fresh page VM,
+        //    hands it to TeamRender.renderContainer, writes the
+        //    container, and populates the filter bar slot.
+        TeamEvents.refreshUI();
 
         _mounted = true;
         _hasMountedOnce = true;
@@ -360,9 +351,7 @@
         if (!_mounted) {
             return;
         }
-        if (typeof TeamEvents.refreshUI === 'function') {
-            TeamEvents.refreshUI();
-        }
+        TeamEvents.refreshUI();
     }
 
     function goToTab() {
@@ -424,10 +413,9 @@
     }
 
     if (!registerWithTabManager()) {
-        // TabManager.register only throws if the API is missing; the
-        // dependency check catches that. The fallback path is for the
-        // boot race: TabManager may not yet exist, and emits
-        // 'tabManagerReady' when it does.
+        // The only legitimate race: TabManager is not yet defined
+        // during initial bootstrap. It emits 'tabManagerReady' when
+        // it is.
         document.addEventListener('tabManagerReady', function() {
             registerWithTabManager();
         });
