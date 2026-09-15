@@ -24,6 +24,15 @@
  *   - All modals use window.Modal (createModal / showModal / closeModal).
  *   - All user-controlled content is escaped via DomUtils.
  *
+ * ACADEMY READS:
+ *   This module used to route class, discipline, and location reads
+ *   through AcademyQueries. That facade is gone. Reads now go to the
+ *   domain owners directly:
+ *     - AcademyClasses       (class entities)
+ *     - AcademyDisciplines   (discipline entities)
+ *     - AcademyLocations     (location entities)
+ *   CharacterQueries is used for roster display names.
+ *
  * DISCIPLINE FORM: NOT HERE
  *   Discipline create/edit is handled inline in AcademyDisciplineView.
  *   The only discipline modal retained here is the delete-confirm.
@@ -50,17 +59,16 @@
  *   version of the Modal utility.
  *
  * DEPENDENCIES:
- *   - window.DomUtils (MANDATORY)
- *   - window.Modal (MANDATORY)
- *   - window.NotificationSystem (MANDATORY)
- *   - window.AcademyClasses (MANDATORY)
- *   - window.AcademyDisciplines (MANDATORY - for delete confirm)
- *   - window.AcademyLocations (MANDATORY)
- *   - window.AcademyQueries (MANDATORY)
- *   - window.CharacterQueries (MANDATORY)
- *   - window.CharacterClasses (MANDATORY)
- *   - window.AcademySocialScore (LAZY - for social score modal)
- *   - window.AcademyUI (LAZY - for class + week context)
+ *   - window.DomUtils            (MANDATORY)
+ *   - window.Modal               (MANDATORY)
+ *   - window.NotificationSystem  (MANDATORY)
+ *   - window.AcademyClasses      (MANDATORY)
+ *   - window.AcademyDisciplines  (MANDATORY - for delete confirm)
+ *   - window.AcademyLocations    (MANDATORY)
+ *   - window.CharacterQueries    (MANDATORY)
+ *   - window.CharacterClasses    (MANDATORY)
+ *   - window.AcademySocialScore  (LAZY - for social score modal)
+ *   - window.AcademyUI           (LAZY - for class + week context)
  *
  * USAGE:
  *   var CRUD = window.AcademyCRUDModals;
@@ -93,6 +101,11 @@
     var DomUtils = window.DomUtils;
     var Modal = window.Modal;
     var NotificationSystem = window.NotificationSystem;
+    var AcademyClasses = window.AcademyClasses;
+    var AcademyDisciplines = window.AcademyDisciplines;
+    var AcademyLocations = window.AcademyLocations;
+    var CharacterQueries = window.CharacterQueries;
+    var CharacterClasses = window.CharacterClasses;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -112,6 +125,21 @@
         }
         if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
             missing.push('NotificationSystem.notify');
+        }
+        if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function') {
+            missing.push('AcademyClasses.getClass');
+        }
+        if (!AcademyDisciplines || typeof AcademyDisciplines.getDiscipline !== 'function') {
+            missing.push('AcademyDisciplines.getDiscipline');
+        }
+        if (!AcademyLocations || typeof AcademyLocations.getLocation !== 'function') {
+            missing.push('AcademyLocations.getLocation');
+        }
+        if (!CharacterQueries || typeof CharacterQueries.getCharacters !== 'function') {
+            missing.push('CharacterQueries.getCharacters');
+        }
+        if (!CharacterClasses || typeof CharacterClasses.addToClass !== 'function') {
+            missing.push('CharacterClasses.addToClass');
         }
 
         if (missing.length > 0) {
@@ -144,6 +172,58 @@
 
     function getAcademyUI() {
         return window.AcademyUI || null;
+    }
+
+    function getAcademySocialScore() {
+        return window.AcademySocialScore || null;
+    }
+
+    // ============================================================
+    // CLASS LOOKUPS - via AcademyClasses
+    // ============================================================
+
+    function getClassRecord(classId) {
+        if (!isNonEmptyString(classId)) {
+            return null;
+        }
+        return AcademyClasses.getClass(classId);
+    }
+
+    /**
+     * Derive the class roster at the module boundary.
+     *
+     * Mirrors the derivation AcademyAggregator.getClassStudentsViewModel
+     * uses: characters whose classIds include classId. The class
+     * INSTRUCTOR is NOT included (they are a separate relationship).
+     *
+     * Returned for display only. The caller must not mutate the
+     * returned objects — AcademyClasses and CharacterQueries return
+     * live references from the store.
+     *
+     * @param {string} classId
+     * @returns {array} Array of character objects
+     */
+    function getClassRoster(classId) {
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
+        var target = String(classId);
+        var characters = CharacterQueries.getCharacters() || [];
+        var result = [];
+
+        for (var i = 0; i < characters.length; i++) {
+            var c = characters[i];
+            if (!c || !c.id) { continue; }
+            if (!Array.isArray(c.classIds)) { continue; }
+            for (var j = 0; j < c.classIds.length; j++) {
+                if (String(c.classIds[j]) === target) {
+                    result.push(c);
+                    break;
+                }
+            }
+        }
+
+        return result;
     }
 
     // ============================================================
@@ -352,17 +432,11 @@
 
     function buildAddCharacterToClassHTML(cls) {
         var currentIds = {};
-        var students = [];
+        var students = getClassRoster(cls.id);
 
-        var AcademyQueries = window.AcademyQueries;
-        var CharacterQueries = window.CharacterQueries;
-
-        if (AcademyQueries && typeof AcademyQueries.getClassStudents === 'function') {
-            students = AcademyQueries.getClassStudents(cls.id) || [];
-            for (var i = 0; i < students.length; i++) {
-                if (students[i] && students[i].id) {
-                    currentIds[String(students[i].id)] = true;
-                }
+        for (var i = 0; i < students.length; i++) {
+            if (students[i] && students[i].id) {
+                currentIds[String(students[i].id)] = true;
             }
         }
 
@@ -371,17 +445,15 @@
         }
 
         var candidates = [];
-        if (CharacterQueries && typeof CharacterQueries.getCharacters === 'function') {
-            var all = CharacterQueries.getCharacters() || [];
-            for (var j = 0; j < all.length; j++) {
-                var c = all[j];
-                if (!c || !c.id) { continue; }
-                if (currentIds[String(c.id)]) { continue; }
-                candidates.push({
-                    id: c.id,
-                    name: CharacterQueries.getDisplayName(c)
-                });
-            }
+        var all = CharacterQueries.getCharacters() || [];
+        for (var j = 0; j < all.length; j++) {
+            var c = all[j];
+            if (!c || !c.id) { continue; }
+            if (currentIds[String(c.id)]) { continue; }
+            candidates.push({
+                id: c.id,
+                name: CharacterQueries.getDisplayName(c)
+            });
         }
 
         candidates.sort(function(a, b) {
@@ -464,13 +536,27 @@
         var isEdit = !!loc;
         var l = loc || {};
 
-        var LocationConstants = window.AcademyLocations || {};
-        var types = LocationConstants.VALID_LOCATION_TYPES || [
-            'classroom', 'lab', 'gym', 'field', 'hall', 'auditorium',
-            'library', 'office', 'other'
-        ];
-        var minCapacity = LocationConstants.MIN_CAPACITY || 1;
-        var maxCapacity = LocationConstants.MAX_CAPACITY || 1000;
+        var types = [];
+        var minCapacity = 1;
+        var maxCapacity = 1000;
+
+        if (AcademyLocations) {
+            if (typeof AcademyLocations.getValidLocationTypes === 'function') {
+                types = AcademyLocations.getValidLocationTypes() || [];
+            } else if (Array.isArray(AcademyLocations.VALID_LOCATION_TYPES)) {
+                types = AcademyLocations.VALID_LOCATION_TYPES.slice();
+            }
+            if (typeof AcademyLocations.MIN_CAPACITY === 'number') {
+                minCapacity = AcademyLocations.MIN_CAPACITY;
+            }
+            if (typeof AcademyLocations.MAX_CAPACITY === 'number') {
+                maxCapacity = AcademyLocations.MAX_CAPACITY;
+            }
+        }
+
+        if (!Array.isArray(types) || types.length === 0) {
+            types = ['classroom', 'lab', 'gym', 'field', 'hall', 'auditorium', 'library', 'office', 'other'];
+        }
 
         var html = '';
         html += '<form id="academy-location-form" class="academy-crud-form" data-edit-id="' +
@@ -509,7 +595,8 @@
         html += '<label for="ac-loc-capacity">Capacity</label>';
         html += '<input type="number" id="ac-loc-capacity" class="ac-loc-capacity" ' +
                     'value="' + escapeAttribute(l.capacity !== undefined && l.capacity !== null ? String(l.capacity) : '') + '" ' +
-                    'min="' + minCapacity + '" max="' + maxCapacity + '" ' +
+                    'min="' + escapeAttribute(String(minCapacity)) + '" ' +
+                    'max="' + escapeAttribute(String(maxCapacity)) + '" ' +
                     'placeholder="Optional">';
         html += '</div>';
 
@@ -556,17 +643,12 @@
     // ============================================================
     // SOCIAL SCORE — FORM HTML (Phase 5)
     // ============================================================
-    //
-    // A small modal with a single numeric input. Context (classId,
-    // week) is passed in by the caller. The current value, when one
-    // exists, is pre-filled. The Save button routes through
-    // AcademySocialScore.setSocialScore.
 
     function buildSocialScoreFormHTML(charId, classId, week, currentValue) {
         var minScore = 0;
         var maxScore = 100;
 
-        var ASS = window.AcademySocialScore;
+        var ASS = getAcademySocialScore();
         if (ASS) {
             if (typeof ASS.MIN_SCORE === 'number') { minScore = ASS.MIN_SCORE; }
             if (typeof ASS.MAX_SCORE === 'number') { maxScore = ASS.MAX_SCORE; }
@@ -622,8 +704,8 @@
 
     function openClassForm(classId) {
         var cls = null;
-        if (classId && window.AcademyQueries && typeof window.AcademyQueries.getClass === 'function') {
-            cls = window.AcademyQueries.getClass(classId);
+        if (classId) {
+            cls = getClassRecord(classId);
         }
 
         var html = buildClassFormHTML(cls);
@@ -654,7 +736,6 @@
 
                 var yearValue = yearRaw === '' ? null : parseInt(yearRaw, 10);
 
-                var AcademyClasses = window.AcademyClasses;
                 if (!AcademyClasses) {
                     notify('Class module not available.', 'error');
                     return;
@@ -695,10 +776,7 @@
     // ============================================================
 
     function openClassDelete(classId) {
-        var cls = null;
-        if (window.AcademyQueries && typeof window.AcademyQueries.getClass === 'function') {
-            cls = window.AcademyQueries.getClass(classId);
-        }
+        var cls = getClassRecord(classId);
         if (!cls) {
             notify('Class not found.', 'error');
             return;
@@ -715,7 +793,6 @@
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
 
-                var AcademyClasses = window.AcademyClasses;
                 if (!AcademyClasses || typeof AcademyClasses.delete !== 'function') {
                     notify('Class module not available.', 'error');
                     return;
@@ -739,10 +816,7 @@
     // ============================================================
 
     function openAddCharacterToClass(classId) {
-        var cls = null;
-        if (window.AcademyQueries && typeof window.AcademyQueries.getClass === 'function') {
-            cls = window.AcademyQueries.getClass(classId);
-        }
+        var cls = getClassRecord(classId);
         if (!cls) {
             notify('Class not found.', 'error');
             return;
@@ -766,7 +840,6 @@
                     return;
                 }
 
-                var CharacterClasses = window.CharacterClasses;
                 if (!CharacterClasses || typeof CharacterClasses.addToClass !== 'function') {
                     notify('Character classes module not available.', 'error');
                     return;
@@ -791,10 +864,8 @@
 
     function openDisciplineDelete(disciplineId) {
         var disc = null;
-        if (window.AcademyQueries && typeof window.AcademyQueries.getDiscipline === 'function') {
-            disc = window.AcademyQueries.getDiscipline(disciplineId);
-        } else if (window.AcademyDisciplines && typeof window.AcademyDisciplines.getDiscipline === 'function') {
-            disc = window.AcademyDisciplines.getDiscipline(disciplineId);
+        if (isNonEmptyString(disciplineId)) {
+            disc = AcademyDisciplines.getDiscipline(disciplineId);
         }
 
         if (!disc) {
@@ -813,7 +884,6 @@
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
 
-                var AcademyDisciplines = window.AcademyDisciplines;
                 if (!AcademyDisciplines || typeof AcademyDisciplines.delete !== 'function') {
                     notify('Discipline module not available.', 'error');
                     return;
@@ -838,10 +908,8 @@
 
     function openLocationForm(locationId) {
         var loc = null;
-        if (locationId && window.AcademyQueries && typeof window.AcademyQueries.getLocation === 'function') {
-            loc = window.AcademyQueries.getLocation(locationId);
-        } else if (locationId && window.AcademyLocations && typeof window.AcademyLocations.getLocation === 'function') {
-            loc = window.AcademyLocations.getLocation(locationId);
+        if (locationId) {
+            loc = AcademyLocations.getLocation(locationId);
         }
 
         var html = buildLocationFormHTML(loc);
@@ -874,7 +942,6 @@
                     capacity: capacity
                 };
 
-                var AcademyLocations = window.AcademyLocations;
                 if (!AcademyLocations) {
                     notify('Location module not available.', 'error');
                     return;
@@ -905,12 +972,7 @@
     // ============================================================
 
     function openLocationDelete(locationId) {
-        var loc = null;
-        if (window.AcademyQueries && typeof window.AcademyQueries.getLocation === 'function') {
-            loc = window.AcademyQueries.getLocation(locationId);
-        } else if (window.AcademyLocations && typeof window.AcademyLocations.getLocation === 'function') {
-            loc = window.AcademyLocations.getLocation(locationId);
-        }
+        var loc = AcademyLocations.getLocation(locationId);
         if (!loc) {
             notify('Location not found.', 'error');
             return;
@@ -927,7 +989,6 @@
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
 
-                var AcademyLocations = window.AcademyLocations;
                 if (!AcademyLocations || typeof AcademyLocations.delete !== 'function') {
                     notify('Location module not available.', 'error');
                     return;
@@ -949,10 +1010,6 @@
     // ============================================================
     // OPEN — SOCIAL SCORE (Phase 5)
     // ============================================================
-    //
-    // Requires class context. Reads it from AcademyUI when not
-    // supplied. When AcademyUI is absent or returns null, the modal
-    // does not open and the user is notified.
 
     function openSocialScoreForm(charId, classId, week) {
         if (!isNonEmptyString(charId)) {
@@ -990,7 +1047,7 @@
 
         // Read current value (may be null).
         var currentValue = null;
-        var ASS = window.AcademySocialScore;
+        var ASS = getAcademySocialScore();
         if (ASS && typeof ASS.getSocialScore === 'function') {
             try {
                 currentValue = ASS.getSocialScore(charId, resolvedClassId, resolvedWeek);
@@ -1030,7 +1087,7 @@
                     return;
                 }
 
-                var Score = window.AcademySocialScore;
+                var Score = getAcademySocialScore();
                 if (!Score || typeof Score.setSocialScore !== 'function') {
                     notify('Social score module not available.', 'error');
                     return;
@@ -1046,7 +1103,6 @@
                         closeModal(modal);
                         notifyChange();
                     }
-                    // On failure, MutationPipeline already notified.
                 }).catch(function(err) {
                     console.warn('[AcademyCRUDModals] Set social score failed:', err);
                     notify('Failed to save social score.', 'error');
