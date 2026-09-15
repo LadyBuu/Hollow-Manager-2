@@ -9,14 +9,16 @@
  *   - Building modal HTML for Location CRUD (add, edit, delete confirm)
  *   - Building modal HTML for adding a character to a class
  *   - Building the Discipline delete-confirm modal
+ *   - Building the Social Score edit modal
  *   - Wiring modal buttons to the corresponding mutation APIs
  *   - Closing the modal on success, notifying on failure
  *
  * IMPORTANT:
  *   - This module ORCHESTRATES mutation calls but does not implement them.
  *   - All mutations go through AcademyClasses / AcademyDisciplines /
- *     AcademyLocations / CharacterClasses, which route through the
- *     MutationPipeline. The pipeline owns persistence and notification.
+ *     AcademyLocations / AcademySocialScore / CharacterClasses, which
+ *     route through MutationPipeline. The pipeline owns persistence and
+ *     notification.
  *   - This module delegates rendering to pure HTML builders that take
  *     plain data and return strings.
  *   - All modals use window.Modal (createModal / showModal / closeModal).
@@ -24,9 +26,14 @@
  *
  * DISCIPLINE FORM: NOT HERE
  *   Discipline create/edit is handled inline in AcademyDisciplineView.
- *   The only discipline modal retained here is the delete-confirm. If
- *   you ever need a discipline form modal again, add it back explicitly
- *   rather than reviving the removed paths.
+ *   The only discipline modal retained here is the delete-confirm.
+ *
+ * SOCIAL SCORE MODAL (Phase 5):
+ *   A small modal with a single numeric input, the current value
+ *   pre-filled (when one exists for the class + week), and a Save
+ *   button. The save routes through AcademySocialScore.setSocialScore.
+ *   The class + week context comes from AcademyUI (the caller passes
+ *   classId and week explicitly).
  *
  * MODAL SHAPE:
  *   Every modal has:
@@ -34,14 +41,13 @@
  *     - .modal-header with title + close button
  *     - .modal-body with form fields
  *     - .form-actions with Cancel + Submit buttons
- *   IDs are stable and unique per modal type, so tests can target them.
+ *   IDs are stable and unique per modal type.
  *
  * MODAL CONTENT CONTRACT:
- *   Modal.createModal() may return either a bare `.modal` shell or one
- *   that already contains a `.modal-content`. The openModal helper in
- *   this file handles both: it reuses an existing `.modal-content` if
- *   present, and appends one otherwise. That way this file works under
- *   either version of the Modal utility.
+ *   Modal.createModal() returns a BARE `.modal` shell. The openModal
+ *   helper below reuses an existing `.modal-content` if present, and
+ *   appends one otherwise. That way this file works under either
+ *   version of the Modal utility.
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
@@ -53,6 +59,8 @@
  *   - window.AcademyQueries (MANDATORY)
  *   - window.CharacterQueries (MANDATORY)
  *   - window.CharacterClasses (MANDATORY)
+ *   - window.AcademySocialScore (LAZY - for social score modal)
+ *   - window.AcademyUI (LAZY - for class + week context)
  *
  * USAGE:
  *   var CRUD = window.AcademyCRUDModals;
@@ -63,6 +71,7 @@
  *   CRUD.openLocationForm(null);
  *   CRUD.openLocationDelete('loc_123');
  *   CRUD.openDisciplineDelete('disc_123');
+ *   CRUD.openSocialScoreForm('char_123');
  *
  *   // Called when the modal successfully submits/closes so that the
  *   // view can re-render.
@@ -95,6 +104,9 @@
         if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
             missing.push('DomUtils.escapeHtml');
         }
+        if (!DomUtils || typeof DomUtils.escapeAttribute !== 'function') {
+            missing.push('DomUtils.escapeAttribute');
+        }
         if (!Modal || typeof Modal.createModal !== 'function') {
             missing.push('Modal.createModal');
         }
@@ -119,13 +131,7 @@
     }
 
     function escapeAttribute(value) {
-        if (DomUtils && typeof DomUtils.escapeAttribute === 'function') {
-            return DomUtils.escapeAttribute(value);
-        }
-        return String(value == null ? '' : value)
-            .replace(/&/g, '&amp;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
+        return DomUtils.escapeAttribute(value);
     }
 
     function notify(message, type) {
@@ -136,13 +142,13 @@
         return typeof value === 'string' && value.trim() !== '';
     }
 
+    function getAcademyUI() {
+        return window.AcademyUI || null;
+    }
+
     // ============================================================
     // CHANGE NOTIFICATION
     // ============================================================
-    //
-    // The view registers a callback so it can re-render after a
-    // mutation succeeds. This module does not know about the view's
-    // container or render function.
 
     var _onChange = null;
 
@@ -164,21 +170,6 @@
     // MODAL PLUMBING
     // ============================================================
 
-    /**
-     * Append content to a modal shell.
-     *
-     * Modal.createModal may return a bare `.modal` shell (new contract)
-     * or one that already contains a `.modal-content` (older contract).
-     * This helper handles both:
-     *   - If the shell already has a `.modal-content`, reuse it.
-     *   - Otherwise create one and append it.
-     *   - Set innerHTML on the wrapper.
-     *
-     * The innerHTML assignment is deliberate: it replaces whatever was
-     * inside (including any auto-generated close button, if any) with
-     * the caller's HTML. Every form this module renders includes its
-     * own `.close-modal` button, so we don't lose the ability to close.
-     */
     function appendModalContent(modal, html) {
         if (!modal) return;
 
@@ -230,10 +221,6 @@
         }
     }
 
-    /**
-     * Bind common modal controls: close button, overlay click,
-     * cancel button.
-     */
     function bindCommonModalControls(modal, onCancel) {
         var closeBtn = modal.querySelector('.close-modal');
         if (closeBtn) {
@@ -348,7 +335,7 @@
         html += '<p>Delete <strong>' + escapeHtml(cls.name || 'this class') + '</strong> permanently?</p>';
         html += '<p class="text-dim" style="font-size:0.75rem;">' +
                     'This removes the class entity, strips its ID from every character, ' +
-                    'and deletes its teams, grades, and rankings.' +
+                    'and deletes its teams, grades, rankings, and enrollments.' +
                 '</p>';
         html += '<div class="form-actions">';
         html += '<button type="button" class="cancel-modal-btn secondary">Cancel</button>';
@@ -367,7 +354,6 @@
         var currentIds = {};
         var students = [];
 
-        // Roster derived from character.classIds via AcademyQueries.
         var AcademyQueries = window.AcademyQueries;
         var CharacterQueries = window.CharacterQueries;
 
@@ -380,7 +366,6 @@
             }
         }
 
-        // Also exclude the instructor so we don't offer them.
         if (cls.instructorId) {
             currentIds[String(cls.instructorId)] = true;
         }
@@ -448,12 +433,6 @@
     // ============================================================
     // DISCIPLINE — DELETE CONFIRM HTML
     // ============================================================
-    //
-    // Discipline create/edit is handled inline in AcademyDisciplineView.
-    // This delete-confirm modal remains because a confirm dialog is
-    // better served by a modal than by a native confirm() call: it
-    // matches the class and location delete UX, and it can show the
-    // cascade semantics in a way that native confirm() cannot.
 
     function buildDisciplineDeleteHTML(disc) {
         var html = '';
@@ -465,8 +444,8 @@
         html += '<div class="modal-body">';
         html += '<p>Delete <strong>' + escapeHtml(disc.name || 'this discipline') + '</strong> permanently?</p>';
         html += '<p class="text-dim" style="font-size:0.75rem;">' +
-                    'This removes the discipline, its auto-groups, and any grades and ' +
-                    'schedule slots referencing it.' +
+                    'This removes the discipline, its auto-groups, enrollments, ' +
+                    'and any grades and schedule slots referencing it.' +
                 '</p>';
         html += '<div class="form-actions">';
         html += '<button type="button" class="cancel-modal-btn secondary">Cancel</button>';
@@ -571,6 +550,69 @@
         html += '</div>';
         html += '</div>';
         html += '</form>';
+        return html;
+    }
+
+    // ============================================================
+    // SOCIAL SCORE — FORM HTML (Phase 5)
+    // ============================================================
+    //
+    // A small modal with a single numeric input. Context (classId,
+    // week) is passed in by the caller. The current value, when one
+    // exists, is pre-filled. The Save button routes through
+    // AcademySocialScore.setSocialScore.
+
+    function buildSocialScoreFormHTML(charId, classId, week, currentValue) {
+        var minScore = 0;
+        var maxScore = 100;
+
+        var ASS = window.AcademySocialScore;
+        if (ASS) {
+            if (typeof ASS.MIN_SCORE === 'number') { minScore = ASS.MIN_SCORE; }
+            if (typeof ASS.MAX_SCORE === 'number') { maxScore = ASS.MAX_SCORE; }
+        }
+
+        var hasCurrent = typeof currentValue === 'number' && isFinite(currentValue);
+        var currentStr = hasCurrent ? String(currentValue) : '';
+
+        var html = '';
+        html += '<form id="academy-social-score-form" ' +
+                    'data-character-id="' + escapeAttribute(charId) + '" ' +
+                    'data-class-id="' + escapeAttribute(classId) + '" ' +
+                    'data-week="' + escapeAttribute(String(week)) + '">';
+
+        html += '<div class="modal-header">';
+        html += '<h3>Set Social Score</h3>';
+        html += '<button type="button" class="close-modal">&times;</button>';
+        html += '</div>';
+
+        html += '<div class="modal-body">';
+
+        html += '<div class="form-group">';
+        html += '<label for="ac-social-score-input">Score (' +
+                    escapeHtml(String(minScore)) + '\u2013' +
+                    escapeHtml(String(maxScore)) +
+                ')</label>';
+        html += '<input type="number" id="ac-social-score-input" ' +
+                    'class="ac-social-score-input" ' +
+                    'value="' + escapeAttribute(currentStr) + '" ' +
+                    'min="' + escapeAttribute(String(minScore)) + '" ' +
+                    'max="' + escapeAttribute(String(maxScore)) + '" ' +
+                    'step="1" required>';
+        html += '<p class="field-hint">' +
+                    'Social score contributes to the overall performance blend ' +
+                    'for this student in this class for the selected week.' +
+                '</p>';
+        html += '</div>';
+
+        html += '<div class="form-actions">';
+        html += '<button type="button" class="cancel-modal-btn secondary">Cancel</button>';
+        html += '<button type="submit" class="primary">Save</button>';
+        html += '</div>';
+
+        html += '</div>';
+        html += '</form>';
+
         return html;
     }
 
@@ -746,11 +788,6 @@
     // ============================================================
     // OPEN — DISCIPLINE DELETE
     // ============================================================
-    //
-    // Discipline create/edit is handled inline in AcademyDisciplineView.
-    // This module only owns the delete-confirm modal. The inline editor
-    // dispatches [data-action="delete-discipline"] which AcademyView
-    // routes to this function.
 
     function openDisciplineDelete(disciplineId) {
         var disc = null;
@@ -910,6 +947,115 @@
     }
 
     // ============================================================
+    // OPEN — SOCIAL SCORE (Phase 5)
+    // ============================================================
+    //
+    // Requires class context. Reads it from AcademyUI when not
+    // supplied. When AcademyUI is absent or returns null, the modal
+    // does not open and the user is notified.
+
+    function openSocialScoreForm(charId, classId, week) {
+        if (!isNonEmptyString(charId)) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        var UI = getAcademyUI();
+
+        // Resolve classId.
+        var resolvedClassId = classId;
+        if (!isNonEmptyString(resolvedClassId)) {
+            if (UI && typeof UI.getSelectedClassId === 'function') {
+                resolvedClassId = UI.getSelectedClassId();
+            }
+        }
+
+        if (!isNonEmptyString(resolvedClassId)) {
+            notify('Select a class before editing a social score.', 'error');
+            return;
+        }
+
+        // Resolve week.
+        var resolvedWeek = parseInt(week, 10);
+        if (isNaN(resolvedWeek)) {
+            if (UI && typeof UI.getDisplayWeek === 'function') {
+                resolvedWeek = parseInt(UI.getDisplayWeek(), 10);
+            }
+        }
+
+        if (isNaN(resolvedWeek)) {
+            notify('No week selected.', 'error');
+            return;
+        }
+
+        // Read current value (may be null).
+        var currentValue = null;
+        var ASS = window.AcademySocialScore;
+        if (ASS && typeof ASS.getSocialScore === 'function') {
+            try {
+                currentValue = ASS.getSocialScore(charId, resolvedClassId, resolvedWeek);
+            } catch (e) {
+                console.warn('[AcademyCRUDModals] getSocialScore failed:', e);
+                currentValue = null;
+            }
+        }
+
+        var html = buildSocialScoreFormHTML(
+            charId,
+            resolvedClassId,
+            resolvedWeek,
+            currentValue
+        );
+
+        openModal('academy-social-score-modal', html, function(modal) {
+            bindCommonModalControls(modal);
+
+            var form = modal.querySelector('#academy-social-score-form');
+            if (!form) { return; }
+
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+
+                var input = form.querySelector('.ac-social-score-input');
+                var raw = input ? input.value.trim() : '';
+
+                if (raw === '') {
+                    notify('Score is required.', 'error');
+                    return;
+                }
+
+                var value = parseFloat(raw);
+                if (isNaN(value)) {
+                    notify('Score must be a number.', 'error');
+                    return;
+                }
+
+                var Score = window.AcademySocialScore;
+                if (!Score || typeof Score.setSocialScore !== 'function') {
+                    notify('Social score module not available.', 'error');
+                    return;
+                }
+
+                Score.setSocialScore(
+                    charId,
+                    resolvedClassId,
+                    resolvedWeek,
+                    value
+                ).then(function(result) {
+                    if (result && result.success) {
+                        closeModal(modal);
+                        notifyChange();
+                    }
+                    // On failure, MutationPipeline already notified.
+                }).catch(function(err) {
+                    console.warn('[AcademyCRUDModals] Set social score failed:', err);
+                    notify('Failed to save social score.', 'error');
+                });
+            });
+        });
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -919,12 +1065,15 @@
         openClassDelete: openClassDelete,
         openAddCharacterToClass: openAddCharacterToClass,
 
-        // Discipline — delete only. Create/edit is inline in the view.
+        // Discipline — delete only.
         openDisciplineDelete: openDisciplineDelete,
 
         // Location
         openLocationForm: openLocationForm,
         openLocationDelete: openLocationDelete,
+
+        // Social score (Phase 5)
+        openSocialScoreForm: openSocialScoreForm,
 
         // Wiring
         setOnChangeCallback: setOnChangeCallback,
@@ -935,7 +1084,8 @@
         buildAddCharacterToClassHTML: buildAddCharacterToClassHTML,
         buildDisciplineDeleteHTML: buildDisciplineDeleteHTML,
         buildLocationFormHTML: buildLocationFormHTML,
-        buildLocationDeleteHTML: buildLocationDeleteHTML
+        buildLocationDeleteHTML: buildLocationDeleteHTML,
+        buildSocialScoreFormHTML: buildSocialScoreFormHTML
     };
 
     // ============================================================
@@ -950,6 +1100,7 @@
             'openClassForm', 'openClassDelete', 'openAddCharacterToClass',
             'openDisciplineDelete',
             'openLocationForm', 'openLocationDelete',
+            'openSocialScoreForm',
             'setOnChangeCallback'
         ];
 
