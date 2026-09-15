@@ -1,6 +1,6 @@
 /**
  * modules/academy/academy-ranking-view.js - Academy Ranking View
- * Standalone view for browsing class rankings
+ * Standalone view for browsing class rankings.
  *
  * Path: js/modules/academy/academy-ranking-view.js
  *
@@ -10,38 +10,54 @@
  *   - Rendering an empty state when no class is selected
  *
  * IMPORTANT:
- *   - RENDER ONLY - no mutations, no domain logic
+ *   - RENDER ONLY - no mutations, no domain logic.
  *   - Does NOT fetch data. Does NOT call AcademyQueries or AcademyRanking.
- *   - Receives a view model from AcademyView
+ *   - Receives a view model from AcademyAggregator.getRankingViewModel.
  *   - Does NOT bind events. Rows emit data-* attributes that
  *     AcademyView's delegated container listeners resolve.
- *   - Uses DomUtils for escaping.
+ *   - Uses DomUtils for escaping (MANDATORY, no fallback).
  *   - Returns an HTML string.
  *
  * INTERFACE:
  *   AcademyRankingView.renderHTML(viewModel) -> string
  *
- *   viewModel is the shape produced by
- *   AcademyView.renderRankingView():
+ *   viewModel:
  *     {
- *       classes:   [ { id, name } ],       // for the class dropdown
- *       classId:   string | null,          // currently selected class
+ *       classes:   [ { id, name } ],
+ *       classId:   string | null,
  *       className: string | null,
- *       week:      number,
- *       entries:   [ { studentId, studentName, rank, average,
- *                      gradeCount, isInstructor } ],
+ *       week:      number | null,
+ *       entries:   [ <entryVM> ],
  *       total:     number
  *     }
  *
- *   If classId is null, an empty state renders.
+ *   entryVM:
+ *     {
+ *       characterId,        // string
+ *       characterName,      // string
+ *       rank,               // number | null
+ *       rankDisplay,        // '#3' | '—'
+ *       average,            // number | null
+ *       averageDisplay,     // '82.5' | '—'
+ *       averageBand,        // 'excellent' | 'good' | 'passing' | 'failing' | null
+ *       gradeCount,         // number | null
+ *       gradeCountDisplay,  // '5' | '—'
+ *       isInstructor        // boolean
+ *     }
  *
- * EVENTS EMITTED (via data-* attributes, for AcademyView to bind):
+ *   averageBand is a PURELY VISUAL band provided by the aggregator.
+ *   It is not derived from the grade scheme and does not represent
+ *   pass/fail. The renderer maps the band to a CSS class; it never
+ *   recomputes the band.
+ *
+ * EVENTS EMITTED (data-* attributes, for AcademyView to bind):
  *   - #academy-ranking-class-select (change)
- *   - #academy-ranking-week-input  (change)
- *   - .academy-ranking-row [data-character-id]
+ *   - #academy-ranking-week-input  (change / Enter)
+ *   - .academy-ranking-row [data-character-id]  (click)
  *
  * DEPENDENCIES:
- *   - window.DomUtils (MANDATORY)
+ *   - window.DomUtils         (MANDATORY)
+ *   - window.CalendarConstants (MANDATORY) — week bounds
  *
  * USAGE:
  *   var html = AcademyRankingView.renderHTML(vm);
@@ -54,67 +70,52 @@
     if (window.__academyRankingViewLoaded) {
         return;
     }
+
+    var DomUtils = window.DomUtils;
+    var CalendarConstants = window.CalendarConstants;
+
+    if (!DomUtils ||
+        typeof DomUtils.escapeHtml !== 'function' ||
+        typeof DomUtils.escapeAttribute !== 'function') {
+        throw new Error(
+            '[AcademyRankingView] Missing mandatory dependency: ' +
+            'DomUtils.escapeHtml / DomUtils.escapeAttribute'
+        );
+    }
+
+    if (!CalendarConstants ||
+        typeof CalendarConstants.MIN_WEEK !== 'number' ||
+        typeof CalendarConstants.MAX_WEEK !== 'number') {
+        throw new Error(
+            '[AcademyRankingView] Missing mandatory dependency: ' +
+            'CalendarConstants.MIN_WEEK / MAX_WEEK'
+        );
+    }
+
     window.__academyRankingViewLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // CONSTANTS
     // ============================================================
 
-    var DomUtils = window.DomUtils;
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-
-    function checkDependencies() {
-        var missing = [];
-
-        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
-            missing.push('DomUtils.escapeHtml');
-        }
-        if (!DomUtils || typeof DomUtils.escapeAttribute !== 'function') {
-            missing.push('DomUtils.escapeAttribute');
-        }
-
-        if (missing.length > 0) {
-            console.warn('[AcademyRankingView] Missing dependencies:', missing.join(', '));
-            return false;
-        }
-
-        return true;
-    }
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
 
     // ============================================================
     // ESCAPING HELPERS
     // ============================================================
 
     function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
-        }
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value);
+        return DomUtils.escapeHtml(value);
     }
 
     function escapeAttribute(value) {
-        if (DomUtils && typeof DomUtils.escapeAttribute === 'function') {
-            return DomUtils.escapeAttribute(value);
-        }
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value);
+        return DomUtils.escapeAttribute(value);
     }
 
     // ============================================================
     // SMALL HELPERS
     // ============================================================
-
-    function isNonEmptyString(value) {
-        return typeof value === 'string' && value.trim() !== '';
-    }
 
     function isFiniteNumber(value) {
         return typeof value === 'number' && isFinite(value);
@@ -130,14 +131,22 @@
         return 'academy-rank-badge academy-rank-default';
     }
 
-    function getAverageClass(average) {
-        if (!isFiniteNumber(average)) {
-            return 'academy-ranking-average academy-ranking-average-unknown';
+    // averageBand is a presentation-only category supplied by the VM.
+    // This function maps the band to a CSS class. It does NOT compute
+    // the band — the aggregator does.
+    function getAverageClass(averageBand) {
+        switch (averageBand) {
+            case 'excellent':
+                return 'academy-ranking-average academy-ranking-average-excellent';
+            case 'good':
+                return 'academy-ranking-average academy-ranking-average-good';
+            case 'passing':
+                return 'academy-ranking-average academy-ranking-average-passing';
+            case 'failing':
+                return 'academy-ranking-average academy-ranking-average-failing';
+            default:
+                return 'academy-ranking-average academy-ranking-average-unknown';
         }
-        if (average >= 90) return 'academy-ranking-average academy-ranking-average-excellent';
-        if (average >= 80) return 'academy-ranking-average academy-ranking-average-good';
-        if (average >= 70) return 'academy-ranking-average academy-ranking-average-passing';
-        return 'academy-ranking-average academy-ranking-average-failing';
     }
 
     // ============================================================
@@ -151,14 +160,6 @@
      * @returns {string} HTML string
      */
     function renderHTML(viewModel) {
-        if (!checkDependencies()) {
-            return (
-                '<div class="academy-body academy-body-empty">' +
-                    '<p class="empty-state">Ranking view dependencies not loaded.</p>' +
-                '</div>'
-            );
-        }
-
         var vm = viewModel || {};
         var classId = vm.classId || null;
 
@@ -184,8 +185,10 @@
         html += '<div class="academy-ranking-top-bar">';
 
         html += '<div class="academy-ranking-top-left">';
-        html += '<label class="academy-top-label">Class:</label>';
-        html += '<select id="academy-ranking-class-select" class="academy-class-select">';
+        html += '<label class="academy-top-label" ' +
+                    'for="academy-ranking-class-select">Class:</label>';
+        html += '<select id="academy-ranking-class-select" ' +
+                    'class="academy-class-select">';
         html += '<option value="">Select a class...</option>';
 
         for (var i = 0; i < classes.length; i++) {
@@ -193,21 +196,28 @@
             if (!cls || !cls.id) {
                 continue;
             }
-            var selected = classId && String(classId) === String(cls.id) ? ' selected' : '';
-            html += '<option value="' + escapeAttribute(cls.id) + '"' + selected + '>' +
-                escapeHtml(cls.name || 'Unnamed Class') +
-                '</option>';
+            var selected = classId && String(classId) === String(cls.id)
+                ? ' selected'
+                : '';
+            html += '<option value="' + escapeAttribute(cls.id) + '"' +
+                        selected + '>' +
+                        escapeHtml(cls.name || 'Unnamed Class') +
+                    '</option>';
         }
 
         html += '</select>';
         html += '</div>';
 
         html += '<div class="academy-ranking-top-right">';
-        html += '<label class="academy-top-label">Week:</label>';
+        html += '<label class="academy-top-label" ' +
+                    'for="academy-ranking-week-input">Week:</label>';
         html += '<input type="number" id="academy-ranking-week-input" ' +
-            'class="academy-week-input" ' +
-            'value="' + escapeAttribute(String(week || 1)) + '" ' +
-            'min="1" max="52">';
+                    'class="academy-week-input" ' +
+                    'value="' + escapeAttribute(
+                        isFiniteNumber(week) ? String(week) : ''
+                    ) + '" ' +
+                    'min="' + escapeAttribute(String(MIN_WEEK)) + '" ' +
+                    'max="' + escapeAttribute(String(MAX_WEEK)) + '">';
         html += '</div>';
 
         html += '</div>';
@@ -222,7 +232,9 @@
         if (!classId) {
             return (
                 '<div class="academy-ranking-empty">' +
-                    '<p class="empty-state small">Select a class to view its rankings.</p>' +
+                    '<p class="empty-state small">' +
+                        'Select a class to view its rankings.' +
+                    '</p>' +
                 '</div>'
             );
         }
@@ -236,13 +248,23 @@
 
         // Header
         html += '<div class="academy-ranking-header">';
-        html += '<h3 class="academy-ranking-title">' + escapeHtml(className) + ' Rankings</h3>';
-        html += '<span class="academy-ranking-subtitle">Week ' + escapeHtml(String(week || 1)) + '</span>';
-        html += '<span class="academy-ranking-count">' + entries.length + ' students</span>';
+        html += '<h3 class="academy-ranking-title">' +
+                    escapeHtml(className) + ' Rankings' +
+                '</h3>';
+        if (isFiniteNumber(week)) {
+            html += '<span class="academy-ranking-subtitle">' +
+                        'Week ' + escapeHtml(String(week)) +
+                    '</span>';
+        }
+        html += '<span class="academy-ranking-count">' +
+                    entries.length + ' students' +
+                '</span>';
         html += '</div>';
 
         if (entries.length === 0) {
-            html += '<p class="empty-state small">No rankings recorded for this week.</p>';
+            html += '<p class="empty-state small">' +
+                        'No rankings recorded for this week.' +
+                    '</p>';
             html += '</div>';
             return html;
         }
@@ -276,12 +298,8 @@
             return '';
         }
 
-        var rank = isFiniteNumber(entry.rank) ? entry.rank : null;
-        var rankDisplay = rank !== null ? '#' + rank : '\u2014';
-        var rankClass = getRankBadgeClass(rank);
-        var avgClass = getAverageClass(entry.average);
-        var avgDisplay = isFiniteNumber(entry.average) ? String(entry.average) : '\u2014';
-        var gradeCount = isFiniteNumber(entry.gradeCount) ? entry.gradeCount : 0;
+        var rankClass = getRankBadgeClass(entry.rank);
+        var avgClass = getAverageClass(entry.averageBand);
 
         var rowClass = 'academy-ranking-row';
         if (entry.isInstructor) {
@@ -290,24 +308,35 @@
 
         var html = '';
         html += '<tr class="' + rowClass + '" ' +
-                    'data-character-id="' + escapeAttribute(entry.studentId || '') + '">';
+                    'data-character-id="' +
+                        escapeAttribute(entry.characterId || '') + '">';
 
         html += '<td class="rank-col">';
-        html += '<span class="' + rankClass + '">' + escapeHtml(rankDisplay) + '</span>';
+        html += '<span class="' + rankClass + '">' +
+                    escapeHtml(entry.rankDisplay || '\u2014') +
+                '</span>';
         html += '</td>';
 
         html += '<td class="name-col">';
-        html += '<span class="academy-ranking-name">' + escapeHtml(entry.studentName || 'Unknown') + '</span>';
+        html += '<span class="academy-ranking-name">' +
+                    escapeHtml(entry.characterName || 'Unknown') +
+                '</span>';
         if (entry.isInstructor) {
-            html += ' <span class="academy-ranking-instructor-badge">Instructor</span>';
+            html += ' <span class="academy-ranking-instructor-badge">' +
+                        'Instructor' +
+                    '</span>';
         }
         html += '</td>';
 
         html += '<td class="avg-col">';
-        html += '<span class="' + avgClass + '">' + escapeHtml(avgDisplay) + '</span>';
+        html += '<span class="' + avgClass + '">' +
+                    escapeHtml(entry.averageDisplay || '\u2014') +
+                '</span>';
         html += '</td>';
 
-        html += '<td class="count-col">' + escapeHtml(String(gradeCount)) + '</td>';
+        html += '<td class="count-col">' +
+                    escapeHtml(entry.gradeCountDisplay || '\u2014') +
+                '</td>';
 
         html += '</tr>';
         return html;
@@ -320,26 +349,5 @@
     window.AcademyRankingView = {
         renderHTML: renderHTML
     };
-
-    // ============================================================
-    // VERIFICATION
-    // ============================================================
-
-    (function verify() {
-        var exports = window.AcademyRankingView;
-        var missing = [];
-
-        var required = ['renderHTML'];
-
-        for (var i = 0; i < required.length; i++) {
-            if (typeof exports[required[i]] !== 'function') {
-                missing.push(required[i]);
-            }
-        }
-
-        if (missing.length > 0) {
-            console.warn('[AcademyRankingView] Verification - some exports may be missing:', missing.join(', '));
-        }
-    })();
 
 })();
