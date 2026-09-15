@@ -1,20 +1,33 @@
 /**
  * modules/tournaments/tournament-aggregator.js - Tournament Aggregator
- * Cross-domain projection builder for tournament UI
+ * Cross-domain projection builder for tournament UI.
+ *
  * Path: js/modules/tournaments/tournament-aggregator.js
  *
- * This module provides Tournament-specific projections by composing
- * data from TournamentQueries, CharacterQueries, TeamQueries, and AcademyQueries.
+ * RESPONSIBILITIES:
+ *   - Build tournament-, round-, and match-level view models for UI
+ *   - Resolve participant and team display names via CharacterQueries
+ *     and TeamQueries
+ *   - Resolve class display names via AcademyQueries
+ *   - Shape result vocabularies into display objects
  *
- * IMPORTANT:
- *   - Projection builder, not a query registry
- *   - Composes TournamentQueries + CharacterQueries + TeamQueries + AcademyQueries
- *   - Returns Tournament-shaped view models for UI
- *   - Never exposes external query APIs directly
- *   - Never mutates data
- *   - No UI dependencies
- *   - No passthrough methods
- *   - This is where name resolution happens (getParticipantName, etc.)
+ * NOT RESPONSIBILITIES:
+ *   - Domain reads beyond the shape of a returned VM
+ *   - Mutations
+ *   - Rendering
+ *
+ * IDENTITY:
+ *   Rounds and matches are addressed by stable IDs, not indices.
+ *   Every round- and match-scoped projection takes the ID.
+ *
+ *   The returned VMs carry BOTH:
+ *     - `id`     : the stable identity
+ *     - `index`  : the positional display order (0-based)
+ *
+ *   Callers that need to act on a round or match use `id`. Callers
+ *   that need to display "Round 3" use `roundNumber` (which the
+ *   tournament stores positionally). Callers that need a stable sort
+ *   tiebreak can use `index`.
  *
  * RESULT VOCABULARY:
  *   - 'pass'  : advanced and successful
@@ -31,26 +44,16 @@
  *     'Not determined' on new data because no winner is set.
  *   - Use getFinalPassersView instead.
  *
- * API:
- *   - getTournamentViewModel(tournamentId, options)
- *   - getTournamentListViewModel(options)
- *   - getRoundViewModel(tournamentId, roundIndex, options)
- *   - getMatchViewModel(tournamentId, roundIndex, matchIndex, options)
- *   - getParticipantName(tournamentId, participantId)
- *   - getParticipantDisplay(tournamentId, participantId)
- *   - getMatchDisplay(tournamentId, roundIndex, matchIndex)
- *   - getPairExamGroupings(tournamentId, roundIndex, matchIndex)
- *   - getTeamMatchViewModel(tournamentId, roundIndex, matchIndex)
- *   - getFinalPassersView(tournamentId)
- *   - getTournamentOverview(tournamentId)
- *   - getActiveTournamentsViewModel()
+ * DEPENDENCIES (MANDATORY):
+ *   - window.TournamentQueries
+ *   - window.TournamentSchema
+ *   - window.CharacterQueries
+ *   - window.TeamQueries
+ *   - window.AcademyQueries
+ *   - window.TournamentConstants
  *
- * DEPENDENCIES:
- *   - window.TournamentQueries (from tournament-queries.js) - MANDATORY
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
- *   - window.TeamQueries (from team-queries.js) - MANDATORY
- *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
- *   - window.TournamentConstants (from tournament-constants.js) - MANDATORY
+ * DEPENDENCIES (OPTIONAL):
+ *   - window.ObjectUtils
  */
 
 (function() {
@@ -59,52 +62,84 @@
     if (window.__tournamentAggregatorLoaded) {
         return;
     }
+
+    // ============================================================
+    // MANDATORY DEPENDENCIES
+    // ============================================================
+
+    var Queries = window.TournamentQueries;
+    var Schema = window.TournamentSchema;
+    var CharacterQueries = window.CharacterQueries;
+    var TeamQueries = window.TeamQueries;
+    var AcademyQueries = window.AcademyQueries;
+    var Constants = window.TournamentConstants;
+
+    var _missing = [];
+
+    if (!Queries || typeof Queries.getTournament !== 'function') {
+        _missing.push('TournamentQueries.getTournament');
+    }
+    if (!Queries || typeof Queries.getRound !== 'function') {
+        _missing.push('TournamentQueries.getRound');
+    }
+    if (!Queries || typeof Queries.getMatch !== 'function') {
+        _missing.push('TournamentQueries.getMatch');
+    }
+    if (!Queries || typeof Queries.getParticipantResult !== 'function') {
+        _missing.push('TournamentQueries.getParticipantResult');
+    }
+    if (!Schema || typeof Schema.normaliseId !== 'function') {
+        _missing.push('TournamentSchema.normaliseId');
+    }
+    if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+        _missing.push('CharacterQueries.getCharacterById');
+    }
+    if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+        _missing.push('CharacterQueries.getDisplayName');
+    }
+    if (!TeamQueries || typeof TeamQueries.getTeamById !== 'function') {
+        _missing.push('TeamQueries.getTeamById');
+    }
+    if (!AcademyQueries || typeof AcademyQueries.getClassDisplayName !== 'function') {
+        _missing.push('AcademyQueries.getClassDisplayName');
+    }
+    if (!Constants) {
+        _missing.push('TournamentConstants');
+    }
+
+    if (_missing.length > 0) {
+        throw new Error(
+            '[TournamentAggregator] Missing mandatory dependencies: ' +
+            _missing.join(', ')
+        );
+    }
+
     window.__tournamentAggregatorLoaded = true;
 
     // ============================================================
-    // LAZY LOADING HELPERS
+    // OPTIONAL DEPENDENCY
     // ============================================================
 
-    function getTournamentQueries() { return window.TournamentQueries || null; }
-    function getCharacterQueries() { return window.CharacterQueries || null; }
-    function getTeamQueries() { return window.TeamQueries || null; }
-    function getAcademyQueries() { return window.AcademyQueries || null; }
-    function getConstants() { return window.TournamentConstants || null; }
-    function getObjectUtils() { return window.ObjectUtils || null; }
-
-    // ============================================================
-    // DEPENDENCY CHECK - Warns but doesn't fail
-    // ============================================================
-
-    function checkDependencies() {
-        var missing = [];
-
-        if (!getTournamentQueries()) { missing.push('TournamentQueries (lazy)'); }
-        if (!getCharacterQueries()) { missing.push('CharacterQueries (lazy)'); }
-        if (!getTeamQueries()) { missing.push('TeamQueries (lazy)'); }
-        if (!getAcademyQueries()) { missing.push('AcademyQueries (lazy)'); }
-        if (!getConstants()) { missing.push('TournamentConstants (lazy)'); }
-
-        if (missing.length > 0) {
-            console.warn('[TournamentAggregator] Some dependencies not yet loaded:', missing.join(', '));
-            return false;
-        }
-
-        return true;
+    function getObjectUtils() {
+        return window.ObjectUtils || null;
     }
-
-    checkDependencies();
 
     // ============================================================
     // HELPERS
     // ============================================================
 
     function isObject(value) {
-        return value !== null && typeof value === 'object' && !Array.isArray(value);
+        return value !== null &&
+               typeof value === 'object' &&
+               !Array.isArray(value);
     }
 
     function isNonEmptyString(value) {
         return typeof value === 'string' && value.trim() !== '';
+    }
+
+    function normaliseId(value) {
+        return Schema.normaliseId(value);
     }
 
     function deepClone(value) {
@@ -118,28 +153,25 @@
         if (typeof structuredClone === 'function') {
             try { return structuredClone(value); } catch (_) {}
         }
-        try { return JSON.parse(JSON.stringify(value)); } catch (_) { return value; }
+        try { return JSON.parse(JSON.stringify(value)); } catch (_) {
+            return value;
+        }
     }
 
     function getCharacterDisplayName(characterId) {
-        var CharacterQueries = getCharacterQueries();
-        if (!CharacterQueries) { return 'Unknown'; }
         var char = CharacterQueries.getCharacterById(characterId);
         if (!char) { return 'Unknown'; }
         return CharacterQueries.getDisplayName(char);
     }
 
     function getTeamName(teamId) {
-        var TeamQueries = getTeamQueries();
-        if (!TeamQueries) { return 'Unknown Team'; }
         var team = TeamQueries.getTeamById(teamId);
         if (!team) { return 'Unknown Team'; }
         return team.name || 'Unknown Team';
     }
 
     function getAcademyClassDisplayName(classId) {
-        var AcademyQueries = getAcademyQueries();
-        if (!AcademyQueries || !classId) { return ''; }
+        if (!classId) { return ''; }
         return AcademyQueries.getClassDisplayName(classId) || '';
     }
 
@@ -153,18 +185,11 @@
     // RESULT DISPLAY
     // ============================================================
 
-    /**
-     * Display metadata for a result value.
-     *
-     * @param {string} outcome - 'pass' | 'fail' | 'retry' | anything
-     * @returns {object} { text, class, label }
-     */
     function getOutcomeDisplay(outcome) {
         var map = {
             'pass': { text: '\u2713', class: 'outcome-pass', label: 'Pass' },
             'retry': { text: '\u21bb', class: 'outcome-retry', label: 'Retry' },
             'fail': { text: '\u2717', class: 'outcome-fail', label: 'Fail' },
-            // Legacy mappings, kept for read compat with old data.
             'winner': { text: '\u2605', class: 'outcome-pass', label: 'Winner' },
             'eliminated': { text: '\u2718', class: 'outcome-fail', label: 'Eliminated' },
             'advancing': { text: '\u2192', class: 'outcome-pass', label: 'Advancing' },
@@ -173,12 +198,13 @@
             'pending': { text: '\u23f3', class: 'outcome-pending', label: 'Pending' },
             'unknown': { text: '?', class: 'outcome-unknown', label: 'Unknown' }
         };
-        return map[outcome] || { text: '?', class: 'outcome-unknown', label: 'Unknown' };
+        return map[outcome] || {
+            text: '?',
+            class: 'outcome-unknown',
+            label: 'Unknown'
+        };
     }
 
-    /**
-     * Category for a result value.
-     */
     function getOutcomeCategory(resultValue) {
         if (resultValue === 'pass') { return 'passed'; }
         if (resultValue === 'retry') { return 'retry'; }
@@ -188,35 +214,52 @@
 
     function getStatusDisplay(status) {
         var map = {
-            'draft': { text: 'Draft', class: 'status-draft' },
-            'active': { text: 'Active', class: 'status-active' },
+            'draft':     { text: 'Draft',     class: 'status-draft' },
+            'active':    { text: 'Active',    class: 'status-active' },
             'completed': { text: 'Completed', class: 'status-completed' }
         };
-        return map[status] || { text: status || 'Unknown', class: 'status-unknown' };
+        return map[status] || {
+            text: status || 'Unknown',
+            class: 'status-unknown'
+        };
     }
 
     function getMatchStatusDisplay(status) {
         var map = {
-            'pending': { text: 'Pending', class: 'match-status-pending' },
+            'pending':     { text: 'Pending',     class: 'match-status-pending' },
             'in_progress': { text: 'In Progress', class: 'match-status-in-progress' },
-            'completed': { text: 'Completed', class: 'match-status-completed' }
+            'completed':   { text: 'Completed',   class: 'match-status-completed' }
         };
-        return map[status] || { text: status || 'Unknown', class: 'match-status-unknown' };
+        return map[status] || {
+            text: status || 'Unknown',
+            class: 'match-status-unknown'
+        };
+    }
+
+    function getMatchTypeLabel(type) {
+        if (type === 'group_exam') { return 'Group Exam'; }
+        if (type === 'team_vs_team') { return 'Team Match'; }
+        if (type === 'standard') { return 'Standard'; }
+        return type || 'Unknown';
     }
 
     function getCanonicalParticipantType(mode) {
-        var Constants = getConstants();
-        if (Constants && typeof Constants.getCanonicalParticipantType === 'function') {
+        if (Constants &&
+            typeof Constants.getCanonicalParticipantType === 'function') {
             return Constants.getCanonicalParticipantType(mode);
         }
         return mode === 'teams' ? 'team' : 'character';
     }
 
-    function getParticipantDisplayName(tournamentId, participantId) {
-        var Queries = getTournamentQueries();
-        if (!Queries) { return 'Unknown'; }
+    // ============================================================
+    // NAME RESOLUTION
+    // ============================================================
 
-        var participantType = Queries.getParticipantTypeFromRecord(tournamentId, participantId);
+    function getParticipantDisplayName(tournamentId, participantId) {
+        var participantType = Queries.getParticipantTypeFromRecord(
+            tournamentId,
+            participantId
+        );
 
         if (participantType === 'character') {
             return getCharacterDisplayName(participantId);
@@ -231,18 +274,24 @@
     // MATCH PARTICIPANT PROJECTION
     // ============================================================
 
-    /**
-     * Build a participant display object for a match, with its outcome.
-     */
-    function buildMatchParticipantVM(tournamentId, roundIndex, matchIndex, participantId, match) {
-        var Queries = getTournamentQueries();
-        var participantType = Queries
-            ? Queries.getParticipantTypeFromRecord(tournamentId, participantId)
-            : null;
+    function buildMatchParticipantVM(
+        tournamentId,
+        roundId,
+        matchId,
+        participantId,
+        match
+    ) {
+        var participantType = Queries.getParticipantTypeFromRecord(
+            tournamentId,
+            participantId
+        );
 
-        var result = Queries
-            ? Queries.getParticipantResult(tournamentId, roundIndex, matchIndex, participantId)
-            : null;
+        var result = Queries.getParticipantResult(
+            tournamentId,
+            roundId,
+            matchId,
+            participantId
+        );
 
         var outcomeKey = result || 'pending';
         var outcomeDisplay = getOutcomeDisplay(outcomeKey);
@@ -263,17 +312,11 @@
     }
 
     // ============================================================
-    // CORE PROJECTIONS
+    // TOURNAMENT VM
     // ============================================================
 
-    /**
-     * Get a complete tournament view model for UI display.
-     */
     function getTournamentViewModel(tournamentId, options) {
         options = options || {};
-
-        var Queries = getTournamentQueries();
-        if (!Queries) { return null; }
 
         var tournament = Queries.getTournament(tournamentId);
         if (!tournament) { return null; }
@@ -302,7 +345,7 @@
             createdAt: tournament.createdAt
         };
 
-        // Participants
+        // ---- Participants ----
         if (includeParticipants) {
             var participants = Queries.getParticipants(tournamentId);
             viewModel.participants = participants.map(function(p) {
@@ -311,46 +354,68 @@
                     type: p.type,
                     typeLabel: getParticipantTypeLabel(p.type),
                     name: getParticipantDisplayName(tournamentId, p.id),
-                    eliminated: Queries.isParticipantEliminated(tournamentId, p.id),
+                    eliminated: Queries.isParticipantEliminated(
+                        tournamentId,
+                        p.id
+                    ),
                     addedAt: p.addedAt || null
                 };
             });
             viewModel.participantCount = viewModel.participants.length;
         }
 
-        // Rounds
+        // ---- Rounds ----
         if (includeRounds) {
             var rounds = Queries.getRounds(tournamentId);
             viewModel.rounds = rounds.map(function(round, index) {
-                var matches = Queries.getMatches(tournamentId, index);
+                if (!round || !isNonEmptyString(round.id)) {
+                    console.warn(
+                        '[TournamentAggregator] Round ' + index +
+                        ' in tournament ' + tournamentId +
+                        ' has no stable id. Skipping.'
+                    );
+                    return null;
+                }
+
+                var matches = Queries.getMatches(tournamentId, round.id);
+
                 return {
+                    id: round.id,
                     index: index,
                     roundNumber: round.roundNumber || (index + 1),
                     status: round.status || 'pending',
-                    statusDisplay: getMatchStatusDisplay(round.status || 'pending'),
+                    statusDisplay: getMatchStatusDisplay(
+                        round.status || 'pending'
+                    ),
                     matchSize: round.matchSize || 2,
                     matchType: round.matchType || 'group_exam',
                     matchTypeLabel: getMatchTypeLabel(round.matchType),
                     isPairExam: round.isPairExam === true,
                     matches: matches.map(function(match, matchIndex) {
-                        return getMatchViewModel(tournamentId, index, matchIndex, {
-                            includeParticipants: true
-                        });
-                    }),
+                        return getMatchViewModel(
+                            tournamentId,
+                            round.id,
+                            match.id,
+                            { includeParticipants: true }
+                        );
+                    }).filter(function(vm) { return vm !== null; }),
                     matchCount: matches.length
                 };
-            });
+            }).filter(function(vm) { return vm !== null; });
             viewModel.roundCount = viewModel.rounds.length;
         }
 
-        // Eliminations
+        // ---- Eliminations ----
         if (includeEliminations) {
             var eliminations = Queries.getEliminations(tournamentId);
             viewModel.eliminations = eliminations.map(function(e) {
                 return {
                     participantId: e.participantId,
                     participantType: e.participantType,
-                    participantName: getParticipantDisplayName(tournamentId, e.participantId),
+                    participantName: getParticipantDisplayName(
+                        tournamentId,
+                        e.participantId
+                    ),
                     week: e.week,
                     reason: e.reason || 'Eliminated',
                     standalone: e.standalone || false
@@ -359,14 +424,17 @@
             viewModel.eliminationCount = viewModel.eliminations.length;
         }
 
-        // Final passers (replaces winner)
+        // ---- Final passers ----
         if (includeFinalPassers) {
             var passers = Queries.getFinalPassers(tournamentId) || [];
             viewModel.finalPassers = passers.map(function(id) {
                 return {
                     id: id,
                     name: getParticipantDisplayName(tournamentId, id),
-                    type: Queries.getParticipantTypeFromRecord(tournamentId, id) || null
+                    type: Queries.getParticipantTypeFromRecord(
+                        tournamentId,
+                        id
+                    ) || null
                 };
             });
             viewModel.finalPasserCount = viewModel.finalPassers.length;
@@ -376,32 +444,22 @@
             viewModel.hasWinner = false;
         }
 
-        // Statistics
+        // ---- Statistics ----
         if (includeStatistics) {
-            viewModel.statistics = Queries.getTournamentStatistics(tournamentId);
+            viewModel.statistics = Queries.getTournamentStatistics(
+                tournamentId
+            );
         }
 
         return viewModel;
     }
 
-    function getMatchTypeLabel(type) {
-        if (type === 'group_exam') { return 'Group Exam'; }
-        if (type === 'team_vs_team') { return 'Team Match'; }
-        if (type === 'standard') { return 'Standard'; }
-        return type || 'Unknown';
-    }
-
     // ============================================================
-    // LIST VIEW MODEL
+    // LIST VM
     // ============================================================
 
     function getTournamentListViewModel(options) {
         options = options || {};
-
-        var Queries = getTournamentQueries();
-        if (!Queries) {
-            return { tournaments: [], total: 0, filtered: 0 };
-        }
 
         var filter = options.filter || null;
         var search = options.search || '';
@@ -414,7 +472,8 @@
         if (search) {
             var lowerSearch = search.toLowerCase();
             tournaments = tournaments.filter(function(t) {
-                return t.name && t.name.toLowerCase().indexOf(lowerSearch) !== -1;
+                return t.name &&
+                    t.name.toLowerCase().indexOf(lowerSearch) !== -1;
             });
         }
 
@@ -453,7 +512,7 @@
                     bVal = b.name || '';
                     break;
                 case 'status':
-                    var order = { 'draft': 0, 'active': 1, 'completed': 2 };
+                    var order = { draft: 0, active: 1, completed: 2 };
                     aVal = order[a.status] || 999;
                     bVal = order[b.status] || 999;
                     break;
@@ -489,35 +548,35 @@
     }
 
     // ============================================================
-    // ROUND VIEW MODEL
+    // ROUND VM - BY ID
     // ============================================================
 
-    function getRoundViewModel(tournamentId, roundIndex, options) {
+    function getRoundViewModel(tournamentId, roundId, options) {
         options = options || {};
-
-        var Queries = getTournamentQueries();
-        if (!Queries) { return null; }
 
         var tournament = Queries.getTournament(tournamentId);
         if (!tournament) { return null; }
 
-        var rounds = Queries.getRounds(tournamentId);
-        var index = parseInt(roundIndex, 10);
-        if (isNaN(index) || index < 0 || index >= rounds.length) {
-            return null;
-        }
+        var normalisedRoundId = normaliseId(roundId);
+        if (normalisedRoundId === null) { return null; }
 
-        var round = rounds[index];
+        var round = Queries.getRound(tournamentId, normalisedRoundId);
         if (!round) { return null; }
 
+        var roundIndex = Queries.getRoundIndex(
+            tournamentId,
+            normalisedRoundId
+        );
+
         var includeMatchDetails = options.includeMatchDetails !== false;
-        var matches = Queries.getMatches(tournamentId, index);
+        var matches = Queries.getMatches(tournamentId, normalisedRoundId);
 
         return {
             tournamentId: tournamentId,
             tournamentName: tournament.name,
-            index: index,
-            roundNumber: round.roundNumber || (index + 1),
+            id: round.id,
+            index: roundIndex >= 0 ? roundIndex : 0,
+            roundNumber: round.roundNumber || (roundIndex + 1),
             status: round.status || 'pending',
             statusDisplay: getMatchStatusDisplay(round.status || 'pending'),
             matchSize: round.matchSize || 2,
@@ -526,18 +585,22 @@
             isPairExam: round.isPairExam === true,
             matchCount: matches.length,
             matches: includeMatchDetails
-                ? matches.map(function(match, matchIndex) {
-                    return getMatchViewModel(tournamentId, index, matchIndex, {
-                        includeParticipants: true
-                    });
-                })
-                : matches.map(function(match, matchIndex) {
+                ? matches.map(function(match) {
+                    return getMatchViewModel(
+                        tournamentId,
+                        normalisedRoundId,
+                        match.id,
+                        { includeParticipants: true }
+                    );
+                }).filter(function(vm) { return vm !== null; })
+                : matches.map(function(match) {
                     return {
-                        index: matchIndex,
-                        id: match.id || null,
+                        id: match.id,
                         type: match.type || 'group_exam',
                         status: match.status || 'pending',
-                        statusDisplay: getMatchStatusDisplay(match.status || 'pending'),
+                        statusDisplay: getMatchStatusDisplay(
+                            match.status || 'pending'
+                        ),
                         participantCount: Array.isArray(match.participants)
                             ? match.participants.length
                             : 0,
@@ -548,40 +611,40 @@
     }
 
     // ============================================================
-    // MATCH VIEW MODEL
+    // MATCH VM - BY ID
     // ============================================================
 
-    /**
-     * Get a match view model with participant results.
-     *
-     * For group_exam / pair_exam:
-     *   viewModel.participants carries per-participant results.
-     *   viewModel.pairings carries resolved pair groupings when the
-     *   match is a pair exam.
-     *
-     * For team_vs_team:
-     *   viewModel.teams carries team-level results, each with a
-     *   `members` array of resolved character results.
-     *   viewModel.participants stays flat for compatibility.
-     */
-    function getMatchViewModel(tournamentId, roundIndex, matchIndex, options) {
+    function getMatchViewModel(tournamentId, roundId, matchId, options) {
         options = options || {};
 
-        var Queries = getTournamentQueries();
-        if (!Queries) { return null; }
+        var normalisedRoundId = normaliseId(roundId);
+        var normalisedMatchId = normaliseId(matchId);
+        if (normalisedRoundId === null || normalisedMatchId === null) {
+            return null;
+        }
 
-        var match = Queries.getMatch(tournamentId, roundIndex, matchIndex);
+        var match = Queries.getMatch(
+            tournamentId,
+            normalisedRoundId,
+            normalisedMatchId
+        );
         if (!match) { return null; }
 
         var includeParticipants = options.includeParticipants !== false;
-
         var type = match.type || 'group_exam';
+
+        var matchIndex = Queries.getMatchIndex(
+            tournamentId,
+            normalisedRoundId,
+            normalisedMatchId
+        );
 
         var viewModel = {
             tournamentId: tournamentId,
-            roundIndex: roundIndex,
-            index: matchIndex,
-            id: match.id || null,
+            roundId: normalisedRoundId,
+            roundIndex: Queries.getRoundIndex(tournamentId, normalisedRoundId),
+            id: normalisedMatchId,
+            index: matchIndex >= 0 ? matchIndex : 0,
             type: type,
             typeLabel: getMatchTypeLabel(type),
             status: match.status || 'pending',
@@ -601,20 +664,29 @@
         }
 
         if (type === 'group_exam') {
-            var participants = Array.isArray(match.participants) ? match.participants : [];
+            var participants = Array.isArray(match.participants)
+                ? match.participants
+                : [];
             viewModel.participants = participants.map(function(pid) {
                 return buildMatchParticipantVM(
-                    tournamentId, roundIndex, matchIndex, pid, match
+                    tournamentId,
+                    normalisedRoundId,
+                    normalisedMatchId,
+                    pid,
+                    match
                 );
             });
             viewModel.participantCount = viewModel.participants.length;
 
-            // Resolve pairings when this is a pair exam.
             if (match.isPairExam && Array.isArray(match.pairings)) {
                 viewModel.pairings = match.pairings.map(function(pair) {
                     return pair.map(function(pid) {
                         return buildMatchParticipantVM(
-                            tournamentId, roundIndex, matchIndex, pid, match
+                            tournamentId,
+                            normalisedRoundId,
+                            normalisedMatchId,
+                            pid,
+                            match
                         );
                     });
                 });
@@ -622,32 +694,41 @@
         }
 
         if (type === 'team_vs_team') {
-            var teams = Array.isArray(match.participants) ? match.participants : [];
+            var teams = Array.isArray(match.participants)
+                ? match.participants
+                : [];
             viewModel.participants = teams.map(function(tid) {
                 return buildMatchParticipantVM(
-                    tournamentId, roundIndex, matchIndex, tid, match
+                    tournamentId,
+                    normalisedRoundId,
+                    normalisedMatchId,
+                    tid,
+                    match
                 );
             });
             viewModel.participantCount = viewModel.participants.length;
 
             viewModel.teams = teams.map(function(tid) {
-                var teamVM = buildTeamMatchTeamVM(
-                    tournamentId, roundIndex, matchIndex, tid, match
+                return buildTeamMatchTeamVM(
+                    tournamentId,
+                    normalisedRoundId,
+                    normalisedMatchId,
+                    tid,
+                    match
                 );
-                return teamVM;
             });
         }
 
         return viewModel;
     }
 
-    /**
-     * Build a team-level view model with member sub-rows.
-     */
-    function buildTeamMatchTeamVM(tournamentId, roundIndex, matchIndex, teamId, match) {
-        var Queries = getTournamentQueries();
-        var TeamQueries = getTeamQueries();
-
+    function buildTeamMatchTeamVM(
+        tournamentId,
+        roundId,
+        matchId,
+        teamId,
+        match
+    ) {
         var teamResult = null;
         if (match.teamResults && match.teamResults[teamId] !== undefined) {
             teamResult = match.teamResults[teamId];
@@ -656,11 +737,7 @@
 
         var members = [];
 
-        // Resolve member characters from the team's roster.
-        var teamObj = TeamQueries && typeof TeamQueries.getTeamById === 'function'
-            ? TeamQueries.getTeamById(teamId)
-            : null;
-
+        var teamObj = TeamQueries.getTeamById(teamId);
         if (teamObj && Array.isArray(teamObj.members)) {
             for (var i = 0; i < teamObj.members.length; i++) {
                 var member = teamObj.members[i];
@@ -671,7 +748,9 @@
                     match.individualResults[member.characterId] !== undefined) {
                     charResult = match.individualResults[member.characterId];
                 }
-                var charOutcomeDisplay = getOutcomeDisplay(charResult || 'pending');
+                var charOutcomeDisplay = getOutcomeDisplay(
+                    charResult || 'pending'
+                );
 
                 members.push({
                     characterId: member.characterId,
@@ -711,10 +790,11 @@
         if (!tournamentId || !participantId) {
             return 'Unknown';
         }
-        var Queries = getTournamentQueries();
-        if (!Queries) { return 'Unknown'; }
 
-        var participantType = Queries.getParticipantTypeFromRecord(tournamentId, participantId);
+        var participantType = Queries.getParticipantTypeFromRecord(
+            tournamentId,
+            participantId
+        );
 
         if (participantType === 'character') {
             return getCharacterDisplayName(participantId);
@@ -730,25 +810,25 @@
      * on new data. Use getFinalPassersView instead.
      */
     function getWinnerName(tournamentId) {
-        var Queries = getTournamentQueries();
-        if (!Queries) { return 'Not determined'; }
-
         var winner = Queries.getWinner(tournamentId);
         if (!winner) { return 'Not determined'; }
-
         return getParticipantName(tournamentId, winner.id);
     }
 
     function getParticipantDisplay(tournamentId, participantId) {
         if (!tournamentId || !participantId) {
-            return { id: null, name: 'Unknown', type: null, typeLabel: 'Unknown' };
-        }
-        var Queries = getTournamentQueries();
-        if (!Queries) {
-            return { id: participantId, name: 'Unknown', type: null, typeLabel: 'Unknown' };
+            return {
+                id: null,
+                name: 'Unknown',
+                type: null,
+                typeLabel: 'Unknown'
+            };
         }
 
-        var type = Queries.getParticipantTypeFromRecord(tournamentId, participantId);
+        var type = Queries.getParticipantTypeFromRecord(
+            tournamentId,
+            participantId
+        );
         var name = getParticipantName(tournamentId, participantId);
 
         return {
@@ -765,21 +845,17 @@
     }
 
     // ============================================================
-    // FINAL PASSERS VIEW
+    // FINAL PASSERS
     // ============================================================
 
-    /**
-     * Get the list of final passers for a tournament, resolved to
-     * display names.
-     */
     function getFinalPassersView(tournamentId) {
-        var Queries = getTournamentQueries();
-        if (!Queries) { return { passers: [], count: 0 }; }
-
         var passers = Queries.getFinalPassers(tournamentId) || [];
 
         var items = passers.map(function(id) {
-            var type = Queries.getParticipantTypeFromRecord(tournamentId, id);
+            var type = Queries.getParticipantTypeFromRecord(
+                tournamentId,
+                id
+            );
             return {
                 id: id,
                 name: getParticipantDisplayName(tournamentId, id),
@@ -798,20 +874,27 @@
     // PAIR EXAM GROUPINGS
     // ============================================================
 
-    /**
-     * Get pair exam groupings for a match, resolved to display objects.
-     * Returns null if the match is not a pair exam.
-     */
-    function getPairExamGroupings(tournamentId, roundIndex, matchIndex) {
-        var Queries = getTournamentQueries();
-        if (!Queries) { return null; }
+    function getPairExamGroupings(tournamentId, roundId, matchId) {
+        var normalisedRoundId = normaliseId(roundId);
+        var normalisedMatchId = normaliseId(matchId);
+        if (normalisedRoundId === null || normalisedMatchId === null) {
+            return null;
+        }
 
-        var match = Queries.getMatch(tournamentId, roundIndex, matchIndex);
+        var match = Queries.getMatch(
+            tournamentId,
+            normalisedRoundId,
+            normalisedMatchId
+        );
         if (!match || match.isPairExam !== true) {
             return null;
         }
 
-        var pairings = Queries.getPairings(tournamentId, roundIndex, matchIndex);
+        var pairings = Queries.getPairings(
+            tournamentId,
+            normalisedRoundId,
+            normalisedMatchId
+        );
         if (!pairings || pairings.length === 0) {
             return { groups: [], groupCount: 0 };
         }
@@ -819,7 +902,11 @@
         var groups = pairings.map(function(pair) {
             return pair.map(function(pid) {
                 return buildMatchParticipantVM(
-                    tournamentId, roundIndex, matchIndex, pid, match
+                    tournamentId,
+                    normalisedRoundId,
+                    normalisedMatchId,
+                    pid,
+                    match
                 );
             });
         });
@@ -830,21 +917,24 @@
         };
     }
 
-    /**
-     * Specialized view model for a team match, exposing two layers.
-     * Delegates to getMatchViewModel but guarantees the teams array
-     * is populated.
-     */
-    function getTeamMatchViewModel(tournamentId, roundIndex, matchIndex) {
-        var matchVM = getMatchViewModel(tournamentId, roundIndex, matchIndex, {
-            includeParticipants: true
-        });
+    // ============================================================
+    // TEAM MATCH VM
+    // ============================================================
+
+    function getTeamMatchViewModel(tournamentId, roundId, matchId) {
+        var matchVM = getMatchViewModel(
+            tournamentId,
+            roundId,
+            matchId,
+            { includeParticipants: true }
+        );
         if (!matchVM || matchVM.type !== 'team_vs_team') {
             return null;
         }
         return {
             id: matchVM.id,
             index: matchVM.index,
+            roundId: matchVM.roundId,
             roundIndex: matchVM.roundIndex,
             status: matchVM.status,
             statusDisplay: matchVM.statusDisplay,
@@ -857,24 +947,37 @@
     // MATCH DISPLAY
     // ============================================================
 
-    function getMatchDisplay(tournamentId, roundIndex, matchIndex) {
-        var Queries = getTournamentQueries();
-        if (!Queries) { return null; }
+    function getMatchDisplay(tournamentId, roundId, matchId) {
+        var normalisedRoundId = normaliseId(roundId);
+        var normalisedMatchId = normaliseId(matchId);
+        if (normalisedRoundId === null || normalisedMatchId === null) {
+            return null;
+        }
 
-        var match = Queries.getMatch(tournamentId, roundIndex, matchIndex);
+        var match = Queries.getMatch(
+            tournamentId,
+            normalisedRoundId,
+            normalisedMatchId
+        );
         if (!match) { return null; }
 
         var type = match.type || 'group_exam';
-        var participants = Array.isArray(match.participants) ? match.participants : [];
+        var participants = Array.isArray(match.participants)
+            ? match.participants
+            : [];
 
         var participantDisplays = participants.map(function(id) {
             return buildMatchParticipantVM(
-                tournamentId, roundIndex, matchIndex, id, match
+                tournamentId,
+                normalisedRoundId,
+                normalisedMatchId,
+                id,
+                match
             );
         });
 
         var display = {
-            id: match.id || null,
+            id: normalisedMatchId,
             type: type,
             typeLabel: getMatchTypeLabel(type),
             status: match.status || 'pending',
@@ -886,22 +989,28 @@
             isComplete: match.status === 'completed'
         };
 
-        // Pair exam groupings
         if (match.isPairExam && Array.isArray(match.pairings)) {
             display.pairings = match.pairings.map(function(pair) {
                 return pair.map(function(pid) {
                     return buildMatchParticipantVM(
-                        tournamentId, roundIndex, matchIndex, pid, match
+                        tournamentId,
+                        normalisedRoundId,
+                        normalisedMatchId,
+                        pid,
+                        match
                     );
                 });
             });
         }
 
-        // Team match teams with members
         if (type === 'team_vs_team') {
             display.teams = participants.map(function(tid) {
                 return buildTeamMatchTeamVM(
-                    tournamentId, roundIndex, matchIndex, tid, match
+                    tournamentId,
+                    normalisedRoundId,
+                    normalisedMatchId,
+                    tid,
+                    match
                 );
             });
         }
@@ -914,9 +1023,6 @@
     // ============================================================
 
     function getTournamentOverview(tournamentId) {
-        var Queries = getTournamentQueries();
-        if (!Queries) { return null; }
-
         var tournament = Queries.getTournament(tournamentId);
         if (!tournament) { return null; }
 
@@ -929,7 +1035,7 @@
         });
 
         var roundStatuses = rounds.map(function(round, index) {
-            var matches = Queries.getMatches(tournamentId, index);
+            var matches = Queries.getMatches(tournamentId, round.id);
             var completed = 0;
             for (var i = 0; i < matches.length; i++) {
                 if (matches[i].status === 'completed') {
@@ -937,6 +1043,8 @@
                 }
             }
             return {
+                id: round.id,
+                index: index,
                 roundNumber: round.roundNumber || (index + 1),
                 matchCount: matches.length,
                 completedCount: completed,
@@ -974,7 +1082,8 @@
             eliminationCount: stats.eliminationCount,
             matchCount: stats.matchCount,
             completedMatchCount: stats.completedMatchCount,
-            isComplete: completedRounds === rounds.length && rounds.length > 0,
+            isComplete: completedRounds === rounds.length &&
+                rounds.length > 0,
             graduatingClassName: tournament.graduatingClassId
                 ? getAcademyClassDisplayName(tournament.graduatingClassId)
                 : ''
@@ -982,17 +1091,12 @@
     }
 
     // ============================================================
-    // ACTIVE TOURNAMENTS VIEW MODEL
+    // ACTIVE TOURNAMENTS VM
     // ============================================================
 
     function getActiveTournamentsViewModel(options) {
         options = options || {};
         var limit = options.limit || 0;
-
-        var Queries = getTournamentQueries();
-        if (!Queries) {
-            return { tournaments: [], count: 0 };
-        }
 
         var tournaments = Queries.getActiveTournaments();
 
@@ -1059,35 +1163,5 @@
         getTournamentOverview: getTournamentOverview,
         getActiveTournamentsViewModel: getActiveTournamentsViewModel
     };
-
-    // ============================================================
-    // VERIFICATION
-    // ============================================================
-
-    (function verify() {
-        var exports = window.TournamentAggregator;
-        var missing = [];
-
-        var required = [
-            'getTournamentViewModel', 'getTournamentListViewModel',
-            'getRoundViewModel', 'getMatchViewModel',
-            'getParticipantName', 'getParticipantDisplay', 'getClassName',
-            'getOutcomeDisplay', 'getOutcomeCategory', 'getMatchTypeLabel',
-            'getStatusDisplay', 'getMatchStatusDisplay', 'getParticipantTypeLabel',
-            'getMatchDisplay', 'getPairExamGroupings', 'getTeamMatchViewModel',
-            'getFinalPassersView',
-            'getTournamentOverview', 'getActiveTournamentsViewModel'
-        ];
-
-        for (var i = 0; i < required.length; i++) {
-            if (typeof exports[required[i]] !== 'function') {
-                missing.push(required[i]);
-            }
-        }
-
-        if (missing.length > 0) {
-            console.warn('[TournamentAggregator] Verification - some exports may be missing:', missing.join(', '));
-        }
-    })();
 
 })();
