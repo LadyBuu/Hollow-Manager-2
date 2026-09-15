@@ -24,24 +24,23 @@
  *   - Delegation is scoped to the container. No document-level
  *     listeners that could match unrelated UI.
  *
- * MODAL STATE:
- *   Modal state (which team, which member, which ranking period) is
- *   owned by TeamUI. The DOM does not carry state via dataset
- *   attributes; the only exception is the character ID on a
- *   membership row, which is read by the delegated handler from the
- *   click target. That is a routing concern, not state.
+ * MODAL LIFECYCLE:
+ *   All modals owned by this module are declared in
+ *   TeamRender.getModalsHTML() and inserted into the container on
+ *   every full-page render. That means:
  *
- * VALIDATION:
- *   The event layer performs only immediate UX validation
- *   (required-field checks, "please select a character"). Domain
- *   validation (name uniqueness, period bounds, role validity,
- *   rank positivity) lives in TeamCore and is enforced by the
- *   pipeline. The event layer submits and lets the pipeline
- *   reject.
+ *     1. The modal SHELLS are replaced on every refreshUI().
+ *     2. Any listener bound directly to a modal element at
+ *        init-time is lost after the first render.
+ *     3. Modal lifecycle (backdrop click, escape key, focus trap,
+ *        focus restore) is owned by window.Modal. Show modals by
+ *        calling Modal.modalSetup(modal) followed by
+ *        Modal.showModal(modal). Do not roll your own show path —
+ *        that bypasses the lifecycle and leaves modals stuck open.
  *
- * PERSISTENCE:
- *   TeamCore and TeamEvents both delegate to MutationPipeline for
- *   persistence. This module does not call saveData.
+ *   Close is handled by a container-delegated click listener for
+ *   `.modal .close-modal` plus the modal's own backdrop-click and
+ *   escape-key handlers installed by modalSetup.
  *
  * DEPENDENCIES:
  *   - window.TeamCore       (MANDATORY)
@@ -148,6 +147,9 @@
         }
         if (!Modal || typeof Modal.closeModal !== 'function') {
             missing.push('Modal.closeModal');
+        }
+        if (!Modal || typeof Modal.modalSetup !== 'function') {
+            missing.push('Modal.modalSetup');
         }
 
         if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
@@ -323,6 +325,7 @@
         bindTabSwitching();
         bindAddTeam();
         bindTeamActions();
+        bindModalCloseDelegation();   // NEW: single delegated close handler
         bindTeamFormModal();
         bindMemberModal();
         bindEditMemberModal();
@@ -337,6 +340,104 @@
         removeAllEventListeners();
         _initialized = false;
         _container = null;
+    }
+
+    // ============================================================
+    // MODAL CLOSE DELEGATION
+    // ============================================================
+    //
+    // All team modals live inside _container (rendered by
+    // TeamRender.getModalsHTML()). Every full-page render replaces
+    // their shells. Because delegation is scoped to _container and
+    // matches by class, this one handler covers every modal's
+    // `.close-modal` button across every re-render.
+    //
+    // Backdrop click and escape key are installed per-modal by
+    // Modal.modalSetup(); they are not handled here.
+    //
+    // When a modal is closed this way, we also clear TeamUI's modal
+    // state. That keeps the UI-state model consistent with the DOM:
+    // no phantom "modal open" state pointing at a hidden modal.
+
+    function bindModalCloseDelegation() {
+        delegate('.modal .close-modal', 'click', function(e, target) {
+            e.preventDefault();
+            e.stopPropagation();
+
+            var modal = target.closest('.modal');
+            if (!modal) return;
+
+            closeModalAndClearState(modal);
+        });
+    }
+
+    /**
+     * Close a modal and clear transient UI state.
+     *
+     * Shared by the delegated close handler and any per-modal
+     * close wrapper (e.g. closeMemberModal's explicit path). Uses
+     * Modal.hideModal() rather than closeModal() when available, so
+     * the modal element is hidden but not removed — its shell
+     * persists in the container and will be reused on next open.
+     *
+     * If Modal.hideModal is unavailable (defensive), falls back to
+     * toggling the hidden class directly, mirroring the previous
+     * local wrapper's behavior.
+     */
+    function closeModalAndClearState(modal) {
+        if (!modal) return;
+
+        try {
+            if (Modal && typeof Modal.hideModal === 'function') {
+                Modal.hideModal(modal);
+            } else if (Modal && typeof Modal.closeModal === 'function') {
+                Modal.closeModal(modal);
+            } else {
+                modal.classList.add('hidden');
+                modal.style.display = 'none';
+            }
+        } catch (err) {
+            console.warn('[TeamEvents] modal close failed:', err);
+            modal.classList.add('hidden');
+            modal.style.display = 'none';
+        }
+
+        TeamUI.clearModalState();
+    }
+
+    // ============================================================
+    // MODAL SHOW HELPER
+    // ============================================================
+    //
+    // SINGLE place this module opens a modal. Always installs the
+    // Modal lifecycle (backdrop click, escape key, focus trap) before
+    // showing. Bypassing this helper — by calling Modal.showModal
+    // directly — leaves the modal without a close path.
+
+    function showModal(modal) {
+        if (!modal) return;
+
+        try {
+            if (Modal && typeof Modal.modalSetup === 'function') {
+                Modal.modalSetup(modal);
+            }
+        } catch (err) {
+            console.warn('[TeamEvents] Modal.modalSetup failed:', err);
+        }
+
+        try {
+            if (Modal && typeof Modal.showModal === 'function') {
+                Modal.showModal(modal);
+                return;
+            }
+        } catch (err) {
+            console.warn('[TeamEvents] Modal.showModal failed:', err);
+        }
+
+        // Defensive fallback: show without lifecycle.
+        // This should not be reached in normal operation.
+        modal.classList.remove('hidden');
+        modal.style.display = 'flex';
     }
 
     // ============================================================
@@ -373,12 +474,19 @@
             return;
         }
 
-        var modal = Modal.createModal('team-form-modal');
-
-        // Reuse the shell rendered by getModalsHTML.
-        var shell = document.getElementById('team-form-modal');
-        if (shell) {
-            modal = shell;
+        // The shell exists in the DOM (from getModalsHTML). Reuse it.
+        var modal = document.getElementById('team-form-modal');
+        if (!modal) {
+            // Defensive: if a caller invokes showTeamForm before the
+            // page has rendered its modal shells, create one.
+            modal = Modal.createModal('team-form-modal');
+            modal.id = 'team-form-modal';
+            document.body.appendChild(modal);
+            var createdContent = document.createElement('div');
+            createdContent.className = 'modal-content';
+            createdContent.innerHTML = TeamRender.getModalsHTML();
+            modal.appendChild(createdContent);
+            modal = document.getElementById('team-form-modal');
         }
 
         var body = modal.querySelector('#team-form-body');
@@ -394,10 +502,11 @@
             titleEl.textContent = formVM.isEdit ? 'Edit Team' : 'Add Team';
         }
 
-        showModal(modal);
-
-        // Sync TeamUI modal state.
+        // Sync TeamUI modal state BEFORE showing, so any handler
+        // that fires from modalSetup/showModal sees the right team.
         TeamUI.setModalTeamId(formVM.isEdit ? formVM.teamId : null);
+
+        showModal(modal);
 
         bindTeamFormSubmit(modal);
     }
@@ -405,9 +514,10 @@
     function closeTeamForm() {
         var modal = document.getElementById('team-form-modal');
         if (modal) {
-            hideModal(modal);
+            closeModalAndClearState(modal);
+        } else {
+            TeamUI.clearModalState();
         }
-        TeamUI.clearModalState();
     }
 
     function bindTeamFormModal() {
@@ -661,6 +771,8 @@
         }
 
         TeamUI.setModalTeamId(teamId);
+
+        // showModal installs the lifecycle before displaying.
         showModal(modal);
     }
 
@@ -680,8 +792,11 @@
 
     function closeMemberModal() {
         var modal = document.getElementById('member-modal');
-        if (modal) hideModal(modal);
-        TeamUI.clearModalState();
+        if (modal) {
+            closeModalAndClearState(modal);
+        } else {
+            TeamUI.clearModalState();
+        }
     }
 
     function bindMemberModal() {
@@ -816,13 +931,21 @@
         });
 
         TeamUI.setModalMemberId(charId);
+
+        // showModal installs the lifecycle before displaying.
         showModal(modal);
+
+        // Fresh form was just inserted — bind its submit handler.
+        bindEditMemberFormSubmit();
     }
 
     function closeEditMemberModal() {
         var modal = document.getElementById('edit-member-modal');
-        if (modal) hideModal(modal);
-        TeamUI.setModalMemberId(null);
+        if (modal) {
+            closeModalAndClearState(modal);
+        } else {
+            TeamUI.setModalMemberId(null);
+        }
     }
 
     function bindEditMemberModal() {
@@ -830,9 +953,6 @@
             e.preventDefault();
             closeEditMemberModal();
         });
-
-        // Form submit is bound when the modal opens; the form is
-        // created fresh each time, so a direct listener is correct.
     }
 
     function bindEditMemberFormSubmit() {
@@ -842,15 +962,17 @@
         var form = modal.querySelector('#edit-member-form');
         if (!form) return;
 
+        // Guard against double-binding when the form is re-rendered
+        // while the modal stays open (e.g. rapid edit → edit).
+        if (form._submitBound) {
+            return;
+        }
+        form._submitBound = true;
+
         form.addEventListener('submit', function(e) {
             e.preventDefault();
             saveEditMember(form);
         });
-
-        var cancelBtn = modal.querySelector('#cancel-edit-member');
-        if (cancelBtn) {
-            cancelBtn.addEventListener('click', closeEditMemberModal);
-        }
     }
 
     function saveEditMember(form) {
@@ -917,15 +1039,18 @@
         if (rankEl) rankEl.value = '';
 
         TeamUI.setModalTeamId(teamId);
-        showModal(modal);
 
-        bindRankingFormSubmit();
+        // showModal installs the lifecycle before displaying.
+        showModal(modal);
     }
 
     function closeRankingModal() {
         var modal = document.getElementById('ranking-modal');
-        if (modal) hideModal(modal);
-        TeamUI.clearModalState();
+        if (modal) {
+            closeModalAndClearState(modal);
+        } else {
+            TeamUI.clearModalState();
+        }
     }
 
     function bindRankingModal() {
@@ -949,12 +1074,6 @@
                 });
             }
         });
-    }
-
-    function bindRankingFormSubmit() {
-        // The add-ranking button is delegated. No form submit path
-        // since the form has no <form> wrapper with submit semantics
-        // in the modal.
     }
 
     function addRankingFromModal() {
@@ -1079,41 +1198,6 @@
     }
 
     // ============================================================
-    // MODAL UTILITY WRAPPERS
-    // ============================================================
-
-    function showModal(modal) {
-        try {
-            if (Modal && typeof Modal.showModal === 'function') {
-                Modal.showModal(modal);
-                return;
-            }
-        } catch (e) { /* fall through */ }
-        // Fallback: toggle class directly.
-        if (modal) {
-            modal.classList.remove('hidden');
-            modal.style.display = 'flex';
-        }
-    }
-
-    function hideModal(modal) {
-        try {
-            if (Modal && typeof Modal.hideModal === 'function') {
-                Modal.hideModal(modal);
-                return;
-            }
-            if (Modal && typeof Modal.closeModal === 'function') {
-                Modal.closeModal(modal);
-                return;
-            }
-        } catch (e) { /* fall through */ }
-        if (modal) {
-            modal.classList.add('hidden');
-            modal.style.display = 'none';
-        }
-    }
-
-    // ============================================================
     // ESCAPING (only used to build small option lists in-place)
     // ============================================================
 
@@ -1124,19 +1208,6 @@
     function escapeAttr(value) {
         return DomUtils.escapeAttribute(value);
     }
-
-    // ============================================================
-    // EDIT MEMBER MODAL BINDING HOOK
-    // ============================================================
-    //
-    // showEditMemberModal creates a fresh form and inserts it. Bind
-    // the submit handler immediately after.
-
-    var _origShowEditMemberModal = showEditMemberModal;
-    showEditMemberModal = function(teamId, charId) {
-        _origShowEditMemberModal(teamId, charId);
-        bindEditMemberFormSubmit();
-    };
 
     // ============================================================
     // EXPOSE
