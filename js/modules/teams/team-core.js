@@ -1,56 +1,94 @@
 /**
  * modules/teams/team-core.js - Team Core
- * CANONICAL mutation API for teams
+ * CANONICAL mutation API for teams.
+ *
+ * Path: js/modules/teams/team-core.js
  *
  * This module provides:
- *   - Team CRUD operations (create, update, delete)
- *   - Member management (add, remove, update)
- *   - Ranking management (add, remove)
- *   - Team read access (getTeam, getTeamIndex)
+ *   - Team CRUD (create, update, delete)
+ *   - Member mutation (add, remove, update)
+ *   - Ranking mutation (add, remove)
+ *   - Configuration (characterProvider injection)
+ *   - Cross-domain cascade helper (stripCharacterRefs)
  *
  * IMPORTANT:
- *   - This is the CANONICAL mutation API for teams
- *   - All team mutations go through MutationPipeline
- *   - Uses TeamConstants for type/status validation
- *   - Uses injected characterProvider for character existence
- *   - Pipeline owns persistence, activity logging, and rollback
- *   - Does NOT depend on TeamQueries (no circular dependency)
- *   - Internally organised by domain (CRUD, Members, Rankings)
+ *   - This is the CANONICAL mutation API for teams.
+ *   - All mutations go through MutationPipeline. The pipeline owns
+ *     persistence, rollback, and activity logging.
+ *   - This module does NOT expose public read APIs. Team reads are
+ *     owned by TeamQueries. Any caller that wants a team record uses
+ *     TeamQueries.getTeamById.
+ *   - Reads performed inside this module are for pre-flight checks
+ *     and pipeline validate() callbacks. They are not part of the
+ *     public surface.
+ *   - The characterProvider is injected via configure(). TeamCore
+ *     does not know how characters are stored.
+ *   - This module does NOT call saveData.
+ *   - This module does NOT render, notify, or touch the DOM.
  *
  * MUTATION CONTRACT:
- *   - All mutations return a Promise that resolves to
- *     { success: boolean, data?: any, message?: string }
- *   - Invalid inputs are REJECTED (resolve with { success: false })
- *   - Mutations are ATOMIC: if persistence fails, window.data is
- *     restored from the pipeline's snapshot
- *   - Valid no-op updates resolve with { success: true, data: existing }
+ *   All public mutations return a Promise that resolves to
+ *   { success: boolean, data?: any, message?: string }.
+ *
+ *   Invalid inputs are REJECTED. The mutation validators check the
+ *   FULL proposed state (candidate) before applying it. Silent
+ *   ignoring of invalid fields — the previous behaviour of the old
+ *   updateTeam — is gone.
+ *
+ *   Validations run twice:
+ *     1. Pre-flight against window.data. Fast fail for obvious
+ *        problems. This is not authoritative; another mutation
+ *        could have been queued between pre-flight and the pipeline.
+ *     2. Inside the pipeline's validate() callback against the
+ *        snapshot. This IS authoritative. It re-derives the
+ *        candidate from the snapshot and re-validates.
+ *
+ * PERIOD SEMANTICS:
+ *   - Periods are positive integers (or integer strings). TeamConstants
+ *     owns the parser and per-type bounds.
+ *   - Periods are canonicalised to numeric strings on write:
+ *     period: "2025", not 2025, not "02025".
+ *   - Invalid periods are rejected, not coerced.
+ *
+ * STATUS SEMANTICS:
+ *   - Valid statuses: active, inactive, deprecated. Enforced via
+ *     TeamConstants.isValidTeamStatus.
+ *
+ * TYPE-CHANGE SEMANTICS:
+ *   - Changing a team's type revalidates its member periods and
+ *     ranking history periods against the new type's bounds.
+ *     A change that would produce an internally inconsistent record
+ *     is rejected.
  *
  * DATA STORE CONTRACT:
- *   - window.data must exist and contain a teams array
- *   - If window.data or window.data.teams is missing, mutations
- *     resolve with { success: false }
- *   - window.saveData must be a function (MutationPipeline calls it)
+ *   - window.data.teams is the canonical store.
+ *   - Reads inside pipeline callbacks use the appData snapshot.
+ *   - Reads inside pre-flight use window.data.
  *
- * TEAM TYPES & STATUSES:
- *   - Types: academic, professional, temporary, civilian
- *   - Statuses: active, inactive, deprecated
- *   - 'deleted' is NOT stored - teams are physically removed
+ * DEFAULT ROLE:
+ *   - DEFAULT_ROLE ('Member') is the fallback when a caller supplies
+ *     an empty role. Role is a free-form string; TeamConstants does
+ *     not enforce a closed enum.
  *
- * YEAR SEMANTICS:
- *   - Years are UNBOUNDED positive integers.
- *   - There is no MIN_YEAR or MAX_YEAR.
- *   - Year-based team types (professional, temporary, civilian)
- *     accept any integer >= 1 as a valid period.
- *   - Academic teams still use bounded weeks (1-52).
+ * CASCADE SEMANTICS (stripCharacterRefs):
+ *   When a character is deleted, member records referencing that
+ *   character are removed from every team. This helper is PURE with
+ *   respect to appData: it mutates the snapshot but does not touch
+ *   window.data. It runs inside another module's pipeline
+ *   transaction. It never throws.
  *
- * EXTERNAL DEPENDENCIES (INJECTED):
- *   - characterProvider: { exists: function(id) { return true/false } }
+ *   Cross-domain cleanup (weekly teams, tournament participants,
+ *   etc.) is not this module's concern. A future TeamCascade
+ *   coordinator will own that list.
  *
  * DEPENDENCIES:
- *   - window.TeamConstants (from team-constants.js) - MANDATORY
- *   - window.ObjectUtils (from object-utils.js) - MANDATORY
- *   - window.IdUtils (from id-utils.js) - MANDATORY
+ *   - window.TeamConstants    (from team-constants.js) - MANDATORY
+ *   - window.IdUtils          (from id-utils.js) - MANDATORY
  *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
+ *   - window.ObjectUtils      (from object-utils.js) - MANDATORY
+ *     (used by MutationPipeline and by the candidate builders here)
+ *
+ *   characterProvider is injected via configure().
  *
  * USAGE:
  *   TeamCore.configure({
@@ -61,13 +99,10 @@
  *       }
  *   });
  *
- *   var result = await TeamCore.createTeam({ name: 'Valiant', type: 'professional' });
- *   if (result.success) {
- *       var team = result.data;
- *   }
- *
- *   // Reads stay synchronous
- *   var team = TeamCore.getTeam(teamId);
+ *   TeamCore.createTeam({ name: 'Valiant', type: 'professional' })
+ *       .then(function(result) {
+ *           if (result.success) { ... }
+ *       });
  */
 
 (function() {
@@ -79,22 +114,13 @@
     window.__teamCoreLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
+    // DEPENDENCY IMPORTS
     // ============================================================
 
     var TeamConstants = window.TeamConstants;
-    var ObjectUtils = window.ObjectUtils;
     var IdUtils = window.IdUtils;
     var MutationPipeline = window.MutationPipeline;
-
-    // ============================================================
-    // CONSTANTS - From TeamConstants
-    // ============================================================
-
-    var DEFAULT_TEAM_TYPE = TeamConstants.DEFAULT_TEAM_TYPE;
-    var DEFAULT_TEAM_STATUS = TeamConstants.DEFAULT_TEAM_STATUS;
-    var DEFAULT_ROLE = TeamConstants.DEFAULT_ROLE;
-    var LEGACY_TYPE_MAP = TeamConstants.LEGACY_TYPE_MAP;
+    var ObjectUtils = window.ObjectUtils;
 
     // ============================================================
     // INJECTED DEPENDENCIES
@@ -104,10 +130,9 @@
 
     /**
      * Configure TeamCore with external dependencies.
-     * Must be called before any mutation operations.
+     * Must be called before any mutation that touches member records.
      *
-     * @param {object} deps - Dependency injection object
-     * @param {object} deps.characterProvider - Character provider with exists() method
+     * @param {object} deps - { characterProvider: { exists(id) -> bool } }
      * @returns {boolean} True if configured successfully
      */
     function configure(deps) {
@@ -134,14 +159,14 @@
         if (!TeamConstants) {
             missing.push('TeamConstants');
         }
-        if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
-            missing.push('ObjectUtils.deepClone');
-        }
         if (!IdUtils || typeof IdUtils.generateId !== 'function') {
             missing.push('IdUtils.generateId');
         }
         if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
             missing.push('MutationPipeline.performMutation');
+        }
+        if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
+            missing.push('ObjectUtils.deepClone');
         }
 
         if (!_characterProvider || typeof _characterProvider.exists !== 'function') {
@@ -157,19 +182,19 @@
     }
 
     // ============================================================
-    // UTILITY HELPERS
+    // HELPERS
     // ============================================================
-
-    function isString(value) {
-        return typeof value === 'string';
-    }
-
-    function isNonEmptyString(value) {
-        return isString(value) && value.trim() !== '';
-    }
 
     function isObject(value) {
         return value !== null && typeof value === 'object' && !Array.isArray(value);
+    }
+
+    function isNonEmptyString(value) {
+        return typeof value === 'string' && value.trim() !== '';
+    }
+
+    function isFiniteNumber(value) {
+        return typeof value === 'number' && isFinite(value);
     }
 
     function deepClone(value) {
@@ -189,7 +214,7 @@
     }
 
     // ============================================================
-    // DATA STORE ACCESS
+    // STORE ACCESS - PRIVATE
     // ============================================================
 
     function getDataStore() {
@@ -202,52 +227,40 @@
         return window.data;
     }
 
-    function getTeamIndex(id) {
-        if (!id) {
-            return -1;
-        }
-        var data = getDataStore();
-        if (!data) {
-            return -1;
+    /**
+     * Find a team in the given data object by ID.
+     *
+     * Used by both pre-flight (against window.data) and pipeline
+     * callbacks (against the appData snapshot). This is the SINGLE
+     * place that traverses the team array by ID.
+     *
+     * @param {object} data
+     * @param {string} id
+     * @returns {object|null} live reference, or null
+     */
+    function findTeamInData(data, id) {
+        if (!data || !Array.isArray(data.teams) || !isNonEmptyString(id)) {
+            return null;
         }
         var target = String(id);
         for (var i = 0; i < data.teams.length; i++) {
             var team = data.teams[i];
             if (team && typeof team === 'object' && String(team.id) === target) {
-                return i;
+                return team;
             }
         }
-        return -1;
-    }
-
-    function getTeam(id) {
-        var index = getTeamIndex(id);
-        if (index === -1) {
-            return null;
-        }
-        var data = getDataStore();
-        return data.teams[index] || null;
+        return null;
     }
 
     // ============================================================
-    // PERIOD HELPERS - Uses TeamConstants
+    // PERIOD HELPERS - delegate to TeamConstants
     // ============================================================
 
-    function parseNumericPeriod(value) {
-        if (value === undefined || value === null || value === '') {
+    function parsePeriod(value) {
+        if (!TeamConstants || typeof TeamConstants.parsePeriod !== 'function') {
             return null;
         }
-        var str = String(value).trim();
-        if (!/^\d+$/.test(str)) {
-            return null;
-        }
-        var parsed = Number(str);
-        return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
-    }
-
-    function parsePositivePeriod(value) {
-        var parsed = parseNumericPeriod(value);
-        return (parsed !== null && parsed >= 1) ? parsed : null;
+        return TeamConstants.parsePeriod(value);
     }
 
     function isValidPeriodForType(period, type) {
@@ -255,22 +268,6 @@
             return true;
         }
         return TeamConstants.isValidPeriod(period, type);
-    }
-
-    function isValidPeriodPair(startPeriod, endPeriod, type) {
-        var start = parseNumericPeriod(startPeriod);
-        var end = parseNumericPeriod(endPeriod);
-
-        if (start !== null && end !== null && start > end) {
-            return { valid: false, message: 'Start period cannot be after end period.' };
-        }
-
-        return { valid: true };
-    }
-
-    function parseRank(value) {
-        var num = parsePositivePeriod(value);
-        return (num !== null && num >= 1) ? num : null;
     }
 
     // ============================================================
@@ -308,13 +305,9 @@
         var result = [];
         for (var i = 0; i < history.length; i++) {
             var entry = history[i];
-            if (!isObject(entry)) {
-                continue;
-            }
+            if (!isObject(entry)) { continue; }
             var name = String(entry.name || '').trim();
-            if (!name) {
-                continue;
-            }
+            if (!name) { continue; }
             result.push({
                 name: name,
                 startPeriod: String(entry.startPeriod || '').trim(),
@@ -338,7 +331,9 @@
 
         return {
             characterId: String(memberData.characterId).trim(),
-            role: isNonEmptyString(memberData.role) ? String(memberData.role).trim() : DEFAULT_ROLE,
+            role: isNonEmptyString(memberData.role)
+                ? String(memberData.role).trim()
+                : TeamConstants.DEFAULT_ROLE,
             joinPeriod: memberData.joinPeriod !== undefined && memberData.joinPeriod !== null
                 ? String(memberData.joinPeriod).trim()
                 : '',
@@ -349,23 +344,32 @@
     }
 
     function validateMemberPeriods(member, teamType) {
-        var join = parseNumericPeriod(member.joinPeriod);
-        var leave = parseNumericPeriod(member.leavePeriod);
+        var hasJoin = member.joinPeriod !== undefined &&
+                      member.joinPeriod !== null &&
+                      member.joinPeriod !== '';
+        var hasLeave = member.leavePeriod !== undefined &&
+                       member.leavePeriod !== null &&
+                       member.leavePeriod !== '';
 
-        if (member.joinPeriod && member.joinPeriod !== '') {
+        var join = null;
+        var leave = null;
+
+        if (hasJoin) {
+            join = parsePeriod(member.joinPeriod);
             if (join === null) {
                 return { valid: false, message: 'Invalid join period format.' };
             }
-            if (!isValidPeriodForType(member.joinPeriod, teamType)) {
+            if (!isValidPeriodForType(join, teamType)) {
                 return { valid: false, message: 'Join period is out of bounds for team type.' };
             }
         }
 
-        if (member.leavePeriod && member.leavePeriod !== '') {
+        if (hasLeave) {
+            leave = parsePeriod(member.leavePeriod);
             if (leave === null) {
                 return { valid: false, message: 'Invalid leave period format.' };
             }
-            if (!isValidPeriodForType(member.leavePeriod, teamType)) {
+            if (!isValidPeriodForType(leave, teamType)) {
                 return { valid: false, message: 'Leave period is out of bounds for team type.' };
             }
         }
@@ -377,211 +381,371 @@
         return { valid: true };
     }
 
+    function validateMemberRole(member) {
+        // Role is free-form. TeamConstants does not enforce an enum.
+        // This validator exists as a hook for future role rules.
+        if (!member || member.role === undefined) {
+            return { valid: true };
+        }
+        if (typeof member.role !== 'string') {
+            return { valid: false, message: 'Member role must be a string.' };
+        }
+        return { valid: true };
+    }
+
     // ============================================================
     // RANKING HELPERS
     // ============================================================
 
     function validateRankingEntry(entry, teamType) {
-        if (!entry || typeof entry !== 'object') {
+        if (!isObject(entry)) {
             return { valid: false, message: 'Invalid ranking entry.' };
         }
 
-        var period = parsePositivePeriod(entry.period);
+        var period = parsePeriod(entry.period);
         if (period === null) {
             return { valid: false, message: 'Invalid period format.' };
         }
 
-        if (!isValidPeriodForType(entry.period, teamType)) {
+        if (!isValidPeriodForType(period, teamType)) {
             return { valid: false, message: 'Period is out of bounds for team type.' };
         }
 
-        var rank = parseRank(entry.rank);
-        if (rank === null || rank < 1) {
+        var rank = parsePeriod(entry.rank);
+        if (rank === null) {
             return { valid: false, message: 'Invalid rank format.' };
         }
 
         return { valid: true, period: period, rank: rank };
     }
 
-    function getSortedRankings(team) {
-        if (!team || !Array.isArray(team.rankingHistory)) {
-            return [];
-        }
-
-        var history = [];
-        for (var i = 0; i < team.rankingHistory.length; i++) {
-            var entry = team.rankingHistory[i];
-            if (entry && parseNumericPeriod(entry.period) !== null && parseRank(entry.rank) !== null) {
-                history.push(entry);
-            }
-        }
-
-        history.sort(function(a, b) {
-            var aNum = parseNumericPeriod(a.period);
-            var bNum = parseNumericPeriod(b.period);
-            return aNum - bNum;
-        });
-
-        return history;
-    }
-
-    function updateCurrentRank(team) {
-        if (!team) {
-            return;
-        }
-
-        var history = getSortedRankings(team);
-        team.currentRank = history.length > 0 ? String(history[history.length - 1].rank) : '';
-    }
-
     // ============================================================
-    // VALIDATION - Team Creation/Update
+    // COMPLETE TEAM VALIDATION
     // ============================================================
+    //
+    // This is the invariant gate for the entire team record. Every
+    // mutation builds a complete candidate team and runs it through
+    // this function before applying it.
 
-    function validateTeamData(teamData) {
-        if (!isObject(teamData)) {
-            return { valid: false, message: 'Team data must be an object.' };
+    function validateCompleteTeam(team) {
+        if (!isObject(team)) {
+            return { valid: false, message: 'Team must be an object.' };
         }
 
-        if (!isNonEmptyString(teamData.name)) {
+        if (!isNonEmptyString(team.name)) {
             return { valid: false, message: 'Team name is required.' };
         }
 
-        var type = TeamConstants.normalizeTeamType(teamData.type);
-        if (type === null) {
+        if (!TeamConstants.isValidTeamType(team.type)) {
             return { valid: false, message: 'Invalid team type.' };
         }
 
-        var status = teamData.status || DEFAULT_TEAM_STATUS;
-        if (!TeamConstants.isValidTeamStatus(status)) {
+        if (!TeamConstants.isValidTeamStatus(team.status)) {
             return { valid: false, message: 'Invalid team status.' };
         }
 
-        var startPeriod = teamData.startPeriod !== undefined && teamData.startPeriod !== null
-            ? String(teamData.startPeriod).trim()
-            : '';
-        var endPeriod = teamData.endPeriod !== undefined && teamData.endPeriod !== null
-            ? String(teamData.endPeriod).trim()
-            : '';
-
-        if (startPeriod && !isValidPeriodForType(startPeriod, type)) {
+        if (!isValidPeriodForType(team.startPeriod, team.type)) {
             return { valid: false, message: 'Invalid start period for team type.' };
         }
-        if (endPeriod && !isValidPeriodForType(endPeriod, type)) {
+        if (!isValidPeriodForType(team.endPeriod, team.type)) {
             return { valid: false, message: 'Invalid end period for team type.' };
         }
 
-        var periodPair = isValidPeriodPair(startPeriod, endPeriod, type);
-        if (!periodPair.valid) {
-            return { valid: false, message: periodPair.message };
+        var startNum = parsePeriod(team.startPeriod);
+        var endNum = parsePeriod(team.endPeriod);
+        if (startNum !== null && endNum !== null && startNum > endNum) {
+            return { valid: false, message: 'Start period cannot be after end period.' };
         }
 
-        var classId = teamData.classId !== undefined && teamData.classId !== null && teamData.classId !== ''
-            ? String(teamData.classId).trim()
-            : null;
-
-        var teamNumber = '';
-        if (teamData.teamNumber !== undefined && teamData.teamNumber !== null) {
-            var numStr = String(teamData.teamNumber).trim();
-            if (numStr && !/^[a-zA-Z0-9\-_ ]+$/.test(numStr)) {
-                return { valid: false, message: 'Team number contains invalid characters.' };
-            }
-            teamNumber = numStr;
-        }
-
-        var temporaryMission = null;
-        if (teamData.temporaryMission !== undefined && teamData.temporaryMission !== null && teamData.temporaryMission !== '') {
-            temporaryMission = String(teamData.temporaryMission).trim();
-        }
-
-        if (teamData.nameHistory !== undefined) {
-            var nameValidation = validateNameHistory(teamData.nameHistory);
-            if (!nameValidation.valid) {
-                return { valid: false, message: nameValidation.message };
+        if (Array.isArray(team.nameHistory)) {
+            var nameCheck = validateNameHistory(team.nameHistory);
+            if (!nameCheck.valid) {
+                return nameCheck;
             }
         }
-        var nameHistory = buildValidatedNameHistory(teamData.nameHistory) || [];
 
-        return {
-            valid: true,
-            data: {
-                name: String(teamData.name).trim(),
-                type: type,
-                startPeriod: startPeriod,
-                endPeriod: endPeriod,
-                status: status,
-                nameHistory: nameHistory,
-                temporaryMission: temporaryMission,
-                classId: classId,
-                teamNumber: teamNumber
+        if (Array.isArray(team.members)) {
+            var seenChars = Object.create(null);
+            for (var i = 0; i < team.members.length; i++) {
+                var member = team.members[i];
+                if (!isObject(member)) {
+                    return { valid: false, message: 'Invalid member record at index ' + i + '.' };
+                }
+                if (!isNonEmptyString(member.characterId)) {
+                    return { valid: false, message: 'Member at index ' + i + ' missing characterId.' };
+                }
+                var charKey = String(member.characterId);
+                if (seenChars[charKey]) {
+                    return { valid: false, message: 'Duplicate member: ' + charKey };
+                }
+                seenChars[charKey] = true;
+
+                var periodCheck = validateMemberPeriods(member, team.type);
+                if (!periodCheck.valid) {
+                    return periodCheck;
+                }
+
+                var roleCheck = validateMemberRole(member);
+                if (!roleCheck.valid) {
+                    return roleCheck;
+                }
             }
-        };
+        }
+
+        if (Array.isArray(team.rankingHistory)) {
+            var seenPeriods = Object.create(null);
+            for (var j = 0; j < team.rankingHistory.length; j++) {
+                var entry = team.rankingHistory[j];
+                var rankCheck = validateRankingEntry(entry, team.type);
+                if (!rankCheck.valid) {
+                    return rankCheck;
+                }
+                var periodKey = String(rankCheck.period);
+                if (seenPeriods[periodKey]) {
+                    return { valid: false, message: 'Duplicate ranking entry for period ' + periodKey + '.' };
+                }
+                seenPeriods[periodKey] = true;
+            }
+        }
+
+        return { valid: true };
     }
 
     // ============================================================
-    // CRUD OPERATIONS - Via MutationPipeline
+    // CANDIDATE BUILDERS
     // ============================================================
 
+    function buildNewTeam(teamData) {
+        return {
+            id: generateId(),
+            name: String(teamData.name).trim(),
+            type: teamData.type,
+            startPeriod: teamData.startPeriod !== undefined && teamData.startPeriod !== null
+                ? String(teamData.startPeriod).trim()
+                : '',
+            endPeriod: teamData.endPeriod !== undefined && teamData.endPeriod !== null
+                ? String(teamData.endPeriod).trim()
+                : '',
+            status: teamData.status || TeamConstants.DEFAULT_TEAM_STATUS,
+            nameHistory: buildValidatedNameHistory(teamData.nameHistory) || [],
+            members: [],
+            rankingHistory: [],
+            temporaryMission: teamData.temporaryMission !== undefined && teamData.temporaryMission !== null && teamData.temporaryMission !== ''
+                ? String(teamData.temporaryMission).trim()
+                : null,
+            classId: teamData.classId !== undefined && teamData.classId !== null && teamData.classId !== ''
+                ? String(teamData.classId).trim()
+                : null,
+            teamNumber: teamData.teamNumber !== undefined && teamData.teamNumber !== null
+                ? String(teamData.teamNumber).trim()
+                : '',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+        };
+    }
+
     /**
-     * Create a new team.
-     *
-     * @param {object} teamData - Team data
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
+     * Build the candidate team that results from applying `updates`
+     * to `existing`. Pure. Does not touch window.data.
      */
+    function buildUpdatedTeam(existing, updates) {
+        var candidate = deepClone(existing);
+
+        // ---- Name ----
+        if (updates.name !== undefined) {
+            if (!isNonEmptyString(updates.name)) {
+                return { valid: false, message: 'Team name cannot be empty.' };
+            }
+            candidate.name = String(updates.name).trim();
+        }
+
+        // ---- Type ----
+        if (updates.type !== undefined) {
+            var normalized = TeamConstants.normalizeTeamType(updates.type);
+            if (normalized === null) {
+                return { valid: false, message: 'Invalid team type: ' + updates.type };
+            }
+            candidate.type = normalized;
+        }
+
+        // ---- Status ----
+        if (updates.status !== undefined) {
+            if (!TeamConstants.isValidTeamStatus(updates.status)) {
+                return { valid: false, message: 'Invalid team status: ' + updates.status };
+            }
+            candidate.status = updates.status;
+        }
+
+        // ---- Periods ----
+        if (updates.startPeriod !== undefined) {
+            candidate.startPeriod = updates.startPeriod !== null
+                ? String(updates.startPeriod).trim()
+                : '';
+        }
+        if (updates.endPeriod !== undefined) {
+            candidate.endPeriod = updates.endPeriod !== null
+                ? String(updates.endPeriod).trim()
+                : '';
+        }
+
+        // ---- Name history ----
+        if (updates.nameHistory !== undefined) {
+            var historyCheck = validateNameHistory(updates.nameHistory);
+            if (!historyCheck.valid) {
+                return historyCheck;
+            }
+            candidate.nameHistory = buildValidatedNameHistory(updates.nameHistory) || [];
+        }
+
+        // ---- Mission ----
+        if (updates.temporaryMission !== undefined) {
+            candidate.temporaryMission = updates.temporaryMission !== null && updates.temporaryMission !== ''
+                ? String(updates.temporaryMission).trim()
+                : null;
+        }
+
+        // ---- Class ----
+        if (updates.classId !== undefined) {
+            candidate.classId = updates.classId !== null && updates.classId !== ''
+                ? String(updates.classId).trim()
+                : null;
+        }
+
+        // ---- Team number ----
+        if (updates.teamNumber !== undefined) {
+            var numStr = updates.teamNumber !== null && updates.teamNumber !== ''
+                ? String(updates.teamNumber).trim()
+                : '';
+            if (numStr && !/^[a-zA-Z0-9\-_ ]+$/.test(numStr)) {
+                return { valid: false, message: 'Team number contains invalid characters.' };
+            }
+            candidate.teamNumber = numStr;
+        }
+
+        // ---- Revalidate members and ranking history against the
+        //      candidate's type. A type change can invalidate
+        //      previously-valid entries. ----
+        if (Array.isArray(candidate.members)) {
+            for (var m = 0; m < candidate.members.length; m++) {
+                var periodCheck = validateMemberPeriods(candidate.members[m], candidate.type);
+                if (!periodCheck.valid) {
+                    return {
+                        valid: false,
+                        message: 'Type change would invalidate existing member periods: ' +
+                                 periodCheck.message
+                    };
+                }
+            }
+        }
+
+        if (Array.isArray(candidate.rankingHistory)) {
+            for (var r = 0; r < candidate.rankingHistory.length; r++) {
+                var rankCheck = validateRankingEntry(candidate.rankingHistory[r], candidate.type);
+                if (!rankCheck.valid) {
+                    return {
+                        valid: false,
+                        message: 'Type change would invalidate existing ranking periods: ' +
+                                 rankCheck.message
+                    };
+                }
+            }
+        }
+
+        candidate.updatedAt = new Date().toISOString();
+
+        return { valid: true, candidate: candidate };
+    }
+
+    // ============================================================
+    // MUTATION WRAPPER
+    // ============================================================
+
+    function runMutation(config) {
+        if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
+            return Promise.resolve(failure('MutationPipeline is not available.'));
+        }
+
+        return MutationPipeline.performMutation({
+            validate: config.validate || function() { return { valid: true }; },
+            mutate: config.mutate,
+            logMessage: config.logMessage,
+            successMessage: config.successMessage || 'Team updated.',
+            failureMessage: config.failureMessage || 'Failed to update team.'
+        });
+    }
+
+    // ============================================================
+    // TEAM CRUD
+    // ============================================================
+
     function createTeam(teamData) {
         if (!checkDependencies()) {
             return Promise.resolve(failure('Dependencies not loaded. Please refresh the page.'));
         }
 
-        var validation = validateTeamData(teamData);
-        if (!validation.valid) {
-            return Promise.resolve(failure(validation.message));
+        if (!isObject(teamData)) {
+            return Promise.resolve(failure('Team data must be an object.'));
         }
 
-        var team = validation.data;
-        var newTeam = {
-            id: generateId(),
-            name: team.name,
-            type: team.type,
-            startPeriod: team.startPeriod,
-            endPeriod: team.endPeriod,
-            currentRank: '',
-            status: team.status,
-            nameHistory: team.nameHistory,
-            members: [],
-            rankingHistory: [],
-            temporaryMission: team.temporaryMission,
-            classId: team.classId,
-            teamNumber: team.teamNumber,
-            createdAt: new Date().toISOString()
-        };
+        if (!isNonEmptyString(teamData.name)) {
+            return Promise.resolve(failure('Team name is required.'));
+        }
 
-        return MutationPipeline.performMutation({
-            validate: function(data) {
-                if (!data || !Array.isArray(data.teams)) {
+        var normalizedType = TeamConstants.normalizeTeamType(teamData.type);
+        if (normalizedType === null) {
+            return Promise.resolve(failure('Invalid team type: ' + teamData.type));
+        }
+
+        var status = teamData.status || TeamConstants.DEFAULT_TEAM_STATUS;
+        if (!TeamConstants.isValidTeamStatus(status)) {
+            return Promise.resolve(failure('Invalid team status: ' + status));
+        }
+
+        var nameHistory = buildValidatedNameHistory(teamData.nameHistory) || [];
+
+        var candidate = buildNewTeam({
+            name: teamData.name,
+            type: normalizedType,
+            startPeriod: teamData.startPeriod,
+            endPeriod: teamData.endPeriod,
+            status: status,
+            nameHistory: nameHistory,
+            temporaryMission: teamData.temporaryMission,
+            classId: teamData.classId,
+            teamNumber: teamData.teamNumber
+        });
+
+        var completeCheck = validateCompleteTeam(candidate);
+        if (!completeCheck.valid) {
+            return Promise.resolve(failure(completeCheck.message));
+        }
+
+        var targetId = candidate.id;
+
+        return runMutation({
+            validate: function(snapshot) {
+                if (!snapshot || !Array.isArray(snapshot.teams)) {
                     return { valid: false, message: 'Team data store is not available.' };
+                }
+                // ID collision check.
+                if (findTeamInData(snapshot, targetId)) {
+                    return { valid: false, message: 'Team ID collision.' };
                 }
                 return { valid: true };
             },
-
-            mutate: function(data) {
-                data.teams.push(newTeam);
-                return { team: newTeam, id: newTeam.id };
+            mutate: function(snapshot) {
+                if (!Array.isArray(snapshot.teams)) {
+                    snapshot.teams = [];
+                }
+                snapshot.teams.push(deepClone(candidate));
+                return { team: candidate, id: targetId };
             },
-
-            logMessage: 'Created team: ' + newTeam.name,
+            logMessage: 'Created team: ' + candidate.name,
             successMessage: 'Team created successfully!',
             failureMessage: 'Failed to create team.'
         });
     }
 
-    /**
-     * Update an existing team.
-     *
-     * @param {string} id - Team ID
-     * @param {object} updates - Updates to apply
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
     function updateTeam(id, updates) {
         if (!checkDependencies()) {
             return Promise.resolve(failure('Dependencies not loaded. Please refresh the page.'));
@@ -595,140 +759,83 @@
             return Promise.resolve(failure('Updates must be an object.'));
         }
 
+        if (Object.keys(updates).length === 0) {
+            return Promise.resolve(failure('Updates are required.'));
+        }
+
         var targetId = String(id).trim();
 
-        // Pre-flight: verify team exists
-        var existing = getTeam(targetId);
-        if (!existing) {
+        var current = findTeamInData(getDataStore(), targetId);
+        if (!current) {
             return Promise.resolve(failure('Team not found.'));
         }
 
-        // Determine final type for validation
-        var finalType = updates.type !== undefined
-            ? TeamConstants.normalizeTeamType(updates.type) || existing.type
-            : existing.type;
+        // ---- Build candidate ----
+        var buildResult = buildUpdatedTeam(current, updates);
+        if (!buildResult.valid) {
+            return Promise.resolve(failure(buildResult.message));
+        }
+        var candidate = buildResult.candidate;
 
-        var finalStartPeriod = updates.startPeriod !== undefined
-            ? String(updates.startPeriod).trim()
-            : existing.startPeriod || '';
-
-        var finalEndPeriod = updates.endPeriod !== undefined
-            ? String(updates.endPeriod).trim()
-            : existing.endPeriod || '';
-
-        var periodPair = isValidPeriodPair(finalStartPeriod, finalEndPeriod, finalType);
-        if (!periodPair.valid) {
-            return Promise.resolve(failure(periodPair.message));
+        // ---- Validate candidate as a whole ----
+        var completeCheck = validateCompleteTeam(candidate);
+        if (!completeCheck.valid) {
+            return Promise.resolve(failure(completeCheck.message));
         }
 
-        return MutationPipeline.performMutation({
-            validate: function(data) {
-                if (!data || !Array.isArray(data.teams)) {
+        return runMutation({
+            validate: function(snapshot) {
+                if (!snapshot || !Array.isArray(snapshot.teams)) {
                     return { valid: false, message: 'Team data store is not available.' };
                 }
-                var idx = -1;
-                for (var i = 0; i < data.teams.length; i++) {
-                    if (data.teams[i] && String(data.teams[i].id) === targetId) {
-                        idx = i;
-                        break;
-                    }
-                }
-                if (idx === -1) {
+                var currentInSnapshot = findTeamInData(snapshot, targetId);
+                if (!currentInSnapshot) {
                     return { valid: false, message: 'Team no longer exists.' };
                 }
+
+                // Re-build the candidate against the snapshot, so a
+                // mutation that ran between pre-flight and this
+                // callback cannot produce an inconsistent result.
+                var snapshotBuild = buildUpdatedTeam(currentInSnapshot, updates);
+                if (!snapshotBuild.valid) {
+                    return { valid: false, message: snapshotBuild.message };
+                }
+                var snapshotCheck = validateCompleteTeam(snapshotBuild.candidate);
+                if (!snapshotCheck.valid) {
+                    return { valid: false, message: snapshotCheck.message };
+                }
+
                 return { valid: true };
             },
-
-            mutate: function(data) {
-                var team = null;
-                for (var i = 0; i < data.teams.length; i++) {
-                    if (data.teams[i] && String(data.teams[i].id) === targetId) {
-                        team = data.teams[i];
-                        break;
-                    }
-                }
-                if (!team) {
+            mutate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target) {
                     throw new Error('Team not found in data store.');
                 }
 
-                var updateableProps = ['name', 'type', 'startPeriod', 'endPeriod', 'status', 'classId', 'teamNumber', 'temporaryMission', 'nameHistory'];
-
-                for (var j = 0; j < updateableProps.length; j++) {
-                    var key = updateableProps[j];
-                    if (updates[key] === undefined) {
-                        continue;
-                    }
-
-                    if (key === 'type') {
-                        var normalizedType = TeamConstants.normalizeTeamType(updates[key]);
-                        if (normalizedType !== null) {
-                            team[key] = normalizedType;
-                        }
-                        continue;
-                    }
-
-                    if (key === 'status') {
-                        team[key] = updates[key] || DEFAULT_TEAM_STATUS;
-                        continue;
-                    }
-
-                    if (key === 'nameHistory') {
-                        var sanitized = buildValidatedNameHistory(updates[key]);
-                        if (sanitized !== null) {
-                            team[key] = sanitized;
-                        }
-                        continue;
-                    }
-
-                    if (key === 'classId') {
-                        team[key] = updates[key] !== undefined && updates[key] !== null && updates[key] !== ''
-                            ? String(updates[key]).trim()
-                            : null;
-                        continue;
-                    }
-
-                    if (key === 'temporaryMission') {
-                        team[key] = updates[key] !== undefined && updates[key] !== null && updates[key] !== ''
-                            ? String(updates[key]).trim()
-                            : null;
-                        continue;
-                    }
-
-                    if (key === 'teamNumber') {
-                        var numStr = updates[key] !== undefined && updates[key] !== null && updates[key] !== ''
-                            ? String(updates[key]).trim()
-                            : '';
-                        if (!numStr || /^[a-zA-Z0-9\-_ ]+$/.test(numStr)) {
-                            team[key] = numStr;
-                        }
-                        continue;
-                    }
-
-                    if (typeof updates[key] === 'string') {
-                        team[key] = updates[key].trim();
-                    } else {
-                        team[key] = updates[key];
+                // Apply the candidate field-by-field so that
+                // unknown/preserved fields on the live record survive.
+                // We only overwrite the fields the update touched.
+                var updateableProps = [
+                    'name', 'type', 'startPeriod', 'endPeriod', 'status',
+                    'classId', 'teamNumber', 'temporaryMission', 'nameHistory',
+                    'updatedAt'
+                ];
+                for (var i = 0; i < updateableProps.length; i++) {
+                    var key = updateableProps[i];
+                    if (candidate[key] !== undefined) {
+                        target[key] = candidate[key];
                     }
                 }
 
-                // Ranking history update is not part of updateTeam's
-                // public contract — use addRanking/removeRanking for that.
-
-                return { team: team, id: targetId };
+                return { team: target, id: targetId };
             },
-
-            logMessage: 'Updated team: ' + (existing.name || targetId),
+            logMessage: 'Updated team: ' + candidate.name,
             successMessage: 'Team updated successfully!',
             failureMessage: 'Failed to update team.'
         });
     }
 
-    /**
-     * Delete a team permanently.
-     *
-     * @param {string} id - Team ID
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
     function deleteTeam(id) {
         if (!checkDependencies()) {
             return Promise.resolve(failure('Dependencies not loaded. Please refresh the page.'));
@@ -739,25 +846,28 @@
         }
 
         var targetId = String(id).trim();
-        var existing = getTeam(targetId);
-        if (!existing) {
+
+        var current = findTeamInData(getDataStore(), targetId);
+        if (!current) {
             return Promise.resolve(failure('Team not found.'));
         }
 
-        var teamName = existing.name || 'Unknown Team';
+        var teamName = current.name || 'Unknown Team';
 
-        return MutationPipeline.performMutation({
-            validate: function(data) {
-                if (!data || !Array.isArray(data.teams)) {
+        return runMutation({
+            validate: function(snapshot) {
+                if (!snapshot || !Array.isArray(snapshot.teams)) {
                     return { valid: false, message: 'Team data store is not available.' };
+                }
+                if (!findTeamInData(snapshot, targetId)) {
+                    return { valid: false, message: 'Team no longer exists.' };
                 }
                 return { valid: true };
             },
-
-            mutate: function(data) {
+            mutate: function(snapshot) {
                 var idx = -1;
-                for (var i = 0; i < data.teams.length; i++) {
-                    if (data.teams[i] && String(data.teams[i].id) === targetId) {
+                for (var i = 0; i < snapshot.teams.length; i++) {
+                    if (snapshot.teams[i] && String(snapshot.teams[i].id) === targetId) {
                         idx = i;
                         break;
                     }
@@ -765,10 +875,9 @@
                 if (idx === -1) {
                     throw new Error('Team not found in data store.');
                 }
-                data.teams.splice(idx, 1);
+                snapshot.teams.splice(idx, 1);
                 return { id: targetId };
             },
-
             logMessage: 'Deleted team: ' + teamName,
             successMessage: 'Team deleted successfully!',
             failureMessage: 'Failed to delete team.'
@@ -776,24 +885,16 @@
     }
 
     // ============================================================
-    // MEMBER OPERATIONS - Via MutationPipeline
+    // MEMBER MUTATIONS
     // ============================================================
 
-    /**
-     * Add a member to a team.
-     *
-     * @param {string} teamId - Team ID
-     * @param {object} memberData - { characterId, role, joinPeriod, leavePeriod }
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
     function addMember(teamId, memberData) {
         if (!checkDependencies()) {
             return Promise.resolve(failure('Dependencies not loaded. Please refresh the page.'));
         }
 
-        var team = getTeam(teamId);
-        if (!team || !Array.isArray(team.members)) {
-            return Promise.resolve(failure('Team not found.'));
+        if (!isNonEmptyString(teamId)) {
+            return Promise.resolve(failure('Team ID is required.'));
         }
 
         var member = buildValidatedMember(memberData);
@@ -805,90 +906,92 @@
             return Promise.resolve(failure('Character not found.'));
         }
 
-        var periodValidation = validateMemberPeriods(member, team.type);
-        if (!periodValidation.valid) {
-            return Promise.resolve(failure(periodValidation.message));
+        var targetId = String(teamId).trim();
+
+        var current = findTeamInData(getDataStore(), targetId);
+        if (!current) {
+            return Promise.resolve(failure('Team not found.'));
         }
 
-        // Duplicate check (pre-flight)
-        for (var i = 0; i < team.members.length; i++) {
-            var m = team.members[i];
-            if (m && String(m.characterId) === String(member.characterId)) {
-                return Promise.resolve(failure('Character is already a member of this team.'));
+        // Pre-flight: duplicate check and period validity.
+        if (Array.isArray(current.members)) {
+            for (var i = 0; i < current.members.length; i++) {
+                if (String(current.members[i].characterId) === String(member.characterId)) {
+                    return Promise.resolve(failure('Character is already a member of this team.'));
+                }
             }
         }
 
-        var targetId = String(teamId).trim();
-        var newMember = {
-            characterId: member.characterId,
-            role: member.role,
-            joinPeriod: member.joinPeriod,
-            leavePeriod: member.leavePeriod
-        };
+        var periodCheck = validateMemberPeriods(member, current.type);
+        if (!periodCheck.valid) {
+            return Promise.resolve(failure(periodCheck.message));
+        }
 
-        return MutationPipeline.performMutation({
-            validate: function(data) {
-                if (!data || !Array.isArray(data.teams)) {
-                    return { valid: false, message: 'Team data store is not available.' };
-                }
-                var currentTeam = null;
-                for (var i = 0; i < data.teams.length; i++) {
-                    if (data.teams[i] && String(data.teams[i].id) === targetId) {
-                        currentTeam = data.teams[i];
-                        break;
-                    }
-                }
-                if (!currentTeam) {
+        return runMutation({
+            validate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target) {
                     return { valid: false, message: 'Team no longer exists.' };
                 }
-                return { valid: true };
-            },
+                if (!Array.isArray(target.members)) {
+                    return { valid: false, message: 'Team members are malformed.' };
+                }
 
-            mutate: function(data) {
-                var currentTeam = null;
-                for (var i = 0; i < data.teams.length; i++) {
-                    if (data.teams[i] && String(data.teams[i].id) === targetId) {
-                        currentTeam = data.teams[i];
-                        break;
+                // Duplicate check against the snapshot.
+                for (var i = 0; i < target.members.length; i++) {
+                    if (String(target.members[i].characterId) === String(member.characterId)) {
+                        return { valid: false, message: 'Character is already a member of this team.' };
                     }
                 }
-                if (!currentTeam) {
+
+                var periodCheck = validateMemberPeriods(member, target.type);
+                if (!periodCheck.valid) {
+                    return { valid: false, message: periodCheck.message };
+                }
+
+                return { valid: true };
+            },
+            mutate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target) {
                     throw new Error('Team not found in data store.');
                 }
-                if (!Array.isArray(currentTeam.members)) {
-                    currentTeam.members = [];
+                if (!Array.isArray(target.members)) {
+                    target.members = [];
                 }
-                currentTeam.members.push(newMember);
-                return { member: newMember, teamId: targetId };
+                target.members.push(deepClone(member));
+                target.updatedAt = new Date().toISOString();
+                return { member: member, teamId: targetId };
             },
-
-            logMessage: 'Added member to team: ' + (team.name || targetId),
+            logMessage: 'Added member to team: ' + (current.name || targetId),
             successMessage: 'Member added successfully!',
             failureMessage: 'Failed to add member.'
         });
     }
 
-    /**
-     * Remove a member from a team.
-     *
-     * @param {string} teamId - Team ID
-     * @param {string} charId - Character ID
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
     function removeMember(teamId, charId) {
         if (!checkDependencies()) {
             return Promise.resolve(failure('Dependencies not loaded. Please refresh the page.'));
         }
 
-        var team = getTeam(teamId);
-        if (!team || !Array.isArray(team.members)) {
+        if (!isNonEmptyString(teamId)) {
+            return Promise.resolve(failure('Team ID is required.'));
+        }
+        if (!isNonEmptyString(charId)) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
+
+        var targetId = String(teamId).trim();
+        var targetChar = String(charId).trim();
+
+        var current = findTeamInData(getDataStore(), targetId);
+        if (!current || !Array.isArray(current.members)) {
             return Promise.resolve(failure('Team not found.'));
         }
 
-        var targetChar = String(charId);
         var found = false;
-        for (var i = 0; i < team.members.length; i++) {
-            if (team.members[i] && String(team.members[i].characterId) === targetChar) {
+        for (var i = 0; i < current.members.length; i++) {
+            if (String(current.members[i].characterId) === targetChar) {
                 found = true;
                 break;
             }
@@ -897,284 +1000,301 @@
             return Promise.resolve(failure('Character is not a member of this team.'));
         }
 
-        var targetId = String(teamId).trim();
-
-        return MutationPipeline.performMutation({
-            validate: function(data) {
-                if (!data || !Array.isArray(data.teams)) {
-                    return { valid: false, message: 'Team data store is not available.' };
+        return runMutation({
+            validate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target || !Array.isArray(target.members)) {
+                    return { valid: false, message: 'Team no longer exists.' };
+                }
+                var present = target.members.some(function(m) {
+                    return m && String(m.characterId) === targetChar;
+                });
+                if (!present) {
+                    return { valid: false, message: 'Character is no longer a member of this team.' };
                 }
                 return { valid: true };
             },
-
-            mutate: function(data) {
-                var currentTeam = null;
-                for (var i = 0; i < data.teams.length; i++) {
-                    if (data.teams[i] && String(data.teams[i].id) === targetId) {
-                        currentTeam = data.teams[i];
-                        break;
-                    }
-                }
-                if (!currentTeam || !Array.isArray(currentTeam.members)) {
+            mutate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target || !Array.isArray(target.members)) {
                     throw new Error('Team not found in data store.');
                 }
-                currentTeam.members = currentTeam.members.filter(function(m) {
+                target.members = target.members.filter(function(m) {
                     return !m || String(m.characterId) !== targetChar;
                 });
+                target.updatedAt = new Date().toISOString();
                 return { characterId: targetChar, teamId: targetId };
             },
-
-            logMessage: 'Removed member from team: ' + (team.name || targetId),
+            logMessage: 'Removed member from team: ' + (current.name || targetId),
             successMessage: 'Member removed successfully!',
             failureMessage: 'Failed to remove member.'
         });
     }
 
-    /**
-     * Update a member's details.
-     *
-     * @param {string} teamId - Team ID
-     * @param {string} charId - Character ID
-     * @param {object} updates - { role, joinPeriod, leavePeriod }
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
     function updateMember(teamId, charId, updates) {
         if (!checkDependencies()) {
             return Promise.resolve(failure('Dependencies not loaded. Please refresh the page.'));
         }
 
-        var team = getTeam(teamId);
-        if (!team || !Array.isArray(team.members)) {
-            return Promise.resolve(failure('Team not found.'));
+        if (!isNonEmptyString(teamId)) {
+            return Promise.resolve(failure('Team ID is required.'));
         }
-
+        if (!isNonEmptyString(charId)) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
         if (!isObject(updates)) {
             return Promise.resolve(failure('Updates must be an object.'));
         }
 
-        var targetChar = String(charId);
+        var targetId = String(teamId).trim();
+        var targetChar = String(charId).trim();
+
+        var current = findTeamInData(getDataStore(), targetId);
+        if (!current || !Array.isArray(current.members)) {
+            return Promise.resolve(failure('Team not found.'));
+        }
+
         var member = null;
-        for (var i = 0; i < team.members.length; i++) {
-            if (team.members[i] && String(team.members[i].characterId) === targetChar) {
-                member = team.members[i];
+        for (var i = 0; i < current.members.length; i++) {
+            if (String(current.members[i].characterId) === targetChar) {
+                member = current.members[i];
                 break;
             }
         }
-
         if (!member) {
             return Promise.resolve(failure('Character is not a member of this team.'));
         }
 
-        var proposedMember = {
+        // ---- Build proposed member ----
+        var proposed = {
             characterId: member.characterId,
-            role: member.role || DEFAULT_ROLE,
-            joinPeriod: member.joinPeriod || '',
-            leavePeriod: member.leavePeriod || ''
+            role: member.role !== undefined && member.role !== null
+                ? String(member.role)
+                : TeamConstants.DEFAULT_ROLE,
+            joinPeriod: member.joinPeriod !== undefined && member.joinPeriod !== null
+                ? String(member.joinPeriod)
+                : '',
+            leavePeriod: member.leavePeriod !== undefined && member.leavePeriod !== null
+                ? String(member.leavePeriod)
+                : ''
         };
 
         if (updates.role !== undefined) {
-            proposedMember.role = typeof updates.role === 'string' ? updates.role.trim() : DEFAULT_ROLE;
+            proposed.role = updates.role !== null
+                ? String(updates.role).trim()
+                : TeamConstants.DEFAULT_ROLE;
         }
         if (updates.joinPeriod !== undefined) {
-            proposedMember.joinPeriod = updates.joinPeriod !== null ? String(updates.joinPeriod).trim() : '';
+            proposed.joinPeriod = updates.joinPeriod !== null
+                ? String(updates.joinPeriod).trim()
+                : '';
         }
         if (updates.leavePeriod !== undefined) {
-            proposedMember.leavePeriod = updates.leavePeriod !== null ? String(updates.leavePeriod).trim() : '';
+            proposed.leavePeriod = updates.leavePeriod !== null
+                ? String(updates.leavePeriod).trim()
+                : '';
         }
 
-        var periodValidation = validateMemberPeriods(proposedMember, team.type);
-        if (!periodValidation.valid) {
-            return Promise.resolve(failure(periodValidation.message));
+        // ---- Validate the proposed member against current team type ----
+        var periodCheck = validateMemberPeriods(proposed, current.type);
+        if (!periodCheck.valid) {
+            return Promise.resolve(failure(periodCheck.message));
         }
 
-        var targetId = String(teamId).trim();
+        var roleCheck = validateMemberRole(proposed);
+        if (!roleCheck.valid) {
+            return Promise.resolve(failure(roleCheck.message));
+        }
 
-        return MutationPipeline.performMutation({
-            validate: function(data) {
-                if (!data || !Array.isArray(data.teams)) {
-                    return { valid: false, message: 'Team data store is not available.' };
+        return runMutation({
+            validate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target || !Array.isArray(target.members)) {
+                    return { valid: false, message: 'Team no longer exists.' };
                 }
-                return { valid: true };
-            },
 
-            mutate: function(data) {
-                var currentTeam = null;
-                for (var i = 0; i < data.teams.length; i++) {
-                    if (data.teams[i] && String(data.teams[i].id) === targetId) {
-                        currentTeam = data.teams[i];
+                var liveMember = null;
+                for (var i = 0; i < target.members.length; i++) {
+                    if (String(target.members[i].characterId) === targetChar) {
+                        liveMember = target.members[i];
                         break;
                     }
                 }
-                if (!currentTeam || !Array.isArray(currentTeam.members)) {
+                if (!liveMember) {
+                    return { valid: false, message: 'Character is no longer a member of this team.' };
+                }
+
+                var periodCheck = validateMemberPeriods(proposed, target.type);
+                if (!periodCheck.valid) {
+                    return { valid: false, message: periodCheck.message };
+                }
+
+                return { valid: true };
+            },
+            mutate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target || !Array.isArray(target.members)) {
                     throw new Error('Team not found in data store.');
                 }
 
-                var target = null;
-                for (var j = 0; j < currentTeam.members.length; j++) {
-                    if (currentTeam.members[j] && String(currentTeam.members[j].characterId) === targetChar) {
-                        target = currentTeam.members[j];
+                var liveMember = null;
+                for (var i = 0; i < target.members.length; i++) {
+                    if (String(target.members[i].characterId) === targetChar) {
+                        liveMember = target.members[i];
                         break;
                     }
                 }
-
-                if (!target) {
+                if (!liveMember) {
                     throw new Error('Member not found in data store.');
                 }
 
-                if (updates.role !== undefined) {
-                    target.role = proposedMember.role;
-                }
-                if (updates.joinPeriod !== undefined) {
-                    target.joinPeriod = proposedMember.joinPeriod;
-                }
-                if (updates.leavePeriod !== undefined) {
-                    target.leavePeriod = proposedMember.leavePeriod;
-                }
+                liveMember.role = proposed.role;
+                liveMember.joinPeriod = proposed.joinPeriod;
+                liveMember.leavePeriod = proposed.leavePeriod;
 
-                return { member: target, teamId: targetId };
+                target.updatedAt = new Date().toISOString();
+
+                return { member: liveMember, teamId: targetId };
             },
-
-            logMessage: 'Updated member on team: ' + (team.name || targetId),
+            logMessage: 'Updated member on team: ' + (current.name || targetId),
             successMessage: 'Member updated successfully!',
             failureMessage: 'Failed to update member.'
         });
     }
 
     // ============================================================
-    // RANKING OPERATIONS - Via MutationPipeline
+    // RANKING MUTATIONS
     // ============================================================
 
-    /**
-     * Add a ranking entry to a team.
-     *
-     * @param {string} teamId - Team ID
-     * @param {string|number} period - Period (week or year)
-     * @param {string|number} rank - Rank number (must be positive integer)
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
     function addRanking(teamId, period, rank) {
         if (!checkDependencies()) {
             return Promise.resolve(failure('Dependencies not loaded. Please refresh the page.'));
         }
 
-        if (!period || String(period).trim() === '') {
-            return Promise.resolve(failure('Period is required.'));
+        if (!isNonEmptyString(teamId)) {
+            return Promise.resolve(failure('Team ID is required.'));
         }
 
-        var team = getTeam(teamId);
-        if (!team || !Array.isArray(team.rankingHistory)) {
-            return Promise.resolve(failure('Team not found.'));
+        var periodNum = parsePeriod(period);
+        if (periodNum === null) {
+            return Promise.resolve(failure('Period must be a positive integer.'));
         }
 
-        var periodStr = String(period).trim();
-        var rankNum = parseRank(rank);
+        var rankNum = parsePeriod(rank);
         if (rankNum === null) {
             return Promise.resolve(failure('Rank must be a positive integer.'));
         }
 
-        var rankValidation = validateRankingEntry({ period: periodStr, rank: rankNum }, team.type);
-        if (!rankValidation.valid) {
-            return Promise.resolve(failure(rankValidation.message));
-        }
-
         var targetId = String(teamId).trim();
 
-        return MutationPipeline.performMutation({
-            validate: function(data) {
-                if (!data || !Array.isArray(data.teams)) {
-                    return { valid: false, message: 'Team data store is not available.' };
+        var current = findTeamInData(getDataStore(), targetId);
+        if (!current) {
+            return Promise.resolve(failure('Team not found.'));
+        }
+
+        // Canonical period string.
+        var periodStr = String(periodNum);
+
+        var entryCheck = validateRankingEntry(
+            { period: periodNum, rank: rankNum },
+            current.type
+        );
+        if (!entryCheck.valid) {
+            return Promise.resolve(failure(entryCheck.message));
+        }
+
+        return runMutation({
+            validate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target) {
+                    return { valid: false, message: 'Team no longer exists.' };
                 }
                 return { valid: true };
             },
-
-            mutate: function(data) {
-                var currentTeam = null;
-                for (var i = 0; i < data.teams.length; i++) {
-                    if (data.teams[i] && String(data.teams[i].id) === targetId) {
-                        currentTeam = data.teams[i];
-                        break;
-                    }
-                }
-                if (!currentTeam) {
+            mutate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target) {
                     throw new Error('Team not found in data store.');
                 }
-                if (!Array.isArray(currentTeam.rankingHistory)) {
-                    currentTeam.rankingHistory = [];
+                if (!Array.isArray(target.rankingHistory)) {
+                    target.rankingHistory = [];
                 }
 
+                // Replace if an entry for this period exists, else push.
                 var existingIndex = -1;
-                for (var j = 0; j < currentTeam.rankingHistory.length; j++) {
-                    var entry = currentTeam.rankingHistory[j];
-                    if (entry && String(entry.period) === periodStr) {
-                        existingIndex = j;
+                for (var i = 0; i < target.rankingHistory.length; i++) {
+                    var entryPeriod = parsePeriod(target.rankingHistory[i].period);
+                    if (entryPeriod !== null && String(entryPeriod) === periodStr) {
+                        existingIndex = i;
                         break;
                     }
                 }
 
+                var newEntry = { period: periodStr, rank: rankNum };
                 if (existingIndex !== -1) {
-                    currentTeam.rankingHistory[existingIndex] = { period: periodStr, rank: rankNum };
+                    target.rankingHistory[existingIndex] = newEntry;
                 } else {
-                    currentTeam.rankingHistory.push({ period: periodStr, rank: rankNum });
+                    target.rankingHistory.push(newEntry);
                 }
 
-                updateCurrentRank(currentTeam);
+                // Sort by period ascending (numeric).
+                target.rankingHistory.sort(function(a, b) {
+                    var ap = parsePeriod(a.period);
+                    var bp = parsePeriod(b.period);
+                    return (ap || 0) - (bp || 0);
+                });
+
+                target.updatedAt = new Date().toISOString();
 
                 return { period: periodStr, rank: rankNum, teamId: targetId };
             },
-
-            logMessage: 'Added ranking to team: ' + (team.name || targetId),
+            logMessage: 'Added ranking to team: ' + (current.name || targetId),
             successMessage: 'Ranking added successfully!',
             failureMessage: 'Failed to add ranking.'
         });
     }
 
-    /**
-     * Remove a ranking entry by period.
-     *
-     * @param {string} teamId - Team ID
-     * @param {string|number} period - Period to remove
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
     function removeRanking(teamId, period) {
         if (!checkDependencies()) {
             return Promise.resolve(failure('Dependencies not loaded. Please refresh the page.'));
         }
 
-        if (!period || String(period).trim() === '') {
-            return Promise.resolve(failure('Period is required.'));
+        if (!isNonEmptyString(teamId)) {
+            return Promise.resolve(failure('Team ID is required.'));
         }
 
-        var team = getTeam(teamId);
-        if (!team || !Array.isArray(team.rankingHistory)) {
+        var periodNum = parsePeriod(period);
+        if (periodNum === null) {
+            return Promise.resolve(failure('Period must be a positive integer.'));
+        }
+
+        var targetId = String(teamId).trim();
+        var periodStr = String(periodNum);
+
+        var current = findTeamInData(getDataStore(), targetId);
+        if (!current) {
             return Promise.resolve(failure('Team not found.'));
         }
 
-        var periodStr = String(period).trim();
-        var targetId = String(teamId).trim();
-
-        return MutationPipeline.performMutation({
-            validate: function(data) {
-                if (!data || !Array.isArray(data.teams)) {
-                    return { valid: false, message: 'Team data store is not available.' };
+        return runMutation({
+            validate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target || !Array.isArray(target.rankingHistory)) {
+                    return { valid: false, message: 'Team no longer exists.' };
                 }
                 return { valid: true };
             },
-
-            mutate: function(data) {
-                var currentTeam = null;
-                for (var i = 0; i < data.teams.length; i++) {
-                    if (data.teams[i] && String(data.teams[i].id) === targetId) {
-                        currentTeam = data.teams[i];
-                        break;
-                    }
-                }
-                if (!currentTeam || !Array.isArray(currentTeam.rankingHistory)) {
+            mutate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target || !Array.isArray(target.rankingHistory)) {
                     throw new Error('Team not found in data store.');
                 }
 
                 var found = false;
-                currentTeam.rankingHistory = currentTeam.rankingHistory.filter(function(entry) {
-                    if (entry && String(entry.period) === periodStr) {
+                target.rankingHistory = target.rankingHistory.filter(function(entry) {
+                    if (!entry) return true;
+                    var entryPeriod = parsePeriod(entry.period);
+                    if (entryPeriod !== null && String(entryPeriod) === periodStr) {
                         found = true;
                         return false;
                     }
@@ -1185,39 +1305,56 @@
                     throw new Error('Ranking entry not found.');
                 }
 
-                updateCurrentRank(currentTeam);
-
+                target.updatedAt = new Date().toISOString();
                 return { period: periodStr, teamId: targetId };
             },
-
-            logMessage: 'Removed ranking from team: ' + (team.name || targetId),
+            logMessage: 'Removed ranking from team: ' + (current.name || targetId),
             successMessage: 'Ranking removed successfully!',
             failureMessage: 'Failed to remove ranking.'
         });
     }
 
-    /**
-     * Get sorted ranking history for a team.
-     *
-     * @param {object} team - Team object
-     * @returns {array} Sorted ranking history
-     */
-    function getSortedRankingsPublic(team) {
-        return getSortedRankings(team);
-    }
+    // ============================================================
+    // CASCADE HELPER
+    // ============================================================
 
     /**
-     * Get the current rank for a team.
+     * Strip all references to a character from every team's members
+     * array.
      *
-     * @param {object} team - Team object
-     * @returns {string} Current rank (empty string if none)
+     * PURE with respect to appData: mutates the snapshot, does not
+     * touch window.data. Runs inside another module's pipeline
+     * transaction. Never throws.
+     *
+     * @param {object} appData
+     * @param {string} charId
+     * @returns {object} { membershipsRemoved }
      */
-    function getCurrentRank(team) {
-        if (!team) {
-            return '';
+    function stripCharacterRefs(appData, charId) {
+        var result = { membershipsRemoved: 0 };
+
+        if (!appData || !charId) {
+            return result;
         }
-        var history = getSortedRankings(team);
-        return history.length > 0 ? String(history[history.length - 1].rank) : '';
+        if (!Array.isArray(appData.teams)) {
+            return result;
+        }
+
+        var target = String(charId);
+
+        for (var i = 0; i < appData.teams.length; i++) {
+            var team = appData.teams[i];
+            if (!team || !Array.isArray(team.members)) {
+                continue;
+            }
+            var before = team.members.length;
+            team.members = team.members.filter(function(m) {
+                return !m || String(m.characterId) !== target;
+            });
+            result.membershipsRemoved += before - team.members.length;
+        }
+
+        return result;
     }
 
     // ============================================================
@@ -1233,26 +1370,44 @@
         updateTeam: updateTeam,
         deleteTeam: deleteTeam,
 
-        // Team reads (LIVE REFERENCES — do not mutate directly)
-        getTeam: getTeam,
-        getTeamIndex: getTeamIndex,
-
-        // Members
+        // Member mutation
         addMember: addMember,
         removeMember: removeMember,
         updateMember: updateMember,
 
-        // Rankings
+        // Ranking mutation
         addRanking: addRanking,
         removeRanking: removeRanking,
-        getSortedRankings: getSortedRankingsPublic,
-        getCurrentRank: getCurrentRank,
 
-        // Utilities (exposed for testing)
-        parseNumericPeriod: parseNumericPeriod,
-        parsePositivePeriod: parsePositivePeriod,
-        parseRank: parseRank,
-        isValidPeriodForType: isValidPeriodForType
+        // Cross-domain cascade
+        stripCharacterRefs: stripCharacterRefs
     };
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.TeamCore;
+        var missing = [];
+
+        var required = [
+            'configure',
+            'createTeam', 'updateTeam', 'deleteTeam',
+            'addMember', 'removeMember', 'updateMember',
+            'addRanking', 'removeRanking',
+            'stripCharacterRefs'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        if (missing.length > 0) {
+            console.warn('[TeamCore] Verification - some exports may be missing:', missing.join(', '));
+        }
+    })();
 
 })();
