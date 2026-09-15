@@ -4,22 +4,33 @@
  *
  * Path: js/modules/academy/academy-character-detail.js
  *
- * The VM is produced by AcademyCharacterDetailAggregator.getViewModel.
- * This module is a renderer: it takes a VM, returns HTML, and does
- * nothing else. Every domain-derived value in the output is already
- * present on the VM.
+ * The VM is produced by AcademyView (currently via its local
+ * buildCharacterDetailViewModel; later via
+ * AcademyCharacterDetailAggregator.getViewModel). This module is a
+ * renderer: it takes a VM, returns HTML, and does nothing else.
+ * Every domain-derived value in the output is already present on
+ * the VM.
  *
  * NAME COLLISION:
- *   window.CharacterDetail is the modal in character-detail.js. This
- *   module exposes itself as window.AcademyCharacterDetail.
+ *   window.CharacterDetail is the modal in
+ *   js/modules/characters/character-detail.js. This module exposes
+ *   itself as window.AcademyCharacterDetail.
  *
  * GRADES EDITOR:
  *   The Grades tab renders an empty host element. Mounting the inline
- *   grades editor into that host is a controller-lifecycle concern and
- *   lives in AcademyView, not here.
+ *   grades editor into that host is a controller-lifecycle concern
+ *   and lives in AcademyView, not here.
+ *
+ * TABS:
+ *   The tabs come from vm.tabs. The active tab comes from
+ *   vm.activeTab. The renderer does not decide which tabs are valid
+ *   for a mode; the VM does.
+ *
+ * MODE VOCABULARY:
+ *   'student' | 'instructor'. There is no 'trainee'.
  *
  * DEPENDENCIES:
- *   - window.DomUtils (mandatory)
+ *   - window.DomUtils (MANDATORY)
  */
 
 (function() {
@@ -35,7 +46,8 @@
         typeof DomUtils.escapeHtml !== 'function' ||
         typeof DomUtils.escapeAttribute !== 'function') {
         throw new Error(
-            '[AcademyCharacterDetail] Missing mandatory dependency: DomUtils'
+            '[AcademyCharacterDetail] Missing mandatory dependency: ' +
+            'DomUtils.escapeHtml / DomUtils.escapeAttribute'
         );
     }
 
@@ -83,7 +95,8 @@
      * Render the character detail panel.
      *
      * @param {object|null} viewModel - VM from
-     *   AcademyCharacterDetailAggregator.getViewModel
+     *   AcademyView.buildCharacterDetailViewModel (or, later,
+     *   AcademyCharacterDetailAggregator.getViewModel)
      * @returns {string} HTML string
      */
     function renderHTML(viewModel) {
@@ -141,7 +154,9 @@
     function renderEmptyState() {
         return (
             '<div class="academy-detail-empty">' +
-                '<p class="empty-state small">Select a character to view their details.</p>' +
+                '<p class="empty-state small">' +
+                    'Select a character to view their details.' +
+                '</p>' +
             '</div>'
         );
     }
@@ -206,7 +221,8 @@
 
         var html = '';
         html += '<div class="academy-character-mode-toggle">';
-        html += '<label class="academy-mode-checkbox-label" for="academy-character-mode-checkbox">';
+        html += '<label class="academy-mode-checkbox-label" ' +
+                    'for="academy-character-mode-checkbox">';
         html += '<input type="checkbox" id="academy-character-mode-checkbox" ' +
                     'class="academy-character-mode-checkbox"' +
                     (isInstructor ? ' checked' : '') + '>';
@@ -237,7 +253,9 @@
                 '<div class="academy-character-detail-warning academy-warning-elimination-now">' +
                     '<span class="academy-warning-icon">\u26a0</span>' +
                     '<span class="academy-warning-text">' +
-                        'Eliminated this week (Week ' + escapeHtml(String(elimination.week)) + ')' +
+                        'Eliminated this week (Week ' +
+                        escapeHtml(String(elimination.week)) +
+                        ')' +
                         reasonSuffix +
                     '</span>' +
                 '</div>'
@@ -248,7 +266,8 @@
             '<div class="academy-character-detail-warning academy-warning-eliminated">' +
                 '<span class="academy-warning-icon">\u26a0</span>' +
                 '<span class="academy-warning-text">' +
-                    'Eliminated in Week ' + escapeHtml(String(elimination.week)) +
+                    'Eliminated in Week ' +
+                    escapeHtml(String(elimination.week)) +
                     reasonSuffix +
                 '</span>' +
             '</div>'
@@ -265,6 +284,7 @@
 
         for (var i = 0; i < tabs.length; i++) {
             var t = tabs[i];
+            if (!t || !t.id) { continue; }
             var isActive = t.id === activeTab;
             html += '<button type="button" ' +
                         'class="academy-character-tab-btn' +
@@ -371,7 +391,10 @@
 
     function renderScoreCard(label, value, kind, action) {
         var hasValue = isFiniteNumber(value);
-        var display = hasValue ? String(Math.round(value * 10) / 10) : '\u2014';
+        var display = hasValue
+            ? String(Math.round(value * 10) / 10)
+            : '\u2014';
+
         var valueClass = 'academy-score-value academy-score-value-' + kind;
         if (!hasValue) {
             valueClass += ' academy-score-value-empty';
@@ -387,7 +410,8 @@
             html += '<button type="button" class="small secondary" ' +
                         'data-action="' + escapeAttribute(action.action) + '" ' +
                         (action.characterId
-                            ? 'data-character-id="' + escapeAttribute(action.characterId) + '" '
+                            ? 'data-character-id="' +
+                                escapeAttribute(action.characterId) + '" '
                             : '') +
                         '>' +
                         escapeHtml(action.label || 'Edit') +
@@ -407,7 +431,8 @@
         var isEliminated = elimination !== null && elimination !== undefined;
 
         var html = '';
-        html += '<div class="academy-character-detail-section academy-character-dropout-section">';
+        html += '<div class="academy-character-detail-section ' +
+                    'academy-character-dropout-section">';
         html += '<div class="academy-character-detail-section-header">';
         html += '<h4 class="academy-character-detail-section-title">Enrollment</h4>';
         html += '</div>';
@@ -415,26 +440,32 @@
         if (isEliminated) {
             html += '<div class="academy-dropout-status academy-dropout-status-eliminated">';
             html += '<span class="academy-dropout-status-label">Eliminated</span>';
+
             if (isFiniteNumber(elimination.week)) {
                 html += '<span class="academy-dropout-status-detail">Week ' +
                             escapeHtml(String(elimination.week)) +
                         '</span>';
             }
+
             if (isNonEmptyString(elimination.reason)) {
                 html += '<span class="academy-dropout-status-detail">' +
                             escapeHtml(elimination.reason) +
                         '</span>';
             }
+
             html += '</div>';
         } else {
             html += '<div class="academy-dropout-controls">';
-            html += '<button type="button" class="small danger academy-dropout-btn" ' +
+            html += '<button type="button" ' +
+                        'class="small danger academy-dropout-btn" ' +
                         'data-action="drop-out-character" ' +
-                        'data-character-id="' + escapeAttribute(character.id) + '">' +
+                        'data-character-id="' +
+                            escapeAttribute(character.id) + '">' +
                         'Drop Out' +
                     '</button>';
             html += '<span class="academy-dropout-hint">' +
-                        'Marks this character as eliminated. They remain on the class roster.' +
+                        'Marks this character as eliminated. ' +
+                        'They remain on the class roster.' +
                     '</span>';
             html += '</div>';
         }
@@ -451,12 +482,17 @@
         if (mode === 'instructor') {
             return renderInstructorDisciplines(vm.instructor);
         }
-        return renderStudentDisciplines(vm.student, vm.classContext, vm.character);
+        return renderStudentDisciplines(
+            vm.student,
+            vm.classContext,
+            vm.character
+        );
     }
 
     function renderStudentDisciplines(student, classContext, character) {
         var html = '';
-        html += '<div class="academy-character-detail-section academy-character-disciplines">';
+        html += '<div class="academy-character-detail-section ' +
+                    'academy-character-disciplines">';
 
         html += '<div class="academy-character-detail-section-header">';
         html += '<h4 class="academy-character-detail-section-title">Disciplines</h4>';
@@ -464,7 +500,8 @@
         if (classContext) {
             html += '<button type="button" class="small primary" ' +
                         'data-action="enroll-discipline" ' +
-                        'data-character-id="' + escapeAttribute(character.id) + '">' +
+                        'data-character-id="' +
+                            escapeAttribute(character.id) + '">' +
                         '+ Enroll' +
                     '</button>';
         }
@@ -479,7 +516,9 @@
         }
 
         if (!student || student.disciplines === null) {
-            html += '<p class="empty-state small">Enrollment module not available.</p>';
+            html += '<p class="empty-state small">' +
+                        'Enrollment module not available.' +
+                    '</p>';
             html += '</div>';
             return html;
         }
@@ -503,8 +542,10 @@
                     '</span>';
             html += '<button type="button" class="small danger" ' +
                         'data-action="leave-discipline" ' +
-                        'data-character-id="' + escapeAttribute(character.id) + '" ' +
-                        'data-discipline-id="' + escapeAttribute(d.id) + '">' +
+                        'data-character-id="' +
+                            escapeAttribute(character.id) + '" ' +
+                        'data-discipline-id="' +
+                            escapeAttribute(d.id) + '">' +
                         'Leave' +
                     '</button>';
             html += '</div>';
@@ -517,19 +558,25 @@
 
     function renderInstructorDisciplines(instructor) {
         var html = '';
-        html += '<div class="academy-character-detail-section academy-character-instructor-disciplines">';
+        html += '<div class="academy-character-detail-section ' +
+                    'academy-character-instructor-disciplines">';
 
         html += '<div class="academy-character-detail-section-header">';
-        html += '<h4 class="academy-character-detail-section-title">Disciplines I Teach</h4>';
+        html += '<h4 class="academy-character-detail-section-title">' +
+                    'Disciplines I Teach' +
+                '</h4>';
         html += '</div>';
 
         if (!instructor) {
-            html += '<p class="empty-state small">Instructor data not available.</p>';
+            html += '<p class="empty-state small">' +
+                        'Instructor data not available.' +
+                    '</p>';
             html += '</div>';
             return html;
         }
 
-        if (instructor.disciplines.length === 0) {
+        if (!Array.isArray(instructor.disciplines) ||
+            instructor.disciplines.length === 0) {
             html += '<p class="empty-state small">' +
                         'Not assigned to teach any disciplines.' +
                     '</p>';
@@ -541,7 +588,8 @@
 
         for (var i = 0; i < instructor.disciplines.length; i++) {
             var d = instructor.disciplines[i];
-            html += '<div class="academy-character-discipline-row academy-instructor-discipline-row" ' +
+            html += '<div class="academy-character-discipline-row ' +
+                        'academy-instructor-discipline-row" ' +
                         'data-discipline-id="' + escapeAttribute(d.id) + '">';
             html += '<span class="academy-character-discipline-name">' +
                         escapeHtml(d.name) +
@@ -562,10 +610,14 @@
     // ============================================================
     // GRADES TAB
     // ============================================================
+    //
+    // The panel renders an empty host element. AcademyView mounts the
+    // inline grades editor into it when the tab is active.
 
     function renderGradesTab(vm) {
         var html = '';
-        html += '<div class="academy-character-detail-section academy-character-grades">';
+        html += '<div class="academy-character-detail-section ' +
+                    'academy-character-grades">';
 
         html += '<div class="academy-character-detail-section-header">';
         html += '<h4 class="academy-character-detail-section-title">Grades</h4>';
@@ -581,7 +633,8 @@
 
         if (vm.student && vm.student.grades && vm.student.grades.hasAny) {
             html += '<span class="academy-character-detail-section-subtitle">' +
-                        'Avg ' + escapeHtml(String(vm.student.grades.average)) +
+                        'Avg ' +
+                        escapeHtml(String(vm.student.grades.average)) +
                     '</span>';
         }
 
@@ -595,21 +648,27 @@
     }
 
     // ============================================================
-    // SCHEDULE TAB (placeholder)
+    // SCHEDULE TAB
     // ============================================================
 
     function renderScheduleTab(vm) {
         var html = '';
-        html += '<div class="academy-character-detail-section academy-character-schedule">';
+        html += '<div class="academy-character-detail-section ' +
+                    'academy-character-schedule">';
         html += '<div class="academy-character-detail-section-header">';
         html += '<h4 class="academy-character-detail-section-title">Schedule</h4>';
+
         if (vm.performance && isFiniteNumber(vm.performance.week)) {
             html += '<span class="academy-character-detail-section-subtitle">' +
-                        'Week ' + escapeHtml(String(vm.performance.week)) +
+                        'Week ' +
+                        escapeHtml(String(vm.performance.week)) +
                     '</span>';
         }
+
         html += '</div>';
-        html += '<p class="empty-state small">Schedule view is coming soon.</p>';
+        html += '<p class="empty-state small">' +
+                    'Schedule view is coming soon.' +
+                '</p>';
         html += '</div>';
         return html;
     }
@@ -620,40 +679,55 @@
 
     function renderTeamsTab(vm) {
         var student = vm.student;
-        var teams = student && Array.isArray(student.teams) ? student.teams : null;
+        var teams = student && Array.isArray(student.teams)
+            ? student.teams
+            : null;
 
         if (teams === null) {
             return (
                 '<div class="academy-character-detail-section">' +
-                    '<p class="empty-state small">Team data not available.</p>' +
+                    '<p class="empty-state small">' +
+                        'Team data not available.' +
+                    '</p>' +
                 '</div>'
             );
         }
 
         if (teams.length === 0) {
             return (
-                '<div class="academy-character-detail-section academy-character-teams">' +
+                '<div class="academy-character-detail-section ' +
+                        'academy-character-teams">' +
                     '<div class="academy-character-detail-section-header">' +
-                        '<h4 class="academy-character-detail-section-title">Teams</h4>' +
-                        '<span class="academy-character-detail-section-count">0</span>' +
+                        '<h4 class="academy-character-detail-section-title">' +
+                            'Teams' +
+                        '</h4>' +
+                        '<span class="academy-character-detail-section-count">' +
+                            '0' +
+                        '</span>' +
                     '</div>' +
-                    '<p class="empty-state small">Not a member of any teams.</p>' +
+                    '<p class="empty-state small">' +
+                        'Not a member of any teams.' +
+                    '</p>' +
                 '</div>'
             );
         }
 
         var html = '';
-        html += '<div class="academy-character-detail-section academy-character-teams">';
+        html += '<div class="academy-character-detail-section ' +
+                    'academy-character-teams">';
 
         html += '<div class="academy-character-detail-section-header">';
         html += '<h4 class="academy-character-detail-section-title">Teams</h4>';
-        html += '<span class="academy-character-detail-section-count">' + teams.length + '</span>';
+        html += '<span class="academy-character-detail-section-count">' +
+                    teams.length +
+                '</span>';
         html += '</div>';
 
         html += '<div class="academy-character-team-list">';
 
         for (var i = 0; i < teams.length; i++) {
             var team = teams[i];
+            if (!team || !team.id) { continue; }
             html += '<div class="academy-character-team-row" ' +
                         'data-team-id="' + escapeAttribute(team.id) + '">';
             html += '<span class="academy-character-team-name">' +
@@ -681,7 +755,9 @@
         if (!instructor) {
             return (
                 '<div class="academy-character-detail-section">' +
-                    '<p class="empty-state small">Instructor data not available.</p>' +
+                    '<p class="empty-state small">' +
+                        'Instructor data not available.' +
+                    '</p>' +
                 '</div>'
             );
         }
@@ -689,25 +765,36 @@
         if (instructor.autoGroups === null) {
             return (
                 '<div class="academy-character-detail-section">' +
-                    '<p class="empty-state small">Auto-groups module not available.</p>' +
+                    '<p class="empty-state small">' +
+                        'Auto-groups module not available.' +
+                    '</p>' +
                 '</div>'
             );
         }
 
-        if (instructor.autoGroups.length === 0) {
+        if (!Array.isArray(instructor.autoGroups) ||
+            instructor.autoGroups.length === 0) {
             return (
-                '<div class="academy-character-detail-section academy-character-auto-groups">' +
+                '<div class="academy-character-detail-section ' +
+                        'academy-character-auto-groups">' +
                     '<div class="academy-character-detail-section-header">' +
-                        '<h4 class="academy-character-detail-section-title">Auto-Groups</h4>' +
-                        '<span class="academy-character-detail-section-count">0</span>' +
+                        '<h4 class="academy-character-detail-section-title">' +
+                            'Auto-Groups' +
+                        '</h4>' +
+                        '<span class="academy-character-detail-section-count">' +
+                            '0' +
+                        '</span>' +
                     '</div>' +
-                    '<p class="empty-state small">Not managing any groups.</p>' +
+                    '<p class="empty-state small">' +
+                        'Not managing any groups.' +
+                    '</p>' +
                 '</div>'
             );
         }
 
         var html = '';
-        html += '<div class="academy-character-detail-section academy-character-auto-groups">';
+        html += '<div class="academy-character-detail-section ' +
+                    'academy-character-auto-groups">';
 
         html += '<div class="academy-character-detail-section-header">';
         html += '<h4 class="academy-character-detail-section-title">Auto-Groups</h4>';
@@ -717,7 +804,10 @@
         html += '</div>';
 
         for (var i = 0; i < instructor.autoGroups.length; i++) {
-            html += renderInstructorGroupBlock(vm.character, instructor.autoGroups[i]);
+            html += renderInstructorGroupBlock(
+                vm.character,
+                instructor.autoGroups[i]
+            );
         }
 
         html += '</div>';
@@ -725,35 +815,46 @@
     }
 
     function renderInstructorGroupBlock(character, group) {
+        if (!group) { return ''; }
+
+        var students = Array.isArray(group.students) ? group.students : [];
+
         var html = '';
         html += '<div class="academy-instructor-group" ' +
-                    'data-group-key="' + escapeAttribute(group.key) + '">';
+                    'data-group-key="' +
+                        escapeAttribute(group.key || '') + '">';
 
         html += '<div class="academy-instructor-group-header">';
         html += '<span class="academy-instructor-group-name">' +
-                    escapeHtml(group.disciplineName) +
+                    escapeHtml(group.disciplineName || 'Unknown Discipline') +
                 '</span>';
         html += '<span class="academy-instructor-group-count">' +
-                    group.studentCount + ' student' + (group.studentCount === 1 ? '' : 's') +
+                    students.length + ' student' +
+                    (students.length === 1 ? '' : 's') +
                 '</span>';
         html += '<button type="button" class="small primary" ' +
                     'data-action="add-group-student" ' +
-                    'data-instructor-id="' + escapeAttribute(character.id) + '" ' +
-                    'data-group-key="' + escapeAttribute(group.key) + '">' +
+                    'data-instructor-id="' +
+                        escapeAttribute(character.id) + '" ' +
+                    'data-group-key="' +
+                        escapeAttribute(group.key || '') + '">' +
                     '+ Add Student' +
                 '</button>';
         html += '</div>';
 
-        if (group.students.length === 0) {
-            html += '<p class="empty-state small academy-instructor-group-empty">' +
+        if (students.length === 0) {
+            html += '<p class="empty-state small ' +
+                        'academy-instructor-group-empty">' +
                         'No students in this group yet.' +
                     '</p>';
         } else {
             html += '<div class="academy-instructor-group-roster">';
-            for (var i = 0; i < group.students.length; i++) {
-                var s = group.students[i];
+            for (var i = 0; i < students.length; i++) {
+                var s = students[i];
+                if (!s || !s.id) { continue; }
                 html += '<div class="academy-instructor-group-roster-row" ' +
-                            'data-character-id="' + escapeAttribute(s.id) + '">';
+                            'data-character-id="' +
+                                escapeAttribute(s.id) + '">';
                 html += '<span class="academy-instructor-group-roster-name">' +
                             escapeHtml(s.name) +
                         '</span>';
@@ -764,8 +865,10 @@
                 }
                 html += '<button type="button" class="small danger" ' +
                             'data-action="remove-group-student" ' +
-                            'data-group-key="' + escapeAttribute(group.key) + '" ' +
-                            'data-character-id="' + escapeAttribute(s.id) + '">' +
+                            'data-group-key="' +
+                                escapeAttribute(group.key || '') + '" ' +
+                            'data-character-id="' +
+                                escapeAttribute(s.id) + '">' +
                             'Remove' +
                         '</button>';
                 html += '</div>';
