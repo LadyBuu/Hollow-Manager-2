@@ -1,92 +1,68 @@
 /**
  * modules/academy/index.js - Academy Module Entry Point
- * Single entry point for all academic year functionality
+ * Single entry point for all academic year functionality.
  *
  * Path: js/modules/academy/index.js
  *
- * This module is responsible for:
- *   - Registering with TabManager
- *   - Verifying schema and dependencies at mount time
- *   - Assembling and injecting external providers
- *   - Handing the container to AcademyView for rendering
- *   - Handling DataLoader integration
- *   - Exposing the public Academy API
+ * RESPONSIBILITIES:
+ *   - Register with TabManager
+ *   - Validate the academy data structure before mount
+ *   - Assemble and inject the calendar provider into AcademySchedule
+ *   - Hand the container to AcademyView for rendering
+ *   - Handle DataLoader and tabChanged integration
+ *   - Expose a small public API on window.Academy
  *
  * ARCHITECTURE:
  *   This file is the LIFECYCLE ENTRY POINT, not a render module.
  *   All rendering and interaction live in academy-view.js.
- *   This file's job is to make sure the world is ready and then
- *   hand the container to AcademyView.
+ *   All domain modules own their own data and validation.
  *
- *   Do not add render logic here. Do not add refresh logic here.
- *   Do not add tab-content event binding here. If something needs
- *   to re-render, it goes through AcademyView.render(container).
- *
- * BOOTSTRAP LIST:
- *   The dependency check below lists the modules that MUST be loaded
- *   before this file runs. The list has grown with each phase:
- *
- *     Foundation:  AcademyClasses, AcademyGrades, AcademyDisciplines,
- *                  AcademyLocations, AcademySchedule, AcademyUI,
- *                  AcademyView, AcademyQueries, AcademyDistribute,
- *                  AcademyGroups, AcademyRanking.
- *
- *     Phase 3:     AcademyPerformance.
- *     Phase 4:     AcademyEnrolments.
- *     Phase 5:     AcademySocialScore.
- *     Phase 5b:    AcademyWeeklyTeams (week-scoped assignments).
- *     Phase 8:     AcademyCascade.
- *     Settings:    AcademySettings.
- *     Aggregation: AcademyTournamentAggregator.
- *
- *   Script-tag order in index.html must match. See index.html for
- *   the canonical order.
- *
- * CALENDAR PROVIDER READ/WRITE SPLIT:
- *   The calendar provider is a facade over two modules:
- *     - CalendarQueries owns READS. Synchronous.
- *     - ScheduleCore owns WRITES. Promise-based (MutationPipeline).
- *
- *   The provider maps each method to the correct module. It is
- *   assembled here and injected into AcademySchedule before any
- *   schedule operation runs.
+ *   Do not add domain logic here. Do not add render logic here.
+ *   Do not add per-feature bootstrapping here. If a feature needs
+ *   initialization, its own module handles it.
  *
  * MOUNT IDEMPOTENCY:
  *   mountAcademy() may be invoked from two paths:
  *     - DataLoader.whenReady  → handleDataReady → mountAcademy
  *     - tabChanged            → mountAcademy
  *   Both paths can fire in the same tick during a fresh load. The
- *   _mounted flag plus the unmount-before-mount sequence inside
- *   mountAcademy() guarantees at most one live mount.
+ *   _mounted flag plus unmount-before-mount guarantees at most one
+ *   live mount.
  *
- * DEPENDENCIES:
+ * PUBLIC API SHAPE:
+ *   window.Academy exposes ten methods. It does NOT re-export the
+ *   domain modules. If a consumer needs a domain module, that module
+ *   is available at its own global (window.AcademyClasses,
+ *   window.AcademyGrades, window.AcademyDisciplines, etc.). Nesting
+ *   them under window.Academy would invite callers to bypass the
+ *   aggregator and read raw storage.
+ *
+ * DATA STRUCTURE VALIDATION:
+ *   validateAcademyStructure() checks that window.data.academy has
+ *   the shape this module expects. It does NOT repair. If the shape
+ *   is wrong, the mount path renders an error state and stops. The
+ *   database migration is responsible for producing the correct
+ *   shape.
+ *
+ * DEPENDENCIES (MANDATORY):
  *   - window.TabManager
- *   - window.CharacterQueries
- *   - window.TeamQueries
- *   - window.CalendarQueries
- *   - window.ScheduleCore
  *   - window.AcademyUI
  *   - window.AcademyView
- *   - window.AcademyClasses
- *   - window.AcademyQueries
- *   - window.AcademyGrades
- *   - window.AcademyGroups
- *   - window.AcademyRanking
- *   - window.AcademyDistribute
  *   - window.AcademySchedule
- *   - window.AcademyDisciplines
- *   - window.AcademyLocations
- *   - window.AcademyPerformance
- *   - window.AcademyEnrolments
- *   - window.AcademySocialScore
- *   - window.AcademyWeeklyTeams
- *   - window.AcademySettings
- *   - window.AcademyCascade
- *   - window.AcademyTournamentAggregator
- *   - window.DomUtils
- *   - window.NotificationSystem
- *   - window.DataLoader
- *   - window.CalendarConstants
+ *   - window.CalendarQueries
+ *   - window.ScheduleCore
+ *
+ * DEPENDENCIES (OPTIONAL, feature-scoped):
+ *   - window.DataLoader — readiness hook is skipped when absent
+ *   - window.CharacterQueries — used only by the calendar provider's
+ *     character existence check, which is not currently consumed
+ *   - window.NotificationSystem — used by error paths when present
+ *
+ * USAGE:
+ *   The module self-registers with TabManager. External callers use:
+ *     window.Academy.mount(container)
+ *     window.Academy.refresh()
+ *     window.Academy.unmount()
  */
 
 (function() {
@@ -95,239 +71,168 @@
     if (window.__academyModuleLoaded) {
         return;
     }
-    window.__academyModuleLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY IMPORTS - MANDATORY
     // ============================================================
 
     var TabManager = window.TabManager;
-    var CharacterQueries = window.CharacterQueries;
-    var TeamQueries = window.TeamQueries;
-    var CalendarQueries = window.CalendarQueries;
-    var ScheduleCore = window.ScheduleCore;
     var AcademyUI = window.AcademyUI;
     var AcademyView = window.AcademyView;
-    var AcademyClasses = window.AcademyClasses;
-    var AcademyQueries = window.AcademyQueries;
-    var AcademyGrades = window.AcademyGrades;
-    var AcademyGroups = window.AcademyGroups;
-    var AcademyRanking = window.AcademyRanking;
-    var AcademyDistribute = window.AcademyDistribute;
     var AcademySchedule = window.AcademySchedule;
-    var AcademyDisciplines = window.AcademyDisciplines;
-    var AcademyLocations = window.AcademyLocations;
-    var AcademyPerformance = window.AcademyPerformance;
-    var AcademyEnrolments = window.AcademyEnrolments;
-    var AcademySocialScore = window.AcademySocialScore;
-    var AcademyWeeklyTeams = window.AcademyWeeklyTeams;
-    var AcademySettings = window.AcademySettings;
-    var AcademyCascade = window.AcademyCascade;
-    var AcademyTournamentAggregator = window.AcademyTournamentAggregator;
-    var DomUtils = window.DomUtils;
-    var NotificationSystem = window.NotificationSystem;
-    var DataLoader = window.DataLoader;
-    var CalendarConstants = window.CalendarConstants;
+    var CalendarQueries = window.CalendarQueries;
+    var ScheduleCore = window.ScheduleCore;
 
     // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
+    //
+    // Only checks what THIS module invokes. Sub-modules validate their
+    // own dependencies at their own load time and throw on failure,
+    // so a missing mandatory dependency elsewhere in the Academy
+    // graph has already stopped the page before this check runs.
 
-    function checkDependencies() {
-        var missing = [];
+    var _missing = [];
 
-        // ---- TabManager ----
-        if (!TabManager || typeof TabManager.register !== 'function') {
-            missing.push('TabManager.register');
-        }
+    if (!TabManager || typeof TabManager.register !== 'function') {
+        _missing.push('TabManager.register');
+    }
+    if (!TabManager || typeof TabManager.getCurrentTab !== 'function') {
+        _missing.push('TabManager.getCurrentTab');
+    }
 
-        // ---- Character / Team queries (used by provider + views) ----
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-            missing.push('CharacterQueries.getDisplayName');
-        }
+    if (!AcademyUI || typeof AcademyUI.getSelectedView !== 'function') {
+        _missing.push('AcademyUI.getSelectedView');
+    }
+    if (!AcademyUI || typeof AcademyUI.getState !== 'function') {
+        _missing.push('AcademyUI.getState');
+    }
+    if (!AcademyUI || typeof AcademyUI.setDisplayWeek !== 'function') {
+        _missing.push('AcademyUI.setDisplayWeek');
+    }
 
-        if (!TeamQueries || typeof TeamQueries.getTeamsByClass !== 'function') {
-            missing.push('TeamQueries.getTeamsByClass');
-        }
+    if (!AcademyView || typeof AcademyView.render !== 'function') {
+        _missing.push('AcademyView.render');
+    }
 
-        // ---- CalendarQueries (READS) ----
-        if (!CalendarQueries || typeof CalendarQueries.getStudentSchedule !== 'function') {
-            missing.push('CalendarQueries.getStudentSchedule');
-        }
-        if (!CalendarQueries || typeof CalendarQueries.getInstructorSchedule !== 'function') {
-            missing.push('CalendarQueries.getInstructorSchedule');
-        }
-        if (!CalendarQueries || typeof CalendarQueries.getLocationSchedule !== 'function') {
-            missing.push('CalendarQueries.getLocationSchedule');
-        }
-        if (!CalendarQueries || typeof CalendarQueries.getStudentRestDays !== 'function') {
-            missing.push('CalendarQueries.getStudentRestDays');
-        }
-        if (!CalendarQueries || typeof CalendarQueries.getSlotMetadata !== 'function') {
-            missing.push('CalendarQueries.getSlotMetadata');
-        }
-        if (!CalendarQueries || typeof CalendarQueries.findClassStart !== 'function') {
-            missing.push('CalendarQueries.findClassStart');
-        }
-        if (!CalendarQueries || typeof CalendarQueries.getInstructorTemplates !== 'function') {
-            missing.push('CalendarQueries.getInstructorTemplates');
-        }
-        if (!CalendarQueries || typeof CalendarQueries.getInstructorBlocks !== 'function') {
-            missing.push('CalendarQueries.getInstructorBlocks');
-        }
+    if (!AcademySchedule || typeof AcademySchedule.configure !== 'function') {
+        _missing.push('AcademySchedule.configure');
+    }
 
-        // ---- ScheduleCore (WRITES) ----
-        if (!ScheduleCore || typeof ScheduleCore.setStudentSlot !== 'function') {
-            missing.push('ScheduleCore.setStudentSlot');
-        }
-        if (!ScheduleCore || typeof ScheduleCore.removeStudentSlot !== 'function') {
-            missing.push('ScheduleCore.removeStudentSlot');
-        }
-        if (!ScheduleCore || typeof ScheduleCore.clearStudentSchedule !== 'function') {
-            missing.push('ScheduleCore.clearStudentSchedule');
-        }
-        if (!ScheduleCore || typeof ScheduleCore.duplicateStudentSchedule !== 'function') {
-            missing.push('ScheduleCore.duplicateStudentSchedule');
-        }
-        if (!ScheduleCore || typeof ScheduleCore.setRestDays !== 'function') {
-            missing.push('ScheduleCore.setRestDays');
-        }
-        if (!ScheduleCore || typeof ScheduleCore.removeRestDays !== 'function') {
-            missing.push('ScheduleCore.removeRestDays');
-        }
-        if (!ScheduleCore || typeof ScheduleCore.setSlotMetadata !== 'function') {
-            missing.push('ScheduleCore.setSlotMetadata');
-        }
-        if (!ScheduleCore || typeof ScheduleCore.setInstructorTemplate !== 'function') {
-            missing.push('ScheduleCore.setInstructorTemplate');
-        }
-        if (!ScheduleCore || typeof ScheduleCore.removeInstructorTemplate !== 'function') {
-            missing.push('ScheduleCore.removeInstructorTemplate');
-        }
-        if (!ScheduleCore || typeof ScheduleCore.setInstructorBlock !== 'function') {
-            missing.push('ScheduleCore.setInstructorBlock');
-        }
-        if (!ScheduleCore || typeof ScheduleCore.removeInstructorBlock !== 'function') {
-            missing.push('ScheduleCore.removeInstructorBlock');
-        }
-        if (!ScheduleCore || typeof ScheduleCore.setLocationClass !== 'function') {
-            missing.push('ScheduleCore.setLocationClass');
-        }
-        if (!ScheduleCore || typeof ScheduleCore.removeLocationClass !== 'function') {
-            missing.push('ScheduleCore.removeLocationClass');
-        }
-        if (!ScheduleCore || typeof ScheduleCore.hasConflict !== 'function') {
-            missing.push('ScheduleCore.hasConflict');
-        }
+    if (!CalendarQueries || typeof CalendarQueries.getStudentSchedule !== 'function') {
+        _missing.push('CalendarQueries.getStudentSchedule');
+    }
+    if (!CalendarQueries || typeof CalendarQueries.getInstructorSchedule !== 'function') {
+        _missing.push('CalendarQueries.getInstructorSchedule');
+    }
+    if (!CalendarQueries || typeof CalendarQueries.getLocationSchedule !== 'function') {
+        _missing.push('CalendarQueries.getLocationSchedule');
+    }
+    if (!CalendarQueries || typeof CalendarQueries.getStudentRestDays !== 'function') {
+        _missing.push('CalendarQueries.getStudentRestDays');
+    }
+    if (!CalendarQueries || typeof CalendarQueries.getSlotMetadata !== 'function') {
+        _missing.push('CalendarQueries.getSlotMetadata');
+    }
+    if (!CalendarQueries || typeof CalendarQueries.findClassStart !== 'function') {
+        _missing.push('CalendarQueries.findClassStart');
+    }
 
-        // ---- UI / View ----
-        if (!AcademyUI || typeof AcademyUI.getSelectedView !== 'function') {
-            missing.push('AcademyUI.getSelectedView');
-        }
-        if (!AcademyUI || typeof AcademyUI.getSelectedClassId !== 'function') {
-            missing.push('AcademyUI.getSelectedClassId');
-        }
-        if (!AcademyView || typeof AcademyView.render !== 'function') {
-            missing.push('AcademyView.render');
-        }
+    if (!ScheduleCore || typeof ScheduleCore.setStudentSlot !== 'function') {
+        _missing.push('ScheduleCore.setStudentSlot');
+    }
+    if (!ScheduleCore || typeof ScheduleCore.removeStudentSlot !== 'function') {
+        _missing.push('ScheduleCore.removeStudentSlot');
+    }
+    if (!ScheduleCore || typeof ScheduleCore.clearStudentSchedule !== 'function') {
+        _missing.push('ScheduleCore.clearStudentSchedule');
+    }
+    if (!ScheduleCore || typeof ScheduleCore.duplicateStudentSchedule !== 'function') {
+        _missing.push('ScheduleCore.duplicateStudentSchedule');
+    }
+    if (!ScheduleCore || typeof ScheduleCore.setRestDays !== 'function') {
+        _missing.push('ScheduleCore.setRestDays');
+    }
+    if (!ScheduleCore || typeof ScheduleCore.removeRestDays !== 'function') {
+        _missing.push('ScheduleCore.removeRestDays');
+    }
+    if (!ScheduleCore || typeof ScheduleCore.setSlotMetadata !== 'function') {
+        _missing.push('ScheduleCore.setSlotMetadata');
+    }
+    if (!ScheduleCore || typeof ScheduleCore.setInstructorTemplate !== 'function') {
+        _missing.push('ScheduleCore.setInstructorTemplate');
+    }
+    if (!ScheduleCore || typeof ScheduleCore.removeInstructorTemplate !== 'function') {
+        _missing.push('ScheduleCore.removeInstructorTemplate');
+    }
+    if (!ScheduleCore || typeof ScheduleCore.setInstructorBlock !== 'function') {
+        _missing.push('ScheduleCore.setInstructorBlock');
+    }
+    if (!ScheduleCore || typeof ScheduleCore.removeInstructorBlock !== 'function') {
+        _missing.push('ScheduleCore.removeInstructorBlock');
+    }
+    if (!ScheduleCore || typeof ScheduleCore.setLocationClass !== 'function') {
+        _missing.push('ScheduleCore.setLocationClass');
+    }
+    if (!ScheduleCore || typeof ScheduleCore.removeLocationClass !== 'function') {
+        _missing.push('ScheduleCore.removeLocationClass');
+    }
+    if (!ScheduleCore || typeof ScheduleCore.hasConflict !== 'function') {
+        _missing.push('ScheduleCore.hasConflict');
+    }
 
-        // ---- Academy domain: classes ----
-        if (!AcademyClasses || typeof AcademyClasses.create !== 'function') {
-            missing.push('AcademyClasses.create');
-        }
+    if (_missing.length > 0) {
+        throw new Error(
+            '[AcademyModule] Missing mandatory dependencies: ' +
+            _missing.join(', ')
+        );
+    }
 
-        // ---- AcademyQueries: still consumed by academy-distribute.js ----
-        if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
-            missing.push('AcademyQueries.getClasses');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
-            missing.push('AcademyQueries.getClass');
-        }
+    window.__academyModuleLoaded = true;
 
-        // ---- Academy domain: disciplines / locations ----
-        if (!AcademyDisciplines || typeof AcademyDisciplines.create !== 'function') {
-            missing.push('AcademyDisciplines.create');
-        }
-        if (!AcademyLocations || typeof AcademyLocations.create !== 'function') {
-            missing.push('AcademyLocations.create');
-        }
+    // ============================================================
+    // OPTIONAL DEPENDENCY ACCESSORS
+    // ============================================================
 
-        // ---- Schedule orchestration ----
-        if (!AcademySchedule || typeof AcademySchedule.configure !== 'function') {
-            missing.push('AcademySchedule.configure');
-        }
+    function getNotificationSystem() {
+        return window.NotificationSystem || null;
+    }
 
-        // ---- Phase 3: performance ----
-        if (!AcademyPerformance || typeof AcademyPerformance.calculateAcademicAverage !== 'function') {
-            missing.push('AcademyPerformance.calculateAcademicAverage');
+    function notify(message, type) {
+        var NS = getNotificationSystem();
+        if (NS && typeof NS.notify === 'function') {
+            NS.notify(message, type || 'info');
         }
-
-        // ---- Phase 4: enrolments ----
-        if (!AcademyEnrolments || typeof AcademyEnrolments.getStudentDisciplines !== 'function') {
-            missing.push('AcademyEnrolments.getStudentDisciplines');
-        }
-
-        // ---- Phase 5: social score ----
-        if (!AcademySocialScore || typeof AcademySocialScore.getSocialScore !== 'function') {
-            missing.push('AcademySocialScore.getSocialScore');
-        }
-
-        // ---- Phase 5b: weekly teams ----
-        if (!AcademyWeeklyTeams || typeof AcademyWeeklyTeams.getWeeklyTeams !== 'function') {
-            missing.push('AcademyWeeklyTeams.getWeeklyTeams');
-        }
-
-        // ---- Settings ----
-        if (!AcademySettings || typeof AcademySettings.getRankingWeights !== 'function') {
-            missing.push('AcademySettings.getRankingWeights');
-        }
-
-        // ---- Phase 8: cascade coordinator ----
-        if (!AcademyCascade || typeof AcademyCascade.characterDeleted !== 'function') {
-            missing.push('AcademyCascade.characterDeleted');
-        }
-
-        // ---- Aggregator (exam VM) ----
-        if (!AcademyTournamentAggregator ||
-            typeof AcademyTournamentAggregator.getExamViewModel !== 'function') {
-            missing.push('AcademyTournamentAggregator.getExamViewModel');
-        }
-
-        // ---- Escape / notify / data ----
-        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
-            missing.push('DomUtils.escapeHtml');
-        }
-        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
-            missing.push('NotificationSystem.notify');
-        }
-        if (!CalendarConstants) {
-            missing.push('CalendarConstants');
-        }
-
-        if (missing.length > 0) {
-            console.warn('[AcademyModule] Missing dependencies:', missing.join(', '));
-            return false;
-        }
-
-        return true;
     }
 
     // ============================================================
-    // ACADEMY DATA STRUCTURE GUARD - DEFENSIVE ONLY
+    // ACADEMY DATA STRUCTURE VALIDATION
     // ============================================================
 
-    function ensureAcademyStructure() {
+    /**
+     * Validate that window.data.academy has the shape this module
+     * expects. Returns true when valid, false when not.
+     *
+     * Does NOT repair. The database migration is responsible for
+     * producing the correct shape. If it is wrong, the mount path
+     * renders an error state.
+     *
+     * The `classStudents` check is informational: the store was
+     * removed in v15 and class membership derives from
+     * character.classIds. If the field is present it means a
+     * migration did not run, and we log a warning. We do not block
+     * the mount on it, because the store being present is harmless.
+     */
+    function validateAcademyStructure() {
         if (!window.data || typeof window.data !== 'object') {
+            console.error('[AcademyModule] window.data is missing.');
             return false;
         }
 
         if (!window.data.academy || typeof window.data.academy !== 'object') {
             console.error(
                 '[AcademyModule] window.data.academy is missing. ' +
-                'database.js should have created it in getEmptyData() or migrateToVersion15().'
+                'database.js should have created it in getEmptyData() or a migration.'
             );
             return false;
         }
@@ -364,10 +269,11 @@
         }
 
         if (Object.prototype.hasOwnProperty.call(academy, 'classStudents')) {
-            console.error(
+            console.warn(
                 '[AcademyModule] academy.classStudents exists. ' +
                 'This store was removed in v15. Class membership is derived ' +
-                'from character.classIds.'
+                'from character.classIds. The migration that removed it did ' +
+                'not run; check database.js.'
             );
         }
 
@@ -375,11 +281,14 @@
     }
 
     // ============================================================
-    // PROVIDER ASSEMBLY
+    // CALENDAR PROVIDER ASSEMBLY
     // ============================================================
     //
-    // READS → CalendarQueries (synchronous)
-    // WRITES → ScheduleCore (Promise-based, MutationPipeline)
+    // READS  → CalendarQueries (synchronous)
+    // WRITES → ScheduleCore    (Promise-based, MutationPipeline)
+    //
+    // The provider is injected into AcademySchedule once. Subsequent
+    // calls are no-ops.
 
     var _providersInitialized = false;
 
@@ -387,29 +296,6 @@
         if (_providersInitialized) {
             return true;
         }
-
-        var characterProvider = {
-            exists: function(id) {
-                if (!id) { return false; }
-                var char = CharacterQueries.getCharacterById(id);
-                return char !== null && char !== undefined;
-            },
-            getCharacterById: function(id) {
-                return CharacterQueries.getCharacterById(id);
-            },
-            getDisplayName: function(id) {
-                return CharacterQueries.getCharacterNameById(id);
-            },
-            getStudents: function() {
-                return CharacterQueries.getStudents();
-            },
-            getInstructors: function() {
-                return CharacterQueries.getInstructors();
-            },
-            getCurrentStatus: function(char) {
-                return CharacterQueries.getCurrentStatus(char);
-            }
-        };
 
         var calendarProvider = {
             // ---- READS — CalendarQueries (synchronous) ----
@@ -423,7 +309,9 @@
                 return CalendarQueries.getSlotMetadata(studentId, week, day, hour);
             },
             findClassStart: function(schedule, metadata, studentId, week, day, hour) {
-                return CalendarQueries.findClassStart(schedule, metadata, studentId, week, day, hour);
+                return CalendarQueries.findClassStart(
+                    schedule, metadata, studentId, week, day, hour
+                );
             },
             getInstructorSchedule: function(instructorId, week) {
                 return CalendarQueries.getInstructorSchedule(instructorId, week);
@@ -440,7 +328,9 @@
 
             // ---- WRITES — ScheduleCore (Promise-based) ----
             setStudentSlot: function(studentId, week, day, hour, disciplineId, duration, metadata) {
-                return ScheduleCore.setStudentSlot(studentId, week, day, hour, disciplineId, duration, metadata);
+                return ScheduleCore.setStudentSlot(
+                    studentId, week, day, hour, disciplineId, duration, metadata
+                );
             },
             removeStudentSlot: function(studentId, week, day, hour) {
                 return ScheduleCore.removeStudentSlot(studentId, week, day, hour);
@@ -461,19 +351,29 @@
                 return ScheduleCore.setSlotMetadata(studentId, week, day, hour, metadata);
             },
             setInstructorTemplate: function(instructorId, week, day, hour, templateData) {
-                return ScheduleCore.setInstructorTemplate(instructorId, week, day, hour, templateData);
+                return ScheduleCore.setInstructorTemplate(
+                    instructorId, week, day, hour, templateData
+                );
             },
             removeInstructorTemplate: function(instructorId, week, day, hour) {
-                return ScheduleCore.removeInstructorTemplate(instructorId, week, day, hour);
+                return ScheduleCore.removeInstructorTemplate(
+                    instructorId, week, day, hour
+                );
             },
             setInstructorBlock: function(instructorId, week, day, hour, blockData) {
-                return ScheduleCore.setInstructorBlock(instructorId, week, day, hour, blockData);
+                return ScheduleCore.setInstructorBlock(
+                    instructorId, week, day, hour, blockData
+                );
             },
             removeInstructorBlock: function(instructorId, week, day, hour) {
-                return ScheduleCore.removeInstructorBlock(instructorId, week, day, hour);
+                return ScheduleCore.removeInstructorBlock(
+                    instructorId, week, day, hour
+                );
             },
             setLocationClass: function(locationId, week, day, hour, disciplineId, metadata) {
-                return ScheduleCore.setLocationClass(locationId, week, day, hour, disciplineId, 1, metadata);
+                return ScheduleCore.setLocationClass(
+                    locationId, week, day, hour, disciplineId, 1, metadata
+                );
             },
             removeLocationClass: function(locationId, week, day, hour) {
                 return ScheduleCore.removeLocationClass(locationId, week, day, hour);
@@ -485,13 +385,13 @@
             }
         };
 
-        var scheduleConfigured = AcademySchedule.configure({
+        var ok = AcademySchedule.configure({
             calendarProvider: calendarProvider
         });
 
-        if (!scheduleConfigured) {
+        if (!ok) {
             console.error(
-                '[AcademyModule] Failed to configure AcademySchedule. ' +
+                '[AcademyModule] AcademySchedule.configure returned false. ' +
                 'The calendarProvider did not satisfy the required method contract.'
             );
             return false;
@@ -527,18 +427,19 @@
             return;
         }
 
-        if (!ensureAcademyStructure()) {
-            container.innerHTML = '<p class="empty-state">Academy data structure is missing. Please refresh the page.</p>';
-            return;
-        }
-
-        if (!checkDependencies()) {
-            container.innerHTML = '<p class="empty-state">Academy dependencies not loaded. Please refresh the page.</p>';
+        if (!validateAcademyStructure()) {
+            container.innerHTML =
+                '<p class="empty-state">' +
+                    'Academy data structure is invalid. Please refresh the page.' +
+                '</p>';
             return;
         }
 
         if (!initProviders()) {
-            container.innerHTML = '<p class="empty-state">Failed to initialize academy providers. Please refresh the page.</p>';
+            container.innerHTML =
+                '<p class="empty-state">' +
+                    'Failed to initialize academy providers. Please refresh the page.' +
+                '</p>';
             return;
         }
 
@@ -546,21 +447,31 @@
             unmountAcademy();
         }
 
+        // Hand the container to AcademyView. AcademyView owns the
+        // render and the event delegation. If it throws, we do not
+        // mark the module as mounted.
+        try {
+            AcademyView.render(container);
+        } catch (e) {
+            console.error('[AcademyModule] AcademyView.render failed:', e);
+            container.innerHTML =
+                '<p class="empty-state">' +
+                    'Failed to render the Academy view. Please refresh the page.' +
+                '</p>';
+            return;
+        }
+
         _container = container;
         _mounted = true;
-
-        // Initialize UI state (loads persisted state from sessionStorage)
-        AcademyUI.init();
-
-        // Hand the container to AcademyView.
-        AcademyView.render(container);
-
-        dispatchReady();
     }
 
     function unmountAcademy() {
         if (!_mounted) {
             return;
+        }
+
+        if (AcademyView && typeof AcademyView.unmount === 'function') {
+            try { AcademyView.unmount(); } catch (e) { /* ignore */ }
         }
 
         if (_container) {
@@ -582,32 +493,15 @@
         if (!_mounted || !_container) {
             return;
         }
-        AcademyView.render(_container);
-    }
-
-    // ============================================================
-    // EVENTS
-    // ============================================================
-
-    function dispatchReady() {
         try {
-            var event = new CustomEvent('academyReady', {
-                detail: {
-                    mounted: _mounted,
-                    initialized: true,
-                    timestamp: Date.now()
-                },
-                bubbles: true,
-                cancelable: false
-            });
-            document.dispatchEvent(event);
+            AcademyView.render(_container);
         } catch (e) {
-            // Ignore event dispatch errors
+            console.error('[AcademyModule] Refresh failed:', e);
         }
     }
 
     // ============================================================
-    // REGISTER WITH TABMANAGER
+    // TABMANAGER REGISTRATION
     // ============================================================
 
     function registerWithTabManager() {
@@ -627,6 +521,8 @@
     // ============================================================
     // DATA READY HANDLING
     // ============================================================
+
+    var DataLoader = window.DataLoader;
 
     function handleDataReady() {
         if (TabManager && TabManager.getCurrentTab() === 'academy') {
@@ -659,19 +555,18 @@
     // ============================================================
 
     window.Academy = {
-        // Mount
+        // Lifecycle
         mount: mountAcademy,
         unmount: unmountAcademy,
-
-        // Refresh — re-renders the whole Academy tab.
         refresh: refreshAcademy,
+        isMounted: function() { return _mounted; },
 
-        // State
+        // State (delegates to AcademyUI)
         getState: function() {
             return AcademyUI.getState();
         },
 
-        // Selections
+        // Selections (delegate to AcademyUI, then refresh)
         selectClass: function(classId) {
             AcademyUI.selectClass(classId);
             refreshAcademy();
@@ -689,43 +584,20 @@
             AcademyUI.clearSelections();
             refreshAcademy();
         },
+
+        // Week — accepts integers or pure-digit strings, rejects
+        // everything else. Delegates the parse to AcademyUI.
         setWeek: function(week) {
-            var num = parseInt(week, 10);
-            if (!isNaN(num) && num >= 1) {
-                AcademyUI.setDisplayWeek(num);
+            if (AcademyUI.setDisplayWeek(week)) {
                 refreshAcademy();
+                return true;
             }
+            return false;
         },
 
-        // Check
-        isMounted: function() {
-            return _mounted;
-        },
-
-        // Module references (read-only)
-        AcademyClasses: AcademyClasses,
-        AcademyQueries: AcademyQueries,
-        AcademyGrades: AcademyGrades,
-        AcademyGroups: AcademyGroups,
-        AcademyRanking: AcademyRanking,
-        AcademyDistribute: AcademyDistribute,
-        AcademySchedule: AcademySchedule,
-        AcademyDisciplines: AcademyDisciplines,
-        AcademyLocations: AcademyLocations,
-        AcademyPerformance: AcademyPerformance,
-        AcademyEnrolments: AcademyEnrolments,
-        AcademySocialScore: AcademySocialScore,
-        AcademyWeeklyTeams: AcademyWeeklyTeams,
-        AcademySettings: AcademySettings,
-        AcademyCascade: AcademyCascade,
-
-        // View reference
+        // View reference — for tests and advanced tooling. Not part
+        // of the everyday API.
         AcademyView: AcademyView
     };
-
-    window.renderAcademy = mountAcademy;
-    window.destroyAcademy = unmountAcademy;
-
-    window.__academyModuleLoaded = true;
 
 })();
