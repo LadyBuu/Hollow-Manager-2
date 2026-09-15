@@ -65,7 +65,6 @@
     if (window.__academyAggregatorLoaded) {
         return;
     }
-    window.__academyAggregatorLoaded = true;
 
     // ============================================================
     // MANDATORY DEPENDENCIES
@@ -510,6 +509,7 @@
                 id: d.id,
                 name: d.name,
                 type: d.type,
+                typeLabel: getDisciplineTypeLabel(d.type),
                 startWeek: d.startWeek,
                 endWeek: d.endWeek,
                 weeklyHours: d.weeklyHours,
@@ -524,6 +524,12 @@
             filters: filters,
             total: listVM.length
         };
+    }
+
+    function getDisciplineTypeLabel(type) {
+        if (type === 'mandatory') { return 'Mandatory'; }
+        if (type === 'optional') { return 'Optional'; }
+        return 'Unknown';
     }
 
     // ============================================================
@@ -687,22 +693,38 @@
         }
 
         var entries = ranked.map(function(r) {
+            var studentId = r.studentId || r.characterId;
+            var name = r.studentName || getCharacterDisplayName(studentId);
+
+            var average = null;
+            if (isFiniteNumber(r.average)) {
+                average = r.average;
+            } else if (isFiniteNumber(r.academicAverage)) {
+                average = r.academicAverage;
+            } else if (isFiniteNumber(r.overallScore)) {
+                average = r.overallScore;
+            }
+
+            var rank = isFiniteNumber(r.rank) ? r.rank : null;
+            var gradeCount = isFiniteNumber(r.gradeCount) ? r.gradeCount : null;
+
             return {
-                studentId: r.studentId,
-                studentName: r.studentName || getCharacterDisplayName(r.studentId),
-                rank: r.rank,
-                academicAverage: r.academicAverage !== undefined ? r.academicAverage : null,
-                socialScore: r.socialScore !== undefined ? r.socialScore : null,
-                overallScore: r.overallScore !== undefined ? r.overallScore : null,
-                average: isFiniteNumber(r.overallScore)
-                    ? r.overallScore
-                    : (isFiniteNumber(r.academicAverage) ? r.academicAverage : null),
-                gradeCount: typeof r.gradeCount === 'number' ? r.gradeCount : 0
+                characterId: studentId,
+                characterName: name,
+                rank: rank,
+                rankDisplay: rank !== null ? '#' + rank : '\u2014',
+                average: average,
+                averageDisplay: average !== null ? String(average) : '\u2014',
+                gradeCount: gradeCount,
+                gradeCountDisplay: gradeCount !== null ? String(gradeCount) : '\u2014',
+                isInstructor: r.isInstructor === true
             };
         });
 
         entries.sort(function(a, b) {
-            return (a.rank || 999999) - (b.rank || 999999);
+            var ar = a.rank !== null ? a.rank : 999999;
+            var br = b.rank !== null ? b.rank : 999999;
+            return ar - br;
         });
 
         return entries;
@@ -761,6 +783,7 @@
             id: location.id,
             name: location.name,
             type: location.type,
+            typeLabel: getLocationTypeLabel(location.type),
             capacity: location.capacity !== undefined ? location.capacity : null,
             scheduleCount: schedule.length
         };
@@ -772,9 +795,15 @@
             id: location.id,
             name: location.name,
             type: location.type,
+            typeLabel: getLocationTypeLabel(location.type),
             capacity: location.capacity !== undefined ? location.capacity : null,
             schedule: schedule
         };
+    }
+
+    function getLocationTypeLabel(type) {
+        if (!isNonEmptyString(type)) { return 'Other'; }
+        return type.charAt(0).toUpperCase() + type.slice(1);
     }
 
     function getLocationScheduleForWeek(locationId, week) {
@@ -852,6 +881,7 @@
                 type: t.type,
                 typeLabel: t.typeLabel,
                 status: t.status,
+                statusLabel: t.statusLabel,
                 periodLabel: t.periodLabel,
                 periodDisplay: t.periodDisplay,
                 memberCount: t.memberCount
@@ -896,6 +926,7 @@
                 type: team.type,
                 typeLabel: TeamConstants.getTypeLabel(team.type),
                 status: team.status || 'active',
+                statusLabel: getTeamStatusLabel(team.status),
                 periodLabel: TeamConstants.getPeriodLabel(team.type),
                 periodDisplay: getTeamPeriodDisplay(team),
                 memberCount: memberIds.length,
@@ -909,6 +940,11 @@
         });
 
         return items;
+    }
+
+    function getTeamStatusLabel(status) {
+        if (!isNonEmptyString(status)) { return 'Active'; }
+        return status.charAt(0).toUpperCase() + status.slice(1);
     }
 
     function buildWeeklyTeamDetail(team, assignments) {
@@ -926,6 +962,7 @@
             type: team.type,
             typeLabel: TeamConstants.getTypeLabel(team.type),
             status: team.status || 'active',
+            statusLabel: getTeamStatusLabel(team.status),
             periodLabel: TeamConstants.getPeriodLabel(team.type),
             periodDisplay: getTeamPeriodDisplay(team),
             temporaryMission: team.temporaryMission || null,
@@ -951,6 +988,7 @@
                     characterId: charId,
                     name: 'Unknown',
                     role: 'Member',
+                    roleLabel: '',
                     age: '',
                     statusLabel: ''
                 });
@@ -961,6 +999,7 @@
                 characterId: charId,
                 name: CharacterQueries.getDisplayName(char),
                 role: 'Member',
+                roleLabel: '',
                 age: CharacterQueries.getCharacterAge(char),
                 statusLabel: char.deceased === true ? 'Deceased' : 'Active'
             });
