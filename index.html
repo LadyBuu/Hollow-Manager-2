@@ -66,7 +66,9 @@
     <script src="js/utils/modal.js"></script>
     <script src="js/utils/notification.js"></script>
 
-    <!-- SHARED CONSTANTS -->
+    <!-- ============================================================
+         SHARED CONSTANTS
+         ============================================================ -->
     <script src="js/modules/shared/constants.js"></script>
     <script src="js/modules/shared/calendar-constants.js"></script>
     <script src="js/modules/shared/character-constants.js"></script>
@@ -78,7 +80,9 @@
 
     <script src="js/utils/calendar-validation.js"></script>
 
-    <!-- SHARED QUERIES -->
+    <!-- ============================================================
+         SHARED QUERIES
+         ============================================================ -->
     <script src="js/modules/shared/queries/character-queries.js"></script>
     <script src="js/modules/shared/queries/team-queries.js"></script>
     <script src="js/modules/shared/queries/tournament-queries.js"></script>
@@ -89,7 +93,9 @@
     <script src="js/modules/shared/queries/elimination-queries.js"></script>
     <script src="js/modules/shared/queries/calendar-queries.js"></script>
 
-    <!-- CORE INFRASTRUCTURE -->
+    <!-- ============================================================
+         CORE INFRASTRUCTURE
+         ============================================================ -->
     <script src="js/core/activity-log.js"></script>
     <script src="js/core/database.js"></script>
     <script src="js/core/loader.js"></script>
@@ -97,7 +103,9 @@
     <script src="js/core/tab-manager.js"></script>
     <script src="js/core/mutation-pipeline.js"></script>
 
-    <!-- CALENDAR DOMAIN -->
+    <!-- ============================================================
+         CALENDAR DOMAIN
+         ============================================================ -->
     <script src="js/modules/calendar/schedule-core.js"></script>
     <script src="js/modules/calendar/calendar-renderer.js"></script>
     <script src="js/modules/calendar/calendar-aggregator.js"></script>
@@ -113,40 +121,30 @@
          Load order within this section matters:
 
            - Grades/disciplines must load after AcademyGradeSchemes
-             and AcademyGrades respectively (both captured eagerly).
-           - AcademyPerformance must load before AcademyRanking
-             (ranking captures performance eagerly).
+             and AcademyGrades respectively.
+           - AcademyPerformance must load before AcademyRanking.
            - AcademyCascade, AcademySettings, AcademyEnrolments,
-             AcademySocialScore are cross-cutting. They load after
-             the base entities and before anything that consumes
-             them.
+             AcademySocialScore are cross-cutting.
            - AcademyAutoGroupsRead must load before AcademyGroups
              (the read aliases delegate to it at call time).
          ============================================================ -->
-
-    <!-- Base entities -->
     <script src="js/modules/academy/academy-grade-schemes.js"></script>
     <script src="js/modules/academy/academy-classes.js"></script>
     <script src="js/modules/academy/academy-grades.js"></script>
     <script src="js/modules/academy/academy-disciplines.js"></script>
     <script src="js/modules/academy/academy-locations.js"></script>
 
-    <!-- Cross-cutting services -->
     <script src="js/modules/academy/academy-cascade.js"></script>
     <script src="js/modules/academy/academy-settings.js"></script>
     <script src="js/modules/academy/academy-enrolments.js"></script>
     <script src="js/modules/academy/academy-social-score.js"></script>
     <script src="js/modules/academy/academy-performance.js"></script>
 
-    <!-- Auto-groups: reads module precedes the mutation module. -->
     <script src="js/modules/shared/queries/academy-auto-groups-read.js"></script>
     <script src="js/modules/academy/academy-groups.js"></script>
 
-    <!-- Ranking consumes performance. -->
     <script src="js/modules/academy/academy-ranking.js"></script>
 
-    <!-- Reduced class-only facade. Still consumed by
-         academy-distribute.js for the roster derivation. -->
     <script src="js/modules/shared/queries/academy-queries.js"></script>
 
     <script src="js/modules/academy/academy-schedule.js"></script>
@@ -213,9 +211,9 @@
     <!-- ============================================================
          ACADEMY VIEW SHELL
          ============================================================
-         Loads last among the Academy-adjacent blocks because the
-         view modules capture AcademyAggregator, AcademyTournament-
-         Aggregator, and CharacterClasses eagerly at IIFE time.
+         Loads last among the Academy-adjacent blocks because view
+         modules capture AcademyAggregator, AcademyTournamentAggregator,
+         and CharacterClasses eagerly at IIFE time.
          ============================================================ -->
     <script src="js/modules/academy/academy-class-detail.js"></script>
     <script src="js/modules/academy/academy-grades-editor.js"></script>
@@ -224,14 +222,12 @@
     <script src="js/modules/academy/academy-location-view.js"></script>
     <script src="js/modules/academy/academy-ranking-view.js"></script>
 
-    <!-- Weekly Teams view.
-         NOTE: The week-scoped DATA module (window.AcademyWeeklyTeams)
-         is a separate module that provides getWeeklyTeams and
-         stripCharacterRefs. Its script tag is not present in this
-         file because its path is not known to this delivery. Add it
-         here once confirmed. Without it, the Weekly Teams view
-         renders empty teams and academy-aggregator logs a warning
-         about the missing optional dependency. -->
+    <!-- Weekly Teams VIEW.
+         The week-scoped DATA module (window.AcademyWeeklyTeams) is a
+         separate file. If it is not loaded, the Weekly Teams view
+         renders empty teams and AcademyAggregator logs a warning
+         about the missing optional dependency. Add its script tag
+         here once its path is confirmed. -->
     <script src="js/modules/academy/academy-weekly-teams-view.js"></script>
 
     <script src="js/modules/academy/academy-tournament-view.js"></script>
@@ -241,15 +237,36 @@
     <script src="js/modules/academy/academy-view.js"></script>
     <script src="js/modules/academy/index.js"></script>
 
-    <!-- TEAM DOMAIN -->
-    <script src="js/modules/teams/team-core.js"></script>
+    <!-- ============================================================
+         TEAM DOMAIN
+         ============================================================
+         Load order within this section matters:
+
+           - TeamQueries depends on TeamConstants.
+           - TeamAggregator depends on TeamQueries, TeamConstants,
+             CharacterQueries, AcademyQueries.
+           - TeamRender depends on DomUtils only.
+           - TeamEvents depends on TeamCore, TeamAggregator, TeamUI,
+             TeamRender.
+           - TeamCore depends on TeamConstants, IdUtils,
+             MutationPipeline, ObjectUtils.
+           - teams/index.js depends on all of the above.
+
+         team-rankings.js has been removed; its functions live on
+         team-queries.js.
+         ============================================================ -->
+    <script src="js/modules/teams/team-constants.js"></script>
+    <script src="js/modules/teams/team-queries.js"></script>
     <script src="js/modules/teams/team-aggregator.js"></script>
     <script src="js/modules/teams/team-ui.js"></script>
     <script src="js/modules/teams/team-render.js"></script>
+    <script src="js/modules/teams/team-core.js"></script>
     <script src="js/modules/teams/team-events.js"></script>
     <script src="js/modules/teams/index.js"></script>
 
-    <!-- MISSIONS DOMAIN -->
+    <!-- ============================================================
+         MISSIONS DOMAIN
+         ============================================================ -->
     <script src="js/modules/missions/mission-schema.js"></script>
     <script src="js/modules/missions/mission-id.js"></script>
     <script src="js/modules/missions/mission-views.js"></script>
@@ -259,7 +276,9 @@
     <script src="js/modules/missions/mission-ui.js"></script>
     <script src="js/modules/missions/index.js"></script>
 
-    <!-- IMPORT/EXPORT DOMAIN -->
+    <!-- ============================================================
+         IMPORT / EXPORT DOMAIN
+         ============================================================ -->
     <script src="js/import-export/export-utils.js"></script>
     <script src="js/import-export/import-result.js"></script>
     <script src="js/import-export/csv-parser.js"></script>
@@ -274,17 +293,23 @@
     <script src="js/import-export/ui.js"></script>
     <script src="js/import-export/index.js"></script>
 
-    <!-- APPLICATION SETTINGS -->
+    <!-- ============================================================
+         APPLICATION SETTINGS
+         ============================================================ -->
     <script src="js/modules/application/application-settings-core.js"></script>
     <script src="js/modules/application/application-settings-queries.js"></script>
 
-    <!-- DASHBOARD -->
+    <!-- ============================================================
+         DASHBOARD
+         ============================================================ -->
     <script src="js/modules/dashboard/dashboard-aggregator.js"></script>
     <script src="js/modules/dashboard/dashboard-render.js"></script>
     <script src="js/modules/dashboard/dashboard-ui.js"></script>
     <script src="js/modules/dashboard/index.js"></script>
 
-    <!-- BOOTSTRAP + APP SHELL -->
+    <!-- ============================================================
+         BOOTSTRAP + APP SHELL
+         ============================================================ -->
     <script src="js/core/bootstrap.js"></script>
     <script src="js/app.js"></script>
 
