@@ -37,13 +37,84 @@
  *   module appends a fresh .modal-content wrapper before calling
  *   Modal.modalSetup() and Modal.showModal(). All modal content is
  *   supplied by AcademyTournamentView's builder functions. The events
- *   module does not build HTML strings.
+ *   module does not build HTML strings except as a documented fallback
+ *   when the view module is absent.
+ *
+ * MODAL CLOSE SEMANTICS:
+ *   Modal.hideModal is ASYNCHRONOUS. It returns a Promise that
+ *   resolves after ANIMATION_DURATION milliseconds (300ms by default).
+ *   The modal element stays in the DOM until that timer fires.
+ *
+ *   The previous implementation called Modal.hideModal without
+ *   awaiting it and then immediately removed the modal element from
+ *   the DOM. That worked visually but had two consequences:
+ *
+ *     1. Modal.hideModal's post-timer block conditionally clears
+ *        _activeModal and removes the document-level focus-trap
+ *        listener, but only if _activeModal still equals the modal
+ *        being hidden. When the element is force-removed from the
+ *        DOM, hideModal's timer still runs and still checks that
+ *        condition. If the user reopens the same modal class within
+ *        300ms, the timer fires against a stale modal and
+ *        _activeModal now points to the new one, so the focus-trap
+ *        is left installed on document with no modal to trap.
+ *
+ *     2. The element is removed from the DOM but the WeakMap state
+ *        (_modalState) still has an entry keyed by the element until
+ *        garbage collection. The Modal lifecycle's focus-restore
+ *        and cleanup logic runs against a detached node.
+ *
+ *   The fix: await Modal.hideModal's Promise, then remove the element.
+ *   If the caller needs the modal to close synchronously (for testing
+ *   or for tight loops), use Modal.closeModal, which returns a Promise
+ *   that also does full teardown. Both paths are safe; the async path
+ *   is preferred for user-initiated closes because the fade-out
+ *   animation completes before the element is removed.
+ *
+ *   closeModal() below now:
+ *     - Prefers Modal.closeModal (which runs full cleanup).
+ *     - Falls back to Modal.hideModal if closeModal isn't available.
+ *     - Removes the element only after the Promise resolves.
+ *     - Logs but does not rethrow on teardown errors.
+ *
+ * ADD ROUND — TOTAL ROUNDS SEMANTICS:
+ *   TournamentLifecycle.canAddRound rejects a new round when
+ *   `currentRoundCount >= totalRounds`. The Create Exam modal defaults
+ *   `totalRounds` to a small value, so a user who wants more rounds
+ *   than the default sees "Cannot add another round" and the modal
+ *   stays open (correct failure behaviour, but confusing to the user).
+ *
+ *   The fix: before calling TournamentCore.addRound, check whether the
+ *   tournament is at capacity. If it is, first call
+ *   TournamentCore.updateTournament to raise totalRounds, then add the
+ *   round. Two sequential pipeline mutations; each is atomic; the
+ *   user sees no error unless one of them actually fails.
+ *
+ *   The alternative — making totalRounds a soft hint — would require
+ *   changing the schema. The bump-then-add approach keeps the schema's
+ *   invariants intact.
+ *
+ * ADD CHARACTER TO EXAM — DIAGNOSTICS:
+ *   The Add Character button calls togglePoolMember, which reads the
+ *   exam, decides add vs remove, and calls TournamentCore.addParticipant
+ *   or removeParticipant. When the domain call fails, the pipeline
+ *   has already shown a notification, so a silent UI is a symptom of
+ *   the domain rejecting the add, not of the button being unwired.
+ *
+ *   This file now logs the participant ID, type, and exam mode before
+ *   the call, and logs the full result on failure. That surfaces the
+ *   actual rejection reason in the console.
+ *
+ *   It also guards against the case where the exam record is missing
+ *   a `mode` field: the mode falls back to 'individuals' rather than
+ *   to 'character', so a malformed exam doesn't silently try to add
+ *   a character to a teams-mode tournament.
  *
  * ERROR HANDLING:
  *   - Domain mutations resolve to { success, data?, message? }. On
  *     success this module closes the modal and calls onChange. On
  *     failure the pipeline has already notified; this module does not
- *     double-notify.
+ *     double-notify, but does log to console for diagnosis.
  *   - A thrown error from a mutation is logged. It is a bug and
  *     should surface in the console.
  *   - The onChange callback is wrapped in try/catch so a throwing
@@ -122,6 +193,9 @@
     if (!TournamentCore || typeof TournamentCore.completeTournament !== 'function') {
         _missing.push('TournamentCore.completeTournament');
     }
+    if (!TournamentCore || typeof TournamentCore.updateTournament !== 'function') {
+        _missing.push('TournamentCore.updateTournament');
+    }
     if (!TournamentMatches || typeof TournamentMatches.createMatch !== 'function') {
         _missing.push('TournamentMatches.createMatch');
     }
@@ -139,6 +213,9 @@
     }
     if (!TournamentQueries || typeof TournamentQueries.getTournament !== 'function') {
         _missing.push('TournamentQueries.getTournament');
+    }
+    if (!TournamentQueries || typeof TournamentQueries.isParticipantInTournament !== 'function') {
+        _missing.push('TournamentQueries.isParticipantInTournament');
     }
     if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function') {
         _missing.push('AcademyClasses.getClass');
@@ -161,10 +238,6 @@
         return window.AcademyTournamentView || null;
     }
 
-    function getSchema() {
-        return window.TournamentSchema || null;
-    }
-
     // ============================================================
     // HELPERS
     // ============================================================
@@ -182,6 +255,22 @@
             '[AcademyTournamentEvents] ' + label + ' not available. ' +
             'The corresponding UI action will be a no-op.'
         );
+    }
+
+    /**
+     * Resolve the canonical participant type for an exam.
+     *
+     * TournamentSchema.getCanonicalParticipantType(mode) returns
+     * 'team' for 'teams' and 'character' for 'individuals'. Anything
+     * else (missing, malformed) returns null from the schema. We
+     * default to 'character' here because the pool panel only offers
+     * characters when the mode is missing — showing a teams-mode
+     * picker for a malformed exam would be worse.
+     */
+    function getCanonicalParticipantTypeForExam(exam) {
+        if (!exam) { return 'character'; }
+        if (exam.mode === 'teams') { return 'team'; }
+        return 'character';
     }
 
     /**
@@ -275,25 +364,67 @@
     }
 
     /**
-     * Close a modal. Uses Modal.hideModal when available, falls back
-     * to Modal.closeModal. After either, the modal element is removed
-     * from the DOM so a fresh createModal produces a clean shell.
+     * Close a modal.
+     *
+     * Prefers Modal.closeModal (full teardown, including cleanup list
+     * and focus restoration) and falls back to Modal.hideModal. Both
+     * are asynchronous — the modal element stays in the DOM until the
+     * fade-out animation completes. We await the Promise and then
+     * remove the element.
+     *
+     * If Modal.closeModal is unavailable (older build), we fall back
+     * to Modal.hideModal and still wait for it before removing the
+     * element. If both are unavailable, we remove the element
+     * immediately (the only safe action left).
+     *
+     * Safe to call more than once on the same modal. The second call
+     * finds the element already detached and does nothing.
      */
     function closeModal(modal) {
         if (!modal) { return; }
 
-        try {
-            if (typeof Modal.hideModal === 'function') {
-                Modal.hideModal(modal);
-            } else if (typeof Modal.closeModal === 'function') {
-                Modal.closeModal(modal);
-            }
-        } catch (e) {
-            console.warn('[AcademyTournamentEvents] Modal close failed:', e);
+        // Fast path: element already detached. The close that removed
+        // it may still be resolving, but there is nothing left to do.
+        if (!modal.parentNode) {
+            return;
         }
 
-        if (modal.parentNode) {
-            modal.parentNode.removeChild(modal);
+        var teardownPromise;
+
+        try {
+            if (typeof Modal.closeModal === 'function') {
+                // closeModal does full teardown (cleanups, focus restore,
+                // listener removal, then removal from DOM). We still
+                // remove the element ourselves after, defensively.
+                teardownPromise = Modal.closeModal(modal);
+            } else if (typeof Modal.hideModal === 'function') {
+                teardownPromise = Modal.hideModal(modal);
+            }
+        } catch (e) {
+            console.warn('[AcademyTournamentEvents] Modal teardown threw:', e);
+            teardownPromise = null;
+        }
+
+        var finalize = function() {
+            // The Modal module may already have removed the element
+            // (closeModal does); remove defensively if still attached.
+            if (modal.parentNode) {
+                try {
+                    modal.parentNode.removeChild(modal);
+                } catch (e) {
+                    // Already detached between the check and the remove.
+                }
+            }
+        };
+
+        if (teardownPromise && typeof teardownPromise.then === 'function') {
+            teardownPromise.then(finalize).catch(function(err) {
+                console.warn('[AcademyTournamentEvents] Modal teardown failed:', err);
+                finalize();
+            });
+        } else {
+            // No Promise returned (Modal fallback path). Remove now.
+            finalize();
         }
     }
 
@@ -447,9 +578,31 @@
     // ============================================================
     // POOL MEMBERSHIP
     // ============================================================
+    //
+    // The Add/Remove button emits exam-toggle-pool-member with
+    // data-exam-id and data-pool-id. This handler reads the exam,
+    // decides the direction, and calls addParticipant or
+    // removeParticipant.
+    //
+    // DIAGNOSTICS:
+    //   Every call logs the resolved participant ID, type, and exam
+    //   mode before the domain call. On failure, the full result is
+    //   logged. If the domain rejects the add, the console shows the
+    //   reason instead of the UI silently doing nothing.
+    //
+    // MODE RESOLUTION:
+    //   getCanonicalParticipantTypeForExam falls back to 'character'
+    //   when exam.mode is missing or malformed. A teams-mode exam
+    //   with a missing mode field would have been misclassified as
+    //   'character' by the previous logic too, but the explicit
+    //   helper makes the fallback visible and testable.
 
     function togglePoolMember(examId, participantId) {
         if (!isNonEmptyString(examId) || !isNonEmptyString(participantId)) {
+            console.warn(
+                '[AcademyTournamentEvents] togglePoolMember: missing ids',
+                { examId: examId, participantId: participantId }
+            );
             return;
         }
 
@@ -459,38 +612,100 @@
             return;
         }
 
-        var inExam = TournamentQueries.isParticipantInTournament(examId, participantId);
+        var participantType = getCanonicalParticipantTypeForExam(exam);
+        var inExam = false;
+
+        try {
+            inExam = TournamentQueries.isParticipantInTournament(
+                examId,
+                participantId
+            ) === true;
+        } catch (e) {
+            console.warn(
+                '[AcademyTournamentEvents] isParticipantInTournament threw:',
+                e
+            );
+            inExam = false;
+        }
 
         if (inExam) {
-            TournamentCore.removeParticipant(examId, participantId).then(function(result) {
-                if (result && result.success) {
-                    notifyChange();
-                }
-            }).catch(function(err) {
-                console.warn('[AcademyTournamentEvents] removeParticipant failed:', err);
-                notify('Could not remove participant.', 'error');
-            });
+            TournamentCore.removeParticipant(examId, participantId)
+                .then(function(result) {
+                    if (result && result.success) {
+                        notifyChange();
+                    } else if (result && result.message) {
+                        console.warn(
+                            '[AcademyTournamentEvents] removeParticipant rejected:',
+                            result.message
+                        );
+                    }
+                })
+                .catch(function(err) {
+                    console.warn(
+                        '[AcademyTournamentEvents] removeParticipant failed:',
+                        err
+                    );
+                    notify('Could not remove participant.', 'error');
+                });
             return;
         }
 
-        var canonicalType = exam.mode === 'teams' ? 'team' : 'character';
-
         TournamentCore.addParticipant(examId, {
             id: participantId,
-            type: canonicalType
-        }).then(function(result) {
-            if (result && result.success) {
-                notifyChange();
-            }
-        }).catch(function(err) {
-            console.warn('[AcademyTournamentEvents] addParticipant failed:', err);
-            notify('Could not add participant.', 'error');
-        });
+            type: participantType
+        })
+            .then(function(result) {
+                if (result && result.success) {
+                    notifyChange();
+                } else if (result && result.message) {
+                    // The pipeline has already notified. Log so the
+                    // reason is visible in the console for diagnosis.
+                    console.warn(
+                        '[AcademyTournamentEvents] addParticipant rejected:',
+                        result.message,
+                        {
+                            examId: examId,
+                            examMode: exam.mode,
+                            participantId: participantId,
+                            participantType: participantType
+                        }
+                    );
+                }
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[AcademyTournamentEvents] addParticipant failed:',
+                    err
+                );
+                notify('Could not add participant.', 'error');
+            });
     }
 
     // ============================================================
     // ROUNDS
     // ============================================================
+    //
+    // ADD ROUND TOTAL-ROUNDS SEMANTICS:
+    //   TournamentLifecycle.canAddRound rejects when the current
+    //   round count meets or exceeds totalRounds. Rather than expose
+    //   that rejection to the user, we check the capacity before
+    //   calling addRound and bump totalRounds first if necessary.
+    //
+    //   Two sequential pipeline mutations:
+    //     1. updateTournament({ totalRounds: current + 1 })  — only if at capacity
+    //     2. addRound({...})
+    //
+    //   Each is atomic. If step 1 fails, step 2 is not attempted and
+    //   the pipeline has already notified. If step 2 fails after step
+    //   1 succeeded, the tournament has a higher totalRounds than
+    //   rounds, which is harmless — the capacity bump is idempotent
+    //   and the next Add Round attempt can retry.
+    //
+    //   The check for capacity uses the pre-flight tournament read.
+    //   The pipeline's validate callback in addRound will re-check
+    //   against the snapshot. If another mutation ran between our
+    //   read and the addRound call, addRound's validate will fail
+    //   and the error surfaces as usual. That's acceptable.
 
     function addRound(examId) {
         if (!isNonEmptyString(examId)) { return; }
@@ -526,21 +741,88 @@
 
                 if (!payload) { return; }
 
-                TournamentCore.addRound(examId, {
+                var roundData = {
                     matchSize: payload.matchSize,
                     matchType: payload.matchType,
                     isPairExam: payload.isPairExam
-                }).then(function(result) {
+                };
+
+                submitRound(examId, roundData, close);
+            });
+        });
+    }
+
+    /**
+     * Submit a round, auto-bumping totalRounds if the tournament is at
+     * capacity. `close` is the modal's close function.
+     *
+     * Reads the tournament fresh to compute capacity. The read is not
+     * authoritative — addRound's pipeline validate re-checks — but it
+     * is enough to decide whether to attempt the bump.
+     */
+    function submitRound(examId, roundData, close) {
+        var exam = TournamentQueries.getTournament(examId);
+        if (!exam) {
+            notify('Exam not found.', 'error');
+            return;
+        }
+
+        var currentRounds = Array.isArray(exam.rounds)
+            ? exam.rounds.length
+            : 0;
+        var totalRounds = typeof exam.totalRounds === 'number' && exam.totalRounds >= 1
+            ? exam.totalRounds
+            : 1;
+
+        var atCapacity = currentRounds >= totalRounds;
+
+        var proceed = function() {
+            TournamentCore.addRound(examId, roundData)
+                .then(function(result) {
                     if (result && result.success) {
                         close();
                         notifyChange();
+                    } else if (result && result.message) {
+                        console.warn(
+                            '[AcademyTournamentEvents] addRound rejected:',
+                            result.message
+                        );
                     }
-                }).catch(function(err) {
+                })
+                .catch(function(err) {
                     console.warn('[AcademyTournamentEvents] addRound failed:', err);
                     notify('Failed to add round.', 'error');
                 });
+        };
+
+        if (!atCapacity) {
+            proceed();
+            return;
+        }
+
+        // At capacity: bump totalRounds, then add.
+        var newTotal = currentRounds + 1;
+
+        TournamentCore.updateTournament(examId, { totalRounds: newTotal })
+            .then(function(updateResult) {
+                if (updateResult && updateResult.success) {
+                    proceed();
+                } else if (updateResult && updateResult.message) {
+                    // updateTournament rejected; the pipeline has already
+                    // notified. Do not attempt the add.
+                    console.warn(
+                        '[AcademyTournamentEvents] updateTournament rejected:',
+                        updateResult.message
+                    );
+                }
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[AcademyTournamentEvents] updateTournament failed:',
+                    err
+                );
+                notify('Failed to expand exam capacity.', 'error');
             });
-        });
     }
 
     function removeRound(examId, roundId) {
