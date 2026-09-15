@@ -6,51 +6,49 @@
  *
  * This module is responsible for:
  *   - Rendering the class summary header
- *   - Rendering the class roster (character list, clickable)
- *   - Rendering the class's academic teams summary
- *   - Rendering the class's ranking summary
+ *   - Rendering the class description (when present)
+ *   - Rendering the class action buttons (Add Character, Edit, Delete)
  *   - Rendering an empty state when no class is selected
  *
+ * NOT responsible for:
+ *   - The class roster. That is the People sidebar's concern, rendered
+ *     from AcademyAggregator.getPeopleViewModel.
+ *   - The class's academic teams. That is the Weekly Teams view's
+ *     concern.
+ *   - The class's rankings. That is the Rankings view's concern.
+ *
+ * ROLE VOCABULARY:
+ *   'student' | 'instructor'. There is no 'trainee'.
+ *
  * IMPORTANT:
- *   - RENDER ONLY - no mutations, no domain logic
- *   - Receives a view model from AcademyAggregator.getClassViewModel
- *   - Does NOT fetch data. Does NOT call AcademyQueries.
- *   - Does NOT bind events. Buttons emit data-* and are handled
- *     by AcademyView's delegated container listeners.
+ *   - RENDER ONLY. No mutations. No domain reads. No state.
+ *   - Receives a view model from AcademyAggregator.getClassViewModel.
+ *   - Does NOT fetch data.
+ *   - Does NOT bind events. Action buttons emit data-* and are
+ *     handled by AcademyView's delegated container listeners.
  *   - Uses DomUtils for escaping.
  *   - Returns an HTML string.
  *
- * NAME COLLISION:
- *   window.ClassDetail is a potential future name for a non-Academy
- *   class module. This module exposes itself as
- *   window.AcademyClassDetail. A legacy alias on window.ClassDetail
- *   is also set for backwards compatibility during the transition.
- *   academy-view.js looks up AcademyClassDetail first.
+ * VIEW MODEL SHAPE (from AcademyAggregator.getClassViewModel):
+ *   {
+ *     id:              string,
+ *     name:            string,
+ *     status:          'active' | 'archived' | 'graduated',
+ *     year:            number | null,
+ *     description:     string,
+ *     instructorId:    string | null,
+ *     instructorName:  string,   // 'Not assigned' when no instructor
+ *     createdAt:       string
+ *   }
  *
- * INTERFACE:
- *   AcademyClassDetail.renderHTML(classVM) -> string
+ *   The renderer trusts this shape. It does not expect roster, teams,
+ *   or rankings on the class VM. When a field is missing, it renders
+ *   a placeholder appropriate to that field, not a fabricated value.
  *
- *   classVM is the shape returned by
- *   AcademyAggregator.getClassViewModel(classId, options).
- *   Required fields:
- *     id, name, status
- *   Optional fields:
- *     year, description, instructorId, instructorName,
- *     students[], studentCount, traineeCount, instructorCount,
- *     teams[], teamCount, rankings[], rankingCount, rankingWeek,
- *     week
- *
- *   If classVM is null or missing id, an empty state is rendered.
- *   If optional fields are missing, that section renders an
- *   "unavailable" placeholder rather than crashing.
- *
- * EVENTS EMITTED (via data-* attributes, for AcademyView to bind):
- *   - .academy-class-detail [data-class-id]
- *   - .academy-student-row [data-character-id]
- *   - .academy-team-row [data-team-id]
+ * EVENTS EMITTED (data-* attributes, for AcademyView to bind):
  *   - [data-action="add-character"] with [data-class-id]
- *   - [data-action="edit-class"] with [data-class-id]
- *   - [data-action="delete-class"] with [data-class-id]
+ *   - [data-action="edit-class"]    with [data-class-id]
+ *   - [data-action="delete-class"]  with [data-class-id]
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
@@ -66,62 +64,38 @@
     if (window.__academyClassDetailLoaded) {
         return;
     }
-    window.__academyClassDetailLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY
     // ============================================================
 
     var DomUtils = window.DomUtils;
 
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-
-    function checkDependencies() {
-        var missing = [];
-
-        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
-            missing.push('DomUtils.escapeHtml');
-        }
-        if (!DomUtils || typeof DomUtils.escapeAttribute !== 'function') {
-            missing.push('DomUtils.escapeAttribute');
-        }
-
-        if (missing.length > 0) {
-            console.warn('[AcademyClassDetail] Missing dependencies:', missing.join(', '));
-            return false;
-        }
-
-        return true;
+    if (!DomUtils ||
+        typeof DomUtils.escapeHtml !== 'function' ||
+        typeof DomUtils.escapeAttribute !== 'function') {
+        throw new Error(
+            '[AcademyClassDetail] Missing mandatory dependency: ' +
+            'DomUtils.escapeHtml / DomUtils.escapeAttribute'
+        );
     }
+
+    window.__academyClassDetailLoaded = true;
 
     // ============================================================
     // ESCAPING HELPERS
     // ============================================================
 
     function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
-        }
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value);
+        return DomUtils.escapeHtml(value);
     }
 
     function escapeAttribute(value) {
-        if (DomUtils && typeof DomUtils.escapeAttribute === 'function') {
-            return DomUtils.escapeAttribute(value);
-        }
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value);
+        return DomUtils.escapeAttribute(value);
     }
 
     // ============================================================
-    // HELPERS
+    // SMALL HELPERS
     // ============================================================
 
     function isNonEmptyString(value) {
@@ -148,46 +122,27 @@
         return status.charAt(0).toUpperCase() + status.slice(1);
     }
 
-    function getRoleBadgeClass(role) {
-        return role === 'instructor'
-            ? 'academy-role-badge academy-role-instructor'
-            : 'academy-role-badge academy-role-trainee';
-    }
-
-    function getRoleLabel(role) {
-        return role === 'instructor' ? 'Instructor' : 'Trainee';
-    }
-
     // ============================================================
-    // RENDER - Top-level
+    // PUBLIC ENTRY POINT
     // ============================================================
 
     /**
      * Render the class detail panel.
      *
-     * @param {object|null} classVM - View model from AcademyAggregator
+     * @param {object|null} classVM - View model from
+     *   AcademyAggregator.getClassViewModel
      * @returns {string} HTML string
      */
     function renderHTML(classVM) {
-        if (!checkDependencies()) {
-            return (
-                '<div class="academy-detail-empty">' +
-                    '<p class="empty-state small">Class detail dependencies not loaded.</p>' +
-                '</div>'
-            );
-        }
-
         if (!classVM || !classVM.id) {
             return renderEmptyState();
         }
 
         var html = '';
-        html += '<div class="academy-class-detail" data-class-id="' + escapeAttribute(classVM.id) + '">';
+        html += '<div class="academy-class-detail" ' +
+                    'data-class-id="' + escapeAttribute(classVM.id) + '">';
         html += renderHeader(classVM);
         html += renderDescription(classVM);
-        html += renderRoster(classVM);
-        html += renderTeams(classVM);
-        html += renderRankings(classVM);
         html += '</div>';
 
         return html;
@@ -200,7 +155,9 @@
     function renderEmptyState() {
         return (
             '<div class="academy-detail-empty">' +
-                '<p class="empty-state small">Select a class to view its details.</p>' +
+                '<p class="empty-state small">' +
+                    'Select a class to view its details.' +
+                '</p>' +
             '</div>'
         );
     }
@@ -216,7 +173,9 @@
 
         // Title row
         html += '<div class="academy-class-detail-title-row">';
-        html += '<h3 class="academy-class-detail-title">' + escapeHtml(classVM.name || 'Unnamed Class') + '</h3>';
+        html += '<h3 class="academy-class-detail-title">' +
+                    escapeHtml(classVM.name || 'Unnamed Class') +
+                '</h3>';
         html += '<span class="' + getStatusBadgeClass(classVM.status) + '">' +
                     escapeHtml(getStatusLabel(classVM.status)) +
                 '</span>';
@@ -233,7 +192,8 @@
         }
 
         if (classVM.instructorId && isNonEmptyString(classVM.instructorName)) {
-            html += '<span class="academy-class-detail-meta-item">' +
+            html += '<span class="academy-class-detail-meta-item" ' +
+                        'data-instructor-id="' + escapeAttribute(classVM.instructorId) + '">' +
                         '<span class="meta-label">Instructor:</span> ' +
                         escapeHtml(classVM.instructorName) +
                     '</span>';
@@ -243,25 +203,9 @@
                     '</span>';
         }
 
-        if (typeof classVM.studentCount === 'number') {
-            html += '<span class="academy-class-detail-meta-item">' +
-                        '<span class="meta-label">Students:</span> ' +
-                        escapeHtml(String(classVM.studentCount)) +
-                    '</span>';
-        }
-
-        if (typeof classVM.teamCount === 'number') {
-            html += '<span class="academy-class-detail-meta-item">' +
-                        '<span class="meta-label">Teams:</span> ' +
-                        escapeHtml(String(classVM.teamCount)) +
-                    '</span>';
-        }
-
         html += '</div>';
 
-        // Actions — emitted as data-* for AcademyView to handle.
-        // AcademyView currently stubs these as no-ops; Session E wires
-        // them to real modals.
+        // Actions
         html += '<div class="academy-class-detail-actions">';
         html += '<button type="button" class="small primary" ' +
                     'data-action="add-character" ' +
@@ -302,260 +246,11 @@
     }
 
     // ============================================================
-    // ROSTER
-    // ============================================================
-
-    function renderRoster(classVM) {
-        var html = '';
-
-        html += '<div class="academy-class-detail-section academy-class-detail-roster">';
-
-        var count = typeof classVM.studentCount === 'number' ? classVM.studentCount : 0;
-        html += '<div class="academy-class-detail-section-header">';
-        html += '<h4 class="academy-class-detail-section-title">Roster</h4>';
-        html += '<span class="academy-class-detail-section-count">' + count + '</span>';
-        html += '</div>';
-
-        if (!Array.isArray(classVM.students)) {
-            html += '<p class="empty-state small">Roster data is not available.</p>';
-            html += '</div>';
-            return html;
-        }
-
-        if (classVM.students.length === 0) {
-            html += '<p class="empty-state small">No students are enrolled in this class.</p>';
-            html += '</div>';
-            return html;
-        }
-
-        html += '<div class="academy-roster-list">';
-
-        for (var i = 0; i < classVM.students.length; i++) {
-            var student = classVM.students[i];
-            if (!student || !student.id) {
-                continue;
-            }
-            html += renderStudentRow(student);
-        }
-
-        html += '</div>';
-        html += '</div>';
-
-        return html;
-    }
-
-    function renderStudentRow(student) {
-        var role = student.role || 'trainee';
-        var roleBadgeClass = getRoleBadgeClass(role);
-        var roleLabel = getRoleLabel(role);
-
-        var rowClass = 'academy-student-row';
-        if (student.deceased) {
-            rowClass += ' academy-student-row-deceased';
-        }
-        if (role === 'instructor') {
-            rowClass += ' academy-student-row-instructor';
-        }
-
-        var html = '';
-        html += '<div class="' + rowClass + '" ' +
-                    'data-character-id="' + escapeAttribute(student.id) + '" ' +
-                    'role="button" tabindex="0">';
-
-        html += '<div class="academy-student-row-main">';
-        html += '<span class="academy-student-row-name">' + escapeHtml(student.name || 'Unknown') + '</span>';
-        html += '<span class="' + roleBadgeClass + '">' + escapeHtml(roleLabel) + '</span>';
-        html += '</div>';
-
-        // Secondary line: status + age + deceased
-        var secondaryParts = [];
-
-        if (isNonEmptyString(student.status)) {
-            secondaryParts.push(escapeHtml(student.status));
-        }
-        if (isNonEmptyString(student.age)) {
-            secondaryParts.push(escapeHtml(student.age));
-        }
-        if (student.deceased) {
-            secondaryParts.push('<span class="academy-student-row-deceased-badge">Deceased</span>');
-        }
-
-        if (secondaryParts.length > 0) {
-            html += '<div class="academy-student-row-secondary">';
-            html += secondaryParts.join(' &middot; ');
-            html += '</div>';
-        }
-
-        html += '</div>';
-
-        return html;
-    }
-
-    // ============================================================
-    // TEAMS
-    // ============================================================
-
-    function renderTeams(classVM) {
-        if (!Array.isArray(classVM.teams)) {
-            return '';
-        }
-
-        var html = '';
-        html += '<div class="academy-class-detail-section academy-class-detail-teams">';
-
-        html += '<div class="academy-class-detail-section-header">';
-        html += '<h4 class="academy-class-detail-section-title">Academic Teams</h4>';
-        html += '<span class="academy-class-detail-section-count">' + classVM.teams.length + '</span>';
-        html += '</div>';
-
-        if (classVM.teams.length === 0) {
-            html += '<p class="empty-state small">No teams have been created for this class.</p>';
-            html += '</div>';
-            return html;
-        }
-
-        html += '<div class="academy-team-list">';
-
-        for (var i = 0; i < classVM.teams.length; i++) {
-            var team = classVM.teams[i];
-            if (!team || !team.id) {
-                continue;
-            }
-            html += renderTeamRow(team);
-        }
-
-        html += '</div>';
-        html += '</div>';
-
-        return html;
-    }
-
-    function renderTeamRow(team) {
-        var html = '';
-        html += '<div class="academy-team-row" data-team-id="' + escapeAttribute(team.id) + '">';
-
-        html += '<div class="academy-team-row-main">';
-        html += '<span class="academy-team-row-name">' + escapeHtml(team.name || 'Unnamed Team') + '</span>';
-        html += '<span class="academy-team-row-member-count">' +
-                    (typeof team.memberCount === 'number' ? team.memberCount : 0) +
-                    ' members' +
-                '</span>';
-        html += '</div>';
-
-        if (isNonEmptyString(team.periodDisplay)) {
-            html += '<div class="academy-team-row-secondary">' + escapeHtml(team.periodDisplay) + '</div>';
-        }
-
-        html += '</div>';
-
-        return html;
-    }
-
-    // ============================================================
-    // RANKINGS
-    // ============================================================
-
-    function renderRankings(classVM) {
-        if (!Array.isArray(classVM.rankings)) {
-            return '';
-        }
-
-        var html = '';
-        html += '<div class="academy-class-detail-section academy-class-detail-rankings">';
-
-        html += '<div class="academy-class-detail-section-header">';
-        html += '<h4 class="academy-class-detail-section-title">Rankings</h4>';
-
-        if (typeof classVM.rankingWeek === 'number') {
-            html += '<span class="academy-class-detail-section-subtitle">Week ' +
-                        escapeHtml(String(classVM.rankingWeek)) +
-                    '</span>';
-        }
-
-        html += '</div>';
-
-        if (classVM.rankings.length === 0) {
-            html += '<p class="empty-state small">No rankings recorded for this week.</p>';
-            html += '</div>';
-            return html;
-        }
-
-        html += '<table class="academy-ranking-table">';
-        html += '<thead>';
-        html += '<tr>';
-        html += '<th class="rank-col">Rank</th>';
-        html += '<th class="name-col">Student</th>';
-        html += '<th class="avg-col">Average</th>';
-        html += '<th class="count-col">Grades</th>';
-        html += '</tr>';
-        html += '</thead>';
-        html += '<tbody>';
-
-        for (var i = 0; i < classVM.rankings.length; i++) {
-            var entry = classVM.rankings[i];
-            if (!entry) {
-                continue;
-            }
-            html += renderRankingRow(entry);
-        }
-
-        html += '</tbody>';
-        html += '</table>';
-        html += '</div>';
-
-        return html;
-    }
-
-    function renderRankingRow(entry) {
-        var html = '';
-        html += '<tr class="academy-ranking-row" ' +
-                    'data-character-id="' + escapeAttribute(entry.studentId || '') + '">';
-
-        html += '<td class="rank-col">#' + escapeHtml(String(entry.rank || '?')) + '</td>';
-        html += '<td class="name-col">' + escapeHtml(entry.studentName || 'Unknown') + '</td>';
-        html += '<td class="avg-col">' +
-                    (typeof entry.average === 'number' ? escapeHtml(String(entry.average)) : '\u2014') +
-                '</td>';
-        html += '<td class="count-col">' +
-                    (typeof entry.gradeCount === 'number' ? entry.gradeCount : 0) +
-                '</td>';
-
-        html += '</tr>';
-        return html;
-    }
-
-    // ============================================================
     // EXPOSE
     // ============================================================
 
-    // EXPOSED AS AcademyClassDetail to match AcademyCharacterDetail and
-    // avoid collision with any future non-Academy ClassDetail module.
     window.AcademyClassDetail = {
         renderHTML: renderHTML
     };
-
-    // Legacy alias — remove once academy-view.js is the only consumer.
-    window.ClassDetail = window.AcademyClassDetail;
-
-    // ============================================================
-    // VERIFICATION
-    // ============================================================
-
-    (function verify() {
-        var exports = window.AcademyClassDetail;
-        var missing = [];
-
-        var required = ['renderHTML'];
-
-        for (var i = 0; i < required.length; i++) {
-            if (typeof exports[required[i]] !== 'function') {
-                missing.push(required[i]);
-            }
-        }
-
-        if (missing.length > 0) {
-            console.warn('[AcademyClassDetail] Verification - some exports may be missing:', missing.join(', '));
-        }
-    })();
 
 })();
