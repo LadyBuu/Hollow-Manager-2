@@ -2,6 +2,8 @@
  * modules/academy/academy-locations.js - Academy Locations
  * SINGLE SOURCE OF TRUTH for all location data and operations
  *
+ * Path: js/modules/academy/academy-locations.js
+ *
  * This module is responsible for:
  *   - Location CRUD operations (create, update, delete)
  *   - Location queries (get by ID, get all, get by type)
@@ -9,52 +11,51 @@
  *   - Location capacity management
  *
  * IMPORTANT:
- *   - This module OWNS location data - it does NOT depend on AcademyQueries
- *   - All MUTATIONS go through MutationPipeline (persistence, rollback, logging)
- *   - All READS are synchronous and side-effect free
- *   - Invalid inputs are REJECTED (mutation resolves with { success: false })
- *   - Mutations are ATOMIC: if persistence fails, window.data is restored
- *   - This module does NOT call saveData() directly - the pipeline does
- *   - AcademyQueries is the PUBLIC read facade that uses these internal lookups
+ *   - This module OWNS location data - it does NOT depend on AcademyQueries.
+ *   - All MUTATIONS go through MutationPipeline.
+ *   - All READS are synchronous and side-effect free.
+ *   - Invalid inputs are REJECTED (mutation resolves with { success: false }).
+ *   - Mutations are ATOMIC: if persistence fails, window.data is restored.
+ *   - This module does NOT call saveData() directly - the pipeline does.
  *
  * READ SAFETY (Phase 2):
  *   - getDataStore() returns null when window.data is missing.
- *   - The internal readers (getLocationRecord, getLocationRecords,
- *     getLocationByNameRecord) never create window.data.locations as
- *     a side effect of a read. Structure creation is confined to
+ *   - Internal readers never create window.data.locations as a side
+ *     effect of a read. Structure creation is confined to
  *     ensureLocationStore, which is only called inside pipeline
  *     mutate() callbacks.
- *   - Public queries (getLocation, getLocations, getLocationsByType)
- *     return DEEP CLONES. Callers cannot mutate live state by writing
- *     to a returned location.
- *   - Pipeline validate() callbacks read from the `appData` argument
- *     the pipeline supplies, not from window.data via the internal
- *     accessors.
- *   - ObjectUtils.deepClone is used as the clone primitive. If cloning
- *     fails, the accessor throws. It does NOT fall back to returning
- *     the original reference, because that would silently alias live
- *     state.
+ *   - Public queries return DEEP CLONES.
+ *   - Internal accessors return LIVE REFERENCES.
+ *   - Pipeline validate() callbacks read from the `appData` argument.
+ *   - ObjectUtils.deepClone throws if cloning fails or if the clone
+ *     aliases the input.
  *
  * NAME NORMALISATION (Phase 2):
- *   - Location name comparison is centralised in normaliseLocationName:
- *     trim + lowercase. Every name lookup (duplicate detection, name
- *     matching) goes through it. This replaces the ad-hoc
- *     String(x).toLowerCase().trim() scattered across the module.
+ *   - Location name comparison is centralised in
+ *     normaliseLocationName: trim + lowercase. Every name lookup
+ *     goes through it.
  *
  * VALID_LOCATION_TYPES (Phase 2):
  *   - The list is deep-frozen at load. Callers cannot mutate the
- *     module's shared list by writing to it. getValidLocationTypes()
- *     returns a copy for callers that need one.
+ *     shared array. getValidLocationTypes() returns a copy.
  *
- * CASCADE SEMANTICS (deleteLocation):
+ * DELETE CASCADE (Phase 8):
  *   Deleting a location is a CASCADE. In a single transaction it:
  *     1. Deletes the location from window.data.locations.
  *     2. Removes curriculum.locationSchedules[locationId] entirely.
  *     3. Removes location references from curriculum.classLocations.
- *     4. Prunes metadata entries prefixed with the location ID.
- *   Rationale: after deletion, any surviving reference would be
- *   unreachable data. Cleaning in the same transaction avoids both
- *   orphaned references and partial-cascade states.
+ *     4. Prunes metadata entries whose entityId matches the location ID.
+ *     5. Cross-domain cleanup via AcademyCascade.locationDeleted.
+ *
+ *   Steps 2–4 stay inline: they operate on curriculum-internal
+ *   structures that AcademyLocations owns. Step 5 is delegated so
+ *   that future location-keyed stores can be handled by the
+ *   coordinator without touching this file.
+ *
+ *   The coordinator's locationDeleted is currently a placeholder
+ *   because no cross-domain store keys off locationId yet. The call
+ *   is still made — it costs nothing and it future-proofs the
+ *   integration.
  *
  * MUTATION CONTRACT:
  *   - create / update / delete / saveLocations all return
@@ -72,6 +73,7 @@
  *   - window.IdUtils (from id-utils.js) - MANDATORY
  *   - window.ValidationUtils (from validation-utils.js) - MANDATORY
  *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
+ *   - window.AcademyCascade (from academy-cascade.js) - LAZY
  *
  * USAGE:
  *   var locations = window.AcademyLocations;
@@ -129,6 +131,14 @@
     var MutationPipeline = window.MutationPipeline;
 
     // ============================================================
+    // LAZY DEPENDENCIES
+    // ============================================================
+
+    function getAcademyCascade() {
+        return window.AcademyCascade || null;
+    }
+
+    // ============================================================
     // CONSTANTS
     // ============================================================
 
@@ -165,18 +175,6 @@
         return typeof value === 'number' && isFinite(value);
     }
 
-    /**
-     * Deep clone a value.
-     *
-     * READ SAFETY: this primitive throws if cloning fails. It does NOT
-     * fall back to returning the original reference, because that would
-     * silently alias live state and let callers mutate the store by
-     * writing to a "cloned" result.
-     *
-     * @param {*} value - Value to clone
-     * @returns {*} Deep clone
-     * @throws {Error} If cloning fails
-     */
     function deepClone(value) {
         var result = ObjectUtils.deepClone(value);
         if (result === value && value !== null && typeof value === 'object') {
@@ -202,13 +200,8 @@
 
     /**
      * Normalise a location name for comparison.
-     *
-     * Centralised name normalisation. Trims leading/trailing whitespace
-     * and lowercases. Every name lookup in this module goes through
-     * this helper, so behaviour is uniform.
-     *
-     * @param {string} name - Location name
-     * @returns {string} Normalised name ('' for empty/invalid input)
+     * Trims leading/trailing whitespace and lowercases. Empty or
+     * invalid input returns ''.
      */
     function normaliseLocationName(name) {
         if (name === null || name === undefined) {
@@ -218,11 +211,9 @@
     }
 
     /**
-     * Get the valid location types as a fresh array.
-     * Callers that need a mutable list can get one without
-     * mutating the module's frozen shared array.
-     *
-     * @returns {array} Copy of VALID_LOCATION_TYPES
+     * Get the valid location types as a fresh array. Callers that
+     * need a mutable list can get one without touching the frozen
+     * shared array.
      */
     function getValidLocationTypes() {
         return VALID_LOCATION_TYPES.slice();
@@ -231,16 +222,6 @@
     // ============================================================
     // DATA STORE ACCESS - INTERNAL
     // ============================================================
-    //
-    // READ SAFETY:
-    //   - getDataStore() returns null when window.data is missing.
-    //   - ensureLocationStore(appData) creates appData.locations when
-    //     called. It is ONLY called from inside pipeline mutate()
-    //     callbacks, operating on the appData snapshot.
-    //   - The internal readers (getLocationRecord, getLocationRecords,
-    //     getLocationByNameRecord) call getDataStore() and inspect
-    //     data.locations directly. They do NOT call
-    //     ensureLocationStore. A read never creates data.locations.
 
     function getDataStore() {
         if (!window.data || typeof window.data !== 'object') {
@@ -263,12 +244,6 @@
     // ============================================================
     // INTERNAL LOCATION LOOKUP - PRIVATE (LIVE REFERENCES)
     // ============================================================
-    //
-    // These return LIVE REFERENCES. They are consumed by this
-    // module's own mutation paths and by AcademyQueries. The public
-    // read surface (below) wraps them with deepClone.
-    //
-    // They do NOT create window.data.locations as a side effect.
 
     function getLocationRecord(id) {
         if (!isNonEmptyString(id)) {
@@ -381,14 +356,11 @@
     }
 
     // ============================================================
-    // CASCADE HELPERS - Remove all references to a location ID
+    // CASCADE HELPERS - Curriculum-internal cleanup
     // ============================================================
 
     /**
      * Remove curriculum.locationSchedules[locationId] entirely.
-     * All weeks, all slots — the location is gone, so its schedule is
-     * unreachable.
-     *
      * Returns 1 if a schedule existed and was removed, 0 otherwise.
      */
     function stripLocationSchedules(curriculum, locationId) {
@@ -407,10 +379,8 @@
 
     /**
      * Remove references to a location from curriculum.classLocations.
-     *
-     * Shape: { classId: locationId }. We filter values that match
-     * the deleted location. A class whose assigned location is deleted
-     * becomes unassigned.
+     * Shape: { classId: locationId }. A class whose assigned location
+     * is deleted becomes unassigned.
      *
      * Returns the number of class→location mappings removed.
      */
@@ -444,10 +414,6 @@
      * `${entityId}_${week}_${day}_${hour}`. For locations, the entity
      * is the location ID itself.
      *
-     * The parser splits on `_` and reconstructs the entity ID as
-     * everything before the final three segments (week, day, hour).
-     * That handles location IDs that themselves contain underscores.
-     *
      * Returns the number of metadata entries pruned.
      */
     function stripLocationFromMetadata(curriculum, locationId) {
@@ -462,7 +428,6 @@
         Object.keys(metadata).forEach(function(key) {
             var parts = String(key).split('_');
             if (parts.length < 4) {
-                // Not a composite key we recognise; leave it alone.
                 return;
             }
 
@@ -480,40 +445,32 @@
     }
 
     // ============================================================
-    // PUBLIC API - LOCATION CRUD (Promise-based)
+    // PUBLIC API - LOCATION CRUD
     // ============================================================
 
     /**
      * Create a new location.
-     *
-     * @param {object} data - Location data
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
     function create(data) {
-        // ---- PHASE 1: VALIDATE INPUT ----
         var validation = validateLocationData(data, false);
         if (!validation.valid) {
             return Promise.resolve(failure(validation.message));
         }
 
-        // ---- PHASE 2: CHECK FOR DUPLICATE NAME (pre-flight) ----
         var existing = getLocationByNameRecord(data.name);
         if (existing) {
             return Promise.resolve(failure('A location with this name already exists.'));
         }
 
-        // ---- PHASE 3: BUILD CANDIDATE ----
         var newLocation = buildLocationRecord(data, null, null);
         var targetId = newLocation.id;
         var normalisedNewName = normaliseLocationName(newLocation.name);
 
-        // ---- PHASE 4: PIPELINE MUTATION ----
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
                     return { valid: false, message: 'Application data is not available.' };
                 }
-                // Read the snapshot, not window.data.
                 if (Array.isArray(appData.locations)) {
                     for (var i = 0; i < appData.locations.length; i++) {
                         var loc = appData.locations[i];
@@ -537,10 +494,6 @@
 
     /**
      * Update an existing location.
-     *
-     * @param {string} id - Location ID
-     * @param {object} updates - Updates to apply
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
     function update(id, updates) {
         if (!isNonEmptyString(id)) {
@@ -556,13 +509,11 @@
             return Promise.resolve(failure('Location not found.'));
         }
 
-        // ---- VALIDATE UPDATES ----
         var validation = validateLocationData(updates, true);
         if (!validation.valid) {
             return Promise.resolve(failure(validation.message));
         }
 
-        // ---- BUILD CANDIDATE ----
         var candidate = deepClone(existing);
         if (candidate === null) {
             return Promise.resolve(failure('Failed to clone location data.'));
@@ -661,11 +612,14 @@
     /**
      * Delete a location permanently.
      *
-     * CASCADE: removes all references to the location in one transaction.
-     * See the CASCADE SEMANTICS block at the top of this file.
+     * CASCADE. In a single transaction it:
+     *   1. Deletes the location from window.data.locations.
+     *   2. Removes curriculum.locationSchedules[locationId].
+     *   3. Removes location refs from curriculum.classLocations.
+     *   4. Prunes metadata entries for this location.
+     *   5. Cross-domain: delegated to AcademyCascade.locationDeleted.
      *
-     * @param {string} id - Location ID
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
+     * Steps 2–4 stay inline. Step 5 is delegated.
      */
     function deleteLocation(id) {
         if (!isNonEmptyString(id)) {
@@ -715,38 +669,54 @@
                 }
                 locations.splice(idx, 1);
 
-                // ---- 2. Ensure curriculum structure exists for cascade ----
+                // ---- 2. Ensure curriculum structure exists ----
                 if (!appData.curriculum || typeof appData.curriculum !== 'object') {
                     appData.curriculum = {};
                 }
                 var curriculum = appData.curriculum;
 
-                // ---- 3. Cascade: remove the location's schedule ----
+                // ---- 3. Curriculum-internal cleanup ----
                 var scheduleRemoved = stripLocationSchedules(curriculum, target);
-
-                // ---- 4. Cascade: strip location from classLocations ----
                 var classLocationsRemoved = stripLocationFromClassLocations(curriculum, target);
-
-                // ---- 5. Cascade: prune metadata for this location ----
                 var metadataPruned = stripLocationFromMetadata(curriculum, target);
+
+                // ---- 4. Cross-domain cascade ----
+                var cascade = null;
+                var Cascade = getAcademyCascade();
+                if (Cascade && typeof Cascade.locationDeleted === 'function') {
+                    cascade = Cascade.locationDeleted(appData, target);
+                }
 
                 return {
                     deleted: true,
                     location: locationInfo,
-                    cascade: {
+                    curriculum: {
                         scheduleRemoved: scheduleRemoved,
                         classLocationsRemoved: classLocationsRemoved,
                         metadataEntriesPruned: metadataPruned
-                    }
+                    },
+                    academyCascade: cascade
                 };
             },
             logMessage: function(result) {
-                var c = result.cascade;
-                var extra = [];
-                if (c.scheduleRemoved > 0) extra.push('schedule');
-                if (c.classLocationsRemoved > 0) extra.push(c.classLocationsRemoved + ' class mapping(s)');
-                if (c.metadataEntriesPruned > 0) extra.push(c.metadataEntriesPruned + ' metadata entry/ies');
-                var suffix = extra.length > 0 ? ' (' + extra.join(', ') + ')' : '';
+                var parts = [];
+                var c = result.curriculum || {};
+
+                if (c.scheduleRemoved > 0) parts.push('schedule');
+                if (c.classLocationsRemoved > 0) parts.push(c.classLocationsRemoved + ' class mapping(s)');
+                if (c.metadataEntriesPruned > 0) parts.push(c.metadataEntriesPruned + ' metadata entry/ies');
+
+                if (result.academyCascade) {
+                    var Cascade = getAcademyCascade();
+                    if (Cascade && typeof Cascade.formatSummary === 'function') {
+                        var summary = Cascade.formatSummary(result.academyCascade);
+                        if (summary) {
+                            parts.push(summary.replace(/^\(|\)$/g, ''));
+                        }
+                    }
+                }
+
+                var suffix = parts.length > 0 ? ' (' + parts.join(', ') + ')' : '';
                 return 'Deleted location: ' + existing.name + suffix;
             },
             successMessage: 'Location deleted successfully!',
@@ -757,11 +727,6 @@
     // ============================================================
     // PUBLIC READ SURFACE (CLONES)
     // ============================================================
-    //
-    // These are the consumer-facing lookups. They return DEEP CLONES
-    // so callers cannot mutate live state by writing to a returned
-    // location. Internal code paths within this module continue to
-    // use the *Internal accessors, which return live references.
 
     function getLocation(id) {
         var record = getLocationRecord(id);
@@ -813,17 +778,6 @@
     // BULK OPERATIONS - Via MutationPipeline
     // ============================================================
 
-    /**
-     * Save multiple locations at once.
-     *
-     * PLAN / APPLY: validate each entry, decide create/update/skip,
-     * apply all writes in a single transaction.
-     *
-     * @param {array} locationsData - Array of location data objects
-     * @param {object} options - Save options
-     * @param {boolean} options.overwrite - Overwrite existing locations (default: true)
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
     function saveLocations(locationsData, options) {
         if (!Array.isArray(locationsData) || locationsData.length === 0) {
             return Promise.resolve(failure('Location data array is required.'));
@@ -832,7 +786,6 @@
         options = options || {};
         var overwrite = options.overwrite !== false;
 
-        // ---- PLAN ----
         var planned = [];
         var errors = [];
 
@@ -885,7 +838,6 @@
             }));
         }
 
-        // ---- APPLY ----
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
@@ -952,13 +904,13 @@
     // ============================================================
 
     window.AcademyLocations = {
-        // ---- Mutations (Promise-based) ----
+        // ---- Mutations ----
         create: create,
         update: update,
         delete: deleteLocation,
         saveLocations: saveLocations,
 
-        // ---- Public queries (synchronous, CLONES) ----
+        // ---- Public queries ----
         getLocation: getLocation,
         getLocations: getLocations,
         getLocationsByType: getLocationsByType,
@@ -966,7 +918,7 @@
         hasCapacity: hasCapacity,
         getLocationCapacity: getLocationCapacity,
 
-        // ---- Internal (LIVE REFERENCES - for AcademyQueries and internal use) ----
+        // ---- Internal ----
         getLocationRecord: getLocationRecord,
         getLocationRecords: getLocationRecords,
         getLocationByNameRecord: getLocationByNameRecord,
