@@ -53,13 +53,27 @@
  *       overall = academicWeight * academic + socialWeight * social
  *   - The weights come from AcademySettings.getRankingWeights(), which
  *     reads academy.settings.ranking. The defaults are 85/15
- *     (academic/social), matching the plan's locked decision.
+ *     (academic/social).
  *   - Missing components are handled explicitly:
  *       both present  → weighted blend
  *       only academic → academic is used as the overall
  *       only social   → social is used as the overall
  *       neither       → null
  *     Partial data does not silently zero-fill.
+ *
+ * FALLBACK RANKING WEIGHTS:
+ *   The constant exported by this module is named
+ *   FALLBACK_RANKING_WEIGHTS. It used to be called
+ *   DEFAULT_RANKING_WEIGHTS, which was misleading: the canonical
+ *   weights come from AcademySettings, and this constant is only
+ *   consulted when AcademySettings is absent or returns malformed
+ *   data. The old name is recorded in MIGRATION.md.
+ *
+ *   Callers that were importing DEFAULT_RANKING_WEIGHTS must switch to
+ *   FALLBACK_RANKING_WEIGHTS. If they wanted the CURRENT weights,
+ *   they should be calling AcademySettings.getRankingWeights() or
+ *   this module's getRankingWeights(), both of which return the live
+ *   values.
  *
  * NULL vs ZERO:
  *   - A discipline average is `null` when there is nothing to average.
@@ -90,7 +104,7 @@
  * EXPECTED AcademySettings API:
  *   AcademySettings.getRankingWeights() -> { academic: number, social: number }
  *   The values are expected to sum to 1.0. When the module is absent or
- *   returns malformed data, DEFAULT_RANKING_WEIGHTS is used.
+ *   returns malformed data, FALLBACK_RANKING_WEIGHTS is used.
  *
  * USAGE:
  *   var P = window.AcademyPerformance;
@@ -191,11 +205,15 @@
     var DEFAULT_PASSING_THRESHOLD = GradeSchemes.PASSING_THRESHOLD || 70;
 
     /**
-     * Default ranking weights. Used when AcademySettings is absent
+     * Fallback ranking weights. Used when AcademySettings is absent
      * or returns malformed data. Matches the plan's locked decision
      * (85/15 academic/social).
+     *
+     * RENAMED: previously DEFAULT_RANKING_WEIGHTS. The new name
+     * reflects that these are a fallback, not the canonical weights.
+     * See MIGRATION.md.
      */
-    var DEFAULT_RANKING_WEIGHTS = Object.freeze({
+    var FALLBACK_RANKING_WEIGHTS = Object.freeze({
         academic: 0.85,
         social: 0.15
     });
@@ -252,7 +270,7 @@
      * Get the ranking weights.
      *
      * Reads from AcademySettings.getRankingWeights() when available.
-     * Falls back to DEFAULT_RANKING_WEIGHTS when:
+     * Falls back to FALLBACK_RANKING_WEIGHTS when:
      *   - AcademySettings is absent
      *   - the returned object is malformed
      *   - the weights do not sum to a positive value
@@ -282,8 +300,8 @@
         }
 
         return {
-            academic: DEFAULT_RANKING_WEIGHTS.academic,
-            social: DEFAULT_RANKING_WEIGHTS.social
+            academic: FALLBACK_RANKING_WEIGHTS.academic,
+            social: FALLBACK_RANKING_WEIGHTS.social
         };
     }
 
@@ -513,8 +531,6 @@
     //
     // When only one component is available, the other is NOT treated
     // as zero. The available component becomes the overall score.
-    // This is deliberate: a student without a social score should not
-    // have their overall score dragged down by a missing input.
 
     /**
      * Calculate a student's overall score for a class + week.
@@ -550,12 +566,12 @@
         var total = weights.academic + weights.social;
         if (total <= 0) {
             // Defensive: weights that sum to zero. Fall back to the
-            // default weights. This shouldn't be reachable given the
+            // fallback weights. This shouldn't be reachable given the
             // guard in getRankingWeights, but we don't want to divide
             // by zero.
             weights = {
-                academic: DEFAULT_RANKING_WEIGHTS.academic,
-                social: DEFAULT_RANKING_WEIGHTS.social
+                academic: FALLBACK_RANKING_WEIGHTS.academic,
+                social: FALLBACK_RANKING_WEIGHTS.social
             };
             total = weights.academic + weights.social;
         }
@@ -855,7 +871,7 @@
         DEFAULT_ASSESSMENT_WEIGHT: DEFAULT_ASSESSMENT_WEIGHT,
         DEFAULT_DISCIPLINE_WEIGHT: DEFAULT_DISCIPLINE_WEIGHT,
         DEFAULT_PASSING_THRESHOLD: DEFAULT_PASSING_THRESHOLD,
-        DEFAULT_RANKING_WEIGHTS: DEFAULT_RANKING_WEIGHTS
+        FALLBACK_RANKING_WEIGHTS: FALLBACK_RANKING_WEIGHTS
     };
 
 })();
