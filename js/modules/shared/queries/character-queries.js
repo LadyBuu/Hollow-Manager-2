@@ -1,12 +1,12 @@
 /**
  * shared/queries/character-queries.js - Character Queries
  * Read-only character domain queries
- * 
+ *
  * IMPORTANT:
  *   - READ ONLY - no mutations
  *   - No dependencies on other modules
  *   - Reads from window.data directly
- * 
+ *
  * DEATH MODEL:
  *   - Death is TIME-DEPENDENT, not a stored boolean
  *   - char.deathYear stores the year of death (empty if alive)
@@ -14,19 +14,24 @@
  *   - char.deceased is a CACHED value equal to isDeceased(char, currentYear)
  *   - Consumers should call isDeceased() for correctness
  *   - The raw char.deceased field exists for legacy compatibility
- * 
+ *
  * DISPLAY NAME MODEL:
  *   - If char.displayParts is present, use the checkbox-driven order:
  *       First Nickname Middle Last (Alias)
  *   - Otherwise fall back to char.nameFormat (legacy)
- * 
+ *
  * DISCIPLINE ENROLLMENT:
- *   - character.disciplineIds is the source of truth for enrollment.
- *   - It may be missing on legacy records; getCharacterDisciplines()
- *     treats a missing field as an empty enrollment list.
- *   - Enrollment is a DISCIPLINE-level fact. Group membership is
- *     separate and is tracked on the group's students array.
- * 
+ *   Enrollment is owned by AcademyEnrolments and is CLASS-SCOPED.
+ *   It lives at academy.enrolments[classId][charId] = [disciplineId].
+ *
+ *   character.disciplineIds is dead. It is NOT read here. It is NOT
+ *   written anywhere in the current codebase. Legacy records may
+ *   still carry the field; nothing consumes it, and it disappears
+ *   naturally as records are edited.
+ *
+ *   Callers that need a character's enrolled disciplines call
+ *   AcademyEnrolments.getStudentDisciplines(charId, classId).
+ *
  * DEPENDENCIES:
  *   - window.data (canonical state)
  */
@@ -71,16 +76,16 @@
 
     /**
      * Get the display name for a character.
-     * 
+     *
      * Uses displayParts if present on the character:
      *   First Nickname Middle Last (Alias)
-     * 
+     *
      * Falls back to the legacy nameFormat switch if displayParts is
      * missing entirely, so existing characters keep displaying as before.
-     * 
+     *
      * If all displayParts are false, falls back to firstName + lastName
      * so we never render a blank name.
-     * 
+     *
      * @param {object} char - Character object
      * @returns {string} Display name
      */
@@ -399,48 +404,6 @@
     }
 
     // ============================================================
-    // DISCIPLINE ENROLLMENT (v16+)
-    // ============================================================
-    //
-    // character.disciplineIds is the source of truth for enrollment.
-    // Legacy records may be missing the field; callers get [] in that
-    // case. Enrollment is a DISCIPLINE-level fact — group membership
-    // is tracked separately on each group's students array.
-
-    /**
-     * Get the discipline IDs a character is enrolled in.
-     * Returns a fresh array. Never returns null. Never returns the
-     * live array from the character record.
-     *
-     * @param {object} char - Character object
-     * @returns {array} Array of discipline IDs
-     */
-    function getCharacterDisciplines(char) {
-        if (!char || typeof char !== 'object') { return []; }
-        if (!Array.isArray(char.disciplineIds)) { return []; }
-        return char.disciplineIds.slice();
-    }
-
-    /**
-     * Is the character enrolled in a specific discipline?
-     *
-     * @param {object} char - Character object
-     * @param {string} disciplineId - Discipline ID
-     * @returns {boolean} True if enrolled
-     */
-    function isEnrolledInDiscipline(char, disciplineId) {
-        if (!char || !disciplineId) { return false; }
-        if (!Array.isArray(char.disciplineIds)) { return false; }
-        var target = String(disciplineId);
-        for (var i = 0; i < char.disciplineIds.length; i++) {
-            if (String(char.disciplineIds[i]) === target) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -480,11 +443,7 @@
         getNonCivilianCharacters: getNonCivilianCharacters,
 
         // Stats
-        getCharacterStats: getCharacterStats,
-
-        // Discipline enrollment
-        getCharacterDisciplines: getCharacterDisciplines,
-        isEnrolledInDiscipline: isEnrolledInDiscipline
+        getCharacterStats: getCharacterStats
     };
 
 })();
