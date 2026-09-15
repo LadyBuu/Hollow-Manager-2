@@ -7,16 +7,19 @@
  *   - Rendering the class dropdown (add to class)
  *   - Rendering class tags with role labels (Trainee / Instructor)
  *   - Rendering academic team memberships (historical)
+ *   - Rendering enrolled disciplines per class (Phase 4 model)
  *   - Rendering the grades table (discipline / class / week / score)
  *   - The combined Academic tab layout
  *   - Populating the character list's class filter dropdown
  *
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no persistence
- *   - Uses AcademyQueries for class, grade, and team data
+ *   - Uses AcademyClasses for class data
+ *   - Uses AcademyGrades.getStudentClassGrades for the grades table
+ *   - Uses AcademyEnrolments.getStudentDisciplines for enrollment
+ *   - Uses AcademyDisciplines for discipline names
  *   - Uses TeamQueries for team lookups
  *   - Uses CharacterQueries for character data
- *   - Uses DisciplineQueries for discipline names
  *   - Uses DomUtils for safe DOM operations
  *   - All user-controlled content uses textContent
  *   - No event binding here (delegated to CharacterEvents)
@@ -27,8 +30,9 @@
  *     render, character-events.js on refresh) MUST use this function
  *     and MUST NOT call the individual section renderers directly.
  *   - The section renderers (renderAddClassSection, renderClassesSection,
- *     renderAcademicTeamsSection, renderGradesSection) are implementation
- *     details. They are exported for testing only.
+ *     renderAcademicTeamsSection, renderEnrollmentSection,
+ *     renderGradesSection) are implementation details. They are
+ *     exported for testing only.
  *
  * CLASS FILTER CONTRACT:
  *   - populateClassFilter() populates #char-class-filter (the class
@@ -37,6 +41,13 @@
  *     exists.
  *   - Called by characters/index.js on mount.
  *
+ * ENROLLMENT MODEL (Phase 4):
+ *   - Enrollment is CLASS-SCOPED. Source of truth is
+ *     AcademyEnrolments.getStudentDisciplines(charId, classId).
+ *   - character.disciplineIds is dead and is NOT read here.
+ *   - The enrollment section shows, for each class the character
+ *     belongs to, the disciplines they are enrolled in for that class.
+ *
  * ROLE LABELS:
  *   - A character is an "Instructor" for a class when
  *     class.instructorId === char.id.
@@ -44,11 +55,14 @@
  *   - This is derived from class data, not from career status.
  *
  * DEPENDENCIES:
- *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
- *   - window.DomUtils (from dom-utils.js) - MANDATORY
- *   - window.DisciplineQueries (from discipline-queries.js) - MANDATORY
- *   - window.TeamQueries (from team-queries.js) - MANDATORY
+ *   - window.AcademyClasses       (from academy-classes.js) - MANDATORY
+ *   - window.AcademyGrades        (from academy-grades.js) - MANDATORY
+ *   - window.AcademyEnrolments    (from academy-enrolments.js) - MANDATORY
+ *   - window.AcademyDisciplines   (from academy-disciplines.js) - MANDATORY
+ *   - window.CharacterQueries     (from character-queries.js) - MANDATORY
+ *   - window.DisciplineQueries    (from discipline-queries.js) - MANDATORY
+ *   - window.DomUtils             (from dom-utils.js) - MANDATORY
+ *   - window.TeamQueries          (from team-queries.js) - MANDATORY
  */
 
 (function() {
@@ -63,10 +77,13 @@
     // DEPENDENCY IMPORTS
     // ============================================================
 
-    var AcademyQueries = window.AcademyQueries;
+    var AcademyClasses = window.AcademyClasses;
+    var AcademyGrades = window.AcademyGrades;
+    var AcademyEnrolments = window.AcademyEnrolments;
+    var AcademyDisciplines = window.AcademyDisciplines;
     var CharacterQueries = window.CharacterQueries;
-    var DomUtils = window.DomUtils;
     var DisciplineQueries = window.DisciplineQueries;
+    var DomUtils = window.DomUtils;
     var TeamQueries = window.TeamQueries;
 
     // ============================================================
@@ -76,14 +93,23 @@
     function checkDependencies() {
         var missing = [];
 
-        if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
-            missing.push('AcademyQueries.getClasses');
+        if (!AcademyClasses || typeof AcademyClasses.getClasses !== 'function') {
+            missing.push('AcademyClasses.getClasses');
         }
-        if (!AcademyQueries || typeof AcademyQueries.getCharacterClasses !== 'function') {
-            missing.push('AcademyQueries.getCharacterClasses');
+        if (!AcademyClasses || typeof AcademyClasses.getCharacterClasses !== 'function') {
+            missing.push('AcademyClasses.getCharacterClasses');
         }
-        if (!AcademyQueries || typeof AcademyQueries.getStudentGrades !== 'function') {
-            missing.push('AcademyQueries.getStudentGrades');
+
+        if (!AcademyGrades || typeof AcademyGrades.getStudentClassGrades !== 'function') {
+            missing.push('AcademyGrades.getStudentClassGrades');
+        }
+
+        if (!AcademyEnrolments || typeof AcademyEnrolments.getStudentDisciplines !== 'function') {
+            missing.push('AcademyEnrolments.getStudentDisciplines');
+        }
+
+        if (!AcademyDisciplines || typeof AcademyDisciplines.getDiscipline !== 'function') {
+            missing.push('AcademyDisciplines.getDiscipline');
         }
 
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
@@ -94,9 +120,8 @@
             missing.push('DomUtils.createElement');
         }
 
-        // DisciplineQueries and TeamQueries are used but not strictly
-        // required for the module to load; the render functions degrade
-        // gracefully if they are missing.
+        // DisciplineQueries and TeamQueries are used but degrade
+        // gracefully. They are not required for the module to load.
 
         if (missing.length > 0) {
             throw new Error('[CharacterClassView] Missing dependencies: ' + missing.join(', '));
@@ -137,10 +162,21 @@
     }
 
     function getClassById(classId) {
-        if (!classId || !AcademyQueries) {
+        if (!classId || !AcademyClasses) {
             return null;
         }
-        return AcademyQueries.getClass(classId);
+        return AcademyClasses.getClass(classId);
+    }
+
+    function getClassDisplayName(classId) {
+        if (!classId || !AcademyClasses) {
+            return 'Unknown Class';
+        }
+        if (typeof AcademyClasses.getDisplayName === 'function') {
+            return AcademyClasses.getDisplayName(classId) || 'Unknown Class';
+        }
+        var cls = getClassById(classId);
+        return cls ? (cls.name || 'Unnamed Class') : 'Unknown Class';
     }
 
     function getClassRoleLabel(cls, charId) {
@@ -164,6 +200,41 @@
         return '';
     }
 
+    function getDisciplineName(disciplineId) {
+        if (!disciplineId) { return 'Unknown'; }
+
+        if (AcademyDisciplines && typeof AcademyDisciplines.getDiscipline === 'function') {
+            var d = AcademyDisciplines.getDiscipline(disciplineId);
+            if (d && d.name) { return d.name; }
+        }
+
+        if (DisciplineQueries && typeof DisciplineQueries.getDiscipline === 'function') {
+            var d2 = DisciplineQueries.getDiscipline(disciplineId);
+            if (d2 && d2.name) { return d2.name; }
+        }
+
+        return 'Unknown';
+    }
+
+    /**
+     * Get the numeric percentage of a grade record.
+     * Grades are stored as score + maxScore. Percentage is derived.
+     * Prefers the derived `percentage` field when present (from
+     * AcademyGrades.decorateGrade); otherwise computes it here.
+     */
+    function getGradePercentage(grade) {
+        if (!grade) { return null; }
+        if (typeof grade.percentage === 'number' && isFinite(grade.percentage)) {
+            return grade.percentage;
+        }
+        var score = Number(grade.score);
+        var max = Number(grade.maxScore);
+        if (isFinite(score) && isFinite(max) && max > 0) {
+            return Math.round((score / max) * 100);
+        }
+        return null;
+    }
+
     // ============================================================
     // CLASS FILTER (character list sidebar)
     // ============================================================
@@ -183,7 +254,10 @@
 
         var previousValue = select.value || 'all';
 
-        var allClasses = AcademyQueries.getClasses() || [];
+        var allClasses = [];
+        if (AcademyClasses && typeof AcademyClasses.getClasses === 'function') {
+            allClasses = AcademyClasses.getClasses() || [];
+        }
 
         // Sort alphabetically by name
         var sorted = allClasses.slice().sort(function(a, b) {
@@ -252,6 +326,7 @@
         container.appendChild(renderAddClassSection(char));
         container.appendChild(renderClassesSection(char));
         container.appendChild(renderAcademicTeamsSection(char));
+        container.appendChild(renderEnrollmentSection(char));
         container.appendChild(renderGradesSection(char));
     }
 
@@ -281,7 +356,11 @@
         placeholder.textContent = 'Select a class...';
         select.appendChild(placeholder);
 
-        var allClasses = AcademyQueries.getClasses() || [];
+        var allClasses = [];
+        if (AcademyClasses && typeof AcademyClasses.getClasses === 'function') {
+            allClasses = AcademyClasses.getClasses() || [];
+        }
+
         var existingIds = getNormalisedClassIds(char);
         var existingSet = {};
         for (var e = 0; e < existingIds.length; e++) {
@@ -473,12 +552,6 @@
         return section;
     }
 
-    /**
-     * Get all academic team memberships for a character.
-     *
-     * @param {object} char - Character object
-     * @returns {array} Array of { teamId, teamName, className, role, joinPeriod, leavePeriod, periodDisplay }
-     */
     function getAcademicTeamMemberships(char) {
         if (!char || !char.id) {
             return [];
@@ -510,8 +583,11 @@
             }
 
             var className = '';
-            if (team.classId && AcademyQueries) {
-                className = AcademyQueries.getClassDisplayName(team.classId) || '';
+            if (team.classId) {
+                className = getClassDisplayName(team.classId);
+                if (className === 'Unknown Class') {
+                    className = '';
+                }
             }
 
             var joinPeriod = member ? member.joinPeriod : '';
@@ -537,8 +613,110 @@
     }
 
     // ============================================================
-    // SECTION 4 — Grades table
+    // SECTION 4 — Enrollment (class-scoped)
     // ============================================================
+    //
+    // For each class the character belongs to, show the disciplines
+    // they are enrolled in for that class. Enrollment is class-scoped
+    // and lives in AcademyEnrolments.
+
+    function renderEnrollmentSection(char) {
+        var section = document.createElement('div');
+        section.className = 'academic-section academic-enrollment';
+        section.style.cssText = 'margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--border-soft);';
+
+        var heading = document.createElement('div');
+        heading.style.cssText = 'font-size:0.75rem;color:var(--accent);font-weight:600;margin-bottom:6px;';
+        heading.textContent = 'Enrollment';
+        section.appendChild(heading);
+
+        var classIds = getNormalisedClassIds(char);
+        if (classIds.length === 0) {
+            var empty = document.createElement('p');
+            empty.className = 'empty-state';
+            empty.style.cssText = 'padding:4px;font-size:0.7rem;color:var(--text-dim);';
+            empty.textContent = 'Not enrolled in any class.';
+            section.appendChild(empty);
+            return section;
+        }
+
+        var anySectionRendered = false;
+
+        classIds.forEach(function(classId) {
+            var cls = getClassById(classId);
+            if (!cls) { return; }
+
+            var disciplineIds = [];
+            if (AcademyEnrolments && typeof AcademyEnrolments.getStudentDisciplines === 'function') {
+                disciplineIds = AcademyEnrolments.getStudentDisciplines(char.id, classId) || [];
+            }
+
+            anySectionRendered = true;
+
+            var classBlock = document.createElement('div');
+            classBlock.style.cssText = 'margin-bottom:8px;';
+
+            var classNameEl = document.createElement('div');
+            classNameEl.style.cssText = 'font-size:0.7rem;color:var(--text-dim);margin-bottom:4px;';
+            classNameEl.textContent = cls.name || 'Unnamed Class';
+            classBlock.appendChild(classNameEl);
+
+            if (disciplineIds.length === 0) {
+                var noneEl = document.createElement('p');
+                noneEl.className = 'empty-state';
+                noneEl.style.cssText = 'padding:2px 4px;font-size:0.65rem;color:var(--text-dim);';
+                noneEl.textContent = 'Not enrolled in any disciplines.';
+                classBlock.appendChild(noneEl);
+                section.appendChild(classBlock);
+                return;
+            }
+
+            var rows = [];
+            for (var i = 0; i < disciplineIds.length; i++) {
+                var did = disciplineIds[i];
+                rows.push({ id: did, name: getDisciplineName(did) });
+            }
+            rows.sort(function(a, b) {
+                return (a.name || '').localeCompare(b.name || '');
+            });
+
+            var list = document.createElement('div');
+            list.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;';
+
+            rows.forEach(function(row) {
+                var chip = document.createElement('span');
+                chip.className = 'enrollment-chip';
+                chip.dataset.disciplineId = row.id;
+                chip.style.cssText = 'background:var(--panel-alt);padding:2px 8px;border-radius:10px;font-size:0.65rem;border:1px solid var(--border-soft);';
+                chip.textContent = row.name;
+                list.appendChild(chip);
+            });
+
+            classBlock.appendChild(list);
+            section.appendChild(classBlock);
+        });
+
+        if (!anySectionRendered) {
+            var noClasses = document.createElement('p');
+            noClasses.className = 'empty-state';
+            noClasses.style.cssText = 'padding:4px;font-size:0.7rem;color:var(--text-dim);';
+            noClasses.textContent = 'No matching classes.';
+            section.appendChild(noClasses);
+        }
+
+        return section;
+    }
+
+    // ============================================================
+    // SECTION 5 — Grades table (class-scoped)
+    // ============================================================
+    //
+    // Grades are shown per class. AcademyGrades.getStudentClassGrades
+    // returns all grades for a (student, class) pair, sorted.
+    //
+    // The table consolidates grades across the character's classes so
+    // the Academic tab has one place to see everything. A "Class"
+    // column makes the grouping visible.
 
     function renderGradesSection(char) {
         var section = document.createElement('div');
@@ -549,9 +727,27 @@
         heading.textContent = 'Classes Taken & Grades';
         section.appendChild(heading);
 
-        var grades = AcademyQueries.getStudentGrades(char.id) || [];
+        var classIds = getNormalisedClassIds(char);
+        var allGrades = [];
 
-        if (grades.length === 0) {
+        for (var c = 0; c < classIds.length; c++) {
+            var classId = classIds[c];
+            var gradesForClass = [];
+            if (AcademyGrades && typeof AcademyGrades.getStudentClassGrades === 'function') {
+                gradesForClass = AcademyGrades.getStudentClassGrades(char.id, classId) || [];
+            }
+
+            // Tag each grade with the class so the table can render a
+            // Class column without a second lookup per row.
+            for (var g = 0; g < gradesForClass.length; g++) {
+                allGrades.push({
+                    grade: gradesForClass[g],
+                    classId: classId
+                });
+            }
+        }
+
+        if (allGrades.length === 0) {
             var empty = document.createElement('p');
             empty.className = 'empty-state';
             empty.style.cssText = 'padding:4px;font-size:0.7rem;color:var(--text-dim);';
@@ -560,13 +756,11 @@
             return section;
         }
 
-        grades.sort(function(a, b) {
-            var wa = parseInt(a.week, 10) || 0;
-            var wb = parseInt(b.week, 10) || 0;
-            if (wa !== wb) {
-                return wa - wb;
-            }
-            return (a.disciplineId || '').localeCompare(b.disciplineId || '');
+        allGrades.sort(function(a, b) {
+            var wa = parseInt(a.grade.week, 10) || 0;
+            var wb = parseInt(b.grade.week, 10) || 0;
+            if (wa !== wb) { return wa - wb; }
+            return (a.grade.disciplineId || '').localeCompare(b.grade.disciplineId || '');
         });
 
         var table = document.createElement('table');
@@ -588,26 +782,20 @@
 
         var tbody = document.createElement('tbody');
 
-        grades.forEach(function(g) {
+        allGrades.forEach(function(entry) {
+            var g = entry.grade;
+
             var tr = document.createElement('tr');
             tr.style.cssText = 'border-bottom:1px solid var(--border-soft);';
 
-            var disciplineName = 'Unknown';
-            if (DisciplineQueries && typeof DisciplineQueries.getDiscipline === 'function') {
-                var d = DisciplineQueries.getDiscipline(g.disciplineId);
-                if (d && d.name) {
-                    disciplineName = d.name;
-                }
-            }
-
             var disciplineTd = document.createElement('td');
             disciplineTd.style.cssText = 'padding:3px 6px;';
-            disciplineTd.textContent = disciplineName;
+            disciplineTd.textContent = getDisciplineName(g.disciplineId);
             tr.appendChild(disciplineTd);
 
             var classTd = document.createElement('td');
             classTd.style.cssText = 'padding:3px 6px;color:var(--text-dim);';
-            classTd.textContent = g.classId ? (AcademyQueries.getClassDisplayName(g.classId) || '\u2014') : '\u2014';
+            classTd.textContent = getClassDisplayName(entry.classId) || '\u2014';
             tr.appendChild(classTd);
 
             var weekTd = document.createElement('td');
@@ -616,16 +804,12 @@
             tr.appendChild(weekTd);
 
             var scoreTd = document.createElement('td');
-            var pct = (typeof g.percentage === 'number') ? g.percentage : null;
-            if (pct === null && typeof g.score === 'number' && typeof g.maxScore === 'number' && g.maxScore > 0) {
-                pct = Math.round((g.score / g.maxScore) * 100);
-            }
+            var pct = getGradePercentage(g);
             if (pct === null) {
                 scoreTd.style.cssText = 'padding:3px 6px;color:var(--text-dim);';
                 scoreTd.textContent = '\u2014';
             } else {
-                var passing = pct >= 70;
-                scoreTd.style.cssText = 'padding:3px 6px;font-weight:600;color:' + (passing ? 'var(--accent)' : 'var(--danger)') + ';';
+                scoreTd.style.cssText = 'padding:3px 6px;font-weight:600;color:var(--text);';
                 scoreTd.textContent = pct + '%';
             }
             tr.appendChild(scoreTd);
@@ -636,7 +820,8 @@
         table.appendChild(tbody);
         section.appendChild(table);
 
-        var summary = computeGradeSummary(grades);
+        // Summary line
+        var summary = computeGradeSummary(allGrades);
         if (summary.count > 0) {
             var summaryEl = document.createElement('p');
             summaryEl.style.cssText = 'margin-top:8px;font-size:0.7rem;color:var(--text-dim);';
@@ -647,21 +832,16 @@
         return section;
     }
 
-    function computeGradeSummary(grades) {
-        if (!Array.isArray(grades) || grades.length === 0) {
+    function computeGradeSummary(gradeEntries) {
+        if (!Array.isArray(gradeEntries) || gradeEntries.length === 0) {
             return { count: 0, average: 0 };
         }
 
         var total = 0;
         var count = 0;
-        for (var i = 0; i < grades.length; i++) {
-            var g = grades[i];
-            var pct = null;
-            if (typeof g.percentage === 'number') {
-                pct = g.percentage;
-            } else if (typeof g.score === 'number' && typeof g.maxScore === 'number' && g.maxScore > 0) {
-                pct = Math.round((g.score / g.maxScore) * 100);
-            }
+        for (var i = 0; i < gradeEntries.length; i++) {
+            var g = gradeEntries[i].grade;
+            var pct = getGradePercentage(g);
             if (pct !== null) {
                 total += pct;
                 count++;
@@ -690,6 +870,7 @@
         renderAddClassSection: renderAddClassSection,
         renderClassesSection: renderClassesSection,
         renderAcademicTeamsSection: renderAcademicTeamsSection,
+        renderEnrollmentSection: renderEnrollmentSection,
         renderGradesSection: renderGradesSection,
 
         // Helpers (exposed for testing only)
