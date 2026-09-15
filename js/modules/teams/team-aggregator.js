@@ -1,36 +1,80 @@
 /**
  * modules/teams/team-aggregator.js - Team Aggregator
- * Team's integration boundary with external domains
- * 
- * This module provides Team-specific projections by composing
- * data from TeamQueries and external queries.
- * 
+ * Team's integration boundary with external domains.
+ *
+ * Path: js/modules/teams/team-aggregator.js
+ *
+ * This module provides Team-specific projections by composing data
+ * from TeamQueries, CharacterQueries, and AcademyQueries.
+ *
  * IMPORTANT:
- *   - Projection builder, not a query registry
- *   - Composes TeamQueries + CharacterQueries + AcademyQueries
- *   - Returns Team-shaped view models
- *   - Never exposes external query APIs directly
- *   - Never mutates data
- *   - No UI dependencies
- *   - No passthrough methods
- * 
+ *   - Projection builder, not a query registry.
+ *   - Composes query modules and domain read surfaces. Never walks
+ *     raw storage.
+ *   - Returns Team-shaped view models. No raw domain entities escape.
+ *   - Never mutates data. No UI dependencies. No passthrough methods.
+ *   - Every public projection returns a self-contained VM. If a VM
+ *     field is a nested object, it is a nested VM, not a domain
+ *     record.
+ *
+ * PERIOD SEMANTICS:
+ *   - Periods are REQUIRED. The aggregator does not fall back to 1.
+ *   - When a caller passes an invalid period, the projection returns
+ *     an empty result or a null selected team. It does not invent a
+ *     period.
+ *   - Callers that want the "current application year" fetch it from
+ *     TeamUI or from window.data.currentYear and pass it in.
+ *
+ * STATUS SEMANTICS:
+ *   - A team is "operational" when its status is 'active' or
+ *     'inactive'. Deprecated teams are not operational.
+ *   - This module does not reimplement the predicate. It calls
+ *     TeamQueries.isTeamOperational.
+ *
+ * MEMBER ACTIVE-AT-PERIOD SEMANTICS:
+ *   - TeamQueries.getActiveTeamMembers is the SINGLE SOURCE OF TRUTH
+ *     for "which members are active at period P".
+ *   - This module uses its result to build an active-id set. It does
+ *     NOT re-parse joinPeriod / leavePeriod.
+ *
+ * RANKING SEMANTICS:
+ *   - Ranking history lives on the team as `rankingHistory`.
+ *   - The team's current rank is DERIVED from history via
+ *     TeamQueries.getRankingSummary.
+ *   - This module does not read a persisted `currentRank` field.
+ *
  * API:
- *   - getTeamViewModel(teamId, options)
- *   - getTeamListViewModel(options)
- *   - getTeamMembersViewModel(teamId, period)
- *   - getTeamPageViewModel(options)
- *   - getCandidateCharactersAtPeriod(teamType, period)
- * 
+ *   Core projections:
+ *     - getTeamViewModel(teamId, options)
+ *     - getTeamListViewModel(options)
+ *     - getTeamMembersViewModel(teamId, period)
+ *     - getTeamPageViewModel(options)
+ *     - getCandidateCharactersAtPeriod(teamType, period)
+ *
+ *   Form / modal VMs:
+ *     - getTeamFormViewModel(teamId)
+ *     - getMemberModalViewModel(teamId, period)
+ *     - getRankingModalViewModel(teamId)
+ *     - getFilterBarViewModel(tab)
+ *
+ *   Display helpers (also used by other render paths):
+ *     - getTeamPeriodDisplay(team)
+ *     - getRankDisplay(team)
+ *     - getRankingHistoryDisplay(team)
+ *
  * DEPENDENCIES:
- *   - window.TeamQueries (from team-queries.js) - MANDATORY
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
- *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
- *   - window.TeamConstants (from team-constants.js) - MANDATORY
- * 
+ *   - window.TeamQueries        (MANDATORY)
+ *   - window.TeamConstants      (MANDATORY)
+ *   - window.CharacterQueries   (MANDATORY)
+ *   - window.AcademyQueries     (MANDATORY) — for class display names
+ *   - window.TeamUI             (OPTIONAL) — for filter bar VM defaults
+ *
  * USAGE:
- *   var vm = TeamAggregator.getTeamViewModel('team_123');
- *   var list = TeamAggregator.getTeamListViewModel({ type: 'professional' });
- *   var members = TeamAggregator.getTeamMembersViewModel('team_123', 5);
+ *   var vm = TeamAggregator.getTeamViewModel('team_123', { period: 2025 });
+ *   var list = TeamAggregator.getTeamListViewModel({
+ *       type: 'professional', period: 2025
+ *   });
+ *   var members = TeamAggregator.getTeamMembersViewModel('team_123', 2025);
  *   var candidates = TeamAggregator.getCandidateCharactersAtPeriod('professional', 2025);
  */
 
@@ -43,13 +87,13 @@
     window.__teamAggregatorLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
+    // DEPENDENCY IMPORTS
     // ============================================================
 
     var TeamQueries = window.TeamQueries;
+    var TeamConstants = window.TeamConstants;
     var CharacterQueries = window.CharacterQueries;
     var AcademyQueries = window.AcademyQueries;
-    var TeamConstants = window.TeamConstants;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -67,11 +111,33 @@
         if (!TeamQueries || typeof TeamQueries.getActiveTeamMembers !== 'function') {
             missing.push('TeamQueries.getActiveTeamMembers');
         }
-        if (!TeamQueries || typeof TeamQueries.getCurrentRank !== 'function') {
-            missing.push('TeamQueries.getCurrentRank');
+        if (!TeamQueries || typeof TeamQueries.getRankingSummary !== 'function') {
+            missing.push('TeamQueries.getRankingSummary');
         }
-        if (!TeamQueries || typeof TeamQueries.getTeamPeriodDisplay !== 'function') {
-            missing.push('TeamQueries.getTeamPeriodDisplay');
+        if (!TeamQueries || typeof TeamQueries.getSortedRankings !== 'function') {
+            missing.push('TeamQueries.getSortedRankings');
+        }
+        if (!TeamQueries || typeof TeamQueries.isTeamOperational !== 'function') {
+            missing.push('TeamQueries.isTeamOperational');
+        }
+        if (!TeamQueries || typeof TeamQueries.getTeamName !== 'function') {
+            missing.push('TeamQueries.getTeamName');
+        }
+
+        if (!TeamConstants || typeof TeamConstants.getPeriodRange !== 'function') {
+            missing.push('TeamConstants.getPeriodRange');
+        }
+        if (!TeamConstants || typeof TeamConstants.parsePeriod !== 'function') {
+            missing.push('TeamConstants.parsePeriod');
+        }
+        if (!TeamConstants || typeof TeamConstants.getTypeLabel !== 'function') {
+            missing.push('TeamConstants.getTypeLabel');
+        }
+        if (!TeamConstants || typeof TeamConstants.getPeriodLabel !== 'function') {
+            missing.push('TeamConstants.getPeriodLabel');
+        }
+        if (!TeamConstants || typeof TeamConstants.normalizeTeamType !== 'function') {
+            missing.push('TeamConstants.normalizeTeamType');
         }
 
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
@@ -94,10 +160,6 @@
             missing.push('AcademyQueries.getClassDisplayName');
         }
 
-        if (!TeamConstants) {
-            missing.push('TeamConstants');
-        }
-
         if (missing.length > 0) {
             console.warn('[TeamAggregator] Missing dependencies:', missing.join(', '));
             return false;
@@ -112,55 +174,63 @@
     // HELPERS
     // ============================================================
 
-    function getCharacterDisplayName(charId) {
-        if (!charId) {
-            return 'Unknown';
-        }
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
-            return 'Unknown';
-        }
-        return CharacterQueries.getDisplayName(char);
+    function isNonEmptyString(value) {
+        return typeof value === 'string' && value.trim() !== '';
     }
 
-    function getCharacterStatus(charId) {
-        if (!charId) {
-            return '';
-        }
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
-            return '';
-        }
-        return CharacterQueries.getCurrentStatus(char);
+    function getTeamUI() {
+        return window.TeamUI || null;
     }
 
-    function getCharacterAge(charId) {
-        if (!charId) {
-            return '';
+    /**
+     * Build a character summary VM from a character ID.
+     *
+     * ONE getCharacterById call per summary. Do not split this into
+     * four helpers that each look up the character again.
+     *
+     * @param {string} charId
+     * @returns {object} { characterId, displayName, status, age, deceased }
+     */
+    function buildCharacterSummary(charId) {
+        if (!isNonEmptyString(charId)) {
+            return {
+                characterId: charId || null,
+                displayName: 'Unknown',
+                status: '',
+                age: '',
+                deceased: false
+            };
         }
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
-            return '';
-        }
-        return CharacterQueries.getCharacterAge(char);
-    }
 
-    function getCharacterDeceased(charId) {
-        if (!charId) {
-            return false;
-        }
         var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
-            return false;
+            return {
+                characterId: charId,
+                displayName: 'Unknown',
+                status: '',
+                age: '',
+                deceased: false
+            };
         }
-        return char.deceased || false;
+
+        return {
+            characterId: charId,
+            displayName: CharacterQueries.getDisplayName(char),
+            status: CharacterQueries.getCurrentStatus(char),
+            age: CharacterQueries.getCharacterAge(char),
+            deceased: char.deceased === true
+        };
     }
 
     function getClassDisplayName(classId) {
-        if (!classId) {
+        if (!isNonEmptyString(classId)) {
             return '';
         }
-        return AcademyQueries.getClassDisplayName(classId) || '';
+        var name = AcademyQueries.getClassDisplayName(classId);
+        if (!name || name === 'Unknown Class') {
+            return '';
+        }
+        return name;
     }
 
     function getTypeLabel(type) {
@@ -171,32 +241,110 @@
         return TeamConstants.getPeriodLabel(type);
     }
 
-    function getPeriodBounds(type) {
-        return TeamConstants.getPeriodBounds(type);
+    // ============================================================
+    // PERIOD DISPLAY (moved here from TeamQueries)
+    // ============================================================
+    //
+    // These are presentation strings. They belong to the projection
+    // layer, not the query layer.
+
+    /**
+     * Format a team's period range for display.
+     *
+     * Academic: "Wk 3 - Wk 14", "From Wk 3", "Until Wk 14", or "-"
+     * Other:    "2025 - 2027", "From 2025", "Until 2027", or "-"
+     *
+     * @param {object} team
+     * @returns {string}
+     */
+    function getTeamPeriodDisplay(team) {
+        if (!team || typeof team !== 'object') {
+            return '-';
+        }
+
+        var normalizedType = TeamConstants.normalizeTeamType(team.type);
+        var start = team.startPeriod || '';
+        var end = team.endPeriod || '';
+
+        if (normalizedType === 'academic') {
+            if (start && end) {
+                return 'Wk ' + start + ' - Wk ' + end;
+            }
+            if (start) {
+                return 'From Wk ' + start;
+            }
+            if (end) {
+                return 'Until Wk ' + end;
+            }
+            return '-';
+        }
+
+        if (start && end) {
+            return start + ' - ' + end;
+        }
+        if (start) {
+            return 'From ' + start;
+        }
+        if (end) {
+            return 'Until ' + end;
+        }
+        return '-';
+    }
+
+    /**
+     * Format a team's current rank for display. Returns '-' when the
+     * team has no ranking.
+     */
+    function getRankDisplay(team) {
+        var summary = TeamQueries.getRankingSummary(team);
+        return summary && summary.current ? summary.current : '-';
+    }
+
+    /**
+     * Format a team's ranking history as a display string.
+     *
+     * @param {object} team
+     * @returns {string} e.g. "2024: #3 → 2025: #1", or "No ranking history"
+     */
+    function getRankingHistoryDisplay(team) {
+        var summary = TeamQueries.getRankingSummary(team);
+        if (!summary || summary.total === 0) {
+            return 'No ranking history';
+        }
+
+        var parts = [];
+        for (var i = 0; i < summary.history.length; i++) {
+            var entry = summary.history[i];
+            parts.push(entry.period + ': #' + entry.rank);
+        }
+
+        return parts.join(' \u2192 ');
     }
 
     // ============================================================
-    // TEAM VIEW MODEL
+    // TEAM DETAIL VIEW MODEL
     // ============================================================
 
     /**
      * Get a complete view model for a single team.
-     * 
-     * @param {string} teamId - Team ID
-     * @param {object} options - Options
-     * @param {number} options.period - Period for member resolution (default: 1)
-     * @param {boolean} options.includeMembers - Include member details (default: true)
-     * @param {boolean} options.includeRankings - Include ranking history (default: true)
-     * @param {boolean} options.includeClass - Include class display name (default: true)
-     * @returns {object|null} Team view model or null
+     *
+     * @param {string} teamId
+     * @param {object} options
+     * @param {number|string} options.period - REQUIRED for member and ranking
+     *                                         resolution. Invalid -> empty
+     *                                         members / rankings.
+     * @param {boolean} options.includeMembers
+     * @param {boolean} options.includeRankings
+     * @param {boolean} options.includeClass
+     * @returns {object|null}
      */
     function getTeamViewModel(teamId, options) {
-        if (!teamId) {
+        if (!isNonEmptyString(teamId)) {
             return null;
         }
 
         options = options || {};
-        var period = options.period || 1;
+        var periodNum = TeamConstants.parsePeriod(options.period);
         var includeMembers = options.includeMembers !== false;
         var includeRankings = options.includeRankings !== false;
         var includeClass = options.includeClass !== false;
@@ -208,18 +356,15 @@
 
         var typeLabel = getTypeLabel(team.type);
         var periodLabel = getPeriodLabel(team.type);
-        var type = team.type || 'professional';
 
         var classDisplay = '';
         if (includeClass && team.classId) {
             classDisplay = getClassDisplayName(team.classId);
         }
 
-        var currentRank = TeamQueries.getCurrentRank(team);
+        var rankingSummary = TeamQueries.getRankingSummary(team);
+        var periodDisplay = getTeamPeriodDisplay(team);
 
-        var periodDisplay = TeamQueries.getTeamPeriodDisplay(team);
-
-        // Build view model
         var viewModel = {
             id: team.id,
             name: team.name,
@@ -230,7 +375,6 @@
             endPeriod: team.endPeriod || '',
             periodDisplay: periodDisplay,
             status: team.status || 'active',
-            currentRank: currentRank,
             classId: team.classId || null,
             classDisplay: classDisplay,
             teamNumber: team.teamNumber || '',
@@ -242,29 +386,35 @@
             createdAt: team.createdAt || ''
         };
 
-        // Include members if requested
+        // ---- Members ----
         if (includeMembers) {
-            var members = TeamQueries.getActiveTeamMembers(team, period);
-            viewModel.members = members.map(function(member) {
-                return {
-                    characterId: member.characterId,
-                    displayName: getCharacterDisplayName(member.characterId),
-                    status: getCharacterStatus(member.characterId),
-                    age: getCharacterAge(member.characterId),
-                    deceased: getCharacterDeceased(member.characterId),
-                    role: member.role || 'Member',
-                    joinPeriod: member.joinPeriod || '',
-                    leavePeriod: member.leavePeriod || '',
-                    active: true
-                };
-            });
-            viewModel.activeMemberCount = viewModel.members.length;
-            viewModel.totalMemberCount = team.members ? team.members.length : 0;
+            if (periodNum !== null) {
+                var activeMembers = TeamQueries.getActiveTeamMembers(team, periodNum);
+                viewModel.members = activeMembers.map(function(member) {
+                    var summary = buildCharacterSummary(member.characterId);
+                    return {
+                        characterId: member.characterId,
+                        displayName: summary.displayName,
+                        status: summary.status,
+                        age: summary.age,
+                        deceased: summary.deceased,
+                        role: member.role || 'Member',
+                        joinPeriod: member.joinPeriod || '',
+                        leavePeriod: member.leavePeriod || '',
+                        activeAtPeriod: true
+                    };
+                });
+                viewModel.activeMemberCount = viewModel.members.length;
+                viewModel.totalMemberCount = team.members ? team.members.length : 0;
+            } else {
+                viewModel.members = [];
+                viewModel.activeMemberCount = 0;
+                viewModel.totalMemberCount = team.members ? team.members.length : 0;
+            }
         }
 
-        // Include rankings if requested
+        // ---- Rankings ----
         if (includeRankings) {
-            var rankingSummary = TeamQueries.getRankingSummary(team);
             viewModel.rankingHistory = rankingSummary.history;
             viewModel.rankingCount = rankingSummary.total;
             viewModel.currentRank = rankingSummary.current;
@@ -279,33 +429,38 @@
     // ============================================================
 
     /**
-     * Get a view model for a list of teams.
-     * Collection-level projection - avoids per-team N+1 queries.
-     * 
-     * @param {object} options - Options
-     * @param {string} options.type - Team type filter
-     * @param {string} options.status - Team status filter
-     * @param {number} options.period - Period for member count
-     * @param {boolean} options.includeInactive - Include inactive teams
-     * @param {string} options.search - Search by name
-     * @param {string} options.sort - Sort field (name, type, rank, members)
-     * @param {string} options.sortDirection - 'asc' or 'desc'
-     * @returns {object} { teams: Array, total: number, filtered: number }
+     * Get a list of team list VMs.
+     *
+     * @param {object} options
+     * @param {string} options.type
+     * @param {string} options.status
+     * @param {number|string} options.period - REQUIRED. Invalid -> empty
+     *                                         member counts.
+     * @param {boolean} options.includeInactive
+     * @param {string} options.search
+     * @param {string} options.sort
+     * @param {string} options.sortDirection
+     * @returns {object} { teams: array, total: number, filtered: number }
      */
     function getTeamListViewModel(options) {
         options = options || {};
         var type = options.type || null;
         var status = options.status || null;
-        var period = options.period || 1;
+        var periodNum = TeamConstants.parsePeriod(options.period);
         var includeInactive = options.includeInactive || false;
         var search = options.search || '';
         var sort = options.sort || 'name';
         var sortDirection = options.sortDirection || 'asc';
 
-        // Get teams from TeamQueries
-        var teams = TeamQueries.getTeams(type, status, includeInactive);
+        // getTeams returns clones. The clones are safe to read and
+        // cannot mutate the store.
+        var teams = TeamQueries.getTeams(
+            type,
+            status,
+            includeInactive
+        );
 
-        // Apply search filter
+        // ---- Search filter ----
         if (search) {
             var lowerSearch = search.toLowerCase();
             teams = teams.filter(function(team) {
@@ -313,11 +468,16 @@
             });
         }
 
-        // Build list items
+        // ---- Build list items ----
         var listItems = teams.map(function(team) {
-            var activeMembers = TeamQueries.getActiveTeamMembers(team, period);
-            var currentRank = TeamQueries.getCurrentRank(team);
+            var activeMemberCount = 0;
+            if (periodNum !== null) {
+                activeMemberCount = TeamQueries.getActiveTeamMemberCount(team, periodNum);
+            }
+
+            var rankingSummary = TeamQueries.getRankingSummary(team);
             var typeLabel = getTypeLabel(team.type);
+            var classDisplay = team.classId ? getClassDisplayName(team.classId) : '';
 
             return {
                 id: team.id,
@@ -325,22 +485,20 @@
                 type: team.type,
                 typeLabel: typeLabel,
                 status: team.status || 'active',
-                currentRank: currentRank,
-                activeMemberCount: activeMembers.length,
+                currentRank: rankingSummary.current || '',
+                activeMemberCount: activeMemberCount,
                 totalMemberCount: team.members ? team.members.length : 0,
-                periodDisplay: TeamQueries.getTeamPeriodDisplay(team),
+                periodDisplay: getTeamPeriodDisplay(team),
                 isActive: team.status === 'active',
                 isOperational: TeamQueries.isTeamOperational(team),
-                classDisplay: team.classId ? getClassDisplayName(team.classId) : '',
+                classDisplay: classDisplay,
                 teamNumber: team.teamNumber || '',
                 temporaryMission: team.temporaryMission || null,
-                createdAt: team.createdAt || '',
-                // Raw team reference for detail expansion
-                _team: team
+                createdAt: team.createdAt || ''
             };
         });
 
-        // Sort
+        // ---- Sort ----
         var total = listItems.length;
 
         listItems.sort(function(a, b) {
@@ -377,12 +535,8 @@
                 return sortDirection === 'desc' ? -result : result;
             }
 
-            if (aVal < bVal) {
-                return sortDirection === 'desc' ? 1 : -1;
-            }
-            if (aVal > bVal) {
-                return sortDirection === 'desc' ? -1 : 1;
-            }
+            if (aVal < bVal) { return sortDirection === 'desc' ? 1 : -1; }
+            if (aVal > bVal) { return sortDirection === 'desc' ? -1 : 1; }
             return 0;
         });
 
@@ -398,18 +552,25 @@
     // ============================================================
 
     /**
-     * Get a view model for team members at a specific period.
-     * 
-     * @param {string} teamId - Team ID
-     * @param {number} period - Period for member resolution
-     * @returns {object|null} Members view model or null
+     * Get a member-oriented view model for a team.
+     *
+     * Membership classification uses TeamQueries.getActiveTeamMembers
+     * as the source of truth. The result set is turned into an
+     * active-id set. This module does NOT re-parse join/leave.
+     *
+     * @param {string} teamId
+     * @param {number|string} period
+     * @returns {object|null}
      */
     function getTeamMembersViewModel(teamId, period) {
-        if (!teamId) {
+        if (!isNonEmptyString(teamId)) {
             return null;
         }
 
-        var periodNum = period || 1;
+        var periodNum = TeamConstants.parsePeriod(period);
+        if (periodNum === null) {
+            return null;
+        }
 
         var team = TeamQueries.getTeamById(teamId);
         if (!team) {
@@ -419,48 +580,34 @@
         var typeLabel = getTypeLabel(team.type);
         var periodLabel = getPeriodLabel(team.type);
 
-        // Get active members at period
         var activeMembers = TeamQueries.getActiveTeamMembers(team, periodNum);
 
-        // Get all members for full history
+        var activeIds = Object.create(null);
+        for (var i = 0; i < activeMembers.length; i++) {
+            activeIds[String(activeMembers[i].characterId)] = true;
+        }
+
         var allMembers = Array.isArray(team.members) ? team.members : [];
 
         var memberViewModels = allMembers.map(function(member) {
-            var displayName = getCharacterDisplayName(member.characterId);
-            var status = getCharacterStatus(member.characterId);
-            var age = getCharacterAge(member.characterId);
-            var deceased = getCharacterDeceased(member.characterId);
-
-            // Determine if member is active at this period
-            var join = parseInt(member.joinPeriod, 10);
-            var leave = parseInt(member.leavePeriod, 10);
-            var hasJoin = member.joinPeriod !== undefined && member.joinPeriod !== null && member.joinPeriod !== '';
-            var hasLeave = member.leavePeriod !== undefined && member.leavePeriod !== null && member.leavePeriod !== '';
-
-            var joined = !hasJoin || join <= periodNum;
-            var notLeft = !hasLeave || leave >= periodNum;
-            var isActiveAtPeriod = joined && notLeft;
-
+            var summary = buildCharacterSummary(member.characterId);
             return {
                 characterId: member.characterId,
-                displayName: displayName,
-                status: status,
-                age: age,
-                deceased: deceased,
+                displayName: summary.displayName,
+                status: summary.status,
+                age: summary.age,
+                deceased: summary.deceased,
                 role: member.role || 'Member',
                 joinPeriod: member.joinPeriod || '',
                 leavePeriod: member.leavePeriod || '',
-                activeAtPeriod: isActiveAtPeriod
+                activeAtPeriod: activeIds[String(member.characterId)] === true
             };
         });
 
-        // Sort: active at period first, then by name
+        // Active members first, then alphabetical within each group.
         memberViewModels.sort(function(a, b) {
-            if (a.activeAtPeriod && !b.activeAtPeriod) {
-                return -1;
-            }
-            if (!a.activeAtPeriod && b.activeAtPeriod) {
-                return 1;
+            if (a.activeAtPeriod !== b.activeAtPeriod) {
+                return a.activeAtPeriod ? -1 : 1;
             }
             return a.displayName.localeCompare(b.displayName);
         });
@@ -483,149 +630,380 @@
     // ============================================================
 
     /**
-     * Get a complete team page view model.
-     * Combines list and detail projections for the main team page.
-     * 
-     * @param {object} options - Options
-     * @param {string} options.type - Team type filter
-     * @param {string} options.status - Team status filter
-     * @param {number} options.period - Period for member counts
-     * @param {string} options.expandedTeamId - Team to expand
-     * @param {string} options.search - Search by name
-     * @returns {object} Team page view model
+     * Get a page-level view model.
+     *
+     * @param {object} options
+     * @param {string} options.type
+     * @param {string} options.status
+     * @param {number|string} options.period
+     * @param {string} options.expandedTeamId
+     * @param {string} options.search
+     * @returns {object}
      */
     function getTeamPageViewModel(options) {
         options = options || {};
         var type = options.type || 'professional';
         var status = options.status || null;
-        var period = options.period || 1;
+        var periodNum = TeamConstants.parsePeriod(options.period);
         var expandedTeamId = options.expandedTeamId || null;
         var search = options.search || '';
 
-        // Get list view model
+        // ---- List ----
         var listVM = getTeamListViewModel({
             type: type,
             status: status,
-            period: period,
+            period: periodNum !== null ? periodNum : undefined,
             search: search
         });
 
-        // If a team is expanded, get its detail
+        // ---- Reconcile expanded team ----
+        // The expanded team must be in the filtered list. A stale ID
+        // from UI state (e.g. team deleted, or type filter changed)
+        // is invalidated rather than silently returned.
         var expandedTeam = null;
+        var resolvedExpandedId = null;
+
         if (expandedTeamId) {
-            expandedTeam = getTeamViewModel(expandedTeamId, {
-                period: period,
-                includeMembers: true,
-                includeRankings: true
-            });
+            for (var i = 0; i < listVM.teams.length; i++) {
+                if (String(listVM.teams[i].id) === String(expandedTeamId)) {
+                    resolvedExpandedId = listVM.teams[i].id;
+                    break;
+                }
+            }
+
+            if (resolvedExpandedId) {
+                expandedTeam = getTeamViewModel(resolvedExpandedId, {
+                    period: periodNum !== null ? periodNum : undefined,
+                    includeMembers: true,
+                    includeRankings: true
+                });
+            }
         }
 
-        // Get counts by type for tab labels
-        var allProfessional = TeamQueries.getTeams('professional', null, false);
-        var allTemporary = TeamQueries.getTeams('temporary', null, false);
-        var allCivilian = TeamQueries.getTeams('civilian', null, false);
+        // ---- Counts by type ----
+        var countProfessional = countTeamsByType('professional');
+        var countTemporary = countTeamsByType('temporary');
+        var countCivilian = countTeamsByType('civilian');
 
         return {
             activeTab: type,
-            period: period,
+            period: periodNum,
             teams: listVM.teams,
             totalTeams: listVM.total,
             filteredTeams: listVM.filtered,
             expandedTeam: expandedTeam,
-            expandedTeamId: expandedTeamId,
+            expandedTeamId: resolvedExpandedId,
             counts: {
-                professional: allProfessional.length,
-                temporary: allTemporary.length,
-                civilian: allCivilian.length
+                professional: countProfessional,
+                temporary: countTemporary,
+                civilian: countCivilian
             },
             types: {
                 professional: {
                     label: getTypeLabel('professional'),
-                    periodLabel: getPeriodLabel('professional'),
-                    teams: allProfessional
+                    periodLabel: getPeriodLabel('professional')
                 },
                 temporary: {
                     label: getTypeLabel('temporary'),
-                    periodLabel: getPeriodLabel('temporary'),
-                    teams: allTemporary
+                    periodLabel: getPeriodLabel('temporary')
                 },
                 civilian: {
                     label: getTypeLabel('civilian'),
-                    periodLabel: getPeriodLabel('civilian'),
-                    teams: allCivilian
+                    periodLabel: getPeriodLabel('civilian')
                 }
             }
         };
     }
 
+    /**
+     * Count teams of a given type. Operational only.
+     */
+    function countTeamsByType(type) {
+        var teams = TeamQueries.getTeams(type, 'operational', false);
+        return teams.length;
+    }
+
     // ============================================================
-    // CANDIDATE CHARACTERS (moved from team-members.js)
+    // FORM / MODAL VIEW MODELS
+    // ============================================================
+
+    /**
+     * Get a view model for the team form.
+     *
+     * Consumed by TeamEvents when opening the team form. Contains the
+     * existing team (or null for create), the class selector options,
+     * and the mission selector options. No raw domain entities.
+     *
+     * @param {string|null} teamId
+     * @returns {object}
+     */
+    function getTeamFormViewModel(teamId) {
+        var team = null;
+        if (isNonEmptyString(teamId)) {
+            team = TeamQueries.getTeamById(teamId);
+        }
+
+        var isEdit = !!team;
+        var t = team || {};
+
+        // ---- Class options ----
+        var classOptions = [];
+        if (AcademyQueries && typeof AcademyQueries.getClasses === 'function') {
+            var classes = AcademyQueries.getClasses() || [];
+            for (var i = 0; i < classes.length; i++) {
+                if (classes[i] && classes[i].id) {
+                    classOptions.push({
+                        id: classes[i].id,
+                        name: classes[i].name || 'Unnamed Class'
+                    });
+                }
+            }
+        }
+
+        // ---- Mission options ----
+        // Missions live in window.data.missions. This is a
+        // Mission-domain read. It should eventually come from a
+        // MissionQueries call; for now it reads the store directly
+        // because no Mission read surface is available in this code
+        // path.
+        var missionOptions = [];
+        var data = window.data || {};
+        var missions = Array.isArray(data.missions) ? data.missions : [];
+        for (var m = 0; m < missions.length; m++) {
+            var mission = missions[m];
+            if (!mission || mission.status === 'cancelled') {
+                continue;
+            }
+            missionOptions.push({
+                id: mission.id,
+                title: mission.title || 'Untitled',
+                status: mission.status || 'active'
+            });
+        }
+        missionOptions.sort(function(a, b) {
+            if (a.status === 'active' && b.status !== 'active') { return -1; }
+            if (a.status !== 'active' && b.status === 'active') { return 1; }
+            return a.title.localeCompare(b.title);
+        });
+
+        return {
+            isEdit: isEdit,
+            teamId: t.id || null,
+            name: t.name || '',
+            type: t.type || 'professional',
+            startPeriod: t.startPeriod || '',
+            endPeriod: t.endPeriod || '',
+            status: t.status || 'active',
+            classId: t.classId || '',
+            teamNumber: t.teamNumber || '',
+            temporaryMission: t.temporaryMission || '',
+            currentRank: TeamQueries.getCurrentRank ? TeamQueries.getCurrentRank(team) : '',
+            nameHistory: Array.isArray(t.nameHistory) ? t.nameHistory.slice() : [],
+            classOptions: classOptions,
+            missionOptions: missionOptions
+        };
+    }
+
+    /**
+     * Get a view model for the member modal.
+     *
+     * @param {string} teamId
+     * @param {number|string} period
+     * @returns {object|null}
+     */
+    function getMemberModalViewModel(teamId, period) {
+        if (!isNonEmptyString(teamId)) {
+            return null;
+        }
+
+        var team = TeamQueries.getTeamById(teamId);
+        if (!team) {
+            return null;
+        }
+
+        var membersVM = getTeamMembersViewModel(teamId, period);
+
+        // Candidates: any character not already a member.
+        var currentIds = Object.create(null);
+        if (Array.isArray(team.members)) {
+            for (var i = 0; i < team.members.length; i++) {
+                currentIds[String(team.members[i].characterId)] = true;
+            }
+        }
+
+        var allChars = CharacterQueries.getCharacters() || [];
+        var candidates = [];
+        for (var j = 0; j < allChars.length; j++) {
+            var c = allChars[j];
+            if (!c || !c.id) { continue; }
+            if (currentIds[String(c.id)]) { continue; }
+            candidates.push({
+                id: c.id,
+                name: CharacterQueries.getDisplayName(c),
+                status: CharacterQueries.getCurrentStatus(c)
+            });
+        }
+        candidates.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
+
+        return {
+            teamId: team.id,
+            teamName: team.name,
+            period: membersVM ? membersVM.period : null,
+            members: membersVM ? membersVM.members : [],
+            candidates: candidates
+        };
+    }
+
+    /**
+     * Get a view model for the ranking modal.
+     *
+     * @param {string} teamId
+     * @returns {object|null}
+     */
+    function getRankingModalViewModel(teamId) {
+        if (!isNonEmptyString(teamId)) {
+            return null;
+        }
+
+        var team = TeamQueries.getTeamById(teamId);
+        if (!team) {
+            return null;
+        }
+
+        var summary = TeamQueries.getRankingSummary(team);
+
+        return {
+            teamId: team.id,
+            teamName: team.name,
+            currentRank: summary.current || '',
+            history: summary.history,
+            historyCount: summary.total,
+            historyDisplay: getRankingHistoryDisplay(team)
+        };
+    }
+
+    /**
+     * Get a view model for the filter bar.
+     *
+     * Consumed by TeamRender.renderFilterBar. Reads persisted filter
+     * state from TeamUI when it is available.
+     *
+     * @param {string} tab
+     * @returns {object}
+     */
+    function getFilterBarViewModel(tab) {
+        var normalized = TeamConstants.normalizeTeamType(tab) || 'professional';
+        var UI = getTeamUI();
+
+        var filter = (UI && typeof UI.getFilter === 'function')
+            ? UI.getFilter(normalized)
+            : {};
+
+        return {
+            tab: normalized,
+            typeLabel: getTypeLabel(normalized),
+            periodLabel: getPeriodLabel(normalized),
+            filterYear: filter.filterYear || '',
+            filterStatus: filter.filterStatus || 'active'
+        };
+    }
+
+    // ============================================================
+    // CANDIDATE CHARACTERS
     // ============================================================
 
     /**
      * Get candidate characters for a team type at a period.
-     * This crosses Team + Character domains.
-     * 
-     * @param {string} teamType - Team type ('professional', 'temporary', 'civilian', 'academic')
-     * @param {number|string} period - Period to check
-     * @returns {array} Array of character objects
+     *
+     * Returns VM objects, not raw Character entities. Any caller that
+     * needs the raw entity for a mutation uses CharacterQueries
+     * directly. The UI projection does not hand out live records.
+     *
+     * ELIGIBILITY RULES:
+     *   These rules are Team-domain policy. They currently live here
+     *   because the only consumer is this projection. If the
+     *   mutation path ever needs to revalidate eligibility, the rules
+     *   should move to TeamQueries.getEligibleCharacters and both
+     *   this module and the mutation path call it.
+     *
+     *   Rules:
+     *     - Team exists (any status).
+     *     - Period is valid for the team type.
+     *     - Character is not deceased.
+     *     - Character status is compatible with the team type.
+     *       academic:     trainee, rookie, junior, student
+     *       civilian:     civilian
+     *       professional: trainee, rookie, junior, senior, instructor,
+     *                     support, student
+     *       temporary:    same as professional
+     *
+     * @param {string} teamType
+     * @param {number|string} period
+     * @returns {array} Array of { id, name, status }
      */
     function getCandidateCharactersAtPeriod(teamType, period) {
-        var characters = CharacterQueries.getCharacters() || [];
-        var periodNum = parseInt(period, 10);
-        if (isNaN(periodNum) || periodNum < 0) {
+        var normalizedType = TeamConstants.normalizeTeamType(teamType);
+        if (normalizedType === null) {
             return [];
         }
 
-        // Validate period against team type
-        var bounds = getPeriodBounds(teamType);
-        if (periodNum < bounds.min || periodNum > bounds.max) {
+        var periodNum = TeamConstants.parsePeriod(period);
+        if (periodNum === null) {
             return [];
         }
 
-        // Determine eligible statuses based on team type
-        var eligibleStatuses = [];
-        if (teamType === 'academic') {
-            eligibleStatuses = ['trainee', 'rookie', 'junior', 'student'];
-        } else if (teamType === 'civilian') {
-            eligibleStatuses = ['civilian'];
-        } else {
-            eligibleStatuses = ['trainee', 'rookie', 'junior', 'senior', 'instructor', 'support'];
+        var range = TeamConstants.getPeriodRange(normalizedType);
+        if (!range) {
+            return [];
         }
 
+        if (periodNum < range.min || periodNum > range.max) {
+            return [];
+        }
+
+        var eligibleStatuses = getEligibleStatuses(normalizedType);
+
+        var allCharacters = CharacterQueries.getCharacters() || [];
         var result = [];
-        for (var i = 0; i < characters.length; i++) {
-            var char = characters[i];
-            if (!char) {
-                continue;
-            }
+
+        for (var i = 0; i < allCharacters.length; i++) {
+            var char = allCharacters[i];
+            if (!char || !char.id) { continue; }
+            if (char.deceased === true) { continue; }
 
             var status = CharacterQueries.getCurrentStatus(char);
-            if (!status) {
+            if (!status) { continue; }
+
+            var statusLower = String(status).toLowerCase();
+            if (eligibleStatuses.indexOf(statusLower) === -1) {
                 continue;
             }
 
-            var isEligible = false;
-            for (var j = 0; j < eligibleStatuses.length; j++) {
-                if (status.toLowerCase() === eligibleStatuses[j].toLowerCase()) {
-                    isEligible = true;
-                    break;
-                }
-            }
-
-            if (isEligible) {
-                result.push(char);
-            }
+            result.push({
+                id: char.id,
+                name: CharacterQueries.getDisplayName(char),
+                status: status
+            });
         }
 
-        // Sort by display name
         result.sort(function(a, b) {
-            var nameA = CharacterQueries.getDisplayName(a);
-            var nameB = CharacterQueries.getDisplayName(b);
-            return nameA.localeCompare(nameB);
+            return a.name.localeCompare(b.name);
         });
 
         return result;
+    }
+
+    function getEligibleStatuses(teamType) {
+        if (teamType === 'academic') {
+            return ['trainee', 'rookie', 'junior', 'student'];
+        }
+        if (teamType === 'civilian') {
+            return ['civilian'];
+        }
+        // professional, temporary
+        return ['trainee', 'rookie', 'junior', 'senior', 'instructor', 'support', 'student'];
     }
 
     // ============================================================
@@ -633,24 +1011,57 @@
     // ============================================================
 
     window.TeamAggregator = {
-        // Projections
+        // Core projections
         getTeamViewModel: getTeamViewModel,
         getTeamListViewModel: getTeamListViewModel,
         getTeamMembersViewModel: getTeamMembersViewModel,
         getTeamPageViewModel: getTeamPageViewModel,
-
-        // Cross-domain
         getCandidateCharactersAtPeriod: getCandidateCharactersAtPeriod,
 
-        // Helpers (exposed for views that need formatting)
-        getCharacterDisplayName: getCharacterDisplayName,
-        getCharacterStatus: getCharacterStatus,
-        getCharacterAge: getCharacterAge,
-        getCharacterDeceased: getCharacterDeceased,
-        getClassDisplayName: getClassDisplayName,
-        getTypeLabel: getTypeLabel,
-        getPeriodLabel: getPeriodLabel,
-        getPeriodBounds: getPeriodBounds
+        // Form / modal VMs
+        getTeamFormViewModel: getTeamFormViewModel,
+        getMemberModalViewModel: getMemberModalViewModel,
+        getRankingModalViewModel: getRankingModalViewModel,
+        getFilterBarViewModel: getFilterBarViewModel,
+
+        // Display helpers
+        getTeamPeriodDisplay: getTeamPeriodDisplay,
+        getRankDisplay: getRankDisplay,
+        getRankingHistoryDisplay: getRankingHistoryDisplay
     };
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.TeamAggregator;
+        var missing = [];
+
+        var required = [
+            'getTeamViewModel',
+            'getTeamListViewModel',
+            'getTeamMembersViewModel',
+            'getTeamPageViewModel',
+            'getCandidateCharactersAtPeriod',
+            'getTeamFormViewModel',
+            'getMemberModalViewModel',
+            'getRankingModalViewModel',
+            'getFilterBarViewModel',
+            'getTeamPeriodDisplay',
+            'getRankDisplay',
+            'getRankingHistoryDisplay'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        if (missing.length > 0) {
+            console.warn('[TeamAggregator] Verification - some exports may be missing:', missing.join(', '));
+        }
+    })();
 
 })();
