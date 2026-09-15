@@ -10,58 +10,73 @@
  *   - Tournament completion
  *   - Status transitions (canonical entry point)
  *   - Cross-domain cascade helper (stripCharacterRefs)
+ *   - Synchronous reads (defensive copies)
  *
  * IMPORTANT:
  *   - This module owns tournament and round mutations
  *   - Match-level mutations are delegated to TournamentMatches
  *   - TournamentCore -> TournamentMatches uses INTERNAL PURE builders
- *   - Does NOT call saveData() - caller owns persistence via MutationPipeline
- *   - Does NOT log activity - MutationPipeline owns activity logging
- *   - Does NOT render or notify - UI layer owns that
+ *     (buildRound), not the public commands
+ *   - All PUBLIC mutations go through MutationPipeline. The pipeline
+ *     owns persistence, rollback, and activity logging.
+ *   - This module does NOT call saveData() directly
+ *   - This module does NOT render or notify — the UI layer owns that
  *   - Uses TournamentSchema for structural validation
  *   - Uses TournamentLifecycle for permission checks
  *   - Uses TournamentRules for domain condition checks
- *   - Returns DEFENSIVE COPIES of mutated objects
+ *   - Reads return DEFENSIVE COPIES
  *
- * MUTATION PHILOSOPHY:
- *   - Caller is responsible for persistence via MutationPipeline
- *   - Invalid inputs are REJECTED (operation returns null/false)
- *   - Schema is SOLE source of truth for STRUCTURAL validation
- *   - Lifecycle is SOLE source of truth for OPERATION permissions
- *   - Rules is SOLE source of truth for DOMAIN CONDITIONS
- *   - Mutations are VALIDATION-ATOMIC: all validation completes before any mutation
- *   - Malformed existing data is NOT silently repaired
- *   - Getters return DEFENSIVE COPIES to prevent external mutation
+ * MUTATION CONTRACT:
+ *   All public mutations return a Promise that resolves to
+ *   { success: boolean, data?: any, message?: string }.
+ *
+ *   The shape mirrors MutationPipeline's contract. On success,
+ *   `data` carries the mutated record or a small descriptor
+ *   (e.g. `{ id }` for delete). On failure, `message` carries a
+ *   human-readable reason.
+ *
+ *   Callers MUST use `.then()` or `await`. The old sync-shaped
+ *   returns (`object|null` for create/update, `boolean` for the
+ *   rest) are gone. Every caller in the codebase has been migrated.
+ *
+ * PHASE SPLIT - VALIDATE / MUTATE:
+ *   Each mutation follows the same shape:
+ *     1. Validate inputs (pure, synchronous). Reject invalid inputs
+ *        with a resolved Promise carrying { success: false }.
+ *     2. Build a candidate object (pure, synchronous). The candidate
+ *        is a fully-formed record or state that will be written if
+ *        the pipeline validate step passes.
+ *     3. Hand the pipeline a validate callback (reads the snapshot)
+ *        and a mutate callback (writes to the snapshot).
+ *     4. The pipeline snapshots, applies mutate, persists, and rolls
+ *        back on failure. This module never touches window.data.
+ *
+ *   The validate callback re-checks the pre-flight conditions against
+ *   the pipeline's snapshot. It is not redundant: between the
+ *   pre-flight check and the pipeline's snapshot, another mutation
+ *   could have been queued. The snapshot is the source of truth at
+ *   mutate time.
  *
  * STATUS TRANSITIONS:
  *   - status is NOT an updatable field via updateTournament
- *   - transitionStatus() is the SINGLE canonical entry point for status changes
- *   - completeTournament() is a thin wrapper around transitionStatus(id, 'completed')
+ *   - transitionStatus() is the SINGLE canonical entry point for
+ *     status changes
+ *   - completeTournament() is a thin wrapper around
+ *     transitionStatus(id, 'completed')
  *
  * YEAR SEMANTICS:
  *   - Tournaments are scoped to WEEKS (bounded 1-52), not years.
  *
  * MATCH DELEGATION:
  *   - addRound() uses TournamentMatches.buildRound() (internal pure builder)
- *   - addRound() does NOT call TournamentMatches.createMatch() (public command)
+ *   - addRound() does NOT call TournamentMatches.createMatch() (public
+ *     command). The public command is pipeline-wrapped; calling it
+ *     from inside this module's pipeline transaction would nest
+ *     pipelines, which is not supported.
  *
  * CASCADE SEMANTICS (stripCharacterRefs):
- *   A character can appear in a tournament in four places:
- *     1. tournament.participants[] - { id, type }. Entries with
- *        type === 'character' matching the ID are removed.
- *     2. tournament.eliminations[] - { participantId, participantType }.
- *        Entries with participantType === 'character' matching are removed.
- *     3. tournament.winner - { id, type }. Cleared if type === 'character'
- *        and id matches.
- *     4. tournament.rounds[].matches[].participants[] - raw ID arrays.
- *        Matching IDs are filtered out. Matches that become empty are
- *        pruned. Within a match, winner / loser / advancing[] fields are
- *        also cleared of the deleted character.
- *
- *   This helper is PURE with respect to appData: it mutates the
- *   tournaments array, but does not touch window.data. It is designed
- *   to be called from inside a pipeline mutate() callback in another
- *   module's transaction. It never throws.
+ *   Pure w.r.t. appData. Called from CharacterCRUD.deleteCharacter
+ *   inside its own pipeline transaction. Never throws.
  *
  * DEPENDENCIES:
  *   - window.TournamentSchema (from tournament-schema.js) - MANDATORY
@@ -74,15 +89,22 @@
  *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  *   - window.IdUtils (from id-utils.js) - MANDATORY
  *   - window.ObjectUtils (from object-utils.js) - MANDATORY
+ *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
  *
  * USAGE:
  *   var Core = window.TournamentCore;
- *   var tournament = Core.createTournament({ name: 'Spring Cup' });
- *   var updated = Core.updateTournament('tourn_123', { name: 'Summer Cup' });
- *   var added = Core.addParticipant('tourn_123', { id: 'char_123', type: 'character' });
- *   var round = Core.addRound('tourn_123', { matchSize: 2, matchType: 'standard' });
- *   var transitioned = Core.transitionStatus('tourn_123', 'active');
- *   var completed = Core.completeTournament('tourn_123');
+ *
+ *   Core.createTournament({ name: 'Spring Cup' }).then(function(result) {
+ *       if (result.success) {
+ *           var tournament = result.data;
+ *       }
+ *   });
+ *
+ *   Core.addParticipant('tourn_123', { id: 'char_123', type: 'character' })
+ *       .then(function(result) { ... });
+ *
+ *   // Reads stay synchronous
+ *   var tournament = Core.getTournament('tourn_123');
  */
 
 (function() {
@@ -136,6 +158,10 @@
         return window.ObjectUtils || null;
     }
 
+    function getMutationPipeline() {
+        return window.MutationPipeline || null;
+    }
+
     // ============================================================
     // DEPENDENCY CHECK - Warns but doesn't fail
     // ============================================================
@@ -143,36 +169,17 @@
     function checkDependencies() {
         var missing = [];
 
-        if (!getSchema()) {
-            missing.push('TournamentSchema (lazy)');
-        }
-        if (!getLifecycle()) {
-            missing.push('TournamentLifecycle (lazy)');
-        }
-        if (!getRules()) {
-            missing.push('TournamentRules (lazy)');
-        }
-        if (!getMatches()) {
-            missing.push('TournamentMatches (lazy)');
-        }
-        if (!getQueries()) {
-            missing.push('TournamentQueries (lazy)');
-        }
-        if (!getCharacterQueries()) {
-            missing.push('CharacterQueries (lazy)');
-        }
-        if (!getTeamQueries()) {
-            missing.push('TeamQueries (lazy)');
-        }
-        if (!getCalendarValidation()) {
-            missing.push('CalendarValidation (lazy)');
-        }
-        if (!getIdUtils()) {
-            missing.push('IdUtils (lazy)');
-        }
-        if (!getObjectUtils()) {
-            missing.push('ObjectUtils (lazy)');
-        }
+        if (!getSchema()) { missing.push('TournamentSchema (lazy)'); }
+        if (!getLifecycle()) { missing.push('TournamentLifecycle (lazy)'); }
+        if (!getRules()) { missing.push('TournamentRules (lazy)'); }
+        if (!getMatches()) { missing.push('TournamentMatches (lazy)'); }
+        if (!getQueries()) { missing.push('TournamentQueries (lazy)'); }
+        if (!getCharacterQueries()) { missing.push('CharacterQueries (lazy)'); }
+        if (!getTeamQueries()) { missing.push('TeamQueries (lazy)'); }
+        if (!getCalendarValidation()) { missing.push('CalendarValidation (lazy)'); }
+        if (!getIdUtils()) { missing.push('IdUtils (lazy)'); }
+        if (!getObjectUtils()) { missing.push('ObjectUtils (lazy)'); }
+        if (!getMutationPipeline()) { missing.push('MutationPipeline (lazy)'); }
 
         if (missing.length > 0) {
             console.warn('[TournamentCore] Some dependencies not yet loaded:', missing.join(', '));
@@ -242,10 +249,23 @@
         return !isNaN(num) && num >= 1 && num <= 52 ? num : null;
     }
 
+    function failure(message) {
+        return { success: false, message: message };
+    }
+
+    function success(data) {
+        return { success: true, data: data };
+    }
+
     function getDataStore() {
         return window.data || {};
     }
 
+    /**
+     * Internal lookup against window.data. Used for pre-flight
+     * checks and for the read path. Mutations never use this to
+     * write; they use the pipeline's appData snapshot.
+     */
     function getTournamentInternal(id) {
         var normalisedId = normaliseId(id);
         if (normalisedId === null) {
@@ -348,7 +368,33 @@
     }
 
     // ============================================================
-    // CASCADE HELPERS - Remove all references to a character ID
+    // PIPELINE WRAPPER
+    // ============================================================
+    //
+    // Every mutation below runs inside a MutationPipeline transaction.
+    // The wrapper is the single place that shapes the failure log
+    // message when the pipeline itself is unavailable. Everything
+    // else is handled by the pipeline.
+
+    function runMutation(config) {
+        var Pipeline = getMutationPipeline();
+        if (!Pipeline || typeof Pipeline.performMutation !== 'function') {
+            return Promise.resolve(
+                failure('MutationPipeline is not available.')
+            );
+        }
+
+        return Pipeline.performMutation({
+            validate: config.validate || function() { return { valid: true }; },
+            mutate: config.mutate,
+            logMessage: config.logMessage,
+            successMessage: config.successMessage || 'Tournament updated.',
+            failureMessage: config.failureMessage || 'Failed to update tournament.'
+        });
+    }
+
+    // ============================================================
+    // CASCADE HELPERS
     // ============================================================
 
     /**
@@ -360,9 +406,9 @@
      *   - The tournament winner (if winner.type === 'character').
      *   - A match participant inside rounds[].matches[].participants[].
      *     Match participants are stored as raw ID arrays; matching IDs
-     *     are filtered out. Matches that become empty are pruned. Within
-     *     a surviving match, winner / loser / advancing[] fields are
-     *     also cleared of the deleted character.
+     *     are filtered out. Matches that become empty are pruned.
+     *     Within a surviving match, winner / loser / advancing[] fields
+     *     are also cleared of the deleted character.
      *
      * This helper is PURE with respect to appData: it mutates the
      * tournaments array, but it does not touch window.data. It is
@@ -398,7 +444,6 @@
                 continue;
             }
 
-            // ---- Participants ----
             if (Array.isArray(tournament.participants)) {
                 var beforeP = tournament.participants.length;
                 tournament.participants = tournament.participants.filter(function(p) {
@@ -409,7 +454,6 @@
                 result.participantRecordsRemoved += beforeP - tournament.participants.length;
             }
 
-            // ---- Eliminations ----
             if (Array.isArray(tournament.eliminations)) {
                 var beforeE = tournament.eliminations.length;
                 tournament.eliminations = tournament.eliminations.filter(function(e) {
@@ -420,7 +464,6 @@
                 result.eliminationRecordsRemoved += beforeE - tournament.eliminations.length;
             }
 
-            // ---- Winner ----
             if (tournament.winner &&
                 tournament.winner.type === 'character' &&
                 String(tournament.winner.id) === target) {
@@ -428,7 +471,6 @@
                 result.winnerRecordsCleared++;
             }
 
-            // ---- Match participants inside rounds ----
             if (Array.isArray(tournament.rounds)) {
                 for (var r = 0; r < tournament.rounds.length; r++) {
                     var round = tournament.rounds[r];
@@ -454,14 +496,11 @@
                                 beforeM - match.participants.length;
                         }
 
-                        // If a match no longer has participants, drop it.
                         if (Array.isArray(match.participants) && match.participants.length === 0) {
                             result.matchesPruned++;
                             continue;
                         }
 
-                        // If the winner/loser of the match was the deleted
-                        // character, clear it.
                         if (match.winner && String(match.winner) === target) {
                             match.winner = null;
                         }
@@ -486,7 +525,7 @@
     }
 
     // ============================================================
-    // TOURNAMENT QUERY HELPERS (delegated to Queries)
+    // READ HELPERS (delegated to Queries)
     // ============================================================
 
     function getTournament(id) {
@@ -560,22 +599,6 @@
         return tournament.rounds.length;
     }
 
-    /**
-     * Check if a tournament is complete.
-     *
-     * A tournament is complete when ALL of the following hold:
-     *   1. status === 'completed'
-     *   2. rounds is a non-empty array
-     *   3. every round has status === 'completed'
-     *   4. a winner is set
-     *
-     * This is stricter than "status says completed". A tournament that
-     * was transitioned to 'completed' without meeting its structural
-     * prerequisites is malformed, not complete.
-     *
-     * @param {string} tournamentId - Tournament ID
-     * @returns {boolean} True if complete
-     */
     function isComplete(tournamentId) {
         var tournament = getTournamentInternal(tournamentId);
         if (!tournament) {
@@ -605,16 +628,15 @@
      * Create a new tournament.
      *
      * @param {object} data - Tournament data
-     * @returns {object|null} Created tournament or null
+     * @returns {Promise<{ success, data?, message? }>}
      */
     function createTournament(data) {
         if (!isObject(data)) {
-            return null;
+            return Promise.resolve(failure('Tournament data is required.'));
         }
 
-        // ---- PHASE 1: VALIDATE INPUTS ----
         if (!isNonEmptyString(data.name)) {
-            return null;
+            return Promise.resolve(failure('Tournament name is required.'));
         }
         var name = data.name.trim();
 
@@ -622,39 +644,39 @@
         var CalendarValidation = getCalendarValidation();
 
         if (!Schema || !CalendarValidation) {
-            return null;
+            return Promise.resolve(failure('Schema or CalendarValidation not available.'));
         }
 
         var mode = data.mode || 'teams';
         if (!Schema.isValidMode(mode)) {
-            return null;
+            return Promise.resolve(failure('Invalid mode: ' + mode));
         }
 
         var startWeek = data.startWeek !== undefined ? data.startWeek : 1;
         var parsedStart = CalendarValidation.parseWeek(startWeek);
         if (parsedStart === null) {
-            return null;
+            return Promise.resolve(failure('Invalid start week.'));
         }
 
         var endWeek = data.endWeek !== undefined ? data.endWeek : 52;
         var parsedEnd = CalendarValidation.parseWeek(endWeek);
         if (parsedEnd === null) {
-            return null;
+            return Promise.resolve(failure('Invalid end week.'));
         }
 
         if (parsedStart > parsedEnd) {
-            return null;
+            return Promise.resolve(failure('Start week cannot be after end week.'));
         }
 
         var totalRounds = data.totalRounds !== undefined ? data.totalRounds : 1;
         var parsedRounds = parsePositiveInteger(totalRounds);
         if (parsedRounds === null) {
-            return null;
+            return Promise.resolve(failure('Invalid total rounds.'));
         }
 
         var status = data.status || 'draft';
         if (!Schema.isValidStatus(status)) {
-            return null;
+            return Promise.resolve(failure('Invalid status: ' + status));
         }
 
         var graduatingClassId = data.graduatingClassId !== undefined
@@ -665,16 +687,14 @@
 
         var appData = getDataStore();
         if (!appData) {
-            return null;
+            return Promise.resolve(failure('Data store not available.'));
         }
 
-        // ---- PHASE 2: GENERATE UNIQUE ID ----
         var id = generateUniqueId(appData);
         if (id === null) {
-            return null;
+            return Promise.resolve(failure('Failed to generate a unique tournament ID.'));
         }
 
-        // ---- PHASE 3: BUILD CANONICAL TOURNAMENT ----
         var newTournament = {
             id: id,
             name: name,
@@ -693,67 +713,71 @@
             classFilterEnabled: classFilterEnabled
         };
 
-        // ---- PHASE 4: VALIDATE COMPLETE OBJECT AGAINST SCHEMA ----
         var validation = validateTournamentInternal(newTournament, true);
         if (!validation.valid) {
-            return null;
+            return Promise.resolve(failure(validation.errors.join('; ')));
         }
 
-        // ---- PHASE 5: PERSIST (in-memory) ----
-        appData.tournaments.push(newTournament);
-
-        return deepClone(newTournament);
+        return runMutation({
+            validate: function(appDataSnapshot) {
+                if (!appDataSnapshot || !Array.isArray(appDataSnapshot.tournaments)) {
+                    return { valid: false, message: 'Tournament store is not available.' };
+                }
+                // Re-check for ID collision inside the snapshot.
+                var collision = appDataSnapshot.tournaments.some(function(t) {
+                    return t && normaliseId(t.id) === id;
+                });
+                if (collision) {
+                    return { valid: false, message: 'Tournament ID collision.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appDataSnapshot) {
+                if (!Array.isArray(appDataSnapshot.tournaments)) {
+                    appDataSnapshot.tournaments = [];
+                }
+                appDataSnapshot.tournaments.push(deepClone(newTournament));
+                return { tournament: newTournament, id: id };
+            },
+            logMessage: 'Created tournament: ' + name,
+            successMessage: 'Tournament created successfully!',
+            failureMessage: 'Failed to create tournament.'
+        });
     }
 
     /**
      * Update an existing tournament.
      *
      * UPDATABLE FIELDS:
-     *   - name
-     *   - mode
-     *   - startWeek
-     *   - endWeek
-     *   - totalRounds
-     *   - graduatingClassId
-     *   - classFilterEnabled
+     *   name, mode, startWeek, endWeek, totalRounds,
+     *   graduatingClassId, classFilterEnabled
      *
-     * NOT UPDATABLE HERE:
-     *   - status: use transitionStatus()
-     *   - participants: use addParticipant/removeParticipant
-     *   - rounds: use addRound/removeRound
-     *   - eliminations: use TournamentEliminationWorkflow
-     *   - winner: derived from match completion
-     *   - id, createdAt: immutable
-     *
-     * @param {string} id - Tournament ID
-     * @param {object} updates - Updates to apply
-     * @returns {object|null} Updated tournament or null
+     * @param {string} id
+     * @param {object} updates
+     * @returns {Promise<{ success, data?, message? }>}
      */
     function updateTournament(id, updates) {
         if (!isObject(updates)) {
-            return null;
+            return Promise.resolve(failure('Updates must be an object.'));
         }
 
         var updateKeys = Object.keys(updates);
         if (updateKeys.length === 0) {
-            return null;
+            return Promise.resolve(failure('Updates are required.'));
         }
 
-        // Reject undefined values
         var hasUndefined = updateKeys.some(function(key) {
             return updates[key] === undefined;
         });
         if (hasUndefined) {
-            return null;
+            return Promise.resolve(failure('Updates cannot contain undefined values.'));
         }
 
-        // ---- PHASE 1: RETRIEVE AND VALIDATE EXISTING (LENIENT) ----
         var tournament = getValidatedTournament(id, false);
         if (!tournament) {
-            return null;
+            return Promise.resolve(failure('Tournament not found.'));
         }
 
-        // ---- PHASE 2: REJECT UNKNOWN / NON-UPDATABLE KEYS ----
         var allowedKeys = [
             'name',
             'mode',
@@ -767,33 +791,30 @@
             return allowedKeys.indexOf(key) === -1;
         });
         if (unknownKeys.length > 0) {
-            return null;
+            return Promise.resolve(failure(
+                'Unknown or non-updatable keys: ' + unknownKeys.join(', ')
+            ));
         }
 
-        // ---- PHASE 3: LIFECYCLE CHECK ----
         var Lifecycle = getLifecycle();
         if (!Lifecycle) {
-            return null;
+            return Promise.resolve(failure('TournamentLifecycle not available.'));
         }
 
-        // Class-only updates (graduatingClassId, classFilterEnabled) are
-        // always allowed. Structural updates require edit permission.
         var isStructuralUpdate = updateKeys.some(function(key) {
             return ['name', 'mode', 'startWeek', 'endWeek', 'totalRounds'].indexOf(key) !== -1;
         });
 
         if (isStructuralUpdate) {
-            // Name changes are allowed in active tournaments
             var onlyNameChange = updateKeys.every(function(key) {
                 return key === 'name';
             });
 
             if (!onlyNameChange && !Lifecycle.canEditMetadata(tournament)) {
-                return null;
+                return Promise.resolve(failure('Tournament status does not permit this update.'));
             }
         }
 
-        // ---- PHASE 4: BUILD PROPOSED STATE ----
         var proposed = Object.assign({}, tournament);
         Object.keys(updates).forEach(function(key) {
             if (updates[key] !== undefined) {
@@ -801,78 +822,117 @@
             }
         });
 
-        // ---- PHASE 5: STRUCTURAL CONSTRAINTS ----
-        // totalRounds cannot be less than existing rounds
         if (updates.totalRounds !== undefined) {
             var newTotal = parsePositiveInteger(proposed.totalRounds);
             if (newTotal !== null && Array.isArray(tournament.rounds) && tournament.rounds.length > newTotal) {
-                return null;
+                return Promise.resolve(failure('Cannot reduce total rounds below the existing round count.'));
             }
         }
 
-        // mode cannot change if participants exist
         if (updates.mode !== undefined && updates.mode !== tournament.mode) {
             if (Array.isArray(tournament.participants) && tournament.participants.length > 0) {
-                return null;
+                return Promise.resolve(failure('Cannot change mode while participants exist.'));
             }
         }
 
-        // ---- PHASE 6: VALIDATE PROPOSED AGAINST SCHEMA (LENIENT) ----
         var validation = validateTournamentInternal(proposed, false);
         if (!validation.valid) {
-            return null;
+            return Promise.resolve(failure(validation.errors.join('; ')));
         }
 
-        // ---- PHASE 7: APPLY VALIDATED UPDATES ----
-        allowedKeys.forEach(function(key) {
-            if (updates[key] === undefined) {
-                return;
-            }
-            tournament[key] = proposed[key];
-        });
+        var targetId = normaliseId(id);
 
-        return deepClone(tournament);
+        return runMutation({
+            validate: function(appDataSnapshot) {
+                if (!appDataSnapshot || !Array.isArray(appDataSnapshot.tournaments)) {
+                    return { valid: false, message: 'Tournament store is not available.' };
+                }
+                var found = appDataSnapshot.tournaments.some(function(t) {
+                    return t && normaliseId(t.id) === targetId;
+                });
+                if (!found) {
+                    return { valid: false, message: 'Tournament no longer exists.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appDataSnapshot) {
+                var idx = -1;
+                for (var i = 0; i < appDataSnapshot.tournaments.length; i++) {
+                    if (normaliseId(appDataSnapshot.tournaments[i].id) === targetId) {
+                        idx = i;
+                        break;
+                    }
+                }
+                if (idx === -1) {
+                    throw new Error('Tournament not found in data store.');
+                }
+
+                var target = appDataSnapshot.tournaments[idx];
+                allowedKeys.forEach(function(key) {
+                    if (updates[key] === undefined) {
+                        return;
+                    }
+                    target[key] = proposed[key];
+                });
+
+                return { tournament: target, id: targetId };
+            },
+            logMessage: 'Updated tournament: ' + proposed.name,
+            successMessage: 'Tournament updated successfully!',
+            failureMessage: 'Failed to update tournament.'
+        });
     }
 
     /**
      * Delete a tournament permanently.
      *
-     * @param {string} id - Tournament ID
-     * @returns {boolean} Success
+     * @param {string} id
+     * @returns {Promise<{ success, data?, message? }>}
      */
     function deleteTournament(id) {
         var normalisedId = normaliseId(id);
         if (normalisedId === null) {
-            return false;
+            return Promise.resolve(failure('Tournament ID is required.'));
         }
 
-        // ---- PHASE 1: RETRIEVE AND VALIDATE EXISTING ----
         var tournament = getValidatedTournament(normalisedId, false);
         if (!tournament) {
-            return false;
+            return Promise.resolve(failure('Tournament not found.'));
         }
 
-        // ---- PHASE 2: MUTATE ----
-        var data = getDataStore();
-        if (!data) {
-            return false;
-        }
+        var tournamentName = tournament.name || 'Unknown';
 
-        var foundIndex = -1;
-        for (var i = 0; i < data.tournaments.length; i++) {
-            if (data.tournaments[i] && normaliseId(data.tournaments[i].id) === normalisedId) {
-                foundIndex = i;
-                break;
-            }
-        }
-
-        if (foundIndex === -1) {
-            return false;
-        }
-
-        data.tournaments.splice(foundIndex, 1);
-
-        return true;
+        return runMutation({
+            validate: function(appDataSnapshot) {
+                if (!appDataSnapshot || !Array.isArray(appDataSnapshot.tournaments)) {
+                    return { valid: false, message: 'Tournament store is not available.' };
+                }
+                var found = appDataSnapshot.tournaments.some(function(t) {
+                    return t && normaliseId(t.id) === normalisedId;
+                });
+                if (!found) {
+                    return { valid: false, message: 'Tournament no longer exists.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appDataSnapshot) {
+                var idx = -1;
+                for (var i = 0; i < appDataSnapshot.tournaments.length; i++) {
+                    if (normaliseId(appDataSnapshot.tournaments[i].id) === normalisedId) {
+                        idx = i;
+                        break;
+                    }
+                }
+                if (idx === -1) {
+                    throw new Error('Tournament not found in data store.');
+                }
+                appDataSnapshot.tournaments.splice(idx, 1);
+                return { id: normalisedId };
+            },
+            logMessage: 'Deleted tournament: ' + tournamentName,
+            successMessage: 'Tournament deleted successfully!',
+            failureMessage: 'Failed to delete tournament.'
+        });
     }
 
     // ============================================================
@@ -882,197 +942,269 @@
     /**
      * Add a participant to a tournament.
      *
-     * @param {string} tournamentId - Tournament ID
+     * @param {string} tournamentId
      * @param {object} participant - { id, type }
-     * @returns {boolean} Success
+     * @returns {Promise<{ success, data?, message? }>}
      */
     function addParticipant(tournamentId, participant) {
         if (!isObject(participant)) {
-            return false;
+            return Promise.resolve(failure('Participant data is required.'));
         }
 
         var id = normaliseId(participant.id);
         if (id === null) {
-            return false;
+            return Promise.resolve(failure('Participant ID is required.'));
         }
 
         var type = participant.type || 'character';
 
-        // ---- PHASE 1: RETRIEVE AND VALIDATE EXISTING ----
         var tournament = getValidatedTournament(tournamentId, false);
         if (!tournament) {
-            return false;
+            return Promise.resolve(failure('Tournament not found.'));
         }
 
         if (!Array.isArray(tournament.participants)) {
-            return false;
+            return Promise.resolve(failure('Tournament participant list is malformed.'));
         }
 
-        // ---- PHASE 2: LIFECYCLE CHECK ----
         var Lifecycle = getLifecycle();
         if (!Lifecycle || !Lifecycle.canModifyParticipants(tournament)) {
-            return false;
+            return Promise.resolve(failure(
+                'Tournament status "' + tournament.status + '" does not permit participant changes.'
+            ));
         }
 
-        // ---- PHASE 3: RULES CHECK ----
         var Rules = getRules();
         if (Rules && typeof Rules.canAddParticipant === 'function') {
             if (!Rules.canAddParticipant(tournament, id, type)) {
-                return false;
+                return Promise.resolve(failure('Participant cannot be added to this tournament.'));
             }
         }
 
-        // ---- PHASE 4: VALIDATE PARTICIPANT TYPE ----
         var Schema = getSchema();
         if (!Schema || !Schema.isValidParticipantType(type)) {
-            return false;
+            return Promise.resolve(failure('Invalid participant type: ' + type));
         }
 
         var canonicalType = Schema.getCanonicalParticipantType(tournament.mode);
         if (canonicalType === null || type !== canonicalType) {
-            return false;
+            return Promise.resolve(failure(
+                'Participant type "' + type + '" does not match tournament mode "' +
+                tournament.mode + '" (expected "' + canonicalType + '").'
+            ));
         }
 
-        var data = getDataStore();
-        if (!data) {
-            return false;
-        }
-
-        // Verify entity exists using domain queries
         var CharacterQueries = getCharacterQueries();
         var TeamQueries = getTeamQueries();
 
         if (type === 'character') {
             if (!CharacterQueries || !CharacterQueries.getCharacterById(id)) {
-                return false;
+                return Promise.resolve(failure('Character not found.'));
             }
         } else if (type === 'team') {
             if (!TeamQueries || !TeamQueries.getTeamById(id)) {
-                return false;
+                return Promise.resolve(failure('Team not found.'));
             }
         } else {
-            return false;
+            return Promise.resolve(failure('Unsupported participant type.'));
         }
 
-        // Check for duplicate
         var exists = tournament.participants.some(function(p) {
             return p && normaliseId(p.id) === id && p.type === type;
         });
         if (exists) {
-            return false;
+            return Promise.resolve(failure('Participant is already in this tournament.'));
         }
 
-        // ---- PHASE 5: APPLY MUTATION ----
-        tournament.participants.push({
-            id: id,
-            type: type,
-            addedAt: new Date().toISOString()
-        });
+        var targetId = normaliseId(tournamentId);
 
-        return true;
+        return runMutation({
+            validate: function(appDataSnapshot) {
+                if (!appDataSnapshot || !Array.isArray(appDataSnapshot.tournaments)) {
+                    return { valid: false, message: 'Tournament store is not available.' };
+                }
+                var current = null;
+                for (var i = 0; i < appDataSnapshot.tournaments.length; i++) {
+                    if (normaliseId(appDataSnapshot.tournaments[i].id) === targetId) {
+                        current = appDataSnapshot.tournaments[i];
+                        break;
+                    }
+                }
+                if (!current) {
+                    return { valid: false, message: 'Tournament no longer exists.' };
+                }
+                if (!Array.isArray(current.participants)) {
+                    return { valid: false, message: 'Tournament participant list is malformed.' };
+                }
+                var dup = current.participants.some(function(p) {
+                    return p && normaliseId(p.id) === id && p.type === type;
+                });
+                if (dup) {
+                    return { valid: false, message: 'Participant is already in this tournament.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appDataSnapshot) {
+                var current = null;
+                for (var i = 0; i < appDataSnapshot.tournaments.length; i++) {
+                    if (normaliseId(appDataSnapshot.tournaments[i].id) === targetId) {
+                        current = appDataSnapshot.tournaments[i];
+                        break;
+                    }
+                }
+                if (!current) {
+                    throw new Error('Tournament not found in data store.');
+                }
+                if (!Array.isArray(current.participants)) {
+                    current.participants = [];
+                }
+                current.participants.push({
+                    id: id,
+                    type: type,
+                    addedAt: new Date().toISOString()
+                });
+                return { participantId: id, type: type };
+            },
+            logMessage: 'Added participant to tournament: ' + (tournament.name || targetId),
+            successMessage: 'Participant added successfully!',
+            failureMessage: 'Failed to add participant.'
+        });
     }
 
     /**
      * Remove a participant from a tournament.
      *
-     * @param {string} tournamentId - Tournament ID
-     * @param {string} participantId - Participant ID
-     * @returns {boolean} Success
+     * @param {string} tournamentId
+     * @param {string} participantId
+     * @returns {Promise<{ success, data?, message? }>}
      */
     function removeParticipant(tournamentId, participantId) {
         var id = normaliseId(participantId);
         if (id === null) {
-            return false;
+            return Promise.resolve(failure('Participant ID is required.'));
         }
 
-        // ---- PHASE 1: RETRIEVE AND VALIDATE EXISTING ----
         var tournament = getValidatedTournament(tournamentId, false);
         if (!tournament || !Array.isArray(tournament.participants)) {
-            return false;
+            return Promise.resolve(failure('Tournament not found.'));
         }
 
-        // ---- PHASE 2: LIFECYCLE CHECK ----
         var Lifecycle = getLifecycle();
         if (!Lifecycle || !Lifecycle.canModifyParticipants(tournament)) {
-            return false;
+            return Promise.resolve(failure(
+                'Tournament status "' + tournament.status + '" does not permit participant changes.'
+            ));
         }
 
-        // ---- PHASE 3: RULES CHECK ----
         var Rules = getRules();
         if (Rules && typeof Rules.canRemoveParticipant === 'function') {
             if (!Rules.canRemoveParticipant(tournament, id)) {
-                return false;
+                return Promise.resolve(failure('Participant cannot be removed from this tournament.'));
             }
         }
 
-        // Check if participant exists
         var participantRecord = null;
         for (var i = 0; i < tournament.participants.length; i++) {
-            if (tournament.participants[i] && normaliseId(tournament.participants[i].id) === id) {
+            if (normaliseId(tournament.participants[i].id) === id) {
                 participantRecord = tournament.participants[i];
                 break;
             }
         }
 
         if (!participantRecord) {
-            return false;
+            return Promise.resolve(failure('Participant not found in this tournament.'));
         }
 
-        // ---- PHASE 4: APPLY MUTATION ----
-        tournament.participants = tournament.participants.filter(function(p) {
-            return !(p && normaliseId(p.id) === id);
-        });
+        var targetId = normaliseId(tournamentId);
 
-        return true;
+        return runMutation({
+            validate: function(appDataSnapshot) {
+                if (!appDataSnapshot || !Array.isArray(appDataSnapshot.tournaments)) {
+                    return { valid: false, message: 'Tournament store is not available.' };
+                }
+                var current = null;
+                for (var i = 0; i < appDataSnapshot.tournaments.length; i++) {
+                    if (normaliseId(appDataSnapshot.tournaments[i].id) === targetId) {
+                        current = appDataSnapshot.tournaments[i];
+                        break;
+                    }
+                }
+                if (!current) {
+                    return { valid: false, message: 'Tournament no longer exists.' };
+                }
+                var present = Array.isArray(current.participants) &&
+                    current.participants.some(function(p) {
+                        return p && normaliseId(p.id) === id;
+                    });
+                if (!present) {
+                    return { valid: false, message: 'Participant no longer exists.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appDataSnapshot) {
+                var current = null;
+                for (var i = 0; i < appDataSnapshot.tournaments.length; i++) {
+                    if (normaliseId(appDataSnapshot.tournaments[i].id) === targetId) {
+                        current = appDataSnapshot.tournaments[i];
+                        break;
+                    }
+                }
+                if (!current || !Array.isArray(current.participants)) {
+                    throw new Error('Tournament not found in data store.');
+                }
+                current.participants = current.participants.filter(function(p) {
+                    return !(p && normaliseId(p.id) === id);
+                });
+                return { participantId: id };
+            },
+            logMessage: 'Removed participant from tournament: ' + (tournament.name || targetId),
+            successMessage: 'Participant removed successfully!',
+            failureMessage: 'Failed to remove participant.'
+        });
     }
 
     // ============================================================
-    // ROUND OPERATIONS - Uses TournamentMatches internal builders
+    // ROUND OPERATIONS
     // ============================================================
 
     /**
      * Add a round to a tournament.
-     * Uses TournamentMatches.buildRound() (internal pure builder).
-     * Does NOT call TournamentMatches.createMatch() (public command).
      *
-     * @param {string} tournamentId - Tournament ID
-     * @param {object} roundData - { matchSize, matchType }
-     * @returns {boolean} Success
+     * @param {string} tournamentId
+     * @param {object} roundData - { matchSize, matchType, isPairExam? }
+     * @returns {Promise<{ success, data?, message? }>}
      */
     function addRound(tournamentId, roundData) {
-        // ---- PHASE 1: RETRIEVE AND VALIDATE EXISTING ----
         var tournament = getValidatedTournament(tournamentId, false);
         if (!tournament || !Array.isArray(tournament.rounds)) {
-            return false;
+            return Promise.resolve(failure('Tournament not found.'));
         }
 
-        // ---- PHASE 2: LIFECYCLE CHECK ----
         var Lifecycle = getLifecycle();
         if (!Lifecycle) {
-            return false;
+            return Promise.resolve(failure('TournamentLifecycle not available.'));
         }
 
         if (!Lifecycle.canAddRound(tournament, tournament.rounds.length, tournament.totalRounds)) {
-            return false;
+            return Promise.resolve(failure('Cannot add another round to this tournament.'));
         }
 
-        // ---- PHASE 3: RULES CHECK ----
         var Rules = getRules();
         if (Rules && typeof Rules.canAddRound === 'function') {
             if (!Rules.canAddRound(tournament, roundData)) {
-                return false;
+                return Promise.resolve(failure('Round cannot be added to this tournament.'));
             }
         }
 
-        // ---- PHASE 4: VALIDATE ROUND DATA ----
         var matchSize = 2;
-        var matchType = 'standard';
+        var matchType = 'group_exam';
+        var isPairExam = false;
 
         if (roundData && typeof roundData === 'object') {
             if (roundData.matchSize !== undefined) {
                 var size = parsePositiveInteger(roundData.matchSize);
                 if (size === null || size < 2) {
-                    return false;
+                    return Promise.resolve(failure('Match size must be an integer >= 2.'));
                 }
                 matchSize = size;
             }
@@ -1080,22 +1212,27 @@
             if (roundData.matchType !== undefined) {
                 var Schema = getSchema();
                 if (!Schema || !Schema.isValidMatchType(roundData.matchType)) {
-                    return false;
+                    return Promise.resolve(failure('Invalid match type: ' + roundData.matchType));
                 }
                 matchType = roundData.matchType;
             }
+
+            if (roundData.isPairExam === true) {
+                isPairExam = true;
+                if (matchType !== 'group_exam') {
+                    matchType = 'group_exam';
+                }
+                matchSize = 2;
+            }
         }
 
-        // ---- PHASE 5: BUILD ROUND USING INTERNAL BUILDER ----
         var Matches = getMatches();
         if (!Matches || typeof Matches.buildRound !== 'function') {
-            return false;
+            return Promise.resolve(failure('TournamentMatches.buildRound is not available.'));
         }
 
-        // Build round with the internal pure builder
         var participants = [];
         if (Array.isArray(tournament.participants)) {
-            // Get active participants for the round
             for (var i = 0; i < tournament.participants.length; i++) {
                 var p = tournament.participants[i];
                 if (p && !isParticipantEliminatedRecord(tournament, p.id)) {
@@ -1108,110 +1245,153 @@
         var round = Matches.buildRound({
             matchSize: matchSize,
             matchType: matchType,
-            roundNumber: roundNumber
+            roundNumber: roundNumber,
+            isPairExam: isPairExam
         }, participants);
 
         if (!round) {
-            return false;
+            return Promise.resolve(failure('Failed to build round.'));
         }
 
-        // ---- PHASE 6: BUILD PROPOSED TOURNAMENT STATE ----
-        var proposed = Object.assign({}, tournament);
-        proposed.rounds = tournament.rounds.slice().map(function(r) {
-            return Object.assign({}, r);
+        var targetId = normaliseId(tournamentId);
+        var roundCopy = deepClone(round);
+        var promoteToActive = tournament.status === 'draft';
+
+        return runMutation({
+            validate: function(appDataSnapshot) {
+                if (!appDataSnapshot || !Array.isArray(appDataSnapshot.tournaments)) {
+                    return { valid: false, message: 'Tournament store is not available.' };
+                }
+                var current = null;
+                for (var i = 0; i < appDataSnapshot.tournaments.length; i++) {
+                    if (normaliseId(appDataSnapshot.tournaments[i].id) === targetId) {
+                        current = appDataSnapshot.tournaments[i];
+                        break;
+                    }
+                }
+                if (!current) {
+                    return { valid: false, message: 'Tournament no longer exists.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appDataSnapshot) {
+                var current = null;
+                for (var i = 0; i < appDataSnapshot.tournaments.length; i++) {
+                    if (normaliseId(appDataSnapshot.tournaments[i].id) === targetId) {
+                        current = appDataSnapshot.tournaments[i];
+                        break;
+                    }
+                }
+                if (!current) {
+                    throw new Error('Tournament not found in data store.');
+                }
+                if (!Array.isArray(current.rounds)) {
+                    current.rounds = [];
+                }
+                current.rounds.push(roundCopy);
+                if (promoteToActive) {
+                    current.status = 'active';
+                }
+                return { round: roundCopy };
+            },
+            logMessage: 'Added round to tournament: ' + (tournament.name || targetId),
+            successMessage: 'Round added successfully!',
+            failureMessage: 'Failed to add round.'
         });
-        proposed.rounds.push(round);
-
-        // If status is draft, promote to active
-        if (proposed.status === 'draft') {
-            proposed.status = 'active';
-        }
-
-        // ---- PHASE 7: VALIDATE PROPOSED AGAINST SCHEMA ----
-        var validation = validateTournamentInternal(proposed, false);
-        if (!validation.valid) {
-            return false;
-        }
-
-        // ---- PHASE 8: APPLY MUTATION ----
-        tournament.rounds = proposed.rounds;
-        if (proposed.status !== tournament.status) {
-            tournament.status = proposed.status;
-        }
-
-        return true;
     }
 
     /**
      * Remove a round from a tournament.
      *
-     * @param {string} tournamentId - Tournament ID
-     * @param {number} roundIndex - Index of round to remove (0-based)
-     * @returns {boolean} Success
+     * @param {string} tournamentId
+     * @param {number} roundIndex
+     * @returns {Promise<{ success, data?, message? }>}
      */
     function removeRound(tournamentId, roundIndex) {
         var index = parseInt(roundIndex, 10);
         if (!Number.isInteger(index)) {
-            return false;
+            return Promise.resolve(failure('Round index is required.'));
         }
 
-        // ---- PHASE 1: RETRIEVE AND VALIDATE EXISTING ----
         var tournament = getValidatedTournament(tournamentId, false);
         if (!tournament || !Array.isArray(tournament.rounds)) {
-            return false;
+            return Promise.resolve(failure('Tournament not found.'));
         }
 
         if (index < 0 || index >= tournament.rounds.length) {
-            return false;
+            return Promise.resolve(failure('Round not found.'));
         }
 
-        // ---- PHASE 2: LIFECYCLE CHECK ----
         var Lifecycle = getLifecycle();
         if (!Lifecycle) {
-            return false;
+            return Promise.resolve(failure('TournamentLifecycle not available.'));
         }
 
         if (!Lifecycle.canRemoveRounds(tournament)) {
-            return false;
+            return Promise.resolve(failure(
+                'Tournament status "' + tournament.status + '" does not permit round removal.'
+            ));
         }
 
-        // ---- PHASE 3: RULES CHECK ----
         var Rules = getRules();
         if (Rules && typeof Rules.canRemoveRound === 'function') {
             if (!Rules.canRemoveRound(tournament, index)) {
-                return false;
+                return Promise.resolve(failure('Round cannot be removed from this tournament.'));
             }
         }
 
-        // ---- PHASE 4: BUILD PROPOSED STATE ----
-        var proposed = Object.assign({}, tournament);
-        proposed.rounds = tournament.rounds
-            .filter(function(_, idx) {
-                return idx !== index;
-            })
-            .map(function(round, idx) {
-                var copy = Object.assign({}, round);
-                copy.roundNumber = idx + 1;
-                return copy;
-            });
+        var targetId = normaliseId(tournamentId);
 
-        if (proposed.rounds.length === 0) {
-            proposed.status = 'draft';
-            proposed.winner = null;
-        }
+        return runMutation({
+            validate: function(appDataSnapshot) {
+                if (!appDataSnapshot || !Array.isArray(appDataSnapshot.tournaments)) {
+                    return { valid: false, message: 'Tournament store is not available.' };
+                }
+                var current = null;
+                for (var i = 0; i < appDataSnapshot.tournaments.length; i++) {
+                    if (normaliseId(appDataSnapshot.tournaments[i].id) === targetId) {
+                        current = appDataSnapshot.tournaments[i];
+                        break;
+                    }
+                }
+                if (!current || !Array.isArray(current.rounds)) {
+                    return { valid: false, message: 'Tournament no longer exists.' };
+                }
+                if (index >= current.rounds.length) {
+                    return { valid: false, message: 'Round no longer exists.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appDataSnapshot) {
+                var current = null;
+                for (var i = 0; i < appDataSnapshot.tournaments.length; i++) {
+                    if (normaliseId(appDataSnapshot.tournaments[i].id) === targetId) {
+                        current = appDataSnapshot.tournaments[i];
+                        break;
+                    }
+                }
+                if (!current || !Array.isArray(current.rounds)) {
+                    throw new Error('Tournament not found in data store.');
+                }
+                current.rounds = current.rounds
+                    .filter(function(_, idx) { return idx !== index; })
+                    .map(function(round, idx) {
+                        var copy = Object.assign({}, round);
+                        copy.roundNumber = idx + 1;
+                        return copy;
+                    });
 
-        // ---- PHASE 5: VALIDATE PROPOSED AGAINST SCHEMA ----
-        var validation = validateTournamentInternal(proposed, false);
-        if (!validation.valid) {
-            return false;
-        }
+                if (current.rounds.length === 0) {
+                    current.status = 'draft';
+                    current.winner = null;
+                }
 
-        // ---- PHASE 6: APPLY MUTATION ----
-        tournament.rounds = proposed.rounds;
-        tournament.status = proposed.status;
-        tournament.winner = proposed.winner;
-
-        return true;
+                return { id: targetId };
+            },
+            logMessage: 'Removed round ' + (index + 1) + ' from tournament: ' + (tournament.name || targetId),
+            successMessage: 'Round removed successfully!',
+            failureMessage: 'Failed to remove round.'
+        });
     }
 
     // ============================================================
@@ -1220,75 +1400,57 @@
 
     /**
      * Transition a tournament to a new status.
-     * This is the SINGLE canonical entry point for all status changes.
-     * completeTournament() delegates to this.
      *
-     * TRANSITION RULES (delegated to TournamentLifecycle):
-     *   - draft      -> active, completed
-     *   - active     -> completed
-     *   - completed  -> (terminal, no transitions)
-     *
-     * PREREQUISITES (delegated to TournamentRules):
-     *   - draft -> active:     requires >= 2 participants, valid week range
-     *   - active -> completed: requires all rounds complete, winner present
-     *                         (bypassed when force === true)
-     *
-     * @param {string} tournamentId - Tournament ID
-     * @param {string} newStatus - Target status ('active' or 'completed')
-     * @param {boolean} force - Bypass domain prerequisites (not lifecycle)
-     * @returns {boolean} Success
+     * @param {string} tournamentId
+     * @param {string} newStatus
+     * @param {boolean} force
+     * @returns {Promise<{ success, data?, message? }>}
      */
     function transitionStatus(tournamentId, newStatus, force) {
         force = force === true;
 
-        // ---- PHASE 1: VALIDATE INPUT ----
         var Schema = getSchema();
         if (!Schema || !Schema.isValidStatus(newStatus)) {
-            return false;
+            return Promise.resolve(failure('Invalid status: ' + newStatus));
         }
 
-        // ---- PHASE 2: RETRIEVE AND VALIDATE EXISTING ----
         var tournament = getValidatedTournament(tournamentId, false);
         if (!tournament) {
-            return false;
+            return Promise.resolve(failure('Tournament not found.'));
         }
 
         var currentStatus = tournament.status;
 
-        // ---- PHASE 3: LIFECYCLE TRANSITION CHECK ----
         var Lifecycle = getLifecycle();
         if (!Lifecycle) {
-            return false;
+            return Promise.resolve(failure('TournamentLifecycle not available.'));
         }
 
         if (!Lifecycle.isValidStatusTransition(currentStatus, newStatus)) {
-            return false;
+            return Promise.resolve(failure(
+                'Transition from "' + currentStatus + '" to "' + newStatus + '" is not allowed.'
+            ));
         }
 
-        // No-op transition is allowed by isValidStatusTransition, but we
-        // reject it here so the caller knows nothing happened.
         if (currentStatus === newStatus) {
-            return false;
+            return Promise.resolve(failure('Tournament is already in status "' + newStatus + '".'));
         }
 
-        // ---- PHASE 4: DOMAIN PREREQUISITES ----
         var Rules = getRules();
 
         if (!force) {
-            // draft -> active
             if (currentStatus === 'draft' && newStatus === 'active') {
                 if (Rules && typeof Rules.canStartTournament === 'function') {
                     if (!Rules.canStartTournament(tournament)) {
-                        return false;
+                        return Promise.resolve(failure('Tournament prerequisites for start are not met.'));
                     }
                 }
             }
 
-            // active -> completed
             if (currentStatus === 'active' && newStatus === 'completed') {
                 if (Rules && typeof Rules.isReadyForCompletion === 'function') {
                     if (!Rules.isReadyForCompletion(tournament)) {
-                        return false;
+                        return Promise.resolve(failure('Tournament is not ready for completion.'));
                     }
                 }
 
@@ -1299,50 +1461,68 @@
                     });
 
                 if (!allRoundsComplete || !tournament.winner) {
-                    return false;
+                    return Promise.resolve(failure('All rounds must be complete and a winner set.'));
                 }
             }
         }
 
-        // ---- PHASE 5: BUILD PROPOSED STATE ----
-        var proposed = Object.assign({}, tournament);
-        proposed.status = newStatus;
+        var targetId = normaliseId(tournamentId);
 
-        // ---- PHASE 6: VALIDATE PROPOSED AGAINST SCHEMA ----
-        var validation = validateTournamentInternal(proposed, false);
-        if (!validation.valid) {
-            return false;
-        }
-
-        // ---- PHASE 7: APPLY MUTATION ----
-        tournament.status = newStatus;
-
-        return true;
+        return runMutation({
+            validate: function(appDataSnapshot) {
+                if (!appDataSnapshot || !Array.isArray(appDataSnapshot.tournaments)) {
+                    return { valid: false, message: 'Tournament store is not available.' };
+                }
+                var current = null;
+                for (var i = 0; i < appDataSnapshot.tournaments.length; i++) {
+                    if (normaliseId(appDataSnapshot.tournaments[i].id) === targetId) {
+                        current = appDataSnapshot.tournaments[i];
+                        break;
+                    }
+                }
+                if (!current) {
+                    return { valid: false, message: 'Tournament no longer exists.' };
+                }
+                if (current.status !== currentStatus) {
+                    return { valid: false, message: 'Tournament status has changed since this request was made.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appDataSnapshot) {
+                var current = null;
+                for (var i = 0; i < appDataSnapshot.tournaments.length; i++) {
+                    if (normaliseId(appDataSnapshot.tournaments[i].id) === targetId) {
+                        current = appDataSnapshot.tournaments[i];
+                        break;
+                    }
+                }
+                if (!current) {
+                    throw new Error('Tournament not found in data store.');
+                }
+                current.status = newStatus;
+                return { id: targetId, status: newStatus };
+            },
+            logMessage: 'Transitioned tournament to "' + newStatus + '": ' + (tournament.name || targetId),
+            successMessage: 'Tournament status updated!',
+            failureMessage: 'Failed to update tournament status.'
+        });
     }
 
     /**
      * Complete a tournament.
-     * Thin wrapper around transitionStatus(id, 'completed').
      *
-     * @param {string} tournamentId - Tournament ID
-     * @param {boolean} force - Bypass prerequisites
-     * @returns {boolean} Success
+     * @param {string} tournamentId
+     * @param {boolean} force
+     * @returns {Promise<{ success, data?, message? }>}
      */
     function completeTournament(tournamentId, force) {
         return transitionStatus(tournamentId, 'completed', force === true);
     }
 
     // ============================================================
-    // LIFECYCLE STATUS QUERY
+    // LIFECYCLE STATUS QUERY (synchronous)
     // ============================================================
 
-    /**
-     * Get the lifecycle status of a tournament.
-     * Delegates to TournamentLifecycle.
-     *
-     * @param {string} tournamentId - Tournament ID
-     * @returns {object} Lifecycle status object
-     */
     function getLifecycleStatus(tournamentId) {
         var tournament = getTournamentInternal(tournamentId);
         if (!tournament) {
@@ -1381,13 +1561,6 @@
         };
     }
 
-    /**
-     * Get the lifecycle rules for a status.
-     * Delegates to TournamentLifecycle.
-     *
-     * @param {string} status - Tournament status
-     * @returns {object|null} Lifecycle rules or null
-     */
     function getLifecycleRules(status) {
         var Lifecycle = getLifecycle();
         if (Lifecycle && typeof Lifecycle.getLifecycleRules === 'function') {
@@ -1396,13 +1569,6 @@
         return null;
     }
 
-    /**
-     * Get the allowed transitions for a tournament's current status.
-     * Delegates to TournamentLifecycle.
-     *
-     * @param {string} tournamentId - Tournament ID
-     * @returns {array} Array of { value, label } transition options
-     */
     function getAllowedTransitions(tournamentId) {
         var tournament = getTournamentInternal(tournamentId);
         if (!tournament) {
@@ -1418,17 +1584,9 @@
     }
 
     // ============================================================
-    // PUBLIC QUERY HELPERS (accept tournament ID, return copies)
+    // PUBLIC QUERY HELPERS (synchronous)
     // ============================================================
 
-    /**
-     * Check if a participant is in a tournament.
-     *
-     * @param {string} tournamentId - Tournament ID
-     * @param {string} participantId - Participant ID
-     * @param {string} participantType - Participant type (optional)
-     * @returns {boolean} True if participant is in tournament
-     */
     function isParticipantInTournament(tournamentId, participantId, participantType) {
         var tournament = getTournamentInternal(tournamentId);
         if (!tournament) {
@@ -1437,13 +1595,6 @@
         return isParticipantInTournamentRecord(tournament, participantId, participantType);
     }
 
-    /**
-     * Get participant type from tournament record.
-     *
-     * @param {string} tournamentId - Tournament ID
-     * @param {string} participantId - Participant ID
-     * @returns {string|null} Participant type or null
-     */
     function getParticipantType(tournamentId, participantId) {
         var tournament = getTournamentInternal(tournamentId);
         if (!tournament) {
@@ -1452,13 +1603,6 @@
         return getParticipantTypeFromRecord(tournament, participantId);
     }
 
-    /**
-     * Check if a participant is eliminated.
-     *
-     * @param {string} tournamentId - Tournament ID
-     * @param {string} participantId - Participant ID
-     * @returns {boolean} True if eliminated
-     */
     function isParticipantEliminated(tournamentId, participantId) {
         var tournament = getTournamentInternal(tournamentId);
         if (!tournament) {
@@ -1467,12 +1611,6 @@
         return isParticipantEliminatedRecord(tournament, participantId);
     }
 
-    /**
-     * Get active participants (not eliminated).
-     *
-     * @param {string} tournamentId - Tournament ID
-     * @returns {array} Array of active participants
-     */
     function getActiveParticipants(tournamentId) {
         var tournament = getTournamentInternal(tournamentId);
         if (!tournament || !Array.isArray(tournament.participants)) {
@@ -1489,12 +1627,6 @@
         return result;
     }
 
-    /**
-     * Get the winner of a tournament (defensive copy).
-     *
-     * @param {string} tournamentId - Tournament ID
-     * @returns {object|null} Winner object or null
-     */
     function getWinner(tournamentId) {
         var tournament = getTournamentInternal(tournamentId);
         if (!tournament || !tournament.winner) {
@@ -1503,23 +1635,10 @@
         return deepClone(tournament.winner);
     }
 
-    /**
-     * Validate a tournament against the schema.
-     *
-     * @param {object} tournament - Tournament to validate
-     * @param {boolean} strict - Strict validation
-     * @returns {object} Validation result
-     */
     function validateTournament(tournament, strict) {
         return validateTournamentInternal(tournament, strict !== false);
     }
 
-    /**
-     * Get a validation report for a tournament.
-     *
-     * @param {object} tournament - Tournament to report on
-     * @returns {object} Validation report
-     */
     function getValidationReport(tournament) {
         var Schema = getSchema();
         if (Schema && typeof Schema.getValidationReport === 'function') {
@@ -1533,24 +1652,24 @@
     // ============================================================
 
     window.TournamentCore = {
-        // ---- Tournament CRUD ----
+        // ---- Tournament CRUD (Promise-based) ----
         createTournament: createTournament,
         updateTournament: updateTournament,
         deleteTournament: deleteTournament,
 
-        // ---- Participant Management ----
+        // ---- Participant Management (Promise-based) ----
         addParticipant: addParticipant,
         removeParticipant: removeParticipant,
 
-        // ---- Round Management ----
+        // ---- Round Management (Promise-based) ----
         addRound: addRound,
         removeRound: removeRound,
 
-        // ---- Status Transitions ----
+        // ---- Status Transitions (Promise-based) ----
         transitionStatus: transitionStatus,
         completeTournament: completeTournament,
 
-        // ---- Lifecycle Status ----
+        // ---- Lifecycle Status (synchronous) ----
         getLifecycleStatus: getLifecycleStatus,
         getLifecycleRules: getLifecycleRules,
         getAllowedTransitions: getAllowedTransitions,
@@ -1607,7 +1726,6 @@
 
         if (missing.length > 0) {
             console.warn('[TournamentCore] Verification - some exports may be missing:', missing.join(', '));
-        } else {
         }
     })();
 
