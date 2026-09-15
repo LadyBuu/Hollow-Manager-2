@@ -63,6 +63,15 @@
  * - Version 15: Added canonical academy structure; consolidated class
  *               membership onto character.classIds; removed the legacy
  *               academy.classStudents roster as an independent authority.
+ * - Version 16: Added academy.enrolments (Phase 4 class-scoped
+ *               student↔discipline enrolment), academy.socialScores
+ *               (Phase 5 class+week social scores), and
+ *               academy.settings (academy-scoped settings such as
+ *               ranking weights). These stores were introduced
+ *               incrementally after v15 without a corresponding
+ *               DATA_VERSION bump, which caused AcademyModule's
+ *               mount-time structural check to fail on any database
+ *               that predated them. v16 backfills them.
  * 
  * ACADEMY MEMBERSHIP MODEL (v15+):
  * - character.classIds[] is the SINGLE SOURCE OF TRUTH for class membership.
@@ -72,6 +81,15 @@
  *   weekly teams for the class, and grades/rankings keyed to the class.
  * - normaliseDataStructure() enforces these invariants on every load and
  *   prunes orphaned classId references (with a dev-mode warning).
+ * 
+ * ACADEMY STORES (v16):
+ *   academy.graduatingClasses  { [classId]: classRecord }
+ *   academy.grades             { [gradeId]: gradeRecord }
+ *   academy.rankings           { [rankingId]: rankingRecord }
+ *   academy.weeklyTeams        { [classId]: { [week]: { [teamId]: [charId] } } }
+ *   academy.enrolments         { [classId]: { [charId]: [disciplineId] } }
+ *   academy.socialScores       { [classId]: { [charId]: { [week]: number } } }
+ *   academy.settings           { ranking: { academic, social } }
  */
 
 (function() {
@@ -79,7 +97,7 @@
 
     var DB_NAME = 'HollowBladesDB';
     var DB_VERSION = 1;  // IndexedDB structural version (only 1 object store)
-    var DATA_VERSION = 15;  // Application data schema version
+    var DATA_VERSION = 16;  // Application data schema version
     var STORE_NAME = 'appData';
 
     // INTERNAL: The actual IndexedDB connection (private)
@@ -179,13 +197,23 @@
      * 
      * NOTE: classStudents is NOT included. Class membership is derived from
      * character.classIds[]. The roster is a query, not stored data.
+     * 
+     * ALL stores consumed by AcademyModule.ensureAcademyStructure() must
+     * be present here. Adding a new academy store elsewhere requires
+     * updating this factory (and, for existing databases, a new
+     * migrateToVersionN).
      */
     function getDefaultAcademyData() {
         return {
             graduatingClasses: {},
             grades: {},
             rankings: {},
-            weeklyTeams: {}
+            weeklyTeams: {},
+            // FIX: v16 stores. Previously missing, which caused
+            // AcademyModule.ensureAcademyStructure() to refuse to mount.
+            enrolments: {},
+            socialScores: {},
+            settings: {}
         };
     }
 
@@ -529,6 +557,7 @@
                 case 12: migrateToVersion13(data); break;
                 case 13: migrateToVersion14(data); break;
                 case 14: migrateToVersion15(data); break;
+                case 15: migrateToVersion16(data); break;   // FIX: v16 migration
                 default: data._dataVersion = DATA_VERSION; break;
             }
         }
@@ -887,6 +916,44 @@
         data._dataVersion = 15;
     }
 
+    /**
+     * Version 16 migration — Academy stores introduced after v15.
+     * 
+     * Adds the three academy subtrees that were introduced incrementally
+     * after the v15 canonical-structure pass but without their own
+     * DATA_VERSION bump:
+     * 
+     *   academy.enrolments   — Phase 4 class-scoped student↔discipline enrolment
+     *   academy.socialScores — Phase 5 class+week social scores
+     *   academy.settings     — academy-scoped settings (ranking weights)
+     * 
+     * Without this migration, any database written between v15 and now
+     * lacks these keys, and AcademyModule.ensureAcademyStructure() refuses
+     * to mount because its structural check requires all seven academy
+     * subtrees to be present.
+     * 
+     * Idempotent: safe to run on a database that already has some or all
+     * of these stores.
+     */
+    function migrateToVersion16(data) {
+        if (!data.academy || typeof data.academy !== 'object' || Array.isArray(data.academy)) {
+            data.academy = {};
+        }
+        var academy = data.academy;
+
+        if (!academy.enrolments || typeof academy.enrolments !== 'object' || Array.isArray(academy.enrolments)) {
+            academy.enrolments = {};
+        }
+        if (!academy.socialScores || typeof academy.socialScores !== 'object' || Array.isArray(academy.socialScores)) {
+            academy.socialScores = {};
+        }
+        if (!academy.settings || typeof academy.settings !== 'object' || Array.isArray(academy.settings)) {
+            academy.settings = {};
+        }
+
+        data._dataVersion = 16;
+    }
+
     // ============================================================
     // NORMALISE DATA STRUCTURE - Current schema defaults
     // ============================================================
@@ -897,6 +964,16 @@
      * Runs on every load (after migration). Idempotent. Sets `repaired = true`
      * if any change was made, which triggers a save so the repaired structure
      * is persisted.
+     * 
+     * MERGE SEMANTICS:
+     *   deepMergeDefaults returns a NEW object every time (it does not
+     *   mutate its target). We therefore cannot distinguish "merge
+     *   changed nothing" from "merge added fields" without a deep
+     *   structural compare. We conservatively treat every merge as a
+     *   repair. The alternative — a missed repair — silently drops
+     *   fields on databases written before a key was added, which is a
+     *   worse failure mode than one extra save on first load after a
+     *   version bump.
      */
     function normaliseDataStructure(data) {
         var repaired = false;
@@ -1008,12 +1085,13 @@
         });
 
         // ---- Curriculum ----
+        // FIX: always mark repaired after a merge (see function header).
         if (!data.curriculum || typeof data.curriculum !== 'object' || Array.isArray(data.curriculum)) {
             data.curriculum = getDefaultCurriculumData();
             repaired = true;
         } else {
-            var curriculumDefaults = getDefaultCurriculumData();
-            data.curriculum = deepMergeDefaults(data.curriculum, curriculumDefaults);
+            data.curriculum = deepMergeDefaults(data.curriculum, getDefaultCurriculumData());
+            repaired = true;
         }
 
         // ---- Social ----
@@ -1021,8 +1099,8 @@
             data.social = getDefaultSocialData();
             repaired = true;
         } else {
-            var socialDefaults = getDefaultSocialData();
-            data.social = deepMergeDefaults(data.social, socialDefaults);
+            data.social = deepMergeDefaults(data.social, getDefaultSocialData());
+            repaired = true;
         }
 
         // ---- StatsConfig ----
@@ -1030,11 +1108,11 @@
             data.statsConfig = getDefaultStatsConfig();
             repaired = true;
         } else {
-            var statsDefaults = getDefaultStatsConfig();
-            data.statsConfig = deepMergeDefaults(data.statsConfig, statsDefaults);
+            data.statsConfig = deepMergeDefaults(data.statsConfig, getDefaultStatsConfig());
+            repaired = true;
         }
 
-        // ---- Academy (v15+) ----
+        // ---- Academy (v15+, extended in v16) ----
         // academy.classStudents is DELIBERATELY absent. If a legacy database
         // somehow reaches this point with it still present (e.g. a database
         // written by an intermediate build), it's dropped here — class
@@ -1043,8 +1121,8 @@
             data.academy = getDefaultAcademyData();
             repaired = true;
         } else {
-            var academyDefaults = getDefaultAcademyData();
-            data.academy = deepMergeDefaults(data.academy, academyDefaults);
+            data.academy = deepMergeDefaults(data.academy, getDefaultAcademyData());
+            repaired = true;
 
             // Drop any lingering legacy roster — it is not part of the
             // current schema and must not be reintroduced.
@@ -1118,6 +1196,26 @@
         }
         pruneByClassId('grades');
         pruneByClassId('rankings');
+
+        // ---- Prune orphaned enrolments / socialScores (v16) ----
+        // Same reasoning as grades / rankings: entries keyed to a
+        // nonexistent class are unreachable. Prune the top-level class
+        // bucket. Per-character and per-discipline orphans are not
+        // pruned here — that is a concern for the domain modules.
+        function pruneClassBucket(storeName) {
+            var store = data.academy[storeName];
+            if (!store || typeof store !== 'object') {
+                return;
+            }
+            Object.keys(store).forEach(function(classId) {
+                if (!validClassIds[classId]) {
+                    delete store[classId];
+                    repaired = true;
+                }
+            });
+        }
+        pruneClassBucket('enrolments');
+        pruneClassBucket('socialScores');
 
         return repaired;
     }
