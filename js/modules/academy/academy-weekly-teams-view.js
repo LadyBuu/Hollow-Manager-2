@@ -7,41 +7,85 @@
  * This module is responsible for:
  *   - Rendering the class + week selectors
  *   - Rendering the team list (left panel)
- *   - Rendering the team detail (right panel) with members and week summary
+ *   - Rendering the team detail (right panel) with members
  *   - Rendering an empty state when no class or team is selected
  *
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no domain logic
  *   - Does NOT fetch data. Does NOT call TeamQueries or AcademyQueries.
- *   - Receives a view model from AcademyView
+ *   - Receives a view model from AcademyAggregator.
  *   - Does NOT bind events. Rows emit data-* attributes that
  *     AcademyView's delegated container listeners resolve.
- *   - Uses DomUtils for escaping.
+ *   - Uses DomUtils for escaping (mandatory, no fallbacks).
  *   - Returns an HTML string.
+ *
+ * DUPLICATE MODULE WARNING:
+ *   A second file, js/modules/academy/academy-weekly-teams.js, also
+ *   claims window.AcademyWeeklyTeamsView. Only one can win — whichever
+ *   loads second is silently discarded. This file is the canonical
+ *   implementation and the other one is scheduled for deletion.
+ *
+ *   If both are still in index.html, remove the
+ *     <script src="...academy-weekly-teams.js"></script>
+ *   line. See the deletion note attached to this delivery.
+ *
+ * VIEW MODEL SOURCE:
+ *   The view model is produced by
+ *   AcademyAggregator.getWeeklyTeamsViewViewModel(classId, week, selectedTeamId).
+ *
+ *   Weekly Teams is ACADEMY-OWNED and WEEK-SCOPED. The team members
+ *   shown are the assignment for the selected week (from
+ *   academy.weeklyTeams), not the persistent Team entity's roster.
+ *   Persistent Team metadata (name, type, status) is still shown
+ *   because the team identity is shared across weeks.
+ *
+ *   Member status fields (joinPeriod, leavePeriod, activeAtPeriod,
+ *   deceased) are NOT part of the weekly assignment model. Every
+ *   member shown in a week's assignment is by definition active in
+ *   that week. The member rows therefore render name and role only.
+ *
+ *   If you need persistent-entity membership (join/leave periods,
+ *   historical rosters), that lives in the Teams tab, not here.
  *
  * INTERFACE:
  *   AcademyWeeklyTeamsView.renderHTML(viewModel) -> string
  *
- *   viewModel is the shape produced by
- *   AcademyView.renderWeeklyTeamsView():
+ *   viewModel:
  *     {
- *       classes:       [ { id, name } ],
- *       classId:       string | null,
- *       className:     string | null,
- *       week:          number,
- *       teams:         [ { id, name, type, typeLabel, periodLabel,
- *                          periodDisplay, memberCount, activeMemberCount,
- *                          status } ],
+ *       classes:        [ { id, name } ],
+ *       classId:        string | null,
+ *       className:      string | null,
+ *       week:           number,
+ *       teams:          [ <teamRowVM> ],
  *       selectedTeamId: string | null,
- *       selectedTeam:  { ...same shape..., members: [ { characterId, name,
- *                          status, age, deceased, role,
- *                          joinPeriod, leavePeriod, activeAtPeriod } ] } | null
+ *       selectedTeam:   <teamDetailVM> | null
+ *     }
+ *
+ *   teamRowVM:
+ *     {
+ *       id, name, type, typeLabel, periodLabel,
+ *       periodDisplay, memberCount, activeMemberCount, status
+ *     }
+ *
+ *   teamDetailVM:
+ *     {
+ *       id, name, type, typeLabel, periodLabel,
+ *       periodDisplay, status,
+ *       temporaryMission: string | null,
+ *       members: [ <memberVM> ],
+ *       activeMemberCount: number
+ *     }
+ *
+ *   memberVM:
+ *     {
+ *       characterId, name, status, age, deceased,
+ *       role, activeAtPeriod
  *     }
  *
  *   If classId is null, an empty state renders.
- *   If teams is empty, the list renders an "no teams" message.
+ *   If teams is empty, the list renders a "no teams" message.
  *
- * EVENTS EMITTED (via data-* attributes, for AcademyView to bind):
+ * EVENTS EMITTED (data-* attributes, for AcademyView to bind):
  *   - #academy-weekly-teams-class-select (change)
  *   - #academy-weekly-teams-week-input   (change)
  *   - .academy-weekly-team-row [data-team-id]
@@ -92,27 +136,15 @@
     }
 
     // ============================================================
-    // ESCAPING HELPERS
+    // ESCAPING HELPERS - Mandatory, no fallbacks
     // ============================================================
 
     function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
-        }
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value);
+        return DomUtils.escapeHtml(value);
     }
 
     function escapeAttribute(value) {
-        if (DomUtils && typeof DomUtils.escapeAttribute === 'function') {
-            return DomUtils.escapeAttribute(value);
-        }
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value);
+        return DomUtils.escapeAttribute(value);
     }
 
     // ============================================================
@@ -139,22 +171,22 @@
 
     function getTeamStatusBadgeClass(status) {
         switch (status) {
-            case 'active':    return 'academy-team-status-badge academy-team-status-active';
-            case 'inactive':  return 'academy-team-status-badge academy-team-status-inactive';
-            case 'deprecated':return 'academy-team-status-badge academy-team-status-deprecated';
-            default:          return 'academy-team-status-badge academy-team-status-unknown';
+            case 'active':     return 'academy-team-status-badge academy-team-status-active';
+            case 'inactive':   return 'academy-team-status-badge academy-team-status-inactive';
+            case 'deprecated': return 'academy-team-status-badge academy-team-status-deprecated';
+            default:           return 'academy-team-status-badge academy-team-status-unknown';
         }
     }
 
+    // Member status classes. The weekly-assignment VM does not carry
+    // join/leave periods; the member is either deceased or active
+    // for the week. There is no "former" state in this view.
     function getMemberStatusBadgeClass(member) {
         if (!member) {
             return 'academy-weekly-member-badge academy-weekly-member-unknown';
         }
         if (member.deceased) {
             return 'academy-weekly-member-badge academy-weekly-member-deceased';
-        }
-        if (!member.activeAtPeriod) {
-            return 'academy-weekly-member-badge academy-weekly-member-former';
         }
         return 'academy-weekly-member-badge academy-weekly-member-active';
     }
@@ -166,22 +198,20 @@
         if (member.deceased) {
             return 'Deceased';
         }
-        if (!member.activeAtPeriod) {
-            return 'Former';
-        }
         return 'Active';
+    }
+
+    function formatTeamStatus(status) {
+        if (!isNonEmptyString(status)) {
+            return 'Active';
+        }
+        return status.charAt(0).toUpperCase() + status.slice(1);
     }
 
     // ============================================================
     // RENDER - Top-level entry point
     // ============================================================
 
-    /**
-     * Render the weekly teams view.
-     *
-     * @param {object|null} viewModel - See INTERFACE above
-     * @returns {string} HTML string
-     */
     function renderHTML(viewModel) {
         if (!checkDependencies()) {
             return (
@@ -226,7 +256,7 @@
         html += '<div class="academy-weekly-teams-top-bar">';
 
         html += '<div class="academy-weekly-teams-top-left">';
-        html += '<label class="academy-top-label">Class:</label>';
+        html += '<label class="academy-top-label" for="academy-weekly-teams-class-select">Class:</label>';
         html += '<select id="academy-weekly-teams-class-select" class="academy-class-select">';
         html += '<option value="">Select a class...</option>';
 
@@ -245,7 +275,7 @@
         html += '</div>';
 
         html += '<div class="academy-weekly-teams-top-right">';
-        html += '<label class="academy-top-label">Week:</label>';
+        html += '<label class="academy-top-label" for="academy-weekly-teams-week-input">Week:</label>';
         html += '<input type="number" id="academy-weekly-teams-week-input" ' +
             'class="academy-week-input" ' +
             'value="' + escapeAttribute(String(week || 1)) + '" ' +
@@ -322,7 +352,7 @@
             html += '<span class="academy-weekly-team-period">' + escapeHtml(team.periodDisplay) + '</span>';
         }
         html += '<span class="' + statusBadgeClass + '">' +
-                    escapeHtml((team.status || 'active').charAt(0).toUpperCase() + (team.status || 'active').slice(1)) +
+                    escapeHtml(formatTeamStatus(team.status)) +
                 '</span>';
         html += '</div>';
 
@@ -349,7 +379,7 @@
         }
 
         html += renderDetailHeader(selected, vm.week);
-        html += renderDetailMembers(selected, vm.week);
+        html += renderDetailMembers(selected);
 
         html += '</div>';
         return html;
@@ -358,6 +388,7 @@
     function renderDetailHeader(team, week) {
         var typeBadgeClass = getTeamTypeBadgeClass(team.type);
         var statusBadgeClass = getTeamStatusBadgeClass(team.status);
+
         var activeCount = isFiniteNumber(team.activeMemberCount)
             ? team.activeMemberCount
             : (Array.isArray(team.members) ? team.members.length : 0);
@@ -373,7 +404,7 @@
                     escapeHtml(team.typeLabel || team.type || 'Team') +
                 '</span>';
         html += '<span class="' + statusBadgeClass + '">' +
-                    escapeHtml((team.status || 'active').charAt(0).toUpperCase() + (team.status || 'active').slice(1)) +
+                    escapeHtml(formatTeamStatus(team.status)) +
                 '</span>';
         html += '</div>';
 
@@ -401,7 +432,7 @@
         }
 
         html += '<span class="academy-weekly-team-detail-meta-item">' +
-                    '<span class="meta-label">Active Members:</span> ' +
+                    '<span class="meta-label">Members:</span> ' +
                     escapeHtml(String(activeCount)) +
                 '</span>';
 
@@ -417,7 +448,7 @@
         return html;
     }
 
-    function renderDetailMembers(team, week) {
+    function renderDetailMembers(team) {
         var members = Array.isArray(team.members) ? team.members : [];
 
         var html = '';
@@ -428,7 +459,7 @@
         html += '</div>';
 
         if (members.length === 0) {
-            html += '<p class="empty-state small">No members recorded for this team.</p>';
+            html += '<p class="empty-state small">No members assigned to this team this week.</p>';
             html += '</div>';
             return html;
         }
@@ -455,9 +486,6 @@
         if (member.deceased) {
             rowClass += ' deceased';
         }
-        if (!member.activeAtPeriod) {
-            rowClass += ' former';
-        }
 
         var secondaryParts = [];
         if (isNonEmptyString(member.role) && member.role !== 'Member') {
@@ -469,10 +497,6 @@
         if (isNonEmptyString(member.age)) {
             secondaryParts.push('Age ' + escapeHtml(member.age));
         }
-
-        var joinStr = isNonEmptyString(member.joinPeriod) ? escapeHtml(member.joinPeriod) : '?';
-        var leaveStr = isNonEmptyString(member.leavePeriod) ? ' \u2192 ' + escapeHtml(member.leavePeriod) : '';
-        var periodLine = 'Wk ' + joinStr + leaveStr;
 
         var html = '';
         html += '<div class="' + rowClass + '" data-character-id="' + escapeAttribute(member.characterId) + '">';
@@ -489,8 +513,6 @@
                         secondaryParts.join(' &middot; ') +
                     '</div>';
         }
-
-        html += '<div class="academy-weekly-team-member-period">' + periodLine + '</div>';
 
         html += '</div>';
         return html;
