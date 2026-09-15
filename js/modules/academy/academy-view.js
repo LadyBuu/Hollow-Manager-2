@@ -10,12 +10,15 @@
  *     Disciplines, Locations
  *   - Delegate rendering to the per-view renderer modules
  *   - Delegate domain reads to AcademyAggregator / AcademyTournamentAggregator
+ *     / AcademyCharacterDetailAggregator
  *   - Delegate mutations to the appropriate domain module
  *   - Own Academy-local UI state that is not part of AcademyUI's
  *     typed store (per-view selected IDs, discipline draft, active
  *     character tab)
  *   - Bind container-level event delegation for all views
  *   - Mount / unmount the inline grades editor after each render
+ *   - Handle exam pair-picker DOM mutations (exam-pair-add /
+ *     exam-pair-remove)
  *
  * NOT RESPONSIBILITIES:
  *   - Domain reads. Those happen in the aggregators.
@@ -36,6 +39,9 @@
  *   location-, ranking-, weekly-teams-, exam-) so dispatch is
  *   deterministic and does not rely on handler chaining.
  *
+ *   exam-pair-add and exam-pair-remove are handled inline in
+ *   handleExamAction. They mutate modal DOM, not domain state.
+ *
  * MODULE-LOCAL UI STATE (NOT in AcademyUI):
  *   _selectedExamClassId
  *   _selectedRankingClassId
@@ -50,11 +56,12 @@
  *   - AcademyUI
  *   - AcademyAggregator
  *   - AcademyTournamentAggregator
+ *   - AcademyCharacterDetailAggregator
  *   - DomUtils
  *   - CalendarConstants
  *
  * DEPENDENCIES (OPTIONAL, feature-scoped):
- *   - CharacterQueries (only for the character edit event payload)
+ *   - CharacterQueries (character identity in a few confirmation prompts)
  *   - AcademyDisciplines
  *   - AcademyEnrolments
  *   - AcademyGroups
@@ -75,12 +82,13 @@
     }
 
     // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (throws if missing)
+    // DEPENDENCY IMPORTS - MANDATORY
     // ============================================================
 
     var AcademyUI = window.AcademyUI;
     var AcademyAggregator = window.AcademyAggregator;
     var AcademyTournamentAggregator = window.AcademyTournamentAggregator;
+    var AcademyCharacterDetailAggregator = window.AcademyCharacterDetailAggregator;
     var DomUtils = window.DomUtils;
     var CalendarConstants = window.CalendarConstants;
 
@@ -139,6 +147,11 @@
     if (!AcademyTournamentAggregator ||
         typeof AcademyTournamentAggregator.getExamViewModel !== 'function') {
         _missing.push('AcademyTournamentAggregator.getExamViewModel');
+    }
+
+    if (!AcademyCharacterDetailAggregator ||
+        typeof AcademyCharacterDetailAggregator.getViewModel !== 'function') {
+        _missing.push('AcademyCharacterDetailAggregator.getViewModel');
     }
 
     if (!DomUtils ||
@@ -223,39 +236,27 @@
     // MODULE STATE
     // ============================================================
 
-    // Character detail panel tab. Reset when the selected character
-    // changes (see resetCharacterTabIfChanged).
     var _activeCharacterTab = 'main';
     var _lastCharacterIdForTab = null;
 
-    // Per-view class/selection state. Not part of AcademyUI because
-    // these are view-local; the cross-view selection (People class +
-    // character) lives in AcademyUI.
     var _selectedExamClassId = null;
     var _selectedRankingClassId = null;
     var _selectedWeeklyTeamsClassId = null;
     var _selectedWeeklyTeamId = null;
     var _selectedLocationId = null;
 
-    // Discipline editor draft. The editor is inline; the draft is
-    // owned by this view and submitted to AcademyDisciplines.
     var _selectedDisciplineId = null;
     var _disciplineDraft = null;
     var _disciplineDraftMode = 'empty';
     var _disciplineDraftErrors = {};
 
-    // Container and listener bookkeeping.
     var _boundContainer = null;
     var _boundHandlers = null;
 
-    // Debounce timers. Cancelled on unbind.
     var _searchTimer = null;
     var _disciplineSearchTimer = null;
     var _locationSearchTimer = null;
 
-    // Academy-UI-local discipline and location filter state. The
-    // cross-view People filter lives in AcademyUI; these two filter
-    // sets are local because AcademyUI does not model them.
     var _disciplineFilters = { type: 'all', search: '' };
     var _locationFilters = { type: 'all', search: '' };
 
@@ -333,7 +334,8 @@
             var v = VIEWS[i];
             var isActive = v.id === activeView;
             html += '<button type="button" ' +
-                        'class="academy-view-btn' + (isActive ? ' active' : '') + '" ' +
+                        'class="academy-view-btn' +
+                            (isActive ? ' active' : '') + '" ' +
                         'data-view="' + escapeAttribute(v.id) + '">' +
                         escapeHtml(v.label) +
                     '</button>';
@@ -363,7 +365,9 @@
 
         if (!classId) {
             html += '<div class="academy-body academy-body-empty">' +
-                        '<p class="empty-state">Select a class to view its members.</p>' +
+                        '<p class="empty-state">' +
+                            'Select a class to view its members.' +
+                        '</p>' +
                     '</div>';
             return html;
         }
@@ -376,16 +380,14 @@
             return html;
         }
 
-        html += '<div class="academy-body academy-people-layout">';
+        var peopleVM = AcademyAggregator.getPeopleViewModel(classId, {
+            filters: AcademyUI.getPeopleFilter(),
+            selectedCharacterId: charId
+        });
 
-        // Left: filters + character list, built from the aggregator's
-        // People VM. This VM carries the class-list, the class id and
-        // name, the filter values that were applied, the filtered
-        // people, and total / filtered counts.
-        var peopleVM = buildPeopleViewModel(classId, charId);
+        html += '<div class="academy-body academy-people-layout">';
         html += renderPeopleSidebar(peopleVM);
 
-        // Right: class detail (no character selected) or character detail.
         html += '<div class="academy-people-detail" id="academy-people-detail">';
         if (charId) {
             resetCharacterTabIfChanged(charId);
@@ -401,103 +403,6 @@
         return html;
     }
 
-    /**
-     * Build the People VM. Uses the AcademyAggregator roster projection
-     * for the class and applies the People filter from AcademyUI.
-     *
-     * The roster is AcademyAggregator.getClassStudentsViewModel(classId).
-     * This returns students only (no instructor). The instructor is
-     * stitched in via the class VM's instructorId when it should appear
-     * in the roster list.
-     *
-     * After this file is fully split, this logic moves into
-     * AcademyAggregator.getPeopleViewModel.
-     */
-    function buildPeopleViewModel(classId, selectedCharacterId) {
-        var classVM = AcademyAggregator.getClassViewModel(classId);
-        var classList = AcademyAggregator.getClassListViewModel() || [];
-        var students = AcademyAggregator.getClassStudentsViewModel(classId) || [];
-
-        // Stitch the instructor into the roster for display. The
-        // instructor is a member of the class but is not in
-        // character.classIds, so the roster projection excludes them.
-        if (classVM && classVM.instructorId) {
-            var alreadyPresent = false;
-            for (var i = 0; i < students.length; i++) {
-                if (String(students[i].id) === String(classVM.instructorId)) {
-                    alreadyPresent = true;
-                    break;
-                }
-            }
-            if (!alreadyPresent) {
-                var instructor = null;
-                var CQ = getCharacterQueries();
-                if (CQ && typeof CQ.getCharacterById === 'function') {
-                    instructor = CQ.getCharacterById(classVM.instructorId);
-                }
-                if (instructor) {
-                    students = students.concat([{
-                        id: instructor.id,
-                        name: CQ.getDisplayName(instructor),
-                        status: CQ.getCurrentStatus(instructor),
-                        age: CQ.getCharacterAge(instructor),
-                        deceased: instructor.deceased === true,
-                        role: 'instructor'
-                    }]);
-                }
-            }
-        }
-
-        var filters = AcademyUI.getPeopleFilter();
-        var search = (filters.search || '').toLowerCase().trim();
-        var roleFilter = filters.role || 'all';
-        var statusFilter = filters.status || 'active';
-
-        var filtered = students.filter(function(person) {
-            if (search && person.name.toLowerCase().indexOf(search) === -1) {
-                return false;
-            }
-            if (roleFilter !== 'all' && person.role !== roleFilter) {
-                return false;
-            }
-            if (statusFilter !== 'all') {
-                var isDeceased = person.deceased === true;
-                if (statusFilter === 'deceased' && !isDeceased) { return false; }
-                if (statusFilter === 'active' && isDeceased) { return false; }
-            }
-            return true;
-        });
-
-        filtered.sort(function(a, b) {
-            if (a.role !== b.role) {
-                return a.role === 'student' ? -1 : 1;
-            }
-            return a.name.localeCompare(b.name);
-        });
-
-        var people = filtered.map(function(person) {
-            return {
-                id: person.id,
-                name: person.name,
-                status: person.status,
-                role: person.role,
-                deceased: person.deceased === true,
-                isSelected: selectedCharacterId !== null &&
-                    String(person.id) === String(selectedCharacterId)
-            };
-        });
-
-        return {
-            classList: classList,
-            classId: classId,
-            className: classVM ? classVM.name : null,
-            filters: filters,
-            people: people,
-            totalCount: students.length,
-            filteredCount: people.length
-        };
-    }
-
     function renderPeopleTopBar(selectedClassId) {
         var week = AcademyUI.getDisplayWeek();
         var classes = AcademyAggregator.getClassListViewModel() || [];
@@ -506,25 +411,30 @@
         html += '<div class="academy-top-bar">';
 
         html += '<div class="academy-top-left">';
-        html += '<label class="academy-top-label" for="academy-class-select">Class:</label>';
+        html += '<label class="academy-top-label" ' +
+                    'for="academy-class-select">Class:</label>';
         html += '<select id="academy-class-select" class="academy-class-select">';
         html += '<option value="">Select a class...</option>';
         for (var i = 0; i < classes.length; i++) {
             var cls = classes[i];
             if (!cls || !cls.id) { continue; }
-            var isSelected = selectedClassId && String(selectedClassId) === String(cls.id);
+            var isSelected = selectedClassId &&
+                String(selectedClassId) === String(cls.id);
             html += '<option value="' + escapeAttribute(cls.id) + '"' +
                         (isSelected ? ' selected' : '') + '>' +
                         escapeHtml(cls.name) +
                     '</option>';
         }
         html += '</select>';
-        html += '<button type="button" id="academy-add-class-btn" class="primary small">+ Add Class</button>';
+        html += '<button type="button" id="academy-add-class-btn" ' +
+                    'class="primary small">+ Add Class</button>';
         html += '</div>';
 
         html += '<div class="academy-top-right">';
-        html += '<label class="academy-top-label" for="academy-week-input">Week:</label>';
-        html += '<input type="number" id="academy-week-input" class="academy-week-input" ' +
+        html += '<label class="academy-top-label" ' +
+                    'for="academy-week-input">Week:</label>';
+        html += '<input type="number" id="academy-week-input" ' +
+                    'class="academy-week-input" ' +
                     'value="' + escapeAttribute(String(week)) + '" ' +
                     'min="' + MIN_WEEK + '" max="' + MAX_WEEK + '">';
         html += '</div>';
@@ -545,35 +455,47 @@
                     'placeholder="Search..." ' +
                     'value="' + escapeAttribute(filters.search || '') + '">';
 
-        html += '<label class="academy-filter-label" for="academy-people-role">Role:</label>';
+        html += '<label class="academy-filter-label" ' +
+                    'for="academy-people-role">Role:</label>';
         html += '<select id="academy-people-role" class="academy-people-role">';
         html += '<option value="all"' +
-                    (filters.role === 'all' ? ' selected' : '') + '>All</option>';
+                    (filters.role === 'all' ? ' selected' : '') +
+                    '>All</option>';
         html += '<option value="student"' +
-                    (filters.role === 'student' ? ' selected' : '') + '>Students</option>';
+                    (filters.role === 'student' ? ' selected' : '') +
+                    '>Students</option>';
         html += '<option value="instructor"' +
-                    (filters.role === 'instructor' ? ' selected' : '') + '>Instructors</option>';
+                    (filters.role === 'instructor' ? ' selected' : '') +
+                    '>Instructors</option>';
         html += '</select>';
 
-        html += '<label class="academy-filter-label" for="academy-people-status">Status:</label>';
+        html += '<label class="academy-filter-label" ' +
+                    'for="academy-people-status">Status:</label>';
         html += '<select id="academy-people-status" class="academy-people-status">';
         html += '<option value="active"' +
-                    (filters.status === 'active' ? ' selected' : '') + '>Active</option>';
+                    (filters.status === 'active' ? ' selected' : '') +
+                    '>Active</option>';
         html += '<option value="eliminated"' +
-                    (filters.status === 'eliminated' ? ' selected' : '') + '>Eliminated</option>';
+                    (filters.status === 'eliminated' ? ' selected' : '') +
+                    '>Eliminated</option>';
         html += '<option value="deceased"' +
-                    (filters.status === 'deceased' ? ' selected' : '') + '>Deceased</option>';
+                    (filters.status === 'deceased' ? ' selected' : '') +
+                    '>Deceased</option>';
         html += '<option value="all"' +
-                    (filters.status === 'all' ? ' selected' : '') + '>All</option>';
+                    (filters.status === 'all' ? ' selected' : '') +
+                    '>All</option>';
         html += '</select>';
 
         html += '</div>';
 
-        html += '<div class="academy-character-list" id="academy-character-list">';
+        html += '<div class="academy-character-list" ' +
+                    'id="academy-character-list">';
 
         var people = vm.people || [];
         if (people.length === 0) {
-            html += '<p class="empty-state small">No characters match the current filters.</p>';
+            html += '<p class="empty-state small">' +
+                        'No characters match the current filters.' +
+                    '</p>';
         } else {
             for (var i = 0; i < people.length; i++) {
                 html += renderPersonRow(people[i]);
@@ -605,7 +527,9 @@
                     escapeHtml(person.name || 'Unknown') +
                 '</span>';
         if (person.role === 'instructor') {
-            html += '<span class="academy-character-role-badge">Instructor</span>';
+            html += '<span class="academy-character-role-badge">' +
+                        'Instructor' +
+                    '</span>';
         }
         html += '</div>';
 
@@ -636,270 +560,18 @@
         );
     }
 
-    /**
-     * Build the character detail VM. Local for now; will be replaced
-     * by AcademyCharacterDetailAggregator.getViewModel when that
-     * module lands. The shape is identical to the aggregator's future
-     * output.
-     */
-    function buildCharacterDetailViewModel(classVM, charId) {
-        var CQ = getCharacterQueries();
-        if (!CQ || typeof CQ.getCharacterById !== 'function') {
-            return null;
-        }
-
-        var char = CQ.getCharacterById(charId);
-        if (!char) {
-            return null;
-        }
-
+    function renderCharacterDetailContent(classVM, charId) {
         var classId = classVM ? classVM.id : null;
         var week = AcademyUI.getDisplayWeek();
         var mode = AcademyUI.getCharacterMode(charId);
 
-        var header = {
-            id: char.id,
-            name: CQ.getDisplayName(char),
-            status: CQ.getCurrentStatus(char),
-            age: CQ.getCharacterAge(char),
-            deceased: char.deceased === true
-        };
-
-        var classContext = classVM ? { id: classVM.id, name: classVM.name } : null;
-
-        var classes = AcademyAggregator.getClassListViewModel() || [];
-        var characterClasses = [];
-        if (Array.isArray(char.classIds)) {
-            for (var i = 0; i < char.classIds.length; i++) {
-                var cid = String(char.classIds[i]);
-                for (var j = 0; j < classes.length; j++) {
-                    if (String(classes[j].id) === cid) {
-                        characterClasses.push({
-                            id: classes[j].id,
-                            name: classes[j].name
-                        });
-                        break;
-                    }
-                }
-            }
-        }
-
-        var tabs = mode === 'instructor'
-            ? [
-                { id: 'main',        label: 'Main' },
-                { id: 'disciplines', label: 'Disciplines' },
-                { id: 'schedule',    label: 'Schedule' },
-                { id: 'autoGroups',  label: 'Auto-Groups' }
-            ]
-            : [
-                { id: 'main',        label: 'Main' },
-                { id: 'disciplines', label: 'Disciplines' },
-                { id: 'grades',      label: 'Grades' },
-                { id: 'schedule',    label: 'Schedule' },
-                { id: 'teams',       label: 'Teams' }
-            ];
-
-        // Validate the requested active tab against the mode.
-        var validTabIds = tabs.map(function(t) { return t.id; });
-        var activeTab = validTabIds.indexOf(_activeCharacterTab) !== -1
-            ? _activeCharacterTab
-            : 'main';
-
-        // Student-side disciplines from enrollment (class-scoped).
-        var studentDisciplines = null;
-        if (mode === 'student' && classId) {
-            var AE = getAcademyEnrolments();
-            if (AE && typeof AE.getStudentDisciplines === 'function') {
-                var ids = AE.getStudentDisciplines(charId, classId) || [];
-                studentDisciplines = [];
-                var AD = getAcademyDisciplines();
-                for (var k = 0; k < ids.length; k++) {
-                    var d = null;
-                    if (AD && typeof AD.getDiscipline === 'function') {
-                        d = AD.getDiscipline(ids[k]);
-                    }
-                    studentDisciplines.push({
-                        id: ids[k],
-                        name: d ? d.name : 'Unknown Discipline'
-                    });
-                }
-            }
-        }
-
-        // Student-side grades from AcademyGrades via class-scoped read.
-        var studentGrades = null;
-        if (mode === 'student' && classId) {
-            var AG = window.AcademyGrades;
-            if (AG && typeof AG.getStudentClassGrades === 'function') {
-                var rawGrades = AG.getStudentClassGrades(charId, classId) || [];
-                var summary = AG.calculateSummary ? AG.calculateSummary(rawGrades) : null;
-                studentGrades = {
-                    average: summary && isFinite(summary.average) ? summary.average : null,
-                    count: summary && isFinite(summary.count) ? summary.count : 0,
-                    hasAny: summary && summary.count > 0
-                };
-            }
-        }
-
-        // Instructor-side disciplines read from discipline.instructorIds.
-        var instructorDisciplines = null;
-        if (mode === 'instructor') {
-            var AD2 = getAcademyDisciplines();
-            if (AD2 && typeof AD2.getDisciplinesByInstructor === 'function') {
-                var list = AD2.getDisciplinesByInstructor(charId) || [];
-                instructorDisciplines = [];
-                for (var m = 0; m < list.length; m++) {
-                    instructorDisciplines.push({
-                        id: list[m].id,
-                        name: list[m].name,
-                        type: list[m].type || ''
-                    });
-                }
-            }
-        }
-
-        // Instructor-side auto-groups.
-        var instructorAutoGroups = null;
-        if (mode === 'instructor') {
-            var AG2 = getAcademyGroups();
-            if (AG2 && typeof AG2.getGroupsByInstructor === 'function') {
-                var groupsMap = AG2.getGroupsByInstructor(charId) || {};
-                instructorAutoGroups = [];
-                var groupKeys = Object.keys(groupsMap);
-                for (var g = 0; g < groupKeys.length; g++) {
-                    var key = groupKeys[g];
-                    var group = groupsMap[key];
-                    if (!group) { continue; }
-                    var students = [];
-                    if (Array.isArray(group.students)) {
-                        for (var s = 0; s < group.students.length; s++) {
-                            var sCQ = getCharacterQueries();
-                            var sChar = sCQ ? sCQ.getCharacterById(group.students[s]) : null;
-                            if (sChar) {
-                                students.push({
-                                    id: sChar.id,
-                                    name: sCQ.getDisplayName(sChar),
-                                    status: sCQ.getCurrentStatus(sChar)
-                                });
-                            }
-                        }
-                    }
-                    var disciplineName = 'Unknown';
-                    var AD3 = getAcademyDisciplines();
-                    if (AD3 && typeof AD3.getDiscipline === 'function') {
-                        var disc = AD3.getDiscipline(group.disciplineId);
-                        if (disc) { disciplineName = disc.name; }
-                    }
-                    instructorAutoGroups.push({
-                        key: key,
-                        disciplineId: group.disciplineId || '',
-                        disciplineName: disciplineName,
-                        studentCount: students.length,
-                        students: students
-                    });
-                }
-            }
-        }
-
-        // Elimination state from character.eliminations.
-        var elimination = null;
-        if (week !== null) {
-            var eliminationWeek = null;
-            var reason = '';
-            if (Array.isArray(char.eliminations)) {
-                for (var e = 0; e < char.eliminations.length; e++) {
-                    var rec = char.eliminations[e];
-                    if (!rec) { continue; }
-                    var w = parseInt(rec.week, 10);
-                    if (isNaN(w)) { continue; }
-                    if (eliminationWeek === null || w < eliminationWeek) {
-                        eliminationWeek = w;
-                        reason = rec.reason || '';
-                    }
-                }
-            }
-            if (eliminationWeek !== null && week >= eliminationWeek) {
-                elimination = {
-                    week: eliminationWeek,
-                    reason: reason,
-                    state: week === eliminationWeek ? 'current' : 'past'
-                };
-            }
-        }
-
-        // Performance blend. Reads through AcademyPerformance when
-        // present; null otherwise.
-        var performance = null;
-        if (mode === 'student' && classId && week !== null) {
-            var AP = window.AcademyPerformance;
-            if (AP && typeof AP.calculateOverallScore === 'function') {
-                var academic = null;
-                var social = null;
-                var overall = null;
-                if (typeof AP.calculateAcademicAverage === 'function') {
-                    var aa = AP.calculateAcademicAverage(charId, classId, week);
-                    if (aa && isFinite(aa.average)) { academic = aa.average; }
-                }
-                var ASS = window.AcademySocialScore;
-                if (ASS && typeof ASS.getSocialScore === 'function') {
-                    var sScore = ASS.getSocialScore(charId, classId, week);
-                    if (isFinite(sScore)) { social = sScore; }
-                }
-                var oScore = AP.calculateOverallScore(charId, classId, week);
-                if (isFinite(oScore)) { overall = oScore; }
-                performance = {
-                    week: week,
-                    academicAverage: academic,
-                    socialScore: social,
-                    overallScore: overall
-                };
-            }
-        }
-
-        // Teams (persistent, via TeamQueries). Only for student mode.
-        var studentTeams = null;
-        if (mode === 'student' && week !== null) {
-            var TQ = window.TeamQueries;
-            if (TQ && typeof TQ.getTeamsForCharacter === 'function') {
-                var rawTeams = TQ.getTeamsForCharacter(charId, week) || [];
-                studentTeams = [];
-                for (var t = 0; t < rawTeams.length; t++) {
-                    studentTeams.push({
-                        id: rawTeams[t].id,
-                        name: rawTeams[t].name || 'Unnamed Team',
-                        typeLabel: rawTeams[t].type || 'team'
-                    });
-                }
-            }
-        }
-
-        return {
-            character: header,
+        var vm = AcademyCharacterDetailAggregator.getViewModel(charId, {
+            classId: classId,
+            week: week,
             mode: mode,
-            activeTab: activeTab,
-            tabs: tabs,
-            classContext: classContext,
-            classes: characterClasses,
-            elimination: elimination,
-            performance: performance,
-            student: mode === 'student'
-                ? {
-                    disciplines: studentDisciplines,
-                    grades: studentGrades,
-                    teams: studentTeams
-                }
-                : null,
-            instructor: mode === 'instructor'
-                ? {
-                    disciplines: instructorDisciplines,
-                    autoGroups: instructorAutoGroups
-                }
-                : null
-        };
-    }
+            tab: _activeCharacterTab
+        });
 
-    function renderCharacterDetailContent(classVM, charId) {
-        var vm = buildCharacterDetailViewModel(classVM, charId);
         if (!vm) {
             return '<p class="empty-state">Character not found.</p>';
         }
@@ -909,14 +581,18 @@
             try {
                 return CharacterDetail.renderHTML(vm);
             } catch (e) {
-                console.warn('[AcademyView] AcademyCharacterDetail.renderHTML failed:', e);
+                console.warn(
+                    '[AcademyView] AcademyCharacterDetail.renderHTML failed:', e
+                );
             }
         }
 
         return (
             '<div class="academy-detail-placeholder">' +
                 '<h3>' + escapeHtml(vm.character.name) + '</h3>' +
-                '<p class="empty-state small">Character detail view not available.</p>' +
+                '<p class="empty-state small">' +
+                    'Character detail view not available.' +
+                '</p>' +
             '</div>'
         );
     }
@@ -945,7 +621,6 @@
             week
         );
 
-        // Sync back if the aggregator resolved a different class.
         _selectedExamClassId = vm.classId;
 
         return Renderer.renderHTML(vm);
@@ -1033,96 +708,15 @@
         });
     }
 
-    /**
-     * Build the discipline editor VM. Local for now; will be replaced
-     * by AcademyAggregator.getDisciplineEditorViewModel when that lands.
-     * The shape matches that future output.
-     */
     function buildDisciplineEditorVM() {
         if (_disciplineDraftMode === 'empty' || !_disciplineDraft) {
             return null;
         }
-
-        var draft = _disciplineDraft;
-        var isNew = _disciplineDraftMode === 'create';
-
-        var availableInstructors = [];
-        var CQ = getCharacterQueries();
-        if (CQ && typeof CQ.getInstructors === 'function') {
-            var instructors = CQ.getInstructors() || [];
-            for (var i = 0; i < instructors.length; i++) {
-                availableInstructors.push({
-                    id: instructors[i].id,
-                    name: CQ.getDisplayName(instructors[i])
-                });
-            }
-        }
-
-        var schemePreview = '';
-        var GradeSchemes = window.AcademyGradeSchemes;
-        if (GradeSchemes && typeof GradeSchemes.getRangeLabel === 'function') {
-            schemePreview = GradeSchemes.getRangeLabel(draft.gradeScheme) || '';
-        }
-
-        var schemePresetId = draft.gradeScheme && draft.gradeScheme.id
-            ? draft.gradeScheme.id
-            : 'numeric';
-
-        var schemePresets = [];
-        if (GradeSchemes && typeof GradeSchemes.getPresets === 'function') {
-            var presets = GradeSchemes.getPresets() || [];
-            for (var p = 0; p < presets.length; p++) {
-                schemePresets.push({ id: presets[p].id, label: presets[p].label });
-            }
-        }
-
-        var assessmentTypes = [];
-        var AD = getAcademyDisciplines();
-        if (AD && typeof AD.getValidAssessmentTypes === 'function') {
-            assessmentTypes = AD.getValidAssessmentTypes() || [];
-        }
-
-        var assessmentWeights = draft.assessmentWeights && typeof draft.assessmentWeights === 'object'
-            ? draft.assessmentWeights
-            : {};
-
-        var defaultAssessmentWeights = {};
-        if (AD && typeof AD.getDefaultAssessmentWeights === 'function') {
-            defaultAssessmentWeights = AD.getDefaultAssessmentWeights() || {};
-        }
-
-        var instructorNames = [];
-        var selectedIds = Array.isArray(draft.instructorIds) ? draft.instructorIds : [];
-        for (var n = 0; n < selectedIds.length; n++) {
-            var sChar = CQ ? CQ.getCharacterById(selectedIds[n]) : null;
-            instructorNames.push(sChar ? CQ.getDisplayName(sChar) : 'Unknown');
-        }
-
-        return {
-            id: isNew ? null : draft.id,
-            name: draft.name || '',
-            type: draft.type || 'mandatory',
-            startWeek: draft.startWeek,
-            endWeek: draft.endWeek,
-            weeklyHours: draft.weeklyHours,
-            weight: draft.weight,
-            instructorIds: selectedIds,
-            instructorNames: instructorNames,
-            availableInstructors: availableInstructors,
-            gradeScheme: draft.gradeScheme || null,
-            schemePresetId: schemePresetId,
-            schemePreview: schemePreview,
-            schemePresets: schemePresets,
-            assessmentTypes: assessmentTypes,
-            assessmentWeights: assessmentWeights,
-            defaultAssessmentWeights: defaultAssessmentWeights,
-            weekBounds: { min: MIN_WEEK, max: MAX_WEEK },
-            weeklyHoursBounds: { min: 0.5, max: 40, step: 0.5 },
-            weightBounds: { min: 0.1, max: 10, step: 0.1 },
-            bandPercentBounds: { min: 0, max: 100, step: 1 },
-            fieldErrors: _disciplineDraftErrors || {},
-            isNew: isNew
-        };
+        return AcademyAggregator.getDisciplineEditorViewModel({
+            draft: _disciplineDraft,
+            isNew: _disciplineDraftMode === 'create',
+            errors: _disciplineDraftErrors
+        });
     }
 
     function initializeDraftFromDiscipline(disciplineId) {
@@ -1151,11 +745,19 @@
             id: record.id,
             name: record.name || '',
             type: record.type || 'mandatory',
-            startWeek: typeof record.startWeek === 'number' ? record.startWeek : MIN_WEEK,
-            endWeek: typeof record.endWeek === 'number' ? record.endWeek : MAX_WEEK,
-            weeklyHours: typeof record.weeklyHours === 'number' ? record.weeklyHours : 1,
+            startWeek: typeof record.startWeek === 'number'
+                ? record.startWeek
+                : MIN_WEEK,
+            endWeek: typeof record.endWeek === 'number'
+                ? record.endWeek
+                : MAX_WEEK,
+            weeklyHours: typeof record.weeklyHours === 'number'
+                ? record.weeklyHours
+                : 1,
             weight: typeof record.weight === 'number' ? record.weight : 1,
-            instructorIds: Array.isArray(record.instructorIds) ? record.instructorIds.slice() : [],
+            instructorIds: Array.isArray(record.instructorIds)
+                ? record.instructorIds.slice()
+                : [],
             gradeScheme: GradeSchemes.normalizeScheme(record.gradeScheme),
             assessmentWeights: weights || {}
         };
@@ -1259,8 +861,14 @@
 
     function cancelAllDebounceTimers() {
         if (_searchTimer) { clearTimeout(_searchTimer); _searchTimer = null; }
-        if (_disciplineSearchTimer) { clearTimeout(_disciplineSearchTimer); _disciplineSearchTimer = null; }
-        if (_locationSearchTimer) { clearTimeout(_locationSearchTimer); _locationSearchTimer = null; }
+        if (_disciplineSearchTimer) {
+            clearTimeout(_disciplineSearchTimer);
+            _disciplineSearchTimer = null;
+        }
+        if (_locationSearchTimer) {
+            clearTimeout(_locationSearchTimer);
+            _locationSearchTimer = null;
+        }
     }
 
     function wireCRUDModalsCallbacks() {
@@ -1281,7 +889,6 @@
     function onDelegatedClick(e) {
         var target = e.target;
 
-        // View switcher
         var viewBtn = target.closest('.academy-view-btn');
         if (viewBtn) {
             e.preventDefault();
@@ -1289,22 +896,21 @@
             return;
         }
 
-        // Character select / deselect
-        var charRow = target.closest('.academy-character-row, .academy-student-row');
+        var charRow = target.closest(
+            '.academy-character-row, .academy-student-row'
+        );
         if (charRow) {
             e.preventDefault();
             handleCharacterSelect(charRow.dataset.characterId);
             return;
         }
 
-        // Top-bar add class
         if (target.closest('#academy-add-class-btn')) {
             e.preventDefault();
             handleAddClass();
             return;
         }
 
-        // Discipline row selection (in Discipline view)
         var discRow = target.closest('.academy-discipline-row');
         if (discRow) {
             e.preventDefault();
@@ -1315,34 +921,36 @@
             return;
         }
 
-        // Location row selection
         var locRow = target.closest('.academy-location-row');
         if (locRow) {
             e.preventDefault();
             if (locRow.dataset.locationId) {
-                _selectedLocationId = (String(_selectedLocationId) === String(locRow.dataset.locationId))
-                    ? null
-                    : locRow.dataset.locationId;
+                _selectedLocationId =
+                    (String(_selectedLocationId) === String(locRow.dataset.locationId))
+                        ? null
+                        : locRow.dataset.locationId;
                 refreshView();
             }
             return;
         }
 
-        // Weekly teams row selection
         var weeklyTeamRow = target.closest('.academy-weekly-team-row');
         if (weeklyTeamRow) {
             e.preventDefault();
             if (weeklyTeamRow.dataset.teamId) {
-                _selectedWeeklyTeamId = (String(_selectedWeeklyTeamId) === String(weeklyTeamRow.dataset.teamId))
-                    ? null
-                    : weeklyTeamRow.dataset.teamId;
+                _selectedWeeklyTeamId =
+                    (String(_selectedWeeklyTeamId) ===
+                        String(weeklyTeamRow.dataset.teamId))
+                        ? null
+                        : weeklyTeamRow.dataset.teamId;
                 refreshView();
             }
             return;
         }
 
-        // Weekly teams member → jump to People
-        var weeklyMemberRow = target.closest('.academy-weekly-team-member-row');
+        var weeklyMemberRow = target.closest(
+            '.academy-weekly-team-member-row'
+        );
         if (weeklyMemberRow) {
             e.preventDefault();
             var memberId = weeklyMemberRow.dataset.characterId;
@@ -1357,13 +965,13 @@
             return;
         }
 
-        // Ranking row → jump to People
         var rankingRow = target.closest('.academy-ranking-row');
         if (rankingRow) {
             e.preventDefault();
             var rankingCharId = rankingRow.dataset.characterId;
             if (rankingCharId) {
-                var rankingClassId = _selectedRankingClassId || AcademyUI.getSelectedClassId();
+                var rankingClassId = _selectedRankingClassId ||
+                    AcademyUI.getSelectedClassId();
                 if (rankingClassId) {
                     AcademyUI.selectClass(rankingClassId);
                 }
@@ -1374,7 +982,6 @@
             return;
         }
 
-        // Character detail tab switch
         var tabBtn = target.closest('.academy-character-tab-btn');
         if (tabBtn) {
             e.preventDefault();
@@ -1385,7 +992,6 @@
             return;
         }
 
-        // Character detail action buttons
         var actionEl = target.closest('[data-action]');
         if (actionEl) {
             var action = actionEl.dataset.action;
@@ -1447,13 +1053,19 @@
                 handleEnrollDiscipline(el.dataset.characterId);
                 return;
             case 'leave-discipline':
-                handleLeaveDiscipline(el.dataset.characterId, el.dataset.disciplineId);
+                handleLeaveDiscipline(
+                    el.dataset.characterId,
+                    el.dataset.disciplineId
+                );
                 return;
             case 'character-add-group-student':
                 handleAddGroupStudent(el.dataset.groupKey);
                 return;
             case 'character-remove-group-student':
-                handleRemoveGroupStudent(el.dataset.groupKey, el.dataset.characterId);
+                handleRemoveGroupStudent(
+                    el.dataset.groupKey,
+                    el.dataset.characterId
+                );
                 return;
             default:
                 return;
@@ -1464,27 +1076,39 @@
         var Events = getAcademyTournamentEvents();
         if (!Events) { return; }
 
-        // The exam id travels on the action element. No direct
-        // TournamentQueries read from this view.
+        // exam-pair-add and exam-pair-remove do not go through the
+        // events module — they mutate modal DOM state, not domain state.
+        if (action === 'exam-pair-add') {
+            handlePairAdd(el);
+            return;
+        }
+        if (action === 'exam-pair-remove') {
+            handlePairRemove(el);
+            return;
+        }
+
         var examId = el.dataset.examId || null;
 
         switch (action) {
             case 'exam-create':
-                Events.createExam(_selectedExamClassId, AcademyUI.getDisplayWeek());
+                Events.createExam(
+                    _selectedExamClassId,
+                    AcademyUI.getDisplayWeek()
+                );
                 return;
             case 'exam-delete':
                 if (examId) { Events.deleteExam(examId); }
                 return;
             case 'exam-toggle-pool-member':
-                if (examId) { Events.togglePoolMember(examId, el.dataset.poolId); }
+                if (examId) {
+                    Events.togglePoolMember(examId, el.dataset.poolId);
+                }
                 return;
             case 'exam-add-round':
                 if (examId) { Events.addRound(examId); }
                 return;
             case 'exam-remove-round':
-                if (examId) {
-                    Events.removeRound(examId, el.dataset.roundId);
-                }
+                if (examId) { Events.removeRound(examId, el.dataset.roundId); }
                 return;
             case 'exam-auto-generate-round':
                 if (examId) {
@@ -1498,17 +1122,29 @@
                 return;
             case 'exam-edit-match':
                 if (examId) {
-                    Events.editMatch(examId, el.dataset.roundId, el.dataset.matchId);
+                    Events.editMatch(
+                        examId,
+                        el.dataset.roundId,
+                        el.dataset.matchId
+                    );
                 }
                 return;
             case 'exam-complete-match':
                 if (examId) {
-                    Events.completeMatch(examId, el.dataset.roundId, el.dataset.matchId);
+                    Events.completeMatch(
+                        examId,
+                        el.dataset.roundId,
+                        el.dataset.matchId
+                    );
                 }
                 return;
             case 'exam-remove-match':
                 if (examId) {
-                    Events.removeMatch(examId, el.dataset.roundId, el.dataset.matchId);
+                    Events.removeMatch(
+                        examId,
+                        el.dataset.roundId,
+                        el.dataset.matchId
+                    );
                 }
                 return;
             case 'exam-complete':
@@ -1516,6 +1152,90 @@
                 return;
             default:
                 return;
+        }
+    }
+
+    /**
+     * Handle the "+ Add" button in the tournament pair picker.
+     *
+     * Reads the three selects inside the same form, validates that at
+     * least two are selected and that all selected values are
+     * distinct, then appends a .at-pair-row to the .at-pair-list with
+     * data-pair set to a JSON-stringified array of participant IDs.
+     */
+    function handlePairAdd(btn) {
+        var form = btn.closest('form');
+        if (!form) { return; }
+
+        var slot1 = form.querySelector('[data-pair-slot="1"]');
+        var slot2 = form.querySelector('[data-pair-slot="2"]');
+        var slot3 = form.querySelector('[data-pair-slot="3"]');
+
+        var v1 = slot1 ? slot1.value : '';
+        var v2 = slot2 ? slot2.value : '';
+        var v3 = slot3 ? slot3.value : '';
+
+        if (!v1 || !v2) {
+            notify('Please select at least 2 participants for the pair.', 'error');
+            return;
+        }
+
+        if (v1 === v2 || (v3 && (v3 === v1 || v3 === v2))) {
+            notify('Participants in a pair must be distinct.', 'error');
+            return;
+        }
+
+        var group = [v1, v2];
+        if (v3) { group.push(v3); }
+
+        var list = form.querySelector('.at-pair-list');
+        if (!list) { return; }
+
+        var View = getTournamentViewModule();
+        var resolver = (View && typeof View.getParticipantDisplayNameForPool === 'function')
+            ? View.getParticipantDisplayNameForPool
+            : null;
+        var CQ = getCharacterQueries();
+
+        var names = group.map(function(id) {
+            if (resolver) {
+                return resolver(id, 'individuals');
+            }
+            if (CQ && CQ.getCharacterById && CQ.getDisplayName) {
+                var c = CQ.getCharacterById(id);
+                if (c) { return CQ.getDisplayName(c); }
+            }
+            return id;
+        }).join(' + ');
+
+        var row = document.createElement('div');
+        row.className = 'at-pair-row';
+        row.dataset.pair = JSON.stringify(group);
+        row.innerHTML =
+            '<span class="at-pair-row-text">' +
+                escapeHtml(names) +
+            '</span>' +
+            '<button type="button" ' +
+                'class="small danger at-pair-remove" ' +
+                'data-action="exam-pair-remove">' +
+                '\u2715' +
+            '</button>';
+
+        list.appendChild(row);
+
+        if (slot1) { slot1.value = ''; }
+        if (slot2) { slot2.value = ''; }
+        if (slot3) { slot3.value = ''; }
+    }
+
+    /**
+     * Remove a pair row that was appended by handlePairAdd.
+     */
+    function handlePairRemove(btn) {
+        var row = btn.closest('.at-pair-row');
+        if (!row) { return; }
+        if (row.parentNode) {
+            row.parentNode.removeChild(row);
         }
     }
 
@@ -1548,8 +1268,7 @@
     }
 
     function handleDisciplineEditorAction(action, el) {
-        // Unprefixed fallback for older markup. Routes into the
-        // canonical discipline handler.
+        // Unprefixed fallback for older markup.
         var canonical = 'discipline-' + action.split('-').slice(1).join('-');
         return handleDisciplineAction(canonical, el);
     }
@@ -1572,8 +1291,7 @@
     }
 
     function handleRankingAction(action, el) {
-        // Rankings view has no inline actions yet; ranking generation
-        // is domain-owned and exposed through AcademyRanking.autoGenerate.
+        // Rankings view has no inline actions yet.
     }
 
     function handleWeeklyTeamsAction(action, el) {
@@ -1603,7 +1321,11 @@
         if (action === 'edit-social-score') {
             var CRUD = getAcademyCRUDModals();
             if (CRUD && typeof CRUD.openSocialScoreForm === 'function') {
-                CRUD.openSocialScoreForm(el.dataset.characterId);
+                CRUD.openSocialScoreForm(
+                    el.dataset.characterId,
+                    AcademyUI.getSelectedClassId(),
+                    AcademyUI.getDisplayWeek()
+                );
             }
             return;
         }
@@ -1632,7 +1354,8 @@
                 var newMode = target.checked ? 'instructor' : 'student';
                 AcademyUI.setCharacterMode(charId, newMode);
                 if (newMode === 'instructor' &&
-                    (_activeCharacterTab === 'grades' || _activeCharacterTab === 'teams')) {
+                    (_activeCharacterTab === 'grades' ||
+                        _activeCharacterTab === 'teams')) {
                     _activeCharacterTab = 'main';
                 }
                 refreshView();
@@ -1870,10 +1593,6 @@
     // ============================================================
 
     function commitDisplayWeek(value) {
-        // Delegate to AcademyUI, which enforces the strict integer
-        // parse. If it accepts the value, refresh; otherwise, do
-        // nothing (the input is left as-is, so the user sees their
-        // invalid input and can correct it).
         var accepted = AcademyUI.setDisplayWeek(value);
         if (accepted) {
             refreshView();
@@ -1900,7 +1619,6 @@
                 return;
 
             case 'startWeek':
-                // Store the raw string. The domain validates on save.
                 _disciplineDraft.startWeek = inputEl.value;
                 return;
 
@@ -1919,7 +1637,8 @@
             case 'instructors': {
                 var selected = [];
                 for (var i = 0; i < inputEl.options.length; i++) {
-                    if (inputEl.options[i].selected && inputEl.options[i].value) {
+                    if (inputEl.options[i].selected &&
+                        inputEl.options[i].value) {
                         selected.push(inputEl.options[i].value);
                     }
                 }
@@ -1952,7 +1671,6 @@
         if (field === 'label') {
             bands[idx].label = inputEl.value;
         } else if (field === 'minPercent') {
-            // Store raw; the domain validates on save.
             bands[idx].minPercent = inputEl.value;
         }
 
@@ -1977,11 +1695,14 @@
         var GradeSchemes = window.AcademyGradeSchemes;
         if (!GradeSchemes || !_disciplineDraft) { return; }
 
-        var previewEl = document.querySelector('.academy-discipline-scheme-preview-text');
+        var previewEl = document.querySelector(
+            '.academy-discipline-scheme-preview-text'
+        );
         if (!previewEl) { return; }
 
         try {
-            previewEl.textContent = GradeSchemes.getRangeLabel(_disciplineDraft.gradeScheme) || '';
+            previewEl.textContent =
+                GradeSchemes.getRangeLabel(_disciplineDraft.gradeScheme) || '';
         } catch (e) {
             // Ignore preview failures while the draft is mid-edit
         }
@@ -1995,7 +1716,9 @@
         var GradeSchemes = window.AcademyGradeSchemes;
         if (!_disciplineDraft || !GradeSchemes) { return; }
 
-        var presetSelect = document.querySelector('[data-discipline-field="schemePresetId"]');
+        var presetSelect = document.querySelector(
+            '[data-discipline-field="schemePresetId"]'
+        );
         var presetId = presetSelect ? presetSelect.value : 'numeric';
 
         if (presetId === 'custom') {
@@ -2007,7 +1730,8 @@
         } else {
             var preset = GradeSchemes.getPreset(presetId);
             if (preset) {
-                _disciplineDraft.gradeScheme = GradeSchemes.normalizeScheme(preset);
+                _disciplineDraft.gradeScheme =
+                    GradeSchemes.normalizeScheme(preset);
             }
         }
 
@@ -2018,7 +1742,9 @@
         if (!_disciplineDraft) { return; }
         var GradeSchemes = window.AcademyGradeSchemes;
         var bands = _disciplineDraft.gradeScheme.bands || [];
-        var maxBands = (GradeSchemes && GradeSchemes.MAX_BANDS) ? GradeSchemes.MAX_BANDS : 26;
+        var maxBands = (GradeSchemes && GradeSchemes.MAX_BANDS)
+            ? GradeSchemes.MAX_BANDS
+            : 26;
         if (bands.length >= maxBands) {
             notify('Too many bands.', 'error');
             return;
@@ -2059,9 +1785,10 @@
     function handleResetAssessmentWeights() {
         if (!_disciplineDraft) { return; }
         var AD = getAcademyDisciplines();
-        _disciplineDraft.assessmentWeights = (AD && typeof AD.getDefaultAssessmentWeights === 'function')
-            ? AD.getDefaultAssessmentWeights()
-            : {};
+        _disciplineDraft.assessmentWeights =
+            (AD && typeof AD.getDefaultAssessmentWeights === 'function')
+                ? AD.getDefaultAssessmentWeights()
+                : {};
         refreshView();
     }
 
@@ -2076,15 +1803,12 @@
 
     function handleDisciplineDelete(disciplineId) {
         var CRUD = getAcademyCRUDModals();
-        if (disciplineId && CRUD && typeof CRUD.openDisciplineDelete === 'function') {
+        if (disciplineId && CRUD &&
+            typeof CRUD.openDisciplineDelete === 'function') {
             CRUD.openDisciplineDelete(disciplineId);
         }
     }
 
-    /**
-     * Build the discipline payload. Shape only. No validation. No
-     * defaulting. The domain owns validation and normalisation.
-     */
     function buildDisciplinePayload(draft) {
         var GradeSchemes = window.AcademyGradeSchemes;
         var scheme = draft.gradeScheme;
@@ -2099,7 +1823,9 @@
             endWeek: draft.endWeek,
             weeklyHours: draft.weeklyHours,
             weight: draft.weight,
-            instructorIds: Array.isArray(draft.instructorIds) ? draft.instructorIds.slice() : [],
+            instructorIds: Array.isArray(draft.instructorIds)
+                ? draft.instructorIds.slice()
+                : [],
             gradeScheme: scheme,
             assessmentWeights: draft.assessmentWeights || {}
         };
@@ -2126,17 +1852,14 @@
 
         promise.then(function(result) {
             if (!result || !result.success) {
-                // The domain already notified on failure via the
-                // pipeline. Nothing more to do here.
                 return;
             }
 
-            // Determine the resulting id for re-initialising the
-            // draft in edit mode.
             var savedId = null;
             if (result.data && result.data.id) {
                 savedId = result.data.id;
-            } else if (result.data && result.data.discipline && result.data.discipline.id) {
+            } else if (result.data && result.data.discipline &&
+                result.data.discipline.id) {
                 savedId = result.data.discipline.id;
             } else if (targetId) {
                 savedId = targetId;
@@ -2217,7 +1940,9 @@
         }
 
         var name = CQ.getDisplayName(char);
-        if (!confirm('Drop out "' + name + '" from the Academy? They will remain on the class roster as an eliminated character.')) {
+        if (!confirm('Drop out "' + name +
+            '" from the Academy? They will remain on the class roster ' +
+            'as an eliminated character.')) {
             return;
         }
 
@@ -2238,15 +1963,6 @@
         });
     }
 
-    /**
-     * Enroll a character in a discipline for the currently selected class.
-     *
-     * Candidates come from the student's current enrollment via
-     * AcademyEnrolments. The list of ALL disciplines comes from
-     * AcademyDisciplines. The candidate set is the difference.
-     * This logic runs on the domain modules' own public APIs, not on
-     * raw storage.
-     */
     function handleEnrollDiscipline(charId) {
         if (!charId) { return; }
 
@@ -2298,7 +2014,8 @@
         }).join('\n');
 
         var input = prompt(
-            'Enroll in which discipline?\n\n' + names + '\n\nEnter the number:',
+            'Enroll in which discipline?\n\n' + names +
+            '\n\nEnter the number:',
             '1'
         );
 
@@ -2345,7 +2062,8 @@
             }
         }
 
-        if (!confirm('Leave ' + disciplineName + '? You can re-enroll later.')) {
+        if (!confirm('Leave ' + disciplineName +
+            '? You can re-enroll later.')) {
             return;
         }
 
@@ -2400,7 +2118,8 @@
         }).join('\n');
 
         var input = prompt(
-            'Add which student to this group?\n\n' + names + '\n\nEnter the number:',
+            'Add which student to this group?\n\n' + names +
+            '\n\nEnter the number:',
             '1'
         );
 
