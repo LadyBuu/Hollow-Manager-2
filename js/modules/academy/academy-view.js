@@ -25,10 +25,11 @@
  *   - Delegates exam mutations to AcademyTournamentEvents
  *   - Delegates discipline mutations to AcademyDisciplines
  *   - Delegates enrollment mutations to AcademyEnrolments
+ *   - Delegates social score mutations to AcademySocialScore
  *   - Uses container-level event delegation (survives innerHTML replacement)
- *   - Uses DomUtils for escaping (mandatory; no fallbacks)
+ *   - Uses DomUtils for escaping (mandatory, no fallbacks)
  *
- * DEPENDENCY MODEL (Phase 7 pre-work):
+ * DEPENDENCY MODEL:
  *   Mandatory:
  *     - AcademyUI
  *     - AcademyAggregator
@@ -36,47 +37,36 @@
  *     - DomUtils
  *     - CalendarConstants
  *
- *   Optional / degraded:
- *     - CharacterQueries  (used only in a few confirmation prompts)
- *     - AcademyQueries    (used only for reading disciplines during
- *                          enroll/leave, which will route through
- *                          AcademyEnrolments in a follow-up)
- *     - AcademyEnrolments (used by the discipline editor flow; a
- *                          fallback path exists for the legacy
- *                          character.disciplineIds contract until
- *                          Phase 4 is complete)
+ *   Degraded / lazy:
+ *     - CharacterQueries  (character identity in a few confirmation prompts)
+ *     - AcademyEnrolments (preferred path for enrollment mutations)
+ *     - AcademySocialScore (set-social-score action)
+ *     - AcademyCRUDModals / AcademyTournamentEvents / AcademyGradesEditor
+ *     - AcademyClassDetail / AcademyCharacterDetail / per-view renderers
  *
- * VIEW MODEL OWNERSHIP:
- *   - Class list VM            → AcademyAggregator.getClassListViewModel()
- *   - Class detail VM          → AcademyAggregator.getClassViewModel()
- *   - Character detail VM      → AcademyCharacterDetail (consumes char + class)
- *   - Exams VM                 → AcademyTournamentAggregator.getExamViewModel()
- *   - Weekly Teams VM          → AcademyAggregator.getWeeklyTeamsViewViewModel()
- *   - Rankings VM              → AcademyAggregator.getRankingViewViewModel()
- *   - Locations VM             → AcademyAggregator.getLocationViewViewModel()
- *   - Disciplines list VM      → AcademyAggregator.getDisciplineListViewModel()
- *   - Disciplines editor VM    → built here (owns draft state)
+ * ENROLLMENT MODEL (Phase 4):
+ *   - Enrollment is class-scoped. Source of truth is
+ *     AcademyEnrolments.getStudentDisciplines(charId, classId).
+ *   - character.disciplineIds is NOT read by this module. The
+ *     legacy field is dead.
+ *   - Enroll and leave actions call AcademyEnrolments.enrol / .leave.
+ *
+ * SOCIAL SCORE MODEL (Phase 5):
+ *   - Social score is class + week scoped. Source of truth is
+ *     AcademySocialScore.
+ *   - The set-social-score action routes to AcademySocialScore.
+ *
+ * DISCIPLINE EDITOR STATE MACHINE:
+ *   - The inline editor draft is owned by this module.
+ *   - Draft includes assessmentWeights (Phase 3).
+ *   - Save sends assessmentWeights to AcademyDisciplines.
  *
  * CHARACTER DETAIL STATE:
  *   - _activeCharacterTab is module-scoped. Reset to 'main' whenever
  *     the selected character changes.
- *   - Mode (student / instructor) is read from AcademyUI and persisted
- *     there. AcademyView does not own it.
- *
- * DISCIPLINE EDITOR STATE MACHINE:
- *   - The inline editor is one self-contained state machine. It will
- *     be extracted into its own module in a follow-up pass. The
- *     extraction is deferred so the current pass stays a mechanical
- *     move with no behavior change.
- *
- * VIEW-SCOPED SELECTION STATE:
- *   - Each view keeps its own selection state (class id, expanded item,
- *     etc.) as module-scoped variables. The aggregators null out stale
- *     selections; the view syncs local state from the aggregator's
- *     response.
+ *   - Mode (student / instructor) is persisted in AcademyUI.
  *
  * USAGE:
- *   // Called by academy/index.js
  *   AcademyView.render(container);
  */
 
@@ -98,18 +88,10 @@
     var DomUtils = window.DomUtils;
     var CalendarConstants = window.CalendarConstants;
 
-    // Lazy / degraded. Read through helpers, not directly.
-    function getCharacterQueries() {
-        return window.CharacterQueries || null;
-    }
-
-    function getAcademyQueries() {
-        return window.AcademyQueries || null;
-    }
-
-    function getAcademyEnrolments() {
-        return window.AcademyEnrolments || null;
-    }
+    // Lazy / degraded accessors.
+    function getCharacterQueries() { return window.CharacterQueries || null; }
+    function getAcademyEnrolments() { return window.AcademyEnrolments || null; }
+    function getAcademySocialScore() { return window.AcademySocialScore || null; }
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -136,8 +118,6 @@
         if (!AcademyUI || typeof AcademyUI.setCharacterMode !== 'function') {
             missing.push('AcademyUI.setCharacterMode');
         }
-        // NOTE: AcademyUI.getRoleFor is NOT required. This module does
-        // not use it.
 
         if (!AcademyAggregator ||
             typeof AcademyAggregator.getClassListViewModel !== 'function') {
@@ -179,12 +159,6 @@
         if (!CalendarConstants) {
             missing.push('CalendarConstants');
         }
-
-        // NOT required (degraded): CharacterQueries, AcademyQueries,
-        // AcademyEnrolments, AcademyCRUDModals, AcademyTournamentEvents,
-        // AcademyGradesEditor, AcademyCharacterDetail,
-        // AcademyClassDetail, per-view renderers. Each is guarded at
-        // call time.
 
         if (missing.length > 0) {
             console.warn('[AcademyView] Missing dependencies:', missing.join(', '));
@@ -244,6 +218,10 @@
 
     function getTournamentEventsModule() {
         return window.AcademyTournamentEvents || null;
+    }
+
+    function getGradesEditorModule() {
+        return window.AcademyGradesEditor || null;
     }
 
     function notify(message, type) {
@@ -421,7 +399,6 @@
             return html;
         }
 
-        // Aggregator returns null for a stale selection.
         var classVM = AcademyAggregator.getClassViewModel(classId);
 
         if (!classVM) {
@@ -450,7 +427,6 @@
         html += '<select id="academy-class-select" class="academy-class-select">';
         html += '<option value="">Select a class...</option>';
 
-        // Canonical class list projection.
         var classes = AcademyAggregator.getClassListViewModel() || [];
 
         for (var i = 0; i < classes.length; i++) {
@@ -644,7 +620,8 @@
                 return CharacterDetail.renderHTML(char, classVM, {
                     week: AcademyUI.getDisplayWeek(),
                     mode: AcademyUI.getCharacterMode(charId),
-                    tab: _activeCharacterTab
+                    tab: _activeCharacterTab,
+                    classId: AcademyUI.getSelectedClassId()
                 });
             } catch (e) {
                 console.warn('[AcademyView] CharacterDetail.renderHTML failed:', e);
@@ -703,7 +680,8 @@
         try {
             CharacterDetail.mountGradesEditor(charId, classVM, {
                 week: AcademyUI.getDisplayWeek(),
-                tab: _activeCharacterTab
+                tab: _activeCharacterTab,
+                classId: classId
             });
         } catch (e) {
             console.warn('[AcademyView] mountGradesEditor failed:', e);
@@ -711,7 +689,7 @@
     }
 
     function unmountGradesEditor() {
-        var GE = window.AcademyGradesEditor;
+        var GE = getGradesEditorModule();
         if (GE && typeof GE.unmount === 'function') {
             try { GE.unmount(); } catch (e) { /* ignore */ }
         }
@@ -741,7 +719,6 @@
             week
         );
 
-        // Sync local state from the aggregator's resolved selection.
         _selectedExamClassId = vm.classId;
 
         return Renderer.renderHTML(vm);
@@ -799,12 +776,20 @@
 
         var schemePresetId = (draft.gradeScheme && draft.gradeScheme.id) || 'numeric';
 
-        // Instructor names via the aggregator's canonical helper.
         var instructorNames = AcademyAggregator.getInstructorNamesForDiscipline
             ? AcademyAggregator.getInstructorNamesForDiscipline({
                 instructorIds: draft.instructorIds || []
             })
             : [];
+
+        // Phase 3: expose assessment types and weights.
+        var assessmentTypes = [];
+        var AD = window.AcademyDisciplines;
+        if (AD && typeof AD.getValidAssessmentTypes === 'function') {
+            assessmentTypes = AD.getValidAssessmentTypes();
+        }
+
+        var assessmentWeights = draft.assessmentWeights || {};
 
         return {
             id: isNew ? null : draft.id,
@@ -820,20 +805,33 @@
             gradeScheme: draft.gradeScheme,
             schemePresetId: schemePresetId,
             schemePreview: schemePreview,
+            assessmentTypes: assessmentTypes,
+            assessmentWeights: assessmentWeights,
             fieldErrors: _disciplineDraftErrors || {},
             isNew: isNew
         };
     }
 
+    /**
+     * Get a fresh copy of the domain default assessment weights.
+     */
+    function getDefaultAssessmentWeights() {
+        var AD = window.AcademyDisciplines;
+        if (AD && typeof AD.getDefaultAssessmentWeights === 'function') {
+            return AD.getDefaultAssessmentWeights();
+        }
+        return {};
+    }
+
     function initializeDraftFromDiscipline(disciplineId) {
-        var AcademyDisciplines = window.AcademyDisciplines;
+        var AD = window.AcademyDisciplines;
         var GradeSchemes = window.AcademyGradeSchemes;
-        if (!AcademyDisciplines || !GradeSchemes) {
+        if (!AD || !GradeSchemes) {
             notify('Discipline module not loaded.', 'error');
             return;
         }
 
-        var record = AcademyDisciplines.getDiscipline(disciplineId);
+        var record = AD.getDiscipline(disciplineId);
         if (!record) {
             notify('Discipline not found.', 'error');
             return;
@@ -842,6 +840,13 @@
         _selectedDisciplineId = String(disciplineId);
         _disciplineDraftMode = 'edit';
         _disciplineDraftErrors = {};
+
+        var weights;
+        if (typeof AD.getAssessmentWeights === 'function') {
+            weights = AD.getAssessmentWeights(record.id);
+        } else {
+            weights = getDefaultAssessmentWeights();
+        }
 
         _disciplineDraft = {
             id: record.id,
@@ -852,7 +857,8 @@
             weeklyHours: typeof record.weeklyHours === 'number' ? record.weeklyHours : 1,
             weight: typeof record.weight === 'number' ? record.weight : 1,
             instructorIds: Array.isArray(record.instructorIds) ? record.instructorIds.slice() : [],
-            gradeScheme: GradeSchemes.normalizeScheme(record.gradeScheme)
+            gradeScheme: GradeSchemes.normalizeScheme(record.gradeScheme),
+            assessmentWeights: weights
         };
     }
 
@@ -876,7 +882,8 @@
             weeklyHours: 1,
             weight: 1,
             instructorIds: [],
-            gradeScheme: GradeSchemes.getDefaultScheme()
+            gradeScheme: GradeSchemes.getDefaultScheme(),
+            assessmentWeights: getDefaultAssessmentWeights()
         };
     }
 
@@ -935,7 +942,6 @@
             _selectedLocationId
         );
 
-        // Aggregator nulls out stale selections.
         if (!vm.selected) {
             _selectedLocationId = null;
         }
@@ -997,7 +1003,6 @@
             _selectedWeeklyTeamId
         );
 
-        // Aggregator resolves the selected team or nulls it.
         _selectedWeeklyTeamsClassId = vm.classId;
         _selectedWeeklyTeamId = vm.selectedTeamId;
 
@@ -1029,7 +1034,6 @@
     function handleDelegatedClick(e) {
         var target = e.target;
 
-        // ---- Global: view nav ----
         var viewBtn = target.closest('.academy-view-btn');
         if (viewBtn) {
             e.preventDefault();
@@ -1037,14 +1041,12 @@
             return;
         }
 
-        // ---- Global: Add Class ----
         if (target.closest('#academy-add-class-btn')) {
             e.preventDefault();
             handleAddClass();
             return;
         }
 
-        // ---- Global: Add Location ----
         if (target.closest('#academy-add-location-btn')) {
             e.preventDefault();
             if (window.AcademyCRUDModals) {
@@ -1053,10 +1055,10 @@
             return;
         }
 
-        // ---- Per-view handlers, in order ----
         if (handleExamClick(e, target)) { return; }
         if (handleWeeklyTeamsClick(e, target)) { return; }
         if (handleRankingClick(e, target)) { return; }
+        if (handleSocialScoreClick(e, target)) { return; }
         if (handleDisciplineClick(e, target)) { return; }
         if (handleLocationClick(e, target)) { return; }
         if (handlePeopleClick(e, target)) { return; }
@@ -1253,6 +1255,30 @@
     }
 
     // ============================================================
+    // DELEGATED CLICK - SOCIAL SCORE (Phase 5)
+    // ============================================================
+    //
+    // The social score edit is initiated from the character detail
+    // Main tab via data-action="edit-social-score". AcademyCRUDModals
+    // owns the modal. After a successful save, AcademySocialScore's
+    // pipeline notifies; the view just refreshes.
+
+    function handleSocialScoreClick(e, target) {
+        var editBtn = target.closest('[data-action="edit-social-score"]');
+        if (editBtn) {
+            e.preventDefault();
+            var charId = editBtn.dataset.characterId;
+            if (charId && window.AcademyCRUDModals &&
+                typeof window.AcademyCRUDModals.openSocialScoreForm === 'function') {
+                window.AcademyCRUDModals.openSocialScoreForm(charId);
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    // ============================================================
     // DELEGATED CLICK - DISCIPLINES VIEW
     // ============================================================
 
@@ -1268,6 +1294,7 @@
             '[data-action="apply-scheme-preset"], ' +
             '[data-action="add-band"], ' +
             '[data-action="remove-band"], ' +
+            '[data-action="reset-assessment-weights"], ' +
             '[data-action="save-discipline"], ' +
             '[data-action="cancel-discipline"], ' +
             '[data-action="delete-discipline"]'
@@ -1340,6 +1367,13 @@
                     label: _disciplineDraft.gradeScheme.label,
                     bands: currentBands
                 });
+                refreshView();
+                return;
+            }
+
+            case 'reset-assessment-weights': {
+                if (!_disciplineDraft) { return; }
+                _disciplineDraft.assessmentWeights = getDefaultAssessmentWeights();
                 refreshView();
                 return;
             }
@@ -1572,7 +1606,6 @@
             return;
         }
 
-        // Week inputs across all views.
         if (target.id === 'academy-week-input' ||
             target.id === 'at-week-input' ||
             target.id === 'academy-ranking-week-input' ||
@@ -1717,12 +1750,45 @@
         updateDisciplinePreviewInPlace();
     }
 
+    function handleAssessmentWeightChange(inputEl) {
+        if (!_disciplineDraft) { return; }
+
+        var type = inputEl.dataset.assessmentWeightType;
+        if (!type) { return; }
+
+        if (!_disciplineDraft.assessmentWeights ||
+            typeof _disciplineDraft.assessmentWeights !== 'object') {
+            _disciplineDraft.assessmentWeights = {};
+        }
+
+        var raw = inputEl.value;
+        if (raw === '' || raw === null || raw === undefined) {
+            // Leave as null. Save will surface the validation error
+            // rather than inventing a default.
+            _disciplineDraft.assessmentWeights[type] = null;
+            return;
+        }
+
+        var num = parseFloat(raw);
+        if (isNaN(num)) {
+            _disciplineDraft.assessmentWeights[type] = null;
+            return;
+        }
+
+        _disciplineDraft.assessmentWeights[type] = num;
+    }
+
     // ============================================================
     // DELEGATED INPUT
     // ============================================================
 
     function handleDelegatedInput(e) {
         var target = e.target;
+
+        if (target.dataset && target.dataset.assessmentWeightType) {
+            handleAssessmentWeightChange(target);
+            return;
+        }
 
         if (target.dataset && target.dataset.disciplineField) {
             handleDisciplineFieldChange(target);
@@ -1930,6 +1996,13 @@
         });
     }
 
+    /**
+     * Enroll a character in a discipline for the currently selected class.
+     *
+     * Enrollment is class-scoped. This handler prompts the user with
+     * the list of disciplines the character is NOT yet enrolled in for
+     * the current class. On selection, it calls AcademyEnrolments.enrol.
+     */
     function handleEnrollDiscipline(charId) {
         if (!charId) { return; }
 
@@ -1939,15 +2012,9 @@
             return;
         }
 
-        var CQ = getCharacterQueries();
-        if (!CQ) {
-            notify('Character queries not available.', 'error');
-            return;
-        }
-
-        var char = CQ.getCharacterById(charId);
-        if (!char) {
-            notify('Character not found.', 'error');
+        var AE = getAcademyEnrolments();
+        if (!AE || typeof AE.enrol !== 'function') {
+            notify('Enrollment module not available.', 'error');
             return;
         }
 
@@ -1961,17 +2028,8 @@
             return;
         }
 
-        // Enrolled IDs for this class. Prefer AcademyEnrolments;
-        // fall back to character.disciplineIds (legacy) if the
-        // enrolments module is not loaded.
         var enrolledIds = {};
-        var AE = getAcademyEnrolments();
-        var current;
-        if (AE && typeof AE.getStudentDisciplines === 'function') {
-            current = AE.getStudentDisciplines(charId, classId);
-        } else {
-            current = Array.isArray(char.disciplineIds) ? char.disciplineIds : [];
-        }
+        var current = AE.getStudentDisciplines(charId, classId);
         for (var i = 0; i < current.length; i++) {
             enrolledIds[String(current[i])] = true;
         }
@@ -2008,7 +2066,14 @@
         }
 
         var picked = candidates[choice - 1];
-        persistDisciplineEnrollment(charId, classId, picked.id, null);
+        AE.enrol(charId, classId, picked.id).then(function(result) {
+            if (result && result.success) {
+                refreshView();
+            }
+        }).catch(function(err) {
+            console.warn('[AcademyView] Enroll failed:', err);
+            notify('Failed to enroll in discipline.', 'error');
+        });
     }
 
     function handleLeaveDiscipline(charId, disciplineId) {
@@ -2020,15 +2085,9 @@
             return;
         }
 
-        var CQ = getCharacterQueries();
-        if (!CQ) {
-            notify('Character queries not available.', 'error');
-            return;
-        }
-
-        var char = CQ.getCharacterById(charId);
-        if (!char) {
-            notify('Character not found.', 'error');
+        var AE = getAcademyEnrolments();
+        if (!AE || typeof AE.leave !== 'function') {
+            notify('Enrollment module not available.', 'error');
             return;
         }
 
@@ -2045,96 +2104,13 @@
             return;
         }
 
-        persistDisciplineEnrollment(charId, classId, null, disciplineId);
-    }
-
-    /**
-     * Persist a discipline enrollment change.
-     *
-     * Prefers AcademyEnrolments (class-scoped). Falls back to
-     * CharacterCRUD.save with character.disciplineIds if the enrolments
-     * module is not loaded. The fallback is retained only so the view
-     * remains functional during the transition; it is removed once the
-     * enrollment migration is complete.
-     *
-     * @param {string} charId
-     * @param {string} classId
-     * @param {string|null} addDisciplineId    - Discipline to add, or null
-     * @param {string|null} removeDisciplineId - Discipline to remove, or null
-     */
-    function persistDisciplineEnrollment(charId, classId, addDisciplineId, removeDisciplineId) {
-        var AE = getAcademyEnrolments();
-
-        if (AE) {
-            var promise;
-            if (addDisciplineId) {
-                promise = AE.enrol(charId, classId, addDisciplineId);
-            } else if (removeDisciplineId) {
-                promise = AE.leave(charId, classId, removeDisciplineId);
-            } else {
-                return;
-            }
-
-            promise.then(function(result) {
-                if (result && result.success) {
-                    refreshView();
-                }
-            }).catch(function(err) {
-                console.warn('[AcademyView] Enrollment save failed:', err);
-                notify('Failed to update enrollment.', 'error');
-            });
-            return;
-        }
-
-        // ---- Legacy fallback (character.disciplineIds) ----
-        var CQ = getCharacterQueries();
-        if (!CQ) {
-            notify('Character queries not available.', 'error');
-            return;
-        }
-
-        var char = CQ.getCharacterById(charId);
-        if (!char) {
-            notify('Character not found.', 'error');
-            return;
-        }
-
-        var current = Array.isArray(char.disciplineIds) ? char.disciplineIds.slice() : [];
-        var finalIds;
-
-        if (addDisciplineId) {
-            if (current.indexOf(addDisciplineId) === -1) {
-                current.push(addDisciplineId);
-            }
-            finalIds = current;
-        } else if (removeDisciplineId) {
-            finalIds = current.filter(function(id) {
-                return String(id) !== String(removeDisciplineId);
-            });
-        } else {
-            finalIds = current;
-        }
-
-        var dto = {
-            _editId: charId,
-            disciplineIds: finalIds,
-            firstName: char.firstName || '',
-            lastName: char.lastName || ''
-        };
-
-        var CRUD = window.CharacterCRUD;
-        if (!CRUD || typeof CRUD.save !== 'function') {
-            notify('Character CRUD not available.', 'error');
-            return;
-        }
-
-        CRUD.save(dto).then(function(result) {
+        AE.leave(charId, classId, disciplineId).then(function(result) {
             if (result && result.success) {
                 refreshView();
             }
         }).catch(function(err) {
-            console.warn('[AcademyView] Enrollment save failed:', err);
-            notify('Failed to update enrollment.', 'error');
+            console.warn('[AcademyView] Leave failed:', err);
+            notify('Failed to leave discipline.', 'error');
         });
     }
 
@@ -2289,6 +2265,26 @@
                 : 'Grade scheme is invalid.';
         }
 
+        // ---- Assessment weights validation ----
+        var weights = _disciplineDraft.assessmentWeights || {};
+        var weightKeys = Object.keys(weights);
+        var weightError = null;
+        for (var wi = 0; wi < weightKeys.length; wi++) {
+            var wv = weights[weightKeys[wi]];
+            if (wv === null || wv === undefined) { continue; }
+            if (typeof wv !== 'number' || !isFinite(wv) ||
+                wv < AcademyDisciplines.MIN_ASSESSMENT_WEIGHT ||
+                wv > AcademyDisciplines.MAX_ASSESSMENT_WEIGHT) {
+                weightError = 'All assessment weights must be numbers between ' +
+                    AcademyDisciplines.MIN_ASSESSMENT_WEIGHT + ' and ' +
+                    AcademyDisciplines.MAX_ASSESSMENT_WEIGHT + '.';
+                break;
+            }
+        }
+        if (weightError) {
+            errors.assessmentWeights = weightError;
+        }
+
         if (Object.keys(errors).length > 0) {
             _disciplineDraftErrors = errors;
             refreshView();
@@ -2305,7 +2301,8 @@
             weeklyHours: wh,
             weight: wt,
             instructorIds: (_disciplineDraft.instructorIds || []).slice(),
-            gradeScheme: scheme
+            gradeScheme: scheme,
+            assessmentWeights: _disciplineDraft.assessmentWeights || null
         };
 
         var isNew = _disciplineDraftMode === 'create';
