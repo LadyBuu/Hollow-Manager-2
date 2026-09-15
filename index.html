@@ -107,37 +107,60 @@
     <script src="js/modules/calendar/location-calendar-ui.js"></script>
     <script src="js/modules/calendar/index.js"></script>
 
-    <!-- ACADEMY DOMAIN -->
+    <!-- ============================================================
+         ACADEMY DOMAIN - BASE ENTITIES AND CROSS-CUTTING SERVICES
+         ============================================================
+         Load order within this section matters:
+
+           - Grades/disciplines must load after AcademyGradeSchemes
+             and AcademyGrades respectively (both captured eagerly).
+           - AcademyPerformance must load before AcademyRanking
+             (ranking captures performance eagerly).
+           - AcademyCascade, AcademySettings, AcademyEnrolments,
+             AcademySocialScore are cross-cutting. They load after
+             the base entities and before anything that consumes
+             them.
+           - AcademyAutoGroupsRead must load before AcademyGroups
+             (the read aliases delegate to it at call time).
+         ============================================================ -->
+
+    <!-- Base entities -->
     <script src="js/modules/academy/academy-grade-schemes.js"></script>
     <script src="js/modules/academy/academy-classes.js"></script>
     <script src="js/modules/academy/academy-grades.js"></script>
-    <script src="js/modules/academy/academy-groups.js"></script>
-    <script src="js/modules/academy/academy-ranking.js"></script>
     <script src="js/modules/academy/academy-disciplines.js"></script>
     <script src="js/modules/academy/academy-locations.js"></script>
+
+    <!-- Cross-cutting services -->
+    <script src="js/modules/academy/academy-cascade.js"></script>
+    <script src="js/modules/academy/academy-settings.js"></script>
+    <script src="js/modules/academy/academy-enrolments.js"></script>
+    <script src="js/modules/academy/academy-social-score.js"></script>
+    <script src="js/modules/academy/academy-performance.js"></script>
+
+    <!-- Auto-groups: reads module precedes the mutation module. -->
+    <script src="js/modules/shared/queries/academy-auto-groups-read.js"></script>
+    <script src="js/modules/academy/academy-groups.js"></script>
+
+    <!-- Ranking consumes performance. -->
+    <script src="js/modules/academy/academy-ranking.js"></script>
+
+    <!-- Reduced class-only facade. Still consumed by
+         academy-distribute.js for the roster derivation. -->
     <script src="js/modules/shared/queries/academy-queries.js"></script>
+
     <script src="js/modules/academy/academy-schedule.js"></script>
     <script src="js/modules/academy/academy-distribute.js"></script>
     <script src="js/modules/academy/academy-aggregator.js"></script>
     <script src="js/modules/academy/academy-ui.js"></script>
 
-    <!-- ACADEMY VIEW SHELL -->
-    <script src="js/modules/academy/academy-class-detail.js"></script>
-    <script src="js/modules/academy/academy-grades-editor.js"></script>
-    <script src="js/modules/academy/academy-character-detail.js"></script>
-    <script src="js/modules/academy/academy-discipline-view.js"></script>
-    <script src="js/modules/academy/academy-location-view.js"></script>
-    <script src="js/modules/academy/academy-ranking-view.js"></script>
-    <script src="js/modules/academy/academy-weekly-teams-view.js"></script>
-    <script src="js/modules/academy/academy-tournament-view.js"></script>
-    <script src="js/modules/academy/academy-tournament-events.js"></script>
-    <script src="js/modules/academy/academy-crud-modals.js"></script>
-    <script src="js/modules/academy/academy-view.js"></script>
-    <script src="js/modules/academy/index.js"></script>
-
-    <!-- SOCIAL DOMAIN - must load BEFORE character domain
-         so that character-events.js can capture SocialCore,
-         SocialGraph, SocialQueries at IIFE time -->
+    <!-- ============================================================
+         SOCIAL DOMAIN
+         ============================================================
+         Must load before the character domain: character-events.js
+         captures SocialCore, SocialGraph, SocialQueries eagerly at
+         IIFE time.
+         ============================================================ -->
     <script src="js/modules/social/social-core.js"></script>
     <script src="js/modules/social/social-aggregator.js"></script>
     <script src="js/modules/social/social-views.js"></script>
@@ -145,7 +168,12 @@
     <script src="js/modules/social/social-events.js"></script>
     <script src="js/modules/social/index.js"></script>
 
-    <!-- CHARACTER DOMAIN -->
+    <!-- ============================================================
+         CHARACTER DOMAIN
+         ============================================================
+         Must load before the Academy view shell: academy-crud-modals
+         captures CharacterClasses eagerly at IIFE time.
+         ============================================================ -->
     <script src="js/modules/characters/character-generator.js"></script>
     <script src="js/modules/characters/character-stats.js"></script>
     <script src="js/modules/characters/character-crud.js"></script>
@@ -162,7 +190,13 @@
     <script src="js/modules/characters/character-events.js"></script>
     <script src="js/modules/characters/index.js"></script>
 
-    <!-- TOURNAMENT DOMAIN -->
+    <!-- ============================================================
+         TOURNAMENT DOMAIN
+         ============================================================
+         Must load before the Academy view shell:
+         academy-tournament-aggregator captures TournamentAggregator
+         eagerly at IIFE time.
+         ============================================================ -->
     <script src="js/modules/tournaments/tournament-schema.js"></script>
     <script src="js/modules/tournaments/tournament-lifecycle.js"></script>
     <script src="js/modules/tournaments/tournament-rules.js"></script>
@@ -175,6 +209,37 @@
     <script src="js/modules/tournaments/tournament-elimination-workflow.js"></script>
     <script src="js/modules/tournaments/tournament-repair.js"></script>
     <script src="js/modules/tournaments/index.js"></script>
+
+    <!-- ============================================================
+         ACADEMY VIEW SHELL
+         ============================================================
+         Loads last among the Academy-adjacent blocks because the
+         view modules capture AcademyAggregator, AcademyTournament-
+         Aggregator, and CharacterClasses eagerly at IIFE time.
+         ============================================================ -->
+    <script src="js/modules/academy/academy-class-detail.js"></script>
+    <script src="js/modules/academy/academy-grades-editor.js"></script>
+    <script src="js/modules/academy/academy-character-detail.js"></script>
+    <script src="js/modules/academy/academy-discipline-view.js"></script>
+    <script src="js/modules/academy/academy-location-view.js"></script>
+    <script src="js/modules/academy/academy-ranking-view.js"></script>
+
+    <!-- Weekly Teams view.
+         NOTE: The week-scoped DATA module (window.AcademyWeeklyTeams)
+         is a separate module that provides getWeeklyTeams and
+         stripCharacterRefs. Its script tag is not present in this
+         file because its path is not known to this delivery. Add it
+         here once confirmed. Without it, the Weekly Teams view
+         renders empty teams and academy-aggregator logs a warning
+         about the missing optional dependency. -->
+    <script src="js/modules/academy/academy-weekly-teams-view.js"></script>
+
+    <script src="js/modules/academy/academy-tournament-view.js"></script>
+    <script src="js/modules/academy/academy-tournament-events.js"></script>
+    <script src="js/modules/academy/academy-tournament-aggregator.js"></script>
+    <script src="js/modules/academy/academy-crud-modals.js"></script>
+    <script src="js/modules/academy/academy-view.js"></script>
+    <script src="js/modules/academy/index.js"></script>
 
     <!-- TEAM DOMAIN -->
     <script src="js/modules/teams/team-core.js"></script>
