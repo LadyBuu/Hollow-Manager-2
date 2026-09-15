@@ -40,6 +40,37 @@
  *   before setup, matching the contract used by every other Academy
  *   modal module.
  *
+ * MODAL CLOSE SEMANTICS:
+ *   Modal.hideModal is ASYNCHRONOUS. closeModal below awaits the
+ *   returned Promise before removing the element from the DOM.
+ *   Falling back to Modal.closeModal when available gives the full
+ *   teardown path (cleanups, focus restore, listener removal).
+ *
+ * ADD CHARACTER TO CLASS — SORTING AND OPTGROUP:
+ *   The candidate list excludes characters who are already in the
+ *   target class (as students or as instructor). It does not exclude
+ *   characters who are in OTHER classes. The list is partitioned:
+ *
+ *     1. Characters with no class membership — first.
+ *     2. Characters with at least one class membership — second.
+ *
+ *   Within each partition, alphabetical by display name.
+ *
+ *   The modal renders the two partitions as <optgroup> blocks:
+ *
+ *     <optgroup label="Unassigned">...free characters...</optgroup>
+ *     <optgroup label="In Other Classes">...assigned...</optgroup>
+ *
+ *   The <optgroup> distinguishes the two cases visually. A flat list
+ *   would rely on the user noticing that alphabetical order "resets"
+ *   at the boundary between the partitions, which is easy to miss.
+ *
+ *   When ALL candidates are in the "Unassigned" partition, the modal
+ *   renders a single option list with no optgroup wrapper, since the
+ *   label adds nothing. Same for the "In Other Classes" partition
+ *   alone. This keeps the common case (a class with mostly unassigned
+ *   characters) visually simple.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
  *   - window.Modal
@@ -173,6 +204,17 @@
         return String(value);
     }
 
+    /**
+     * Compare two strings for alphabetical ordering. Case-insensitive,
+     * locale-aware. Falls back to `-1/1` on null inputs so callers
+     * don't need to guard.
+     */
+    function compareAlpha(a, b) {
+        var sa = isNonEmptyString(a) ? a : '';
+        var sb = isNonEmptyString(b) ? b : '';
+        return sa.localeCompare(sb);
+    }
+
     // ============================================================
     // DOMAIN LOOKUPS
     // ============================================================
@@ -241,21 +283,52 @@
         return modal;
     }
 
+    /**
+     * Close a modal.
+     *
+     * Prefers Modal.closeModal (full teardown) and awaits its Promise.
+     * Falls back to Modal.hideModal. Both are asynchronous; the modal
+     * stays in the DOM until the fade-out animation completes.
+     *
+     * Idempotent: calling on an already-detached modal does nothing.
+     */
     function closeModal(modal) {
         if (!modal) { return; }
 
-        try {
-            if (typeof Modal.hideModal === 'function') {
-                Modal.hideModal(modal);
-            } else if (typeof Modal.closeModal === 'function') {
-                Modal.closeModal(modal);
-            }
-        } catch (e) {
-            console.warn('[AcademyCRUDModals] Modal close failed:', e);
+        if (!modal.parentNode) {
+            return;
         }
 
-        if (modal.parentNode) {
-            modal.parentNode.removeChild(modal);
+        var teardownPromise;
+
+        try {
+            if (typeof Modal.closeModal === 'function') {
+                teardownPromise = Modal.closeModal(modal);
+            } else if (typeof Modal.hideModal === 'function') {
+                teardownPromise = Modal.hideModal(modal);
+            }
+        } catch (e) {
+            console.warn('[AcademyCRUDModals] Modal teardown threw:', e);
+            teardownPromise = null;
+        }
+
+        var finalize = function() {
+            if (modal.parentNode) {
+                try {
+                    modal.parentNode.removeChild(modal);
+                } catch (e) {
+                    // Already detached
+                }
+            }
+        };
+
+        if (teardownPromise && typeof teardownPromise.then === 'function') {
+            teardownPromise.then(finalize).catch(function(err) {
+                console.warn('[AcademyCRUDModals] Modal teardown failed:', err);
+                finalize();
+            });
+        } else {
+            finalize();
         }
     }
 
@@ -398,10 +471,14 @@
     //
     // The candidate list is supplied by the caller. The builder does
     // NOT query the roster; the aggregator does that.
+    //
+    // The VM carries `candidatesUnassigned` and `candidatesAssigned`
+    // as two separate arrays. The builder renders them as two
+    // <optgroup> blocks when both are non-empty, a single <optgroup>
+    // when only one is non-empty, and a flat list when the VM has a
+    // legacy `candidates` array.
 
     function buildAddCharacterToClassHTML(vm) {
-        var candidates = Array.isArray(vm.candidates) ? vm.candidates : [];
-
         var html = '';
         html += '<form id="academy-add-character-form" ' +
                     'data-class-id="' + escapeAttribute(vm.classId) + '">';
@@ -419,14 +496,71 @@
         html += '<label for="ac-add-character-select">Character</label>';
         html += '<select id="ac-add-character-select" ' +
                     'class="ac-add-character-select" required>';
-        html += '<option value="">Select a character...</option>';
-        for (var i = 0; i < candidates.length; i++) {
-            var cand = candidates[i];
-            if (!cand || !cand.id) { continue; }
-            html += '<option value="' + escapeAttribute(cand.id) + '">' +
-                        escapeHtml(cand.name) +
-                    '</option>';
+
+        var hasGroups =
+            Array.isArray(vm.candidatesUnassigned) ||
+            Array.isArray(vm.candidatesAssigned);
+
+        if (hasGroups) {
+            var free = Array.isArray(vm.candidatesUnassigned)
+                ? vm.candidatesUnassigned
+                : [];
+            var assigned = Array.isArray(vm.candidatesAssigned)
+                ? vm.candidatesAssigned
+                : [];
+            var total = free.length + assigned.length;
+
+            html += '<option value="">Select a character...</option>';
+
+            if (total === 0) {
+                // No candidates — the "already in the class" empty state
+                // is handled by the surrounding hint below.
+            } else if (free.length > 0 && assigned.length > 0) {
+                html += renderCharacterOptgroup('Unassigned', free);
+                html += renderCharacterOptgroup('In Other Classes', assigned);
+            } else if (free.length > 0) {
+                // Only unassigned; a label adds nothing.
+                html += renderCharacterOptions(free);
+            } else {
+                // Only assigned.
+                html += renderCharacterOptgroup('In Other Classes', assigned);
+            }
+
+            html += '</select>';
+
+            if (total === 0) {
+                html += '<p class="field-hint">' +
+                            'All characters are already in this class.' +
+                        '</p>';
+            } else if (free.length === 0 && assigned.length > 0) {
+                html += '<p class="field-hint">' +
+                            'Every available character is already a member ' +
+                            'of another class.' +
+                        '</p>';
+            }
+
+            html += '</div>';
+
+            html += '<div class="form-actions">';
+            html += '<button type="button" ' +
+                        'class="cancel-modal-btn secondary">Cancel</button>';
+            html += '<button type="submit" class="primary"' +
+                        (total === 0 ? ' disabled' : '') +
+                        '>Add Character</button>';
+            html += '</div>';
+
+            html += '</div>';
+            html += '</form>';
+
+            return html;
         }
+
+        // Legacy path: the VM has a flat `candidates` array. Kept so a
+        // partially-migrated deployment doesn't produce an empty modal.
+        var candidates = Array.isArray(vm.candidates) ? vm.candidates : [];
+
+        html += '<option value="">Select a character...</option>';
+        html += renderCharacterOptions(candidates);
         html += '</select>';
 
         if (candidates.length === 0) {
@@ -451,10 +585,44 @@
         return html;
     }
 
+    function renderCharacterOptions(candidates) {
+        var html = '';
+        for (var i = 0; i < candidates.length; i++) {
+            var cand = candidates[i];
+            if (!cand || !cand.id) { continue; }
+            html += '<option value="' + escapeAttribute(cand.id) + '">' +
+                        escapeHtml(cand.name) +
+                    '</option>';
+        }
+        return html;
+    }
+
+    function renderCharacterOptgroup(label, candidates) {
+        var inner = renderCharacterOptions(candidates);
+        if (inner === '') { return ''; }
+        return '<optgroup label="' + escapeAttribute(label) + '">' +
+                    inner +
+                '</optgroup>';
+    }
+
     /**
      * Build the VM for the "Add Character to Class" modal.
+     *
      * Uses the aggregator's roster projection and character list to
-     * compute the diff.
+     * compute the diff. Partitions candidates into:
+     *
+     *   - candidatesUnassigned: characters with no class membership.
+     *   - candidatesAssigned:   characters with at least one class
+     *                           membership (any class other than the
+     *                           target class, since the target class's
+     *                           roster is already excluded).
+     *
+     * Both partitions are sorted alphabetically by display name.
+     *
+     * The roster of the TARGET class is excluded entirely — both its
+     * students (from the aggregator) and its instructor (from the
+     * class record). "Already in a class" here means "in some OTHER
+     * class".
      */
     function buildAddCharacterToClassViewModel(classId) {
         var cls = getClassRecord(classId);
@@ -474,25 +642,39 @@
         }
 
         var all = CharacterQueries.getCharacters() || [];
-        var candidates = [];
+        var free = [];
+        var assigned = [];
+
         for (var j = 0; j < all.length; j++) {
             var c = all[j];
             if (!c || !c.id) { continue; }
             if (currentIds[String(c.id)]) { continue; }
-            candidates.push({
+
+            var entry = {
                 id: c.id,
                 name: CharacterQueries.getDisplayName(c)
-            });
+            };
+
+            var hasAnyClass = Array.isArray(c.classIds) && c.classIds.length > 0;
+            if (hasAnyClass) {
+                assigned.push(entry);
+            } else {
+                free.push(entry);
+            }
         }
 
-        candidates.sort(function(a, b) {
-            return a.name.localeCompare(b.name);
-        });
+        free.sort(function(a, b) { return compareAlpha(a.name, b.name); });
+        assigned.sort(function(a, b) { return compareAlpha(a.name, b.name); });
 
         return {
             classId: cls.id,
             className: cls.name || 'Unnamed Class',
-            candidates: candidates
+            candidatesUnassigned: free,
+            candidatesAssigned: assigned,
+
+            // Legacy flat array. Kept so callers that read
+            // `vm.candidates` still see a sensible combined list.
+            candidates: free.concat(assigned)
         };
     }
 
