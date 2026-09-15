@@ -1,85 +1,66 @@
 /**
  * modules/academy/academy-grades-editor.js - Academy Inline Grades Editor
- * Inline editor for a single character's grades within a class + week.
+ * Inline editor for a single character's grades within a class.
  *
  * Path: js/modules/academy/academy-grades-editor.js
  *
- * This module is responsible for:
- *   - Rendering the grades editor (table + add form)
- *   - Wiring per-row Edit / Delete buttons
- *   - Wiring the Add Grade form
- *   - Delegating to AcademyGrades for all mutations
- *   - Converting percentages to the discipline's grading scheme label
- *     for display (percentage remains the source of truth)
+ * RESPONSIBILITIES:
+ *   - Render the grades table for a (character, class) pair
+ *   - Render the Add Grade form and Edit Grade modal
+ *   - Render the Delete Grade confirmation modal
+ *   - Wire per-row Edit / Delete buttons via container delegation
+ *   - Route every mutation through AcademyGrades (Promise-based)
+ *   - Convert percentages to the discipline's grading scheme for
+ *     display (percentage remains the source of truth)
  *
- * IMPORTANT:
- *   - RENDER + WIRE - all mutations go through AcademyGrades.
- *   - AcademyGrades mutations are Promise-based and route through
- *     MutationPipeline. The pipeline owns persistence and notification.
- *   - This module uses container-level delegation for all row actions
- *     so re-renders do not leak listeners.
- *   - This module is designed to be MOUNTED into an existing container,
- *     not to replace the whole Academy view. It is the inline grades
- *     section of the character detail panel.
- *   - The class context (classId) is fixed when the editor is rendered.
- *     Changing class must re-mount.
- *
- * GRADE SCHEME SEMANTICS:
- *   - Grades are stored as percentages (score + maxScore). The scheme
- *     is a DISPLAY layer only.
- *   - Non-numeric schemes render as "85% (B)". Numeric schemes render
- *     as "85%".
- *   - The scheme is read from the discipline's `gradeScheme` via
- *     AcademyDisciplines.getGradeScheme, which normalizes on read.
- *   - The add/edit modal shows a live preview of the label as the user
- *     types the score.
- *
- * WEIGHT MODEL (Phase 3):
- *   - Grades do NOT carry a weight. Weight is a property of the
- *     assessment type within a discipline, configured at
- *     discipline.assessmentWeights. The editor does not expose weight.
- *
- * ENROLLMENT MODEL (Phase 3):
- *   - The discipline picker is sourced from the student's enrollment
- *     for the selected class via AcademyEnrolments. Enrollment is a
- *     CLASS-SCOPED relationship: a student can be enrolled in
- *     different disciplines for different classes.
- *   - Disciplines the student is enrolled in but which are not active
- *     during the editor's week are shown disabled.
- *   - When the student has no enrollment for the class, the picker
- *     shows an empty state and submit is disabled.
- *
- * DERIVED FIELDS (Phase 3):
- *   - `percentage` and `passing` are DERIVED by AcademyGrades on read.
- *     The editor prefers `grade.percentage` when present; falls back
- *     to computing from score / maxScore.
- *
- * MODAL CONTENT CONTRACT:
- *   Modal.createModal returns a BARE `.modal` shell. Both openers in
- *   this file reuse an existing `.modal-content` if present, and
- *   append one otherwise. That works with both the bare-shell and
- *   pre-created-wrapper contracts.
+ * NOT RESPONSIBILITIES:
+ *   - Domain validation. AcademyGrades validates.
+ *   - Notifications. The pipeline notifies.
+ *   - Persistence. The pipeline persists.
  *
  * LIFECYCLE:
- *   mount(container, charId, classId, week)  → render + bind
- *   refresh()                                 → re-render only
- *   unmount(container)                        → remove listeners
+ *   mount(container, charId, classId, week)
+ *   refresh()  — re-render after a mutation succeeds
+ *   unmount(container) — remove listeners
  *
- * DEPENDENCIES:
- *   - window.DomUtils (MANDATORY)
- *   - window.AcademyGrades (MANDATORY)
- *   - window.AcademyDisciplines (MANDATORY)
- *   - window.AcademyGradeSchemes (MANDATORY)
- *   - window.AcademyEnrolments (MANDATORY — falls back to legacy
- *     character.disciplineIds only when absent)
- *   - window.CharacterQueries (MANDATORY)
- *   - window.NotificationSystem (MANDATORY)
- *   - window.Modal (MANDATORY)
+ * CLASS + WEEK CONTEXT:
+ *   The class and week are FIXED at mount time. Changing class or week
+ *   requires a re-mount. The editor does not track UI state changes
+ *   on its own; the caller (AcademyView) owns that.
  *
- * USAGE:
- *   var GE = window.AcademyGradesEditor;
- *   GE.mount(document.getElementById('academy-grades-editor-host'),
- *             'char_123', 'class_456', 5);
+ * GRADE SCHEME:
+ *   Grades are stored as percentages (score + maxScore). The scheme is
+ *   a display layer. It is read from AcademyDisciplines.getGradeScheme,
+ *   which normalizes on read.
+ *
+ * ENROLLMENT:
+ *   The discipline picker sources its options from the student's
+ *   enrollment for the selected class via AcademyEnrolments. Enrollment
+ *   is class-scoped. character.disciplineIds is not read.
+ *
+ * WEEK SEMANTICS:
+ *   Weeks are parsed via ValidationUtils.parseStrictPositiveInteger and
+ *   bounded by CalendarConstants.MIN_WEEK / MAX_WEEK. No silent
+ *   coercion of "12garbage" to 12.
+ *
+ * MODAL CONTENT CONTRACT:
+ *   Modal.createModal returns a bare .modal shell. The modal content
+ *   helper here appends a fresh .modal-content wrapper, matching the
+ *   pattern used by the rest of the Academy shell.
+ *
+ * DEPENDENCIES (MANDATORY):
+ *   - window.DomUtils
+ *   - window.Modal
+ *   - window.NotificationSystem
+ *   - window.ValidationUtils
+ *   - window.AcademyGrades
+ *   - window.AcademyDisciplines
+ *   - window.AcademyGradeSchemes
+ *   - window.AcademyEnrolments
+ *   - window.CalendarConstants
+ *
+ * DEPENDENCIES (OPTIONAL, used for display only):
+ *   - window.CharacterQueries
  */
 
 (function() {
@@ -88,93 +69,109 @@
     if (window.__academyGradesEditorLoaded) {
         return;
     }
-    window.__academyGradesEditorLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // MANDATORY DEPENDENCIES
     // ============================================================
 
     var DomUtils = window.DomUtils;
+    var Modal = window.Modal;
+    var NotificationSystem = window.NotificationSystem;
+    var ValidationUtils = window.ValidationUtils;
     var AcademyGrades = window.AcademyGrades;
     var AcademyDisciplines = window.AcademyDisciplines;
     var GradeSchemes = window.AcademyGradeSchemes;
-    var AcademyEnrolments = window.AcademyEnrolments || null;
-    var CharacterQueries = window.CharacterQueries;
-    var NotificationSystem = window.NotificationSystem;
-    var Modal = window.Modal;
+    var AcademyEnrolments = window.AcademyEnrolments;
+    var CalendarConstants = window.CalendarConstants;
 
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
+    var _missing = [];
 
-    function checkDependencies() {
-        var missing = [];
-
-        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
-            missing.push('DomUtils.escapeHtml');
-        }
-        if (!DomUtils || typeof DomUtils.escapeAttribute !== 'function') {
-            missing.push('DomUtils.escapeAttribute');
-        }
-
-        if (!AcademyGrades || typeof AcademyGrades.getStudentClassGrades !== 'function') {
-            missing.push('AcademyGrades.getStudentClassGrades');
-        }
-        if (!AcademyGrades || typeof AcademyGrades.getStudentGrades !== 'function') {
-            missing.push('AcademyGrades.getStudentGrades');
-        }
-        if (!AcademyGrades || typeof AcademyGrades.create !== 'function') {
-            missing.push('AcademyGrades.create');
-        }
-        if (!AcademyGrades || typeof AcademyGrades.update !== 'function') {
-            missing.push('AcademyGrades.update');
-        }
-        if (!AcademyGrades || typeof AcademyGrades.delete !== 'function') {
-            missing.push('AcademyGrades.delete');
-        }
-        if (!AcademyGrades || typeof AcademyGrades.getGrade !== 'function') {
-            missing.push('AcademyGrades.getGrade');
-        }
-
-        if (!AcademyDisciplines || typeof AcademyDisciplines.getDiscipline !== 'function') {
-            missing.push('AcademyDisciplines.getDiscipline');
-        }
-        if (!AcademyDisciplines || typeof AcademyDisciplines.getGradeScheme !== 'function') {
-            missing.push('AcademyDisciplines.getGradeScheme');
-        }
-
-        if (!GradeSchemes || typeof GradeSchemes.getGradeDisplay !== 'function') {
-            missing.push('AcademyGradeSchemes.getGradeDisplay');
-        }
-        if (!GradeSchemes || typeof GradeSchemes.getLabelForScore !== 'function') {
-            missing.push('AcademyGradeSchemes.getLabelForScore');
-        }
-        if (!GradeSchemes || typeof GradeSchemes.isNumericScheme !== 'function') {
-            missing.push('AcademyGradeSchemes.isNumericScheme');
-        }
-        if (!GradeSchemes || typeof GradeSchemes.normalizeScheme !== 'function') {
-            missing.push('AcademyGradeSchemes.normalizeScheme');
-        }
-
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
-        }
-
-        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
-            missing.push('NotificationSystem.notify');
-        }
-
-        if (!Modal || typeof Modal.createModal !== 'function') {
-            missing.push('Modal.createModal');
-        }
-
-        if (missing.length > 0) {
-            console.warn('[AcademyGradesEditor] Missing dependencies:', missing.join(', '));
-            return false;
-        }
-
-        return true;
+    if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
+        _missing.push('DomUtils.escapeHtml');
     }
+    if (!DomUtils || typeof DomUtils.escapeAttribute !== 'function') {
+        _missing.push('DomUtils.escapeAttribute');
+    }
+    if (!Modal || typeof Modal.createModal !== 'function') {
+        _missing.push('Modal.createModal');
+    }
+    if (!Modal || typeof Modal.showModal !== 'function') {
+        _missing.push('Modal.showModal');
+    }
+    if (!Modal || typeof Modal.modalSetup !== 'function') {
+        _missing.push('Modal.modalSetup');
+    }
+    if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
+        _missing.push('NotificationSystem.notify');
+    }
+    if (!ValidationUtils || typeof ValidationUtils.parseStrictPositiveInteger !== 'function') {
+        _missing.push('ValidationUtils.parseStrictPositiveInteger');
+    }
+    if (!AcademyGrades || typeof AcademyGrades.getStudentClassGrades !== 'function') {
+        _missing.push('AcademyGrades.getStudentClassGrades');
+    }
+    if (!AcademyGrades || typeof AcademyGrades.create !== 'function') {
+        _missing.push('AcademyGrades.create');
+    }
+    if (!AcademyGrades || typeof AcademyGrades.update !== 'function') {
+        _missing.push('AcademyGrades.update');
+    }
+    if (!AcademyGrades || typeof AcademyGrades.delete !== 'function') {
+        _missing.push('AcademyGrades.delete');
+    }
+    if (!AcademyGrades || typeof AcademyGrades.getGrade !== 'function') {
+        _missing.push('AcademyGrades.getGrade');
+    }
+    if (!AcademyGrades || typeof AcademyGrades.calculateSummary !== 'function') {
+        _missing.push('AcademyGrades.calculateSummary');
+    }
+    if (!AcademyDisciplines || typeof AcademyDisciplines.getDiscipline !== 'function') {
+        _missing.push('AcademyDisciplines.getDiscipline');
+    }
+    if (!AcademyDisciplines || typeof AcademyDisciplines.getGradeScheme !== 'function') {
+        _missing.push('AcademyDisciplines.getGradeScheme');
+    }
+    if (!GradeSchemes || typeof GradeSchemes.getGradeDisplay !== 'function') {
+        _missing.push('AcademyGradeSchemes.getGradeDisplay');
+    }
+    if (!GradeSchemes || typeof GradeSchemes.normalizeScheme !== 'function') {
+        _missing.push('AcademyGradeSchemes.normalizeScheme');
+    }
+    if (!AcademyEnrolments || typeof AcademyEnrolments.getStudentDisciplines !== 'function') {
+        _missing.push('AcademyEnrolments.getStudentDisciplines');
+    }
+    if (!CalendarConstants ||
+        typeof CalendarConstants.MIN_WEEK !== 'number' ||
+        typeof CalendarConstants.MAX_WEEK !== 'number') {
+        _missing.push('CalendarConstants.MIN_WEEK / MAX_WEEK');
+    }
+
+    if (_missing.length > 0) {
+        throw new Error(
+            '[AcademyGradesEditor] Missing mandatory dependencies: ' +
+            _missing.join(', ')
+        );
+    }
+
+    window.__academyGradesEditorLoaded = true;
+
+    // ============================================================
+    // OPTIONAL DEPENDENCY ACCESSOR
+    // ============================================================
+
+    function getCharacterQueries() {
+        return window.CharacterQueries || null;
+    }
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
+
+    var DEFAULT_MAX_SCORE = 100;
+    var DEFAULT_GRADE_TYPE = 'assignment';
 
     // ============================================================
     // HELPERS
@@ -200,19 +197,44 @@
         NotificationSystem.notify(message, type || 'info');
     }
 
+    function safeString(value) {
+        if (value === undefined || value === null) { return ''; }
+        return String(value);
+    }
+
+    function parseStrictWeek(value) {
+        var n = ValidationUtils.parseStrictPositiveInteger(value);
+        if (n === null) { return null; }
+        if (n < MIN_WEEK || n > MAX_WEEK) { return null; }
+        return n;
+    }
+
+    function parseFiniteNumber(value) {
+        var n = Number(value);
+        if (!isFinite(n)) { return null; }
+        return n;
+    }
+
     function getDisciplineName(disciplineId) {
-        if (!disciplineId) { return 'Unknown'; }
+        if (!isNonEmptyString(disciplineId)) { return 'Unknown'; }
         var d = AcademyDisciplines.getDiscipline(disciplineId);
         return d && d.name ? d.name : 'Unknown';
     }
 
+    function getDisciplineType(disciplineId) {
+        if (!isNonEmptyString(disciplineId)) { return ''; }
+        var d = AcademyDisciplines.getDiscipline(disciplineId);
+        return d && d.type ? d.type : '';
+    }
+
     /**
      * Get the normalized grade scheme for a discipline.
-     * Always returns a valid scheme (numeric default when discipline
-     * is missing or has no scheme).
+     * AcademyDisciplines.getGradeScheme normalizes on read; this
+     * helper is a thin wrapper that also handles the missing-discipline
+     * case.
      */
     function getSchemeForDiscipline(disciplineId) {
-        if (!disciplineId) {
+        if (!isNonEmptyString(disciplineId)) {
             return GradeSchemes.normalizeScheme(null);
         }
         return AcademyDisciplines.getGradeScheme(disciplineId);
@@ -226,10 +248,11 @@
     function getGradePercentage(grade) {
         if (!grade) { return null; }
         if (isFiniteNumber(grade.percentage)) { return grade.percentage; }
-        if (isFiniteNumber(grade.score) && isFiniteNumber(grade.maxScore) && grade.maxScore > 0) {
-            return Math.round((grade.score / grade.maxScore) * 100);
-        }
-        return null;
+
+        var score = parseFiniteNumber(grade.score);
+        var max = parseFiniteNumber(grade.maxScore);
+        if (score === null || max === null || max <= 0) { return null; }
+        return Math.round((score / max) * 100);
     }
 
     function formatScoreDisplay(grade, scheme) {
@@ -242,33 +265,38 @@
         if (!isFiniteNumber(percentage)) {
             return 'academy-grade-score academy-grade-score-unknown';
         }
-        if (percentage >= 90) return 'academy-grade-score academy-grade-score-excellent';
-        if (percentage >= 80) return 'academy-grade-score academy-grade-score-good';
-        if (percentage >= 70) return 'academy-grade-score academy-grade-score-passing';
+        if (percentage >= 90) {
+            return 'academy-grade-score academy-grade-score-excellent';
+        }
+        if (percentage >= 80) {
+            return 'academy-grade-score academy-grade-score-good';
+        }
+        if (percentage >= 70) {
+            return 'academy-grade-score academy-grade-score-passing';
+        }
         return 'academy-grade-score academy-grade-score-failing';
     }
 
-    /**
-     * Build a preview string for a score under a scheme.
-     * Numeric scheme → '85%'. Non-numeric → '85% (B)'.
-     */
     function buildLabelPreview(score, scheme) {
-        if (!isFinite(score)) { return ''; }
-        if (!GradeSchemes.isNumericScheme(scheme)) {
-            var label = GradeSchemes.getLabelForScore(scheme, score);
-            if (label) {
-                return score + '% (' + label + ')';
-            }
-        }
-        return score + '%';
+        if (!isFiniteNumber(score)) { return ''; }
+        return GradeSchemes.getGradeDisplay(scheme, score);
     }
 
     // ============================================================
     // MODAL PLUMBING
     // ============================================================
 
+    function openModalShell(className) {
+        var modal = Modal.createModal(className);
+        if (!modal) {
+            notify('Could not create modal.', 'error');
+            return null;
+        }
+        return modal;
+    }
+
     function attachModalContent(modal, html) {
-        if (!modal) return;
+        if (!modal) { return; }
 
         var contentEl = modal.querySelector('.modal-content');
         if (!contentEl) {
@@ -276,48 +304,64 @@
             contentEl.className = 'modal-content';
             modal.appendChild(contentEl);
         }
-        contentEl.innerHTML = html;
+        contentEl.innerHTML = html || '';
+
+        Modal.modalSetup(modal);
+        Modal.showModal(modal);
+    }
+
+    function closeModal(modal) {
+        if (!modal) { return; }
+
+        try {
+            if (typeof Modal.hideModal === 'function') {
+                Modal.hideModal(modal);
+            } else if (typeof Modal.closeModal === 'function') {
+                Modal.closeModal(modal);
+            }
+        } catch (e) {
+            console.warn('[AcademyGradesEditor] Modal close failed:', e);
+        }
+
+        if (modal.parentNode) {
+            modal.parentNode.removeChild(modal);
+        }
+    }
+
+    function bindCommonModalControls(modal, close) {
+        if (!modal || typeof close !== 'function') { return; }
+
+        var closeBtn = modal.querySelector('.close-modal');
+        if (closeBtn) { closeBtn.addEventListener('click', close); }
+
+        var cancelBtn = modal.querySelector('.cancel-modal-btn');
+        if (cancelBtn) { cancelBtn.addEventListener('click', close); }
+
+        modal.addEventListener('click', function(e) {
+            if (e.target === modal) { close(); }
+        });
     }
 
     // ============================================================
-    // ENROLLMENT PICKER (Phase 3)
+    // ENROLLMENT PICKER
     // ============================================================
-    //
-    // The discipline picker sources its options from the student's
-    // enrollment for the class. Enrollment is class-scoped:
-    //   AcademyEnrolments.getStudentDisciplines(charId, classId)
-    //
-    // Legacy fallback: when AcademyEnrolments is absent, this falls
-    // back to character.disciplineIds. That path exists only during
-    // the enrollment migration. It is removed once all callers use
-    // AcademyEnrolments.
-    //
-    // Active-this-week filtering: disciplines the student is enrolled
-    // in but which are not active during the editor's week are still
-    // shown, marked disabled. That makes the state visible rather
-    // than silently hiding disciplines.
 
+    /**
+     * Get the discipline options from the student's enrollment for a
+     * class. Returns an array of { id, name, activeThisWeek }.
+     * Enrollment is class-scoped; the source of truth is AcademyEnrolments.
+     */
     function getEnrolledDisciplineOptions(studentId, classId, week) {
-        var enrolledIds = [];
-
-        if (AcademyEnrolments &&
-            typeof AcademyEnrolments.getStudentDisciplines === 'function' &&
-            classId) {
-            enrolledIds = AcademyEnrolments.getStudentDisciplines(studentId, classId);
-        } else {
-            var student = CharacterQueries.getCharacterById(studentId);
-            if (student && Array.isArray(student.disciplineIds)) {
-                enrolledIds = student.disciplineIds.slice();
-            }
+        if (!isNonEmptyString(studentId) || !isNonEmptyString(classId)) {
+            return [];
         }
 
+        var enrolledIds = AcademyEnrolments.getStudentDisciplines(studentId, classId);
         if (!Array.isArray(enrolledIds) || enrolledIds.length === 0) {
             return [];
         }
 
-        var weekNum = parseInt(week, 10);
-        if (isNaN(weekNum)) { weekNum = null; }
-
+        var weekNum = parseStrictWeek(week);
         var options = [];
 
         for (var i = 0; i < enrolledIds.length; i++) {
@@ -329,12 +373,12 @@
 
             var activeThisWeek = true;
             if (weekNum !== null) {
-                var startWeek = parseInt(discipline.startWeek, 10);
-                var endWeek = parseInt(discipline.endWeek, 10);
-                if (!isNaN(startWeek) && weekNum < startWeek) {
+                var startWeek = ValidationUtils.parseStrictPositiveInteger(discipline.startWeek);
+                var endWeek = ValidationUtils.parseStrictPositiveInteger(discipline.endWeek);
+                if (startWeek !== null && weekNum < startWeek) {
                     activeThisWeek = false;
                 }
-                if (!isNaN(endWeek) && weekNum > endWeek) {
+                if (endWeek !== null && weekNum > endWeek) {
                     activeThisWeek = false;
                 }
             }
@@ -342,6 +386,7 @@
             options.push({
                 id: discipline.id,
                 name: discipline.name || 'Unnamed Discipline',
+                type: getDisciplineType(discipline.id),
                 activeThisWeek: activeThisWeek
             });
         }
@@ -356,7 +401,7 @@
     }
 
     // ============================================================
-    // STATE
+    // MODULE STATE
     // ============================================================
 
     var _state = {
@@ -370,26 +415,25 @@
     var _delegatedHandler = null;
 
     // ============================================================
-    // MOUNT / UNMOUNT
+    // MOUNT / UNMOUNT / REFRESH
     // ============================================================
 
     function mount(container, charId, classId, week) {
-        if (!checkDependencies()) {
-            if (container) {
-                container.innerHTML =
-                    '<p class="empty-state small">Grades editor dependencies not loaded.</p>';
-            }
-            return;
-        }
-
         if (!container) {
             console.warn('[AcademyGradesEditor] mount requires a container');
             return;
         }
 
-        if (!charId) {
+        if (!isNonEmptyString(charId)) {
             container.innerHTML =
                 '<p class="empty-state small">No character selected.</p>';
+            return;
+        }
+
+        var weekNum = parseStrictWeek(week);
+        if (weekNum === null) {
+            container.innerHTML =
+                '<p class="empty-state small">Valid week is required.</p>';
             return;
         }
 
@@ -397,8 +441,8 @@
 
         _state.container = container;
         _state.charId = String(charId);
-        _state.classId = classId ? String(classId) : null;
-        _state.week = isFiniteNumber(week) ? week : null;
+        _state.classId = isNonEmptyString(classId) ? String(classId) : null;
+        _state.week = weekNum;
 
         render();
 
@@ -436,7 +480,7 @@
     }
 
     // ============================================================
-    // RENDER
+    // RENDER — TABLE
     // ============================================================
 
     function render() {
@@ -445,8 +489,6 @@
         var charId = _state.charId;
         var classId = _state.classId;
 
-        // Class-scoped query. When classId is missing (defensive
-        // case), fall back to all student grades.
         var grades;
         if (classId) {
             grades = AcademyGrades.getStudentClassGrades(charId, classId) || [];
@@ -455,8 +497,8 @@
         }
 
         grades = grades.slice().sort(function(a, b) {
-            var wa = parseInt(a.week, 10) || 0;
-            var wb = parseInt(b.week, 10) || 0;
+            var wa = parseStrictWeek(a.week) || 0;
+            var wb = parseStrictWeek(b.week) || 0;
             if (wa !== wb) { return wa - wb; }
             return String(a.date || '').localeCompare(String(b.date || ''));
         });
@@ -466,15 +508,20 @@
 
         html += '<div class="academy-grades-editor-header">';
         html += '<h4 class="academy-grades-editor-title">Grades</h4>';
-        html += '<button type="button" class="primary small academy-add-grade-btn" ' +
-                    'data-action="add-grade">+ Add Grade</button>';
+        html += '<button type="button" ' +
+                    'class="primary small academy-add-grade-btn" ' +
+                    'data-action="add-grade">' +
+                    '+ Add Grade' +
+                '</button>';
         html += '</div>';
 
         if (grades.length === 0) {
-            html += '<p class="empty-state small">No grades recorded for this character in this class.</p>';
+            html += '<p class="empty-state small">' +
+                        'No grades recorded for this character in this class.' +
+                    '</p>';
             html += '</div>';
             _state.container.innerHTML = html;
-            return html;
+            return;
         }
 
         html += '<div class="academy-grades-editor-table-wrapper">';
@@ -498,10 +545,19 @@
         html += '</table>';
         html += '</div>';
 
+        // Summary line
+        var summary = AcademyGrades.calculateSummary(grades);
+        if (summary && summary.count > 0 && isFiniteNumber(summary.average)) {
+            html += '<p class="academy-grades-summary">' +
+                        'Average across ' + summary.count +
+                        ' grade' + (summary.count === 1 ? '' : 's') + ': ' +
+                        escapeHtml(String(summary.average)) + '%' +
+                    '</p>';
+        }
+
         html += '</div>';
 
         _state.container.innerHTML = html;
-        return html;
     }
 
     function renderGradeRow(grade) {
@@ -511,7 +567,9 @@
         var scheme = getSchemeForDiscipline(grade.disciplineId);
         var scoreDisplay = formatScoreDisplay(grade, scheme);
 
-        var typeLabel = isNonEmptyString(grade.type) ? grade.type : 'assignment';
+        var typeLabel = isNonEmptyString(grade.type)
+            ? grade.type
+            : DEFAULT_GRADE_TYPE;
         var weekLabel = grade.week !== undefined && grade.week !== null
             ? String(grade.week)
             : '\u2014';
@@ -530,10 +588,14 @@
         html += '<td class="actions-col">';
         html += '<button type="button" class="small secondary" ' +
                     'data-action="edit-grade" ' +
-                    'data-grade-id="' + escapeAttribute(grade.id || '') + '">Edit</button>';
+                    'data-grade-id="' + escapeAttribute(grade.id || '') + '">' +
+                    'Edit' +
+                '</button>';
         html += '<button type="button" class="small danger" ' +
                     'data-action="delete-grade" ' +
-                    'data-grade-id="' + escapeAttribute(grade.id || '') + '">Delete</button>';
+                    'data-grade-id="' + escapeAttribute(grade.id || '') + '">' +
+                    'Delete' +
+                '</button>';
         html += '</td>';
         html += '</tr>';
         return html;
@@ -570,7 +632,7 @@
     }
 
     // ============================================================
-    // ADD / EDIT GRADE MODAL
+    // ADD / EDIT GRADE FORM
     // ============================================================
 
     function openGradeForm(gradeId) {
@@ -586,22 +648,18 @@
         var isEdit = !!existing;
         var g = existing || {};
 
-        // Discipline picker from enrollment (Phase 3).
         var disciplineOptions = getEnrolledDisciplineOptions(
             _state.charId,
             _state.classId,
             _state.week
         );
 
-        var validTypes = (AcademyGrades.VALID_GRADE_TYPES) || [
-            'exam', 'assignment', 'participation', 'project', 'quiz', 'final'
-        ];
+        var validTypes = Array.isArray(AcademyGrades.VALID_GRADE_TYPES)
+            ? AcademyGrades.VALID_GRADE_TYPES.slice()
+            : [DEFAULT_GRADE_TYPE];
 
-        var modal = Modal.createModal('academy-grade-form-modal');
-        if (!modal) {
-            notify('Could not create modal.', 'error');
-            return;
-        }
+        var modal = openModalShell('academy-grade-form-modal');
+        if (!modal) { return; }
 
         // Initial discipline:
         //   - Edit mode: the grade's own discipline.
@@ -618,10 +676,13 @@
 
         var initialScheme = getSchemeForDiscipline(initialDisciplineId);
 
-        var initialScore = (g.score !== undefined && g.score !== null) ? g.score : '';
+        var initialScore = (g.score !== undefined && g.score !== null)
+            ? g.score
+            : '';
         var initialPreview = '';
-        if (initialScore !== '' && !isNaN(parseFloat(initialScore))) {
-            initialPreview = buildLabelPreview(parseFloat(initialScore), initialScheme);
+        var initialScoreNum = parseFiniteNumber(initialScore);
+        if (initialScoreNum !== null) {
+            initialPreview = buildLabelPreview(initialScoreNum, initialScheme);
         }
 
         var hasEnrollment = disciplineOptions.length > 0;
@@ -634,8 +695,9 @@
         }
 
         var html = '';
-        html += '<form id="academy-grade-form" data-edit-id="' +
-                    (isEdit ? escapeAttribute(existing.id) : '') + '">';
+        html += '<form id="academy-grade-form" ' +
+                    'data-edit-id="' +
+                        (isEdit ? escapeAttribute(existing.id) : '') + '">';
 
         html += '<div class="modal-header">';
         html += '<h3>' + (isEdit ? 'Edit Grade' : 'Add Grade') + '</h3>';
@@ -650,12 +712,16 @@
         html += '<select id="ag-disc-select" class="ag-disc-select" required>';
 
         if (!hasEnrollment) {
-            html += '<option value="">Not enrolled in any disciplines for this class</option>';
+            html += '<option value="">' +
+                        'Not enrolled in any disciplines for this class' +
+                    '</option>';
         } else {
             html += '<option value="">Select a discipline...</option>';
             for (var d = 0; d < disciplineOptions.length; d++) {
                 var opt = disciplineOptions[d];
-                var selected = String(opt.id) === String(initialDisciplineId) ? ' selected' : '';
+                var selected = String(opt.id) === String(initialDisciplineId)
+                    ? ' selected'
+                    : '';
                 var disabled = opt.activeThisWeek ? '' : ' disabled';
                 var suffix = opt.activeThisWeek ? '' : ' (not active this week)';
                 html += '<option value="' + escapeAttribute(opt.id) + '"' +
@@ -669,12 +735,14 @@
 
         if (!hasEnrollment) {
             html += '<p class="field-hint">' +
-                        'This student is not enrolled in any disciplines for this class. ' +
-                        'Enroll them in a discipline before adding grades.' +
+                        'This student is not enrolled in any disciplines ' +
+                        'for this class. Enroll them in a discipline before ' +
+                        'adding grades.' +
                     '</p>';
         } else if (!hasActiveEnrollment) {
             html += '<p class="field-hint">' +
-                        'None of this student\'s enrolled disciplines are active during week ' +
+                        'None of this student\'s enrolled disciplines are ' +
+                        'active during week ' +
                         escapeHtml(String(_state.week)) + '.' +
                     '</p>';
         }
@@ -687,13 +755,15 @@
         html += '<select id="ag-type-select" class="ag-type-select">';
         for (var t = 0; t < validTypes.length; t++) {
             var type = validTypes[t];
-            var tSel = (g.type || 'assignment') === type ? ' selected' : '';
+            var tSel = (g.type || DEFAULT_GRADE_TYPE) === type ? ' selected' : '';
             html += '<option value="' + escapeAttribute(type) + '"' + tSel + '>' +
                         escapeHtml(type.charAt(0).toUpperCase() + type.slice(1)) +
                     '</option>';
         }
         html += '</select>';
-        html += '<p class="field-hint">Weight comes from the discipline\'s assessment setup.</p>';
+        html += '<p class="field-hint">' +
+                    'Weight comes from the discipline\'s assessment setup.' +
+                '</p>';
         html += '</div>';
 
         // Week.
@@ -703,24 +773,30 @@
                     'value="' + escapeAttribute(String(
                         g.week !== undefined && g.week !== null
                             ? g.week
-                            : (_state.week !== null ? _state.week : '')
+                            : _state.week
                     )) + '" ' +
-                    'min="1" max="52" required>';
+                    'min="' + escapeAttribute(String(MIN_WEEK)) + '" ' +
+                    'max="' + escapeAttribute(String(MAX_WEEK)) + '" required>';
         html += '</div>';
 
         // Score / Max score.
-        html += '<div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
+        html += '<div class="form-row" ' +
+                    'style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
         html += '<div class="form-group">';
         html += '<label for="ag-score-input">Score *</label>';
-        html += '<input type="number" step="0.1" id="ag-score-input" class="ag-score-input" ' +
+        html += '<input type="number" step="0.1" id="ag-score-input" ' +
+                    'class="ag-score-input" ' +
                     'value="' + escapeAttribute(initialScore) + '" ' +
                     'min="0" required>';
         html += '</div>';
         html += '<div class="form-group">';
         html += '<label for="ag-max-score-input">Max Score</label>';
-        html += '<input type="number" step="0.1" id="ag-max-score-input" class="ag-max-score-input" ' +
+        html += '<input type="number" step="0.1" ' +
+                    'id="ag-max-score-input" class="ag-max-score-input" ' +
                     'value="' + escapeAttribute(
-                        g.maxScore !== undefined && g.maxScore !== null ? String(g.maxScore) : '100'
+                        g.maxScore !== undefined && g.maxScore !== null
+                            ? String(g.maxScore)
+                            : String(DEFAULT_MAX_SCORE)
                     ) + '" ' +
                     'min="1">';
         html += '</div>';
@@ -734,8 +810,6 @@
                 '</span>';
         html += '</div>';
 
-        // Weight input is deliberately absent.
-
         // Date.
         html += '<div class="form-group">';
         html += '<label for="ag-date-input">Date</label>';
@@ -746,15 +820,19 @@
         // Notes.
         html += '<div class="form-group">';
         html += '<label for="ag-notes-input">Notes</label>';
-        html += '<textarea id="ag-notes-input" class="ag-notes-input" rows="2">' +
+        html += '<textarea id="ag-notes-input" class="ag-notes-input" ' +
+                    'rows="2">' +
                     escapeHtml(g.notes || '') +
                 '</textarea>';
         html += '</div>';
 
         // Actions.
-        var submitDisabled = (!hasEnrollment || !hasActiveEnrollment) ? ' disabled' : '';
+        var submitDisabled = (!hasEnrollment || !hasActiveEnrollment)
+            ? ' disabled'
+            : '';
         html += '<div class="form-actions">';
-        html += '<button type="button" class="cancel-modal-btn secondary">Cancel</button>';
+        html += '<button type="button" ' +
+                    'class="cancel-modal-btn secondary">Cancel</button>';
         html += '<button type="submit" class="primary"' + submitDisabled + '>' +
                     (isEdit ? 'Update Grade' : 'Add Grade') +
                 '</button>';
@@ -764,36 +842,15 @@
         html += '</form>';
 
         attachModalContent(modal, html);
-
-        Modal.modalSetup(modal);
-        Modal.showModal(modal);
-
         bindGradeFormEvents(modal, existing);
     }
 
     function bindGradeFormEvents(modal, existing) {
-        var closeModal = function() {
-            try {
-                if (Modal && typeof Modal.closeModal === 'function') {
-                    Modal.closeModal(modal);
-                }
-            } catch (e) {
-                // Ignore
-            }
-            if (modal.parentNode) {
-                modal.parentNode.removeChild(modal);
-            }
+        var close = function() {
+            closeModal(modal);
         };
 
-        var closeBtn = modal.querySelector('.close-modal');
-        if (closeBtn) { closeBtn.addEventListener('click', closeModal); }
-
-        var cancelBtn = modal.querySelector('.cancel-modal-btn');
-        if (cancelBtn) { cancelBtn.addEventListener('click', closeModal); }
-
-        modal.addEventListener('click', function(e) {
-            if (e.target === modal) { closeModal(); }
-        });
+        bindCommonModalControls(modal, close);
 
         var form = modal.querySelector('#academy-grade-form');
         if (!form) { return; }
@@ -809,9 +866,9 @@
             var scheme = getSchemeForDiscipline(discId);
 
             var rawScore = scoreInput ? scoreInput.value : '';
-            var score = parseFloat(rawScore);
+            var score = parseFiniteNumber(rawScore);
 
-            if (rawScore === '' || isNaN(score)) {
+            if (score === null) {
                 previewEl.textContent = '\u2014';
                 return;
             }
@@ -837,23 +894,26 @@
             var notesInput = form.querySelector('.ag-notes-input');
 
             var disciplineId = discInput ? discInput.value : '';
-            var week = weekInput ? parseInt(weekInput.value, 10) : NaN;
-            var score = scoreInput ? parseFloat(scoreInput.value) : NaN;
-            var maxScore = maxInput && maxInput.value ? parseFloat(maxInput.value) : 100;
+            var week = weekInput ? parseStrictWeek(weekInput.value) : null;
+            var score = scoreInput ? parseFiniteNumber(scoreInput.value) : null;
+            var maxScore = maxInput && maxInput.value !== ''
+                ? parseFiniteNumber(maxInput.value)
+                : DEFAULT_MAX_SCORE;
 
             if (!disciplineId) {
                 notify('Please select a discipline.', 'error');
                 return;
             }
-            if (isNaN(week) || week < 1 || week > 52) {
-                notify('Week must be between 1 and 52.', 'error');
+            if (week === null) {
+                notify('Week must be between ' + MIN_WEEK +
+                    ' and ' + MAX_WEEK + '.', 'error');
                 return;
             }
-            if (isNaN(score)) {
+            if (score === null) {
                 notify('Score is required and must be a number.', 'error');
                 return;
             }
-            if (isNaN(maxScore) || maxScore <= 0) {
+            if (maxScore === null || maxScore <= 0) {
                 notify('Max score must be greater than 0.', 'error');
                 return;
             }
@@ -869,7 +929,7 @@
                 week: week,
                 score: score,
                 maxScore: maxScore,
-                type: typeInput ? typeInput.value : 'assignment',
+                type: typeInput ? typeInput.value : DEFAULT_GRADE_TYPE,
                 date: dateInput ? dateInput.value : undefined,
                 notes: notesInput ? notesInput.value.trim() : ''
             };
@@ -883,10 +943,11 @@
 
             promise.then(function(result) {
                 if (result && result.success) {
-                    closeModal();
+                    close();
                     refresh();
                 }
-                // On failure, MutationPipeline already notified.
+                // On failure, the pipeline has already notified.
+                // Modal stays open so the user can retry.
             }).catch(function(err) {
                 console.warn('[AcademyGradesEditor] Save failed:', err);
                 notify('Failed to save grade.', 'error');
@@ -909,11 +970,8 @@
         var scheme = getSchemeForDiscipline(grade.disciplineId);
         var scoreDisplay = formatScoreDisplay(grade, scheme);
 
-        var modal = Modal.createModal('academy-grade-delete-modal');
-        if (!modal) {
-            notify('Could not create modal.', 'error');
-            return;
-        }
+        var modal = openModalShell('academy-grade-delete-modal');
+        if (!modal) { return; }
 
         var html = '';
         html += '<form id="academy-grade-delete-form">';
@@ -929,7 +987,8 @@
                 ' \u2014 ' + escapeHtml(scoreDisplay);
         html += '</p>';
         html += '<div class="form-actions">';
-        html += '<button type="button" class="cancel-modal-btn secondary">Cancel</button>';
+        html += '<button type="button" ' +
+                    'class="cancel-modal-btn secondary">Cancel</button>';
         html += '<button type="submit" class="danger">Delete Grade</button>';
         html += '</div>';
         html += '</div>';
@@ -937,31 +996,11 @@
 
         attachModalContent(modal, html);
 
-        Modal.modalSetup(modal);
-        Modal.showModal(modal);
-
-        var closeModal = function() {
-            try {
-                if (Modal && typeof Modal.closeModal === 'function') {
-                    Modal.closeModal(modal);
-                }
-            } catch (e) {
-                // Ignore
-            }
-            if (modal.parentNode) {
-                modal.parentNode.removeChild(modal);
-            }
+        var close = function() {
+            closeModal(modal);
         };
 
-        var closeBtn = modal.querySelector('.close-modal');
-        if (closeBtn) { closeBtn.addEventListener('click', closeModal); }
-
-        var cancelBtn = modal.querySelector('.cancel-modal-btn');
-        if (cancelBtn) { cancelBtn.addEventListener('click', closeModal); }
-
-        modal.addEventListener('click', function(e) {
-            if (e.target === modal) { closeModal(); }
-        });
+        bindCommonModalControls(modal, close);
 
         var form = modal.querySelector('#academy-grade-delete-form');
         if (!form) { return; }
@@ -971,7 +1010,7 @@
 
             AcademyGrades.delete(gradeId).then(function(result) {
                 if (result && result.success) {
-                    closeModal();
+                    close();
                     refresh();
                 }
             }).catch(function(err) {
@@ -991,26 +1030,5 @@
         refresh: refresh,
         render: render
     };
-
-    // ============================================================
-    // VERIFICATION
-    // ============================================================
-
-    (function verify() {
-        var exports = window.AcademyGradesEditor;
-        var missing = [];
-
-        var required = ['mount', 'unmount', 'refresh', 'render'];
-
-        for (var i = 0; i < required.length; i++) {
-            if (typeof exports[required[i]] !== 'function') {
-                missing.push(required[i]);
-            }
-        }
-
-        if (missing.length > 0) {
-            console.warn('[AcademyGradesEditor] Verification - some exports may be missing:', missing.join(', '));
-        }
-    })();
 
 })();
