@@ -22,15 +22,25 @@
  *   Do not add tab-content event binding here. If something needs
  *   to re-render, it goes through AcademyView.render(container).
  *
- * SHELL HISTORY:
- *   Previously this file handed the container to AcademyEvents,
- *   which rendered a class/student/faculty sub-tab shell. That
- *   shell is being replaced by AcademyView's People shell.
+ * BOOTSTRAP LIST:
+ *   The dependency check below lists the modules that MUST be loaded
+ *   before this file runs. The list has grown with each phase:
  *
- *   AcademyEvents is still loaded (its <script> tag is in
- *   index.html), but it is no longer wired to the tab. It will
- *   be repurposed later as the sub-view switcher for
- *   Weekly Teams / Rankings / Disciplines / Locations.
+ *     Foundation:  AcademyClasses, AcademyGrades, AcademyDisciplines,
+ *                  AcademyLocations, AcademySchedule, AcademyUI,
+ *                  AcademyView, AcademyQueries, AcademyDistribute,
+ *                  AcademyGroups, AcademyRanking.
+ *
+ *     Phase 3:     AcademyPerformance.
+ *     Phase 4:     AcademyEnrolments.
+ *     Phase 5:     AcademySocialScore.
+ *     Phase 5b:    AcademyWeeklyTeams (week-scoped assignments).
+ *     Phase 8:     AcademyCascade.
+ *     Settings:    AcademySettings.
+ *     Aggregation: AcademyTournamentAggregator.
+ *
+ *   Script-tag order in index.html must match. See index.html for
+ *   the canonical order.
  *
  * CALENDAR PROVIDER READ/WRITE SPLIT:
  *   The calendar provider is a facade over two modules:
@@ -66,6 +76,13 @@
  *   - window.AcademySchedule
  *   - window.AcademyDisciplines
  *   - window.AcademyLocations
+ *   - window.AcademyPerformance
+ *   - window.AcademyEnrolments
+ *   - window.AcademySocialScore
+ *   - window.AcademyWeeklyTeams
+ *   - window.AcademySettings
+ *   - window.AcademyCascade
+ *   - window.AcademyTournamentAggregator
  *   - window.DomUtils
  *   - window.NotificationSystem
  *   - window.DataLoader
@@ -100,6 +117,13 @@
     var AcademySchedule = window.AcademySchedule;
     var AcademyDisciplines = window.AcademyDisciplines;
     var AcademyLocations = window.AcademyLocations;
+    var AcademyPerformance = window.AcademyPerformance;
+    var AcademyEnrolments = window.AcademyEnrolments;
+    var AcademySocialScore = window.AcademySocialScore;
+    var AcademyWeeklyTeams = window.AcademyWeeklyTeams;
+    var AcademySettings = window.AcademySettings;
+    var AcademyCascade = window.AcademyCascade;
+    var AcademyTournamentAggregator = window.AcademyTournamentAggregator;
     var DomUtils = window.DomUtils;
     var NotificationSystem = window.NotificationSystem;
     var DataLoader = window.DataLoader;
@@ -112,31 +136,24 @@
     function checkDependencies() {
         var missing = [];
 
+        // ---- TabManager ----
         if (!TabManager || typeof TabManager.register !== 'function') {
             missing.push('TabManager.register');
         }
 
+        // ---- Character / Team queries (used by provider + views) ----
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
             missing.push('CharacterQueries.getCharacterById');
         }
         if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
             missing.push('CharacterQueries.getDisplayName');
         }
-        if (!CharacterQueries || typeof CharacterQueries.getStudents !== 'function') {
-            missing.push('CharacterQueries.getStudents');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getInstructors !== 'function') {
-            missing.push('CharacterQueries.getInstructors');
-        }
 
         if (!TeamQueries || typeof TeamQueries.getTeamsByClass !== 'function') {
             missing.push('TeamQueries.getTeamsByClass');
         }
-        if (!TeamQueries || typeof TeamQueries.getTeamName !== 'function') {
-            missing.push('TeamQueries.getTeamName');
-        }
 
-        // ---- CalendarQueries — READ operations ----
+        // ---- CalendarQueries (READS) ----
         if (!CalendarQueries || typeof CalendarQueries.getStudentSchedule !== 'function') {
             missing.push('CalendarQueries.getStudentSchedule');
         }
@@ -162,7 +179,7 @@
             missing.push('CalendarQueries.getInstructorBlocks');
         }
 
-        // ---- ScheduleCore — WRITE operations (Promise-based) ----
+        // ---- ScheduleCore (WRITES) ----
         if (!ScheduleCore || typeof ScheduleCore.setStudentSlot !== 'function') {
             missing.push('ScheduleCore.setStudentSlot');
         }
@@ -206,17 +223,23 @@
             missing.push('ScheduleCore.hasConflict');
         }
 
+        // ---- UI / View ----
         if (!AcademyUI || typeof AcademyUI.getSelectedView !== 'function') {
             missing.push('AcademyUI.getSelectedView');
         }
         if (!AcademyUI || typeof AcademyUI.getSelectedClassId !== 'function') {
             missing.push('AcademyUI.getSelectedClassId');
         }
-
         if (!AcademyView || typeof AcademyView.render !== 'function') {
             missing.push('AcademyView.render');
         }
 
+        // ---- Academy domain: classes ----
+        if (!AcademyClasses || typeof AcademyClasses.create !== 'function') {
+            missing.push('AcademyClasses.create');
+        }
+
+        // ---- AcademyQueries: still consumed by academy-distribute.js ----
         if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
             missing.push('AcademyQueries.getClasses');
         }
@@ -224,10 +247,7 @@
             missing.push('AcademyQueries.getClass');
         }
 
-        if (!AcademyClasses || typeof AcademyClasses.create !== 'function') {
-            missing.push('AcademyClasses.create');
-        }
-
+        // ---- Academy domain: disciplines / locations ----
         if (!AcademyDisciplines || typeof AcademyDisciplines.create !== 'function') {
             missing.push('AcademyDisciplines.create');
         }
@@ -235,18 +255,54 @@
             missing.push('AcademyLocations.create');
         }
 
+        // ---- Schedule orchestration ----
         if (!AcademySchedule || typeof AcademySchedule.configure !== 'function') {
             missing.push('AcademySchedule.configure');
         }
 
+        // ---- Phase 3: performance ----
+        if (!AcademyPerformance || typeof AcademyPerformance.calculateAcademicAverage !== 'function') {
+            missing.push('AcademyPerformance.calculateAcademicAverage');
+        }
+
+        // ---- Phase 4: enrolments ----
+        if (!AcademyEnrolments || typeof AcademyEnrolments.getStudentDisciplines !== 'function') {
+            missing.push('AcademyEnrolments.getStudentDisciplines');
+        }
+
+        // ---- Phase 5: social score ----
+        if (!AcademySocialScore || typeof AcademySocialScore.getSocialScore !== 'function') {
+            missing.push('AcademySocialScore.getSocialScore');
+        }
+
+        // ---- Phase 5b: weekly teams ----
+        if (!AcademyWeeklyTeams || typeof AcademyWeeklyTeams.getWeeklyTeams !== 'function') {
+            missing.push('AcademyWeeklyTeams.getWeeklyTeams');
+        }
+
+        // ---- Settings ----
+        if (!AcademySettings || typeof AcademySettings.getRankingWeights !== 'function') {
+            missing.push('AcademySettings.getRankingWeights');
+        }
+
+        // ---- Phase 8: cascade coordinator ----
+        if (!AcademyCascade || typeof AcademyCascade.characterDeleted !== 'function') {
+            missing.push('AcademyCascade.characterDeleted');
+        }
+
+        // ---- Aggregator (exam VM) ----
+        if (!AcademyTournamentAggregator ||
+            typeof AcademyTournamentAggregator.getExamViewModel !== 'function') {
+            missing.push('AcademyTournamentAggregator.getExamViewModel');
+        }
+
+        // ---- Escape / notify / data ----
         if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
             missing.push('DomUtils.escapeHtml');
         }
-
         if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
             missing.push('NotificationSystem.notify');
         }
-
         if (!CalendarConstants) {
             missing.push('CalendarConstants');
         }
@@ -292,6 +348,18 @@
         }
         if (!academy.weeklyTeams || typeof academy.weeklyTeams !== 'object') {
             console.error('[AcademyModule] academy.weeklyTeams is missing.');
+            return false;
+        }
+        if (!academy.enrolments || typeof academy.enrolments !== 'object') {
+            console.error('[AcademyModule] academy.enrolments is missing.');
+            return false;
+        }
+        if (!academy.socialScores || typeof academy.socialScores !== 'object') {
+            console.error('[AcademyModule] academy.socialScores is missing.');
+            return false;
+        }
+        if (!academy.settings || typeof academy.settings !== 'object') {
+            console.error('[AcademyModule] academy.settings is missing.');
             return false;
         }
 
@@ -484,8 +552,7 @@
         // Initialize UI state (loads persisted state from sessionStorage)
         AcademyUI.init();
 
-        // Hand the container to AcademyView. From this point, all
-        // rendering goes through AcademyView.render(container).
+        // Hand the container to AcademyView.
         AcademyView.render(container);
 
         dispatchReady();
@@ -509,8 +576,7 @@
     // ============================================================
     //
     // AcademyView is the authoritative renderer. Refreshing the
-    // Academy tab means re-rendering the whole tab. There is no
-    // partial refresh path.
+    // Academy tab means re-rendering the whole tab.
 
     function refreshAcademy() {
         if (!_mounted || !_container) {
@@ -636,7 +702,7 @@
             return _mounted;
         },
 
-        // Module references
+        // Module references (read-only)
         AcademyClasses: AcademyClasses,
         AcademyQueries: AcademyQueries,
         AcademyGrades: AcademyGrades,
@@ -646,6 +712,12 @@
         AcademySchedule: AcademySchedule,
         AcademyDisciplines: AcademyDisciplines,
         AcademyLocations: AcademyLocations,
+        AcademyPerformance: AcademyPerformance,
+        AcademyEnrolments: AcademyEnrolments,
+        AcademySocialScore: AcademySocialScore,
+        AcademyWeeklyTeams: AcademyWeeklyTeams,
+        AcademySettings: AcademySettings,
+        AcademyCascade: AcademyCascade,
 
         // View reference
         AcademyView: AcademyView
