@@ -4,106 +4,32 @@
  *
  * Path: js/modules/academy/academy-weekly-teams-view.js
  *
- * This module is responsible for:
+ * RESPONSIBILITIES:
  *   - Rendering the class + week selectors
- *   - Rendering the team list (left panel)
+ *   - Rendering the team list (left panel) with actions
  *   - Rendering the team detail (right panel) with members
  *   - Rendering an empty state when no class or team is selected
+ *   - Building the Create Team and Auto-Distribute modals
+ *   - Collecting form values from those modals
  *
- * IMPORTANT:
- *   - RENDER ONLY - no mutations, no domain logic.
- *   - Does NOT fetch data. Does NOT call TeamQueries or AcademyQueries.
- *   - Receives a view model from AcademyAggregator.getWeeklyTeamsViewModel.
- *   - Does NOT bind events. Rows emit data-* attributes that
- *     AcademyView's delegated container listeners resolve.
- *   - Uses DomUtils for escaping (MANDATORY, no fallback).
- *   - Returns an HTML string.
+ * NOT RESPONSIBILITIES:
+ *   - Event binding. AcademyView binds; this module emits data-*.
+ *   - Domain reads. The VM carries everything the renderer needs.
+ *   - Validation. Collectors return raw field values; the domain
+ *     validates.
  *
- * VIEW MODEL SOURCE:
- *   The view model is produced by
- *   AcademyAggregator.getWeeklyTeamsViewModel(classId, week, selectedTeamId).
- *
- *   Weekly Teams is ACADEMY-OWNED and WEEK-SCOPED. The team members
- *   shown are the assignment for the selected week (from
- *   academy.weeklyTeams), not the persistent Team entity's roster.
- *   Persistent Team metadata (name, type, status, period) is still
- *   shown because the team identity is shared across weeks.
- *
- *   The VM supplies every display-ready value the renderer needs:
- *     typeLabel       — display label for the team type
- *     statusLabel     — display label for the team status
- *     periodLabel     — 'Week' | 'Year'
- *     periodDisplay   — formatted range ('Wk 3 – Wk 14', '2025 – 2027', '-')
- *     memberCount     — number of members in the weekly assignment
- *   Member VMs supply:
- *     roleLabel       — display label for the member's role ('' for default)
- *     statusLabel     — 'Active' | 'Deceased'
- *
- *   The renderer does not derive any of these from raw enum values.
- *
- * MEMBER SEMANTICS (WEEKLY ASSIGNMENT MODEL):
- *   The members shown are the weekly assignment. Every member of the
- *   assignment is by definition active in the selected week. There is
- *   no "former member" state in this view. Persistent-entity
- *   membership (join/leave periods, historical rosters) lives in the
- *   Teams tab, not here.
- *
- * INTERFACE:
- *   AcademyWeeklyTeamsView.renderHTML(viewModel) -> string
- *
- *   viewModel:
- *     {
- *       classes:        [ { id, name } ],
- *       classId:        string | null,
- *       className:      string | null,
- *       week:           number | null,
- *       teams:          [ <teamRowVM> ],
- *       selectedTeamId: string | null,
- *       selectedTeam:   <teamDetailVM> | null
- *     }
- *
- *   teamRowVM:
- *     {
- *       id, name,
- *       type, typeLabel,
- *       status, statusLabel,
- *       periodLabel, periodDisplay,
- *       memberCount
- *     }
- *
- *   teamDetailVM:
- *     {
- *       id, name,
- *       type, typeLabel,
- *       status, statusLabel,
- *       periodLabel, periodDisplay,
- *       temporaryMission: string | null,
- *       memberCount: number,
- *       members: [ <memberVM> ]
- *     }
- *
- *   memberVM:
- *     {
- *       characterId,
- *       name,
- *       role,
- *       roleLabel,
- *       age,
- *       statusLabel
- *     }
- *
- * EVENTS EMITTED (data-* attributes, for AcademyView to bind):
+ * EVENTS EMITTED:
  *   - #academy-weekly-teams-class-select  (change)
  *   - #academy-weekly-teams-week-input    (change / Enter)
  *   - .academy-weekly-team-row            [data-team-id]
  *   - .academy-weekly-team-member-row     [data-character-id]
+ *   - [data-action="weekly-teams-create-team"]     (click)
+ *   - [data-action="weekly-teams-auto-distribute"] (click)
+ *   - [data-action="weekly-teams-delete-team"] [data-team-id]  (click)
+ *   - [data-action="weekly-teams-manage-members"] [data-team-id] (click)
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
- *
- * USAGE:
- *   var html = AcademyWeeklyTeamsView.renderHTML(vm);
- *   container.innerHTML = html;
  */
 
 (function() {
@@ -127,7 +53,7 @@
     window.__academyWeeklyTeamsViewLoaded = true;
 
     // ============================================================
-    // ESCAPING HELPERS
+    // ESCAPING
     // ============================================================
 
     function escapeHtml(value) {
@@ -169,8 +95,6 @@
         }
     }
 
-    // Member status is binary in the weekly-assignment model: a member
-    // is either deceased or active for the selected week.
     function getMemberStatusBadgeClass(member) {
         if (member && member.statusLabel === 'Deceased') {
             return 'academy-weekly-member-badge academy-weekly-member-deceased';
@@ -208,7 +132,7 @@
     }
 
     // ============================================================
-    // TOP BAR - Class + Week selectors
+    // TOP BAR
     // ============================================================
 
     function renderTopBar(vm) {
@@ -228,9 +152,7 @@
 
         for (var i = 0; i < classes.length; i++) {
             var cls = classes[i];
-            if (!cls || !cls.id) {
-                continue;
-            }
+            if (!cls || !cls.id) { continue; }
             var selected = classId && String(classId) === String(cls.id)
                 ? ' selected'
                 : '';
@@ -269,6 +191,21 @@
         var html = '';
         html += '<div class="academy-weekly-teams-sidebar">';
 
+        // ---- Actions ----
+        html += '<div class="academy-weekly-teams-list-actions">';
+        html += '<button type="button" ' +
+                    'class="primary small academy-add-team-btn" ' +
+                    'data-action="weekly-teams-create-team">' +
+                    '+ Create Team' +
+                '</button>';
+        html += '<button type="button" ' +
+                    'class="secondary small academy-auto-distribute-btn" ' +
+                    'data-action="weekly-teams-auto-distribute">' +
+                    'Auto-Distribute' +
+                '</button>';
+        html += '</div>';
+
+        // ---- List header ----
         html += '<div class="academy-weekly-teams-list-header">';
         html += '<h4 class="academy-weekly-teams-list-title">Teams</h4>';
         html += '<span class="academy-weekly-teams-list-count">' +
@@ -278,7 +215,9 @@
 
         if (teams.length === 0) {
             html += '<p class="empty-state small">' +
-                        'No teams found for this class.' +
+                        'No teams found for this class. ' +
+                        'Use <strong>+ Create Team</strong> or ' +
+                        '<strong>Auto-Distribute</strong> to get started.' +
                     '</p>';
             html += '</div>';
             return html;
@@ -295,9 +234,7 @@
     }
 
     function renderListRow(team, selectedTeamId) {
-        if (!team || !team.id) {
-            return '';
-        }
+        if (!team || !team.id) { return ''; }
 
         var isSelected = selectedTeamId &&
             String(selectedTeamId) === String(team.id);
@@ -306,9 +243,7 @@
         var statusBadgeClass = getTeamStatusBadgeClass(team.status);
 
         var rowClass = 'academy-weekly-team-row';
-        if (isSelected) {
-            rowClass += ' selected';
-        }
+        if (isSelected) { rowClass += ' selected'; }
 
         var html = '';
         html += '<div class="' + rowClass + '" ' +
@@ -416,14 +351,22 @@
                     team.memberCount +
                 '</span>';
 
-        if (isNonEmptyString(team.temporaryMission)) {
-            html += '<span class="academy-weekly-team-detail-meta-item">' +
-                        '<span class="meta-label">Mission:</span> ' +
-                        escapeHtml(team.temporaryMission) +
-                    '</span>';
-        }
-
         html += '</div>';
+
+        // Detail actions
+        html += '<div class="academy-weekly-team-detail-actions">';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-action="weekly-teams-manage-members" ' +
+                    'data-team-id="' + escapeAttribute(team.id) + '">' +
+                    'Manage Members' +
+                '</button>';
+        html += '<button type="button" class="small danger" ' +
+                    'data-action="weekly-teams-delete-team" ' +
+                    'data-team-id="' + escapeAttribute(team.id) + '">' +
+                    'Delete Team' +
+                '</button>';
+        html += '</div>';
+
         html += '</div>';
         return html;
     }
@@ -459,9 +402,7 @@
     }
 
     function renderMemberRow(member) {
-        if (!member || !member.characterId) {
-            return '';
-        }
+        if (!member || !member.characterId) { return ''; }
 
         var statusClass = getMemberStatusBadgeClass(member);
 
@@ -470,9 +411,6 @@
             rowClass += ' deceased';
         }
 
-        // Secondary line: role, then age. The VM's roleLabel is
-        // already display-ready; empty means the default role, which
-        // is not shown.
         var secondaryParts = [];
         if (isNonEmptyString(member.roleLabel)) {
             secondaryParts.push(escapeHtml(member.roleLabel));
@@ -506,11 +444,210 @@
     }
 
     // ============================================================
+    // MODAL BUILDERS - Create Team
+    // ============================================================
+
+    function buildCreateTeamModalHTML(options) {
+        options = options || {};
+        var classId = options.classId || '';
+        var className = options.className || 'Class';
+        var week = options.week;
+
+        var html = '';
+        html += '<form id="weekly-teams-create-team-form" ' +
+                    'data-class-id="' + escapeAttribute(classId) + '" ' +
+                    'data-week="' + escapeAttribute(String(week || '')) + '">';
+
+        html += '<div class="modal-header">';
+        html += '<h3>Create Academic Team</h3>';
+        html += '<button type="button" class="close-modal">&times;</button>';
+        html += '</div>';
+
+        html += '<div class="modal-body">';
+
+        html += '<p class="field-hint">' +
+                    'Creates a persistent Team entity of type "academic" ' +
+                    'for <strong>' + escapeHtml(className) + '</strong>.' +
+                '</p>';
+
+        html += '<div class="form-group">';
+        html += '<label for="weekly-team-name">Team Name *</label>';
+        html += '<input type="text" id="weekly-team-name" ' +
+                    'class="weekly-team-name" ' +
+                    'placeholder="e.g., Team Alpha" required>';
+        html += '</div>';
+
+        html += '<div class="form-group">';
+        html += '<label for="weekly-team-number">Team Number</label>';
+        html += '<input type="text" id="weekly-team-number" ' +
+                    'class="weekly-team-number" ' +
+                    'placeholder="Optional, e.g., A, 1, Alpha">';
+        html += '</div>';
+
+        html += '<div class="form-group">';
+        html += '<label for="weekly-team-start-period">Start Week</label>';
+        html += '<input type="number" id="weekly-team-start-period" ' +
+                    'class="weekly-team-start-period" ' +
+                    'value="' + escapeAttribute(String(week || 1)) + '" ' +
+                    'min="1" max="52">';
+        html += '</div>';
+
+        html += '<div class="form-group">';
+        html += '<label for="weekly-team-end-period">End Week (optional)</label>';
+        html += '<input type="number" id="weekly-team-end-period" ' +
+                    'class="weekly-team-end-period" ' +
+                    'min="1" max="52" placeholder="Leave blank for ongoing">';
+        html += '</div>';
+
+        html += '<div class="form-actions">';
+        html += '<button type="button" ' +
+                    'class="cancel-modal-btn secondary">Cancel</button>';
+        html += '<button type="submit" class="primary">Create Team</button>';
+        html += '</div>';
+
+        html += '</div>';
+        html += '</form>';
+
+        return html;
+    }
+
+    function collectCreateTeamForm(form) {
+        if (!form) { return null; }
+
+        var nameEl = form.querySelector('.weekly-team-name');
+        var numberEl = form.querySelector('.weekly-team-number');
+        var startEl = form.querySelector('.weekly-team-start-period');
+        var endEl = form.querySelector('.weekly-team-end-period');
+
+        var name = nameEl ? nameEl.value.trim() : '';
+        var number = numberEl ? numberEl.value.trim() : '';
+        var startPeriod = startEl ? startEl.value.trim() : '';
+        var endPeriod = endEl ? endEl.value.trim() : '';
+
+        return {
+            name: name,
+            teamNumber: number,
+            startPeriod: startPeriod,
+            endPeriod: endPeriod
+        };
+    }
+
+    // ============================================================
+    // MODAL BUILDERS - Auto-Distribute
+    // ============================================================
+
+    function buildAutoDistributeModalHTML(options) {
+        options = options || {};
+        var classId = options.classId || '';
+        var className = options.className || 'Class';
+        var week = options.week;
+        var eligibleCount = isFiniteNumber(options.eligibleCount)
+            ? options.eligibleCount
+            : 0;
+
+        var html = '';
+        html += '<form id="weekly-teams-auto-distribute-form" ' +
+                    'data-class-id="' + escapeAttribute(classId) + '" ' +
+                    'data-week="' + escapeAttribute(String(week || '')) + '">';
+
+        html += '<div class="modal-header">';
+        html += '<h3>Auto-Distribute to Teams</h3>';
+        html += '<button type="button" class="close-modal">&times;</button>';
+        html += '</div>';
+
+        html += '<div class="modal-body">';
+
+        html += '<p class="at-auto-info">' +
+                    'Eligible students in <strong>' +
+                    escapeHtml(className) + '</strong>: ' +
+                    '<strong>' + eligibleCount + '</strong>' +
+                '</p>';
+
+        html += '<div class="form-group">';
+        html += '<label for="weekly-teams-group-size">Students per Team</label>';
+        html += '<input type="number" id="weekly-teams-group-size" ' +
+                    'class="weekly-teams-group-size" ' +
+                    'value="4" min="2" max="20">';
+        html += '<p class="field-hint">' +
+                    'Students are partitioned into groups of this size. ' +
+                    'Each group becomes one academic team for ' +
+                    '<strong>' + escapeHtml(className) + '</strong>, ' +
+                    'assigned to week ' + escapeAttribute(String(week || '')) +
+                    '.' +
+                '</p>';
+        html += '</div>';
+
+        html += '<div class="form-group">';
+        html += '<label for="weekly-teams-name-prefix">Team Name Prefix</label>';
+        html += '<input type="text" id="weekly-teams-name-prefix" ' +
+                    'class="weekly-teams-name-prefix" ' +
+                    'value="Team ">';
+        html += '<p class="field-hint">' +
+                    'Each team is named Prefix + letter (Team A, Team B, ...).' +
+                '</p>';
+        html += '</div>';
+
+        html += '<div class="form-group">';
+        html += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;">' +
+                    '<input type="checkbox" ' +
+                        'class="weekly-teams-clear-existing" checked>' +
+                    '<span>Clear existing teams for this class</span>' +
+                '</label>';
+        html += '<p class="field-hint">' +
+                    'When checked, existing academic teams for this class ' +
+                    'are deleted before distribution. Persistent Team ' +
+                    'entities of other types are not affected.' +
+                '</p>';
+        html += '</div>';
+
+        html += '<div class="form-actions">';
+        html += '<button type="button" ' +
+                    'class="cancel-modal-btn secondary">Cancel</button>';
+        html += '<button type="submit" class="primary"' +
+                    (eligibleCount < 2 ? ' disabled' : '') +
+                    '>Distribute</button>';
+        html += '</div>';
+
+        html += '</div>';
+        html += '</form>';
+
+        return html;
+    }
+
+    function collectAutoDistributeForm(form) {
+        if (!form) { return null; }
+
+        var sizeEl = form.querySelector('.weekly-teams-group-size');
+        var prefixEl = form.querySelector('.weekly-teams-name-prefix');
+        var clearEl = form.querySelector('.weekly-teams-clear-existing');
+
+        var size = sizeEl ? parseInt(sizeEl.value, 10) : 4;
+        if (isNaN(size) || size < 2) { size = 2; }
+
+        var prefix = prefixEl ? prefixEl.value : 'Team ';
+        var clearExisting = clearEl ? clearEl.checked === true : false;
+
+        return {
+            groupSize: size,
+            namePrefix: prefix,
+            clearExisting: clearExisting
+        };
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
     window.AcademyWeeklyTeamsView = {
-        renderHTML: renderHTML
+        renderHTML: renderHTML,
+
+        // Modal builders
+        buildCreateTeamModalHTML: buildCreateTeamModalHTML,
+        buildAutoDistributeModalHTML: buildAutoDistributeModalHTML,
+
+        // Form collectors
+        collectCreateTeamForm: collectCreateTeamForm,
+        collectAutoDistributeForm: collectAutoDistributeForm
     };
 
 })();
