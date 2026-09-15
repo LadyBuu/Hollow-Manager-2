@@ -1,24 +1,33 @@
 /**
  * modules/academy/academy-class-detail.js - Academy Class Detail Panel
- * Right-panel renderer for the Academy People view (no character selected)
+ * Right-panel renderer for the Academy People view (no character selected).
  *
  * Path: js/modules/academy/academy-class-detail.js
  *
- * This module is responsible for:
- *   - Rendering the class summary header
- *   - Rendering the class description (when present)
- *   - Rendering the class action buttons (Add Character, Edit, Delete)
- *   - Rendering an empty state when no class is selected
+ * RESPONSIBILITIES:
+ *   - Render the class summary header
+ *   - Render the class description (when present)
+ *   - Render the class action buttons (Add Character, Edit, Delete)
+ *   - Render an empty state when no class is selected
  *
- * NOT responsible for:
- *   - The class roster. That is the People sidebar's concern, rendered
- *     from AcademyAggregator.getPeopleViewModel.
- *   - The class's academic teams. That is the Weekly Teams view's
- *     concern.
- *   - The class's rankings. That is the Rankings view's concern.
+ * NOT RESPONSIBLE FOR:
+ *   - The class roster. That is the People sidebar's concern.
+ *   - The class's academic teams. That is the Weekly Teams view.
+ *   - The class's rankings. That is the Rankings view.
  *
  * ROLE VOCABULARY:
  *   'student' | 'instructor'. There is no 'trainee'.
+ *
+ * ACTION NAMING:
+ *   Every action element uses a prefix that the AcademyView dispatcher
+ *   routes deterministically:
+ *     edit-class-add-character   → handleEditDispatcher → openAddCharacterToClass
+ *     edit-class                 → handleEditDispatcher → openClassForm
+ *     delete-class               → handleDeleteDispatcher → openClassDelete
+ *
+ *   The "+ Add Character" button was previously data-action="add-character",
+ *   whose 'add' prefix misrouted it to the discipline editor handler. The
+ *   current action name matches the edit-prefix dispatcher.
  *
  * IMPORTANT:
  *   - RENDER ONLY. No mutations. No domain reads. No state.
@@ -41,21 +50,8 @@
  *     createdAt:       string
  *   }
  *
- *   The renderer trusts this shape. It does not expect roster, teams,
- *   or rankings on the class VM. When a field is missing, it renders
- *   a placeholder appropriate to that field, not a fabricated value.
- *
- * EVENTS EMITTED (data-* attributes, for AcademyView to bind):
- *   - [data-action="add-character"] with [data-class-id]
- *   - [data-action="edit-class"]    with [data-class-id]
- *   - [data-action="delete-class"]  with [data-class-id]
- *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
- *
- * USAGE:
- *   var html = AcademyClassDetail.renderHTML(classVM);
- *   container.innerHTML = html;
  */
 
 (function() {
@@ -64,10 +60,6 @@
     if (window.__academyClassDetailLoaded) {
         return;
     }
-
-    // ============================================================
-    // DEPENDENCY
-    // ============================================================
 
     var DomUtils = window.DomUtils;
 
@@ -126,13 +118,6 @@
     // PUBLIC ENTRY POINT
     // ============================================================
 
-    /**
-     * Render the class detail panel.
-     *
-     * @param {object|null} classVM - View model from
-     *   AcademyAggregator.getClassViewModel
-     * @returns {string} HTML string
-     */
     function renderHTML(classVM) {
         if (!classVM || !classVM.id) {
             return renderEmptyState();
@@ -193,13 +178,16 @@
 
         if (classVM.instructorId && isNonEmptyString(classVM.instructorName)) {
             html += '<span class="academy-class-detail-meta-item" ' +
-                        'data-instructor-id="' + escapeAttribute(classVM.instructorId) + '">' +
+                        'data-instructor-id="' +
+                            escapeAttribute(classVM.instructorId) + '">' +
                         '<span class="meta-label">Instructor:</span> ' +
                         escapeHtml(classVM.instructorName) +
                     '</span>';
         } else {
-            html += '<span class="academy-class-detail-meta-item academy-meta-muted">' +
-                        '<span class="meta-label">Instructor:</span> Not assigned' +
+            html += '<span class="academy-class-detail-meta-item ' +
+                        'academy-meta-muted">' +
+                        '<span class="meta-label">Instructor:</span> ' +
+                        'Not assigned' +
                     '</span>';
         }
 
@@ -208,7 +196,7 @@
         // Actions
         html += '<div class="academy-class-detail-actions">';
         html += '<button type="button" class="small primary" ' +
-                    'data-action="add-character" ' +
+                    'data-action="edit-class-add-character" ' +
                     'data-class-id="' + escapeAttribute(classVM.id) + '">' +
                     '+ Add Character' +
                 '</button>';
