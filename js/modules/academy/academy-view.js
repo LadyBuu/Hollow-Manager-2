@@ -47,14 +47,31 @@
  * ENROLLMENT MODEL (Phase 4):
  *   - Enrollment is class-scoped. Source of truth is
  *     AcademyEnrolments.getStudentDisciplines(charId, classId).
- *   - character.disciplineIds is NOT read by this module. The
- *     legacy field is dead.
+ *   - character.disciplineIds is NOT read by this module.
  *   - Enroll and leave actions call AcademyEnrolments.enrol / .leave.
  *
  * SOCIAL SCORE MODEL (Phase 5):
  *   - Social score is class + week scoped. Source of truth is
  *     AcademySocialScore.
  *   - The set-social-score action routes to AcademySocialScore.
+ *
+ * ROLE VOCABULARY (FROZEN):
+ *   The People view filter uses three values: 'all', 'trainee',
+ *   'instructor'. The class VM's `students` array uses 'trainee' and
+ *   'instructor' for its display roles. This module normalises the
+ *   comparison at the filter layer: any student-role entry whose
+ *   role is 'trainee' matches the 'trainee' filter. The class VM
+ *   keeps the 'trainee' spelling for its own consumers
+ *   (academy-class-detail.js). Do not rename the vocabulary here —
+ *   that would ripple into the class VM and its other consumer.
+ *
+ * CLASS SELECTION SEMANTICS:
+ *   - AcademyUI.selectClass(classId) is a pure setter: it clears the
+ *     character selection on every class change.
+ *   - This module preserves the character selection when the
+ *     character is still a member (or the instructor) of the newly
+ *     selected class. The check lives here because the roster VM
+ *     is available here and nowhere in the UI-state layer.
  *
  * DISCIPLINE EDITOR STATE MACHINE:
  *   - The inline editor draft is owned by this module.
@@ -229,6 +246,41 @@
             typeof window.NotificationSystem.notify === 'function') {
             window.NotificationSystem.notify(message, type || 'info');
         }
+    }
+
+    // ============================================================
+    // CLASS VM MEMBERSHIP CHECK
+    // ============================================================
+    //
+    // Does the character appear in the class VM's roster?
+    //
+    // The class VM stitches the instructor into the roster with
+    // role: 'instructor'. Students come in with role: 'trainee'.
+    // Membership therefore covers both the roster and the instructor
+    // relationship, which is the correct answer to "should the
+    // character selection survive a class switch".
+
+    function isCharacterInClassVM(charId, classVM) {
+        if (!charId || !classVM) {
+            return false;
+        }
+        var target = String(charId);
+
+        if (classVM.instructorId &&
+            String(classVM.instructorId) === target) {
+            return true;
+        }
+
+        if (Array.isArray(classVM.students)) {
+            for (var i = 0; i < classVM.students.length; i++) {
+                var s = classVM.students[i];
+                if (s && String(s.id) === target) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     // ============================================================
@@ -1257,11 +1309,6 @@
     // ============================================================
     // DELEGATED CLICK - SOCIAL SCORE (Phase 5)
     // ============================================================
-    //
-    // The social score edit is initiated from the character detail
-    // Main tab via data-action="edit-social-score". AcademyCRUDModals
-    // owns the modal. After a successful save, AcademySocialScore's
-    // pipeline notifies; the view just refreshes.
 
     function handleSocialScoreClick(e, target) {
         var editBtn = target.closest('[data-action="edit-social-score"]');
@@ -1410,6 +1457,17 @@
     // ============================================================
 
     function handleLocationClick(e, target) {
+        // Add Location — emitted by academy-location-view.js.
+        var addBtn = target.closest('[data-action="add-location"]');
+        if (addBtn) {
+            e.preventDefault();
+            if (window.AcademyCRUDModals &&
+                typeof window.AcademyCRUDModals.openLocationForm === 'function') {
+                window.AcademyCRUDModals.openLocationForm(null);
+            }
+            return true;
+        }
+
         var locationRow = target.closest('.academy-location-row');
         if (locationRow) {
             e.preventDefault();
@@ -1763,8 +1821,6 @@
 
         var raw = inputEl.value;
         if (raw === '' || raw === null || raw === undefined) {
-            // Leave as null. Save will surface the validation error
-            // rather than inventing a default.
             _disciplineDraft.assessmentWeights[type] = null;
             return;
         }
@@ -1848,13 +1904,41 @@
         }
     }
 
+    /**
+     * Handle a class selection from the top bar.
+     *
+     * SEMANTICS:
+     *   - AcademyUI.selectClass is a pure setter: it clears the
+     *     character selection on every class change.
+     *   - This handler preserves the character selection when the
+     *     character is still a member of (or the instructor for) the
+     *     newly selected class.
+     *   - The check uses the class VM, which is the same projection
+     *     the People view uses to render the roster. So "member" here
+     *     means exactly what the roster shows.
+     */
     function handleClassSelect(classId) {
         if (!classId) {
             AcademyUI.selectClass(null);
             refreshView();
             return;
         }
+
+        // Remember the previously selected character.
+        var prevCharId = AcademyUI.getSelectedCharacterId();
+
+        // Apply the class change. This clears the character selection.
         AcademyUI.selectClass(classId);
+
+        // Restore the character selection if the character is still
+        // a member of the new class.
+        if (prevCharId) {
+            var classVM = AcademyAggregator.getClassViewModel(classId);
+            if (classVM && isCharacterInClassVM(prevCharId, classVM)) {
+                AcademyUI.selectCharacter(prevCharId);
+            }
+        }
+
         refreshView();
     }
 
@@ -1998,10 +2082,6 @@
 
     /**
      * Enroll a character in a discipline for the currently selected class.
-     *
-     * Enrollment is class-scoped. This handler prompts the user with
-     * the list of disciplines the character is NOT yet enrolled in for
-     * the current class. On selection, it calls AcademyEnrolments.enrol.
      */
     function handleEnrollDiscipline(charId) {
         if (!charId) { return; }
