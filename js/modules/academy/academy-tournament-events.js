@@ -19,8 +19,8 @@
  *
  * IMPORTANT:
  *   - All mutations route through TournamentCore / TournamentMatches.
- *   - TournamentCore and TournamentMatches are MutationPipeline-wrapped.
- *     The pipeline owns persistence, rollback, and activity logging.
+ *   - Both modules are MutationPipeline-wrapped. Every call resolves
+ *     to { success, data?, message? }. This module chains `.then()`.
  *   - This module does NOT call saveData().
  *   - This module does NOT mutate window.data directly.
  *   - This module does NOT bind DOM events. It exposes handler
@@ -50,6 +50,11 @@
  *   - removeMatch(examId, roundIndex, matchIndex)
  *   - completeExam(examId)
  *
+ * PERSISTENCE:
+ *   TournamentCore and TournamentMatches are pipeline-wrapped.
+ *   MutationPipeline owns persistence, rollback, and activity logging.
+ *   This module awaits the resolved result and reacts on success.
+ *
  * DEPENDENCIES:
  *   - window.DomUtils          (MANDATORY)
  *   - window.Modal             (MANDATORY)
@@ -59,18 +64,9 @@
  *   - window.TournamentQueries (MANDATORY)
  *   - window.TournamentSchema  (MANDATORY)
  *   - window.AcademyClasses    (MANDATORY)
- *   - window.AcademyQueries    (MANDATORY) — legacy class/grade reads removed; only getClass is replaced
  *   - window.CharacterQueries  (MANDATORY)
  *   - window.TeamQueries       (LAZY)
  *   - window.TournamentAggregator (LAZY)
- *
- * NOTE ON PERSISTENCE:
- *   The core modules (TournamentCore, TournamentMatches) are
- *   pipeline-wrapped at the leaf level. Every create/update/delete
- *   resolves through MutationPipeline.performMutation. The pipeline
- *   snapshots window.data, applies the mutation, calls saveData(),
- *   and rolls back on failure. This module awaits the result and
- *   reacts — it does not orchestrate persistence.
  */
 
 (function() {
@@ -308,14 +304,12 @@
 
         html += '<div class="modal-body">';
 
-        // Name
         html += '<div class="form-group">';
         html += '<label for="at-exam-name">Exam Name</label>';
         html += '<input type="text" id="at-exam-name" class="at-exam-name" ' +
                     'value="' + escapeAttribute(defaultName) + '">';
         html += '</div>';
 
-        // Mode
         html += '<div class="form-group">';
         html += '<label for="at-exam-mode">Mode</label>';
         html += '<select id="at-exam-mode" class="at-exam-mode">';
@@ -331,7 +325,6 @@
                 '</p>';
         html += '</div>';
 
-        // Total rounds
         html += '<div class="form-group">';
         html += '<label for="at-exam-total-rounds">Total Rounds</label>';
         html += '<input type="number" id="at-exam-total-rounds" ' +
@@ -341,7 +334,6 @@
                 '</p>';
         html += '</div>';
 
-        // Actions
         html += '<div class="form-actions">';
         html += '<button type="button" class="cancel-modal-btn secondary">Cancel</button>';
         html += '<button type="submit" class="primary">Create Exam</button>';
@@ -380,13 +372,7 @@
                     return;
                 }
 
-                // TournamentCore.createTournament is synchronous and
-                // mutates window.data directly. Persistence and
-                // rollback are the caller's responsibility at the
-                // tournament-core boundary — see the note in that
-                // module's header. This module treats the call as
-                // synchronous and reacts to the returned record.
-                var result = Core.createTournament({
+                Core.createTournament({
                     name: name,
                     mode: examMode,
                     startWeek: week,
@@ -395,15 +381,16 @@
                     graduatingClassId: classId,
                     classFilterEnabled: true,
                     status: 'draft'
-                });
-
-                if (!result) {
+                }).then(function(result) {
+                    if (result && result.success) {
+                        close();
+                        notifyChange();
+                    }
+                    // On failure, pipeline already notified.
+                }).catch(function(err) {
+                    console.warn('[AcademyTournamentEvents] createTournament failed:', err);
                     notify('Failed to create exam.', 'error');
-                    return;
-                }
-
-                close();
-                notifyChange();
+                });
             });
         });
     }
@@ -454,14 +441,15 @@
                 var Core = window.TournamentCore;
                 if (!Core) { return; }
 
-                var result = Core.deleteTournament(examId);
-                if (!result) {
+                Core.deleteTournament(examId).then(function(result) {
+                    if (result && result.success) {
+                        close();
+                        notifyChange();
+                    }
+                }).catch(function(err) {
+                    console.warn('[AcademyTournamentEvents] deleteTournament failed:', err);
                     notify('Failed to delete exam.', 'error');
-                    return;
-                }
-
-                close();
-                notifyChange();
+                });
             });
         });
     }
@@ -487,29 +475,30 @@
         var inExam = Queries.isParticipantInTournament(examId, participantId);
 
         if (inExam) {
-            var removed = Core.removeParticipant(examId, participantId);
-            if (!removed) {
+            Core.removeParticipant(examId, participantId).then(function(result) {
+                if (result && result.success) {
+                    notifyChange();
+                }
+            }).catch(function(err) {
+                console.warn('[AcademyTournamentEvents] removeParticipant failed:', err);
                 notify('Could not remove participant.', 'error');
-                return;
-            }
-            notifyChange();
+            });
             return;
         }
 
-        // Determine participant type from the exam mode.
         var canonicalType = exam.mode === 'teams' ? 'team' : 'character';
 
-        var added = Core.addParticipant(examId, {
+        Core.addParticipant(examId, {
             id: participantId,
             type: canonicalType
-        });
-
-        if (!added) {
+        }).then(function(result) {
+            if (result && result.success) {
+                notifyChange();
+            }
+        }).catch(function(err) {
+            console.warn('[AcademyTournamentEvents] addParticipant failed:', err);
             notify('Could not add participant.', 'error');
-            return;
-        }
-
-        notifyChange();
+        });
     }
 
     // ============================================================
@@ -537,7 +526,6 @@
         html += '</div>';
         html += '<div class="modal-body">';
 
-        // Match type
         html += '<div class="form-group">';
         html += '<label for="at-round-type">Match Type</label>';
         html += '<select id="at-round-type" class="at-round-type">';
@@ -550,7 +538,6 @@
         html += '</select>';
         html += '</div>';
 
-        // Match size
         html += '<div class="form-group">';
         html += '<label for="at-round-size">Participants per Match</label>';
         html += '<input type="number" id="at-round-size" class="at-round-size" ' +
@@ -600,19 +587,19 @@
                 }
 
                 var Core = window.TournamentCore;
-                var added = Core.addRound(examId, {
+                Core.addRound(examId, {
                     matchSize: isPairExam ? 2 : size,
                     matchType: matchType,
                     isPairExam: isPairExam
-                });
-
-                if (!added) {
+                }).then(function(result) {
+                    if (result && result.success) {
+                        close();
+                        notifyChange();
+                    }
+                }).catch(function(err) {
+                    console.warn('[AcademyTournamentEvents] addRound failed:', err);
                     notify('Failed to add round.', 'error');
-                    return;
-                }
-
-                close();
-                notifyChange();
+                });
             });
         });
     }
@@ -653,14 +640,15 @@
                 e.preventDefault();
 
                 var Core = window.TournamentCore;
-                var result = Core.removeRound(examId, idx);
-                if (!result) {
+                Core.removeRound(examId, idx).then(function(result) {
+                    if (result && result.success) {
+                        close();
+                        notifyChange();
+                    }
+                }).catch(function(err) {
+                    console.warn('[AcademyTournamentEvents] removeRound failed:', err);
                     notify('Failed to remove round.', 'error');
-                    return;
-                }
-
-                close();
-                notifyChange();
+                });
             });
         });
     }
@@ -712,7 +700,6 @@
         var defaultSize = round.matchSize || 2;
         var isPairExam = round.isPairExam === true;
 
-        // Preview math
         var previewCount = 0;
         if (isPairExam) {
             previewCount = Math.ceil(available.length / 2);
@@ -1553,14 +1540,15 @@
         if (!examId) { return; }
 
         var Core = window.TournamentCore;
-        var result = Core.completeTournament(examId, true);
-
-        if (!result) {
+        Core.completeTournament(examId, true).then(function(result) {
+            if (result && result.success) {
+                notifyChange();
+            }
+            // On failure, pipeline already notified.
+        }).catch(function(err) {
+            console.warn('[AcademyTournamentEvents] completeTournament failed:', err);
             notify('Could not complete the exam.', 'error');
-            return;
-        }
-
-        notifyChange();
+        });
     }
 
     // ============================================================
