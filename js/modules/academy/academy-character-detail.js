@@ -20,8 +20,12 @@
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no domain logic
  *   - Receives a character OBJECT and a class VM from the caller.
- *   - Uses CharacterQueries, AcademyQueries, EliminationQueries,
- *     AcademyEnrolments, AcademyPerformance, AcademySocialScore.
+ *   - Uses CharacterQueries, AcademyClasses, AcademyGrades,
+ *     AcademyDisciplines, AcademyEnrolments, AcademyPerformance,
+ *     AcademySocialScore, AcademyGroups (read aliases),
+ *     EliminationQueries, TeamQueries.
+ *   - Does NOT use AcademyQueries. That facade was reduced to a
+ *     class-only surface and this module no longer depends on it.
  *   - Does NOT bind events. Buttons emit data-* and are handled by
  *     AcademyView's delegated container listeners.
  *   - Uses DomUtils for escaping (mandatory, no fallbacks).
@@ -37,9 +41,15 @@
  *     Enrollment is CLASS-SCOPED: getStudentDisciplines(charId, classId).
  *   - The classId is provided via options.classId by AcademyView.
  *   - When options.classId is absent, the Disciplines tab renders an
- *     empty state asking the user to select a class. This is a
- *     defensive path; in normal operation classId is always present.
+ *     empty state asking the user to select a class.
  *   - character.disciplineIds is NOT read.
+ *
+ * GRADES MODEL (Phase 3):
+ *   - Grades are CLASS-SCOPED. The Grades tab shows only the grades
+ *     for the currently selected class, via
+ *     AcademyGrades.getStudentClassGrades(charId, classId).
+ *   - When options.classId is absent, the Grades tab renders the
+ *     same empty state as the Disciplines tab.
  *
  * PERFORMANCE MODEL (Phase 3):
  *   - Academic average comes from AcademyPerformance.
@@ -76,17 +86,18 @@
  *   AcademyCharacterDetail.mountGradesEditor(charId, classVM, options)
  *
  * DEPENDENCIES:
- *   - window.DomUtils (MANDATORY)
- *   - window.CharacterQueries (MANDATORY)
- *   - window.AcademyQueries (MANDATORY)
- *   - window.DisciplineQueries (MANDATORY)
- *   - window.CalendarConstants (MANDATORY)
- *   - window.AcademyEnrolments (LAZY)
- *   - window.AcademyPerformance (LAZY)
- *   - window.AcademySocialScore (LAZY)
- *   - window.AcademyGroups (LAZY)
- *   - window.TeamQueries (LAZY)
- *   - window.EliminationQueries (LAZY)
+ *   - window.DomUtils              (MANDATORY)
+ *   - window.CharacterQueries      (MANDATORY)
+ *   - window.AcademyClasses        (MANDATORY)
+ *   - window.AcademyGrades         (MANDATORY)
+ *   - window.AcademyEnrolments     (LAZY)
+ *   - window.AcademyDisciplines    (MANDATORY)
+ *   - window.AcademyPerformance    (LAZY)
+ *   - window.AcademySocialScore    (LAZY)
+ *   - window.AcademyGroups         (LAZY, for auto-group reads)
+ *   - window.TeamQueries           (LAZY)
+ *   - window.EliminationQueries    (LAZY)
+ *   - window.CalendarConstants     (MANDATORY)
  */
 
 (function() {
@@ -103,8 +114,9 @@
 
     var DomUtils = window.DomUtils;
     var CharacterQueries = window.CharacterQueries;
-    var AcademyQueries = window.AcademyQueries;
-    var DisciplineQueries = window.DisciplineQueries;
+    var AcademyClasses = window.AcademyClasses;
+    var AcademyGrades = window.AcademyGrades;
+    var AcademyDisciplines = window.AcademyDisciplines;
     var CalendarConstants = window.CalendarConstants;
 
     // ============================================================
@@ -128,12 +140,22 @@
             missing.push('CharacterQueries.getCurrentStatus');
         }
 
-        if (!AcademyQueries || typeof AcademyQueries.getCharacterClasses !== 'function') {
-            missing.push('AcademyQueries.getCharacterClasses');
+        if (!AcademyClasses || typeof AcademyClasses.getCharacterClasses !== 'function') {
+            missing.push('AcademyClasses.getCharacterClasses');
+        }
+        if (!AcademyClasses || typeof AcademyClasses.getDisplayName !== 'function') {
+            missing.push('AcademyClasses.getDisplayName');
         }
 
-        if (!DisciplineQueries || typeof DisciplineQueries.getDiscipline !== 'function') {
-            missing.push('DisciplineQueries.getDiscipline');
+        if (!AcademyGrades || typeof AcademyGrades.getStudentClassGrades !== 'function') {
+            missing.push('AcademyGrades.getStudentClassGrades');
+        }
+        if (!AcademyGrades || typeof AcademyGrades.calculateSummary !== 'function') {
+            missing.push('AcademyGrades.calculateSummary');
+        }
+
+        if (!AcademyDisciplines || typeof AcademyDisciplines.getDiscipline !== 'function') {
+            missing.push('AcademyDisciplines.getDiscipline');
         }
 
         if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
@@ -147,6 +169,15 @@
 
         return true;
     }
+
+    // ============================================================
+    // LAZY ACCESSORS
+    // ============================================================
+
+    function getAcademyEnrolments() { return window.AcademyEnrolments || null; }
+    function getAcademyPerformance() { return window.AcademyPerformance || null; }
+    function getAcademySocialScore() { return window.AcademySocialScore || null; }
+    function getAcademyGroups() { return window.AcademyGroups || null; }
 
     // ============================================================
     // ESCAPING HELPERS
@@ -187,8 +218,15 @@
         if (!isNonEmptyString(disciplineId)) {
             return 'Unknown';
         }
-        var discipline = DisciplineQueries.getDiscipline(disciplineId);
+        var discipline = AcademyDisciplines.getDiscipline(disciplineId);
         return discipline && discipline.name ? discipline.name : 'Unknown';
+    }
+
+    function getClassDisplayName(classId) {
+        if (!isNonEmptyString(classId)) {
+            return 'Unknown Class';
+        }
+        return AcademyClasses.getDisplayName(classId) || 'Unknown Class';
     }
 
     function getRoleForCharInClass(char, classVM) {
@@ -417,7 +455,7 @@
                 html += renderDisciplinesTab(char, mode, week, classId);
                 break;
             case 'grades':
-                html += renderGradesTab(char, week);
+                html += renderGradesTab(char, week, classId);
                 break;
             case 'schedule':
                 html += renderScheduleTab(char, week);
@@ -515,7 +553,7 @@
 
         var html = '';
         html += '<div class="academy-character-mode-toggle">';
-        html += '<label class="academy-mode-checkbox-label">';
+        html += '<label class="academy-mode-checkbox-label" for="academy-character-mode-checkbox">';
         html += '<input type="checkbox" id="academy-character-mode-checkbox" ' +
                     'class="academy-character-mode-checkbox"' +
                     (isInstructor ? ' checked' : '') + '>';
@@ -584,7 +622,7 @@
     }
 
     function renderClassChips(char) {
-        var classes = AcademyQueries.getCharacterClasses(char);
+        var classes = AcademyClasses.getCharacterClasses(char);
         if (!Array.isArray(classes) || classes.length === 0) {
             return '';
         }
@@ -615,20 +653,6 @@
     // ============================================================
     // PERFORMANCE SCORES (Phase 5)
     // ============================================================
-    //
-    // Renders three scores:
-    //   - Academic average: from AcademyPerformance.calculateAcademicAverage
-    //   - Social score: from AcademySocialScore.getSocialScore for the week
-    //   - Overall: from AcademyPerformance.calculateOverallScore
-    //
-    // All three are display-only. This module does not compute them.
-    //
-    // Rendering is defensive: any of the three may be null (no data
-    // yet). Null renders as an em dash, not as "0".
-    //
-    // The edit-social-score button is on the Social Score card. It
-    // emits data-action="edit-social-score" and is handled by
-    // AcademyView.
 
     function renderPerformanceScores(char, classId, week) {
         var academic = null;
@@ -636,7 +660,7 @@
         var overall = null;
 
         // ---- Academic ----
-        var AP = window.AcademyPerformance;
+        var AP = getAcademyPerformance();
         if (AP && typeof AP.calculateAcademicAverage === 'function') {
             try {
                 var academicResult = AP.calculateAcademicAverage(char.id, classId, week);
@@ -649,7 +673,7 @@
         }
 
         // ---- Social ----
-        var ASS = window.AcademySocialScore;
+        var ASS = getAcademySocialScore();
         if (ASS && typeof ASS.getSocialScore === 'function') {
             try {
                 var socialResult = ASS.getSocialScore(char.id, classId, week);
@@ -684,14 +708,12 @@
 
         html += '<div class="academy-score-grid">';
 
-        // Academic average.
         html += renderScoreCard(
             'Academic Average',
             academic,
             'academic-average'
         );
 
-        // Social score (with edit button).
         html += renderScoreCard(
             'Social Score',
             social,
@@ -703,16 +725,14 @@
             }
         );
 
-        // Overall.
         html += renderScoreCard(
             'Overall',
             overall,
             'overall-score'
         );
 
-        html += '</div>'; // grid
-
-        html += '</div>'; // section
+        html += '</div>';
+        html += '</div>';
 
         return html;
     }
@@ -804,16 +824,6 @@
         return renderStudentDisciplinesTab(char, week, classId);
     }
 
-    /**
-     * Student Disciplines tab.
-     *
-     * Enrollment is class-scoped. The list of enrolled disciplines
-     * comes from AcademyEnrolments.getStudentDisciplines(charId, classId).
-     *
-     * When classId is absent (defensive path), the tab renders an
-     * empty state asking the user to select a class. This should not
-     * occur in normal operation.
-     */
     function renderStudentDisciplinesTab(char, week, classId) {
         var html = '';
         html += '<div class="academy-character-detail-section academy-character-disciplines">';
@@ -838,7 +848,7 @@
             return html;
         }
 
-        var AE = window.AcademyEnrolments;
+        var AE = getAcademyEnrolments();
         if (!AE || typeof AE.getStudentDisciplines !== 'function') {
             html += '<p class="empty-state small">' +
                         'Enrollment module not available.' +
@@ -893,9 +903,9 @@
     /**
      * Instructor Disciplines tab.
      *
-     * Reads the instructor's groups via AcademyGroups, which currently
-     * forwards to AcademyQueries. Groups represent the instructor's
-     * teaching assignments per discipline.
+     * Reads the instructor's groups via AcademyGroups' read aliases,
+     * which delegate to AcademyAutoGroupsRead. Groups represent the
+     * instructor's teaching assignments per discipline.
      */
     function renderInstructorDisciplinesTab(char, week) {
         var html = '';
@@ -905,7 +915,7 @@
         html += '<h4 class="academy-character-detail-section-title">Disciplines I Teach</h4>';
         html += '</div>';
 
-        var AG = window.AcademyGroups;
+        var AG = getAcademyGroups();
         if (!AG || typeof AG.getGroupsByInstructor !== 'function') {
             html += '<p class="empty-state small">Auto-groups module not available.</p>';
             html += '</div>';
@@ -974,16 +984,33 @@
     // ============================================================
     // GRADES TAB
     // ============================================================
+    //
+    // Grades are CLASS-SCOPED. The tab shows only the currently
+    // selected class's grades via AcademyGrades.getStudentClassGrades.
+    //
+    // When classId is absent, the tab renders the same empty state as
+    // the Disciplines tab. The grades editor is only mountable when
+    // both the character and a class are selected.
 
-    function renderGradesTab(char, week) {
-        var allGrades = AcademyQueries.getStudentGrades(char.id) || [];
-        var summary = AcademyQueries.calculateGradeSummary(allGrades);
-
+    function renderGradesTab(char, week, classId) {
         var html = '';
         html += '<div class="academy-character-detail-section academy-character-grades">';
 
         html += '<div class="academy-character-detail-section-header">';
         html += '<h4 class="academy-character-detail-section-title">Grades</h4>';
+
+        if (!classId) {
+            html += '</div>';
+            html += '<p class="empty-state small">' +
+                        'Select a class to view this student\'s grades.' +
+                    '</p>';
+            html += '</div>';
+            return html;
+        }
+
+        var grades = AcademyGrades.getStudentClassGrades(char.id, classId) || [];
+        var summary = AcademyGrades.calculateSummary(grades);
+
         if (summary && typeof summary.count === 'number' && summary.count > 0) {
             html += '<span class="academy-character-detail-section-subtitle">' +
                         'Avg ' + escapeHtml(String(summary.average)) +
@@ -1083,7 +1110,7 @@
     // ============================================================
 
     function renderAutoGroupsTab(char, week) {
-        var AG = window.AcademyGroups;
+        var AG = getAcademyGroups();
         if (!AG || typeof AG.getGroupsByInstructor !== 'function') {
             return (
                 '<div class="academy-character-detail-section">' +
