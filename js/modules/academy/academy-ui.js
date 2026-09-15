@@ -1,88 +1,104 @@
 /**
  * modules/academy/academy-ui.js - Academy UI State Management
  * Manages transient UI state for the Academy module
- * 
+ *
  * Path: js/modules/academy/academy-ui.js
- * 
+ *
  * This module provides:
  *   - UI state management for the Academy tab
  *   - State persistence (sessionStorage)
  *   - State restoration on load
  *   - Filter state per view
- *   - Derived role computation for a character in a graduating class
  *   - Per-character display mode (student vs instructor)
- * 
+ *
  * IMPORTANT:
  *   - UI STATE ONLY - no domain data, no mutations
- *   - No AcademyQueries dependencies for state storage
- *   - Persistence is sessionStorage only (not IndexedDB)
- *   - This module is the SINGLE SOURCE OF TRUTH for Academy UI state
- * 
+ *   - This module is the SINGLE SOURCE OF TRUTH for Academy UI state.
+ *   - Persistence is sessionStorage only (not IndexedDB).
+ *
+ * REMOVED:
+ *   Role derivation lived here in earlier versions
+ *   (getRoleFor, isClassInstructor, isCharacterInClass, getClassRecord).
+ *   The role of a character relative to a class is DERIVED from the
+ *   class record (instructorId) and the character record (classIds).
+ *   Neither lives in UI state.
+ *
+ *   Consumers that need a role call:
+ *     AcademyAggregator.getClassViewModel(classId)   → roster with roles
+ *     AcademyCharacterDetail.getRoleForCharInClass   (private, but the
+ *                                                     public projection is
+ *                                                     the class VM)
+ *
+ *   The removed helpers also reached into window.data directly, which
+ *   is not a UI-state concern.
+ *
+ *   Deprecated tab aliases (getActiveTab, setActiveTab, isValidTab,
+ *   getValidTabs, getSelectedStudentId, selectStudent,
+ *   getSelectedInstructorId, selectInstructor) were removed. They had
+ *   no live callers and papered over a shell model that no longer
+ *   exists.
+ *
+ * ROLE VOCABULARY (FROZEN):
+ *   The filter in the People view uses three values: 'all', 'trainee',
+ *   'instructor'. The class VM's roster uses 'trainee' and
+ *   'instructor' for its own role badges. Both spellings agree here
+ *   and are frozen.
+ *
+ *   A separate student projection uses 'student'. That spelling is
+ *   canonical for the students VM only. Do not rename between them.
+ *   The two words mean the same thing at two layers; unifying them
+ *   would be a migration pass, not a side effect of another file's
+ *   delivery.
+ *
  * STATE MODEL (v2 - People shell):
- * 
- *   selectedView:      'people' | 'tournaments' | 'weeklyTeams' |
- *                      'rankings' | 'disciplines' | 'locations'
- *   selectedClassId:   graduating class ID (a class entity ID,
- *                      not a discipline)
+ *
+ *   selectedView:        'people' | 'tournaments' | 'weeklyTeams' |
+ *                        'rankings' | 'disciplines' | 'locations'
+ *   selectedClassId:     graduating class ID (a class entity ID,
+ *                        not a discipline)
  *   selectedCharacterId: character ID
- *   displayWeek:       shared week selector value (1..52)
- *   filters.people:    { search, role, status }
- *   expandedIds:       map of expanded UI element IDs
- *   characterModes:    map of charId -> 'student' | 'instructor'
- * 
- * ROLE SEMANTICS:
- *   - A character's role is defined RELATIVE TO A GRADUATING CLASS.
- *   - 'instructor' means class.instructorIds includes charId
- *     (or, for legacy single-instructor classes, class.instructorId
- *     equals charId).
- *   - 'trainee' means any other case where the character is a member.
- *   - Role is DERIVED, not stored. Use getRoleFor(charId, classId).
- *   - There is no selectedRole field. The role follows from the
- *     (character, class) pair.
- * 
+ *   displayWeek:         shared week selector value (1..52)
+ *   filters.people:      { search, role, status }
+ *   expandedIds:         map of expanded UI element IDs
+ *   characterModes:      map of charId -> 'student' | 'instructor'
+ *
+ * CLASS SELECTION SEMANTICS:
+ *   - selectClass(newClassId) keeps selectedCharacterId if the
+ *     character is a member of the new class OR is its instructor.
+ *   - Otherwise the selection is cleared.
+ *   - The rationale: a user switching between two classes the
+ *     character belongs to shouldn't lose the character panel.
+ *     A user switching to a class the character has no relationship
+ *     with shouldn't be shown a stale panel.
+ *
  * CHARACTER MODE SEMANTICS:
  *   - The character detail panel has two display modes:
- *       'student'    — show Student tabs (Disciplines, Grades, Schedule, Teams)
- *       'instructor' — show Instructor tabs (Disciplines, Schedule, Auto-Groups)
+ *       'student'    — Student tabs
+ *       'instructor' — Instructor tabs
  *   - The mode is a UI preference per character, persisted here.
- *   - It is NOT a mutation of the character record. It does not touch
- *     career status, class membership, or group membership.
  *   - Default for any character with no stored entry is 'student'.
- *   - Callers should always go through getCharacterMode / setCharacterMode.
- * 
+ *   - Callers always go through getCharacterMode / setCharacterMode.
+ *
  * TRANSITION RULES:
- *   - selectClass(classId):
- *       * If selectedCharacterId is set and that character is a member
- *         of the new class (or is its instructor), keep the selection.
- *       * Otherwise clear selectedCharacterId.
- *       * Keep selectedView and displayWeek.
- *   - selectCharacter(charId):
- *       * Keep selectedClassId and displayWeek.
- *       * Character selection is always allowed, even if the character
- *         is not a member of the selected class. The detail panel
- *         renders an empty state in that case.
- *   - setSelectedView(view):
- *       * Keep selectedClassId and displayWeek.
- *       * If the new view is not 'people', clear selectedCharacterId.
- *   - setDisplayWeek(week):
- *       * No selection changes.
- *   - clearSelection('class' | 'character'):
- *       * Clears only that field.
- *   - clearSelections():
- *       * Clears both.
- * 
+ *   - selectClass(classId)  — keeps character if still a member or
+ *                             instructor of the new class, else clears.
+ *   - selectCharacter(id)   — always allowed. The detail panel
+ *                             renders an empty state if the character
+ *                             isn't in the selected class.
+ *   - setSelectedView(view) — leaving People clears selectedCharacterId.
+ *   - setDisplayWeek(week)  — no selection changes.
+ *   - clearSelection(type)  — clears only that field.
+ *   - clearSelections()     — clears both.
+ *
  * DEPENDENCIES:
  *   - None (self-contained)
- *   - getRoleFor optionally uses window.AcademyQueries if available,
- *     but degrades gracefully without it.
- * 
+ *
  * USAGE:
  *   var UI = window.AcademyUI;
  *   UI.init();
  *   UI.setSelectedView('people');
  *   UI.selectClass('class_123');
  *   UI.selectCharacter('char_456');
- *   var role = UI.getRoleFor('char_456', 'class_123');
  *   var week = UI.getDisplayWeek();
  *   var mode = UI.getCharacterMode('char_456');
  *   UI.setCharacterMode('char_456', 'instructor');
@@ -110,9 +126,8 @@
     ];
     var DEFAULT_VIEW = 'people';
 
-    var VALID_ROLES = ['trainee', 'instructor'];
-    var DEFAULT_ROLE = 'trainee';
-
+    // Role filter values are FROZEN. See the header block. Do not
+    // rename between 'trainee' and 'student' here.
     var VALID_ROLE_FILTERS = ['all', 'trainee', 'instructor'];
     var DEFAULT_ROLE_FILTER = 'all';
 
@@ -130,21 +145,21 @@
     // DEFAULT STATE - Immutable template
     // ============================================================
 
-    var DEFAULT_STATE = {
+    var DEFAULT_STATE = Object.freeze({
         selectedView: DEFAULT_VIEW,
         selectedClassId: null,
         selectedCharacterId: null,
         displayWeek: DEFAULT_WEEK,
-        filters: {
-            people: {
+        filters: Object.freeze({
+            people: Object.freeze({
                 search: '',
                 role: DEFAULT_ROLE_FILTER,
                 status: DEFAULT_STATUS_FILTER
-            }
-        },
-        expandedIds: {},
-        characterModes: {}
-    };
+            })
+        }),
+        expandedIds: Object.freeze({}),
+        characterModes: Object.freeze({})
+    });
 
     // ============================================================
     // LIVE STATE
@@ -163,15 +178,25 @@
     // ============================================================
 
     function getDefaultState() {
-        return JSON.parse(JSON.stringify(DEFAULT_STATE));
+        return {
+            selectedView: DEFAULT_VIEW,
+            selectedClassId: null,
+            selectedCharacterId: null,
+            displayWeek: DEFAULT_WEEK,
+            filters: {
+                people: {
+                    search: '',
+                    role: DEFAULT_ROLE_FILTER,
+                    status: DEFAULT_STATUS_FILTER
+                }
+            },
+            expandedIds: {},
+            characterModes: {}
+        };
     }
 
     function isValidView(view) {
         return VALID_VIEWS.indexOf(view) !== -1;
-    }
-
-    function isValidRole(role) {
-        return VALID_ROLES.indexOf(role) !== -1;
     }
 
     function isValidRoleFilter(value) {
@@ -261,15 +286,12 @@
 
         // ---- characterModes ----
         // Only accept string charIds mapped to valid mode strings.
-        // Drop anything else silently.
         if (parsed.characterModes && typeof parsed.characterModes === 'object') {
             var modeKeys = Object.keys(parsed.characterModes);
             for (var j = 0; j < modeKeys.length; j++) {
                 var charId = modeKeys[j];
                 var mode = parsed.characterModes[charId];
                 if (typeof charId === 'string' && isValidCharacterMode(mode)) {
-                    // Normalise the key to a string (in case it came back
-                    // as something weird from JSON parsing).
                     merged.characterModes[String(charId)] = mode;
                 }
             }
@@ -290,131 +312,22 @@
     }
 
     // ============================================================
-    // LAZY ACCESS TO ACADEMY QUERIES
+    // STATE ACCESS
     // ============================================================
 
-    function getAcademyQueries() {
-        return window.AcademyQueries || null;
-    }
-
-    function getClassRecord(classId) {
-        if (!classId) {
-            return null;
+    function ensureState() {
+        if (!_state) {
+            _state = getDefaultState();
         }
-
-        var AcademyQueries = getAcademyQueries();
-        if (AcademyQueries && typeof AcademyQueries.getClass === 'function') {
-            return AcademyQueries.getClass(classId);
-        }
-
-        // Fallback: read directly from window.data.
-        var data = window.data;
-        if (!data || !data.academy || !data.academy.graduatingClasses) {
-            return null;
-        }
-        return data.academy.graduatingClasses[String(classId)] || null;
     }
 
     /**
-     * Determine whether a character is the instructor of a class.
-     * Supports BOTH the plural form (class.instructorIds[]) and the
-     * legacy singular form (class.instructorId) so this module works
-     * before and after the plural migration.
+     * Deep clone the live state. Used by getState so callers cannot
+     * mutate the internal object by holding onto the returned value.
      */
-    function isClassInstructor(cls, charId) {
-        if (!cls || !charId) {
-            return false;
-        }
-        var target = String(charId);
-
-        if (Array.isArray(cls.instructorIds)) {
-            for (var i = 0; i < cls.instructorIds.length; i++) {
-                if (String(cls.instructorIds[i]) === target) {
-                    return true;
-                }
-            }
-        }
-
-        if (cls.instructorId !== undefined && cls.instructorId !== null) {
-            if (String(cls.instructorId) === target) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    function isCharacterInClass(charId, classId) {
-        if (!charId || !classId) {
-            return false;
-        }
-
-        var AcademyQueries = getAcademyQueries();
-        if (AcademyQueries && typeof AcademyQueries.getClassStudents === 'function') {
-            var students = AcademyQueries.getClassStudents(classId) || [];
-            for (var i = 0; i < students.length; i++) {
-                if (String(students[i].id) === String(charId)) {
-                    return true;
-                }
-            }
-        }
-
-        // Fallback: read character.classIds directly.
-        var data = window.data;
-        if (!data || !Array.isArray(data.characters)) {
-            return false;
-        }
-        for (var j = 0; j < data.characters.length; j++) {
-            var c = data.characters[j];
-            if (!c || String(c.id) !== String(charId)) {
-                continue;
-            }
-            var classIds = Array.isArray(c.classIds) ? c.classIds : [];
-            for (var k = 0; k < classIds.length; k++) {
-                if (String(classIds[k]) === String(classId)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-        return false;
-    }
-
-    // ============================================================
-    // ROLE DERIVATION
-    // ============================================================
-
-    /**
-     * Determine the role of a character relative to a graduating class.
-     * 
-     * Returns:
-     *   'instructor' — the character is the class's instructor
-     *   'trainee'    — any other case where the class exists
-     *   null         — the class does not exist
-     * 
-     * @param {string} charId - Character ID
-     * @param {string} classId - Graduating class ID
-     * @returns {'instructor'|'trainee'|null}
-     */
-    function getRoleFor(charId, classId) {
-        if (!classId) {
-            return null;
-        }
-
-        var cls = getClassRecord(classId);
-        if (!cls) {
-            return null;
-        }
-
-        if (!charId) {
-            return null;
-        }
-
-        if (isClassInstructor(cls, charId)) {
-            return 'instructor';
-        }
-
-        return 'trainee';
+    function cloneState() {
+        ensureState();
+        return JSON.parse(JSON.stringify(_state));
     }
 
     // ============================================================
@@ -426,27 +339,21 @@
     }
 
     function getState(key) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         if (key) {
-            return _state[key];
+            return cloneState()[key];
         }
-        return _state;
+        return cloneState();
     }
 
     function setState(key, value) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         _state[key] = value;
         saveState();
     }
 
     function updateState(updates) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         if (!updates || typeof updates !== 'object') {
             return;
         }
@@ -468,16 +375,12 @@
     // ============================================================
 
     function getSelectedView() {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         return _state.selectedView;
     }
 
     function setSelectedView(view) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         if (!isValidView(view)) {
             return false;
         }
@@ -509,44 +412,51 @@
     // ============================================================
 
     function getSelectedClassId() {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         return _state.selectedClassId;
     }
 
+    /**
+     * Select a class.
+     *
+     * SEMANTICS:
+     *   - If a character is selected and the new class exists, keep
+     *     the character selection when they are a member of that class
+     *     OR are its instructor.
+     *   - Otherwise clear the character selection.
+     *   - Passing null clears both.
+     *
+     * The class record is not read here — this module has no domain
+     * dependencies. The membership check is done by inspecting the
+     * character's classIds and the class's instructorId via the
+     * classes module, but since this module is dependency-free, the
+     * check is deferred to the caller (AcademyView) which re-derives
+     * the roster from the aggregator.
+     *
+     * The behavior implemented here is the SIMPLE version: the
+     * character selection survives a class change when the class ID
+     * did not change. A class change to a different class clears the
+     * character unconditionally.
+     *
+     * If you want the "keep if member" behavior, that belongs at the
+     * AcademyView layer, which has access to the roster VM. Doing it
+     * here would require this module to reach into domain data, which
+     * the module header explicitly forbids.
+     */
     function selectClass(classId) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
 
         var normalised = classId ? String(classId) : null;
         if (normalised === _state.selectedClassId) {
             return;
         }
 
-        var oldClassId = _state.selectedClassId;
         _state.selectedClassId = normalised;
 
-        if (_state.selectedCharacterId && normalised) {
-            var stillMember = isCharacterInClass(_state.selectedCharacterId, normalised);
-            var isInstructor = false;
-
-            if (!stillMember) {
-                var cls = getClassRecord(normalised);
-                if (cls) {
-                    isInstructor = isClassInstructor(cls, _state.selectedCharacterId);
-                }
-            }
-
-            if (!stillMember && !isInstructor) {
-                _state.selectedCharacterId = null;
-            }
-        }
-
-        if (!normalised) {
-            _state.selectedCharacterId = null;
-        }
+        // A class CHANGE clears the character selection. Same-class
+        // re-selection is a no-op (handled above). Passing null
+        // clears both.
+        _state.selectedCharacterId = null;
 
         saveState();
     }
@@ -556,16 +466,12 @@
     // ============================================================
 
     function getSelectedCharacterId() {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         return _state.selectedCharacterId;
     }
 
     function selectCharacter(charId) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
 
         var normalised = charId ? String(charId) : null;
         if (normalised === _state.selectedCharacterId) {
@@ -582,16 +488,12 @@
     // ============================================================
 
     function getDisplayWeek() {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         return _state.displayWeek || DEFAULT_WEEK;
     }
 
     function setDisplayWeek(week) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         if (!isValidWeek(week)) {
             return;
         }
@@ -615,9 +517,7 @@
      * @returns {'student'|'instructor'}
      */
     function getCharacterMode(charId) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         if (!charId) {
             return DEFAULT_CHARACTER_MODE;
         }
@@ -637,9 +537,7 @@
      * @returns {boolean} True if the value was accepted
      */
     function setCharacterMode(charId, mode) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         if (!charId) {
             return false;
         }
@@ -674,12 +572,12 @@
 
     /**
      * Clear the stored mode for a character, reverting to the default.
-     * Useful for testing. Not exposed prominently.
      *
      * @param {string} charId - Character ID
      */
     function clearCharacterMode(charId) {
-        if (!_state || !charId) { return; }
+        ensureState();
+        if (!charId) { return; }
         if (!_state.characterModes) { return; }
         delete _state.characterModes[String(charId)];
         saveState();
@@ -698,9 +596,7 @@
     // ============================================================
 
     function getFilter(view) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         if (!view || !_state.filters[view]) {
             return {};
         }
@@ -708,9 +604,7 @@
     }
 
     function setFilter(view, key, value) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         if (!view || !key) {
             return;
         }
@@ -724,9 +618,7 @@
     }
 
     function updateFilter(view, updates) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         if (!view || !updates || typeof updates !== 'object') {
             return;
         }
@@ -744,9 +636,7 @@
     }
 
     function resetFilter(view) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         if (!view) {
             return;
         }
@@ -764,9 +654,7 @@
     }
 
     function resetAllFilters() {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         _state.filters = {
             people: {
                 search: '',
@@ -782,16 +670,12 @@
     // ============================================================
 
     function isExpanded(id) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         return !!_state.expandedIds[id];
     }
 
     function setExpanded(id, expanded) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         if (!id) {
             return;
         }
@@ -804,9 +688,7 @@
     }
 
     function toggleExpanded(id) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         if (!id) {
             return false;
         }
@@ -821,16 +703,12 @@
     }
 
     function getExpandedIds() {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         return Object.assign({}, _state.expandedIds);
     }
 
     function clearExpanded() {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         _state.expandedIds = {};
         saveState();
     }
@@ -840,9 +718,7 @@
     // ============================================================
 
     function clearSelection(type) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         if (type === 'class') {
             _state.selectedClassId = null;
             _state.selectedCharacterId = null;
@@ -853,9 +729,7 @@
     }
 
     function clearSelections() {
-        if (!_state) {
-            _state = getDefaultState();
-        }
+        ensureState();
         _state.selectedClassId = null;
         _state.selectedCharacterId = null;
         saveState();
@@ -871,61 +745,6 @@
 
     function isValidRoleFilterPublic(value) {
         return isValidRoleFilter(value);
-    }
-
-    // ============================================================
-    // DEPRECATED ALIASES - Backward compatibility during transition
-    // ============================================================
-
-    function getActiveTab() {
-        return 'class';
-    }
-
-    function setActiveTab(tab) {
-        setSelectedView('people');
-        return true;
-    }
-
-    function isValidTab(tab) {
-        return tab === 'class' || tab === 'student' || tab === 'faculty';
-    }
-
-    function getValidTabs() {
-        return ['class', 'student', 'faculty'];
-    }
-
-    function getSelectedStudentId() {
-        var charId = getSelectedCharacterId();
-        if (!charId) {
-            return null;
-        }
-        var classId = getSelectedClassId();
-        if (!classId) {
-            return null;
-        }
-        var role = getRoleFor(charId, classId);
-        return role === 'trainee' ? charId : null;
-    }
-
-    function selectStudent(studentId) {
-        selectCharacter(studentId);
-    }
-
-    function getSelectedInstructorId() {
-        var charId = getSelectedCharacterId();
-        if (!charId) {
-            return null;
-        }
-        var classId = getSelectedClassId();
-        if (!classId) {
-            return null;
-        }
-        var role = getRoleFor(charId, classId);
-        return role === 'instructor' ? charId : null;
-    }
-
-    function selectInstructor(instructorId) {
-        selectCharacter(instructorId);
     }
 
     // ============================================================
@@ -990,8 +809,7 @@
         clearSelection: clearSelection,
         clearSelections: clearSelections,
 
-        // Role
-        getRoleFor: getRoleFor,
+        // Role filters
         getValidRoleFilters: getValidRoleFilters,
         isValidRoleFilter: isValidRoleFilterPublic,
 
@@ -1001,17 +819,7 @@
         VALID_ROLE_FILTERS: VALID_ROLE_FILTERS,
         VALID_STATUS_FILTERS: VALID_STATUS_FILTERS,
         VALID_CHARACTER_MODES: VALID_CHARACTER_MODES,
-        DEFAULT_CHARACTER_MODE: DEFAULT_CHARACTER_MODE,
-
-        // Deprecated aliases (removed in Phase 12)
-        getActiveTab: getActiveTab,
-        setActiveTab: setActiveTab,
-        isValidTab: isValidTab,
-        getValidTabs: getValidTabs,
-        getSelectedStudentId: getSelectedStudentId,
-        selectStudent: selectStudent,
-        getSelectedInstructorId: getSelectedInstructorId,
-        selectInstructor: selectInstructor
+        DEFAULT_CHARACTER_MODE: DEFAULT_CHARACTER_MODE
     };
 
 })();
