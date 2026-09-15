@@ -2,6 +2,8 @@
  * modules/academy/academy-groups.js - Academy Groups
  * CANONICAL source of truth for auto-group MUTATIONS.
  *
+ * Path: js/modules/academy/academy-groups.js
+ *
  * This module provides:
  *   - Group mutations (create, delete)
  *   - Student membership mutations (add, remove, bulk)
@@ -9,13 +11,15 @@
  *   - Bulk cleanup (delete all groups for instructor / discipline)
  *   - Candidate builders for MutationPipeline (advanced callers)
  *   - Cross-domain cascade helper (stripCharacterRefs)
+ *   - DEPRECATED read aliases that delegate to AcademyAutoGroupsRead
  *
  * IMPORTANT:
  *   - This module owns auto-group MUTATIONS only.
- *   - READS are owned by AcademyQueries. This module does not
+ *   - READS are owned by AcademyAutoGroupsRead. This module does not
  *     re-implement reads; the legacy read functions below are thin
- *     aliases that delegate to AcademyQueries and are kept only for
- *     backward compatibility. New code should call AcademyQueries.
+ *     aliases that delegate to AcademyAutoGroupsRead and are kept only
+ *     for backward compatibility. New code should call
+ *     AcademyAutoGroupsRead directly.
  *   - Uses LAZY LOADING to break circular dependencies.
  *   - All PUBLIC mutations go through MutationPipeline. The pipeline
  *     owns persistence, rollback, and activity logging.
@@ -26,7 +30,20 @@
  *     mutate() callback.
  *   - This module does NOT call saveData() directly.
  *
- * READ SAFETY (Phase 2):
+ * READ ALIAS DELEGATION:
+ *   Historically, these aliases delegated to AcademyQueries. That
+ *   created an infinite-recursion risk when AcademyQueries also owned
+ *   the group reads. Both problems are now gone:
+ *     - Reads live in AcademyAutoGroupsRead.
+ *     - AcademyAutoGroupsRead does not delegate anywhere.
+ *   The direction is one-way:
+ *
+ *     callers → AcademyGroups.getX (alias) → AcademyAutoGroupsRead.getX
+ *     callers → AcademyGroups.mutate            (mutation, no read)
+ *
+ *   AcademyAutoGroupsRead never calls back into this module.
+ *
+ * READ SAFETY:
  *   - getAutoGroupsStore() returns null when the store is missing.
  *     It does NOT create curriculum.autoGroups as a side effect of a
  *     read.
@@ -37,21 +54,21 @@
  *     is called exclusively from inside pipeline mutate() callbacks,
  *     operating on the appData snapshot.
  *
- * DELETE-ALL NO-OP SEMANTICS (Phase 2):
+ * DELETE-ALL NO-OP SEMANTICS:
  *   - deleteAllGroupsForInstructor and deleteAllGroupsForDiscipline
  *     treat an empty store as a SUCCESS. The operation completed; there
  *     was simply nothing to remove. The result reports removed: 0.
  *   - This matches the semantics of deleteGroup on a non-existent key:
  *     the requested post-state (group absent) is satisfied.
  *
- * STATUS CLASSIFIERS (Phase 2):
+ * STATUS CLASSIFIERS:
  *   - CharacterConstants is MANDATORY. The status classifiers delegate
  *     directly to CharacterConstants.isInstructorStatus /
  *     isStudentStatus. The local fallback lists are gone.
  *   - The status classifiers accept any casing; CharacterConstants
  *     lowercases internally.
  *
- * DISCIPLINE LOOKUP (Phase 2):
+ * DISCIPLINE LOOKUP:
  *   - AcademyDisciplines is the canonical owner of discipline entities.
  *     This module uses AcademyDisciplines.getDiscipline for validation
  *     lookups. It does NOT use DisciplineQueries.
@@ -94,7 +111,7 @@
  *   - window.CalendarConstants - MANDATORY
  *   - window.MutationPipeline - MANDATORY
  *   - window.CharacterConstants - MANDATORY
- *   - window.AcademyQueries - LAZY (for read aliases only)
+ *   - window.AcademyAutoGroupsRead - LAZY (for read aliases only)
  *
  * USAGE:
  *   var groups = window.AcademyGroups;
@@ -126,8 +143,8 @@
     // LAZY LOADING HELPERS
     // ============================================================
 
-    function getAcademyQueries() {
-        return window.AcademyQueries || null;
+    function getAcademyAutoGroupsRead() {
+        return window.AcademyAutoGroupsRead || null;
     }
 
     function getCharacterQueries() {
@@ -194,8 +211,8 @@
             missing.push('CharacterConstants');
         }
 
-        if (!getAcademyQueries()) {
-            missing.push('AcademyQueries (lazy)');
+        if (!getAcademyAutoGroupsRead()) {
+            missing.push('AcademyAutoGroupsRead (lazy)');
         }
 
         if (missing.length > 0) {
@@ -295,10 +312,6 @@
     // ============================================================
     // STATUS CLASSIFIERS - Delegates to CharacterConstants
     // ============================================================
-    //
-    // Phase 2: CharacterConstants is MANDATORY. The local fallback
-    // lists have been removed. The classifiers accept any casing;
-    // CharacterConstants lowercases internally.
 
     function isInstructorStatus(status) {
         if (!isNonEmptyString(status)) {
@@ -339,12 +352,6 @@
         return { valid: true, key: key };
     }
 
-    /**
-     * Validate a discipline ID.
-     *
-     * Phase 2: uses AcademyDisciplines (the canonical owner of
-     * discipline entities) instead of DisciplineQueries.
-     */
     function validateDisciplineId(disciplineId) {
         if (!isNonEmptyString(disciplineId)) {
             return { valid: false, message: 'Discipline ID is required.' };
@@ -509,11 +516,6 @@
     // ============================================================
     // CANDIDATE BUILDERS - For MutationPipeline
     // ============================================================
-    //
-    // Each builder returns { success: true, data: { mutate, ... } }.
-    // The `mutate` closure takes an `appData` argument and is designed
-    // to run INSIDE a pipeline mutate() callback. It does NOT reach
-    // into window.data directly.
 
     function buildCreateGroupCandidate(disciplineId, instructorId) {
         var discResult = validateDisciplineId(disciplineId);
@@ -994,14 +996,6 @@
         });
     }
 
-    /**
-     * Build a candidate to delete all groups for an instructor.
-     *
-     * DELETE-ALL NO-OP SEMANTICS: an empty store is a SUCCESS. There
-     * was nothing to remove; the caller's requested post-state (no
-     * groups for this instructor) is already satisfied. The candidate
-     * resolves with removed: 0.
-     */
     function buildDeleteAllForInstructorCandidate(instructorId) {
         if (!isNonEmptyString(instructorId)) {
             return failure('Instructor ID is required.');
@@ -1021,10 +1015,6 @@
                 }
             }
         }
-
-        // No-op success when there is nothing to remove.
-        // (Previously this returned failure('No groups found...'), which
-        // conflated "nothing to do" with "operation failed".)
 
         function mutate(appData) {
             if (keysToRemove.length === 0) {
@@ -1048,12 +1038,6 @@
         });
     }
 
-    /**
-     * Build a candidate to delete all groups for a discipline.
-     *
-     * DELETE-ALL NO-OP SEMANTICS: same as the instructor variant. An
-     * empty store is a success with removed: 0.
-     */
     function buildDeleteAllForDisciplineCandidate(disciplineId) {
         if (!isNonEmptyString(disciplineId)) {
             return failure('Discipline ID is required.');
@@ -1186,10 +1170,6 @@
     // MUTATION PIPELINE WRAPPER
     // ============================================================
 
-    /**
-     * Run a candidate's mutate closure inside a MutationPipeline
-     * transaction. Handles dependency check and error wrapping.
-     */
     function runCandidate(candidate, options) {
         if (!candidate || !candidate.success) {
             return Promise.resolve(candidate || failure('Candidate build failed.'));
@@ -1326,13 +1306,6 @@
         });
     }
 
-    /**
-     * Delete all groups for an instructor.
-     *
-     * DELETE-ALL NO-OP SEMANTICS: when there are no groups to remove,
-     * this resolves with success and removed: 0. The operation
-     * completed successfully; the post-state was already satisfied.
-     */
     function deleteAllGroupsForInstructor(instructorId) {
         var candidate = buildDeleteAllForInstructorCandidate(instructorId);
         if (!candidate.success) {
@@ -1346,11 +1319,6 @@
         });
     }
 
-    /**
-     * Delete all groups for a discipline.
-     *
-     * DELETE-ALL NO-OP SEMANTICS: same as the instructor variant.
-     */
     function deleteAllGroupsForDiscipline(disciplineId) {
         var candidate = buildDeleteAllForDisciplineCandidate(disciplineId);
         if (!candidate.success) {
@@ -1365,134 +1333,140 @@
     }
 
     // ============================================================
-    // BACKWARD-COMPATIBILITY READ ALIASES
+    // READ ALIASES - DELEGATE TO AcademyAutoGroupsRead
     // ============================================================
     //
-    // These delegate to AcademyQueries. They exist for backward
-    // compatibility with callers that still use AcademyGroups.getX.
-    // New code should call AcademyQueries.getX directly.
+    // Historically these delegated to AcademyQueries, which created a
+    // recursion risk when AcademyQueries also owned the group reads.
+    // Both problems are gone:
+    //   - Reads live in AcademyAutoGroupsRead.
+    //   - AcademyAutoGroupsRead does not delegate anywhere.
     //
     // IMPORTANT: do not add new reads here, and do not make
-    // AcademyQueries call these aliases — that would recreate the
-    // recursion loop that caused a stack overflow. AcademyQueries is
-    // the single source of truth for reads; these are aliases only.
+    // AcademyAutoGroupsRead call these aliases — that would recreate
+    // the recursion loop. AcademyAutoGroupsRead is the single source of
+    // truth for reads; these are thin pass-throughs only.
+
+    function getAutoGroupsRead() {
+        return getAcademyAutoGroupsRead();
+    }
 
     function getAllAutoGroups() {
-        var AQ = getAcademyQueries();
-        if (AQ && typeof AQ.getAllGroups === 'function') {
-            return AQ.getAllGroups();
+        var AR = getAutoGroupsRead();
+        if (AR && typeof AR.getAllGroups === 'function') {
+            return AR.getAllGroups();
         }
         return {};
     }
 
     function getAutoGroup(key) {
-        var AQ = getAcademyQueries();
-        if (AQ && typeof AQ.getGroup === 'function') {
-            return AQ.getGroup(key);
+        var AR = getAutoGroupsRead();
+        if (AR && typeof AR.getGroup === 'function') {
+            return AR.getGroup(key);
         }
         return null;
     }
 
     function isStudentInGroup(key, studentId) {
-        var AQ = getAcademyQueries();
-        if (AQ && typeof AQ.isStudentInGroup === 'function') {
-            return AQ.isStudentInGroup(key, studentId);
+        var AR = getAutoGroupsRead();
+        if (AR && typeof AR.isStudentInGroup === 'function') {
+            return AR.isStudentInGroup(key, studentId);
         }
         return false;
     }
 
     function getGroupStudents(key) {
-        var AQ = getAcademyQueries();
-        if (AQ && typeof AQ.getGroupStudents === 'function') {
-            return AQ.getGroupStudents(key);
+        var AR = getAutoGroupsRead();
+        if (AR && typeof AR.getGroupStudents === 'function') {
+            return AR.getGroupStudents(key);
         }
         return [];
     }
 
     function getGroupSlots(key) {
-        var AQ = getAcademyQueries();
-        if (AQ && typeof AQ.getGroupSlots === 'function') {
-            return AQ.getGroupSlots(key);
+        var AR = getAutoGroupsRead();
+        if (AR && typeof AR.getGroupSlots === 'function') {
+            return AR.getGroupSlots(key);
         }
         return [];
     }
 
     function getGroupsByDiscipline(disciplineId) {
-        var AQ = getAcademyQueries();
-        if (AQ && typeof AQ.getGroupsByDiscipline === 'function') {
-            return AQ.getGroupsByDiscipline(disciplineId);
+        var AR = getAutoGroupsRead();
+        if (AR && typeof AR.getGroupsByDiscipline === 'function') {
+            return AR.getGroupsByDiscipline(disciplineId);
         }
         return {};
     }
 
     function getGroupsByInstructor(instructorId) {
-        var AQ = getAcademyQueries();
-        if (AQ && typeof AQ.getGroupsByInstructor === 'function') {
-            return AQ.getGroupsByInstructor(instructorId);
+        var AR = getAutoGroupsRead();
+        if (AR && typeof AR.getGroupsByInstructor === 'function') {
+            return AR.getGroupsByInstructor(instructorId);
         }
         return {};
     }
 
     function getGroupStudentCount(key) {
-        var AQ = getAcademyQueries();
-        if (AQ && typeof AQ.getGroupStudentCount === 'function') {
-            return AQ.getGroupStudentCount(key);
+        var AR = getAutoGroupsRead();
+        if (AR && typeof AR.getGroupStudentCount === 'function') {
+            return AR.getGroupStudentCount(key);
         }
         return 0;
     }
 
     function getGroupSlotCount(key) {
-        var AQ = getAcademyQueries();
-        if (AQ && typeof AQ.getGroupSlotCount === 'function') {
-            return AQ.getGroupSlotCount(key);
+        var AR = getAutoGroupsRead();
+        if (AR && typeof AR.getGroupSlotCount === 'function') {
+            return AR.getGroupSlotCount(key);
         }
         return 0;
     }
 
     function getGroupsForStudent(studentId) {
-        var AQ = getAcademyQueries();
-        if (AQ && typeof AQ.getGroupsForStudent === 'function') {
-            return AQ.getGroupsForStudent(studentId);
+        var AR = getAutoGroupsRead();
+        if (AR && typeof AR.getGroupsForStudent === 'function') {
+            return AR.getGroupsForStudent(studentId);
         }
         return {};
     }
 
     function getGroupsForWeek(week) {
-        var AQ = getAcademyQueries();
-        if (AQ && typeof AQ.getGroupsForWeek === 'function') {
-            return AQ.getGroupsForWeek(week);
+        var AR = getAutoGroupsRead();
+        if (AR && typeof AR.getGroupsForWeek === 'function') {
+            return AR.getGroupsForWeek(week);
         }
         return {};
     }
 
     function getGroupSlotsByWeek(key, week) {
-        var AQ = getAcademyQueries();
-        if (AQ && typeof AQ.getGroupSlotsByWeek === 'function') {
-            return AQ.getGroupSlotsByWeek(key, week);
+        var AR = getAutoGroupsRead();
+        if (AR && typeof AR.getGroupSlotsByWeek === 'function') {
+            return AR.getGroupSlotsByWeek(key, week);
         }
         return [];
     }
 
     function getGroupSummary(key) {
-        var AQ = getAcademyQueries();
-        if (AQ && typeof AQ.getGroupSummary === 'function') {
-            return AQ.getGroupSummary(key);
+        var AR = getAutoGroupsRead();
+        if (AR && typeof AR.getGroupSummary === 'function') {
+            return AR.getGroupSummary(key);
         }
         return null;
     }
 
     function getAllGroupSummaries() {
-        var AQ = getAcademyQueries();
-        if (AQ && typeof AQ.getAllGroupSummaries === 'function') {
-            return AQ.getAllGroupSummaries();
+        var AR = getAutoGroupsRead();
+        if (AR && typeof AR.getAllGroupSummaries === 'function') {
+            return AR.getAllGroupSummaries();
         }
         return [];
     }
 
     function getGroupDisplayName(key) {
-        var AQ = getAcademyQueries();
-        if (AQ && typeof AQ.getGroupDisplayName === 'function') {
-            return AQ.getGroupDisplayName(key);
+        var AR = getAutoGroupsRead();
+        if (AR && typeof AR.getGroupDisplayName === 'function') {
+            return AR.getGroupDisplayName(key);
         }
         return 'Unknown Group';
     }
@@ -1533,7 +1507,7 @@
         isInstructorStatus: isInstructorStatus,
         isStudentStatus: isStudentStatus,
 
-        // ---- Read aliases (DEPRECATED — call AcademyQueries directly) ----
+        // ---- Read aliases (DEPRECATED — call AcademyAutoGroupsRead directly) ----
         getAutoGroup: getAutoGroup,
         isStudentInGroup: isStudentInGroup,
         getGroupStudents: getGroupStudents,
