@@ -27,8 +27,8 @@
  *   data-action="exam-pair-remove". The collector reads the rows.
  *
  * IMPORTANT:
- *   - RENDER ONLY. No mutations. The one domain read (pool fallback)
- *     is documented and isolated.
+ *   - RENDER ONLY. No mutations. The one domain read (pool fallback) is
+ *     documented and isolated.
  *   - Uses DomUtils for escaping (MANDATORY, no fallback).
  *   - Returns HTML strings. Never touches the DOM.
  *
@@ -55,12 +55,32 @@
  * RESULT VOCABULARY:
  *   'pass' | 'retry' | 'fail'
  *
+ * CREATE EXAM MODAL — UX NOTES:
+ *   The modal opens after the user has already picked a class and week
+ *   in the top bar, so those are fixed and displayed as read-only
+ *   context rather than as editable fields.
+ *
+ *   Total Rounds is presented with a short explanation of what a
+ *   round is. It defaults to 5 rather than 1, because most users add
+ *   more than one round and the domain now auto-bumps the capacity
+ *   when the user adds a round beyond the current total. The default
+ *   is a starting point, not a hard ceiling.
+ *
+ *   Mode is presented last, after the user has read the other fields,
+ *   so the choice is made with full context.
+ *
+ * ADD ROUND MODAL — CAPACITY NOTE:
+ *   The modal does not surface the tournament's totalRounds. If the
+ *   user is at capacity, the events module auto-bumps totalRounds
+ *   before adding the round. The modal is unaware of the capacity
+ *   rule; it just submits a round configuration.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
  *
  * DEPENDENCIES (OPTIONAL, used by modal builders):
  *   - window.TournamentQueries
- *   - window.AcademyTournamentAggregator
+ *   - window.TournamentAggregator
  *   - window.CharacterQueries
  *   - window.TeamQueries
  *
@@ -1001,6 +1021,19 @@
     // ============================================================
     // MODAL BUILDER - Create Exam
     // ============================================================
+    //
+    // UX NOTES:
+    //   - The class and week are fixed (they came from the top bar).
+    //     The modal shows them as read-only context so the user knows
+    //     what they're creating the exam for.
+    //   - Total Rounds defaults to 5. This is a starting point, not a
+    //     ceiling: the events module auto-bumps capacity when the user
+    //     adds a round beyond the current total.
+    //   - Mode is presented last, after the user has read the other
+    //     fields, so the choice is made with full context.
+    //   - Field hints are written for a first-time user: they explain
+    //     what a round is, what the mode choices mean, and that
+    //     participants are added after creation.
 
     function buildCreateExamModalHTML(options) {
         options = options || {};
@@ -1022,12 +1055,42 @@
 
         html += '<div class="modal-body">';
 
+        // ---- Fixed context: class + week ----
+        html += '<div class="form-group at-fixed-context">';
+        html += '<label>Creating exam for</label>';
+        html += '<p class="at-context-line">' +
+                    '<strong>' + escapeHtml(className) + '</strong>' +
+                    ' in <strong>Week ' + escapeHtml(safeString(week)) +
+                    '</strong>' +
+                '</p>';
+        html += '</div>';
+
+        // ---- Name ----
         html += '<div class="form-group">';
         html += '<label for="at-exam-name">Exam Name</label>';
         html += '<input type="text" id="at-exam-name" class="at-exam-name" ' +
                     'value="' + escapeAttribute(defaultName) + '">';
+        html += '<p class="field-hint">' +
+                    'A label for this exam. You can change it later.' +
+                '</p>';
         html += '</div>';
 
+        // ---- Total Rounds ----
+        html += '<div class="form-group">';
+        html += '<label for="at-exam-total-rounds">Maximum Rounds</label>';
+        html += '<input type="number" id="at-exam-total-rounds" ' +
+                    'class="at-exam-total-rounds" value="5" min="1">';
+        html += '<p class="field-hint">' +
+                    'A round is one pass through the class. Each round ' +
+                    'holds one or more matches, and participants advance ' +
+                    'from one round to the next based on their match ' +
+                    'results. You can raise this later if you need more ' +
+                    'rounds; the exam expands automatically when you add ' +
+                    'a round beyond the current maximum.' +
+                '</p>';
+        html += '</div>';
+
+        // ---- Mode ----
         html += '<div class="form-group">';
         html += '<label for="at-exam-mode">Mode</label>';
         html += '<select id="at-exam-mode" class="at-exam-mode">';
@@ -1039,20 +1102,17 @@
                     '>Teams</option>';
         html += '</select>';
         html += '<p class="field-hint">' +
-                    'Individuals: characters compete. ' +
-                    'Teams: academic teams compete.' +
+                    '<strong>Individuals:</strong> characters compete on ' +
+                    'their own. ' +
+                    '<strong>Teams:</strong> pre-existing academic teams ' +
+                    'compete. You can add or remove participants after ' +
+                    'creating the exam. The mode determines who the exam ' +
+                    'can recruit from, so pick the one that matches how ' +
+                    'this class runs.' +
                 '</p>';
         html += '</div>';
 
-        html += '<div class="form-group">';
-        html += '<label for="at-exam-total-rounds">Total Rounds</label>';
-        html += '<input type="number" id="at-exam-total-rounds" ' +
-                    'class="at-exam-total-rounds" value="1" min="1">';
-        html += '<p class="field-hint">' +
-                    'Each round can hold one or more matches.' +
-                '</p>';
-        html += '</div>';
-
+        // ---- Actions ----
         html += '<div class="form-actions">';
         html += '<button type="button" ' +
                     'class="cancel-modal-btn secondary">Cancel</button>';
@@ -1074,9 +1134,9 @@
 
         var name = nameEl ? nameEl.value.trim() : '';
         var mode = modeEl ? modeEl.value : 'individuals';
-        var totalRounds = roundsEl ? parseInt(roundsEl.value, 10) : 1;
+        var totalRounds = roundsEl ? parseInt(roundsEl.value, 10) : 5;
         if (isNaN(totalRounds) || totalRounds < 1) {
-            totalRounds = 1;
+            totalRounds = 5;
         }
 
         return {
@@ -1137,6 +1197,14 @@
             html += '<option value="pair_exam">Pair Exam</option>';
         }
         html += '</select>';
+        html += '<p class="field-hint">' +
+                    (isTeamMode
+                        ? 'Team matches pit two or more academic teams ' +
+                          'against each other.'
+                        : 'A group exam has every participant compete ' +
+                          'individually. A pair exam splits participants ' +
+                          'into pairs or triples that work together.') +
+                '</p>';
         html += '</div>';
 
         html += '<div class="form-group">';
@@ -1144,8 +1212,10 @@
         html += '<input type="number" id="at-round-size" ' +
                     'class="at-round-size" value="2" min="2" max="20">';
         html += '<p class="field-hint">' +
-                    'For pairs, this value is ignored. ' +
-                    'For team matches, this is the number of teams per match.' +
+                    'How many participants go into each match. ' +
+                    (isTeamMode
+                        ? 'This is the number of teams per match.'
+                        : 'For pair exams, this value is ignored.') +
                 '</p>';
         html += '</div>';
 
