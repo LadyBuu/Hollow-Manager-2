@@ -214,25 +214,47 @@
          TOURNAMENT DOMAIN
          ============================================================
          tournament-schema.js has already loaded in the SHARED
-         CONSTANTS block. The remaining tournament files load here.
+         CONSTANTS block.
 
-         The four UI-layer files (tournament-render.js,
-         tournament-ui.js, tournament-events.js, tournaments/index.js)
-         have been removed. They powered the standalone Tournaments
-         tab, which does not exist. The Academy-embedded Exams view
-         uses the domain layer below and its own view shell files.
+         Load order within this block matters:
 
-         Must load before the Academy view shell:
-         academy-tournament-aggregator captures TournamentAggregator
-         eagerly at IIFE time.
+           - tournament-elimination-cascade.js depends on IdUtils
+             and CalendarValidation (both already loaded above).
+             It must load BEFORE tournament-matches.js, which reads
+             window.TournamentEliminationCascade at IIFE time and
+             throws if missing.
+
+           - tournament-rules.js depends on TournamentConstants,
+             TournamentSchema, CalendarValidation.
+
+           - tournament-matches.js depends on Constants, Schema,
+             Rules, Queries, EliminationCascade, CalendarValidation,
+             MutationPipeline, ObjectUtils.
+
+           - tournament-core.js depends on Schema, Constants, Rules,
+             Matches, Queries, EliminationCascade, CalendarValidation,
+             IdUtils, ObjectUtils, MutationPipeline.
+
+         Removed from this block (no longer used):
+
+           - tournament-lifecycle.js      (dead — status is a soft
+                                           label, no permission gates)
+           - tournament-aggregator.js     (dead — no standalone
+                                           tournament tab; Academy
+                                           aggregator reads directly
+                                           from TournamentQueries)
+           - tournament-elimination-workflow.js
+                                          (dead — manual restore moved
+                                           into the elimination cascade
+                                           as restoreCharacterElimination)
+           - tournament-repair.js         (dead — no consumers; the
+                                           schema owns canonicalisation,
+                                           migrations own legacy data)
          ============================================================ -->
-    <script src="js/modules/tournaments/tournament-lifecycle.js"></script>
+    <script src="js/modules/tournaments/tournament-elimination-cascade.js"></script>
     <script src="js/modules/tournaments/tournament-rules.js"></script>
     <script src="js/modules/tournaments/tournament-matches.js"></script>
     <script src="js/modules/tournaments/tournament-core.js"></script>
-    <script src="js/modules/tournaments/tournament-aggregator.js"></script>
-    <script src="js/modules/tournaments/tournament-elimination-workflow.js"></script>
-    <script src="js/modules/tournaments/tournament-repair.js"></script>
 
     <!-- ============================================================
          ACADEMY VIEW SHELL
@@ -241,14 +263,27 @@
          modules capture AcademyAggregator, AcademyTournamentAggregator,
          and CharacterClasses eagerly at IIFE time.
 
-         The character-detail aggregator must load before
-         academy-view.js, which requires it at load time.
+         Load order within this block matters:
 
-         academy-weekly-teams-members.js must load before
-         academy-view.js. It is accessed lazily at call time by
-         academy-view's weekly-teams-manage-members handler, but
-         loading it in the shell block keeps the Academy view
-         dependencies co-located.
+           - academy-character-detail-aggregator.js must load before
+             academy-view.js, which requires it at load time.
+
+           - academy-weekly-teams-members.js must load before
+             academy-view.js. It is accessed lazily at call time by
+             academy-view's weekly-teams-manage-members handler, but
+             loading it in the shell block keeps the Academy view
+             dependencies co-located.
+
+           - academy-tournament-view.js must load before
+             academy-tournament-events.js, which requires it at
+             IIFE time.
+
+           - academy-tournament-aggregator.js must load before
+             academy-view.js. academy-view.js requires
+             AcademyTournamentAggregator at load time.
+
+           - academy-tournament-events.js must load before
+             academy-view.js, which routes exam actions to it.
          ============================================================ -->
     <script src="js/modules/academy/academy-character-detail-aggregator.js"></script>
     <script src="js/modules/academy/academy-class-detail.js"></script>
