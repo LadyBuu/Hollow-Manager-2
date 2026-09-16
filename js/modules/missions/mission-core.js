@@ -1,174 +1,218 @@
 /**
  * js/modules/missions/mission-core.js - Mission Core
- * CANONICAL mutation API for missions
  *
- * This module provides:
- *   - Mission CRUD operations (create, update, delete)
- *   - Mission status transitions (complete, cancel, reactivate)
- *   - Objective management (add, remove, toggle)
- *   - Support personnel management (add, remove)
- *   - Mission log management (add entry)
- *   - Domain rule functions (progress, pay, eligibility)
- *   - Cross-domain cascade helper (stripCharacterRefs)
+ * Path: js/modules/missions/mission-core.js
  *
- * IMPORTANT:
- *   - This is the CANONICAL mutation API for missions
- *   - All mission mutations should go through this module
- *   - Uses MutationPipeline for all mutations
- *   - Uses MissionQueries for read operations
- *   - Uses MissionSchema for structural validation
- *   - All mutations are atomic and validated before application
- *   - Does NOT call saveData() - MutationPipeline handles persistence
- *   - Does NOT depend on UI (no notifications, no DOM)
+ * Canonical mutation API for missions.
  *
- * MUTATION CONTRACT:
- *   - All operations return { success: boolean, data?: any, message?: string }
- *   - Invalid inputs are REJECTED (operation returns { success: false })
- *   - Mutations are ATOMIC: if any part is invalid, nothing changes
- *   - Valid no-op updates return the existing object (idempotent)
+ * WHAT THIS MODULE OWNS:
+ *   - Mission creation, update, archive, unarchive, purge.
+ *   - Status transitions: complete, cancel, reactivate.
+ *   - Objective mutations: add, remove, toggle.
+ *   - Support personnel mutations: add, remove.
+ *   - Log entry mutations: append.
+ *   - Report mutations: add, update, remove.
+ *   - MutationPipeline orchestration for all of the above.
  *
- * DATA STORE CONTRACT:
- *   - window.data.missions is the source of truth
- *   - If window.data or window.data.missions is missing, operations return failure
+ * WHAT THIS MODULE DOES NOT OWN:
+ *   - Reads. Callers use MissionQueries directly.
+ *   - Structural validation. MissionSchema owns it.
+ *   - Domain rules and derivations. MissionRules owns them.
+ *   - ID grammar. MissionId owns it.
+ *   - Cross-domain cascades. MissionCascade owns them.
+ *   - Presentation. MissionAggregator and MissionRender own it.
  *
- * DERIVED FIELD RULES:
- *   - progress: ALWAYS derived from objectives (never stored directly)
- *   - pay: ALWAYS derived from basePay + surchargePay
- *   - completedAt: Set when status becomes 'completed', cleared otherwise
- *   - Status is EXPLICITLY set by user (no auto-complete on checkbox click)
+ * MUTATION PATTERN:
+ *   Every mutation follows the same shape:
  *
- * CASCADE SEMANTICS (stripCharacterRefs):
- *   A character can appear in a mission as support personnel.
- *   The helper removes the character from every mission's
- *   supportPersonnel array. Missions themselves are NOT deleted —
- *   support personnel are optional and a mission can survive with
- *   fewer (or zero) support entries.
+ *     1. Cheap preflight on the operation's inputs (title present,
+ *        updates is an object, etc). Fast UX-level rejection.
  *
- *   Note: missions reference TEAMS via assignedTeamId. Deleting a
- *   character does not touch that field. Deleting a team would (that
- *   cascade belongs elsewhere and is not part of this helper).
+ *     2. MutationPipeline.performMutation with:
  *
- * DEPENDENCIES:
- *   - window.MissionQueries (from mission-queries.js) - MANDATORY
- *   - window.MissionSchema (from mission-schema.js) - MANDATORY
- *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
- *   - window.ObjectUtils (from object-utils.js) - MANDATORY
- *   - window.IdUtils (from id-utils.js) - MANDATORY
- *   - window.TeamQueries (from team-queries.js) - MANDATORY
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
+ *        validate(appData):
+ *          - Re-read the mission from the SNAPSHOT, not from a
+ *            preflight read.
+ *          - Build the candidate by applying the requested changes
+ *            to that snapshot mission.
+ *          - Recompute derived fields from the candidate's own
+ *            objectives and pay inputs.
+ *          - Run MissionSchema.validateMission on the candidate.
+ *          - Run the operation's MissionRules checks against the
+ *            snapshot mission and the candidate.
+ *          - Return { valid, message? }.
  *
- * USAGE:
- *   var Core = window.MissionCore;
+ *        mutate(appData):
+ *          - Locate the mission again in the snapshot (or append for
+ *            create).
+ *          - Write the validated candidate.
+ *          - Return a summary for the log.
  *
- *   // Create mission
- *   var result = Core.createMission({ title: 'Operation Nightfall', ... });
+ *   Nothing is computed once from a preflight read and then
+ *   blind-written. Every invariant is checked against the
+ *   transaction snapshot. This is what makes the mutations actually
+ *   atomic.
  *
- *   // Update mission
- *   var result = Core.updateMission('miss_123', { status: 'completed' });
+ * ARCHIVE VS PURGE:
+ *   Missions follow the historical-preservation model.
  *
- *   // Toggle objective
- *   var result = Core.toggleObjective('miss_123', 0);
+ *     archiveMission(id)
+ *       Sets archivedAt and status 'completed'. History preserved.
+ *       Archived missions are hidden from default queries but stay
+ *       queryable. This is the ordinary UI delete.
  *
- *   // Add support personnel
- *   var result = Core.addSupportPersonnel('miss_123', 'char_456');
+ *     unarchiveMission(id)
+ *       Clears archivedAt. Status is left as-is. The caller decides
+ *       whether to also update status.
+ *
+ *     purgeMission(id)
+ *       Permanently removes the mission. Administrative, not wired
+ *       to any ordinary UI button.
+ *
+ * REPORTS:
+ *   Reports are historical notes attached to a mission. They can be
+ *   added, edited, and (soft) removed at any time, independent of
+ *   mission status. An edited report carries `updatedAt`; a fresh
+ *   report leaves `updatedAt` null until first edit. Removed
+ *   reports are dropped from the array entirely — see the note in
+ *   removeReport below for the trade-off.
+ *
+ * DERIVED FIELDS:
+ *   progress and pay are recomputed from the candidate inside
+ *   validate, via MissionRules.recalculateDerivedFields. The stored
+ *   values the user supplied for those fields are ignored; they are
+ *   always derived. completedAt is set by the transition rule for
+ *   status changes that enter or leave 'completed'.
+ *
+ * DEPENDENCIES (MANDATORY):
+ *   - window.MutationPipeline
+ *   - window.ObjectUtils
+ *   - window.IdUtils
+ *   - window.MissionConstants
+ *   - window.MissionId
+ *   - window.MissionSchema
+ *   - window.MissionRules
  */
 
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__missionCoreLoaded) {
         return;
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - MANDATORY (no fallbacks)
+    // MANDATORY DEPENDENCIES
     // ============================================================
 
-    var missing = [];
+    var MutationPipeline = window.MutationPipeline;
+    var ObjectUtils = window.ObjectUtils;
+    var IdUtils = window.IdUtils;
+    var MissionConstants = window.MissionConstants;
+    var MissionId = window.MissionId;
+    var MissionSchema = window.MissionSchema;
+    var MissionRules = window.MissionRules;
 
-    if (!window.MissionQueries || typeof window.MissionQueries.getMission !== 'function') {
-        missing.push('MissionQueries.getMission');
-    }
-    if (!window.MissionQueries || typeof window.MissionQueries.getMissions !== 'function') {
-        missing.push('MissionQueries.getMissions');
-    }
+    var _missing = [];
 
-    if (!window.MissionSchema || typeof window.MissionSchema.validateMission !== 'function') {
-        missing.push('MissionSchema.validateMission');
+    if (!MutationPipeline ||
+        typeof MutationPipeline.performMutation !== 'function') {
+        _missing.push('MutationPipeline.performMutation');
     }
-    if (!window.MissionSchema || typeof window.MissionSchema.canonicaliseMissionShape !== 'function') {
-        missing.push('MissionSchema.canonicaliseMissionShape');
+    if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
+        _missing.push('ObjectUtils.deepClone');
     }
-    if (!window.MissionSchema || typeof window.MissionSchema.VALID_STATUSES === 'undefined') {
-        missing.push('MissionSchema.VALID_STATUSES');
+    if (!IdUtils || typeof IdUtils.generateId !== 'function') {
+        _missing.push('IdUtils.generateId');
     }
-
-    if (!window.MutationPipeline || typeof window.MutationPipeline.performMutation !== 'function') {
-        missing.push('MutationPipeline.performMutation');
-    }
-
-    if (!window.ObjectUtils || typeof window.ObjectUtils.deepClone !== 'function') {
-        missing.push('ObjectUtils.deepClone');
+    if (!IdUtils || typeof IdUtils.normaliseId !== 'function') {
+        _missing.push('IdUtils.normaliseId');
     }
 
-    if (!window.IdUtils || typeof window.IdUtils.generateId !== 'function') {
-        missing.push('IdUtils.generateId');
+    if (!MissionConstants) {
+        _missing.push('MissionConstants (module)');
+    } else {
+        if (!Array.isArray(MissionConstants.VALID_STATUSES)) {
+            _missing.push('MissionConstants.VALID_STATUSES');
+        }
+        if (typeof MissionConstants.getDefaults !== 'function') {
+            _missing.push('MissionConstants.getDefaults');
+        }
     }
 
-    if (!window.TeamQueries || typeof window.TeamQueries.getTeamById !== 'function') {
-        missing.push('TeamQueries.getTeamById');
+    if (!MissionId || typeof MissionId.generate !== 'function') {
+        _missing.push('MissionId.generate');
     }
 
-    if (!window.CharacterQueries || typeof window.CharacterQueries.getCharacterById !== 'function') {
-        missing.push('CharacterQueries.getCharacterById');
+    if (!MissionSchema) {
+        _missing.push('MissionSchema (module)');
+    } else {
+        if (typeof MissionSchema.validateMission !== 'function') {
+            _missing.push('MissionSchema.validateMission');
+        }
+        if (typeof MissionSchema.canonicaliseMissionShape !== 'function') {
+            _missing.push('MissionSchema.canonicaliseMissionShape');
+        }
     }
 
-    if (missing.length > 0) {
-        throw new Error('[MissionCore] Missing dependencies: ' + missing.join(', '));
+    if (!MissionRules) {
+        _missing.push('MissionRules (module)');
+    } else {
+        if (typeof MissionRules.recalculateDerivedFields !== 'function') {
+            _missing.push('MissionRules.recalculateDerivedFields');
+        }
+        if (typeof MissionRules.validateStatusChange !== 'function') {
+            _missing.push('MissionRules.validateStatusChange');
+        }
+        if (typeof MissionRules.validateObjectivesEditable !== 'function') {
+            _missing.push('MissionRules.validateObjectivesEditable');
+        }
+        if (typeof MissionRules.deriveCompletedAt !== 'function') {
+            _missing.push('MissionRules.deriveCompletedAt');
+        }
+    }
+
+    if (_missing.length > 0) {
+        throw new Error(
+            '[MissionCore] Missing mandatory dependencies: ' +
+            _missing.join(', ')
+        );
     }
 
     window.__missionCoreLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
-    // ============================================================
-
-    var MissionQueries = window.MissionQueries;
-    var MissionSchema = window.MissionSchema;
-    var MutationPipeline = window.MutationPipeline;
-    var ObjectUtils = window.ObjectUtils;
-    var IdUtils = window.IdUtils;
-    var TeamQueries = window.TeamQueries;
-    var CharacterQueries = window.CharacterQueries;
-
-    // ============================================================
-    // CONSTANTS
-    // ============================================================
-
-    var VALID_STATUSES = MissionSchema.VALID_STATUSES;
-    var DEFAULT_STATUS = 'active';
-    var DEFAULT_PRIORITY = 'medium';
-    var DEFAULT_DIFFICULTY = 'medium';
-
-    // ============================================================
     // HELPERS
     // ============================================================
 
-    function isObject(value) {
-        return value !== null && typeof value === 'object' && !Array.isArray(value);
+    function isPlainObject(value) {
+        return value !== null &&
+               typeof value === 'object' &&
+               !Array.isArray(value);
     }
 
     function isNonEmptyString(value) {
         return typeof value === 'string' && value.trim() !== '';
     }
 
-    function deepClone(value) {
-        return ObjectUtils.deepClone(value);
+    function normaliseId(value) {
+        return IdUtils.normaliseId(value);
     }
 
     function generateId(prefix) {
         return IdUtils.generateId(prefix);
+    }
+
+    function deepClone(value) {
+        var result = ObjectUtils.deepClone(value);
+        if (result === value &&
+            value !== null &&
+            typeof value === 'object') {
+            throw new Error(
+                '[MissionCore] deepClone returned the original reference.'
+            );
+        }
+        return result;
     }
 
     function failure(message) {
@@ -179,1206 +223,1534 @@
         return { success: true, data: data };
     }
 
-    function getDataStore() {
-        if (!window.data || typeof window.data !== 'object') {
+    // ============================================================
+    // SNAPSHOT ACCESS
+    // ============================================================
+    //
+    // These helpers read from the appData snapshot the pipeline
+    // hands in. They never touch window.data.
+
+    function ensureMissionArray(appData) {
+        if (!appData || typeof appData !== 'object') {
             return null;
         }
-        return window.data;
+        if (!Array.isArray(appData.missions)) {
+            appData.missions = [];
+        }
+        return appData.missions;
     }
 
-    // ============================================================
-    // DOMAIN RULE FUNCTIONS (formerly in mission-rules.js)
-    // ============================================================
-
-    /**
-     * Calculate progress percentage from objectives.
-     *
-     * @param {array} objectives - Array of objective objects
-     * @returns {number} Progress percentage (0-100)
-     */
-    function calculateProgress(objectives) {
-        if (!Array.isArray(objectives) || objectives.length === 0) {
-            return 0;
+    function findMissionInSnapshot(appData, missionId) {
+        if (!appData || !Array.isArray(appData.missions)) {
+            return null;
         }
-
-        var completed = 0;
-        for (var i = 0; i < objectives.length; i++) {
-            var objective = objectives[i];
-            if (objective && objective.done) {
-                completed++;
+        var target = normaliseId(missionId);
+        if (target === null) { return null; }
+        var missions = appData.missions;
+        for (var i = 0; i < missions.length; i++) {
+            var m = missions[i];
+            if (isPlainObject(m) && normaliseId(m.id) === target) {
+                return m;
             }
         }
-
-        return Math.round((completed / objectives.length) * 100);
-    }
-
-    /**
-     * Parse a pay value from string or number.
-     * Returns null for invalid values.
-     *
-     * @param {*} value - Pay value to parse
-     * @returns {number|null} Parsed number or null
-     */
-    function parsePayValue(value) {
-        if (value === null || value === undefined || value === '') {
-            return null;
-        }
-
-        var text = String(value).trim();
-        var match = text.match(/^-?\d+(?:\.\d+)?$/);
-
-        if (!match) {
-            return null;
-        }
-
-        var num = Number(text);
-        return Number.isFinite(num) ? num : null;
-    }
-
-    /**
-     * Calculate total pay from base pay and surcharge pay.
-     *
-     * @param {*} basePay - Base pay value
-     * @param {*} surchargePay - Surcharge pay value
-     * @returns {string} Formatted pay string or empty string
-     */
-    function calculatePay(basePay, surchargePay) {
-        var baseNum = parsePayValue(basePay);
-        var surchargeNum = parsePayValue(surchargePay);
-
-        // Negative pay is rejected
-        if (baseNum !== null && baseNum < 0) {
-            return '';
-        }
-        if (surchargeNum !== null && surchargeNum < 0) {
-            return '';
-        }
-
-        if (baseNum !== null && surchargeNum !== null) {
-            return (baseNum + surchargeNum).toFixed(2) + ' credits';
-        }
-
-        if (baseNum !== null) {
-            return baseNum.toFixed(2) + ' credits';
-        }
-
-        if (surchargeNum !== null) {
-            return surchargeNum.toFixed(2) + ' credits';
-        }
-
-        return '';
-    }
-
-    /**
-     * Calculate pay as a number (for comparisons).
-     *
-     * @param {*} basePay - Base pay value
-     * @param {*} surchargePay - Surcharge pay value
-     * @returns {number|null} Total pay as number or null
-     */
-    function calculatePayNumber(basePay, surchargePay) {
-        var baseNum = parsePayValue(basePay);
-        var surchargeNum = parsePayValue(surchargePay);
-
-        if (baseNum !== null && surchargeNum !== null) {
-            return baseNum + surchargeNum;
-        }
-
-        if (baseNum !== null) {
-            return baseNum;
-        }
-
-        if (surchargeNum !== null) {
-            return surchargeNum;
-        }
-
         return null;
     }
 
-    /**
-     * Check if a mission is ready for completion.
-     *
-     * @param {object} mission - Mission object
-     * @returns {boolean} True if all objectives are done
-     */
-    function isReadyForCompletion(mission) {
-        if (!mission || typeof mission !== 'object') {
-            return false;
+    function findMissionIndexInSnapshot(appData, missionId) {
+        if (!appData || !Array.isArray(appData.missions)) {
+            return -1;
         }
-
-        if (mission.status === 'completed' || mission.status === 'cancelled') {
-            return false;
-        }
-
-        var progress = mission.progress !== undefined ? mission.progress : calculateProgress(mission.objectives);
-        return progress === 100;
-    }
-
-    /**
-     * Determine the appropriate completedAt value based on status transition.
-     *
-     * @param {string} originalStatus - Current status
-     * @param {string} proposedStatus - Proposed status
-     * @param {string|null} originalCompletedAt - Current completedAt value
-     * @param {string} policy - 'first' or 'current' (default: 'current')
-     * @returns {string|null} Appropriate completedAt value
-     */
-    function deriveCompletedAt(originalStatus, proposedStatus, originalCompletedAt, policy) {
-        policy = policy || 'current';
-
-        // If becoming completed
-        if (proposedStatus === 'completed' && originalStatus !== 'completed') {
-            return new Date().toISOString();
-        }
-
-        // If leaving completed
-        if (proposedStatus !== 'completed' && originalStatus === 'completed') {
-            if (policy === 'first') {
-                return originalCompletedAt || null;
-            }
-            return null;
-        }
-
-        // Preserve existing
-        return originalCompletedAt || null;
-    }
-
-    /**
-     * Check if a status transition is valid.
-     *
-     * @param {string} fromStatus - Current status
-     * @param {string} toStatus - Proposed status
-     * @returns {boolean} True if transition is valid
-     */
-    function isValidStatusTransition(fromStatus, toStatus) {
-        if (fromStatus === toStatus) {
-            return true;
-        }
-
-        // Allowed transitions:
-        // active -> completed, cancelled
-        // completed -> active
-        // cancelled -> active
-        if (fromStatus === 'active' && (toStatus === 'completed' || toStatus === 'cancelled')) {
-            return true;
-        }
-
-        if (fromStatus === 'completed' && toStatus === 'active') {
-            return true;
-        }
-
-        if (fromStatus === 'cancelled' && toStatus === 'active') {
-            return true;
-        }
-
-        return false;
-    }
-
-    /**
-     * Get the valid status transitions for a given status.
-     *
-     * @param {string} status - Current status
-     * @returns {array} Array of valid target statuses
-     */
-    function getValidTransitions(status) {
-        var result = [];
-        for (var i = 0; i < VALID_STATUSES.length; i++) {
-            if (isValidStatusTransition(status, VALID_STATUSES[i])) {
-                result.push(VALID_STATUSES[i]);
+        var target = normaliseId(missionId);
+        if (target === null) { return -1; }
+        var missions = appData.missions;
+        for (var i = 0; i < missions.length; i++) {
+            var m = missions[i];
+            if (isPlainObject(m) && normaliseId(m.id) === target) {
+                return i;
             }
         }
-        return result;
-    }
-
-    /**
-     * Check if objectives can be modified for a mission.
-     *
-     * @param {object} mission - Mission object
-     * @returns {boolean} True if objectives can be modified
-     */
-    function canModifyObjectives(mission) {
-        if (!mission || typeof mission !== 'object') {
-            return false;
-        }
-
-        return mission.status !== 'completed' && mission.status !== 'cancelled';
-    }
-
-    /**
-     * Check if a team is eligible for mission assignment.
-     *
-     * @param {object} team - Team object
-     * @returns {boolean} True if team is eligible
-     */
-    function isTeamEligibleForMission(team) {
-        if (!team || typeof team !== 'object') {
-            return false;
-        }
-
-        // Only Professional and Temporary teams can be assigned missions
-        if (team.type !== 'professional' && team.type !== 'temporary') {
-            return false;
-        }
-
-        // Team must be active
-        if (team.status !== 'active') {
-            return false;
-        }
-
-        return true;
-    }
-
-    /**
-     * Filter teams to only those eligible for mission assignment.
-     *
-     * @param {array} teams - Array of team objects
-     * @returns {array} Filtered array of eligible teams
-     */
-    function filterEligibleTeams(teams) {
-        if (!Array.isArray(teams)) {
-            return [];
-        }
-
-        var result = [];
-        for (var i = 0; i < teams.length; i++) {
-            if (isTeamEligibleForMission(teams[i])) {
-                result.push(teams[i]);
-            }
-        }
-        return result;
-    }
-
-    /**
-     * Recalculate all derived fields for a mission.
-     * Pure function - returns a new mission object with derived fields updated.
-     *
-     * @param {object} mission - Mission object
-     * @param {string} completedAtPolicy - 'first' or 'current' (default: 'current')
-     * @returns {object} Mission with derived fields recalculated
-     */
-    function recalculateMission(mission, completedAtPolicy) {
-        completedAtPolicy = completedAtPolicy || 'current';
-
-        if (!mission || typeof mission !== 'object') {
-            return mission;
-        }
-
-        var result = deepClone(mission);
-        if (result === null) {
-            return mission;
-        }
-
-        // Recalculate progress from objectives
-        result.progress = calculateProgress(result.objectives);
-
-        // Recalculate pay from basePay and surchargePay
-        result.pay = calculatePay(result.basePay, result.surchargePay);
-
-        // NOTE: Status is NOT auto-derived from progress.
-        // Status changes are EXPLICIT user actions.
-        // This function only derives progress and pay.
-
-        return result;
+        return -1;
     }
 
     // ============================================================
-    // VALIDATION HELPERS
-    // ============================================================
-
-    function validateStatus(status) {
-        if (VALID_STATUSES.indexOf(status) === -1) {
-            return { valid: false, message: 'Invalid status. Must be one of: ' + VALID_STATUSES.join(', ') };
-        }
-        return { valid: true };
-    }
-
-    function validatePriority(priority) {
-        var validPriorities = ['low', 'medium', 'high', 'critical'];
-        if (validPriorities.indexOf(priority) === -1) {
-            return { valid: false, message: 'Invalid priority. Must be one of: ' + validPriorities.join(', ') };
-        }
-        return { valid: true };
-    }
-
-    function validateDifficulty(difficulty) {
-        var validDifficulties = ['easy', 'medium', 'hard', 'expert'];
-        if (validDifficulties.indexOf(difficulty) === -1) {
-            return { valid: false, message: 'Invalid difficulty. Must be one of: ' + validDifficulties.join(', ') };
-        }
-        return { valid: true };
-    }
-
-    function validateTeamId(teamId) {
-        if (!teamId) {
-            return { valid: true }; // Null/undefined is allowed
-        }
-        var team = TeamQueries.getTeamById(teamId);
-        if (!team) {
-            return { valid: false, message: 'Team not found.' };
-        }
-        if (!isTeamEligibleForMission(team)) {
-            return { valid: false, message: 'Team is not eligible for mission assignment.' };
-        }
-        return { valid: true, team: team };
-    }
-
-    function validateCharacterId(characterId) {
-        if (!characterId) {
-            return { valid: false, message: 'Character ID is required.' };
-        }
-        var character = CharacterQueries.getCharacterById(characterId);
-        if (!character) {
-            return { valid: false, message: 'Character not found.' };
-        }
-        return { valid: true, character: character };
-    }
-
-    function validateObjective(objective) {
-        if (!isObject(objective)) {
-            return { valid: false, message: 'Objective must be an object.' };
-        }
-        if (!isNonEmptyString(objective.text)) {
-            return { valid: false, message: 'Objective text is required.' };
-        }
-        return { valid: true };
-    }
-
-    // ============================================================
-    // GET MISSION (delegates to Queries)
+    // CANDIDATE BUILDING
     // ============================================================
 
     /**
-     * Get a mission by ID.
-     * Delegates to MissionQueries.
+     * After applying any updates to a mission candidate, recompute
+     * derived fields from the candidate's own facts and, when a
+     * status transition is requested, update completedAt.
      *
-     * @param {string} id - Mission ID
-     * @returns {object|null} Mission object or null
+     * Pure with respect to the input: returns a new object.
      */
-    function getMission(id) {
-        return MissionQueries.getMission(id);
-    }
-
-    /**
-     * Get all missions.
-     * Delegates to MissionQueries.
-     *
-     * @param {string} filter - Status filter
-     * @returns {array} Array of mission objects
-     */
-    function getMissions(filter) {
-        return MissionQueries.getMissions(filter);
+    function finaliseCandidate(candidate, nowIso) {
+        var recalculated = MissionRules.recalculateDerivedFields(candidate);
+        recalculated.completedAt = candidate.completedAt;
+        return recalculated;
     }
 
     // ============================================================
-    // CASCADE HELPERS - Remove all references to a character ID
-    // ============================================================
-
-    /**
-     * Strip all references to a character from missions.
-     *
-     * A character can appear as:
-     *   - A support personnel entry (mission.supportPersonnel).
-     *     Removed from the array.
-     *   - (Characters do NOT appear as assignedTeamId — that field
-     *     stores a team ID. Not touched here.)
-     *
-     * This helper is PURE with respect to `appData`: it mutates the
-     * missions array, but it does not touch `window.data`. It is
-     * designed to be called from inside a pipeline mutate() callback
-     * in another module's transaction. It never throws.
-     *
-     * @param {object} appData - The pipeline's appData snapshot
-     * @param {string} charId - Character ID to strip
-     * @returns {object} { supportEntriesRemoved }
-     */
-    function stripCharacterRefs(appData, charId) {
-        var result = { supportEntriesRemoved: 0 };
-
-        if (!appData || !charId) {
-            return result;
-        }
-
-        if (!Array.isArray(appData.missions)) {
-            return result;
-        }
-
-        var target = String(charId);
-
-        for (var i = 0; i < appData.missions.length; i++) {
-            var mission = appData.missions[i];
-            if (!mission || !Array.isArray(mission.supportPersonnel)) {
-                continue;
-            }
-
-            var before = mission.supportPersonnel.length;
-            mission.supportPersonnel = mission.supportPersonnel.filter(function(id) {
-                return String(id) !== target;
-            });
-            result.supportEntriesRemoved += before - mission.supportPersonnel.length;
-        }
-
-        return result;
-    }
-
-    // ============================================================
-    // CRUD OPERATIONS - Using MutationPipeline
+    // CREATE
     // ============================================================
 
     /**
      * Create a new mission.
      *
-     * @param {object} data - Mission data
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
+     * @param {object} data - Mission fields. Required: title.
+     *   Optional: everything else. Missing fields fall back to
+     *   MissionConstants.getDefaults() for enum fields and to ''
+     *   / [] / null for text, arrays, and IDs.
+     * @returns {Promise<{success, data?, message?}>}
      */
     function createMission(data) {
-        // ---- PHASE 1: VALIDATE INPUT ----
-        if (!isObject(data)) {
-            return Promise.resolve(failure('Mission data is required.'));
+        if (!isPlainObject(data)) {
+            return Promise.resolve(
+                failure('Mission data is required.')
+            );
         }
-
         if (!isNonEmptyString(data.title)) {
-            return Promise.resolve(failure('Mission title is required.'));
+            return Promise.resolve(
+                failure('Mission title is required.')
+            );
         }
 
-        // Validate team
-        var teamResult = validateTeamId(data.assignedTeamId);
-        if (!teamResult.valid) {
-            return Promise.resolve(failure(teamResult.message));
-        }
-
-        // Validate status
-        var status = data.status || DEFAULT_STATUS;
-        var statusResult = validateStatus(status);
-        if (!statusResult.valid) {
-            return Promise.resolve(failure(statusResult.message));
-        }
-
-        // Validate priority
-        var priority = data.priority || DEFAULT_PRIORITY;
-        var priorityResult = validatePriority(priority);
-        if (!priorityResult.valid) {
-            return Promise.resolve(failure(priorityResult.message));
-        }
-
-        // Validate difficulty
-        var difficulty = data.difficulty || DEFAULT_DIFFICULTY;
-        var difficultyResult = validateDifficulty(difficulty);
-        if (!difficultyResult.valid) {
-            return Promise.resolve(failure(difficultyResult.message));
-        }
-
-        // Validate objectives
-        var objectives = Array.isArray(data.objectives) ? data.objectives : [];
-        for (var i = 0; i < objectives.length; i++) {
-            var objResult = validateObjective(objectives[i]);
-            if (!objResult.valid) {
-                return Promise.resolve(failure('Objective ' + (i + 1) + ': ' + objResult.message));
-            }
-        }
-
-        // ---- PHASE 2: BUILD MISSION DATA ----
-        var now = new Date().toISOString();
-
-        var missionData = {
-            id: generateId('miss'),
-            missionId: data.missionId || null,
-            title: data.title.trim(),
-            description: data.description || '',
-            year: data.year || null,
-            month: data.month || null,
-            day: data.day || null,
-            primaryType: data.primaryType || '',
-            subtype: data.subtype || '',
-            secondaryType: data.secondaryType || '',
-            escalation: data.escalation || 'tier_ii',
-            threatType: data.threatType || '',
-            environment: data.environment || '',
-            location: data.location || '',
-            duration: data.duration || '',
-            difficulty: difficulty,
-            priority: priority,
-            basePay: data.basePay || '',
-            surchargePay: data.surchargePay || '',
-            pay: '',
-            billing: data.billing || 'original',
-            assignedTeamId: data.assignedTeamId || null,
-            supportPersonnel: Array.isArray(data.supportPersonnel) ? data.supportPersonnel.slice() : [],
-            status: status,
-            objectives: objectives.map(function(obj) {
-                return {
-                    text: obj.text.trim(),
-                    done: obj.done === true
-                };
-            }),
-            progress: 0,
-            notes: data.notes || '',
-            tags: Array.isArray(data.tags) ? data.tags.slice() : [],
-            createdAt: now,
-            completedAt: status === 'completed' ? now : null,
-            log: [],
-            graduatingClassId: data.graduatingClassId || null,
-            classFilterEnabled: data.classFilterEnabled || false
-        };
-
-        // ---- PHASE 3: CANONICALISE ----
-        var canonical = MissionSchema.canonicaliseMissionShape(missionData);
-        if (!canonical.valid) {
-            return Promise.resolve(failure('Validation failed: ' + canonical.errors.join(', ')));
-        }
-
-        var validatedData = canonical.value;
-
-        // ---- PHASE 4: RECALCULATE DERIVED FIELDS ----
-        var recalculated = recalculateMission(validatedData);
-        if (recalculated) {
-            validatedData = recalculated;
-        }
-
-        // ---- PHASE 5: MUTATION VIA PIPELINE ----
         return MutationPipeline.performMutation({
-            validate: function() {
-                var dataStore = getDataStore();
-                if (!dataStore) {
-                    return { valid: false, message: 'Data store is not available.' };
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
 
-                var existing = MissionQueries.getMission(validatedData.id);
-                if (existing) {
-                    return { valid: false, message: 'Mission with this ID already exists.' };
+                var missions = ensureMissionArray(appData);
+                if (!missions) {
+                    return {
+                        valid: false,
+                        message: 'Mission store is not available.'
+                    };
                 }
+
+                var defaults = MissionConstants.getDefaults();
+                var nowIso = new Date().toISOString();
+
+                // ---- Assemble the raw candidate input ----
+                // Defaults are applied here, at creation time, from
+                // MissionConstants. Schema does not fill defaults.
+                var raw = {
+                    id: generateId('miss'),
+
+                    title: typeof data.title === 'string'
+                        ? data.title.trim()
+                        : '',
+
+                    description: typeof data.description === 'string'
+                        ? data.description
+                        : '',
+
+                    year: data.year !== undefined && data.year !== null
+                        ? data.year
+                        : new Date().getFullYear(),
+
+                    month: data.month !== undefined && data.month !== null
+                        ? data.month
+                        : new Date().getMonth() + 1,
+
+                    day: data.day !== undefined && data.day !== null
+                        ? data.day
+                        : new Date().getDate(),
+
+                    primaryType: typeof data.primaryType === 'string'
+                        ? data.primaryType
+                        : '',
+
+                    subtype: typeof data.subtype === 'string'
+                        ? data.subtype
+                        : '',
+
+                    secondaryType: typeof data.secondaryType === 'string'
+                        ? data.secondaryType
+                        : '',
+
+                    escalation: data.escalation !== undefined &&
+                                data.escalation !== null
+                        ? data.escalation
+                        : defaults.escalation,
+
+                    threatType: typeof data.threatType === 'string'
+                        ? data.threatType
+                        : '',
+
+                    environment: typeof data.environment === 'string'
+                        ? data.environment
+                        : '',
+
+                    location: typeof data.location === 'string'
+                        ? data.location
+                        : '',
+
+                    duration: typeof data.duration === 'string'
+                        ? data.duration
+                        : '',
+
+                    difficulty: data.difficulty !== undefined &&
+                                data.difficulty !== null
+                        ? data.difficulty
+                        : defaults.difficulty,
+
+                    priority: data.priority !== undefined &&
+                              data.priority !== null
+                        ? data.priority
+                        : defaults.priority,
+
+                    basePay: typeof data.basePay === 'string'
+                        ? data.basePay
+                        : '',
+
+                    surchargePay: typeof data.surchargePay === 'string'
+                        ? data.surchargePay
+                        : '',
+
+                    pay: '',
+
+                    billing: data.billing !== undefined &&
+                             data.billing !== null
+                        ? data.billing
+                        : defaults.billing,
+
+                    assignedTeamId: data.assignedTeamId !== undefined
+                        ? data.assignedTeamId
+                        : null,
+
+                    supportPersonnel: Array.isArray(data.supportPersonnel)
+                        ? data.supportPersonnel.slice()
+                        : [],
+
+                    status: data.status !== undefined &&
+                            data.status !== null
+                        ? data.status
+                        : defaults.status,
+
+                    objectives: Array.isArray(data.objectives)
+                        ? data.objectives.map(function(obj) {
+                            return {
+                                text: obj && typeof obj.text === 'string'
+                                    ? obj.text
+                                    : '',
+                                done: obj && obj.done === true
+                            };
+                        })
+                        : [],
+
+                    progress: 0,
+
+                    notes: typeof data.notes === 'string'
+                        ? data.notes
+                        : '',
+
+                    tags: Array.isArray(data.tags)
+                        ? data.tags.slice()
+                        : [],
+
+                    createdAt: nowIso,
+                    completedAt: null,
+                    archivedAt: null,
+
+                    reports: [],
+
+                    log: [],
+
+                    graduatingClassId: data.graduatingClassId !== undefined
+                        ? data.graduatingClassId
+                        : null,
+
+                    classFilterEnabled:
+                        data.classFilterEnabled === true
+                };
+
+                // ---- Sequence allocation against the snapshot ----
+                // The sequence is scoped to (year, difficulty).
+                // MissionId.generate walks the snapshot missions and
+                // returns max(sequence) + 1 for that scope.
+                var sequenceResult = MissionId.generate(
+                    raw.year,
+                    raw.difficulty,
+                    missions
+                );
+                if (!sequenceResult) {
+                    return {
+                        valid: false,
+                        message:
+                            'Could not allocate a mission sequence for ' +
+                            'the given year and difficulty.'
+                    };
+                }
+                raw.sequence = sequenceResult.sequence;
+
+                // ---- Canonicalise structurally ----
+                var canonical = MissionSchema.canonicaliseMissionShape(raw);
+                if (!canonical.valid || !canonical.value) {
+                    return {
+                        valid: false,
+                        message: canonical.errors.join('; ')
+                    };
+                }
+
+                // ---- Recompute derived fields ----
+                var candidate = finaliseCandidate(
+                    canonical.value,
+                    nowIso
+                );
+
+                // ---- Re-validate the final candidate ----
+                var validated = MissionSchema.validateMission(candidate);
+                if (!validated.valid) {
+                    return {
+                        valid: false,
+                        message: validated.errors.join('; ')
+                    };
+                }
+
+                // Stash for mutate.
+                stagedCandidate = candidate;
 
                 return { valid: true };
             },
 
-            mutate: function() {
-                var dataStore = getDataStore();
-                if (!dataStore) {
-                    throw new Error('Data store is not available.');
+            mutate: function(appData) {
+                var missions = ensureMissionArray(appData);
+                if (!missions) {
+                    throw new Error(
+                        'Mission store is not available.'
+                    );
                 }
 
-                if (!Array.isArray(dataStore.missions)) {
-                    dataStore.missions = [];
+                if (!stagedCandidate) {
+                    throw new Error(
+                        'Mission candidate was not built during validate.'
+                    );
                 }
 
-                dataStore.missions.push(deepClone(validatedData));
+                missions.push(deepClone(stagedCandidate));
 
                 return {
-                    mission: validatedData,
-                    id: validatedData.id
+                    mission: stagedCandidate,
+                    id: stagedCandidate.id
                 };
             },
 
-            logMessage: 'Created mission: ' + validatedData.title,
-            successMessage: 'Mission created successfully!',
+            logMessage: function(result) {
+                return 'Created mission: ' + result.mission.title;
+            },
+            successMessage: 'Mission created.',
             failureMessage: 'Failed to create mission.'
         });
     }
 
+    // ============================================================
+    // UPDATE
+    // ============================================================
+
     /**
      * Update an existing mission.
      *
-     * @param {string} id - Mission ID
-     * @param {object} updates - Updates to apply
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
+     * Updatable fields: every non-derived, non-timestamp field.
+     * id, sequence, createdAt, and missionId (which is not stored)
+     * are never changed by this function. Status changes go through
+     * the status-transition rules.
+     *
+     * @param {string} missionId - Mission UUID
+     * @param {object} updates
+     * @returns {Promise<{success, data?, message?}>}
      */
-    function updateMission(id, updates) {
-        // ---- PHASE 1: VALIDATE INPUT ----
-        if (!isNonEmptyString(id)) {
+    function updateMission(missionId, updates) {
+        var target = normaliseId(missionId);
+        if (target === null) {
             return Promise.resolve(failure('Mission ID is required.'));
         }
-
-        if (!isObject(updates) || Object.keys(updates).length === 0) {
-            return Promise.resolve(failure('Updates must be an object with at least one field.'));
+        if (!isPlainObject(updates) || Object.keys(updates).length === 0) {
+            return Promise.resolve(
+                failure('Updates must be a non-empty object.')
+            );
         }
 
-        // ---- PHASE 2: GET EXISTING ----
-        var existing = MissionQueries.getMission(id);
-        if (!existing) {
-            return Promise.resolve(failure('Mission not found.'));
-        }
-
-        // ---- PHASE 3: VALIDATE UPDATES ----
-        if (updates.status !== undefined) {
-            var statusResult = validateStatus(updates.status);
-            if (!statusResult.valid) {
-                return Promise.resolve(failure(statusResult.message));
-            }
-            if (!isValidStatusTransition(existing.status, updates.status)) {
-                return Promise.resolve(failure('Invalid status transition from "' + existing.status + '" to "' + updates.status + '".'));
-            }
-        }
-
-        if (updates.priority !== undefined) {
-            var priorityResult = validatePriority(updates.priority);
-            if (!priorityResult.valid) {
-                return Promise.resolve(failure(priorityResult.message));
-            }
-        }
-
-        if (updates.difficulty !== undefined) {
-            var difficultyResult = validateDifficulty(updates.difficulty);
-            if (!difficultyResult.valid) {
-                return Promise.resolve(failure(difficultyResult.message));
-            }
-        }
-
-        if (updates.assignedTeamId !== undefined) {
-            var teamResult = validateTeamId(updates.assignedTeamId);
-            if (!teamResult.valid) {
-                return Promise.resolve(failure(teamResult.message));
-            }
-        }
-
-        if (updates.supportPersonnel !== undefined) {
-            if (!Array.isArray(updates.supportPersonnel)) {
-                return Promise.resolve(failure('Support personnel must be an array.'));
-            }
-            for (var i = 0; i < updates.supportPersonnel.length; i++) {
-                var charResult = validateCharacterId(updates.supportPersonnel[i]);
-                if (!charResult.valid) {
-                    return Promise.resolve(failure('Invalid support personnel: ' + charResult.message));
-                }
-            }
-        }
-
-        if (updates.objectives !== undefined) {
-            if (!Array.isArray(updates.objectives)) {
-                return Promise.resolve(failure('Objectives must be an array.'));
-            }
-            if (!canModifyObjectives(existing)) {
-                return Promise.resolve(failure('Cannot modify objectives for a ' + existing.status + ' mission.'));
-            }
-            for (var j = 0; j < updates.objectives.length; j++) {
-                var objResult = validateObjective(updates.objectives[j]);
-                if (!objResult.valid) {
-                    return Promise.resolve(failure('Objective ' + (j + 1) + ': ' + objResult.message));
-                }
-            }
-        }
-
-        if (updates.title !== undefined && !isNonEmptyString(updates.title)) {
-            return Promise.resolve(failure('Mission title cannot be empty.'));
-        }
-
-        // ---- PHASE 4: BUILD CANDIDATE ----
-        var candidate = deepClone(existing);
-        if (candidate === null) {
-            return Promise.resolve(failure('Failed to clone mission data.'));
-        }
-
-        var statusChanged = false;
-        var originalStatus = candidate.status;
-
-        // Apply updates
-        if (updates.title !== undefined) {
-            candidate.title = updates.title.trim();
-        }
-
-        if (updates.description !== undefined) {
-            candidate.description = updates.description || '';
-        }
-
-        if (updates.status !== undefined) {
-            candidate.status = updates.status;
-            statusChanged = true;
-        }
-
-        if (updates.priority !== undefined) {
-            candidate.priority = updates.priority;
-        }
-
-        if (updates.difficulty !== undefined) {
-            candidate.difficulty = updates.difficulty;
-        }
-
-        if (updates.assignedTeamId !== undefined) {
-            candidate.assignedTeamId = updates.assignedTeamId || null;
-        }
-
-        if (updates.location !== undefined) {
-            candidate.location = updates.location || '';
-        }
-
-        if (updates.duration !== undefined) {
-            candidate.duration = updates.duration || '';
-        }
-
-        if (updates.basePay !== undefined) {
-            candidate.basePay = updates.basePay || '';
-        }
-
-        if (updates.surchargePay !== undefined) {
-            candidate.surchargePay = updates.surchargePay || '';
-        }
-
-        if (updates.notes !== undefined) {
-            candidate.notes = updates.notes || '';
-        }
-
-        if (updates.tags !== undefined) {
-            candidate.tags = Array.isArray(updates.tags) ? updates.tags.slice() : [];
-        }
-
-        if (updates.supportPersonnel !== undefined) {
-            candidate.supportPersonnel = updates.supportPersonnel.slice();
-        }
-
-        if (updates.objectives !== undefined) {
-            candidate.objectives = updates.objectives.map(function(obj) {
-                return {
-                    text: obj.text.trim(),
-                    done: obj.done === true
-                };
-            });
-        }
-
-        // Handle completedAt
-        if (statusChanged) {
-            candidate.completedAt = deriveCompletedAt(originalStatus, candidate.status, candidate.completedAt);
-        }
-
-        // ---- PHASE 5: RECALCULATE DERIVED FIELDS ----
-        var recalculated = recalculateMission(candidate);
-        if (recalculated) {
-            candidate = recalculated;
-        }
-
-        // ---- PHASE 6: STRUCTURAL VALIDATION ----
-        var validation = MissionSchema.validateMission(candidate);
-        if (!validation.valid) {
-            return Promise.resolve(failure('Validation failed: ' + validation.errors.join(', ')));
-        }
-
-        // ---- PHASE 7: MUTATION VIA PIPELINE ----
         return MutationPipeline.performMutation({
-            validate: function() {
-                var current = MissionQueries.getMission(id);
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+
+                var current = findMissionInSnapshot(appData, target);
                 if (!current) {
-                    return { valid: false, message: 'Mission no longer exists.' };
+                    return {
+                        valid: false,
+                        message: 'Mission no longer exists.'
+                    };
                 }
 
-                var dataStore = getDataStore();
-                if (!dataStore) {
-                    return { valid: false, message: 'Data store is not available.' };
+                var nowIso = new Date().toISOString();
+                var candidate = deepClone(current);
+
+                // ---- Apply status change separately so the
+                // transition rule runs against the CURRENT status.
+                if (updates.status !== undefined &&
+                    updates.status !== current.status) {
+                    var statusCheck = MissionRules.validateStatusChange(
+                        current,
+                        updates.status
+                    );
+                    if (!statusCheck.valid) {
+                        return statusCheck;
+                    }
+                    candidate.status = updates.status;
+                    candidate.completedAt = MissionRules.deriveCompletedAt(
+                        current.status,
+                        updates.status,
+                        current.completedAt,
+                        nowIso
+                    );
                 }
 
+                // ---- Objectives ----
+                if (updates.objectives !== undefined) {
+                    if (!Array.isArray(updates.objectives)) {
+                        return {
+                            valid: false,
+                            message: 'Objectives must be an array.'
+                        };
+                    }
+                    var objCheck = MissionRules.validateObjectivesEditable(
+                        current
+                    );
+                    if (!objCheck.valid) {
+                        return objCheck;
+                    }
+                    candidate.objectives = updates.objectives.map(
+                        function(obj) {
+                            return {
+                                text: obj && typeof obj.text === 'string'
+                                    ? obj.text
+                                    : '',
+                                done: obj && obj.done === true
+                            };
+                        }
+                    );
+                }
+
+                // ---- Support personnel ----
+                if (updates.supportPersonnel !== undefined) {
+                    if (!Array.isArray(updates.supportPersonnel)) {
+                        return {
+                            valid: false,
+                            message: 'Support personnel must be an array.'
+                        };
+                    }
+                    candidate.supportPersonnel =
+                        updates.supportPersonnel.slice();
+                }
+
+                // ---- Text and enum fields (validated by Schema) ----
+                copyIfProvided(
+                    candidate, updates, 'title',
+                    function(v) {
+                        return typeof v === 'string' ? v.trim() : v;
+                    }
+                );
+                copyIfProvided(candidate, updates, 'description');
+                copyIfProvided(candidate, updates, 'primaryType');
+                copyIfProvided(candidate, updates, 'subtype');
+                copyIfProvided(candidate, updates, 'secondaryType');
+                copyIfProvided(candidate, updates, 'escalation');
+                copyIfProvided(candidate, updates, 'threatType');
+                copyIfProvided(candidate, updates, 'environment');
+                copyIfProvided(candidate, updates, 'location');
+                copyIfProvided(candidate, updates, 'duration');
+                copyIfProvided(candidate, updates, 'difficulty');
+                copyIfProvided(candidate, updates, 'priority');
+                copyIfProvided(candidate, updates, 'basePay');
+                copyIfProvided(candidate, updates, 'surchargePay');
+                copyIfProvided(candidate, updates, 'billing');
+                copyIfProvided(candidate, updates, 'notes');
+                copyIfProvided(candidate, updates, 'tags');
+                copyIfProvided(candidate, updates, 'assignedTeamId');
+                copyIfProvided(candidate, updates, 'graduatingClassId');
+                copyIfProvided(candidate, updates, 'classFilterEnabled');
+                copyIfProvided(candidate, updates, 'year');
+                copyIfProvided(candidate, updates, 'month');
+                copyIfProvided(candidate, updates, 'day');
+
+                // ---- Recompute derived fields ----
+                var final = finaliseCandidate(candidate, nowIso);
+                final.completedAt = candidate.completedAt;
+
+                // ---- Structural validation on the final candidate ----
+                var validated = MissionSchema.validateMission(final);
+                if (!validated.valid) {
+                    return {
+                        valid: false,
+                        message: validated.errors.join('; ')
+                    };
+                }
+
+                stagedCandidate = final;
                 return { valid: true };
             },
 
-            mutate: function() {
-                var dataStore = getDataStore();
-                if (!dataStore || !Array.isArray(dataStore.missions)) {
-                    throw new Error('Data store is not available.');
+            mutate: function(appData) {
+                var idx = findMissionIndexInSnapshot(appData, target);
+                if (idx === -1) {
+                    throw new Error(
+                        'Mission disappeared between validate and mutate.'
+                    );
                 }
 
-                var foundIndex = -1;
-                for (var i = 0; i < dataStore.missions.length; i++) {
-                    if (dataStore.missions[i] && String(dataStore.missions[i].id) === String(id)) {
-                        foundIndex = i;
-                        break;
-                    }
+                if (!stagedCandidate) {
+                    throw new Error(
+                        'Mission candidate was not built during validate.'
+                    );
                 }
 
-                if (foundIndex === -1) {
-                    throw new Error('Mission not found in data store.');
-                }
-
-                dataStore.missions[foundIndex] = deepClone(candidate);
+                appData.missions[idx] = deepClone(stagedCandidate);
 
                 return {
-                    mission: candidate,
-                    id: id,
-                    changed: true
+                    mission: stagedCandidate,
+                    id: target
                 };
             },
 
-            logMessage: function() {
-                return 'Updated mission: ' + candidate.title;
+            logMessage: function(result) {
+                return 'Updated mission: ' +
+                    (result.mission.title || target);
             },
-            successMessage: 'Mission updated successfully!',
+            successMessage: 'Mission updated.',
             failureMessage: 'Failed to update mission.'
         });
     }
 
+    // ============================================================
+    // ARCHIVE / UNARCHIVE / PURGE
+    // ============================================================
+
     /**
-     * Delete a mission.
-     *
-     * @param {string} id - Mission ID
-     * @returns {Promise<{ success: boolean, message?: string }>}
+     * Archive a mission. Sets archivedAt and status 'completed'.
+     * History preserved.
      */
-    function deleteMission(id) {
-        if (!isNonEmptyString(id)) {
+    function archiveMission(missionId) {
+        var target = normaliseId(missionId);
+        if (target === null) {
             return Promise.resolve(failure('Mission ID is required.'));
         }
 
-        var existing = MissionQueries.getMission(id);
-        if (!existing) {
-            return Promise.resolve(failure('Mission not found.'));
-        }
-
-        var title = existing.title;
-
         return MutationPipeline.performMutation({
-            validate: function() {
-                var current = MissionQueries.getMission(id);
+            validate: function(appData) {
+                var current = findMissionInSnapshot(appData, target);
                 if (!current) {
-                    return { valid: false, message: 'Mission no longer exists.' };
+                    return {
+                        valid: false,
+                        message: 'Mission no longer exists.'
+                    };
                 }
-
-                var dataStore = getDataStore();
-                if (!dataStore) {
-                    return { valid: false, message: 'Data store is not available.' };
+                if (current.archivedAt !== undefined &&
+                    current.archivedAt !== null) {
+                    return {
+                        valid: false,
+                        message: 'Mission is already archived.'
+                    };
                 }
-
                 return { valid: true };
             },
 
-            mutate: function() {
-                var dataStore = getDataStore();
-                if (!dataStore || !Array.isArray(dataStore.missions)) {
-                    throw new Error('Data store is not available.');
+            mutate: function(appData) {
+                var idx = findMissionIndexInSnapshot(appData, target);
+                if (idx === -1) {
+                    throw new Error('Mission no longer exists.');
                 }
-
-                var foundIndex = -1;
-                for (var i = 0; i < dataStore.missions.length; i++) {
-                    if (dataStore.missions[i] && String(dataStore.missions[i].id) === String(id)) {
-                        foundIndex = i;
-                        break;
-                    }
+                var m = appData.missions[idx];
+                m.archivedAt = new Date().toISOString();
+                m.status = 'completed';
+                if (!m.completedAt) {
+                    m.completedAt = m.archivedAt;
                 }
-
-                if (foundIndex === -1) {
-                    throw new Error('Mission not found in data store.');
-                }
-
-                dataStore.missions.splice(foundIndex, 1);
-
-                return { deleted: true, id: id };
+                return { id: target, mission: deepClone(m) };
             },
 
-            logMessage: 'Deleted mission: ' + title,
-            successMessage: 'Mission deleted successfully!',
-            failureMessage: 'Failed to delete mission.'
+            logMessage: function(result) {
+                return 'Archived mission: ' +
+                    (result.mission.title || target);
+            },
+            successMessage: 'Mission archived.',
+            failureMessage: 'Failed to archive mission.'
+        });
+    }
+
+    /**
+     * Unarchive a mission. Clears archivedAt. Status is left as-is;
+     * the caller decides whether to transition status separately.
+     */
+    function unarchiveMission(missionId) {
+        var target = normaliseId(missionId);
+        if (target === null) {
+            return Promise.resolve(failure('Mission ID is required.'));
+        }
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                var current = findMissionInSnapshot(appData, target);
+                if (!current) {
+                    return {
+                        valid: false,
+                        message: 'Mission no longer exists.'
+                    };
+                }
+                if (current.archivedAt === undefined ||
+                    current.archivedAt === null) {
+                    return {
+                        valid: false,
+                        message: 'Mission is not archived.'
+                    };
+                }
+                return { valid: true };
+            },
+
+            mutate: function(appData) {
+                var idx = findMissionIndexInSnapshot(appData, target);
+                if (idx === -1) {
+                    throw new Error('Mission no longer exists.');
+                }
+                appData.missions[idx].archivedAt = null;
+                return {
+                    id: target,
+                    mission: deepClone(appData.missions[idx])
+                };
+            },
+
+            logMessage: function(result) {
+                return 'Unarchived mission: ' +
+                    (result.mission.title || target);
+            },
+            successMessage: 'Mission unarchived.',
+            failureMessage: 'Failed to unarchive mission.'
+        });
+    }
+
+    /**
+     * Permanently remove a mission from the snapshot. Administrative.
+     * Not wired to any ordinary UI action.
+     */
+    function purgeMission(missionId) {
+        var target = normaliseId(missionId);
+        if (target === null) {
+            return Promise.resolve(failure('Mission ID is required.'));
+        }
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                var current = findMissionInSnapshot(appData, target);
+                if (!current) {
+                    return {
+                        valid: false,
+                        message: 'Mission no longer exists.'
+                    };
+                }
+                return { valid: true };
+            },
+
+            mutate: function(appData) {
+                var idx = findMissionIndexInSnapshot(appData, target);
+                if (idx === -1) {
+                    throw new Error('Mission no longer exists.');
+                }
+                var m = appData.missions[idx];
+                var title = m && typeof m.title === 'string'
+                    ? m.title
+                    : target;
+                appData.missions.splice(idx, 1);
+                return { id: target, title: title };
+            },
+
+            logMessage: function(result) {
+                return 'Purged mission: ' + result.title;
+            },
+            successMessage: 'Mission purged.',
+            failureMessage: 'Failed to purge mission.'
         });
     }
 
     // ============================================================
-    // STATUS OPERATIONS
+    // STATUS COMMANDS
     // ============================================================
 
-    /**
-     * Complete a mission.
-     *
-     * @param {string} id - Mission ID
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
-    function completeMission(id) {
-        return updateMission(id, { status: 'completed' });
+    function completeMission(missionId) {
+        return updateMission(missionId, { status: 'completed' });
     }
 
-    /**
-     * Cancel a mission.
-     *
-     * @param {string} id - Mission ID
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
-    function cancelMission(id) {
-        return updateMission(id, { status: 'cancelled' });
+    function cancelMission(missionId) {
+        return updateMission(missionId, { status: 'cancelled' });
     }
 
-    /**
-     * Reactivate a mission.
-     *
-     * @param {string} id - Mission ID
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
-    function reactivateMission(id) {
-        return updateMission(id, { status: 'active' });
+    function reactivateMission(missionId) {
+        return updateMission(missionId, { status: 'active' });
     }
 
     // ============================================================
-    // OBJECTIVE OPERATIONS
+    // OBJECTIVE COMMANDS
     // ============================================================
 
     /**
-     * Toggle an objective's done status.
+     * Set an objective's done flag to a specific value.
      *
-     * @param {string} missionId - Mission ID
-     * @param {number} index - Objective index
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
+     * Uses "set" semantics rather than "toggle": the caller
+     * expresses the intended state. This avoids lost updates when
+     * the UI is stale — an old checkbox checked against an old
+     * record will set the intended value, not flip whatever the
+     * current value happens to be.
      */
-    function toggleObjective(missionId, index) {
-        if (!isNonEmptyString(missionId)) {
+    function setObjectiveDone(missionId, index, done) {
+        var target = normaliseId(missionId);
+        if (target === null) {
             return Promise.resolve(failure('Mission ID is required.'));
         }
 
-        var mission = MissionQueries.getMission(missionId);
-        if (!mission) {
-            return Promise.resolve(failure('Mission not found.'));
+        if (typeof index !== 'number' ||
+            !Number.isInteger(index) ||
+            index < 0) {
+            return Promise.resolve(
+                failure('Objective index must be a non-negative integer.')
+            );
         }
 
-        if (!Array.isArray(mission.objectives) || mission.objectives.length === 0) {
-            return Promise.resolve(failure('Mission has no objectives.'));
+        if (typeof done !== 'boolean') {
+            return Promise.resolve(
+                failure('Objective done must be a boolean.')
+            );
         }
 
-        if (index < 0 || index >= mission.objectives.length) {
-            return Promise.resolve(failure('Objective index out of range.'));
-        }
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                var current = findMissionInSnapshot(appData, target);
+                if (!current) {
+                    return {
+                        valid: false,
+                        message: 'Mission no longer exists.'
+                    };
+                }
 
-        if (!canModifyObjectives(mission)) {
-            return Promise.resolve(failure('Cannot modify objectives for a ' + mission.status + ' mission.'));
-        }
+                var objCheck = MissionRules.validateObjectivesEditable(
+                    current
+                );
+                if (!objCheck.valid) {
+                    return objCheck;
+                }
 
-        var objectives = mission.objectives.slice();
-        objectives[index] = {
-            text: objectives[index].text,
-            done: !objectives[index].done
-        };
+                if (!Array.isArray(current.objectives) ||
+                    index >= current.objectives.length) {
+                    return {
+                        valid: false,
+                        message: 'Objective index is out of range.'
+                    };
+                }
 
-        return updateMission(missionId, { objectives: objectives });
+                var nowIso = new Date().toISOString();
+                var candidate = deepClone(current);
+                candidate.objectives[index] = {
+                    text: candidate.objectives[index].text,
+                    done: done
+                };
+                var final = finaliseCandidate(candidate, nowIso);
+                final.completedAt = candidate.completedAt;
+
+                var validated = MissionSchema.validateMission(final);
+                if (!validated.valid) {
+                    return {
+                        valid: false,
+                        message: validated.errors.join('; ')
+                    };
+                }
+
+                stagedCandidate = final;
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var idx = findMissionIndexInSnapshot(appData, target);
+                if (idx === -1) {
+                    throw new Error('Mission no longer exists.');
+                }
+                appData.missions[idx] = deepClone(stagedCandidate);
+                return { id: target, mission: stagedCandidate };
+            },
+            logMessage: function(result) {
+                return 'Set objective ' + index + ' on mission ' +
+                    (result.mission.title || target) +
+                    ' to ' + done;
+            },
+            successMessage: 'Objective updated.',
+            failureMessage: 'Failed to update objective.'
+        });
     }
 
     /**
      * Add an objective to a mission.
-     *
-     * @param {string} missionId - Mission ID
-     * @param {string} text - Objective text
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
     function addObjective(missionId, text) {
-        if (!isNonEmptyString(missionId)) {
+        var target = normaliseId(missionId);
+        if (target === null) {
             return Promise.resolve(failure('Mission ID is required.'));
         }
-
         if (!isNonEmptyString(text)) {
-            return Promise.resolve(failure('Objective text is required.'));
+            return Promise.resolve(
+                failure('Objective text is required.')
+            );
         }
+        var trimmed = text.trim();
 
-        var mission = MissionQueries.getMission(missionId);
-        if (!mission) {
-            return Promise.resolve(failure('Mission not found.'));
-        }
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                var current = findMissionInSnapshot(appData, target);
+                if (!current) {
+                    return {
+                        valid: false,
+                        message: 'Mission no longer exists.'
+                    };
+                }
+                var objCheck = MissionRules.validateObjectivesEditable(
+                    current
+                );
+                if (!objCheck.valid) {
+                    return objCheck;
+                }
 
-        if (!canModifyObjectives(mission)) {
-            return Promise.resolve(failure('Cannot modify objectives for a ' + mission.status + ' mission.'));
-        }
+                var nowIso = new Date().toISOString();
+                var candidate = deepClone(current);
+                if (!Array.isArray(candidate.objectives)) {
+                    candidate.objectives = [];
+                }
+                candidate.objectives.push({ text: trimmed, done: false });
+                var final = finaliseCandidate(candidate, nowIso);
+                final.completedAt = candidate.completedAt;
 
-        var objectives = Array.isArray(mission.objectives) ? mission.objectives.slice() : [];
-        objectives.push({ text: text.trim(), done: false });
+                var validated = MissionSchema.validateMission(final);
+                if (!validated.valid) {
+                    return {
+                        valid: false,
+                        message: validated.errors.join('; ')
+                    };
+                }
 
-        return updateMission(missionId, { objectives: objectives });
+                stagedCandidate = final;
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var idx = findMissionIndexInSnapshot(appData, target);
+                if (idx === -1) {
+                    throw new Error('Mission no longer exists.');
+                }
+                appData.missions[idx] = deepClone(stagedCandidate);
+                return { id: target, mission: stagedCandidate };
+            },
+            logMessage: function(result) {
+                return 'Added objective to mission: ' +
+                    (result.mission.title || target);
+            },
+            successMessage: 'Objective added.',
+            failureMessage: 'Failed to add objective.'
+        });
     }
 
     /**
-     * Remove an objective from a mission.
-     *
-     * @param {string} missionId - Mission ID
-     * @param {number} index - Objective index
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
+     * Remove an objective by index.
      */
     function removeObjective(missionId, index) {
-        if (!isNonEmptyString(missionId)) {
+        var target = normaliseId(missionId);
+        if (target === null) {
             return Promise.resolve(failure('Mission ID is required.'));
         }
-
-        var mission = MissionQueries.getMission(missionId);
-        if (!mission) {
-            return Promise.resolve(failure('Mission not found.'));
+        if (typeof index !== 'number' ||
+            !Number.isInteger(index) ||
+            index < 0) {
+            return Promise.resolve(
+                failure('Objective index must be a non-negative integer.')
+            );
         }
 
-        if (!Array.isArray(mission.objectives) || mission.objectives.length === 0) {
-            return Promise.resolve(failure('Mission has no objectives.'));
-        }
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                var current = findMissionInSnapshot(appData, target);
+                if (!current) {
+                    return {
+                        valid: false,
+                        message: 'Mission no longer exists.'
+                    };
+                }
+                var objCheck = MissionRules.validateObjectivesEditable(
+                    current
+                );
+                if (!objCheck.valid) {
+                    return objCheck;
+                }
+                if (!Array.isArray(current.objectives) ||
+                    index >= current.objectives.length) {
+                    return {
+                        valid: false,
+                        message: 'Objective index is out of range.'
+                    };
+                }
 
-        if (index < 0 || index >= mission.objectives.length) {
-            return Promise.resolve(failure('Objective index out of range.'));
-        }
+                var nowIso = new Date().toISOString();
+                var candidate = deepClone(current);
+                candidate.objectives.splice(index, 1);
+                var final = finaliseCandidate(candidate, nowIso);
+                final.completedAt = candidate.completedAt;
 
-        if (!canModifyObjectives(mission)) {
-            return Promise.resolve(failure('Cannot modify objectives for a ' + mission.status + ' mission.'));
-        }
+                var validated = MissionSchema.validateMission(final);
+                if (!validated.valid) {
+                    return {
+                        valid: false,
+                        message: validated.errors.join('; ')
+                    };
+                }
 
-        var objectives = mission.objectives.slice();
-        objectives.splice(index, 1);
-
-        return updateMission(missionId, { objectives: objectives });
+                stagedCandidate = final;
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var idx = findMissionIndexInSnapshot(appData, target);
+                if (idx === -1) {
+                    throw new Error('Mission no longer exists.');
+                }
+                appData.missions[idx] = deepClone(stagedCandidate);
+                return { id: target, mission: stagedCandidate };
+            },
+            logMessage: function(result) {
+                return 'Removed objective from mission: ' +
+                    (result.mission.title || target);
+            },
+            successMessage: 'Objective removed.',
+            failureMessage: 'Failed to remove objective.'
+        });
     }
 
     // ============================================================
-    // SUPPORT PERSONNEL OPERATIONS
+    // SUPPORT PERSONNEL COMMANDS
     // ============================================================
 
-    /**
-     * Add support personnel to a mission.
-     *
-     * @param {string} missionId - Mission ID
-     * @param {string} characterId - Character ID
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
     function addSupportPersonnel(missionId, characterId) {
-        if (!isNonEmptyString(missionId)) {
+        var target = normaliseId(missionId);
+        var charTarget = normaliseId(characterId);
+
+        if (target === null) {
             return Promise.resolve(failure('Mission ID is required.'));
         }
-
-        var charResult = validateCharacterId(characterId);
-        if (!charResult.valid) {
-            return Promise.resolve(failure(charResult.message));
-        }
-
-        var mission = MissionQueries.getMission(missionId);
-        if (!mission) {
-            return Promise.resolve(failure('Mission not found.'));
-        }
-
-        var personnel = Array.isArray(mission.supportPersonnel) ? mission.supportPersonnel.slice() : [];
-
-        // Check if already added
-        for (var i = 0; i < personnel.length; i++) {
-            if (String(personnel[i]) === String(characterId)) {
-                return Promise.resolve(failure('Character is already assigned as support personnel.'));
-            }
-        }
-
-        personnel.push(characterId);
-
-        return updateMission(missionId, { supportPersonnel: personnel });
-    }
-
-    /**
-     * Remove support personnel from a mission.
-     *
-     * @param {string} missionId - Mission ID
-     * @param {string} characterId - Character ID
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
-    function removeSupportPersonnel(missionId, characterId) {
-        if (!isNonEmptyString(missionId)) {
-            return Promise.resolve(failure('Mission ID is required.'));
-        }
-
-        if (!isNonEmptyString(characterId)) {
+        if (charTarget === null) {
             return Promise.resolve(failure('Character ID is required.'));
         }
 
-        var mission = MissionQueries.getMission(missionId);
-        if (!mission) {
-            return Promise.resolve(failure('Mission not found.'));
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                var current = findMissionInSnapshot(appData, target);
+                if (!current) {
+                    return {
+                        valid: false,
+                        message: 'Mission no longer exists.'
+                    };
+                }
+
+                var support = Array.isArray(current.supportPersonnel)
+                    ? current.supportPersonnel
+                    : [];
+                for (var i = 0; i < support.length; i++) {
+                    if (normaliseId(support[i]) === charTarget) {
+                        return {
+                            valid: false,
+                            message:
+                                'Character is already assigned as support.'
+                        };
+                    }
+                }
+
+                var nowIso = new Date().toISOString();
+                var candidate = deepClone(current);
+                candidate.supportPersonnel = support.concat([charTarget]);
+                var final = finaliseCandidate(candidate, nowIso);
+                final.completedAt = candidate.completedAt;
+
+                var validated = MissionSchema.validateMission(final);
+                if (!validated.valid) {
+                    return {
+                        valid: false,
+                        message: validated.errors.join('; ')
+                    };
+                }
+
+                stagedCandidate = final;
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var idx = findMissionIndexInSnapshot(appData, target);
+                if (idx === -1) {
+                    throw new Error('Mission no longer exists.');
+                }
+                appData.missions[idx] = deepClone(stagedCandidate);
+                return { id: target, mission: stagedCandidate };
+            },
+            logMessage: function(result) {
+                return 'Added support to mission: ' +
+                    (result.mission.title || target);
+            },
+            successMessage: 'Support personnel added.',
+            failureMessage: 'Failed to add support personnel.'
+        });
+    }
+
+    function removeSupportPersonnel(missionId, characterId) {
+        var target = normaliseId(missionId);
+        var charTarget = normaliseId(characterId);
+
+        if (target === null) {
+            return Promise.resolve(failure('Mission ID is required.'));
+        }
+        if (charTarget === null) {
+            return Promise.resolve(failure('Character ID is required.'));
         }
 
-        var personnel = Array.isArray(mission.supportPersonnel) ? mission.supportPersonnel.slice() : [];
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                var current = findMissionInSnapshot(appData, target);
+                if (!current) {
+                    return {
+                        valid: false,
+                        message: 'Mission no longer exists.'
+                    };
+                }
 
-        var found = false;
-        var newPersonnel = [];
-        for (var i = 0; i < personnel.length; i++) {
-            if (String(personnel[i]) === String(characterId)) {
-                found = true;
-            } else {
-                newPersonnel.push(personnel[i]);
-            }
-        }
+                var support = Array.isArray(current.supportPersonnel)
+                    ? current.supportPersonnel
+                    : [];
+                var found = false;
+                for (var i = 0; i < support.length; i++) {
+                    if (normaliseId(support[i]) === charTarget) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    return {
+                        valid: false,
+                        message:
+                            'Character is not assigned as support.'
+                    };
+                }
 
-        if (!found) {
-            return Promise.resolve(failure('Character is not assigned as support personnel.'));
-        }
+                var nowIso = new Date().toISOString();
+                var candidate = deepClone(current);
+                candidate.supportPersonnel = support.filter(function(id) {
+                    return normaliseId(id) !== charTarget;
+                });
+                var final = finaliseCandidate(candidate, nowIso);
+                final.completedAt = candidate.completedAt;
 
-        return updateMission(missionId, { supportPersonnel: newPersonnel });
+                var validated = MissionSchema.validateMission(final);
+                if (!validated.valid) {
+                    return {
+                        valid: false,
+                        message: validated.errors.join('; ')
+                    };
+                }
+
+                stagedCandidate = final;
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var idx = findMissionIndexInSnapshot(appData, target);
+                if (idx === -1) {
+                    throw new Error('Mission no longer exists.');
+                }
+                appData.missions[idx] = deepClone(stagedCandidate);
+                return { id: target, mission: stagedCandidate };
+            },
+            logMessage: function(result) {
+                return 'Removed support from mission: ' +
+                    (result.mission.title || target);
+            },
+            successMessage: 'Support personnel removed.',
+            failureMessage: 'Failed to remove support personnel.'
+        });
     }
 
     // ============================================================
-    // LOG OPERATIONS
+    // LOG COMMAND
     // ============================================================
 
     /**
-     * Add a log entry to a mission.
+     * Append a log entry.
      *
-     * @param {string} missionId - Mission ID
-     * @param {string} message - Log message
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
+     * Logs are historical events. They are appended, never edited
+     * or removed through this API. A caller that wants to redact a
+     * log entry would need a dedicated operation that does not
+     * exist here.
      */
     function addLog(missionId, message) {
-        if (!isNonEmptyString(missionId)) {
+        var target = normaliseId(missionId);
+        if (target === null) {
+            return Promise.resolve(failure('Mission ID is required.'));
+        }
+        if (!isNonEmptyString(message)) {
+            return Promise.resolve(
+                failure('Log message is required.')
+            );
+        }
+        var trimmed = message.trim();
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                var current = findMissionInSnapshot(appData, target);
+                if (!current) {
+                    return {
+                        valid: false,
+                        message: 'Mission no longer exists.'
+                    };
+                }
+
+                var nowIso = new Date().toISOString();
+                var candidate = deepClone(current);
+                if (!Array.isArray(candidate.log)) {
+                    candidate.log = [];
+                }
+                candidate.log.push({
+                    timestamp: nowIso,
+                    message: trimmed
+                });
+                var final = finaliseCandidate(candidate, nowIso);
+                final.completedAt = candidate.completedAt;
+
+                var validated = MissionSchema.validateMission(final);
+                if (!validated.valid) {
+                    return {
+                        valid: false,
+                        message: validated.errors.join('; ')
+                    };
+                }
+
+                stagedCandidate = final;
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var idx = findMissionIndexInSnapshot(appData, target);
+                if (idx === -1) {
+                    throw new Error('Mission no longer exists.');
+                }
+                appData.missions[idx] = deepClone(stagedCandidate);
+                return { id: target, mission: stagedCandidate };
+            },
+            logMessage: function(result) {
+                return 'Added log entry to mission: ' +
+                    (result.mission.title || target);
+            },
+            successMessage: 'Log entry added.',
+            failureMessage: 'Failed to add log entry.'
+        });
+    }
+
+    // ============================================================
+    // REPORT COMMANDS
+    // ============================================================
+    //
+    // Reports are historical notes. Author may be null (redacted).
+    // Editing a report updates its text and sets updatedAt.
+
+    function addReport(missionId, authorId, text) {
+        var target = normaliseId(missionId);
+        if (target === null) {
             return Promise.resolve(failure('Mission ID is required.'));
         }
 
-        if (!isNonEmptyString(message)) {
-            return Promise.resolve(failure('Log message is required.'));
+        var author = null;
+        var authorRedacted = false;
+        if (authorId !== undefined && authorId !== null && authorId !== '') {
+            author = normaliseId(authorId);
+            if (author === null) {
+                return Promise.resolve(
+                    failure('Author ID must be a valid id or empty.')
+                );
+            }
+        } else {
+            authorRedacted = true;
         }
 
-        var mission = MissionQueries.getMission(missionId);
-        if (!mission) {
-            return Promise.resolve(failure('Mission not found.'));
+        if (!isNonEmptyString(text)) {
+            return Promise.resolve(
+                failure('Report text is required.')
+            );
         }
+        var trimmedText = text.trim();
 
-        var log = Array.isArray(mission.log) ? mission.log.slice() : [];
-        log.push({
-            timestamp: new Date().toISOString(),
-            message: message.trim()
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                var current = findMissionInSnapshot(appData, target);
+                if (!current) {
+                    return {
+                        valid: false,
+                        message: 'Mission no longer exists.'
+                    };
+                }
+
+                var nowIso = new Date().toISOString();
+                var candidate = deepClone(current);
+                if (!Array.isArray(candidate.reports)) {
+                    candidate.reports = [];
+                }
+
+                var newReport = {
+                    id: generateId('mrep'),
+                    authorId: author,
+                    authorRedacted: authorRedacted,
+                    text: trimmedText,
+                    createdAt: nowIso,
+                    updatedAt: null
+                };
+
+                candidate.reports.push(newReport);
+                var final = finaliseCandidate(candidate, nowIso);
+                final.completedAt = candidate.completedAt;
+
+                var validated = MissionSchema.validateMission(final);
+                if (!validated.valid) {
+                    return {
+                        valid: false,
+                        message: validated.errors.join('; ')
+                    };
+                }
+
+                stagedCandidate = final;
+                stagedReportId = newReport.id;
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var idx = findMissionIndexInSnapshot(appData, target);
+                if (idx === -1) {
+                    throw new Error('Mission no longer exists.');
+                }
+                appData.missions[idx] = deepClone(stagedCandidate);
+                return {
+                    id: target,
+                    mission: stagedCandidate,
+                    reportId: stagedReportId
+                };
+            },
+            logMessage: function(result) {
+                return 'Added report to mission: ' +
+                    (result.mission.title || target);
+            },
+            successMessage: 'Report added.',
+            failureMessage: 'Failed to add report.'
         });
+    }
 
-        return updateMission(missionId, { log: log });
+    function updateReport(missionId, reportId, text) {
+        var target = normaliseId(missionId);
+        var reportTarget = normaliseId(reportId);
+
+        if (target === null) {
+            return Promise.resolve(failure('Mission ID is required.'));
+        }
+        if (reportTarget === null) {
+            return Promise.resolve(failure('Report ID is required.'));
+        }
+        if (!isNonEmptyString(text)) {
+            return Promise.resolve(failure('Report text is required.'));
+        }
+        var trimmedText = text.trim();
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                var current = findMissionInSnapshot(appData, target);
+                if (!current) {
+                    return {
+                        valid: false,
+                        message: 'Mission no longer exists.'
+                    };
+                }
+
+                if (!Array.isArray(current.reports)) {
+                    return {
+                        valid: false,
+                        message: 'Report not found.'
+                    };
+                }
+
+                var foundIndex = -1;
+                for (var i = 0; i < current.reports.length; i++) {
+                    if (normaliseId(current.reports[i].id) === reportTarget) {
+                        foundIndex = i;
+                        break;
+                    }
+                }
+                if (foundIndex === -1) {
+                    return {
+                        valid: false,
+                        message: 'Report not found.'
+                    };
+                }
+
+                var nowIso = new Date().toISOString();
+                var candidate = deepClone(current);
+                var report = candidate.reports[foundIndex];
+                report.text = trimmedText;
+                report.updatedAt = nowIso;
+
+                var final = finaliseCandidate(candidate, nowIso);
+                final.completedAt = candidate.completedAt;
+
+                var validated = MissionSchema.validateMission(final);
+                if (!validated.valid) {
+                    return {
+                        valid: false,
+                        message: validated.errors.join('; ')
+                    };
+                }
+
+                stagedCandidate = final;
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var idx = findMissionIndexInSnapshot(appData, target);
+                if (idx === -1) {
+                    throw new Error('Mission no longer exists.');
+                }
+                appData.missions[idx] = deepClone(stagedCandidate);
+                return { id: target, mission: stagedCandidate };
+            },
+            logMessage: function(result) {
+                return 'Updated report on mission: ' +
+                    (result.mission.title || target);
+            },
+            successMessage: 'Report updated.',
+            failureMessage: 'Failed to update report.'
+        });
+    }
+
+    /**
+     * Remove a report.
+     *
+     * This is a HARD removal from the reports array. Reports are
+     * the mission's notes, not the mission's history log — the log
+     * is append-only. A user who writes a report in error should be
+     * able to remove it. Historical preservation applies to the
+     * mission itself, not to individual annotations about it.
+     *
+     * If you later decide that report removals should be soft (a
+     * `removedAt` flag), change this function and update
+     * MissionSchema to match. Nothing else depends on the removal
+     * being hard.
+     */
+    function removeReport(missionId, reportId) {
+        var target = normaliseId(missionId);
+        var reportTarget = normaliseId(reportId);
+
+        if (target === null) {
+            return Promise.resolve(failure('Mission ID is required.'));
+        }
+        if (reportTarget === null) {
+            return Promise.resolve(failure('Report ID is required.'));
+        }
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                var current = findMissionInSnapshot(appData, target);
+                if (!current) {
+                    return {
+                        valid: false,
+                        message: 'Mission no longer exists.'
+                    };
+                }
+
+                if (!Array.isArray(current.reports)) {
+                    return {
+                        valid: false,
+                        message: 'Report not found.'
+                    };
+                }
+
+                var found = false;
+                for (var i = 0; i < current.reports.length; i++) {
+                    if (normaliseId(current.reports[i].id) === reportTarget) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    return {
+                        valid: false,
+                        message: 'Report not found.'
+                    };
+                }
+
+                var nowIso = new Date().toISOString();
+                var candidate = deepClone(current);
+                candidate.reports = candidate.reports.filter(
+                    function(r) {
+                        return normaliseId(r.id) !== reportTarget;
+                    }
+                );
+                var final = finaliseCandidate(candidate, nowIso);
+                final.completedAt = candidate.completedAt;
+
+                var validated = MissionSchema.validateMission(final);
+                if (!validated.valid) {
+                    return {
+                        valid: false,
+                        message: validated.errors.join('; ')
+                    };
+                }
+
+                stagedCandidate = final;
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var idx = findMissionIndexInSnapshot(appData, target);
+                if (idx === -1) {
+                    throw new Error('Mission no longer exists.');
+                }
+                appData.missions[idx] = deepClone(stagedCandidate);
+                return { id: target, mission: stagedCandidate };
+            },
+            logMessage: function(result) {
+                return 'Removed report from mission: ' +
+                    (result.mission.title || target);
+            },
+            successMessage: 'Report removed.',
+            failureMessage: 'Failed to remove report.'
+        });
+    }
+
+    // ============================================================
+    // INTERNAL UTILITIES
+    // ============================================================
+
+    /**
+     * If `updates[field]` is present (not undefined), copy it onto
+     * `candidate`, optionally transforming it first.
+     */
+    function copyIfProvided(candidate, updates, field, transform) {
+        if (updates[field] === undefined) {
+            return;
+        }
+        var value = updates[field];
+        if (typeof transform === 'function') {
+            value = transform(value);
+        }
+        candidate[field] = value;
+    }
+
+    // ============================================================
+    // STAGING
+    // ============================================================
+    //
+    // The pipeline gives validate and mutate separate callbacks that
+    // share no arguments. Each performMutation call is synchronous
+    // within a single mutation, so a module-level staging slot is
+    // safe here: only one mutation can be inside the pipeline at
+    // once for this module. The slot is cleared at the start of each
+    // mutation's validate, and overwritten before mutate runs.
+    //
+    // This is deliberately not reentrant. If you ever add a mutation
+    // that calls another mission mutation from inside its own
+    // validate callback, the outer slot will be overwritten. Don't
+    // do that.
+
+    var stagedCandidate = null;
+    var stagedReportId = null;
+
+    function beginStaging() {
+        stagedCandidate = null;
+        stagedReportId = null;
+    }
+
+    // Wrap each public mutation to clear staging at entry.
+    function wrapMutation(fn) {
+        return function() {
+            beginStaging();
+            return fn.apply(null, arguments);
+        };
     }
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
-    window.MissionCore = {
-        // ---- Query functions (delegate to Queries) ----
-        getMission: getMission,
-        getMissions: getMissions,
+    window.MissionCore = Object.freeze({
+        // Lifecycle
+        createMission: wrapMutation(createMission),
+        updateMission: wrapMutation(updateMission),
+        archiveMission: wrapMutation(archiveMission),
+        unarchiveMission: wrapMutation(unarchiveMission),
+        purgeMission: wrapMutation(purgeMission),
 
-        // ---- CRUD ----
-        createMission: createMission,
-        updateMission: updateMission,
-        deleteMission: deleteMission,
+        // Status
+        completeMission: wrapMutation(completeMission),
+        cancelMission: wrapMutation(cancelMission),
+        reactivateMission: wrapMutation(reactivateMission),
 
-        // ---- Status ----
-        completeMission: completeMission,
-        cancelMission: cancelMission,
-        reactivateMission: reactivateMission,
+        // Objectives
+        setObjectiveDone: wrapMutation(setObjectiveDone),
+        addObjective: wrapMutation(addObjective),
+        removeObjective: wrapMutation(removeObjective),
 
-        // ---- Objectives ----
-        toggleObjective: toggleObjective,
-        addObjective: addObjective,
-        removeObjective: removeObjective,
+        // Support personnel
+        addSupportPersonnel: wrapMutation(addSupportPersonnel),
+        removeSupportPersonnel: wrapMutation(removeSupportPersonnel),
 
-        // ---- Support Personnel ----
-        addSupportPersonnel: addSupportPersonnel,
-        removeSupportPersonnel: removeSupportPersonnel,
+        // Log
+        addLog: wrapMutation(addLog),
 
-        // ---- Log ----
-        addLog: addLog,
+        // Reports
+        addReport: wrapMutation(addReport),
+        updateReport: wrapMutation(updateReport),
+        removeReport: wrapMutation(removeReport)
+    });
 
-        // ---- Cascade helpers (for cross-domain cleanup) ----
-        stripCharacterRefs: stripCharacterRefs,
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
 
-        // ---- Domain Rules (pure functions) ----
-        calculateProgress: calculateProgress,
-        parsePayValue: parsePayValue,
-        calculatePay: calculatePay,
-        calculatePayNumber: calculatePayNumber,
-        isReadyForCompletion: isReadyForCompletion,
-        deriveCompletedAt: deriveCompletedAt,
-        isValidStatusTransition: isValidStatusTransition,
-        getValidTransitions: getValidTransitions,
-        canModifyObjectives: canModifyObjectives,
-        isTeamEligibleForMission: isTeamEligibleForMission,
-        filterEligibleTeams: filterEligibleTeams,
-        recalculateMission: recalculateMission,
+    (function verify() {
+        var exports = window.MissionCore;
+        var missing = [];
 
-        // ---- Validation (exposed for external use) ----
-        validateStatus: validateStatus,
-        validatePriority: validatePriority,
-        validateDifficulty: validateDifficulty,
-        validateTeamId: validateTeamId,
-        validateCharacterId: validateCharacterId,
-        validateObjective: validateObjective,
+        var required = [
+            'createMission',
+            'updateMission',
+            'archiveMission',
+            'unarchiveMission',
+            'purgeMission',
+            'completeMission',
+            'cancelMission',
+            'reactivateMission',
+            'setObjectiveDone',
+            'addObjective',
+            'removeObjective',
+            'addSupportPersonnel',
+            'removeSupportPersonnel',
+            'addLog',
+            'addReport',
+            'updateReport',
+            'removeReport'
+        ];
 
-        // ---- Constants ----
-        VALID_STATUSES: VALID_STATUSES,
-        DEFAULT_STATUS: DEFAULT_STATUS,
-        DEFAULT_PRIORITY: DEFAULT_PRIORITY,
-        DEFAULT_DIFFICULTY: DEFAULT_DIFFICULTY
-    };
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        if (missing.length > 0) {
+            console.warn(
+                '[MissionCore] Verification failed:',
+                missing.join(', ')
+            );
+        }
+    })();
 
 })();
