@@ -85,6 +85,25 @@
     }
 
     // ============================================================
+    // DIAGNOSTIC FLAG
+    // ============================================================
+    // Set to true to emit tracing logs. Set to false in production.
+    var _DIAGNOSTIC = true;
+
+    function diag() {
+        if (!_DIAGNOSTIC) return;
+        var args = Array.prototype.slice.call(arguments);
+        args.unshift('[AWTM]');
+        console.log.apply(console, args);
+    }
+
+    function diagWarn() {
+        var args = Array.prototype.slice.call(arguments);
+        args.unshift('[AWTM]');
+        console.warn.apply(console, args);
+    }
+
+    // ============================================================
     // MANDATORY DEPENDENCIES
     // ============================================================
 
@@ -135,6 +154,20 @@
     window.__academyWeeklyTeamsMembersLoaded = true;
 
     // ============================================================
+    // STARTUP DIAGNOSTIC
+    // ============================================================
+    // Emitted once per page load, so we know which module instance
+    // is actually loaded and where its dependencies point.
+
+    diag('Module loaded.');
+    diag('  AcademyWeeklyTeams object:', AcademyWeeklyTeams);
+    diag('  getWeeklyTeams fn:', AcademyWeeklyTeams.getWeeklyTeams);
+    diag('  setWeeklyTeams fn:', AcademyWeeklyTeams.setWeeklyTeams);
+    diag('  getTeamMembers fn:', AcademyWeeklyTeams.getTeamMembers);
+    diag('  window.data present:', !!window.data);
+    diag('  window.data.academy present:', !!(window.data && window.data.academy));
+
+    // ============================================================
     // OPTIONAL DEPENDENCIES
     // ============================================================
 
@@ -180,39 +213,41 @@
      * @returns {array}
      */
     function buildCandidatePool(classId, week, teamId) {
+        diag('buildCandidatePool CALLED', { classId, week, teamId });
+
         if (!isNonEmptyString(classId) || !isNonEmptyString(teamId)) {
+            diagWarn('buildCandidatePool: invalid classId or teamId, returning [].',
+                { classId, teamId });
             return [];
         }
 
         // ---- 1. Class roster ----
         var roster = AcademyAggregator.getClassStudentsViewModel(classId) || [];
+        diag('buildCandidatePool: roster size:', roster.length);
         if (roster.length === 0) {
             return [];
         }
 
         // ---- 2. Class instructor exclusion ----
-        // The class record's instructorId is authoritative for
-        // "who teaches this class". Career status is NOT.
         var cls = AcademyClasses.getClass(classId);
         var instructorId = cls && cls.instructorId
             ? String(cls.instructorId)
             : null;
+        diag('buildCandidatePool: class instructorId:', instructorId);
 
         // ---- 3. Current team members ----
         var currentMembers = AcademyWeeklyTeams.getTeamMembers(classId, week, teamId);
+        diag('buildCandidatePool: currentMembers for', teamId, ':', currentMembers);
         var currentSet = Object.create(null);
         for (var i = 0; i < currentMembers.length; i++) {
             currentSet[String(currentMembers[i])] = true;
         }
 
         // ---- 4. Assigned-elsewhere set ----
-        // Excludes characters already assigned to another team in
-        // the same class at the same week. This enforces the
-        // "one academic team per character per class per week"
-        // invariant on the read side so the picker never offers an
-        // assignment that AcademyWeeklyTeams.setWeeklyTeams would
-        // immediately strip.
         var assignments = AcademyWeeklyTeams.getWeeklyTeams(classId, week);
+        diag('buildCandidatePool: full assignments map for week', week, ':',
+            JSON.stringify(assignments));
+
         var assignedElsewhere = Object.create(null);
         var teamIds = Object.keys(assignments);
         for (var t = 0; t < teamIds.length; t++) {
@@ -226,11 +261,14 @@
                 assignedElsewhere[String(members[m])] = true;
             }
         }
+        diag('buildCandidatePool: assignedElsewhere keys:',
+            Object.keys(assignedElsewhere));
 
         // ---- 5. Elimination queries ----
         var EQ = getEliminationQueries();
         var canCheckElimination = EQ &&
             typeof EQ.isCharacterEliminatedByWeek === 'function';
+        diag('buildCandidatePool: canCheckElimination:', canCheckElimination);
 
         // ---- 6. Filter ----
         var pool = [];
@@ -255,9 +293,6 @@
                 try {
                     eliminated = EQ.isCharacterEliminatedByWeek(studentId, week) === true;
                 } catch (e) {
-                    // A throwing elimination query is a bug. We do not
-                    // silently misclassify the character. Include them
-                    // and log.
                     console.warn(
                         '[AcademyWeeklyTeamsMembers] isCharacterEliminatedByWeek threw for ' +
                         studentId + ':', e
@@ -291,6 +326,9 @@
             return (a.name || '').localeCompare(b.name || '');
         });
 
+        diag('buildCandidatePool: pool size:', pool.length,
+            'ids:', pool.map(function(p) { return p.id; }));
+
         return pool;
     }
 
@@ -298,7 +336,12 @@
      * Build the current-member view model for rendering.
      */
     function buildCurrentMemberViewModels(classId, week, teamId) {
+        diag('buildCurrentMemberViewModels CALLED', { classId, week, teamId });
+
         var memberIds = AcademyWeeklyTeams.getTeamMembers(classId, week, teamId);
+        diag('buildCurrentMemberViewModels: memberIds from AWT.getTeamMembers:',
+            memberIds);
+
         var result = [];
 
         for (var i = 0; i < memberIds.length; i++) {
@@ -327,6 +370,8 @@
         result.sort(function(a, b) {
             return (a.name || '').localeCompare(b.name || '');
         });
+
+        diag('buildCurrentMemberViewModels: result:', result);
 
         return result;
     }
@@ -474,8 +519,13 @@
      * re-normalizes and re-enforces the single-team invariant.
      */
     function addMember(classId, week, teamId, charId) {
+        diag('addMember CALLED', { classId, week, teamId, charId });
+
         var current = AcademyWeeklyTeams.getWeeklyTeams(classId, week);
+        diag('addMember: current map read:', JSON.stringify(current));
+
         var next = deepCloneShallow(current);
+        diag('addMember: shallow clone:', JSON.stringify(next));
 
         if (!Array.isArray(next[teamId])) {
             next[teamId] = [];
@@ -484,6 +534,7 @@
         var target = String(charId);
         for (var i = 0; i < next[teamId].length; i++) {
             if (String(next[teamId][i]) === target) {
+                diagWarn('addMember: character already in team (early exit).');
                 return Promise.resolve({
                     success: false,
                     message: 'Character is already in this team.'
@@ -492,14 +543,38 @@
         }
 
         next[teamId].push(target);
+        diag('addMember: next map to write:', JSON.stringify(next));
 
-        return AcademyWeeklyTeams.setWeeklyTeams(classId, week, next);
+        var promise = AcademyWeeklyTeams.setWeeklyTeams(classId, week, next);
+        diag('addMember: setWeeklyTeams returned:', promise);
+
+        return promise.then(function(result) {
+            diag('addMember: setWeeklyTeams RESOLVED:', result);
+
+            // Read back immediately to confirm the write landed
+            var afterRead = AcademyWeeklyTeams.getWeeklyTeams(classId, week);
+            diag('addMember: read-back after write:', JSON.stringify(afterRead));
+
+            var afterMembers = AcademyWeeklyTeams.getTeamMembers(classId, week, teamId);
+            diag('addMember: getTeamMembers after write:', afterMembers);
+
+            diag('addMember: window.data.academy.weeklyTeams:',
+                JSON.stringify(
+                    window.data &&
+                    window.data.academy &&
+                    window.data.academy.weeklyTeams
+                ));
+
+            return result;
+        });
     }
 
     /**
      * Remove a character from the team for the (class, week).
      */
     function removeMember(classId, week, teamId, charId) {
+        diag('removeMember CALLED', { classId, week, teamId, charId });
+
         var current = AcademyWeeklyTeams.getWeeklyTeams(classId, week);
         var next = deepCloneShallow(current);
 
@@ -523,19 +598,16 @@
             });
         }
 
-        // Empty teams are dropped by normaliseAssignments inside
-        // setWeeklyTeams. That's the correct behaviour — an empty
-        // team has no week-scoped meaning.
-        return AcademyWeeklyTeams.setWeeklyTeams(classId, week, next);
+        return AcademyWeeklyTeams.setWeeklyTeams(classId, week, next)
+            .then(function(result) {
+                diag('removeMember: setWeeklyTeams RESOLVED:', result);
+                return result;
+            });
     }
 
     /**
      * Shallow clone of an assignment map. The values are arrays; we
      * copy each array so we never mutate the caller's input.
-     *
-     * This is a local helper rather than a call to ObjectUtils because
-     * this module does not import ObjectUtils. The clone is sufficient
-     * for a two-level map of string -> array-of-string.
      */
     function deepCloneShallow(map) {
         var result = {};
@@ -554,23 +626,12 @@
 
     /**
      * Open the member manager for a (class, week, team) triple.
-     *
-     * Renders into the caller's container. Re-renders in place after
-     * each mutation. Invokes options.onChange after every successful
-     * mutation so the caller can refresh outer views (sidebar
-     * counters, member previews).
-     *
-     * @param {HTMLElement} container - Typically a .modal-content
-     * @param {string} classId
-     * @param {number|string} week
-     * @param {string} teamId
-     * @param {object} options
-     *   - onClose: called when the user clicks Close / ×
-     *   - onChange: called after every successful mutation
-     * @returns {object|null} Handle with { refresh, close, isOpen }
      */
     function openMemberManager(container, classId, week, teamId, options) {
+        diag('openMemberManager CALLED', { classId, week, teamId, options });
+
         if (!container || !isNonEmptyString(classId) || !isNonEmptyString(teamId)) {
+            diagWarn('openMemberManager: invalid args, returning null.');
             return null;
         }
 
@@ -583,6 +644,8 @@
             : null;
 
         var weekNum = parseInt(week, 10);
+        diag('openMemberManager: parsed weekNum:', weekNum, 'from week:', week);
+
         if (isNaN(weekNum)) {
             container.innerHTML =
                 '<div class="modal-body">' +
@@ -612,18 +675,14 @@
         }
 
         function render() {
+            diag('render CALLED. disposed:', disposed,
+                'container.parentNode:', !!container.parentNode);
+
             if (disposed || !container.parentNode) {
+                diag('render: bailing out.');
                 return;
             }
 
-            // Team metadata: name comes from the class entity via
-            // TeamQueries? No — we read it from the class-scoped team
-            // list. But we only have the teamId here. To keep this
-            // module independent of TeamQueries, we resolve the name
-            // through the assignments map's counterpart: the team
-            // name is not strictly necessary for the manager to
-            // function. We display a fallback and let the caller
-            // inject a name via options.teamName if it wants one.
             var teamName = isNonEmptyString(options.teamName)
                 ? options.teamName
                 : 'Team';
@@ -634,6 +693,9 @@
             var candidates = buildCandidatePool(
                 classId, weekNum, teamId
             );
+
+            diag('render: members count:', members.length,
+                'candidates count:', candidates.length);
 
             var vm = {
                 teamName: teamName,
@@ -646,6 +708,9 @@
         }
 
         function bindEvents(rootEl, vm) {
+            diag('bindEvents CALLED. add-btn present:',
+                !!rootEl.querySelector('.awtm-member-add-btn'));
+
             // Close buttons.
             var closeBtns = rootEl.querySelectorAll('.awtm-close-btn');
             for (var i = 0; i < closeBtns.length; i++) {
@@ -670,7 +735,6 @@
                                     render();
                                     invokeOnChange();
                                 }
-                                // On failure: pipeline already notified.
                             })
                             .catch(function(err) {
                                 console.warn(
@@ -687,8 +751,12 @@
             var addBtn = rootEl.querySelector('.awtm-member-add-btn');
             if (addBtn) {
                 addBtn.addEventListener('click', function() {
+                    diag('Add button CLICKED.');
+
                     var select = rootEl.querySelector('.awtm-member-select');
                     var charId = select ? select.value : '';
+                    diag('Add button: selected charId:', charId);
+
                     if (!charId) {
                         notify('Select a character to add.', 'error');
                         return;
@@ -696,6 +764,8 @@
 
                     addMember(classId, weekNum, teamId, charId)
                         .then(function(result) {
+                            diag('addMember resolved in click handler:', result);
+
                             if (result && result.success) {
                                 render();
                                 invokeOnChange();
