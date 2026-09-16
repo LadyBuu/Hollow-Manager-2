@@ -18,6 +18,19 @@
  *     AcademyAggregator.getClassStudentsViewModel(); elimination
  *     queries accept IDs directly.
  *
+ * IDENTITY PRESERVATION:
+ *   Round and match IDs are STABLE. The TournamentAggregator VM
+ *   carries `id` on every round and every match. This projection
+ *   MUST pass those IDs through unchanged. Every round- and match-
+ *   scoped action in the Academy view reads the ID from a data-*
+ *   attribute and dispatches on it; a projection that drops the ID
+ *   silently disables every such action.
+ *
+ *   The rule is: any field on the source VM that downstream code
+ *   uses as an identity or dispatch key is a REQUIRED passthrough.
+ *   `id` is the primary example. `index` is preserved too because
+ *   some UI code uses it for ordering.
+ *
  * EXAM MODE SEMANTICS:
  *   - When an exam exists, its `mode` field is authoritative.
  *   - When no exam exists, mode is 'individuals'.
@@ -243,9 +256,23 @@
         };
     }
 
+    /**
+     * Project a round VM.
+     *
+     * REQUIRED PASSTHROUGH: `id`. Every round-scoped action in the
+     * Academy view reads data-round-id and dispatches on it. Dropping
+     * the ID disables "Auto-Generate", "Add Match", "Remove Round",
+     * and every match action that carries the round ID as context.
+     */
     function buildExamRoundVM(round) {
+        if (!round) { return null; }
+
         return {
+            // ---- Identity ----
+            id: round.id,
             index: round.index,
+
+            // ---- Display ----
             roundNumber: round.roundNumber,
             status: round.status,
             statusLabel: round.statusDisplay ? round.statusDisplay.text : round.status,
@@ -253,16 +280,28 @@
             matchType: round.matchType,
             matchTypeLabel: round.matchTypeLabel,
             isPairExam: round.isPairExam === true,
+
+            // ---- Matches ----
             matches: (round.matches || []).map(buildExamMatchVM)
         };
     }
 
+    /**
+     * Project a match VM.
+     *
+     * REQUIRED PASSTHROUGH: `id`. Every match-scoped action reads
+     * data-match-id. Dropping it disables "Edit Match", "Complete
+     * Match", and "Remove Match".
+     */
     function buildExamMatchVM(match) {
         if (!match) { return null; }
 
         var vm = {
-            index: match.index,
+            // ---- Identity ----
             id: match.id,
+            index: match.index,
+
+            // ---- Display ----
             type: match.type,
             typeLabel: match.typeLabel,
             status: match.status,
@@ -478,7 +517,9 @@
         buildExamViewModel: buildExamViewModel,
         buildExamPool: buildExamPool,
         buildCharacterPoolForClass: buildCharacterPoolForClass,
-        buildTeamPoolForClass: buildTeamPoolForClass
+        buildTeamPoolForClass: buildTeamPoolForClass,
+        buildExamRoundVM: buildExamRoundVM,
+        buildExamMatchVM: buildExamMatchVM
     };
 
 })();
