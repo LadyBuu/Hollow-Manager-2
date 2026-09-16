@@ -1,39 +1,53 @@
 /**
  * js/modules/missions/mission-aggregator.js - Mission Aggregator
- * Mission's integration boundary with external domains
- * 
- * This module provides Mission-specific projections by composing
- * data from MissionQueries and external queries.
- * 
- * IMPORTANT:
- *   - Projection builder, not a query registry
- *   - Composes MissionQueries + TeamQueries + CharacterQueries
- *   - Returns Mission-shaped view models
- *   - Never exposes external query APIs directly
- *   - Never mutates data
- *   - No UI dependencies
- *   - No passthrough methods
- * 
- * API SHAPE:
- *   ✓ getMissionListViewModel(options)
- *   ✓ getMissionDetailViewModel(missionId)
- *   ✓ getMissionFormViewModel(options)
- *   ✓ getMissionPageViewModel(options)
- *   ✓ getMissionStatisticsViewModel()
- *   ✓ resolveTeamName(teamId)
- *   ✓ resolveSupportNames(supportIds)
- * 
- * DEPENDENCIES:
- *   - window.MissionQueries (from mission-queries.js) - MANDATORY
- *   - window.TeamQueries (from team-queries.js) - MANDATORY
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
- *   - window.MissionViews (from mission-views.js) - MANDATORY
- * 
- * USAGE:
- *   var MA = window.MissionAggregator;
- *   var list = MA.getMissionListViewModel({ filter: 'active' });
- *   var detail = MA.getMissionDetailViewModel('miss_123');
- *   var form = MA.getMissionFormViewModel({ editId: 'miss_123' });
+ *
+ * Path: js/modules/missions/mission-aggregator.js
+ *
+ * Projection builder for the mission domain.
+ *
+ * WHAT THIS MODULE OWNS:
+ *   - Assembling UI-shaped view models from mission records,
+ *     cross-domain references, and presentation metadata.
+ *   - Resolving team names and support personnel names.
+ *   - Resolving report author names, including the redacted case.
+ *   - Deriving the mission label via MissionId.derive and
+ *     attaching it to VMs.
+ *   - Exposing capability flags (canEdit, canComplete, ...) by
+ *     delegating to MissionRules.
+ *
+ * WHAT THIS MODULE DOES NOT OWN:
+ *   - Reads. MissionQueries owns those. This module calls Queries
+ *     and composes its results.
+ *   - Mutations. MissionCore owns those.
+ *   - Structural validation. MissionSchema owns that.
+ *   - Domain rules. MissionRules owns those. This module calls
+ *     Rules; it does not re-implement rule logic.
+ *   - Presentation strings beyond what it must attach to VMs.
+ *     MissionViews owns the vocabulary; this module imports it and
+ *     attaches the resulting labels and classes to VMs.
+ *   - Cross-domain business rules. Whether a team is *eligible* is
+ *     a rule (MissionRules). Whether a team *exists* is a query
+ *     (TeamQueries). This module consults both.
+ *
+ * VM SHAPE PRINCIPLES:
+ *   - Every VM is a plain data structure. No functions, no live
+ *     references to mission, team, or character records.
+ *   - Every reference to a cross-domain entity is either an ID or
+ *     a resolved { id, name } pair. Never the whole entity.
+ *   - Derived values (missionId, progress, pay, capability flags)
+ *     are present on VMs so renderers never compute them.
+ *   - Missing or unresolvable references resolve to `null` or an
+ *     explicit "Unknown"/"Unassigned" string, not to fabricated
+ *     entity IDs.
+ *
+ * DEPENDENCIES (MANDATORY):
+ *   - window.MissionQueries
+ *   - window.MissionConstants
+ *   - window.MissionId
+ *   - window.MissionRules
+ *   - window.MissionViews
+ *   - window.CharacterQueries
+ *   - window.TeamQueries
  */
 
 (function() {
@@ -42,668 +56,976 @@
     if (window.__missionAggregatorLoaded) {
         return;
     }
-    window.__missionAggregatorLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
+    // MANDATORY DEPENDENCIES
     // ============================================================
 
     var MissionQueries = window.MissionQueries;
-    var TeamQueries = window.TeamQueries;
-    var CharacterQueries = window.CharacterQueries;
+    var MissionConstants = window.MissionConstants;
+    var MissionId = window.MissionId;
+    var MissionRules = window.MissionRules;
     var MissionViews = window.MissionViews;
+    var CharacterQueries = window.CharacterQueries;
+    var TeamQueries = window.TeamQueries;
 
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
+    var _missing = [];
 
-    function checkDependencies() {
-        var missing = [];
-
-        if (!MissionQueries || typeof MissionQueries.getMissions !== 'function') {
-            missing.push('MissionQueries.getMissions');
+    if (!MissionQueries) {
+        _missing.push('MissionQueries (module)');
+    } else {
+        if (typeof MissionQueries.getMission !== 'function') {
+            _missing.push('MissionQueries.getMission');
         }
-        if (!MissionQueries || typeof MissionQueries.getMission !== 'function') {
-            missing.push('MissionQueries.getMission');
+        if (typeof MissionQueries.getMissions !== 'function') {
+            _missing.push('MissionQueries.getMissions');
         }
-        if (!MissionQueries || typeof MissionQueries.getEligibleTeams !== 'function') {
-            missing.push('MissionQueries.getEligibleTeams');
+        if (typeof MissionQueries.getStatistics !== 'function') {
+            _missing.push('MissionQueries.getStatistics');
         }
-
-        if (!TeamQueries || typeof TeamQueries.getTeamById !== 'function') {
-            missing.push('TeamQueries.getTeamById');
-        }
-        if (!TeamQueries || typeof TeamQueries.getTeamName !== 'function') {
-            missing.push('TeamQueries.getTeamName');
-        }
-
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-            missing.push('CharacterQueries.getDisplayName');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getCharacters !== 'function') {
-            missing.push('CharacterQueries.getCharacters');
-        }
-
-        if (!MissionViews || typeof MissionViews.getPriorityInfo !== 'function') {
-            missing.push('MissionViews.getPriorityInfo');
-        }
-        if (!MissionViews || typeof MissionViews.getStatusInfo !== 'function') {
-            missing.push('MissionViews.getStatusInfo');
-        }
-        if (!MissionViews || typeof MissionViews.getDifficultyLabel !== 'function') {
-            missing.push('MissionViews.getDifficultyLabel');
-        }
-        if (!MissionViews || typeof MissionViews.getMissionTypeLabel !== 'function') {
-            missing.push('MissionViews.getMissionTypeLabel');
-        }
-
-        if (missing.length > 0) {
-            console.warn('[MissionAggregator] Missing dependencies:', missing.join(', '));
-            return false;
-        }
-
-        return true;
     }
 
-    checkDependencies();
+    if (!MissionConstants) {
+        _missing.push('MissionConstants (module)');
+    }
+    if (!MissionId || typeof MissionId.derive !== 'function') {
+        _missing.push('MissionId.derive');
+    }
+    if (!MissionRules) {
+        _missing.push('MissionRules (module)');
+    } else {
+        if (typeof MissionRules.calculateProgress !== 'function') {
+            _missing.push('MissionRules.calculateProgress');
+        }
+        if (typeof MissionRules.canEdit !== 'function') {
+            _missing.push('MissionRules.canEdit');
+        }
+    }
+    if (!MissionViews) {
+        _missing.push('MissionViews (module)');
+    } else {
+        if (typeof MissionViews.getStatusInfo !== 'function') {
+            _missing.push('MissionViews.getStatusInfo');
+        }
+        if (typeof MissionViews.getPriorityInfo !== 'function') {
+            _missing.push('MissionViews.getPriorityInfo');
+        }
+    }
+    if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+        _missing.push('CharacterQueries.getCharacterById');
+    }
+    if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+        _missing.push('CharacterQueries.getDisplayName');
+    }
+    if (!TeamQueries || typeof TeamQueries.getTeamById !== 'function') {
+        _missing.push('TeamQueries.getTeamById');
+    }
+
+    if (_missing.length > 0) {
+        throw new Error(
+            '[MissionAggregator] Missing mandatory dependencies: ' +
+            _missing.join(', ')
+        );
+    }
+
+    window.__missionAggregatorLoaded = true;
 
     // ============================================================
     // HELPERS
     // ============================================================
 
-    function getTeamName(teamId) {
-        if (!teamId) {
-            return 'Unassigned';
-        }
-        return TeamQueries.getTeamName(teamId) || 'Unknown Team';
+    function isPlainObject(value) {
+        return value !== null &&
+               typeof value === 'object' &&
+               !Array.isArray(value);
     }
 
-    function getTeamType(teamId) {
-        if (!teamId) {
-            return null;
-        }
-        var team = TeamQueries.getTeamById(teamId);
-        return team ? team.type : null;
+    function isNonEmptyString(value) {
+        return typeof value === 'string' && value.trim() !== '';
     }
 
-    function getCharacterDisplayName(charId) {
-        if (!charId) {
-            return 'Unknown';
-        }
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
-            return 'Unknown';
-        }
-        return CharacterQueries.getDisplayName(char);
+    function safeString(value) {
+        if (value === undefined || value === null) { return ''; }
+        return String(value);
     }
 
-    function resolveSupportNames(supportIds) {
-        if (!Array.isArray(supportIds) || supportIds.length === 0) {
-            return [];
-        }
-
-        var names = [];
-        for (var i = 0; i < supportIds.length; i++) {
-            var name = getCharacterDisplayName(supportIds[i]);
-            if (name !== 'Unknown') {
-                names.push(name);
-            }
-        }
-        return names;
-    }
-
-    function resolveSupportCharacters(supportIds) {
-        if (!Array.isArray(supportIds) || supportIds.length === 0) {
-            return [];
-        }
-
-        var characters = [];
-        for (var i = 0; i < supportIds.length; i++) {
-            var char = CharacterQueries.getCharacterById(supportIds[i]);
-            if (char) {
-                characters.push({
-                    id: char.id,
-                    name: CharacterQueries.getDisplayName(char),
-                    status: CharacterQueries.getCurrentStatus(char),
-                    character: char
-                });
-            }
-        }
-        return characters;
-    }
-
-    function getSafeProgress(value) {
-        var progress = Number(value);
-        if (!Number.isFinite(progress)) {
-            return 0;
-        }
-        if (progress < 0) {
-            return 0;
-        }
-        if (progress > 100) {
-            return 100;
-        }
-        return Math.round(progress);
-    }
-
-    function getStatusInfo(status) {
-        return MissionViews.getStatusInfo(status) || {
-            label: status || 'Unknown',
-            color: 'var(--text-dim)',
-            class: 'status-unknown'
-        };
-    }
-
-    function getPriorityInfo(priority) {
-        return MissionViews.getPriorityInfo(priority) || {
-            label: priority || 'Medium',
-            color: 'var(--text-dim)',
-            class: 'priority-medium'
-        };
-    }
-
-    function getDifficultyLabel(difficulty) {
-        return MissionViews.getDifficultyLabel(difficulty) || difficulty || 'Medium';
-    }
-
-    function getMissionTypeLabel(typeId) {
-        return MissionViews.getMissionTypeLabel(typeId) || typeId || 'Unclassified';
-    }
-
-    function getSubtypeLabel(subtypeId) {
-        return MissionViews.getSubtypeLabel(subtypeId) || subtypeId || '';
-    }
-
-    function getEscalationLabel(escalation) {
-        return MissionViews.getEscalationLabel(escalation) || escalation || 'Tier II - Complicated';
+    function isFiniteNumber(value) {
+        return typeof value === 'number' && isFinite(value);
     }
 
     // ============================================================
-    // MISSION LIST VIEW MODEL
+    // ENTITY RESOLUTION
+    // ============================================================
+    //
+    // Cross-domain lookups. Each resolver returns a small
+    // { id, name } projection or null. It never returns the raw
+    // entity.
+
+    function resolveCharacterRef(characterId) {
+        if (!isNonEmptyString(characterId)) { return null; }
+        var char = CharacterQueries.getCharacterById(characterId);
+        if (!char) {
+            return {
+                id: String(characterId),
+                name: 'Unknown'
+            };
+        }
+        return {
+            id: char.id,
+            name: CharacterQueries.getDisplayName(char),
+            status: CharacterQueries.getCurrentStatus
+                ? CharacterQueries.getCurrentStatus(char)
+                : null
+        };
+    }
+
+    function resolveTeamRef(teamId) {
+        if (!isNonEmptyString(teamId)) { return null; }
+        var team = TeamQueries.getTeamById(teamId);
+        if (!team) {
+            return {
+                id: String(teamId),
+                name: 'Unknown Team'
+            };
+        }
+        return {
+            id: team.id,
+            name: isNonEmptyString(team.name) ? team.name : 'Unnamed Team'
+        };
+    }
+
+    function resolveTeamNameOrUnassigned(teamId) {
+        if (!isNonEmptyString(teamId)) {
+            return 'Unassigned';
+        }
+        var ref = resolveTeamRef(teamId);
+        return ref ? ref.name : 'Unknown Team';
+    }
+
+    // ============================================================
+    // REPORT PROJECTION
+    // ============================================================
+
+    function buildReportVM(report, mission) {
+        if (!isPlainObject(report)) { return null; }
+
+        var authorRef = null;
+        if (report.authorId !== undefined && report.authorId !== null) {
+            authorRef = resolveCharacterRef(report.authorId);
+        }
+
+        var authorName;
+        if (report.authorRedacted === true || !authorRef) {
+            authorName = 'Unknown';
+        } else {
+            authorName = authorRef.name;
+        }
+
+        return {
+            id: report.id,
+            authorId: report.authorId || null,
+            authorName: authorName,
+            authorRedacted: report.authorRedacted === true,
+            authorStatus: authorRef && authorRef.status
+                ? authorRef.status
+                : null,
+            text: report.text || '',
+            createdAt: report.createdAt || null,
+            createdAtDisplay: MissionViews.formatTimestamp
+                ? MissionViews.formatTimestamp(report.createdAt)
+                : '',
+            updatedAt: report.updatedAt || null,
+            updatedAtDisplay: MissionViews.formatTimestamp
+                ? MissionViews.formatTimestamp(report.updatedAt)
+                : '',
+            isEdited: report.updatedAt !== undefined &&
+                      report.updatedAt !== null
+        };
+    }
+
+    function buildReportsVM(mission) {
+        if (!mission || !Array.isArray(mission.reports)) {
+            return [];
+        }
+
+        var result = [];
+        for (var i = 0; i < mission.reports.length; i++) {
+            var vm = buildReportVM(mission.reports[i], mission);
+            if (vm) { result.push(vm); }
+        }
+
+        // Newest first, by createdAt desc, then id for stability.
+        result.sort(function(a, b) {
+            var ta = isNonEmptyString(a.createdAt) ? a.createdAt : '';
+            var tb = isNonEmptyString(b.createdAt) ? b.createdAt : '';
+            if (ta !== tb) {
+                return tb.localeCompare(ta);
+            }
+            return String(a.id).localeCompare(String(b.id));
+        });
+
+        return result;
+    }
+
+    // ============================================================
+    // SUPPORT PERSONNEL PROJECTION
+    // ============================================================
+
+    function buildSupportPersonnelVM(mission) {
+        if (!mission || !Array.isArray(mission.supportPersonnel)) {
+            return [];
+        }
+
+        var result = [];
+        for (var i = 0; i < mission.supportPersonnel.length; i++) {
+            var id = mission.supportPersonnel[i];
+            if (!isNonEmptyString(id)) { continue; }
+            var ref = resolveCharacterRef(id);
+            result.push(ref || { id: String(id), name: 'Unknown' });
+        }
+
+        // Sort by name for deterministic display.
+        result.sort(function(a, b) {
+            return String(a.name).localeCompare(String(b.name));
+        });
+
+        return result;
+    }
+
+    // ============================================================
+    // LOG PROJECTION
+    // ============================================================
+
+    function buildLogVM(mission) {
+        if (!mission || !Array.isArray(mission.log)) {
+            return [];
+        }
+
+        // Display order is newest first. The persistence order is
+        // append order (oldest first). Presentation reverses.
+        var result = [];
+        for (var i = mission.log.length - 1; i >= 0; i--) {
+            var entry = mission.log[i];
+            if (!isPlainObject(entry)) { continue; }
+            result.push({
+                timestamp: entry.timestamp || null,
+                timestampDisplay: MissionViews.formatTimestamp
+                    ? MissionViews.formatTimestamp(entry.timestamp)
+                    : '',
+                message: entry.message || ''
+            });
+        }
+
+        return result;
+    }
+
+    // ============================================================
+    // OBJECTIVE PROJECTION
+    // ============================================================
+
+    function buildObjectivesVM(mission) {
+        if (!mission || !Array.isArray(mission.objectives)) {
+            return [];
+        }
+        var result = [];
+        for (var i = 0; i < mission.objectives.length; i++) {
+            var obj = mission.objectives[i];
+            if (!isPlainObject(obj)) { continue; }
+            result.push({
+                index: i,
+                text: obj.text || '',
+                done: obj.done === true
+            });
+        }
+        return result;
+    }
+
+    // ============================================================
+    // CAPABILITY FLAGS
+    // ============================================================
+    //
+    // Delegated to MissionRules. This module does not re-implement
+    // any rule.
+
+    function buildCapabilitiesVM(mission) {
+        return {
+            edit: MissionRules.canEdit(mission),
+            modifyObjectives: MissionRules.canModifyObjectives(mission),
+            complete: MissionRules.canComplete(mission),
+            cancel: MissionRules.canCancel(mission),
+            reactivate: MissionRules.canReactivate(mission)
+        };
+    }
+
+    // ============================================================
+    // DATE DISPLAY
+    // ============================================================
+
+    function buildDateDisplay(mission) {
+        if (!mission) { return 'Not specified'; }
+
+        var hasYear = mission.year !== undefined && mission.year !== null;
+        var hasMonth = mission.month !== undefined && mission.month !== null;
+        var hasDay = mission.day !== undefined && mission.day !== null;
+
+        if (hasYear && hasMonth && hasDay) {
+            var monthNames = [
+                'January', 'February', 'March', 'April', 'May', 'June',
+                'July', 'August', 'September', 'October', 'November',
+                'December'
+            ];
+            var monthName = monthNames[mission.month - 1] || '';
+            return monthName + ' ' + mission.day + ', ' + mission.year;
+        }
+
+        if (hasYear) {
+            return String(mission.year);
+        }
+
+        return 'Not specified';
+    }
+
+    // ============================================================
+    // TYPE DISPLAY
+    // ============================================================
+
+    function buildTypeDisplay(mission) {
+        var primary = MissionConstants.getMissionTypeLabel(
+            mission.primaryType
+        ) || '';
+        var subtype = MissionConstants.getSubtypeLabel(
+            mission.primaryType, mission.subtype
+        ) || '';
+        var secondary = MissionConstants.getMissionTypeLabel(
+            mission.secondaryType
+        ) || '';
+
+        var parts = [];
+        if (primary) {
+            parts.push(primary);
+            if (subtype) { parts.push(subtype); }
+        }
+        if (secondary) { parts.push(secondary); }
+
+        if (parts.length === 0) {
+            return 'Unclassified';
+        }
+        return parts.join(' | ');
+    }
+
+    // ============================================================
+    // LIST VM
     // ============================================================
 
     /**
-     * Get a view model for a list of missions.
-     * Collection-level projection - avoids per-mission N+1 queries.
-     * 
-     * @param {object} options - Options
-     * @param {string} options.filter - Status filter ('all', 'active', 'completed', 'cancelled')
-     * @param {string} options.search - Search by title or missionId
-     * @param {string} options.teamId - Filter by team ID
-     * @param {string} options.typeId - Filter by mission type
-     * @param {string} options.sort - Sort field ('title', 'date', 'priority', 'status', 'progress')
-     * @param {string} options.sortDirection - 'asc' or 'desc'
-     * @returns {object} { missions: Array, total: number, filtered: number, counts: object }
+     * Build the list view model.
+     *
+     * @param {object} [options]
+     * @param {string} [options.filter] - 'all' | 'active' |
+     *   'completed' | 'cancelled'
+     * @param {string} [options.search] - free-text search
+     * @param {string} [options.teamId] - filter by assigned team
+     * @param {string} [options.typeId] - filter by mission type
+     * @param {string} [options.sort] - 'date' | 'title' | 'priority'
+     *   | 'status' | 'progress'
+     * @param {string} [options.sortDirection] - 'asc' | 'desc'
+     * @param {boolean} [options.includeArchived]
+     * @returns {object} { missions, total, filtered, counts }
      */
     function getMissionListViewModel(options) {
         options = options || {};
-        var filter = options.filter || 'all';
-        var search = options.search || '';
-        var teamId = options.teamId || null;
-        var typeId = options.typeId || null;
-        var sort = options.sort || 'date';
-        var sortDirection = options.sortDirection || 'desc';
 
-        // Get missions from MissionQueries
-        var missions = MissionQueries.getMissions(filter);
+        var filter = isNonEmptyString(options.filter)
+            ? options.filter
+            : 'all';
+        var search = isNonEmptyString(options.search)
+            ? options.search.trim()
+            : '';
+        var teamId = isNonEmptyString(options.teamId)
+            ? options.teamId
+            : null;
+        var typeId = isNonEmptyString(options.typeId)
+            ? options.typeId
+            : null;
+        var sort = isNonEmptyString(options.sort)
+            ? options.sort
+            : 'date';
+        var sortDirection = options.sortDirection === 'asc'
+            ? 'asc'
+            : 'desc';
+        var includeArchived = options.includeArchived === true;
 
-        // Apply team filter
-        if (teamId) {
-            missions = missions.filter(function(m) {
-                return m.assignedTeamId && String(m.assignedTeamId) === String(teamId);
-            });
-        }
+        // Status filter goes through the query layer.
+        var statusFilter = filter === 'all' ? null : filter;
 
-        // Apply type filter
-        if (typeId) {
-            missions = missions.filter(function(m) {
-                return m.primaryType === typeId || m.secondaryType === typeId;
-            });
-        }
-
-        // Apply search filter
-        if (search) {
-            var lowerSearch = search.toLowerCase();
-            missions = missions.filter(function(m) {
-                var title = (m.title || '').toLowerCase();
-                var missionId = (m.missionId || '').toLowerCase();
-                var location = (m.location || '').toLowerCase();
-                return title.indexOf(lowerSearch) !== -1 ||
-                       missionId.indexOf(lowerSearch) !== -1 ||
-                       location.indexOf(lowerSearch) !== -1;
-            });
-        }
-
-        // Build list items
-        var listItems = missions.map(function(m) {
-            var priorityInfo = getPriorityInfo(m.priority);
-            var statusInfo = getStatusInfo(m.status);
-            var supportCount = Array.isArray(m.supportPersonnel) ? m.supportPersonnel.length : 0;
-
-            return {
-                id: m.id,
-                missionId: m.missionId || '—',
-                title: m.title || 'Untitled',
-                status: m.status || 'active',
-                statusLabel: statusInfo.label,
-                statusClass: statusInfo.class,
-                priority: m.priority || 'medium',
-                priorityLabel: priorityInfo.label,
-                priorityClass: priorityInfo.class,
-                difficulty: m.difficulty || 'medium',
-                difficultyLabel: getDifficultyLabel(m.difficulty),
-                progress: getSafeProgress(m.progress),
-                teamId: m.assignedTeamId,
-                teamName: getTeamName(m.assignedTeamId),
-                supportCount: supportCount,
-                location: m.location || '',
-                primaryType: m.primaryType || '',
-                primaryTypeLabel: getMissionTypeLabel(m.primaryType),
-                subtype: m.subtype || '',
-                subtypeLabel: getSubtypeLabel(m.subtype),
-                escalation: m.escalation || 'tier_ii',
-                escalationLabel: getEscalationLabel(m.escalation),
-                date: m.year ? m.year + (m.month ? '-' + String(m.month).padStart(2, '0') : '') : '',
-                createdAt: m.createdAt || '',
-                isCompleted: m.status === 'completed',
-                isCancelled: m.status === 'cancelled',
-                isActive: m.status === 'active',
-                isReadyForCompletion: getSafeProgress(m.progress) === 100 && m.status !== 'completed'
-            };
+        var missions = MissionQueries.getMissions(statusFilter, {
+            includeArchived: includeArchived
         });
 
-        // Sort
-        var total = listItems.length;
+        var total = missions.length;
 
-        listItems.sort(function(a, b) {
-            var aVal, bVal;
+        // Additional filters are screen state and belong here.
+        var filtered = missions;
 
-            switch (sort) {
-                case 'title':
-                    aVal = a.title || '';
-                    bVal = b.title || '';
-                    break;
-                case 'date':
-                    aVal = a.date || a.createdAt || '';
-                    bVal = b.date || b.createdAt || '';
-                    break;
-                case 'priority':
-                    var priorityOrder = { 'critical': 0, 'high': 1, 'medium': 2, 'low': 3 };
-                    aVal = priorityOrder[a.priority] || 999;
-                    bVal = priorityOrder[b.priority] || 999;
-                    break;
-                case 'status':
-                    var statusOrder = { 'active': 0, 'completed': 1, 'cancelled': 2 };
-                    aVal = statusOrder[a.status] || 999;
-                    bVal = statusOrder[b.status] || 999;
-                    break;
-                case 'progress':
-                    aVal = a.progress;
-                    bVal = b.progress;
-                    break;
-                default:
-                    aVal = a.title || '';
-                    bVal = b.title || '';
-            }
+        if (teamId !== null) {
+            var teamTarget = String(teamId);
+            filtered = filtered.filter(function(m) {
+                return m.assignedTeamId !== undefined &&
+                       m.assignedTeamId !== null &&
+                       String(m.assignedTeamId) === teamTarget;
+            });
+        }
 
-            if (typeof aVal === 'string') {
-                var result = aVal.localeCompare(bVal);
-                return sortDirection === 'desc' ? -result : result;
-            }
+        if (typeId !== null) {
+            filtered = filtered.filter(function(m) {
+                return m.primaryType === typeId ||
+                       m.secondaryType === typeId;
+            });
+        }
 
-            if (aVal < bVal) {
-                return sortDirection === 'desc' ? 1 : -1;
-            }
-            if (aVal > bVal) {
-                return sortDirection === 'desc' ? -1 : 1;
-            }
-            return 0;
+        if (search !== '') {
+            var term = search.toLowerCase();
+            filtered = filtered.filter(function(m) {
+                var label = MissionId.derive(m) || '';
+                var title = typeof m.title === 'string'
+                    ? m.title.toLowerCase()
+                    : '';
+                var location = typeof m.location === 'string'
+                    ? m.location.toLowerCase()
+                    : '';
+                var description = typeof m.description === 'string'
+                    ? m.description.toLowerCase()
+                    : '';
+                var labelLower = label.toLowerCase();
+                return title.indexOf(term) !== -1 ||
+                       location.indexOf(term) !== -1 ||
+                       description.indexOf(term) !== -1 ||
+                       labelLower.indexOf(term) !== -1;
+            });
+        }
+
+        // Build list item VMs.
+        var items = filtered.map(function(m) {
+            return buildListItemVM(m);
         });
 
-        // Counts
-        var counts = {
-            total: missions.length,
-            active: missions.filter(function(m) { return m.status === 'active'; }).length,
-            completed: missions.filter(function(m) { return m.status === 'completed'; }).length,
-            cancelled: missions.filter(function(m) { return m.status === 'cancelled'; }).length,
-            ready: missions.filter(function(m) {
-                return getSafeProgress(m.progress) === 100 && m.status !== 'completed';
-            }).length
-        };
+        // Sort.
+        items.sort(buildListComparator(sort, sortDirection));
+
+        // Counts are computed against the status-filtered set, before
+        // team/type/search filtering. This gives the "how many are
+        // active" number the sidebar shows, independent of the
+        // current search.
+        var counts = buildStatusCounts(missions);
 
         return {
-            missions: listItems,
+            missions: items,
             total: total,
-            filtered: listItems.length,
+            filtered: items.length,
             counts: counts
         };
     }
 
-    // ============================================================
-    // MISSION DETAIL VIEW MODEL
-    // ============================================================
+    function buildListItemVM(mission) {
+        var statusInfo = MissionViews.getStatusInfo(mission.status);
+        var priorityInfo = MissionViews.getPriorityInfo(mission.priority);
+        var progress = MissionRules.calculateProgress(mission.objectives);
+        var supportCount = Array.isArray(mission.supportPersonnel)
+            ? mission.supportPersonnel.length
+            : 0;
 
-    /**
-     * Get a complete view model for a single mission.
-     * Resolves team name, support personnel, and presentation metadata.
-     * 
-     * @param {string} missionId - Mission ID
-     * @param {object} options - Options
-     * @param {boolean} options.includeSupport - Include support personnel details (default: true)
-     * @param {boolean} options.includeLog - Include activity log (default: true)
-     * @returns {object|null} Mission detail view model or null
-     */
-    function getMissionDetailViewModel(missionId, options) {
-        if (!missionId) {
-            return null;
-        }
+        return {
+            id: mission.id,
+            missionId: MissionId.derive(mission) || '',
+            title: mission.title || 'Untitled',
 
-        options = options || {};
-        var includeSupport = options.includeSupport !== false;
-        var includeLog = options.includeLog !== false;
-
-        var mission = MissionQueries.getMission(missionId);
-        if (!mission) {
-            return null;
-        }
-
-        var priorityInfo = getPriorityInfo(mission.priority);
-        var statusInfo = getStatusInfo(mission.status);
-        var progress = getSafeProgress(mission.progress);
-
-        var viewModel = {
-            // Raw mission (defensive copy)
-            mission: mission,
-
-            // Resolved fields
-            teamName: getTeamName(mission.assignedTeamId),
-            teamType: getTeamType(mission.assignedTeamId),
-
-            // Presentation metadata
-            priorityLabel: priorityInfo.label,
-            priorityColor: priorityInfo.color,
-            priorityClass: priorityInfo.class,
+            status: mission.status,
             statusLabel: statusInfo.label,
-            statusColor: statusInfo.color,
             statusClass: statusInfo.class,
-            difficultyLabel: getDifficultyLabel(mission.difficulty),
-            primaryTypeLabel: getMissionTypeLabel(mission.primaryType),
-            secondaryTypeLabel: mission.secondaryType ? getMissionTypeLabel(mission.secondaryType) : null,
-            subtypeLabel: getSubtypeLabel(mission.subtype),
-            escalationLabel: getEscalationLabel(mission.escalation),
-            billingLabel: MissionViews.getBillingLabel(mission.billing),
 
-            // Progress
+            priority: mission.priority,
+            priorityLabel: priorityInfo.label,
+            priorityClass: priorityInfo.class,
+
+            difficulty: mission.difficulty,
+            difficultyLabel: MissionConstants.getDifficultyLabel(
+                mission.difficulty
+            ) || '',
+
             progress: progress,
-            isComplete: progress === 100,
-            isReadyForCompletion: progress === 100 && mission.status !== 'completed',
 
-            // Status flags
+            teamId: mission.assignedTeamId || null,
+            teamName: resolveTeamNameOrUnassigned(mission.assignedTeamId),
+
+            supportCount: supportCount,
+
+            location: mission.location || '',
+
+            primaryType: mission.primaryType || '',
+            primaryTypeLabel: MissionConstants.getMissionTypeLabel(
+                mission.primaryType
+            ) || '',
+            subtype: mission.subtype || '',
+            subtypeLabel: MissionConstants.getSubtypeLabel(
+                mission.primaryType, mission.subtype
+            ) || '',
+            secondaryType: mission.secondaryType || '',
+            secondaryTypeLabel: MissionConstants.getMissionTypeLabel(
+                mission.secondaryType
+            ) || '',
+            typeDisplay: buildTypeDisplay(mission),
+
+            escalation: mission.escalation,
+            escalationLabel: MissionConstants.getEscalationLabel(
+                mission.escalation
+            ) || '',
+
+            dateDisplay: buildDateDisplay(mission),
+            createdAt: mission.createdAt || '',
+            archivedAt: mission.archivedAt || null,
+            isArchived: mission.archivedAt !== undefined &&
+                        mission.archivedAt !== null,
+
             isActive: mission.status === 'active',
             isCompleted: mission.status === 'completed',
             isCancelled: mission.status === 'cancelled',
 
-            // Editability
-            canEdit: mission.status !== 'completed' && mission.status !== 'cancelled',
-            canModifyObjectives: mission.status !== 'completed' && mission.status !== 'cancelled',
-            canComplete: mission.status === 'active' && progress === 100,
-            canCancel: mission.status === 'active',
-            canReactivate: mission.status === 'completed' || mission.status === 'cancelled',
-
-            // Support personnel
-            supportCount: Array.isArray(mission.supportPersonnel) ? mission.supportPersonnel.length : 0,
-            supportNames: includeSupport ? resolveSupportNames(mission.supportPersonnel) : [],
-            supportCharacters: includeSupport ? resolveSupportCharacters(mission.supportPersonnel) : [],
-
-            // Log
-            log: includeLog ? (mission.log || []).slice() : [],
-            logCount: includeLog ? (mission.log || []).length : 0
+            isReadyForCompletion: MissionRules.isReadyForCompletion(
+                mission
+            )
         };
+    }
 
-        return viewModel;
+    function buildListComparator(sort, direction) {
+        var sign = direction === 'asc' ? 1 : -1;
+
+        return function(a, b) {
+            var av;
+            var bv;
+
+            switch (sort) {
+                case 'title':
+                    av = a.title || '';
+                    bv = b.title || '';
+                    break;
+
+                case 'priority':
+                    var priorityOrder = {
+                        'critical': 0,
+                        'high': 1,
+                        'medium': 2,
+                        'low': 3
+                    };
+                    av = priorityOrder[a.priority];
+                    bv = priorityOrder[b.priority];
+                    if (av === undefined) { av = 999; }
+                    if (bv === undefined) { bv = 999; }
+                    break;
+
+                case 'status':
+                    var statusOrder = {
+                        'active': 0,
+                        'completed': 1,
+                        'cancelled': 2
+                    };
+                    av = statusOrder[a.status];
+                    bv = statusOrder[b.status];
+                    if (av === undefined) { av = 999; }
+                    if (bv === undefined) { bv = 999; }
+                    break;
+
+                case 'progress':
+                    av = isFiniteNumber(a.progress) ? a.progress : 0;
+                    bv = isFiniteNumber(b.progress) ? b.progress : 0;
+                    break;
+
+                case 'date':
+                default:
+                    av = a.createdAt || '';
+                    bv = b.createdAt || '';
+                    break;
+            }
+
+            if (typeof av === 'string' && typeof bv === 'string') {
+                var result = av.localeCompare(bv);
+                if (result !== 0) { return result * sign; }
+                return String(a.id).localeCompare(String(b.id));
+            }
+
+            if (av < bv) { return -1 * sign; }
+            if (av > bv) { return 1 * sign; }
+            return String(a.id).localeCompare(String(b.id));
+        };
+    }
+
+    function buildStatusCounts(missions) {
+        var counts = {
+            total: missions.length,
+            active: 0,
+            completed: 0,
+            cancelled: 0,
+            readyForCompletion: 0
+        };
+        for (var i = 0; i < missions.length; i++) {
+            var m = missions[i];
+            if (m.status === 'active') { counts.active++; }
+            else if (m.status === 'completed') { counts.completed++; }
+            else if (m.status === 'cancelled') { counts.cancelled++; }
+
+            if (MissionRules.isReadyForCompletion(m)) {
+                counts.readyForCompletion++;
+            }
+        }
+        return counts;
     }
 
     // ============================================================
-    // MISSION FORM VIEW MODEL
+    // DETAIL VM
     // ============================================================
 
     /**
-     * Get a view model for the mission form.
-     * Returns mission data with available teams and characters.
-     * 
-     * @param {object} options - Options
-     * @param {string} options.editId - Mission ID to edit (optional)
-     * @param {boolean} options.includeAllTeams - Include all teams (default: false, only eligible)
-     * @returns {object} Form view model
+     * Build the detail view model for a single mission.
+     *
+     * @param {string} missionId - Mission UUID
+     * @returns {object|null}
+     */
+    function getMissionDetailViewModel(missionId) {
+        var mission = MissionQueries.getMission(missionId);
+        if (!mission) { return null; }
+
+        var statusInfo = MissionViews.getStatusInfo(mission.status);
+        var priorityInfo = MissionViews.getPriorityInfo(mission.priority);
+        var progress = MissionRules.calculateProgress(mission.objectives);
+
+        var supportPersonnel = buildSupportPersonnelVM(mission);
+        var reports = buildReportsVM(mission);
+        var log = buildLogVM(mission);
+        var objectives = buildObjectivesVM(mission);
+        var capabilities = buildCapabilitiesVM(mission);
+
+        var teamRef = resolveTeamRef(mission.assignedTeamId);
+
+        return {
+            id: mission.id,
+            missionId: MissionId.derive(mission) || '',
+            title: mission.title || 'Untitled',
+            description: mission.description || '',
+
+            dateDisplay: buildDateDisplay(mission),
+            year: mission.year !== undefined ? mission.year : null,
+            month: mission.month !== undefined ? mission.month : null,
+            day: mission.day !== undefined ? mission.day : null,
+            sequence: mission.sequence,
+
+            status: mission.status,
+            statusLabel: statusInfo.label,
+            statusClass: statusInfo.class,
+
+            priority: mission.priority,
+            priorityLabel: priorityInfo.label,
+            priorityClass: priorityInfo.class,
+
+            difficulty: mission.difficulty,
+            difficultyLabel: MissionConstants.getDifficultyLabel(
+                mission.difficulty
+            ) || '',
+
+            primaryType: mission.primaryType || '',
+            primaryTypeLabel: MissionConstants.getMissionTypeLabel(
+                mission.primaryType
+            ) || '',
+            subtype: mission.subtype || '',
+            subtypeLabel: MissionConstants.getSubtypeLabel(
+                mission.primaryType, mission.subtype
+            ) || '',
+            secondaryType: mission.secondaryType || '',
+            secondaryTypeLabel: MissionConstants.getMissionTypeLabel(
+                mission.secondaryType
+            ) || '',
+            typeDisplay: buildTypeDisplay(mission),
+
+            escalation: mission.escalation,
+            escalationLabel: MissionConstants.getEscalationLabel(
+                mission.escalation
+            ) || '',
+
+            threatType: mission.threatType || '',
+            environment: mission.environment || '',
+            location: mission.location || '',
+            duration: mission.duration || '',
+
+            billing: mission.billing,
+            billingLabel: MissionConstants.getBillingLabel(
+                mission.billing
+            ) || '',
+
+            basePay: mission.basePay || '',
+            surchargePay: mission.surchargePay || '',
+            pay: mission.pay || '',
+
+            teamId: mission.assignedTeamId || null,
+            teamName: teamRef ? teamRef.name : 'Unassigned',
+
+            supportPersonnel: supportPersonnel,
+            supportCount: supportPersonnel.length,
+
+            objectives: objectives,
+            progress: progress,
+
+            reports: reports,
+            reportCount: reports.length,
+
+            log: log,
+            logCount: log.length,
+
+            tags: Array.isArray(mission.tags) ? mission.tags.slice() : [],
+
+            notes: mission.notes || '',
+
+            createdAt: mission.createdAt || null,
+            createdAtDisplay: MissionViews.formatTimestamp
+                ? MissionViews.formatTimestamp(mission.createdAt)
+                : '',
+            completedAt: mission.completedAt || null,
+            completedAtDisplay: MissionViews.formatTimestamp
+                ? MissionViews.formatTimestamp(mission.completedAt)
+                : '',
+            archivedAt: mission.archivedAt || null,
+            archivedAtDisplay: MissionViews.formatTimestamp
+                ? MissionViews.formatTimestamp(mission.archivedAt)
+                : '',
+
+            isActive: mission.status === 'active',
+            isCompleted: mission.status === 'completed',
+            isCancelled: mission.status === 'cancelled',
+            isArchived: mission.archivedAt !== undefined &&
+                        mission.archivedAt !== null,
+            isReadyForCompletion: capabilities.complete,
+
+            capabilities: capabilities,
+
+            graduatingClassId: mission.graduatingClassId || null,
+            classFilterEnabled: mission.classFilterEnabled === true
+        };
+    }
+
+    // ============================================================
+    // FORM VM
+    // ============================================================
+
+    /**
+     * Build the form view model for creating or editing a mission.
+     *
+     * @param {object} [options]
+     * @param {string} [options.editId] - Mission UUID to edit
+     * @returns {object}
      */
     function getMissionFormViewModel(options) {
         options = options || {};
-        var editId = options.editId || null;
-        var includeAllTeams = options.includeAllTeams || false;
+
+        var editId = isNonEmptyString(options.editId)
+            ? options.editId
+            : null;
 
         var mission = editId ? MissionQueries.getMission(editId) : null;
-
-        // Get teams
-        var teams = [];
-        if (includeAllTeams) {
-            // Get all active teams (not just eligible)
-            var allTeams = TeamQueries.getTeams ? TeamQueries.getTeams(null, 'active', false) : [];
-            teams = allTeams;
-        } else {
-            teams = MissionQueries.getEligibleTeams() || [];
+        if (editId && !mission) {
+            return null;
         }
 
-        // Get characters for support personnel selection
-        var characters = CharacterQueries.getCharacters ? CharacterQueries.getCharacters() : [];
+        var isEdit = mission !== null;
 
-        // Sort characters by display name
-        if (characters.length > 0) {
-            characters.sort(function(a, b) {
-                return CharacterQueries.getDisplayName(a).localeCompare(
-                    CharacterQueries.getDisplayName(b)
-                );
-            });
-        }
-
-        // Get support IDs if editing
-        var supportIds = mission && Array.isArray(mission.supportPersonnel)
-            ? mission.supportPersonnel.slice()
+        // Teams eligible for assignment.
+        var teams = TeamQueries.getTeams
+            ? MissionRules.filterEligibleTeams(TeamQueries.getTeams())
             : [];
 
-        // Get objectives if editing
-        var objectives = mission && Array.isArray(mission.objectives)
-            ? mission.objectives.slice()
-            : [];
-
-        return {
-            mission: mission,
-            isEdit: !!mission,
-            editId: editId,
-            teams: teams,
-            characters: characters,
-            supportIds: supportIds,
-            objectives: objectives,
-            defaultYear: new Date().getFullYear(),
-            defaultMonth: new Date().getMonth() + 1,
-            defaultDay: new Date().getDate()
-        };
-    }
-
-    // ============================================================
-    // MISSION PAGE VIEW MODEL
-    // ============================================================
-
-    /**
-     * Get a complete mission page view model.
-     * Combines list and stats for the main mission page.
-     * 
-     * @param {object} options - Options
-     * @param {string} options.filter - Status filter
-     * @param {string} options.search - Search term
-     * @param {string} options.teamId - Team filter
-     * @returns {object} Page view model
-     */
-    function getMissionPageViewModel(options) {
-        options = options || {};
-        var filter = options.filter || 'all';
-        var search = options.search || '';
-        var teamId = options.teamId || null;
-
-        var listVM = getMissionListViewModel({
-            filter: filter,
-            search: search,
-            teamId: teamId
+        var teamOptions = teams.map(function(t) {
+            return {
+                id: t.id,
+                name: isNonEmptyString(t.name) ? t.name : 'Unnamed Team'
+            };
+        });
+        teamOptions.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
         });
 
-        // Get statistics
-        var stats = MissionQueries.getStatistics ? MissionQueries.getStatistics() : null;
+        // Characters available for support personnel.
+        var charactersRaw = CharacterQueries.getCharacters
+            ? CharacterQueries.getCharacters()
+            : [];
+        var characterOptions = [];
+        for (var i = 0; i < charactersRaw.length; i++) {
+            var c = charactersRaw[i];
+            if (!c || !c.id) { continue; }
+            characterOptions.push({
+                id: c.id,
+                name: CharacterQueries.getDisplayName(c)
+            });
+        }
+        characterOptions.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
+
+        // Enum lists.
+        var difficulties = MissionConstants.getValidDifficulties()
+            .map(function(id) {
+                return {
+                    id: id,
+                    label: MissionConstants.getDifficultyLabel(id)
+                };
+            });
+
+        var priorities = MissionConstants.getValidPriorities()
+            .map(function(id) {
+                return {
+                    id: id,
+                    label: MissionConstants.getPriorityLabel(id)
+                };
+            });
+
+        var statuses = MissionConstants.getValidStatuses()
+            .map(function(id) {
+                return {
+                    id: id,
+                    label: MissionConstants.getStatusLabel(id)
+                };
+            });
+
+        var billingTypes = MissionConstants.getValidBillingTypes()
+            .map(function(id) {
+                return {
+                    id: id,
+                    label: MissionConstants.getBillingLabel(id)
+                };
+            });
+
+        var escalationTiers = MissionConstants.getValidEscalationTiers()
+            .map(function(id) {
+                return {
+                    id: id,
+                    label: MissionConstants.getEscalationLabel(id)
+                };
+            });
+
+        var missionTypes = MissionConstants.getMissionTypes();
+        var typeList = Object.keys(missionTypes).map(function(key) {
+            return missionTypes[key];
+        });
+
+        // Preview of the label that would be assigned if the user
+        // submits now with the current year and difficulty.
+        var previewLabel = null;
+        if (!isEdit) {
+            previewLabel = MissionQueries.getNextMissionId(
+                new Date().getFullYear(),
+                MissionConstants.DEFAULT_DIFFICULTY
+            );
+        } else {
+            previewLabel = MissionId.derive(mission);
+        }
 
         return {
-            missions: listVM.missions,
-            total: listVM.total,
-            filtered: listVM.filtered,
-            counts: listVM.counts,
-            filter: filter,
-            search: search,
-            teamId: teamId,
-            statistics: stats || {
-                total: 0,
-                active: 0,
-                completed: 0,
-                cancelled: 0,
-                byPriority: { critical: 0, high: 0, medium: 0, low: 0 },
-                byDifficulty: { easy: 0, medium: 0, hard: 0, expert: 0 }
+            isEdit: isEdit,
+            editId: editId,
+
+            mission: mission ? buildFormMissionFields(mission) : null,
+            previewLabel: previewLabel,
+
+            teams: teamOptions,
+            characters: characterOptions,
+
+            difficulties: difficulties,
+            priorities: priorities,
+            statuses: statuses,
+            billingTypes: billingTypes,
+            escalationTiers: escalationTiers,
+            missionTypes: typeList,
+
+            defaults: {
+                year: new Date().getFullYear(),
+                month: new Date().getMonth() + 1,
+                day: new Date().getDate()
             }
         };
     }
 
-    // ============================================================
-    // MISSION STATISTICS VIEW MODEL
-    // ============================================================
-
     /**
-     * Get mission statistics for dashboard display.
-     * 
-     * @returns {object} Statistics view model
+     * Project the fields the form needs from an existing mission.
+     * Does not expose the whole record.
      */
-    function getMissionStatisticsViewModel() {
-        var stats = MissionQueries.getStatistics ? MissionQueries.getStatistics() : null;
-
-        if (!stats) {
-            return {
-                total: 0,
-                active: 0,
-                completed: 0,
-                cancelled: 0,
-                byPriority: { critical: 0, high: 0, medium: 0, low: 0 },
-                byDifficulty: { easy: 0, medium: 0, hard: 0, expert: 0 },
-                completionRate: 0,
-                activePercentage: 0
-            };
-        }
-
-        var total = stats.total || 0;
-        var active = stats.active || 0;
-        var completed = stats.completed || 0;
-        var cancelled = stats.cancelled || 0;
-
+    function buildFormMissionFields(mission) {
         return {
-            total: total,
-            active: active,
-            completed: completed,
-            cancelled: cancelled,
-            byPriority: stats.byPriority || { critical: 0, high: 0, medium: 0, low: 0 },
-            byDifficulty: stats.byDifficulty || { easy: 0, medium: 0, hard: 0, expert: 0 },
-            completionRate: total > 0 ? Math.round((completed / total) * 100) : 0,
-            activePercentage: total > 0 ? Math.round((active / total) * 100) : 0
+            id: mission.id,
+            title: mission.title || '',
+            description: mission.description || '',
+            year: mission.year !== undefined ? mission.year : null,
+            month: mission.month !== undefined ? mission.month : null,
+            day: mission.day !== undefined ? mission.day : null,
+            primaryType: mission.primaryType || '',
+            subtype: mission.subtype || '',
+            secondaryType: mission.secondaryType || '',
+            escalation: mission.escalation || '',
+            threatType: mission.threatType || '',
+            environment: mission.environment || '',
+            location: mission.location || '',
+            duration: mission.duration || '',
+            difficulty: mission.difficulty || '',
+            priority: mission.priority || '',
+            basePay: mission.basePay || '',
+            surchargePay: mission.surchargePay || '',
+            billing: mission.billing || '',
+            assignedTeamId: mission.assignedTeamId || null,
+            supportPersonnel: Array.isArray(mission.supportPersonnel)
+                ? mission.supportPersonnel.slice()
+                : [],
+            status: mission.status || '',
+            objectives: buildObjectivesVM(mission),
+            notes: mission.notes || '',
+            tags: Array.isArray(mission.tags) ? mission.tags.slice() : [],
+            classFilterEnabled: mission.classFilterEnabled === true
         };
     }
 
     // ============================================================
-    // RESOLUTION HELPERS (exposed for views)
+    // STATISTICS VM
     // ============================================================
 
     /**
-     * Resolve a team name from a team ID.
-     * 
-     * @param {string} teamId - Team ID
-     * @returns {string} Team name
+     * Statistics VM for dashboard display.
      */
-    function resolveTeamName(teamId) {
-        return getTeamName(teamId);
-    }
+    function getMissionStatisticsViewModel() {
+        var stats = MissionQueries.getStatistics();
 
-    /**
-     * Resolve support personnel names from support IDs.
-     * 
-     * @param {array} supportIds - Array of character IDs
-     * @returns {array} Array of character names
-     */
-    function resolveSupportNames(supportIds) {
-        return resolveSupportNames(supportIds);
-    }
+        var total = stats.total;
+        var completed = stats.completed;
 
-    /**
-     * Check if a mission can be edited.
-     * 
-     * @param {object} mission - Mission object
-     * @returns {boolean} True if editable
-     */
-    function canEditMission(mission) {
-        if (!mission) {
-            return false;
-        }
-        return mission.status !== 'completed' && mission.status !== 'cancelled';
-    }
-
-    /**
-     * Check if a mission can be completed.
-     * 
-     * @param {object} mission - Mission object
-     * @returns {boolean} True if completable
-     */
-    function canCompleteMission(mission) {
-        if (!mission) {
-            return false;
-        }
-        if (mission.status !== 'active') {
-            return false;
-        }
-        var progress = getSafeProgress(mission.progress);
-        return progress === 100;
+        return {
+            total: total,
+            active: stats.active,
+            completed: completed,
+            cancelled: stats.cancelled,
+            archived: stats.archived,
+            byPriority: stats.byPriority,
+            byDifficulty: stats.byDifficulty,
+            completionRate: total > 0
+                ? Math.round((completed / total) * 100)
+                : 0,
+            activeRate: total > 0
+                ? Math.round((stats.active / total) * 100)
+                : 0
+        };
     }
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
-    window.MissionAggregator = {
-        // Projections
+    window.MissionAggregator = Object.freeze({
         getMissionListViewModel: getMissionListViewModel,
         getMissionDetailViewModel: getMissionDetailViewModel,
         getMissionFormViewModel: getMissionFormViewModel,
-        getMissionPageViewModel: getMissionPageViewModel,
-        getMissionStatisticsViewModel: getMissionStatisticsViewModel,
-
-        // Resolution helpers
-        resolveTeamName: resolveTeamName,
-        resolveSupportNames: resolveSupportNames,
-        resolveSupportCharacters: resolveSupportCharacters,
-        canEditMission: canEditMission,
-        canCompleteMission: canCompleteMission,
-
-        // Exposed for convenience (delegates to Views)
-        getPriorityInfo: getPriorityInfo,
-        getStatusInfo: getStatusInfo,
-        getDifficultyLabel: getDifficultyLabel,
-        getMissionTypeLabel: getMissionTypeLabel,
-        getSubtypeLabel: getSubtypeLabel,
-        getEscalationLabel: getEscalationLabel,
-        getSafeProgress: getSafeProgress
-    };
+        getMissionStatisticsViewModel: getMissionStatisticsViewModel
+    });
 
     // ============================================================
     // VERIFICATION
@@ -717,13 +1039,7 @@
             'getMissionListViewModel',
             'getMissionDetailViewModel',
             'getMissionFormViewModel',
-            'getMissionPageViewModel',
-            'getMissionStatisticsViewModel',
-            'resolveTeamName',
-            'resolveSupportNames',
-            'resolveSupportCharacters',
-            'canEditMission',
-            'canCompleteMission'
+            'getMissionStatisticsViewModel'
         ];
 
         for (var i = 0; i < required.length; i++) {
@@ -733,8 +1049,10 @@
         }
 
         if (missing.length > 0) {
-            console.warn('[MissionAggregator] Verification - some exports may be missing:', missing.join(', '));
-        } else {
+            console.warn(
+                '[MissionAggregator] Verification failed:',
+                missing.join(', ')
+            );
         }
     })();
 
