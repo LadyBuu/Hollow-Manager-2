@@ -16,6 +16,23 @@
  *   - Import returns candidates (does NOT mutate)
  *   - Export is read-only (does NOT access window.data)
  * 
+ * SECTION MARKER HANDLING:
+ *   The section marker is compared via normalizeSectionMarker, which:
+ *     - strips a leading UTF-8 BOM if one survived the CSV parser
+ *     - trims surrounding whitespace
+ *     - collapses the space between '#' and the section name
+ *     - uppercases the result
+ *   This makes "# CHARACTERS", "#CHARACTERS", "# characters", and
+ *   "﻿# CHARACTERS" all match. The old strict `===` comparison failed
+ *   on any variation, silently skipping every row in the file.
+ * 
+ * ROW ACCEPTANCE:
+ *   A data row is accepted when at least one cell has content. The
+ *   CharacterId column may be empty — that is the normal case for a
+ *   newly exported template or a hand-authored file, where the ID is
+ *   assigned at import time. The old check required the first cell
+ *   (CharacterId) to be non-empty, which dropped every fresh row.
+ * 
  * DEPENDENCIES:
  *   - window.CSV (from csv-parser.js) - MANDATORY
  *   - window.ImportResult (from import-result.js) - MANDATORY
@@ -73,6 +90,7 @@
 
     var SECTION = '# CHARACTERS';
     var MAX_ROWS = 10000;
+    var BOM_CHAR_CODE = 0xFEFF;
 
     // ============================================================
     // COLUMN DEFINITIONS
@@ -127,6 +145,58 @@
         20: 'careerStatus',
         21: 'eliminatedWeeks'
     };
+
+    // ============================================================
+    // SECTION MARKER NORMALIZATION
+    // ============================================================
+    //
+    // The section marker in the file may appear in several equivalent
+    // forms. This normalization produces a single canonical string
+    // for comparison.
+    //
+    //   "﻿# CHARACTERS"  → "#CHARACTERS"
+    //   "# CHARACTERS"   → "#CHARACTERS"
+    //   "#CHARACTERS"    → "#CHARACTERS"
+    //   "# characters"   → "#CHARACTERS"
+    //   "  #CHARACTERS " → "#CHARACTERS"
+    //
+    // Returns '' for null, undefined, or empty input.
+
+    function normalizeSectionMarker(value) {
+        var str = String(value == null ? '' : value);
+
+        // Strip a leading BOM that may have survived the CSV parser.
+        if (str.length > 0 && str.charCodeAt(0) === BOM_CHAR_CODE) {
+            str = str.substring(1);
+        }
+
+        str = str.trim();
+        if (str === '') { return ''; }
+
+        // Collapse whitespace between '#' and the section name.
+        if (str.charAt(0) === '#') {
+            str = '#' + str.substring(1).trim();
+        }
+
+        return str.toUpperCase();
+    }
+
+    /**
+     * Does this cell look like the start of a section?
+     * Any cell beginning with '#' (after normalization) counts.
+     * Used to detect when the CHARACTERS section ends and another
+     * section begins.
+     */
+    function isSectionMarker(value) {
+        var normalized = normalizeSectionMarker(value);
+        return normalized.length > 0 && normalized.charAt(0) === '#';
+    }
+
+    // Pre-computed canonical target marker for this module's section.
+    var TARGET_SECTION_MARKER = normalizeSectionMarker(SECTION);
+
+    // Pre-computed canonical header marker for the first column.
+    var HEADER_MARKER_FIRST_COLUMN = 'CHARACTERID';
 
     // ============================================================
     // SCHEMA HELPERS
@@ -279,28 +349,28 @@
         }
 
         return [
-            character.id ?? '',
-            character.firstName ?? '',
-            character.middleName ?? '',
-            character.lastName ?? '',
-            character.birthYear ?? '',
-            character.gender ?? '',
-            character.associatedNames ?? '',
-            character.eyes ?? '',
-            character.hair ?? '',
-            character.skin ?? '',
-            character.height ?? '',
-            character.weight ?? '',
-            character.build ?? '',
-            character.appearanceNotes ?? '',
-            character.notes ?? '',
+            character.id != null ? character.id : '',
+            character.firstName != null ? character.firstName : '',
+            character.middleName != null ? character.middleName : '',
+            character.lastName != null ? character.lastName : '',
+            character.birthYear != null ? character.birthYear : '',
+            character.gender != null ? character.gender : '',
+            character.associatedNames != null ? character.associatedNames : '',
+            character.eyes != null ? character.eyes : '',
+            character.hair != null ? character.hair : '',
+            character.skin != null ? character.skin : '',
+            character.height != null ? character.height : '',
+            character.weight != null ? character.weight : '',
+            character.build != null ? character.build : '',
+            character.appearanceNotes != null ? character.appearanceNotes : '',
+            character.notes != null ? character.notes : '',
             character.deceased ? 'true' : 'false',
-            character.deathYear ?? '',
-            character.deathCause ?? '',
-            character.deathAge ?? '',
-            character.specialty ?? '',
-            JSON.stringify(character.careerStatus ?? []),
-            JSON.stringify(character.eliminatedWeeks ?? [])
+            character.deathYear != null ? character.deathYear : '',
+            character.deathCause != null ? character.deathCause : '',
+            character.deathAge != null ? character.deathAge : '',
+            character.specialty != null ? character.specialty : '',
+            JSON.stringify(character.careerStatus != null ? character.careerStatus : []),
+            JSON.stringify(character.eliminatedWeeks != null ? character.eliminatedWeeks : [])
         ];
     }
 
@@ -412,9 +482,21 @@
     // ============================================================
 
     /**
-     * Extract character rows from CSV records.
-     * 
-     * @param {Array} records - All CSV records
+     * Extract character rows from parsed CSV records.
+     *
+     * SEMANTICS:
+     *   - Skips rows until the "# CHARACTERS" section marker is found.
+     *     The marker comparison is normalized (BOM-tolerant, whitespace-
+     *     tolerant, case-insensitive).
+     *   - Skips the header row (whose first cell normalizes to
+     *     "CHARACTERID").
+     *   - Accepts any non-blank row as a character row. The first cell
+     *     (CharacterId) may be empty — that is the normal case for
+     *     newly-created characters in a fresh template.
+     *   - Stops when a different section marker (# at the start of a
+     *     cell) is encountered.
+     *
+     * @param {Array} records - All CSV records (2D array of strings)
      * @returns {Array} Array of character data rows
      */
     function extractRows(records) {
@@ -428,26 +510,29 @@
                 continue;
             }
 
-            var first = String(row[0] || '').trim();
+            var first = String(row[0] == null ? '' : row[0]);
 
-            if (first === SECTION) {
-                inSection = true;
+            if (!inSection) {
+                // Looking for the CHARACTERS section marker.
+                if (normalizeSectionMarker(first) === TARGET_SECTION_MARKER) {
+                    inSection = true;
+                }
                 continue;
             }
 
-            if (inSection && first.startsWith('#')) {
+            // We are inside the CHARACTERS section.
+            // A new section marker terminates us.
+            if (isSectionMarker(first)) {
                 break;
             }
 
-            if (inSection && first === 'CharacterId') {
+            // Skip the header row.
+            if (normalizeSectionMarker(first) === HEADER_MARKER_FIRST_COLUMN) {
                 continue;
             }
 
-            if (inSection) {
-                if (row.length > 0 && String(row[0] || '').trim()) {
-                    rows.push(row);
-                }
-            }
+            // Accept any non-blank row.
+            rows.push(row);
         }
 
         return rows;
@@ -901,7 +986,6 @@
 
         if (missing.length > 0) {
             console.warn('[CharacterCSV] Verification - some exports may be missing:', missing.join(', '));
-        } else {
         }
     })();
 
