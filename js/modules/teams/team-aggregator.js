@@ -37,6 +37,20 @@
  *   - This module uses its result to build an active-id set. It does
  *     NOT re-parse joinPeriod / leavePeriod.
  *
+ * MEMBER-MODAL CANDIDATE SEMANTICS:
+ *   - The member-modal VM's `candidates` array is the pool of
+ *     characters that CAN be added to the team.
+ *   - CANDIDATE POOL: when the team has a classId, the pool is
+ *     restricted to the class roster at the requested period. When
+ *     the team has no classId, the pool falls back to all characters.
+ *   - EXCLUSIONS: current team members, instructors, and characters
+ *     already in the pool via other teams' active rosters are all
+ *     excluded. Instructors are excluded because they are not
+ *     students.
+ *   - This scoping is done HERE, not at the caller. Both the Teams
+ *     tab's member modal and the Academy Weekly Teams member manager
+ *     consume the same VM and get the same scoped pool.
+ *
  * RANKING SEMANTICS:
  *   - Ranking history lives on the team as `rankingHistory`.
  *   - The team's current rank is DERIVED from history via
@@ -67,6 +81,7 @@
  *   - window.TeamConstants      (MANDATORY)
  *   - window.CharacterQueries   (MANDATORY)
  *   - window.AcademyQueries     (MANDATORY) — for class display names
+ *     and class-scoped candidate pools
  *   - window.TeamUI             (OPTIONAL) — for filter bar VM defaults
  *
  * USAGE:
@@ -155,9 +170,15 @@
         if (!CharacterQueries || typeof CharacterQueries.getCharacters !== 'function') {
             missing.push('CharacterQueries.getCharacters');
         }
+        if (!CharacterQueries || typeof CharacterQueries.isInstructor !== 'function') {
+            missing.push('CharacterQueries.isInstructor');
+        }
 
         if (!AcademyQueries || typeof AcademyQueries.getClassDisplayName !== 'function') {
             missing.push('AcademyQueries.getClassDisplayName');
+        }
+        if (!AcademyQueries || typeof AcademyQueries.getClassStudentIds !== 'function') {
+            missing.push('AcademyQueries.getClassStudentIds');
         }
 
         if (missing.length > 0) {
@@ -807,6 +828,20 @@
     /**
      * Get a view model for the member modal.
      *
+     * CANDIDATE POOL:
+     *   - When the team has a classId, candidates are restricted to
+     *     the class roster at the requested period.
+     *   - When the team has no classId, candidates fall back to all
+     *     characters.
+     *
+     * EXCLUSIONS:
+     *   - Current team members (all of them, not just active).
+     *   - Instructors (they are not students).
+     *   - Characters who are members of ANOTHER academic team for the
+     *     same class at the requested period. This prevents a
+     *     character from being added to two academic teams within the
+     *     same class and week.
+     *
      * @param {string} teamId
      * @param {number|string} period
      * @returns {object|null}
@@ -821,28 +856,101 @@
             return null;
         }
 
-        var membersVM = getTeamMembersViewModel(teamId, period);
+        var periodNum = TeamConstants.parsePeriod(period);
 
-        // Candidates: any character not already a member.
+        var membersVM = getTeamMembersViewModel(teamId, periodNum);
+
+        // ---- Current member IDs (all, not just active) ----
         var currentIds = Object.create(null);
         if (Array.isArray(team.members)) {
             for (var i = 0; i < team.members.length; i++) {
-                currentIds[String(team.members[i].characterId)] = true;
+                var m = team.members[i];
+                if (m && m.characterId) {
+                    currentIds[String(m.characterId)] = true;
+                }
             }
         }
 
+        // ---- Allowed set (class-scoped) ----
+        // When the team has a classId, restrict the pool to the class
+        // roster at the requested period. When the team has no
+        // classId, allowedIds stays null and the pool is unrestricted
+        // (except for the exclusions below).
+        var allowedIds = null;
+        var teamClassId = isNonEmptyString(team.classId) ? String(team.classId) : null;
+
+        if (teamClassId !== null) {
+            var studentIds = AcademyQueries.getClassStudentIds(teamClassId);
+            if (Array.isArray(studentIds) && studentIds.length > 0) {
+                allowedIds = Object.create(null);
+                for (var k = 0; k < studentIds.length; k++) {
+                    allowedIds[String(studentIds[k])] = true;
+                }
+            }
+        }
+
+        // ---- Assigned-elsewhere set ----
+        // For each OTHER academic team in the same class, collect the
+        // active member IDs at the requested period. Those IDs are
+        // excluded from the candidate pool. This enforces "one
+        // academic team per class per week" for the candidate list.
+        var assignedElsewhere = Object.create(null);
+        if (teamClassId !== null && periodNum !== null) {
+            var siblingTeams = TeamQueries.getTeamsByClass(
+                teamClassId,
+                'operational'
+            );
+            for (var s = 0; s < siblingTeams.length; s++) {
+                var sibling = siblingTeams[s];
+                if (!sibling || String(sibling.id) === String(team.id)) {
+                    continue;
+                }
+                if (TeamConstants.normalizeTeamType(sibling.type) !== 'academic') {
+                    continue;
+                }
+                var siblingMembers = TeamQueries.getActiveTeamMembers(
+                    sibling,
+                    periodNum
+                );
+                for (var t = 0; t < siblingMembers.length; t++) {
+                    var sm = siblingMembers[t];
+                    if (sm && sm.characterId) {
+                        assignedElsewhere[String(sm.characterId)] = true;
+                    }
+                }
+            }
+        }
+
+        // ---- Build candidate pool ----
         var allChars = CharacterQueries.getCharacters() || [];
         var candidates = [];
-        for (var j = 0; j < allChars.length; j++) {
-            var c = allChars[j];
-            if (!c || !c.id) { continue; }
-            if (currentIds[String(c.id)]) { continue; }
+
+        for (var c = 0; c < allChars.length; c++) {
+            var char = allChars[c];
+            if (!char || !char.id) { continue; }
+
+            var charId = String(char.id);
+
+            // Exclude current team members.
+            if (currentIds[charId]) { continue; }
+
+            // Exclude instructors.
+            if (CharacterQueries.isInstructor(char)) { continue; }
+
+            // Exclude characters not in the class roster.
+            if (allowedIds !== null && !allowedIds[charId]) { continue; }
+
+            // Exclude characters already assigned to another academic
+            // team for this class at this period.
+            if (assignedElsewhere[charId]) { continue; }
+
             candidates.push({
-                id: c.id,
-                name: CharacterQueries.getDisplayName(c),
-                status: CharacterQueries.getCurrentStatus(c)
+                id: char.id,
+                name: CharacterQueries.getDisplayName(char),
+                status: CharacterQueries.getCurrentStatus(char)
             });
         }
+
         candidates.sort(function(a, b) {
             return a.name.localeCompare(b.name);
         });
@@ -850,6 +958,7 @@
         return {
             teamId: team.id,
             teamName: team.name,
+            teamClassId: teamClassId,
             period: membersVM ? membersVM.period : null,
             members: membersVM ? membersVM.members : [],
             candidates: candidates
