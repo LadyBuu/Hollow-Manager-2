@@ -69,25 +69,6 @@
     }
 
     // ============================================================
-    // DIAGNOSTIC FLAG
-    // ============================================================
-    // Set to true to emit tracing logs. Set to false in production.
-    var _DIAGNOSTIC = true;
-
-    function diag() {
-        if (!_DIAGNOSTIC) return;
-        var args = Array.prototype.slice.call(arguments);
-        args.unshift('[AWT]');
-        console.log.apply(console, args);
-    }
-
-    function diagWarn() {
-        var args = Array.prototype.slice.call(arguments);
-        args.unshift('[AWT]');
-        console.warn.apply(console, args);
-    }
-
-    // ============================================================
     // MANDATORY DEPENDENCIES - no fallbacks
     // ============================================================
 
@@ -176,7 +157,8 @@
     /**
      * Parse a week. Returns an integer within [MIN_WEEK, MAX_WEEK] or
      * null. Delegates to CalendarValidation.parseWeek for the canonical
-     * parsing rules.
+     * parsing rules (integer-only, no silent coercion of trailing
+     * characters, no floats).
      */
     function parseWeekStrict(week) {
         var parsed = CalendarValidation.parseWeek(week);
@@ -202,78 +184,47 @@
      * input escapes.
      */
     function normaliseAssignments(raw) {
-        diag('=== normaliseAssignments START ===');
-        diag('  INPUT:', JSON.stringify(raw));
-        diag('  INPUT keys:', Object.keys(raw || {}));
-        diag('  INPUT isPlainObject?', isPlainObject(raw));
-
         var cleaned = {};
 
         if (!isPlainObject(raw)) {
-            diagWarn('  not a plain object, returning {}');
-            diag('=== normaliseAssignments END (empty) ===');
             return cleaned;
         }
 
         var teamIds = Object.keys(raw);
-        diag('  teamIds from Object.keys:', teamIds);
-
         for (var i = 0; i < teamIds.length; i++) {
             var rawTeamId = teamIds[i];
-            diag('  --- iteration', i, 'rawTeamId:', JSON.stringify(rawTeamId));
-
             if (!isNonEmptyString(rawTeamId)) {
-                diagWarn('    SKIP: rawTeamId is not a non-empty string');
                 continue;
             }
             var teamId = String(rawTeamId).trim();
-            diag('    teamId (trimmed):', JSON.stringify(teamId));
 
             var members = raw[rawTeamId];
-            diag('    members = raw[rawTeamId]:', members);
-            diag('    Array.isArray(members):', Array.isArray(members));
-
             if (!Array.isArray(members)) {
-                diagWarn('    SKIP: members is not an array');
                 continue;
             }
 
             var seen = Object.create(null);
             var clean = [];
             for (var j = 0; j < members.length; j++) {
-                var raw_member = members[j];
-                if (raw_member === undefined || raw_member === null) {
-                    diag('      member', j, 'is undefined/null, skip');
+                var raw = members[j];
+                if (raw === undefined || raw === null) {
                     continue;
                 }
-                var id = String(raw_member).trim();
-                if (id === '') {
-                    diag('      member', j, 'is empty after trim, skip');
-                    continue;
-                }
-                if (seen[id]) {
-                    diag('      member', j, 'is a duplicate of', id, 'skip');
+                var id = String(raw).trim();
+                if (id === '' || seen[id]) {
                     continue;
                 }
                 seen[id] = true;
                 clean.push(id);
             }
 
-            diag('    clean list:', clean);
-
             if (clean.length === 0) {
-                diagWarn('    SKIP: clean list is empty (would drop team', teamId, ')');
                 continue;
             }
 
             clean.sort();
             cleaned[teamId] = clean;
-            diag('    ADDED to cleaned:', teamId, '=', clean);
         }
-
-        diag('  OUTPUT:', JSON.stringify(cleaned));
-        diag('  OUTPUT keys:', Object.keys(cleaned));
-        diag('=== normaliseAssignments END ===');
 
         return cleaned;
     }
@@ -281,20 +232,21 @@
     /**
      * Apply the single-team-per-character invariant.
      *
-     * Teams are visited in lexicographic ID order; a character is
-     * claimed by the first team that names it.
+     * A character may appear in at most one team per (class, week). If
+     * the input contains overlaps, the deterministic resolution is:
+     * teams are visited in lexicographic ID order, and a character is
+     * claimed by the first team that names it. Later teams that also
+     * name that character have it removed from their roster.
+     *
+     * This is deterministic regardless of the input map's key insertion
+     * order. It is NOT a silent "last write wins"; the rule is
+     * documented here and enforced consistently.
      */
     function enforceSingleTeamPerCharacter(assignments) {
-        diag('=== enforceSingleTeamPerCharacter START ===');
-        diag('  INPUT:', JSON.stringify(assignments));
-        diag('  INPUT keys:', Object.keys(assignments || {}));
-
         var seenCharacters = Object.create(null);
         var result = {};
 
         var teamIds = Object.keys(assignments).sort();
-        diag('  sorted teamIds:', teamIds);
-
         for (var i = 0; i < teamIds.length; i++) {
             var teamId = teamIds[i];
             var members = assignments[teamId];
@@ -302,19 +254,13 @@
             for (var j = 0; j < members.length; j++) {
                 var id = members[j];
                 if (seenCharacters[id]) {
-                    diag('    team', teamId, 'member', id, 'already seen elsewhere, drop');
                     continue;
                 }
                 seenCharacters[id] = true;
                 filtered.push(id);
             }
-            diag('    filtered for', teamId, ':', filtered);
             result[teamId] = filtered;
         }
-
-        diag('  OUTPUT:', JSON.stringify(result));
-        diag('  OUTPUT keys:', Object.keys(result));
-        diag('=== enforceSingleTeamPerCharacter END ===');
 
         return result;
     }
@@ -381,6 +327,13 @@
 
     /**
      * Get the assignments for a (class, week).
+     *
+     * Returns a deep clone of the assignment map. When no assignments
+     * exist, returns an empty object.
+     *
+     * @param {string} classId
+     * @param {number|string} week
+     * @returns {object} Map of { teamId: [charId, ...] }
      */
     function getWeeklyTeams(classId, week) {
         if (!isNonEmptyString(classId)) {
@@ -579,110 +532,59 @@
      * @returns {Promise<{ success, data?, message? }>}
      */
     function setWeeklyTeams(classId, week, assignments) {
-        diag('=== setWeeklyTeams CALLED ===');
-        diag('  classId:', JSON.stringify(classId));
-        diag('  week:', JSON.stringify(week));
-        diag('  assignments:', JSON.stringify(assignments));
-        diag('  assignments keys:', Object.keys(assignments || {}));
-
         if (!isNonEmptyString(classId)) {
-            diagWarn('  REJECT: Class ID is required.');
             return Promise.resolve(failure('Class ID is required.'));
         }
 
         var weekNum = parseWeekStrict(week);
-        diag('  weekNum after parseWeekStrict:', weekNum);
-
         if (weekNum === null) {
-            diagWarn('  REJECT: invalid week.');
             return Promise.resolve(
                 failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').')
             );
         }
 
         if (!isPlainObject(assignments)) {
-            diagWarn('  REJECT: assignments is not a plain object.');
             return Promise.resolve(failure('Assignments must be an object.'));
         }
 
         var targetClass = String(classId);
         var targetWeek = String(weekNum);
-        diag('  targetClass:', JSON.stringify(targetClass));
-        diag('  targetWeek:', JSON.stringify(targetWeek));
 
+        // Build the canonical assignments map once, from the caller's
+        // input. We do NOT read window.data here; the pipeline's
+        // validate() will rebuild the same structure from the snapshot.
         var cleaned = normaliseAssignments(assignments);
-        diag('  cleaned keys:', Object.keys(cleaned));
-
         var finalised = enforceSingleTeamPerCharacter(cleaned);
-        diag('  finalised:', JSON.stringify(finalised));
-        diag('  finalised keys:', Object.keys(finalised));
-
-        if (Object.keys(finalised).length === 0) {
-            diagWarn('  finalised is EMPTY. Writing an empty map to the store.');
-        }
 
         return MutationPipeline.performMutation({
             validate: function(appData) {
-                diag('  [VALIDATE] called');
-                diag('  [VALIDATE] appData === window.data?', appData === window.data);
-                diag('  [VALIDATE] finalised in closure:', JSON.stringify(finalised));
-
                 if (!appData || typeof appData !== 'object') {
                     return { valid: false, message: 'Application data is not available.' };
                 }
-
-                // Re-run the normalisation from the closure input.
-                // Note: this does NOT use the snapshot. See header note.
+                // Rebuild and validate against the snapshot. This is
+                // identical work to the preflight; the reason it happens
+                // here is that another mutation could have queued
+                // between the preflight and the snapshot. The snapshot
+                // is authoritative.
                 var snapshotCleaned = normaliseAssignments(assignments);
                 var snapshotFinal = enforceSingleTeamPerCharacter(snapshotCleaned);
-
+                // The normalisation is deterministic; the shapes must
+                // match. A mismatch indicates a structural problem with
+                // the input that surface-level validation missed.
                 if (JSON.stringify(snapshotFinal) !== JSON.stringify(finalised)) {
-                    diagWarn('  [VALIDATE] REJECT: normalisation is not deterministic.');
                     return {
                         valid: false,
                         message: 'Assignments map produced inconsistent state between preflight and snapshot.'
                     };
                 }
-
-                diag('  [VALIDATE] OK');
                 return { valid: true };
             },
             mutate: function(appData) {
-                diag('  [MUTATE] called');
-                diag('  [MUTATE] appData === window.data?', appData === window.data);
-                diag('  [MUTATE] appData.academy === window.data.academy?',
-                    appData && window.data && appData.academy === window.data.academy);
-                diag('  [MUTATE] targetClass:', targetClass);
-                diag('  [MUTATE] targetWeek:', targetWeek);
-                diag('  [MUTATE] finalised in closure:', JSON.stringify(finalised));
-                diag('  [MUTATE] finalised keys:', Object.keys(finalised));
-
                 var store = ensureWeeklyTeamsStore(appData);
-                diag('  [MUTATE] store === window.data.academy.weeklyTeams?',
-                    store === (window.data && window.data.academy && window.data.academy.weeklyTeams));
-                diag('  [MUTATE] store BEFORE write:',
-                    JSON.stringify(store));
-                diag('  [MUTATE] store[targetClass] BEFORE:',
-                    JSON.stringify(store[targetClass]));
-
                 if (!store[targetClass] || typeof store[targetClass] !== 'object') {
-                    diag('  [MUTATE] store[targetClass] missing, creating {}');
                     store[targetClass] = {};
                 }
-
                 store[targetClass][targetWeek] = deepClone(finalised);
-
-                diag('  [MUTATE] store AFTER write:',
-                    JSON.stringify(store));
-                diag('  [MUTATE] store[targetClass][targetWeek] AFTER:',
-                    JSON.stringify(store[targetClass][targetWeek]));
-                diag('  [MUTATE] window.data.academy.weeklyTeams AFTER write:',
-                    JSON.stringify(
-                        window.data &&
-                        window.data.academy &&
-                        window.data.academy.weeklyTeams
-                    ));
-
                 return {
                     classId: targetClass,
                     week: weekNum,
@@ -697,6 +599,10 @@
 
     /**
      * Clear all weekly teams for a (class, week).
+     *
+     * @param {string} classId
+     * @param {number|string} week
+     * @returns {Promise<{ success, data?, message? }>}
      */
     function clearWeeklyTeams(classId, week) {
         if (!isNonEmptyString(classId)) {
@@ -733,6 +639,7 @@
                     return { cleared: false };
                 }
                 delete byClass[targetWeek];
+                // If the class has no more weeks, remove the class entry.
                 if (Object.keys(byClass).length === 0) {
                     delete store[targetClass];
                 }
@@ -754,6 +661,14 @@
 
     /**
      * Strip all references to a character from every week's assignments.
+     *
+     * Removes the character from every team's member list. Teams left
+     * with zero members are deleted. Class and week entries that end up
+     * empty are deleted.
+     *
+     * @param {object} appData
+     * @param {string} charId
+     * @returns {object} { assignmentsRemoved }
      */
     function stripCharacterRefs(appData, charId) {
         var result = { assignmentsRemoved: 0 };
@@ -826,6 +741,10 @@
 
     /**
      * Strip the entire weekly-teams subtree for a class.
+     *
+     * @param {object} appData
+     * @param {string} classId
+     * @returns {object} { assignmentsRemoved }
      */
     function stripClassRefs(appData, classId) {
         var result = { assignmentsRemoved: 0 };
@@ -866,6 +785,14 @@
 
     /**
      * Strip a single team from every week's assignments for every class.
+     *
+     * Used when a persistent Team entity is deleted. Removes the team
+     * entry from every (class, week) map. Class and week entries that
+     * end up empty are deleted.
+     *
+     * @param {object} appData
+     * @param {string} teamId
+     * @returns {object} { assignmentsRemoved }
      */
     function stripTeamRefs(appData, teamId) {
         var result = { assignmentsRemoved: 0 };
