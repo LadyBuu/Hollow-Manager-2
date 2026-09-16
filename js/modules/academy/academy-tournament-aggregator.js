@@ -7,6 +7,8 @@
  * This module is responsible for:
  *   - Building the exam view model for a class + week
  *   - Building the exam pool (eligible characters or teams)
+ *   - Surfacing eliminations with enough data for the UI to render
+ *     an "Eliminated" section and restore individual participants
  *
  * IMPORTANT:
  *   - Projection builder. No mutations. No persistence. No DOM.
@@ -16,7 +18,9 @@
  *     AcademyAggregator.getClassListViewModel().
  *   - Does NOT depend on CharacterQueries. Pool identity comes from
  *     AcademyAggregator.getClassStudentsViewModel(); elimination
- *     queries accept IDs directly.
+ *     queries accept IDs directly; elimination names are resolved
+ *     through TournamentAggregator.getParticipantName, which already
+ *     handles both character and team participants.
  *
  * IDENTITY PRESERVATION:
  *   Round and match IDs are STABLE and are the dispatch keys for
@@ -42,6 +46,14 @@
  * POOL MEMBERSHIP:
  *   - Character pool: students only. Instructors do NOT appear.
  *   - Team pool: persistent academic Team entities from TeamQueries.
+ *
+ * ELIMINATION PROVENANCE:
+ *   Each elimination record carries fromRoundId and fromMatchId
+ *   when it was produced by the elimination cascade. Legacy
+ *   eliminations (produced by the manual mark path before the
+ *   cascade existed) do not. The VM carries those fields through
+ *   as-is, or null when absent, so the UI can decide whether to
+ *   show provenance.
  *
  * DEPENDENCIES:
  *   - window.AcademyAggregator (MANDATORY)
@@ -97,6 +109,10 @@
         if (!TournamentAggregator ||
             typeof TournamentAggregator.getTournamentViewModel !== 'function') {
             missing.push('TournamentAggregator.getTournamentViewModel');
+        }
+        if (!TournamentAggregator ||
+            typeof TournamentAggregator.getParticipantName !== 'function') {
+            missing.push('TournamentAggregator.getParticipantName');
         }
 
         if (missing.length > 0) {
@@ -189,7 +205,7 @@
         var vm = TA.getTournamentViewModel(examRecord.id, {
             includeParticipants: true,
             includeRounds: true,
-            includeEliminations: false,
+            includeEliminations: true,
             includeFinalPassers: true,
             includeStatistics: false
         });
@@ -206,6 +222,7 @@
             roundCount: vm.roundCount || 0,
             totalRounds: vm.totalRounds || 1,
             participants: vm.participants || [],
+            eliminations: buildEliminationsVM(vm.eliminations || [], vm.id),
             finalPassers: vm.finalPassers || [],
             finalPasserCount: vm.finalPasserCount || 0,
             rounds: (vm.rounds || []).map(buildExamRoundVM)
@@ -307,6 +324,112 @@
             }),
             memberCount: team.memberCount || 0
         };
+    }
+
+    // ============================================================
+    // ELIMINATIONS VM
+    // ============================================================
+    //
+    // The upstream TournamentAggregator produces eliminations with:
+    //   {
+    //     participantId, participantType,
+    //     participantName, week, reason, standalone
+    //   }
+    //
+    // The raw tournament record additionally carries fromRoundId and
+    // fromMatchId on cascade-produced eliminations. The upstream VM
+    // does NOT surface those. This projection re-reads the raw
+    // tournament record to pick them up, so the UI can render
+    // provenance when it exists.
+    //
+    // Each elimination VM exposes:
+    //   {
+    //     participantId,
+    //     participantType,
+    //     participantName,
+    //     week,
+    //     reason,
+    //     standalone,
+    //     fromRoundId,           // string or null
+    //     fromMatchId,           // string or null
+    //     hasProvenance          // true when fromMatchId is present
+    //   }
+    //
+    // Entries with participantType !== 'character' are dropped: the
+    // elimination cascade only eliminates individual characters. A
+    // team elimination record, if it ever appeared, would not be
+    // restorable through the character-side API anyway.
+
+    function buildEliminationsVM(eliminationVMs, examId) {
+        if (!Array.isArray(eliminationVMs) || eliminationVMs.length === 0) {
+            return [];
+        }
+
+        // Read the raw tournament to pick up provenance fields that
+        // the upstream VM does not carry.
+        var rawById = Object.create(null);
+        try {
+            var rawExam = TournamentQueries.getTournament(examId);
+            if (rawExam && Array.isArray(rawExam.eliminations)) {
+                for (var r = 0; r < rawExam.eliminations.length; r++) {
+                    var raw = rawExam.eliminations[r];
+                    if (!raw || !raw.participantId) { continue; }
+                    var key = String(raw.participantId);
+                    rawById[key] = raw;
+                }
+            }
+        } catch (e) {
+            // If the raw read fails, we degrade to VMs without
+            // provenance. The UI still renders and restores work.
+            rawById = Object.create(null);
+        }
+
+        var result = [];
+
+        for (var i = 0; i < eliminationVMs.length; i++) {
+            var e = eliminationVMs[i];
+            if (!e) { continue; }
+            if (e.participantType && e.participantType !== 'character') {
+                continue;
+            }
+
+            var participantId = e.participantId ? String(e.participantId) : null;
+            if (!participantId) { continue; }
+
+            var raw = rawById[participantId] || null;
+            var fromRoundId = (raw && typeof raw.fromRoundId === 'string' && raw.fromRoundId !== '')
+                ? raw.fromRoundId
+                : null;
+            var fromMatchId = (raw && typeof raw.fromMatchId === 'string' && raw.fromMatchId !== '')
+                ? raw.fromMatchId
+                : null;
+
+            result.push({
+                participantId: participantId,
+                participantType: 'character',
+                participantName: e.participantName || 'Unknown',
+                week: e.week,
+                reason: e.reason || '',
+                standalone: e.standalone === true,
+                fromRoundId: fromRoundId,
+                fromMatchId: fromMatchId,
+                hasProvenance: fromMatchId !== null
+            });
+        }
+
+        // Stable sort by week descending, then by name ascending.
+        // The UI wants newest eliminations first, with ties broken
+        // consistently so re-renders don't shuffle the list.
+        result.sort(function(a, b) {
+            var wa = (typeof a.week === 'number') ? a.week : -1;
+            var wb = (typeof b.week === 'number') ? b.week : -1;
+            if (wa !== wb) { return wb - wa; }
+            return String(a.participantName || '').localeCompare(
+                String(b.participantName || '')
+            );
+        });
+
+        return result;
     }
 
     // ============================================================
@@ -423,7 +546,8 @@
         buildCharacterPoolForClass: buildCharacterPoolForClass,
         buildTeamPoolForClass: buildTeamPoolForClass,
         buildExamRoundVM: buildExamRoundVM,
-        buildExamMatchVM: buildExamMatchVM
+        buildExamMatchVM: buildExamMatchVM,
+        buildEliminationsVM: buildEliminationsVM
     };
 
 })();
