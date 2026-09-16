@@ -10,8 +10,8 @@
  *   - Team match completion (team-level + member-level results)
  *   - Auto-generation of matches from an eligible pool
  *   - Internal pure builders for Core.addRound
- *   - Round promotion: when the last match in a round completes, the
- *     round's status is set to 'completed'
+ *   - Round promotion / reconciliation: after any match mutation the
+ *     round's derived status is reconciled from its matches
  *   - Elimination cascade on completion: failing participants are
  *     eliminated on both the tournament and character sides, inside
  *     the same pipeline transaction
@@ -29,28 +29,34 @@
  *   All public commands accept IDs, not array indices. Lookup goes
  *   through Schema.findRoundById / Schema.findMatchById.
  *
- * ROUND STATUS PROMOTION:
- *   Completing a match does not automatically complete the tournament.
- *   It does automatically promote the round to 'completed' when every
- *   match in the round is completed.
+ * ROUND STATUS - DERIVED AND RECONCILED:
+ *   A round's `status` is DERIVED from its matches:
+ *     - zero matches        → 'pending'
+ *     - all matches completed → 'completed'
+ *     - otherwise           → 'in_progress'
+ *   reconcileRoundStatus(round) applies this rule. It is called after
+ *   every match mutation (completion, removal, creation, update) so
+ *   the derived state is always consistent with the match list.
  *
  * MATCH TYPES:
- *   'standard'    : legacy 2-participant match. Read-only compat.
- *   'group_exam'  : open assessment. participants.length === round.matchSize.
- *   'team_vs_team': adversarial team match. participants.length >= 2.
- *                   The round's matchSize is NOT a constraint for
- *                   team matches.
+ *   - 'group_exam'  : open assessment. participants.length === round.matchSize.
+ *                     May be isPairExam.
+ *   - 'team_vs_team': adversarial team match. participants.length >= 2.
  *
  * RESULT VALIDATION:
  *   buildProposedMatch validates result maps WITHOUT a participant
  *   allow-list. It passes `null` as the participants argument to
- *   validateResultMap, which skips the participant-membership check
- *   and only validates keys and values. The participant-membership
- *   check runs later in validateProposedMatch, against the actual
- *   round and participant list.
+ *   validateResultMap, which skips the participant-membership check.
+ *   The participant-membership check runs later in
+ *   validateProposedMatch, against the actual round and participant
+ *   list.
  *
- *   Passing an empty array here was a bug: `[].indexOf(anyId)` is
- *   always -1, so every result key was rejected as "not a participant".
+ *   For team_vs_team:
+ *     - teamResults keys are validated against match.participants
+ *       (which are team IDs).
+ *     - individualResults keys are validated as strings. Team
+ *       membership of individual results is NOT checked here; that
+ *       is a cross-domain concern.
  *
  * ELIMINATION CASCADE:
  *   When completeMatch succeeds and any participant's result is
@@ -70,32 +76,32 @@
  *   For 'team_vs_team' matches, ONLY individualResults[charId] ===
  *   'fail' eliminates. teamResults never eliminates anyone directly.
  *   For 'group_exam', results[charId] === 'fail' eliminates.
- *   For 'standard', no eliminations are produced (legacy).
  *
  *   The cascade runs inside completeMatch's mutate callback, in the
  *   same transaction as the match status change. It does NOT go
- *   through CharacterEliminations or TournamentEliminationWorkflow,
- *   because both of those are pipeline entry points and nesting
- *   pipelines deadlocks.
+ *   through a public elimination mutation API.
  *
  * ELIMINATION REVERSAL:
  *   When removeMatch succeeds and the removed match was completed,
  *   reverseMatchEliminations runs BEFORE the match is spliced out.
  *   It removes eliminations whose provenance is this match, on both
- *   sides. Standalone eliminations are not touched. Legacy elimination
- *   records without fromMatchId are not touched by per-match reversal
- *   (they predate the cascade and have no provenance to match against).
+ *   sides. Standalone eliminations are not touched.
+ *
+ * TRANSACTION VALIDATION:
+ *   Pre-flight validation is for UX. Pipeline validation is for
+ *   correctness. Every mutation re-validates its invariants against
+ *   the transaction snapshot; no business-critical condition exists
+ *   only in the preflight phase.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TournamentConstants
  *   - window.TournamentSchema
- *   - window.TournamentLifecycle
  *   - window.TournamentRules
  *   - window.TournamentQueries
  *   - window.TournamentEliminationCascade
+ *   - window.CalendarValidation
  *   - window.MutationPipeline
  *   - window.ObjectUtils
- *   - window.IdUtils
  */
 
 (function() {
@@ -111,13 +117,12 @@
 
     var Constants = window.TournamentConstants;
     var Schema = window.TournamentSchema;
-    var Lifecycle = window.TournamentLifecycle;
     var Rules = window.TournamentRules;
     var Queries = window.TournamentQueries;
     var EliminationCascade = window.TournamentEliminationCascade;
+    var CalendarValidation = window.CalendarValidation;
     var MutationPipeline = window.MutationPipeline;
     var ObjectUtils = window.ObjectUtils;
-    var IdUtils = window.IdUtils;
 
     var _missing = [];
 
@@ -125,8 +130,14 @@
     if (!Schema || typeof Schema.findRoundById !== 'function') {
         _missing.push('TournamentSchema.findRoundById');
     }
-    if (!Schema || typeof Schema.findMatchById !== 'function') {
-        _missing.push('TournamentSchema.findMatchById');
+    if (!Schema || typeof Schema.findRoundByIdInternal !== 'function') {
+        _missing.push('TournamentSchema.findRoundByIdInternal');
+    }
+    if (!Schema || typeof Schema.findMatchByIdInternal !== 'function') {
+        _missing.push('TournamentSchema.findMatchByIdInternal');
+    }
+    if (!Schema || typeof Schema.findMatchIndexById !== 'function') {
+        _missing.push('TournamentSchema.findMatchIndexById');
     }
     if (!Schema || typeof Schema.generateRoundId !== 'function') {
         _missing.push('TournamentSchema.generateRoundId');
@@ -140,13 +151,21 @@
     if (!Schema || typeof Schema.isValidMatchType !== 'function') {
         _missing.push('TournamentSchema.isValidMatchType');
     }
+    if (!Schema || typeof Schema.isValidMatchStatus !== 'function') {
+        _missing.push('TournamentSchema.isValidMatchStatus');
+    }
+    if (!Schema || typeof Schema.normaliseId !== 'function') {
+        _missing.push('TournamentSchema.normaliseId');
+    }
     if (!Schema || typeof Schema.normalisePairings !== 'function') {
         _missing.push('TournamentSchema.normalisePairings');
     }
     if (!Schema || typeof Schema.isValidResult !== 'function') {
         _missing.push('TournamentSchema.isValidResult');
     }
-    if (!Lifecycle) { _missing.push('TournamentLifecycle'); }
+    if (!Schema || typeof Schema.isParticipantEliminated !== 'function') {
+        _missing.push('TournamentSchema.isParticipantEliminated');
+    }
     if (!Rules) { _missing.push('TournamentRules'); }
     if (!Queries) { _missing.push('TournamentQueries'); }
     if (!EliminationCascade ||
@@ -155,7 +174,13 @@
     }
     if (!EliminationCascade ||
         typeof EliminationCascade.reverseMatchEliminations !== 'function') {
-        _missing.push('TournamentEliminationCascade.reverseMatchEliminations');
+        _missing.push(
+            'TournamentEliminationCascade.reverseMatchEliminations'
+        );
+    }
+    if (!CalendarValidation ||
+        typeof CalendarValidation.parseWeek !== 'function') {
+        _missing.push('CalendarValidation.parseWeek');
     }
     if (!MutationPipeline ||
         typeof MutationPipeline.performMutation !== 'function') {
@@ -163,9 +188,6 @@
     }
     if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
         _missing.push('ObjectUtils.deepClone');
-    }
-    if (!IdUtils || typeof IdUtils.generateId !== 'function') {
-        _missing.push('IdUtils.generateId');
     }
 
     if (_missing.length > 0) {
@@ -197,8 +219,12 @@
 
     function deepClone(value) {
         var result = ObjectUtils.deepClone(value);
-        if (result === value && value !== null && typeof value === 'object') {
-            throw new Error('[TournamentMatches] deepClone aliased the input.');
+        if (result === value &&
+            value !== null &&
+            typeof value === 'object') {
+            throw new Error(
+                '[TournamentMatches] deepClone aliased the input.'
+            );
         }
         return result;
     }
@@ -209,13 +235,6 @@
 
     function success(data) {
         return { success: true, data: data };
-    }
-
-    function getCanonicalParticipantType(mode) {
-        if (Schema && typeof Schema.getCanonicalParticipantType === 'function') {
-            return Schema.getCanonicalParticipantType(mode);
-        }
-        return mode === 'teams' ? 'team' : 'character';
     }
 
     function isValidResult(value) {
@@ -248,31 +267,52 @@
     function findRoundInSnapshot(appData, tournamentId, roundId) {
         var tournament = findTournamentInSnapshot(appData, tournamentId);
         if (!tournament) { return null; }
-        return Schema.findRoundById(tournament, roundId);
+        return Schema.findRoundByIdInternal(tournament, roundId);
     }
 
     // ============================================================
     // ELIGIBILITY
     // ============================================================
 
+    /**
+     * Is the participant eligible for a NEW match in this tournament?
+     *
+     * Checks:
+     *   - participant is in the tournament
+     *   - participant is not eliminated
+     *   - participant has no 'fail' result in any completed match
+     *
+     * For team_vs_team matches, only teamResults are consulted for the
+     * participant (which is a team). Individual results concern
+     * characters, who are not the participants of a team match.
+     */
     function isEligibleForNewMatch(tournamentId, participantId) {
         if (!participantId) { return false; }
 
-        if (!Queries.isParticipantInTournament(tournamentId, participantId)) {
+        if (!Queries.isParticipantInTournament(
+            tournamentId,
+            participantId
+        )) {
             return false;
         }
 
-        if (Queries.isParticipantEliminated(tournamentId, participantId)) {
+        if (Queries.isParticipantEliminated(
+            tournamentId,
+            participantId
+        )) {
             return false;
         }
 
-        var rounds = Queries.getRounds(tournamentId);
-        for (var r = 0; r < rounds.length; r++) {
-            var matches = rounds[r] && Array.isArray(rounds[r].matches)
-                ? rounds[r].matches
-                : [];
-            for (var m = 0; m < matches.length; m++) {
-                var match = matches[m];
+        var tournament = Queries.getTournament(tournamentId);
+        if (!tournament || !Array.isArray(tournament.rounds)) {
+            return true;
+        }
+
+        for (var r = 0; r < tournament.rounds.length; r++) {
+            var round = tournament.rounds[r];
+            if (!round || !Array.isArray(round.matches)) { continue; }
+            for (var m = 0; m < round.matches.length; m++) {
+                var match = round.matches[m];
                 if (!match || match.status !== 'completed') { continue; }
 
                 if (match.type === 'team_vs_team') {
@@ -309,32 +349,51 @@
     }
 
     // ============================================================
-    // VALIDATION - Match participants
+    // MATCH PARTICIPANT VALIDATION - PREFLIGHT (query-based)
     // ============================================================
 
-    function validateMatchParticipants(tournamentId, participantIds) {
+    /**
+     * Validate match participants against the LIVE tournament store.
+     *
+     * This is PREFLIGHT validation for UX. It is not authoritative;
+     * the pipeline's validate callback re-checks the same invariants
+     * against the transaction snapshot.
+     */
+    function validateMatchParticipantsPreflight(
+        tournamentId,
+        participantIds
+    ) {
         if (!Array.isArray(participantIds) || participantIds.length < 2) {
-            return { valid: false, message: 'At least 2 participants required.' };
+            return {
+                valid: false,
+                message: 'At least 2 participants required.'
+            };
         }
 
-        var seen = {};
+        var seen = Object.create(null);
         var tournament = Queries.getTournament(tournamentId);
         if (!tournament) {
             return { valid: false, message: 'Tournament not found.' };
         }
 
-        var expectedType = getCanonicalParticipantType(tournament.mode);
+        var expectedType = Schema.getCanonicalParticipantType(
+            tournament.mode
+        );
 
         for (var i = 0; i < participantIds.length; i++) {
             var id = normaliseId(participantIds[i]);
             if (id === null) {
                 return {
                     valid: false,
-                    message: 'Invalid participant ID: ' + participantIds[i]
+                    message:
+                        'Invalid participant ID: ' + participantIds[i]
                 };
             }
             if (seen[id]) {
-                return { valid: false, message: 'Duplicate participant: ' + id };
+                return {
+                    valid: false,
+                    message: 'Duplicate participant: ' + id
+                };
             }
             seen[id] = true;
 
@@ -369,7 +428,85 @@
     }
 
     // ============================================================
-    // VALIDATION - Result maps
+    // MATCH PARTICIPANT VALIDATION - SNAPSHOT (authoritative)
+    // ============================================================
+
+    /**
+     * Validate match participants against a transaction snapshot.
+     *
+     * This is the AUTHORITATIVE check. It runs inside the pipeline
+     * validate callback and sees the same state the mutation will.
+     */
+    function validateMatchParticipantsInSnapshot(
+        appData,
+        tournamentId,
+        participantIds
+    ) {
+        if (!Array.isArray(participantIds) || participantIds.length < 2) {
+            return {
+                valid: false,
+                message: 'At least 2 participants required.'
+            };
+        }
+
+        var tournament = findTournamentInSnapshot(appData, tournamentId);
+        if (!tournament) {
+            return { valid: false, message: 'Tournament no longer exists.' };
+        }
+
+        var expectedType = Schema.getCanonicalParticipantType(
+            tournament.mode
+        );
+
+        var participantIds_set = Object.create(null);
+        for (var p = 0; p < tournament.participants.length; p++) {
+            var tp = tournament.participants[p];
+            if (tp && isNonEmptyString(tp.id)) {
+                participantIds_set[String(tp.id)] = true;
+            }
+        }
+
+        var seen = Object.create(null);
+
+        for (var i = 0; i < participantIds.length; i++) {
+            var id = normaliseId(participantIds[i]);
+            if (id === null) { return { valid: false, message: 'Invalid participant ID.' }; }
+            if (seen[id]) { return { valid: false, message: 'Duplicate participant.' }; }
+            seen[id] = true;
+
+            if (!participantIds_set[id]) {
+                return {
+                    valid: false,
+                    message: 'Participant ' + id +
+                        ' is no longer in the tournament.'
+                };
+            }
+
+            if (Schema.isParticipantEliminated(tournament, id)) {
+                return {
+                    valid: false,
+                    message: 'Participant ' + id +
+                        ' has been eliminated.'
+                };
+            }
+
+            var actualType = Schema.getParticipantTypeFromRecord(
+                tournament,
+                id
+            );
+            if (actualType !== expectedType) {
+                return {
+                    valid: false,
+                    message: 'Participant type mismatch for ' + id + '.'
+                };
+            }
+        }
+
+        return { valid: true };
+    }
+
+    // ============================================================
+    // RESULT-MAP VALIDATION
     // ============================================================
     //
     // `participants` is optional. When it is an array, each result
@@ -396,7 +533,10 @@
             var key = keys[i];
             var id = normaliseId(key);
             if (id === null) {
-                return { valid: false, message: 'Invalid result key: ' + key };
+                return {
+                    valid: false,
+                    message: 'Invalid result key: ' + key
+                };
             }
             if (Array.isArray(participants) &&
                 participants.indexOf(id) === -1) {
@@ -449,10 +589,7 @@
             id: id,
             participants: matchParticipants,
             type: matchType,
-            status: 'pending',
-            winner: null,
-            loser: null,
-            advancing: []
+            status: 'pending'
         };
 
         if (matchType === 'group_exam') {
@@ -469,7 +606,7 @@
         return result;
     }
 
-    function buildRound(roundData, participants) {
+    function buildRound(roundData) {
         roundData = roundData || {};
         var matchSize = roundData.matchSize || 2;
         var matchType = roundData.matchType || 'group_exam';
@@ -493,6 +630,10 @@
 
         return round;
     }
+
+    // ============================================================
+    // BUILD PROPOSED MATCH
+    // ============================================================
 
     function buildProposedMatch(base, updates, tournament, round, options) {
         options = options || {};
@@ -522,25 +663,35 @@
 
         var proposedType = updates.type !== undefined
             ? updates.type
-            : (base.type || round.matchType || 'group_exam');
+            : base.type;
+
+        if (!Schema.isValidMatchType(proposedType)) {
+            return null;
+        }
 
         if (updates.type !== undefined && updates.type !== base.type) {
             if (!isTypeChangeAllowed(base)) {
                 return null;
             }
-            var validTypes = Constants.VALID_MATCH_TYPES;
-            if (validTypes.indexOf(proposedType) === -1) {
-                return null;
-            }
+        }
+
+        // Match type must agree with the round's declared match type.
+        if (round && round.matchType && proposedType !== round.matchType) {
+            return null;
         }
 
         normalisedUpdates.type = proposedType;
 
-        var currentStatus = base.status || 'pending';
+        var currentStatus = base.status;
+        if (!Schema.isValidMatchStatus(currentStatus)) {
+            // A persisted match with an invalid status is malformed.
+            // We do not silently repair to 'pending'.
+            return null;
+        }
+
         if (updates.status !== undefined &&
             updates.status !== currentStatus) {
-            var validStatuses = ['pending', 'in_progress', 'completed'];
-            if (validStatuses.indexOf(updates.status) === -1) {
+            if (!Schema.isValidMatchStatus(updates.status)) {
                 return null;
             }
             if (updates.status === 'completed' &&
@@ -601,9 +752,10 @@
         }
 
         if (updates.pairings !== undefined) {
-            var isPairExamFinal = normalisedUpdates.isPairExam !== undefined
-                ? normalisedUpdates.isPairExam
-                : (base.isPairExam === true);
+            var isPairExamFinal =
+                normalisedUpdates.isPairExam !== undefined
+                    ? normalisedUpdates.isPairExam
+                    : (base.isPairExam === true);
             if (proposedType !== 'group_exam' || !isPairExamFinal) {
                 return null;
             }
@@ -622,10 +774,7 @@
             type: normalisedUpdates.type,
             status: normalisedUpdates.status !== undefined
                 ? normalisedUpdates.status
-                : (base.status !== undefined ? base.status : 'pending'),
-            winner: null,
-            loser: null,
-            advancing: []
+                : currentStatus
         };
 
         var isPairExam = normalisedUpdates.isPairExam !== undefined
@@ -665,7 +814,9 @@
         }
 
         if (matchSizeApplies(proposed.type)) {
-            var matchSize = round && round.matchSize ? round.matchSize : 2;
+            var matchSize = round && round.matchSize
+                ? round.matchSize
+                : 2;
             if (proposed.participants.length > 0 &&
                 proposed.participants.length !== matchSize) {
                 return null;
@@ -698,11 +849,6 @@
             }
         }
 
-        if (Schema &&
-            typeof Schema.deriveAdvancing === 'function') {
-            proposed.advancing = Schema.deriveAdvancing(proposed);
-        }
-
         return proposed;
     }
 
@@ -720,7 +866,10 @@
         }
 
         if (matchId) {
-            var existingMatch = Schema.findMatchById(round, matchId);
+            var existingMatch = Schema.findMatchByIdInternal(
+                round,
+                matchId
+            );
             if (existingMatch && existingMatch.status === 'completed') {
                 errors.push('Cannot modify a completed match.');
                 return { valid: false, errors: errors };
@@ -768,14 +917,13 @@
             Object.keys(base.individualResults).length > 0) {
             return false;
         }
-        if (base.winner) { return false; }
         return true;
     }
 
     function normaliseIdArrayStrict(ids) {
         if (!Array.isArray(ids)) { return null; }
         var result = [];
-        var seen = {};
+        var seen = Object.create(null);
         for (var i = 0; i < ids.length; i++) {
             var normalised = normaliseId(ids[i]);
             if (normalised === null) { return null; }
@@ -790,9 +938,9 @@
         if (!results || typeof results !== 'object') {
             return true;
         }
-        var participantIds = participants.map(normaliseId).filter(function(id) {
-            return id !== null;
-        });
+        var participantIds = participants.map(normaliseId).filter(
+            function(id) { return id !== null; }
+        );
         var keys = Object.keys(results);
         for (var i = 0; i < keys.length; i++) {
             var id = normaliseId(keys[i]);
@@ -803,23 +951,45 @@
     }
 
     // ============================================================
-    // ROUND PROMOTION
+    // ROUND STATUS RECONCILIATION
     // ============================================================
+    //
+    // A round's status is DERIVED from its matches. This function is
+    // called after every match mutation so the derived state is
+    // always consistent.
+    //
+    // Rule:
+    //   zero matches             → 'pending'
+    //   all matches completed    → 'completed'
+    //   otherwise                → 'in_progress'
 
-    function promoteRoundIfComplete(round) {
-        if (!round || !Array.isArray(round.matches)) { return false; }
-        if (round.matches.length === 0) { return false; }
-        if (round.status === 'completed') { return false; }
-
-        for (var i = 0; i < round.matches.length; i++) {
-            var m = round.matches[i];
-            if (!m || m.status !== 'completed') {
-                return false;
-            }
+    function reconcileRoundStatus(round) {
+        if (!round || !Array.isArray(round.matches)) {
+            return false;
         }
 
-        round.status = 'completed';
-        return true;
+        var nextStatus;
+
+        if (round.matches.length === 0) {
+            nextStatus = 'pending';
+        } else {
+            var allCompleted = true;
+            for (var i = 0; i < round.matches.length; i++) {
+                var m = round.matches[i];
+                if (!m || m.status !== 'completed') {
+                    allCompleted = false;
+                    break;
+                }
+            }
+            nextStatus = allCompleted ? 'completed' : 'in_progress';
+        }
+
+        if (round.status !== nextStatus) {
+            round.status = nextStatus;
+            return true;
+        }
+
+        return false;
     }
 
     // ============================================================
@@ -869,7 +1039,7 @@
         }
 
         var participants = matchData.participants || [];
-        var validation = validateMatchParticipants(
+        var validation = validateMatchParticipantsPreflight(
             tournamentId,
             participants
         );
@@ -927,10 +1097,27 @@
                     appData, targetTournamentId, targetRoundId
                 );
                 if (!snapshotRound) {
-                    return { valid: false, message: 'Round no longer exists.' };
+                    return {
+                        valid: false,
+                        message: 'Round no longer exists.'
+                    };
                 }
                 if (snapshotRound.status === 'completed') {
-                    return { valid: false, message: 'Round is completed.' };
+                    return {
+                        valid: false,
+                        message: 'Round is completed.'
+                    };
+                }
+                var participantCheck = validateMatchParticipantsInSnapshot(
+                    appData,
+                    targetTournamentId,
+                    matchCopy.participants
+                );
+                if (!participantCheck.valid) {
+                    return {
+                        valid: false,
+                        message: participantCheck.message
+                    };
                 }
                 return { valid: true };
             },
@@ -939,12 +1126,15 @@
                     appData, targetTournamentId, targetRoundId
                 );
                 if (!snapshotRound) {
-                    throw new Error('Round not found in data store.');
+                    throw new Error(
+                        'Round not found in data store.'
+                    );
                 }
                 if (!Array.isArray(snapshotRound.matches)) {
                     snapshotRound.matches = [];
                 }
                 snapshotRound.matches.push(matchCopy);
+                reconcileRoundStatus(snapshotRound);
                 return { match: matchCopy };
             },
             logMessage: 'Added match to round',
@@ -964,9 +1154,12 @@
     //   keyed by (tournamentId, fromMatchId). Standalone eliminations
     //   and legacy eliminations without provenance are not touched.
     //
-    //   The reversal runs inside the same transaction as the removal.
-    //   If persistence fails, both the removal and the reversal roll
-    //   back together.
+    // ROUND STATUS RECONCILIATION:
+    //   After removal, the round's status is reconciled. A round that
+    //   was completed because all matches were completed may now be
+    //   pending or in_progress. This is the fix for the previously
+    //   inconsistent state where removing a match from a completed
+    //   round left the round permanently completed.
 
     function removeMatch(tournamentId, roundId, matchId) {
         if (!isNonEmptyString(roundId) || !isNonEmptyString(matchId)) {
@@ -993,7 +1186,6 @@
         var targetTournamentId = normaliseId(tournamentId);
         var targetRoundId = normaliseId(roundId);
         var targetMatchId = normaliseId(matchId);
-        var matchWasCompleted = match.status === 'completed';
 
         return executeMutation({
             validate: function(appData) {
@@ -1001,10 +1193,19 @@
                     appData, targetTournamentId, targetRoundId
                 );
                 if (!snapshotRound) {
-                    return { valid: false, message: 'Round no longer exists.' };
+                    return {
+                        valid: false,
+                        message: 'Round no longer exists.'
+                    };
                 }
-                if (!Schema.findMatchById(snapshotRound, targetMatchId)) {
-                    return { valid: false, message: 'Match no longer exists.' };
+                if (!Schema.findMatchByIdInternal(
+                    snapshotRound,
+                    targetMatchId
+                )) {
+                    return {
+                        valid: false,
+                        message: 'Match no longer exists.'
+                    };
                 }
                 return { valid: true };
             },
@@ -1013,41 +1214,49 @@
                     appData, targetTournamentId
                 );
                 if (!snapshotTournament) {
-                    throw new Error('Tournament not found in data store.');
+                    throw new Error(
+                        'Tournament not found in data store.'
+                    );
                 }
-                var snapshotRound = Schema.findRoundById(
+                var snapshotRound = Schema.findRoundByIdInternal(
                     snapshotTournament, targetRoundId
                 );
-                if (!snapshotRound || !Array.isArray(snapshotRound.matches)) {
-                    throw new Error('Round not found in data store.');
+                if (!snapshotRound ||
+                    !Array.isArray(snapshotRound.matches)) {
+                    throw new Error(
+                        'Round not found in data store.'
+                    );
                 }
 
-                var idx = -1;
-                for (var i = 0; i < snapshotRound.matches.length; i++) {
-                    if (normaliseId(snapshotRound.matches[i].id) === targetMatchId) {
-                        idx = i;
-                        break;
-                    }
-                }
+                var idx = Schema.findMatchIndexById(
+                    snapshotRound,
+                    targetMatchId
+                );
                 if (idx === -1) {
-                    throw new Error('Match not found in data store.');
+                    throw new Error(
+                        'Match not found in data store.'
+                    );
                 }
 
                 // ---- Reverse eliminations BEFORE splicing the match ----
                 // We check the LIVE match status in the snapshot, not
                 // the pre-flight status, because another mutation may
-                // have completed the match between pre-flight and now.
+                // have completed the match between preflight and now.
                 var liveMatch = snapshotRound.matches[idx];
                 var reversal = { reversed: 0, characterIds: [] };
                 if (liveMatch && liveMatch.status === 'completed') {
-                    reversal = EliminationCascade.reverseMatchEliminations(
-                        appData,
-                        snapshotTournament,
-                        targetMatchId
-                    );
+                    reversal = EliminationCascade
+                        .reverseMatchEliminations(
+                            appData,
+                            snapshotTournament,
+                            targetMatchId
+                        );
                 }
 
                 snapshotRound.matches.splice(idx, 1);
+
+                // ---- Reconcile round status ----
+                reconcileRoundStatus(snapshotRound);
 
                 return {
                     removed: true,
@@ -1142,13 +1351,36 @@
                     appData, targetTournamentId, targetRoundId
                 );
                 if (!snapshotRound) {
-                    return { valid: false, message: 'Round no longer exists.' };
+                    return {
+                        valid: false,
+                        message: 'Round no longer exists.'
+                    };
                 }
                 if (snapshotRound.status === 'completed') {
-                    return { valid: false, message: 'Round is completed.' };
+                    return {
+                        valid: false,
+                        message: 'Round is completed.'
+                    };
                 }
-                if (!Schema.findMatchById(snapshotRound, targetMatchId)) {
-                    return { valid: false, message: 'Match no longer exists.' };
+                if (!Schema.findMatchByIdInternal(
+                    snapshotRound,
+                    targetMatchId
+                )) {
+                    return {
+                        valid: false,
+                        message: 'Match no longer exists.'
+                    };
+                }
+                var participantCheck = validateMatchParticipantsInSnapshot(
+                    appData,
+                    targetTournamentId,
+                    updatedMatch.participants
+                );
+                if (!participantCheck.valid) {
+                    return {
+                        valid: false,
+                        message: participantCheck.message
+                    };
                 }
                 return { valid: true };
             },
@@ -1156,22 +1388,31 @@
                 var snapshotRound = findRoundInSnapshot(
                     appData, targetTournamentId, targetRoundId
                 );
-                if (!snapshotRound || !Array.isArray(snapshotRound.matches)) {
-                    throw new Error('Round not found in data store.');
+                if (!snapshotRound ||
+                    !Array.isArray(snapshotRound.matches)) {
+                    throw new Error(
+                        'Round not found in data store.'
+                    );
                 }
 
-                var idx = -1;
-                for (var i = 0; i < snapshotRound.matches.length; i++) {
-                    if (normaliseId(snapshotRound.matches[i].id) === targetMatchId) {
-                        idx = i;
-                        break;
-                    }
-                }
+                var idx = Schema.findMatchIndexById(
+                    snapshotRound,
+                    targetMatchId
+                );
                 if (idx === -1) {
-                    throw new Error('Match not found in data store.');
+                    throw new Error(
+                        'Match not found in data store.'
+                    );
                 }
 
-                applyMatchUpdate(snapshotRound.matches[idx], updatedMatch);
+                // Replace the entire match object.
+                snapshotRound.matches[idx] = deepClone(updatedMatch);
+
+                // Reconcile round status (the replaced match may have
+                // a different status than the one it replaced, though
+                // updateMatch forbids 'completed' transitions).
+                reconcileRoundStatus(snapshotRound);
+
                 return { match: snapshotRound.matches[idx] };
             },
             logMessage: 'Updated match',
@@ -1229,40 +1470,28 @@
         }
 
         if (match.status === 'completed') {
-            return Promise.resolve(failure('Match is already completed.'));
+            return Promise.resolve(
+                failure('Match is already completed.')
+            );
         }
 
         // ---- Elimination week ----
         // The cascade needs a valid week to write. If the tournament
-        // has no endWeek, we refuse to complete the match rather than
-        // fabricate one. The caller fixes the tournament and retries.
-        var eliminationWeek = Schema.normaliseId(tournament.endWeek);
+        // has no valid endWeek, we refuse to complete the match
+        // rather than fabricate one. The caller fixes the tournament
+        // and retries.
+        var eliminationWeek = CalendarValidation.parseWeek(
+            tournament.endWeek
+        );
         if (eliminationWeek === null) {
-            // Schema.normaliseId won't parse an integer; check directly.
-            var weekNum = parseInt(tournament.endWeek, 10);
-            if (isNaN(weekNum) || weekNum < 1) {
-                return Promise.resolve(failure(
-                    'Tournament has no valid endWeek. ' +
-                    'Cannot determine the elimination week. ' +
-                    'Set the tournament endWeek and retry.'
-                ));
-            }
-            eliminationWeek = weekNum;
-        } else {
-            // normaliseId returned a string; it's not a number. This
-            // shouldn't happen for a well-formed tournament, but we
-            // guard anyway.
-            var parsed = parseInt(eliminationWeek, 10);
-            if (isNaN(parsed) || parsed < 1) {
-                return Promise.resolve(failure(
-                    'Tournament endWeek is malformed. ' +
-                    'Cannot determine the elimination week.'
-                ));
-            }
-            eliminationWeek = parsed;
+            return Promise.resolve(failure(
+                'Tournament has no valid endWeek. ' +
+                'Cannot determine the elimination week. ' +
+                'Set the tournament endWeek and retry.'
+            ));
         }
 
-        var type = match.type || 'group_exam';
+        var type = match.type;
         var updates = { status: 'completed' };
 
         if (type === 'group_exam') {
@@ -1330,39 +1559,13 @@
             }
         }
 
-        if (type === 'standard') {
-            if (!result.winner) {
-                return Promise.resolve(
-                    failure('Winner is required for a standard match.')
-                );
-            }
-            var winnerNormalised = normaliseId(result.winner);
-            var matchParticipants = Array.isArray(match.participants)
-                ? match.participants
-                : [];
-            if (winnerNormalised === null ||
-                matchParticipants.indexOf(winnerNormalised) === -1) {
-                return Promise.resolve(
-                    failure('Winner must be a participant in the match.')
-                );
-            }
-            updates.winner = winnerNormalised;
-        }
-
-        var proposed;
-        if (type === 'standard') {
-            proposed = Object.assign({}, match);
-            proposed.status = 'completed';
-            proposed.winner = updates.winner;
-        } else {
-            proposed = buildProposedMatch(
-                match,
-                updates,
-                tournament,
-                round,
-                { allowCompletion: true }
-            );
-        }
+        var proposed = buildProposedMatch(
+            match,
+            updates,
+            tournament,
+            round,
+            { allowCompletion: true }
+        );
 
         if (!proposed) {
             return Promise.resolve(
@@ -1390,16 +1593,26 @@
                     appData, targetTournamentId, targetRoundId
                 );
                 if (!snapshotRound) {
-                    return { valid: false, message: 'Round no longer exists.' };
+                    return {
+                        valid: false,
+                        message: 'Round no longer exists.'
+                    };
                 }
-                var snapshotMatch = Schema.findMatchById(
-                    snapshotRound, targetMatchId
+                var snapshotMatch = Schema.findMatchByIdInternal(
+                    snapshotRound,
+                    targetMatchId
                 );
                 if (!snapshotMatch) {
-                    return { valid: false, message: 'Match no longer exists.' };
+                    return {
+                        valid: false,
+                        message: 'Match no longer exists.'
+                    };
                 }
                 if (snapshotMatch.status === 'completed') {
-                    return { valid: false, message: 'Match is already completed.' };
+                    return {
+                        valid: false,
+                        message: 'Match is already completed.'
+                    };
                 }
                 return { valid: true };
             },
@@ -1408,32 +1621,36 @@
                     appData, targetTournamentId
                 );
                 if (!snapshotTournament) {
-                    throw new Error('Tournament not found in data store.');
+                    throw new Error(
+                        'Tournament not found in data store.'
+                    );
                 }
-                var snapshotRound = Schema.findRoundById(
+                var snapshotRound = Schema.findRoundByIdInternal(
                     snapshotTournament, targetRoundId
                 );
-                if (!snapshotRound || !Array.isArray(snapshotRound.matches)) {
-                    throw new Error('Round not found in data store.');
+                if (!snapshotRound ||
+                    !Array.isArray(snapshotRound.matches)) {
+                    throw new Error(
+                        'Round not found in data store.'
+                    );
                 }
 
-                var idx = -1;
-                for (var i = 0; i < snapshotRound.matches.length; i++) {
-                    if (normaliseId(snapshotRound.matches[i].id) === targetMatchId) {
-                        idx = i;
-                        break;
-                    }
-                }
+                var idx = Schema.findMatchIndexById(
+                    snapshotRound,
+                    targetMatchId
+                );
                 if (idx === -1) {
-                    throw new Error('Match not found in data store.');
+                    throw new Error(
+                        'Match not found in data store.'
+                    );
                 }
 
-                applyMatchUpdate(snapshotRound.matches[idx], completedMatch);
+                // Replace the entire match object.
+                snapshotRound.matches[idx] = deepClone(completedMatch);
 
                 // ---- Elimination cascade ----
                 // Runs inside this transaction. Failing participants
-                // are eliminated on both sides. See the module header
-                // for the full contract.
+                // are eliminated on both sides.
                 var cascade = EliminationCascade.applyFailEliminations(
                     appData,
                     snapshotTournament,
@@ -1442,22 +1659,12 @@
                     eliminationWeek
                 );
 
-                if (cascade.error) {
-                    // The cascade refuses to write with a bad week. It
-                    // should not have been reachable here because we
-                    // already validated eliminationWeek above, but if
-                    // the snapshot's endWeek differs from the live one
-                    // we surface the error rather than write garbage.
-                    throw new Error(
-                        'Elimination cascade failed: ' + cascade.error
-                    );
-                }
-
-                var promoted = promoteRoundIfComplete(snapshotRound);
+                // ---- Reconcile round status ----
+                var promoted = reconcileRoundStatus(snapshotRound);
 
                 return {
                     match: snapshotRound.matches[idx],
-                    roundPromoted: promoted,
+                    roundReconciled: promoted,
                     eliminationsWritten: cascade.written,
                     eliminationsReplaced: cascade.replaced,
                     eliminatedCharacterIds: cascade.characterIds
@@ -1466,7 +1673,8 @@
             logMessage: function(result) {
                 if (result && result.eliminationsWritten > 0) {
                     return 'Completed match (eliminated ' +
-                        result.eliminationsWritten + ' participant(s))';
+                        result.eliminationsWritten +
+                        ' participant(s))';
                 }
                 return 'Completed match';
             },
@@ -1478,6 +1686,16 @@
     // ============================================================
     // PUBLIC COMMAND - Generate Matches
     // ============================================================
+    //
+    // TRANSACTION SAFETY:
+    //   The eligible pool is computed inside the transaction
+    //   mutate callback, from the snapshot, not from the live store.
+    //   Two rapid calls cannot generate overlapping matches from the
+    //   same pool because each transaction sees the other's writes.
+    //
+    //   The pre-flight phase validates only the round's declared
+    //   configuration (matchSize, isPairExam, matchType). It does not
+    //   compute the pool; that would be wasted work.
 
     function generateMatches(tournamentId, roundId, options) {
         options = options || {};
@@ -1513,78 +1731,6 @@
             matchSize = 2;
         }
 
-        var pool = getEligibleParticipants(tournamentId);
-
-        var alreadyInRound = {};
-        if (Array.isArray(round.matches)) {
-            for (var m = 0; m < round.matches.length; m++) {
-                var existing = round.matches[m];
-                if (existing && Array.isArray(existing.participants)) {
-                    for (var p = 0; p < existing.participants.length; p++) {
-                        var pid = normaliseId(existing.participants[p]);
-                        if (pid !== null) {
-                            alreadyInRound[pid] = true;
-                        }
-                    }
-                }
-            }
-        }
-
-        var eligible = pool.filter(function(id) {
-            return !alreadyInRound[id];
-        });
-
-        if (eligible.length < 2) {
-            return Promise.resolve(failure(
-                'Not enough eligible participants to generate a match ' +
-                '(need at least 2, have ' + eligible.length + ').'
-            ));
-        }
-
-        var partitions;
-        if (isPairExam) {
-            partitions = partitionIntoPairs(eligible);
-        } else {
-            partitions = partitionIntoGroups(eligible, matchSize);
-        }
-
-        if (!partitions || partitions.length === 0) {
-            return Promise.resolve(
-                failure('Could not partition participants.')
-            );
-        }
-
-        var proposedMatches = [];
-        var matchType = round.matchType || 'group_exam';
-        if (isPairExam && matchType !== 'group_exam') {
-            matchType = 'group_exam';
-        }
-
-        for (var i = 0; i < partitions.length; i++) {
-            var group = partitions[i];
-            var base = buildMatch([], {
-                matchType: matchType,
-                isPairExam: isPairExam
-            });
-            var updates = {
-                participants: group,
-                type: matchType
-            };
-            if (isPairExam) {
-                updates.isPairExam = true;
-                updates.pairings = [group.slice()];
-            }
-            var proposed = buildProposedMatch(
-                base, updates, tournament, round
-            );
-            if (!proposed) {
-                return Promise.resolve(failure(
-                    'Failed to build match for group ' + (i + 1) + '.'
-                ));
-            }
-            proposedMatches.push(proposed);
-        }
-
         var targetTournamentId = normaliseId(tournamentId);
         var targetRoundId = normaliseId(roundId);
 
@@ -1594,32 +1740,150 @@
                     appData, targetTournamentId, targetRoundId
                 );
                 if (!snapshotRound) {
-                    return { valid: false, message: 'Round no longer exists.' };
+                    return {
+                        valid: false,
+                        message: 'Round no longer exists.'
+                    };
                 }
                 if (snapshotRound.status === 'completed') {
-                    return { valid: false, message: 'Round is completed.' };
+                    return {
+                        valid: false,
+                        message: 'Round is completed.'
+                    };
                 }
                 return { valid: true };
             },
             mutate: function(appData) {
-                var snapshotRound = findRoundInSnapshot(
-                    appData, targetTournamentId, targetRoundId
+                var snapshotTournament = findTournamentInSnapshot(
+                    appData, targetTournamentId
                 );
-                if (!snapshotRound) {
-                    throw new Error('Round not found in data store.');
+                if (!snapshotTournament) {
+                    throw new Error(
+                        'Tournament not found in data store.'
+                    );
                 }
-                if (!Array.isArray(snapshotRound.matches)) {
-                    snapshotRound.matches = [];
+                var snapshotRound = Schema.findRoundByIdInternal(
+                    snapshotTournament, targetRoundId
+                );
+                if (!snapshotRound ||
+                    !Array.isArray(snapshotRound.matches)) {
+                    throw new Error(
+                        'Round not found in data store.'
+                    );
                 }
+
+                // ---- Build the eligible pool from the snapshot ----
+                var pool = [];
+                if (Array.isArray(snapshotTournament.participants)) {
+                    for (var p = 0;
+                         p < snapshotTournament.participants.length;
+                         p++) {
+                        var participant =
+                            snapshotTournament.participants[p];
+                        if (!participant || !participant.id) { continue; }
+                        if (Schema.isParticipantEliminated(
+                            snapshotTournament,
+                            participant.id
+                        )) {
+                            continue;
+                        }
+                        pool.push(String(participant.id));
+                    }
+                }
+
+                // ---- Exclude participants already in this round ----
+                var alreadyInRound = Object.create(null);
+                for (var m = 0; m < snapshotRound.matches.length; m++) {
+                    var existing = snapshotRound.matches[m];
+                    if (!existing ||
+                        !Array.isArray(existing.participants)) {
+                        continue;
+                    }
+                    for (var pi = 0;
+                         pi < existing.participants.length;
+                         pi++) {
+                        var pid = normaliseId(
+                            existing.participants[pi]
+                        );
+                        if (pid !== null) {
+                            alreadyInRound[pid] = true;
+                        }
+                    }
+                }
+
+                var eligible = pool.filter(function(id) {
+                    return !alreadyInRound[id];
+                });
+
+                if (eligible.length < 2) {
+                    throw new Error(
+                        'Not enough eligible participants to generate ' +
+                        'a match (need at least 2, have ' +
+                        eligible.length + ').'
+                    );
+                }
+
+                // ---- Partition ----
+                var partitions;
+                if (isPairExam) {
+                    partitions = partitionIntoPairs(eligible);
+                } else {
+                    partitions = partitionIntoGroups(
+                        eligible,
+                        matchSize
+                    );
+                }
+
+                if (!partitions || partitions.length === 0) {
+                    throw new Error(
+                        'Could not partition participants.'
+                    );
+                }
+
+                // ---- Build matches against the snapshot ----
+                var matchType = snapshotRound.matchType || 'group_exam';
+                if (isPairExam && matchType !== 'group_exam') {
+                    matchType = 'group_exam';
+                }
+
                 var created = [];
-                for (var k = 0; k < proposedMatches.length; k++) {
-                    var copy = deepClone(proposedMatches[k]);
+
+                for (var g = 0; g < partitions.length; g++) {
+                    var group = partitions[g];
+                    var base = buildMatch([], {
+                        matchType: matchType,
+                        isPairExam: isPairExam
+                    });
+                    var updates = {
+                        participants: group,
+                        type: matchType
+                    };
+                    if (isPairExam) {
+                        updates.isPairExam = true;
+                        updates.pairings = [group.slice()];
+                    }
+                    var proposed = buildProposedMatch(
+                        base, updates, snapshotTournament, snapshotRound
+                    );
+                    if (!proposed) {
+                        throw new Error(
+                            'Failed to build match for group ' +
+                            (g + 1) + '.'
+                        );
+                    }
+                    var copy = deepClone(proposed);
                     snapshotRound.matches.push(copy);
                     created.push(copy);
                 }
-                return { createdCount: created.length, matches: created };
+
+                reconcileRoundStatus(snapshotRound);
+
+                return {
+                    createdCount: created.length,
+                    matches: created
+                };
             },
-            logMessage: 'Generated ' + proposedMatches.length + ' match(es)',
+            logMessage: 'Generated matches',
             successMessage: 'Matches generated successfully.',
             failureMessage: 'Failed to generate matches.'
         });
@@ -1684,34 +1948,6 @@
     }
 
     // ============================================================
-    // INTERNAL HELPERS
-    // ============================================================
-
-    function applyMatchUpdate(target, updated) {
-        var keys = [
-            'participants',
-            'type',
-            'status',
-            'winner',
-            'loser',
-            'advancing',
-            'results',
-            'isPairExam',
-            'pairings',
-            'teamResults',
-            'individualResults'
-        ];
-        for (var i = 0; i < keys.length; i++) {
-            var key = keys[i];
-            if (updated[key] !== undefined) {
-                target[key] = updated[key];
-            } else {
-                delete target[key];
-            }
-        }
-    }
-
-    // ============================================================
     // READ HELPERS - Delegated to Queries
     // ============================================================
 
@@ -1754,7 +1990,8 @@
         buildProposedMatch: buildProposedMatch,
 
         validateProposedMatch: validateProposedMatch,
-        validateMatchParticipants: validateMatchParticipants,
+        validateMatchParticipantsPreflight: validateMatchParticipantsPreflight,
+        validateMatchParticipantsInSnapshot: validateMatchParticipantsInSnapshot,
         validateResultMap: validateResultMap,
         isTypeChangeAllowed: isTypeChangeAllowed,
         matchSizeApplies: matchSizeApplies,
@@ -1762,12 +1999,60 @@
         partitionIntoGroups: partitionIntoGroups,
         partitionIntoPairs: partitionIntoPairs,
 
-        promoteRoundIfComplete: promoteRoundIfComplete,
+        reconcileRoundStatus: reconcileRoundStatus,
 
         getRoundMatches: getRoundMatches,
         getMatch: getMatchWrapper,
         isMatchComplete: isMatchComplete,
         getMatchAdvancing: getMatchAdvancing
     };
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.TournamentMatches;
+        var missing = [];
+
+        var required = [
+            'createMatch',
+            'removeMatch',
+            'updateMatch',
+            'completeMatch',
+            'generateMatches',
+            'isEligibleForNewMatch',
+            'getEligibleParticipants',
+            'buildMatch',
+            'buildRound',
+            'buildProposedMatch',
+            'validateProposedMatch',
+            'validateMatchParticipantsPreflight',
+            'validateMatchParticipantsInSnapshot',
+            'validateResultMap',
+            'isTypeChangeAllowed',
+            'matchSizeApplies',
+            'partitionIntoGroups',
+            'partitionIntoPairs',
+            'reconcileRoundStatus',
+            'getRoundMatches',
+            'getMatch',
+            'isMatchComplete',
+            'getMatchAdvancing'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        if (missing.length > 0) {
+            console.warn(
+                '[TournamentMatches] Verification - some exports may be ' +
+                'missing:', missing.join(', ')
+            );
+        }
+    })();
 
 })();
