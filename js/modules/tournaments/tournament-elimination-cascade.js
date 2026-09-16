@@ -1,12 +1,13 @@
 /**
  * modules/tournaments/tournament-elimination-cascade.js
- * Elimination Cascade
+ * Tournament Elimination Cascade
  *
  * Path: js/modules/tournaments/tournament-elimination-cascade.js
  *
  * PURPOSE:
- *   Pure helpers that write and reverse elimination records on the
- *   tournament and character sides, given an appData snapshot.
+ *   Transaction-local mutation helpers that synchronise elimination
+ *   records on the tournament side and the character side, given an
+ *   appData snapshot.
  *
  * WHY THIS MODULE EXISTS:
  *   When a match completes and a participant's result is 'fail',
@@ -16,117 +17,158 @@
  *     - character.eliminations[]    (the character's historical view)
  *
  *   Those writes must happen INSIDE the same pipeline transaction
- *   that completes the match. They cannot go through
- *   CharacterEliminations or TournamentEliminationWorkflow, because
- *   both of those are themselves pipeline entry points, and nesting
+ *   that completes the match. They cannot go through a public
+ *   mutation API (like a hypothetical CharacterEliminations.add())
+ *   because that would itself enter the pipeline, and nesting
  *   pipelines deadlocks or corrupts the transaction.
  *
- *   This module is the pure alternative. It receives an appData
- *   snapshot, mutates it in place, and returns counts. It never
- *   enters the pipeline. It is designed to run inside
- *   TournamentMatches.completeMatch's mutate callback, and inside
- *   the reversal paths in removeMatch / removeRound /
- *   deleteTournament.
+ *   This module is the transaction-local alternative. It receives an
+ *   appData snapshot, mutates it in place, and returns counts. It
+ *   NEVER enters the pipeline.
+ *
+ * NOMENCLATURE:
+ *   These functions are NOT pure in the functional-programming sense:
+ *   they mutate appData in place. They are TRANSACTION-LOCAL MUTATION
+ *   HELPERS. The distinction matters: "pure" would imply no side
+ *   effects, and that is not what these functions do.
+ *
+ *   What they DO guarantee:
+ *     - They never touch window.data.
+ *     - They never enter the pipeline.
+ *     - They never call saveData().
+ *     - They operate only on the appData they are given.
+ *     - They throw on contract violations (see below), so a broken
+ *       caller fails the enclosing transaction loudly.
+ *
+ * PUBLIC OPERATIONS:
+ *   applyFailEliminations(appData, tournament, match, round, week)
+ *     Write eliminations for failing participants of a completed
+ *     match.
+ *
+ *   reverseMatchEliminations(appData, tournament, matchId)
+ *     Remove eliminations whose provenance is a specific match.
+ *
+ *   reverseRoundEliminations(appData, tournament, roundId)
+ *     Remove eliminations whose provenance is a specific round.
+ *
+ *   reverseTournamentEliminations(appData, tournamentId)
+ *     Remove every non-standalone character-side elimination keyed
+ *     to a tournament. Used when the tournament itself is being
+ *     destroyed.
+ *
+ *   restoreCharacterElimination(appData, tournamentId, characterId)
+ *     Manual override. Remove the elimination record for a
+ *     (tournamentId, characterId) pair, regardless of provenance.
+ *     This is the user-initiated "Restore" action.
  *
  * PROVENANCE:
- *   Every elimination written by the cascade carries:
+ *   Every elimination written by applyFailEliminations carries:
  *     fromRoundId   the round the match belongs to
  *     fromMatchId   the match that produced the failure
- *   on both the tournament-side and character-side records.
+ *   on BOTH the tournament-side and character-side records.
  *
- *   This is what makes reversal possible. Without provenance, you
- *   cannot tell which elimination belongs to which match, and
- *   removing one match would force you to reverse every elimination
- *   in the tournament.
+ *   This is what makes per-match and per-round reversal possible.
+ *   Without provenance, removing one match would force reversing
+ *   every elimination in the tournament.
  *
- *   Legacy elimination records without provenance are not touched by
- *   per-match or per-round reversal. They are only reversed by
- *   deleteTournament's tournament-wide reversal, or by the manual
- *   restore path in TournamentEliminationWorkflow.
+ *   Legacy elimination records without provenance:
+ *     - Are NOT touched by reverseMatchEliminations.
+ *     - Are NOT touched by reverseRoundEliminations.
+ *     - ARE touched by reverseTournamentEliminations (which is
+ *       provenance-agnostic).
+ *     - ARE touched by restoreCharacterElimination (which is
+ *       provenance-agnostic).
  *
  * LAST-WINS SEMANTICS:
- *   If a character is somehow eliminated twice within the same
- *   tournament (a second chance, then a second failure), the newer
- *   elimination REPLACES the older one. The story is: the first
- *   elimination was reversed to grant a second chance, then the
- *   character failed again. The code does not preserve the
- *   intermediate reversal as a separate record — the tournament
- *   keeps one elimination per (characterId, tournamentId).
+ *   The tournament keeps ONE elimination per (characterId,
+ *   tournamentId). If a character fails twice in one tournament
+ *   (e.g. after a manual restore and a second failure), the newer
+ *   elimination REPLACES the older one on both sides.
  *
- *   "Replace" here means: remove any existing elimination for
- *   (characterId, tournamentId) on both sides, then write the new
- *   one. The result is one record per (characterId, tournamentId).
+ *   Consequence: reverseMatchEliminations on the older match finds
+ *   nothing to reverse, because the older elimination's provenance
+ *   is gone. That is consistent with the "current elimination
+ *   state" model. It does NOT preserve the history of the first
+ *   elimination as a separate event.
  *
- * IDEMPOTENCE:
- *   applyFailEliminations is idempotent on participants whose result
- *   is 'fail' and who already have an elimination for this
- *   tournament. The result is the same elimination, rewritten.
+ *   If a historical-event model is ever adopted, this module is the
+ *   single place that changes.
  *
  * TEAM MATCH SEMANTICS:
  *   For 'team_vs_team' matches, ONLY individualResults[charId] ===
  *   'fail' triggers an elimination. teamResults[] never eliminates
- *   anyone directly. A team can fail a match while every individual
- *   member passes; no one is eliminated. A team can pass while an
- *   individual member fails; only that member is eliminated.
+ *   anyone directly. A team can fail while every member passes; a
+ *   team can pass while a member fails.
  *
- * LEGACY MATCH TYPES:
- *   'standard' is not handled. It has no results map and is not
- *   produced by the current match-generation code.
+ * IDEMPOTENCE:
+ *   applyFailEliminations is idempotent for a given match: calling
+ *   it twice with the same inputs produces the same state on both
+ *   sides.
  *
- * WEEK SEMANTICS:
- *   The elimination week is the TOURNAMENT'S endWeek, not the
- *   match's week and not the current UI week. The contract is:
- *   elimination happens at the end of the tournament, and the
- *   character is ineligible starting the following week.
+ * CONTRACT ON INVALID INPUT:
+ *   Invalid invocation (missing appData, missing tournament, missing
+ *   match, missing round, invalid week) THROWS. That is deliberate:
+ *   these are internal transaction helpers, and a broken caller
+ *   should fail the enclosing transaction, not silently return an
+ *   empty result that the caller will ignore.
  *
- *   EliminationQueries.isCharacterEliminatedByWeek(char, N) uses a
- *   strictly-less-than boundary: it returns true only when
- *   elimWeek < N. A character eliminated at week 14 is therefore
- *   eligible in week 14 and ineligible from week 15 onward. That is
- *   exactly the intended behaviour.
+ *   Normal domain outcomes (no failures to apply, no eliminations to
+ *   reverse) return a result with zero counts. Those are not errors.
  *
- * REASON STRING:
- *   'Eliminated on week ' + week
- *   where week is the tournament's endWeek.
+ * RESULT SHAPE:
+ *   Every operation returns a summary:
+ *     {
+ *       written:  N,   // records written (apply only)
+ *       replaced: N,   // records replaced by last-wins (apply only)
+ *       reversed: N,   // elimination records removed (reverse/restore)
+ *       characterIds: [ ... ],  // characters touched
+ *     }
+ *
+ *   `reversed` counts RECORDS removed, not characters touched.
+ *   `characterIds` is the list of characters whose records changed.
+ *   The two can diverge only if a malformed character had two
+ *   matching elimination records; the invariant is one per
+ *   (characterId, tournamentId).
  *
  * DEPENDENCIES (MANDATORY):
- *   - window.IdUtils (for generating elimination record IDs)
- *   - window.CalendarValidation (for rebuilding eliminatedWeeks[] strictly)
+ *   - window.IdUtils            (elimination record IDs on the
+ *                                character side)
+ *   - window.CalendarValidation (rebuilding eliminatedWeeks[] and
+ *                                validating the elimination week)
  *
  * DEPENDENCIES (OPTIONAL):
- *   - window.ObjectUtils (for deepClone, if a caller needs one; not
- *     used internally)
+ *   - window.ObjectUtils        (not used internally; reserved for
+ *                                callers if needed)
  *
  * USAGE:
  *   // Inside TournamentMatches.completeMatch's mutate callback:
  *   var cascade = TournamentEliminationCascade.applyFailEliminations(
- *       appData,
- *       tournament,
- *       completedMatch,
- *       round,
- *       tournament.endWeek
+ *       appData, tournament, match, round, tournament.endWeek
  *   );
  *
- *   // Inside removeMatch's mutate callback:
- *   var cascade = TournamentEliminationCascade.reverseMatchEliminations(
- *       appData,
- *       tournament,
- *       matchId
- *   );
+ *   // Inside TournamentMatches.removeMatch's mutate callback:
+ *   var reversal =
+ *       TournamentEliminationCascade.reverseMatchEliminations(
+ *           appData, tournament, matchId
+ *       );
  *
- *   // Inside removeRound's mutate callback:
- *   var cascade = TournamentEliminationCascade.reverseRoundEliminations(
- *       appData,
- *       tournament,
- *       roundId
- *   );
+ *   // Inside TournamentCore.removeRound's mutate callback:
+ *   var reversal =
+ *       TournamentEliminationCascade.reverseRoundEliminations(
+ *           appData, tournament, roundId
+ *       );
  *
- *   // Inside deleteTournament's mutate callback, BEFORE the tournament
- *   // record is spliced out:
- *   var cascade = TournamentEliminationCascade.reverseTournamentEliminations(
- *       appData,
- *       tournamentId
- *   );
+ *   // Inside TournamentCore.deleteTournament's mutate callback:
+ *   var reversal =
+ *       TournamentEliminationCascade.reverseTournamentEliminations(
+ *           appData, tournamentId
+ *       );
+ *
+ *   // Manual restore, from a UI event handler:
+ *   var restore =
+ *       TournamentEliminationCascade.restoreCharacterElimination(
+ *           appData, tournamentId, characterId
+ *       );
  */
 
 (function() {
@@ -137,7 +179,7 @@
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - MANDATORY
+    // MANDATORY DEPENDENCIES
     // ============================================================
 
     var IdUtils = window.IdUtils;
@@ -148,14 +190,15 @@
     if (!IdUtils || typeof IdUtils.generateId !== 'function') {
         _missing.push('IdUtils.generateId');
     }
-    if (!CalendarValidation || typeof CalendarValidation.parseWeek !== 'function') {
+    if (!CalendarValidation ||
+        typeof CalendarValidation.parseWeek !== 'function') {
         _missing.push('CalendarValidation.parseWeek');
     }
 
     if (_missing.length > 0) {
         throw new Error(
-            '[TournamentEliminationCascade] Missing mandatory dependencies: ' +
-            _missing.join(', ')
+            '[TournamentEliminationCascade] Missing mandatory ' +
+            'dependencies: ' + _missing.join(', ')
         );
     }
 
@@ -201,12 +244,14 @@
     }
 
     /**
-     * Ensure character.eliminations[] is an array, and rebuild
-     * character.eliminatedWeeks[] from it.
+     * Rebuild character.eliminatedWeeks[] from character.eliminations[].
      *
      * eliminatedWeeks[] is a derived cache. It is rebuilt here
      * because the cascade is the last writer to touch
-     * character.eliminations[] inside the pipeline transaction.
+     * character.eliminations[] inside the transaction.
+     *
+     * Exposed for testing and for callers that need to rebuild the
+     * cache after their own mutation.
      */
     function rebuildEliminatedWeeks(character) {
         if (!character) {
@@ -235,209 +280,6 @@
         character.eliminatedWeeks.sort(function(a, b) { return a - b; });
     }
 
-    /**
-     * Remove every tournament-side elimination for this tournament
-     * whose provenance is (fromMatchId) matches the given match ID.
-     *
-     * Returns the array of removed records (for logging).
-     */
-    function removeTournamentEliminationsByMatch(tournament, matchId) {
-        var removed = [];
-        if (!tournament || !Array.isArray(tournament.eliminations)) {
-            return removed;
-        }
-        if (!isNonEmptyString(matchId)) {
-            return removed;
-        }
-
-        var target = String(matchId);
-        var kept = [];
-        for (var i = 0; i < tournament.eliminations.length; i++) {
-            var e = tournament.eliminations[i];
-            if (e && isNonEmptyString(e.fromMatchId) &&
-                String(e.fromMatchId) === target) {
-                removed.push(e);
-                continue;
-            }
-            kept.push(e);
-        }
-        tournament.eliminations = kept;
-        return removed;
-    }
-
-    /**
-     * Remove every tournament-side elimination for this tournament
-     * whose provenance is (fromRoundId) matches the given round ID.
-     */
-    function removeTournamentEliminationsByRound(tournament, roundId) {
-        var removed = [];
-        if (!tournament || !Array.isArray(tournament.eliminations)) {
-            return removed;
-        }
-        if (!isNonEmptyString(roundId)) {
-            return removed;
-        }
-
-        var target = String(roundId);
-        var kept = [];
-        for (var i = 0; i < tournament.eliminations.length; i++) {
-            var e = tournament.eliminations[i];
-            if (e && isNonEmptyString(e.fromRoundId) &&
-                String(e.fromRoundId) === target) {
-                removed.push(e);
-                continue;
-            }
-            kept.push(e);
-        }
-        tournament.eliminations = kept;
-        return removed;
-    }
-
-    /**
-     * Remove character-side eliminations whose (tournamentId,
-     * fromMatchId) matches the given pair.
-     */
-    function removeCharacterEliminationsByMatch(appData, tournamentId, matchId) {
-        var removedIds = [];
-        if (!appData || !Array.isArray(appData.characters)) {
-            return removedIds;
-        }
-        if (!isNonEmptyString(tournamentId) || !isNonEmptyString(matchId)) {
-            return removedIds;
-        }
-
-        var targetTournament = String(tournamentId);
-        var targetMatch = String(matchId);
-
-        for (var i = 0; i < appData.characters.length; i++) {
-            var char = appData.characters[i];
-            if (!char || !Array.isArray(char.eliminations)) {
-                continue;
-            }
-
-            var kept = [];
-            var wasTouched = false;
-            for (var j = 0; j < char.eliminations.length; j++) {
-                var e = char.eliminations[j];
-                if (e &&
-                    e.standalone !== true &&
-                    isNonEmptyString(e.tournamentId) &&
-                    isNonEmptyString(e.fromMatchId) &&
-                    String(e.tournamentId) === targetTournament &&
-                    String(e.fromMatchId) === targetMatch) {
-                    wasTouched = true;
-                    continue;
-                }
-                kept.push(e);
-            }
-
-            if (wasTouched) {
-                char.eliminations = kept;
-                rebuildEliminatedWeeks(char);
-                removedIds.push(String(char.id));
-            }
-        }
-
-        return removedIds;
-    }
-
-    /**
-     * Remove character-side eliminations whose (tournamentId,
-     * fromRoundId) matches the given pair.
-     */
-    function removeCharacterEliminationsByRound(appData, tournamentId, roundId) {
-        var removedIds = [];
-        if (!appData || !Array.isArray(appData.characters)) {
-            return removedIds;
-        }
-        if (!isNonEmptyString(tournamentId) || !isNonEmptyString(roundId)) {
-            return removedIds;
-        }
-
-        var targetTournament = String(tournamentId);
-        var targetRound = String(roundId);
-
-        for (var i = 0; i < appData.characters.length; i++) {
-            var char = appData.characters[i];
-            if (!char || !Array.isArray(char.eliminations)) {
-                continue;
-            }
-
-            var kept = [];
-            var wasTouched = false;
-            for (var j = 0; j < char.eliminations.length; j++) {
-                var e = char.eliminations[j];
-                if (e &&
-                    e.standalone !== true &&
-                    isNonEmptyString(e.tournamentId) &&
-                    isNonEmptyString(e.fromRoundId) &&
-                    String(e.tournamentId) === targetTournament &&
-                    String(e.fromRoundId) === targetRound) {
-                    wasTouched = true;
-                    continue;
-                }
-                kept.push(e);
-            }
-
-            if (wasTouched) {
-                char.eliminations = kept;
-                rebuildEliminatedWeeks(char);
-                removedIds.push(String(char.id));
-            }
-        }
-
-        return removedIds;
-    }
-
-    /**
-     * Remove character-side eliminations tied to a tournament, of any
-     * provenance. This is the deleteTournament path: the tournament
-     * is going away, so every non-standalone elimination keyed to it
-     * must go too.
-     *
-     * Standalone eliminations (standalone === true) are not touched.
-     */
-    function removeCharacterEliminationsByTournament(appData, tournamentId) {
-        var removedIds = [];
-        if (!appData || !Array.isArray(appData.characters)) {
-            return removedIds;
-        }
-        if (!isNonEmptyString(tournamentId)) {
-            return removedIds;
-        }
-
-        var target = String(tournamentId);
-
-        for (var i = 0; i < appData.characters.length; i++) {
-            var char = appData.characters[i];
-            if (!char || !Array.isArray(char.eliminations)) {
-                continue;
-            }
-
-            var kept = [];
-            var wasTouched = false;
-            for (var j = 0; j < char.eliminations.length; j++) {
-                var e = char.eliminations[j];
-                if (e &&
-                    e.standalone !== true &&
-                    isNonEmptyString(e.tournamentId) &&
-                    String(e.tournamentId) === target) {
-                    wasTouched = true;
-                    continue;
-                }
-                kept.push(e);
-            }
-
-            if (wasTouched) {
-                char.eliminations = kept;
-                rebuildEliminatedWeeks(char);
-                removedIds.push(String(char.id));
-            }
-        }
-
-        return removedIds;
-    }
-
     // ============================================================
     // FAIL-RESULT EXTRACTION
     // ============================================================
@@ -447,15 +289,15 @@
      * whose result is 'fail'.
      *
      * SEMANTICS:
-     *   - group_exam: results[charId] === 'fail'
+     *   - group_exam:   results[charId] === 'fail'
      *   - team_vs_team: individualResults[charId] === 'fail'
-     *     (teamResults is not consulted; a team failing does not
-     *      directly eliminate its members)
-     *   - anything else: [] (standard is legacy and not supported)
+     *                   (teamResults is never consulted)
      *
-     * The returned array is de-duplicated and only contains IDs that
-     * appear in match.participants[]. Results maps that contain
-     * unknown keys are ignored for the purposes of this cascade.
+     * The result is de-duplicated. Only IDs that appear in
+     * match.participants[] are returned; extraneous keys in the
+     * result maps are ignored.
+     *
+     * Exposed for testing.
      */
     function getFailingParticipantIds(match) {
         if (!match || typeof match !== 'object') {
@@ -508,64 +350,142 @@
                 }
             }
         }
-        // 'standard' and any unknown types produce no eliminations.
 
         return failures;
     }
 
     // ============================================================
-    // PUBLIC API - WRITE
+    // INTERNAL REMOVAL HELPERS
+    // ============================================================
+    //
+    // Each returns { count, characterIds } where:
+    //   - count is the number of elimination RECORDS removed.
+    //   - characterIds is the list of characters whose arrays changed.
+    //
+    // Both removal helpers run independently of each other. The
+    // reversal operations run the tournament-side and character-side
+    // removals unconditionally, so an asymmetry in the two sides
+    // (from corruption or a partial earlier write) is corrected by
+    // the next reversal.
+
+    /**
+     * Remove tournament-side eliminations matching a predicate.
+     * Returns { count }.
+     */
+    function removeTournamentEliminationsBy(tournament, predicate) {
+        if (!tournament || !Array.isArray(tournament.eliminations)) {
+            return { count: 0 };
+        }
+
+        var removed = 0;
+        var kept = [];
+
+        for (var i = 0; i < tournament.eliminations.length; i++) {
+            var e = tournament.eliminations[i];
+            if (e && predicate(e)) {
+                removed++;
+                continue;
+            }
+            kept.push(e);
+        }
+
+        tournament.eliminations = kept;
+        return { count: removed };
+    }
+
+    /**
+     * Remove character-side eliminations matching a predicate.
+     * Returns { count, characterIds }.
+     *
+     * Counts elimination RECORDS removed, not characters touched.
+     */
+    function removeCharacterEliminationsBy(appData, predicate) {
+        var result = { count: 0, characterIds: [] };
+
+        if (!appData || !Array.isArray(appData.characters)) {
+            return result;
+        }
+
+        for (var i = 0; i < appData.characters.length; i++) {
+            var char = appData.characters[i];
+            if (!char || !Array.isArray(char.eliminations)) {
+                continue;
+            }
+
+            var kept = [];
+            var removed = 0;
+
+            for (var j = 0; j < char.eliminations.length; j++) {
+                var e = char.eliminations[j];
+                if (e && predicate(e)) {
+                    removed++;
+                    continue;
+                }
+                kept.push(e);
+            }
+
+            if (removed > 0) {
+                char.eliminations = kept;
+                rebuildEliminatedWeeks(char);
+                result.count += removed;
+                result.characterIds.push(String(char.id));
+            }
+        }
+
+        return result;
+    }
+
+    // ============================================================
+    // WRITE
     // ============================================================
 
     /**
      * Apply eliminations for the failing participants of a completed
      * match.
      *
-     * PURE with respect to appData: mutates the snapshot in place,
-     * never touches window.data, never enters the pipeline.
+     * TRANSACTION-LOCAL. Mutates appData in place. Never enters the
+     * pipeline.
      *
      * CONTRACT:
-     *   - Writes one elimination per (characterId, tournamentId).
-     *   - If an elimination for (characterId, tournamentId) already
-     *     exists on either side, both sides are cleaned up first,
-     *     then the new one is written. This is "last wins".
+     *   - One elimination per (characterId, tournamentId).
+     *   - If an elimination already exists for that pair on either
+     *     side, both sides are cleaned up first, then the new one is
+     *     written. This is "last wins".
      *   - Every written elimination carries fromRoundId and
      *     fromMatchId.
      *   - character.eliminatedWeeks[] is rebuilt after any write.
-     *   - Standalone eliminations are not touched.
-     *   - Participants whose result is not 'fail' are not touched.
+     *   - Standalone eliminations are NOT touched.
      *
-     * @param {object} appData       - Pipeline snapshot
-     * @param {object} tournament    - Live tournament reference in appData
-     * @param {object} match         - Completed match (live reference)
-     * @param {object} round         - Round containing the match
-     * @param {number} week          - Elimination week (tournament endWeek)
-     * @returns {object}             - Cascade counts
+     * THROWS on missing/invalid inputs. A caller that violates the
+     * contract fails the enclosing transaction.
+     *
+     * @param {object} appData    - Pipeline snapshot
+     * @param {object} tournament - Live tournament reference in appData
+     * @param {object} match      - Completed match (live reference)
+     * @param {object} round      - Round containing the match
+     * @param {number|string} week - Elimination week
+     * @returns {object} { written, replaced, reversed, characterIds }
      */
     function applyFailEliminations(appData, tournament, match, round, week) {
-        var result = {
-            written: 0,
-            replaced: 0,
-            unchanged: 0,
-            characterIds: [],
-            error: null
-        };
-
         if (!appData || typeof appData !== 'object') {
-            result.error = 'appData is required.';
-            return result;
+            throw new Error(
+                '[TournamentEliminationCascade] appData is required.'
+            );
         }
         if (!isObject(tournament)) {
-            result.error = 'tournament is required.';
-            return result;
+            throw new Error(
+                '[TournamentEliminationCascade] tournament is required.'
+            );
         }
         if (!isObject(match)) {
-            result.error = 'match is required.';
-            return result;
+            throw new Error(
+                '[TournamentEliminationCascade] match is required.'
+            );
         }
         if (!isObject(round)) {
-            result.error = 'round is required.';
-            return result;
+            throw new Error(
+                '[TournamentEliminationCascade] round is required.'
+            );
         }
 
         var tournamentId = isNonEmptyString(tournament.id)
@@ -579,15 +499,26 @@
             : '';
 
         if (tournamentId === '' || matchId === '' || roundId === '') {
-            result.error = 'Missing tournament, round, or match ID.';
-            return result;
+            throw new Error(
+                '[TournamentEliminationCascade] Missing tournament, ' +
+                'round, or match ID.'
+            );
         }
 
         var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
-            result.error = 'Valid elimination week is required.';
-            return result;
+            throw new Error(
+                '[TournamentEliminationCascade] Valid elimination ' +
+                'week is required.'
+            );
         }
+
+        var result = {
+            written: 0,
+            replaced: 0,
+            reversed: 0,
+            characterIds: []
+        };
 
         var failingIds = getFailingParticipantIds(match);
         if (failingIds.length === 0) {
@@ -604,27 +535,27 @@
             var charId = failingIds[f];
 
             // ---- Remove any existing elimination for this pair ----
-            // Tournament side: remove by (participantId), regardless of
-            // provenance, because there can be only one per pair.
+            // Tournament side: remove by participantId, regardless of
+            // provenance. One per (characterId, tournamentId).
+            var tournamentRemoved = 0;
             var tournamentKept = [];
-            var tournamentTouched = false;
             for (var te = 0; te < tournament.eliminations.length; te++) {
                 var tourE = tournament.eliminations[te];
                 if (tourE &&
                     tourE.participantType === 'character' &&
                     isNonEmptyString(tourE.participantId) &&
                     String(tourE.participantId) === charId) {
-                    tournamentTouched = true;
+                    tournamentRemoved++;
                     continue;
                 }
                 tournamentKept.push(tourE);
             }
             tournament.eliminations = tournamentKept;
 
-            // Character side: remove by (tournamentId), regardless of
+            // Character side: remove by tournamentId, regardless of
             // provenance.
             var char = findCharacterInSnapshot(appData, charId);
-            var charTouched = false;
+            var charRemoved = 0;
             if (char && Array.isArray(char.eliminations)) {
                 var charKept = [];
                 for (var ce = 0; ce < char.eliminations.length; ce++) {
@@ -633,7 +564,7 @@
                         charE.standalone !== true &&
                         isNonEmptyString(charE.tournamentId) &&
                         String(charE.tournamentId) === tournamentId) {
-                        charTouched = true;
+                        charRemoved++;
                         continue;
                     }
                     charKept.push(charE);
@@ -641,7 +572,7 @@
                 char.eliminations = charKept;
             }
 
-            if (tournamentTouched || charTouched) {
+            if (tournamentRemoved > 0 || charRemoved > 0) {
                 result.replaced++;
             }
 
@@ -681,113 +612,257 @@
     }
 
     // ============================================================
-    // PUBLIC API - REVERSE
+    // REVERSAL
     // ============================================================
 
     /**
      * Reverse eliminations produced by a specific match.
      *
-     * Called from removeMatch's mutate, BEFORE the match is spliced
+     * TRANSACTION-LOCAL. Mutates appData in place.
+     *
+     * Removes eliminations on BOTH sides independently. If the two
+     * sides were out of sync (corruption, partial write), the
+     * reversal corrects both. This is idempotent: running it twice
+     * produces the same state as running it once.
+     *
+     * Called from removeMatch's mutate, before the match is spliced
      * out of the round.
      *
      * @returns {object} { reversed, characterIds }
      */
     function reverseMatchEliminations(appData, tournament, matchId) {
-        var result = { reversed: 0, characterIds: [] };
-
-        if (!isObject(tournament) || !isNonEmptyString(matchId)) {
-            return result;
+        if (!appData || typeof appData !== 'object') {
+            throw new Error(
+                '[TournamentEliminationCascade] appData is required.'
+            );
+        }
+        if (!isObject(tournament)) {
+            throw new Error(
+                '[TournamentEliminationCascade] tournament is required.'
+            );
+        }
+        if (!isNonEmptyString(matchId)) {
+            throw new Error(
+                '[TournamentEliminationCascade] matchId is required.'
+            );
         }
 
-        var removed = removeTournamentEliminationsByMatch(
-            tournament,
-            matchId
-        );
-        if (removed.length === 0) {
-            return result;
-        }
-
+        var target = String(matchId);
         var tournamentId = isNonEmptyString(tournament.id)
             ? String(tournament.id)
             : '';
 
-        var characterIds = removeCharacterEliminationsByMatch(
-            appData,
-            tournamentId,
-            matchId
+        var tournamentResult = removeTournamentEliminationsBy(
+            tournament,
+            function(e) {
+                return isNonEmptyString(e.fromMatchId) &&
+                    String(e.fromMatchId) === target;
+            }
         );
 
-        result.reversed = removed.length;
-        result.characterIds = characterIds;
-        return result;
+        var characterResult = removeCharacterEliminationsBy(
+            appData,
+            function(e) {
+                return e.standalone !== true &&
+                    isNonEmptyString(e.tournamentId) &&
+                    String(e.tournamentId) === tournamentId &&
+                    isNonEmptyString(e.fromMatchId) &&
+                    String(e.fromMatchId) === target;
+            }
+        );
+
+        return {
+            reversed: tournamentResult.count + characterResult.count,
+            characterIds: characterResult.characterIds
+        };
     }
 
     /**
      * Reverse eliminations produced by every match in a round.
      *
-     * Called from removeRound's mutate, BEFORE the round is spliced
-     * out of the tournament.
+     * TRANSACTION-LOCAL. Mutates appData in place.
+     *
+     * Removes eliminations on BOTH sides independently, keyed by
+     * fromRoundId. Runs before the round is spliced out of the
+     * tournament.
      *
      * @returns {object} { reversed, characterIds }
      */
     function reverseRoundEliminations(appData, tournament, roundId) {
-        var result = { reversed: 0, characterIds: [] };
-
-        if (!isObject(tournament) || !isNonEmptyString(roundId)) {
-            return result;
+        if (!appData || typeof appData !== 'object') {
+            throw new Error(
+                '[TournamentEliminationCascade] appData is required.'
+            );
+        }
+        if (!isObject(tournament)) {
+            throw new Error(
+                '[TournamentEliminationCascade] tournament is required.'
+            );
+        }
+        if (!isNonEmptyString(roundId)) {
+            throw new Error(
+                '[TournamentEliminationCascade] roundId is required.'
+            );
         }
 
-        var removed = removeTournamentEliminationsByRound(
-            tournament,
-            roundId
-        );
-        if (removed.length === 0) {
-            return result;
-        }
-
+        var target = String(roundId);
         var tournamentId = isNonEmptyString(tournament.id)
             ? String(tournament.id)
             : '';
 
-        var characterIds = removeCharacterEliminationsByRound(
-            appData,
-            tournamentId,
-            roundId
+        var tournamentResult = removeTournamentEliminationsBy(
+            tournament,
+            function(e) {
+                return isNonEmptyString(e.fromRoundId) &&
+                    String(e.fromRoundId) === target;
+            }
         );
 
-        result.reversed = removed.length;
-        result.characterIds = characterIds;
-        return result;
+        var characterResult = removeCharacterEliminationsBy(
+            appData,
+            function(e) {
+                return e.standalone !== true &&
+                    isNonEmptyString(e.tournamentId) &&
+                    String(e.tournamentId) === tournamentId &&
+                    isNonEmptyString(e.fromRoundId) &&
+                    String(e.fromRoundId) === target;
+            }
+        );
+
+        return {
+            reversed: tournamentResult.count + characterResult.count,
+            characterIds: characterResult.characterIds
+        };
     }
 
     /**
-     * Reverse every non-standalone elimination keyed to a tournament
-     * on the character side.
+     * Reverse every non-standalone character-side elimination keyed
+     * to a tournament.
      *
-     * Called from deleteTournament's mutate, BEFORE the tournament
+     * TRANSACTION-LOCAL. Mutates appData in place.
+     *
+     * Called from deleteTournament's mutate, before the tournament
      * record is spliced out. The tournament's own eliminations[]
      * disappears with the record, so only the character side needs
-     * explicit cleanup.
+     * explicit cleanup here.
      *
      * Standalone eliminations are NOT touched.
      *
      * @returns {object} { reversed, characterIds }
      */
     function reverseTournamentEliminations(appData, tournamentId) {
-        var result = { reversed: 0, characterIds: [] };
-
+        if (!appData || typeof appData !== 'object') {
+            throw new Error(
+                '[TournamentEliminationCascade] appData is required.'
+            );
+        }
         if (!isNonEmptyString(tournamentId)) {
-            return result;
+            throw new Error(
+                '[TournamentEliminationCascade] tournamentId is required.'
+            );
         }
 
-        var characterIds = removeCharacterEliminationsByTournament(
+        var target = String(tournamentId);
+
+        var characterResult = removeCharacterEliminationsBy(
             appData,
-            tournamentId
+            function(e) {
+                return e.standalone !== true &&
+                    isNonEmptyString(e.tournamentId) &&
+                    String(e.tournamentId) === target;
+            }
         );
 
-        result.reversed = characterIds.length;
-        result.characterIds = characterIds;
-        return result;
+        return {
+            reversed: characterResult.count,
+            characterIds: characterResult.characterIds
+        };
+    }
+
+    // ============================================================
+    // MANUAL RESTORE
+    // ============================================================
+
+    /**
+     * Remove the elimination record for (tournamentId, characterId).
+     *
+     * TRANSACTION-LOCAL. Mutates appData in place.
+     *
+     * This is the MANUAL OVERRIDE path. It removes eliminations on
+     * both sides regardless of provenance. It is distinct from the
+     * per-match and per-round reversals, which are provenance-keyed
+     * and run when the match or round is removed.
+     *
+     * The manual restore does NOT re-enable the character for past
+     * rounds. It removes the record. Subsequent matches can include
+     * the character again; past matches are unchanged.
+     *
+     * Standalone eliminations are NOT touched.
+     *
+     * Called from AcademyTournamentEvents.restoreEliminatedParticipant
+     * inside a MutationPipeline transaction.
+     *
+     * @returns {object} { reversed, characterIds }
+     */
+    function restoreCharacterElimination(appData, tournamentId, characterId) {
+        if (!appData || typeof appData !== 'object') {
+            throw new Error(
+                '[TournamentEliminationCascade] appData is required.'
+            );
+        }
+        if (!isNonEmptyString(tournamentId)) {
+            throw new Error(
+                '[TournamentEliminationCascade] tournamentId is required.'
+            );
+        }
+        if (!isNonEmptyString(characterId)) {
+            throw new Error(
+                '[TournamentEliminationCascade] characterId is required.'
+            );
+        }
+
+        var tId = String(tournamentId);
+        var cId = String(characterId);
+
+        // Tournament side: find the tournament in the snapshot.
+        var tournament = null;
+        if (Array.isArray(appData.tournaments)) {
+            for (var i = 0; i < appData.tournaments.length; i++) {
+                var t = appData.tournaments[i];
+                if (t && String(t.id) === tId) {
+                    tournament = t;
+                    break;
+                }
+            }
+        }
+
+        var tournamentResult = { count: 0 };
+        if (tournament && Array.isArray(tournament.eliminations)) {
+            tournamentResult = removeTournamentEliminationsBy(
+                tournament,
+                function(e) {
+                    return e.participantType === 'character' &&
+                        isNonEmptyString(e.participantId) &&
+                        String(e.participantId) === cId;
+                }
+            );
+        }
+
+        // Character side: remove by (tournamentId, characterId).
+        var characterResult = removeCharacterEliminationsBy(
+            appData,
+            function(e) {
+                if (e.standalone === true) { return false; }
+                if (!isNonEmptyString(e.tournamentId)) { return false; }
+                if (String(e.tournamentId) !== tId) { return false; }
+                return true;
+            }
+        );
+
+        return {
+            reversed: tournamentResult.count + characterResult.count,
+            characterIds: characterResult.characterIds
+        };
     }
 
     // ============================================================
@@ -795,14 +870,52 @@
     // ============================================================
 
     window.TournamentEliminationCascade = {
+        // Writes
         applyFailEliminations: applyFailEliminations,
+
+        // Reversals
         reverseMatchEliminations: reverseMatchEliminations,
         reverseRoundEliminations: reverseRoundEliminations,
         reverseTournamentEliminations: reverseTournamentEliminations,
 
-        // Exposed for testing only.
+        // Manual override
+        restoreCharacterElimination: restoreCharacterElimination,
+
+        // Exposed for testing / advanced callers
         getFailingParticipantIds: getFailingParticipantIds,
         rebuildEliminatedWeeks: rebuildEliminatedWeeks
     };
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.TournamentEliminationCascade;
+        var missing = [];
+
+        var required = [
+            'applyFailEliminations',
+            'reverseMatchEliminations',
+            'reverseRoundEliminations',
+            'reverseTournamentEliminations',
+            'restoreCharacterElimination',
+            'getFailingParticipantIds',
+            'rebuildEliminatedWeeks'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        if (missing.length > 0) {
+            console.warn(
+                '[TournamentEliminationCascade] Verification - some ' +
+                'exports may be missing:', missing.join(', ')
+            );
+        }
+    })();
 
 })();
