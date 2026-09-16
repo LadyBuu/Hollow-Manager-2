@@ -105,6 +105,10 @@
             typeof TournamentQueries.getExamForClassAndWeek !== 'function') {
             missing.push('TournamentQueries.getExamForClassAndWeek');
         }
+        if (!TournamentQueries ||
+            typeof TournamentQueries.getTournament !== 'function') {
+            missing.push('TournamentQueries.getTournament');
+        }
 
         if (!TournamentAggregator ||
             typeof TournamentAggregator.getTournamentViewModel !== 'function') {
