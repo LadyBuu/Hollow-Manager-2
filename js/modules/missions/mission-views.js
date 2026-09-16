@@ -1,500 +1,602 @@
 /**
  * js/modules/missions/mission-views.js - Mission Views
- * Presentation metadata for missions
+ *
  * Path: js/modules/missions/mission-views.js
- * 
- * This module provides:
- *   - Priority labels and colors
- *   - Status labels and colors
- *   - Difficulty labels
- *   - Mission type icons and colors
- *   - Subtype labels
- *   - Escalation labels
- *   - Billing labels
- * 
- * IMPORTANT:
- *   - PURE presentation functions - no business logic
- *   - No persistence, no DOM, no state
- *   - Consumes MissionSchema for canonical values
- *   - Maps domain values to presentation values
- *   - All functions return strings (never objects that could be mutated)
- *   - No fallbacks - uses canonical schema values
- * 
- * DEPENDENCIES:
- *   - window.MissionSchema (required)
- * 
- * USAGE:
- *   var Views = window.MissionViews;
- *   var label = Views.getPriorityLabel('critical');  // "Critical"
- *   var color = Views.getPriorityColor('critical'); // "var(--danger)"
+ *
+ * Presentation metadata for missions.
+ *
+ * WHAT THIS MODULE OWNS:
+ *   - CSS class names for statuses, priorities, mission types.
+ *   - CSS colour tokens for statuses and priorities (used by
+ *     anything that needs a raw colour rather than a class).
+ *   - Icons for mission types.
+ *   - Display formatting for timestamps and pay strings.
+ *   - The { label, class } / { label, class, color } composite
+ *     shapes that the aggregator attaches to VMs.
+ *
+ * WHAT THIS MODULE DOES NOT OWN:
+ *   - Domain vocabulary. Every label comes from MissionConstants.
+ *     This module never redefines "Medium" or "Tier III".
+ *   - Querying or validating. It receives a value and returns
+ *     presentation metadata for it.
+ *   - Rendering HTML. MissionRender owns that.
+ *   - Composition with mission records. MissionAggregator owns
+ *     that. This module's functions take a single enum value and
+ *     return one object or one string.
+ *
+ * FALLBACK POLICY:
+ *   For unknown input, these functions return a well-marked
+ *   "unknown" result, never a fabricated valid-looking value.
+ *
+ *   Specifically:
+ *     getStatusInfo('banana')   -> { label: 'Unknown', class: 'status-unknown' }
+ *     getStatusInfo('')         -> same
+ *     getStatusInfo(null)       -> same
+ *
+ *   Not: { label: 'Active', class: 'status-active' }
+ *
+ *   The old behaviour of defaulting unknown values to a
+ *   plausible-looking alternative has been removed. If a caller
+ *   receives "Unknown", the mission data is malformed; that is
+ *   information, and the renderer can display it as such.
+ *
+ * DEPENDENCIES (MANDATORY):
+ *   - window.MissionConstants
  */
 
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__missionViewsLoaded) {
         return;
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - NO FALLBACKS
+    // MANDATORY DEPENDENCIES
     // ============================================================
 
-    if (!window.MissionSchema) {
-        throw new Error('[MissionViews] MissionSchema is required.');
+    var MissionConstants = window.MissionConstants;
+
+    var _missing = [];
+
+    if (!MissionConstants) {
+        _missing.push('MissionConstants (module)');
+    } else {
+        if (typeof MissionConstants.getStatusLabel !== 'function') {
+            _missing.push('MissionConstants.getStatusLabel');
+        }
+        if (typeof MissionConstants.getPriorityLabel !== 'function') {
+            _missing.push('MissionConstants.getPriorityLabel');
+        }
+        if (typeof MissionConstants.getDifficultyLabel !== 'function') {
+            _missing.push('MissionConstants.getDifficultyLabel');
+        }
+        if (typeof MissionConstants.getBillingLabel !== 'function') {
+            _missing.push('MissionConstants.getBillingLabel');
+        }
+        if (typeof MissionConstants.getEscalationLabel !== 'function') {
+            _missing.push('MissionConstants.getEscalationLabel');
+        }
+        if (typeof MissionConstants.getMissionTypeLabel !== 'function') {
+            _missing.push('MissionConstants.getMissionTypeLabel');
+        }
+        if (typeof MissionConstants.getSubtypeLabel !== 'function') {
+            _missing.push('MissionConstants.getSubtypeLabel');
+        }
+    }
+
+    if (_missing.length > 0) {
+        throw new Error(
+            '[MissionViews] Missing mandatory dependencies: ' +
+            _missing.join(', ')
+        );
     }
 
     window.__missionViewsLoaded = true;
 
-    var Schema = window.MissionSchema;
-
     // ============================================================
-    // CONSTANTS - Derived from Schema, frozen
+    // CLASS AND COLOUR MAPS
     // ============================================================
+    //
+    // These are PRESENTATION-ONLY. They do not redefine the label
+    // for each value; the label comes from MissionConstants.
+    //
+    // If a value has no entry here, the caller receives the
+    // "unknown" variant, not a fabricated "default" variant that
+    // looks correct.
 
-    // Priority labels and colors (presentation only)
-    var PRIORITY_LABELS = Object.freeze({
-        'critical': 'Critical',
-        'high': 'High',
-        'medium': 'Medium',
-        'low': 'Low'
-    });
-
-    var PRIORITY_COLORS = Object.freeze({
-        'critical': 'var(--danger)',
-        'high': 'var(--warning)',
-        'medium': 'var(--accent)',
-        'low': 'var(--text-dim)'
-    });
-
-    var PRIORITY_CLASSES = Object.freeze({
-        'critical': 'priority-critical',
-        'high': 'priority-high',
-        'medium': 'priority-medium',
-        'low': 'priority-low'
-    });
-
-    // Status labels and colors (presentation only)
-    var STATUS_LABELS = Object.freeze({
-        'active': 'Active',
-        'completed': 'Completed',
-        'cancelled': 'Cancelled'
+    var STATUS_CLASSES = Object.freeze({
+        'active':    'mission-status-active',
+        'completed': 'mission-status-completed',
+        'cancelled': 'mission-status-cancelled'
     });
 
     var STATUS_COLORS = Object.freeze({
-        'active': 'var(--accent)',
+        'active':    'var(--accent)',
         'completed': 'var(--info)',
         'cancelled': 'var(--danger)'
     });
 
-    var STATUS_CLASSES = Object.freeze({
-        'active': 'status-active',
-        'completed': 'status-completed',
-        'cancelled': 'status-cancelled'
+    var PRIORITY_CLASSES = Object.freeze({
+        'critical': 'mission-priority-critical',
+        'high':     'mission-priority-high',
+        'medium':   'mission-priority-medium',
+        'low':      'mission-priority-low'
     });
 
-    // Difficulty labels
-    var DIFFICULTY_LABELS = Object.freeze({
-        'easy': 'Easy',
-        'medium': 'Medium',
-        'hard': 'Hard',
-        'expert': 'Expert'
+    var PRIORITY_COLORS = Object.freeze({
+        'critical': 'var(--danger)',
+        'high':     'var(--warning)',
+        'medium':   'var(--accent)',
+        'low':      'var(--text-dim)'
     });
 
-    // Escalation labels
-    var ESCALATION_LABELS = Object.freeze({
-        'tier_i': 'Tier I - Routine',
-        'tier_ii': 'Tier II - Complicated',
-        'tier_iii': 'Tier III - Dangerous',
-        'tier_iv': 'Tier IV - Critical',
-        'tier_v': 'Tier V - Catastrophic'
-    });
-
-    // Billing labels
-    var BILLING_LABELS = Object.freeze({
-        'original': 'Original Contract',
-        'escalated': 'Escalated / Surcharge',
-        'emergency': 'Emergency Intervention',
-        'internal': 'Internal / Research'
-    });
-
-    // Mission type icons and colors (presentation only)
     var MISSION_TYPE_ICONS = Object.freeze({
-        'combat': '⚔',
-        'recovery': '🔍',
-        'investigation': '🔍',
-        'exploration': '🧭',
-        'infiltration': '🥷',
-        'containment': '🔒',
-        'acquisition': '📦',
-        'research': '🔬',
-        'diplomatic': '🤝',
+        'combat':        '⚔',
+        'recovery':      '🔍',
+        'investigation': '🔎',
+        'exploration':   '🧭',
+        'infiltration':  '🥷',
+        'containment':   '🔒',
+        'acquisition':   '📦',
+        'research':      '🔬',
+        'diplomatic':    '🤝',
         'assassination': '🎯'
     });
 
     var MISSION_TYPE_COLORS = Object.freeze({
-        'combat': 'var(--danger)',
-        'recovery': 'var(--warning)',
+        'combat':        'var(--danger)',
+        'recovery':      'var(--warning)',
         'investigation': 'var(--accent)',
-        'exploration': 'var(--info)',
-        'infiltration': 'var(--warning)',
-        'containment': 'var(--warning)',
-        'acquisition': 'var(--accent)',
-        'research': 'var(--info)',
-        'diplomatic': 'var(--accent)',
+        'exploration':   'var(--info)',
+        'infiltration':  'var(--warning)',
+        'containment':   'var(--warning)',
+        'acquisition':   'var(--accent)',
+        'research':      'var(--info)',
+        'diplomatic':    'var(--accent)',
         'assassination': 'var(--danger)'
     });
 
-    // Subtype labels
-    var SUBTYPE_LABELS = Object.freeze({
-        'elimination': 'Elimination',
-        'defence': 'Defence',
-        'protection': 'Protection',
-        'retrieval': 'Retrieval',
-        'rescue': 'Rescue',
-        'material_recovery': 'Material Recovery',
-        'artifact_recovery': 'Artifact Recovery',
-        'investigation': 'Investigation',
-        'reconnaissance': 'Reconnaissance',
-        'surveillance': 'Surveillance',
-        'exploration': 'Exploration',
-        'survey': 'Survey',
-        'expedition': 'Expedition',
-        'stealth_entry': 'Stealth Entry',
-        'social_infiltration': 'Social Infiltration',
-        'theft_recovery': 'Theft / Recovery',
-        'espionage': 'Espionage',
-        'capture': 'Capture',
-        'magical_containment': 'Magical Containment',
-        'quarantine': 'Quarantine',
-        'ingredients': 'Ingredients',
-        'resources': 'Resources',
-        'specimens': 'Specimens',
-        'observation': 'Observation',
-        'field_research': 'Field Research',
-        'field_testing': 'Field Testing',
-        'negotiation': 'Negotiation',
-        'mediation': 'Mediation',
-        'representation': 'Representation',
-        'targeted_elimination': 'Targeted Elimination'
-    });
+    // ============================================================
+    // SMALL HELPERS
+    // ============================================================
+
+    function isNonEmptyString(value) {
+        return typeof value === 'string' && value.trim() !== '';
+    }
+
+    function isFiniteNumber(value) {
+        return typeof value === 'number' && isFinite(value);
+    }
 
     // ============================================================
-    // PRIORITY HELPERS
+    // STATUS
     // ============================================================
 
     /**
-     * Get the display label for a priority value.
-     * 
-     * @param {string} priority - Priority value
-     * @returns {string} Display label
+     * Composite status presentation.
+     *
+     * @param {string} status
+     * @returns {object} { label, class, color, isKnown }
      */
-    function getPriorityLabel(priority) {
-        return PRIORITY_LABELS[priority] || priority || 'Medium';
-    }
+    function getStatusInfo(status) {
+        var label = MissionConstants.getStatusLabel(status);
 
-    /**
-     * Get the CSS color for a priority value.
-     * 
-     * @param {string} priority - Priority value
-     * @returns {string} CSS color value
-     */
-    function getPriorityColor(priority) {
-        return PRIORITY_COLORS[priority] || 'var(--text-dim)';
-    }
+        if (label === null) {
+            return {
+                label: 'Unknown',
+                class: 'mission-status-unknown',
+                color: 'var(--text-dim)',
+                isKnown: false
+            };
+        }
 
-    /**
-     * Get the CSS class for a priority value.
-     * 
-     * @param {string} priority - Priority value
-     * @returns {string} CSS class name
-     */
-    function getPriorityClass(priority) {
-        return PRIORITY_CLASSES[priority] || 'priority-medium';
-    }
-
-    /**
-     * Get the complete priority info object.
-     * 
-     * @param {string} priority - Priority value
-     * @returns {object} { label, color, class }
-     */
-    function getPriorityInfo(priority) {
         return {
-            label: getPriorityLabel(priority),
-            color: getPriorityColor(priority),
-            class: getPriorityClass(priority)
+            label: label,
+            class: STATUS_CLASSES[status],
+            color: STATUS_COLORS[status],
+            isKnown: true
         };
     }
 
-    // ============================================================
-    // STATUS HELPERS
-    // ============================================================
-
-    /**
-     * Get the display label for a status value.
-     * 
-     * @param {string} status - Status value
-     * @returns {string} Display label
-     */
-    function getStatusLabel(status) {
-        return STATUS_LABELS[status] || status || 'Active';
+    function getStatusClass(status) {
+        return STATUS_CLASSES[status] || 'mission-status-unknown';
     }
 
-    /**
-     * Get the CSS color for a status value.
-     * 
-     * @param {string} status - Status value
-     * @returns {string} CSS color value
-     */
     function getStatusColor(status) {
         return STATUS_COLORS[status] || 'var(--text-dim)';
     }
 
-    /**
-     * Get the CSS class for a status value.
-     * 
-     * @param {string} status - Status value
-     * @returns {string} CSS class name
-     */
-    function getStatusClass(status) {
-        return STATUS_CLASSES[status] || 'status-active';
-    }
+    // ============================================================
+    // PRIORITY
+    // ============================================================
 
     /**
-     * Get the complete status info object.
-     * 
-     * @param {string} status - Status value
-     * @returns {object} { label, color, class }
+     * Composite priority presentation.
+     *
+     * @param {string} priority
+     * @returns {object} { label, class, color, isKnown }
      */
-    function getStatusInfo(status) {
+    function getPriorityInfo(priority) {
+        var label = MissionConstants.getPriorityLabel(priority);
+
+        if (label === null) {
+            return {
+                label: 'Unknown',
+                class: 'mission-priority-unknown',
+                color: 'var(--text-dim)',
+                isKnown: false
+            };
+        }
+
         return {
-            label: getStatusLabel(status),
-            color: getStatusColor(status),
-            class: getStatusClass(status)
+            label: label,
+            class: PRIORITY_CLASSES[priority],
+            color: PRIORITY_COLORS[priority],
+            isKnown: true
         };
     }
 
-    // ============================================================
-    // DIFFICULTY HELPERS
-    // ============================================================
-
-    /**
-     * Get the display label for a difficulty value.
-     * 
-     * @param {string} difficulty - Difficulty value
-     * @returns {string} Display label
-     */
-    function getDifficultyLabel(difficulty) {
-        return DIFFICULTY_LABELS[difficulty] || difficulty || 'Medium';
+    function getPriorityClass(priority) {
+        return PRIORITY_CLASSES[priority] || 'mission-priority-unknown';
     }
 
-    /**
-     * Get the difficulty code for a difficulty value.
-     * Delegates to Schema.
-     * 
-     * @param {string} difficulty - Difficulty value
-     * @returns {string} Difficulty code (E, M, H, X)
-     */
-    function getDifficultyCode(difficulty) {
-        return Schema.getDifficultyCode(difficulty) || 'M';
+    function getPriorityColor(priority) {
+        return PRIORITY_COLORS[priority] || 'var(--text-dim)';
     }
 
     // ============================================================
-    // ESCALATION HELPERS
+    // MISSION TYPE
     // ============================================================
 
     /**
-     * Get the display label for an escalation tier.
-     * 
-     * @param {string} escalation - Escalation tier value
-     * @returns {string} Display label
+     * Composite mission type presentation.
+     *
+     * @param {string} typeId
+     * @returns {object} { label, icon, color, isKnown }
      */
-    function getEscalationLabel(escalation) {
-        return ESCALATION_LABELS[escalation] || escalation || 'Tier II - Complicated';
+    function getMissionTypeInfo(typeId) {
+        var label = MissionConstants.getMissionTypeLabel(typeId);
+
+        if (label === null) {
+            return {
+                label: 'Unclassified',
+                icon: '📋',
+                color: 'var(--text-dim)',
+                isKnown: false
+            };
+        }
+
+        return {
+            label: label,
+            icon: MISSION_TYPE_ICONS[typeId] || '📋',
+            color: MISSION_TYPE_COLORS[typeId] || 'var(--text-dim)',
+            isKnown: true
+        };
     }
 
-    // ============================================================
-    // BILLING HELPERS
-    // ============================================================
-
-    /**
-     * Get the display label for a billing type.
-     * 
-     * @param {string} billing - Billing type value
-     * @returns {string} Display label
-     */
-    function getBillingLabel(billing) {
-        return BILLING_LABELS[billing] || billing || 'Original Contract';
-    }
-
-    // ============================================================
-    // MISSION TYPE HELPERS
-    // ============================================================
-
-    /**
-     * Get the display icon for a mission type.
-     * 
-     * @param {string} typeId - Mission type ID
-     * @returns {string} Icon character
-     */
     function getMissionTypeIcon(typeId) {
         return MISSION_TYPE_ICONS[typeId] || '📋';
     }
 
-    /**
-     * Get the CSS color for a mission type.
-     * 
-     * @param {string} typeId - Mission type ID
-     * @returns {string} CSS color value
-     */
     function getMissionTypeColor(typeId) {
         return MISSION_TYPE_COLORS[typeId] || 'var(--text-dim)';
     }
 
-    /**
-     * Get the label for a mission type.
-     * Delegates to Schema.
-     * 
-     * @param {string} typeId - Mission type ID
-     * @returns {string} Display label
-     */
+    // ============================================================
+    // VOCABULARY RE-EXPORTS
+    // ============================================================
+    //
+    // Callers that reach for MissionViews expecting the vocabulary
+    // lookups find them here. The canonical home is
+    // MissionConstants; these are pass-throughs.
+    //
+    // These return null for unknown input, matching
+    // MissionConstants.
+
+    function getDifficultyLabel(difficulty) {
+        return MissionConstants.getDifficultyLabel(difficulty);
+    }
+
+    function getDifficultyCode(difficulty) {
+        return MissionConstants.getDifficultyCode(difficulty);
+    }
+
+    function getDifficultyFromCode(code) {
+        return MissionConstants.getDifficultyFromCode(code);
+    }
+
+    function getBillingLabel(billing) {
+        return MissionConstants.getBillingLabel(billing);
+    }
+
+    function getEscalationLabel(escalation) {
+        return MissionConstants.getEscalationLabel(escalation);
+    }
+
     function getMissionTypeLabel(typeId) {
-        return Schema.getMissionTypeLabel(typeId);
+        return MissionConstants.getMissionTypeLabel(typeId);
     }
 
-    /**
-     * Get complete mission type info.
-     * 
-     * @param {string} typeId - Mission type ID
-     * @returns {object} { label, icon, color }
-     */
-    function getMissionTypeInfo(typeId) {
-        return {
-            label: getMissionTypeLabel(typeId),
-            icon: getMissionTypeIcon(typeId),
-            color: getMissionTypeColor(typeId)
-        };
+    function getSubtypeLabel(typeId, subtypeId) {
+        return MissionConstants.getSubtypeLabel(typeId, subtypeId);
     }
 
     // ============================================================
-    // SUBTYPE HELPERS
+    // TIMESTAMP FORMATTING
     // ============================================================
 
     /**
-     * Get the display label for a subtype.
-     * 
-     * @param {string} subtypeId - Subtype ID
-     * @returns {string} Display label
+     * Format an ISO timestamp for display.
+     *
+     * Returns '' for missing or malformed input. Never throws.
+     *
+     * Format: locale-dependent. Uses toLocaleString() with a fixed
+     * options object so output is stable across renders on the same
+     * machine. The choice of locale is the browser's.
+     *
+     * @param {string} iso
+     * @returns {string}
      */
-    function getSubtypeLabel(subtypeId) {
-        return SUBTYPE_LABELS[subtypeId] || subtypeId || '';
-    }
+    function formatTimestamp(iso) {
+        if (!isNonEmptyString(iso)) { return ''; }
 
-    // ============================================================
-    // FORMAT HELPERS
-    // ============================================================
+        var date = new Date(iso);
+        if (isNaN(date.getTime())) { return ''; }
 
-    /**
-     * Format a mission ID for display.
-     * 
-     * @param {string} missionId - Mission ID
-     * @returns {string} Formatted mission ID
-     */
-    function formatMissionId(missionId) {
-        if (!missionId) {
-            return '—';
+        try {
+            return date.toLocaleString(undefined, {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        } catch (e) {
+            // Some environments may not support options; fall back.
+            try {
+                return date.toLocaleString();
+            } catch (e2) {
+                return '';
+            }
         }
-        return String(missionId);
     }
 
     /**
-     * Parse a mission ID into components.
-     * 
-     * @param {string} missionId - Mission ID
-     * @returns {object|null} { team, year, difficultyCode, difficulty, sequence, full } or null
+     * Format just the date portion of an ISO timestamp.
      */
-    function parseMissionId(missionId) {
-        if (!missionId || typeof missionId !== 'string') {
-            return null;
+    function formatDate(iso) {
+        if (!isNonEmptyString(iso)) { return ''; }
+
+        var date = new Date(iso);
+        if (isNaN(date.getTime())) { return ''; }
+
+        try {
+            return date.toLocaleDateString(undefined, {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric'
+            });
+        } catch (e) {
+            try {
+                return date.toLocaleDateString();
+            } catch (e2) {
+                return '';
+            }
+        }
+    }
+
+    // ============================================================
+    // PAY FORMATTING
+    // ============================================================
+
+    /**
+     * Format a numeric pay value for display.
+     *
+     * The stored `mission.pay` field is already a formatted string
+     * ("500.00 credits"). This helper handles the case where the
+     * caller has a raw number and needs the same format.
+     *
+     * Returns '' for null, undefined, NaN, Infinity, or negative.
+     * Returns the number formatted with two decimals plus the
+     * "credits" suffix otherwise.
+     *
+     * @param {number|string} value
+     * @returns {string}
+     */
+    function formatPay(value) {
+        if (value === null || value === undefined || value === '') {
+            return '';
         }
 
-        var match = /^([^-]+)-(\d{2})-([EMHX])(\d+)$/.exec(missionId);
-        if (!match) {
-            return null;
+        var n;
+
+        if (typeof value === 'number') {
+            n = value;
+        } else if (typeof value === 'string') {
+            var trimmed = value.trim();
+            if (trimmed === '') { return ''; }
+            if (!/^\d+(?:\.\d+)?$/.test(trimmed)) {
+                // Already formatted, or invalid. Return as-is if it
+                // looks like a formatted string already.
+                if (/^\d+(?:\.\d+)?\s+credits$/.test(trimmed)) {
+                    return trimmed;
+                }
+                return '';
+            }
+            n = Number(trimmed);
+        } else {
+            return '';
         }
 
-        var difficultyMap = {
-            'E': 'easy',
-            'M': 'medium',
-            'H': 'hard',
-            'X': 'expert'
-        };
+        if (!isFinite(n) || n < 0) {
+            return '';
+        }
 
-        return {
-            team: match[1],
-            year: match[2],
-            difficultyCode: match[3],
-            difficulty: difficultyMap[match[3]] || null,
-            sequence: match[4],
-            full: missionId
-        };
+        return n.toFixed(2) + ' credits';
     }
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
-    window.MissionViews = {
-        // Priority
-        getPriorityLabel: getPriorityLabel,
-        getPriorityColor: getPriorityColor,
-        getPriorityClass: getPriorityClass,
-        getPriorityInfo: getPriorityInfo,
-
-        // Status
-        getStatusLabel: getStatusLabel,
-        getStatusColor: getStatusColor,
-        getStatusClass: getStatusClass,
+    window.MissionViews = Object.freeze({
+        // Composite presentation
         getStatusInfo: getStatusInfo,
-
-        // Difficulty
-        getDifficultyLabel: getDifficultyLabel,
-        getDifficultyCode: getDifficultyCode,
-
-        // Escalation
-        getEscalationLabel: getEscalationLabel,
-
-        // Billing
-        getBillingLabel: getBillingLabel,
-
-        // Mission type
-        getMissionTypeLabel: getMissionTypeLabel,
-        getMissionTypeIcon: getMissionTypeIcon,
-        getMissionTypeColor: getMissionTypeColor,
+        getPriorityInfo: getPriorityInfo,
         getMissionTypeInfo: getMissionTypeInfo,
 
-        // Subtype
+        // Individual class / colour / icon lookups
+        getStatusClass: getStatusClass,
+        getStatusColor: getStatusColor,
+        getPriorityClass: getPriorityClass,
+        getPriorityColor: getPriorityColor,
+        getMissionTypeIcon: getMissionTypeIcon,
+        getMissionTypeColor: getMissionTypeColor,
+
+        // Vocabulary pass-throughs (canonical home: MissionConstants)
+        getDifficultyLabel: getDifficultyLabel,
+        getDifficultyCode: getDifficultyCode,
+        getDifficultyFromCode: getDifficultyFromCode,
+        getBillingLabel: getBillingLabel,
+        getEscalationLabel: getEscalationLabel,
+        getMissionTypeLabel: getMissionTypeLabel,
         getSubtypeLabel: getSubtypeLabel,
 
         // Formatting
-        formatMissionId: formatMissionId,
-        parseMissionId: parseMissionId,
+        formatTimestamp: formatTimestamp,
+        formatDate: formatDate,
+        formatPay: formatPay,
 
-        // Constants (read-only references)
-        PRIORITY_LABELS: PRIORITY_LABELS,
-        PRIORITY_COLORS: PRIORITY_COLORS,
-        PRIORITY_CLASSES: PRIORITY_CLASSES,
-        STATUS_LABELS: STATUS_LABELS,
-        STATUS_COLORS: STATUS_COLORS,
+        // Read-only constants (for consumers that want to iterate)
         STATUS_CLASSES: STATUS_CLASSES,
-        DIFFICULTY_LABELS: DIFFICULTY_LABELS,
-        ESCALATION_LABELS: ESCALATION_LABELS,
-        BILLING_LABELS: BILLING_LABELS,
+        STATUS_COLORS: STATUS_COLORS,
+        PRIORITY_CLASSES: PRIORITY_CLASSES,
+        PRIORITY_COLORS: PRIORITY_COLORS,
         MISSION_TYPE_ICONS: MISSION_TYPE_ICONS,
-        MISSION_TYPE_COLORS: MISSION_TYPE_COLORS,
-        SUBTYPE_LABELS: SUBTYPE_LABELS
-    };
+        MISSION_TYPE_COLORS: MISSION_TYPE_COLORS
+    });
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.MissionViews;
+        var missing = [];
+
+        var required = [
+            'getStatusInfo',
+            'getPriorityInfo',
+            'getMissionTypeInfo',
+            'getStatusClass',
+            'getStatusColor',
+            'getPriorityClass',
+            'getPriorityColor',
+            'getMissionTypeIcon',
+            'getMissionTypeColor',
+            'getDifficultyLabel',
+            'getDifficultyCode',
+            'getDifficultyFromCode',
+            'getBillingLabel',
+            'getEscalationLabel',
+            'getMissionTypeLabel',
+            'getSubtypeLabel',
+            'formatTimestamp',
+            'formatDate',
+            'formatPay'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        // Smoke test: valid input returns valid presentation, and
+        // unknown input returns the "unknown" variant, not a
+        // plausible-looking default.
+        try {
+            var activeInfo = getStatusInfo('active');
+            if (activeInfo.label !== 'Active' ||
+                activeInfo.class !== 'mission-status-active' ||
+                activeInfo.isKnown !== true) {
+                missing.push('getStatusInfo("active") returned wrong shape');
+            }
+
+            var unknownStatus = getStatusInfo('banana');
+            if (unknownStatus.label !== 'Unknown' ||
+                unknownStatus.class !== 'mission-status-unknown' ||
+                unknownStatus.isKnown !== false) {
+                missing.push('getStatusInfo("banana") did not return the unknown variant');
+            }
+
+            var nullStatus = getStatusInfo(null);
+            if (nullStatus.label !== 'Unknown' ||
+                nullStatus.isKnown !== false) {
+                missing.push('getStatusInfo(null) did not return the unknown variant');
+            }
+
+            var criticalInfo = getPriorityInfo('critical');
+            if (criticalInfo.label !== 'Critical' ||
+                criticalInfo.class !== 'mission-priority-critical' ||
+                criticalInfo.isKnown !== true) {
+                missing.push('getPriorityInfo("critical") returned wrong shape');
+            }
+
+            var unknownPriority = getPriorityInfo('banana');
+            if (unknownPriority.label !== 'Unknown' ||
+                unknownPriority.isKnown !== false) {
+                missing.push('getPriorityInfo("banana") did not return the unknown variant');
+            }
+
+            var combatInfo = getMissionTypeInfo('combat');
+            if (combatInfo.label !== 'Combat' ||
+                combatInfo.isKnown !== true) {
+                missing.push('getMissionTypeInfo("combat") returned wrong shape');
+            }
+
+            var unknownType = getMissionTypeInfo('banana');
+            if (unknownType.label !== 'Unclassified' ||
+                unknownType.isKnown !== false) {
+                missing.push('getMissionTypeInfo("banana") did not return the unknown variant');
+            }
+
+            // Pay formatting
+            if (formatPay(500) !== '500.00 credits') {
+                missing.push("formatPay(500) !== '500.00 credits'");
+            }
+            if (formatPay(null) !== '') {
+                missing.push("formatPay(null) !== ''");
+            }
+            if (formatPay('banana') !== '') {
+                missing.push("formatPay('banana') !== ''");
+            }
+            if (formatPay('500.00 credits') !== '500.00 credits') {
+                missing.push('formatPay did not pass through already-formatted string');
+            }
+
+            // Timestamp formatting
+            if (formatTimestamp(null) !== '') {
+                missing.push("formatTimestamp(null) !== ''");
+            }
+            if (formatTimestamp('not-a-date') !== '') {
+                missing.push("formatTimestamp('not-a-date') !== ''");
+            }
+            var ts = formatTimestamp('2026-09-17T12:00:00.000Z');
+            if (typeof ts !== 'string' || ts === '') {
+                missing.push('formatTimestamp of a valid ISO string returned empty');
+            }
+        } catch (e) {
+            missing.push('smoke test threw: ' + e.message);
+        }
+
+        if (missing.length > 0) {
+            console.warn(
+                '[MissionViews] Verification failed:',
+                missing.join(', ')
+            );
+        }
+    })();
 
 })();
