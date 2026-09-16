@@ -42,6 +42,36 @@
  *   `.modal .close-modal` plus the modal's own backdrop-click and
  *   escape-key handlers installed by modalSetup.
  *
+ * EXTERNAL ENTRY POINTS (added in this revision):
+ *   The Teams module has two callers for its member UI:
+ *
+ *     1. The Teams tab itself, which mounts the whole Team Manager
+ *        page and uses its own modals (showTeamForm, showMemberModal,
+ *        showRankingModal). These depend on TeamUI state and the
+ *        modal shells being present in the DOM.
+ *
+ *     2. External callers (e.g. the Academy Weekly Teams view) that
+ *        need to show the member manager for a team without mounting
+ *        the whole Teams tab. These callers supply their own modal
+ *        container and do not want to depend on TeamUI.
+ *
+ *   For (2), this module exposes:
+ *
+ *     openMemberManager(container, teamId, period, options)
+ *     openMemberEditor(container, teamId, charId, period, options)
+ *
+ *   Both render into a container the caller owns, wire the add/
+ *   remove/edit buttons to TeamCore directly, and re-render in
+ *   place after mutations. They do not use TeamUI, they do not
+ *   require the Teams tab to be mounted, and they do not use the
+ *   modal shells from TeamRender.getModalsHTML.
+ *
+ * MODAL CLOSE SEMANTICS:
+ *   Modal.hideModal is ASYNCHRONOUS. closeModal below awaits the
+ *   returned Promise before removing the element from the DOM.
+ *   When Modal.closeModal is available (full teardown, cleanup list,
+ *   focus restore), it is preferred.
+ *
  * DEPENDENCIES:
  *   - window.TeamCore       (MANDATORY)
  *   - window.TeamAggregator (MANDATORY)
@@ -50,11 +80,22 @@
  *   - window.Modal          (MANDATORY)
  *   - window.NotificationSystem (MANDATORY)
  *   - window.DomUtils       (MANDATORY)
+ *   - window.CharacterQueries (OPTIONAL, used by the external
+ *     entry points to display names in the add-member picker; the
+ *     aggregator already resolves the candidates it hands us, so
+ *     this is only needed when the caller wants a custom picker)
  *
  * USAGE:
  *   var TE = window.TeamEvents;
  *   TE.init(container);
  *   TE.destroy();
+ *
+ *   // External caller:
+ *   var content = document.querySelector('.modal-content');
+ *   TE.openMemberManager(content, 'team_123', 2025, {
+ *       onClose: function() { Modal.closeModal(modal); },
+ *       onMutation: function() { refreshAcademyView(); }
+ *   });
  */
 
 (function() {
@@ -141,6 +182,12 @@
         if (!TeamRender || typeof TeamRender.renderTeamForm !== 'function') {
             missing.push('TeamRender.renderTeamForm');
         }
+        if (!TeamRender || typeof TeamRender.renderMemberList !== 'function') {
+            missing.push('TeamRender.renderMemberList');
+        }
+        if (!TeamRender || typeof TeamRender.renderMemberForm !== 'function') {
+            missing.push('TeamRender.renderMemberForm');
+        }
 
         if (!Modal || typeof Modal.showModal !== 'function') {
             missing.push('Modal.showModal');
@@ -159,6 +206,9 @@
         if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
             missing.push('DomUtils.escapeHtml');
         }
+        if (!DomUtils || typeof DomUtils.escapeAttribute !== 'function') {
+            missing.push('DomUtils.escapeAttribute');
+        }
 
         if (missing.length > 0) {
             console.warn('[TeamEvents] Missing dependencies:', missing.join(', '));
@@ -174,6 +224,14 @@
 
     function notify(message, type) {
         NotificationSystem.notify(message, type || 'info');
+    }
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    function isNonEmptyString(value) {
+        return typeof value === 'string' && value.trim() !== '';
     }
 
     // ============================================================
@@ -237,9 +295,6 @@
     // ============================================================
     // PERIOD HELPERS
     // ============================================================
-    //
-    // The current period for a tab is a TeamUI concern. This module
-    // does not fall back to a Gregorian year or a hardcoded 1.
 
     function getCurrentPeriod(tab) {
         var filter = TeamUI.getFilter(tab);
@@ -277,20 +332,12 @@
             expandedTeamId: expandedTeamId
         });
 
-        // If the aggregator resolved a different expanded team ID
-        // (e.g. stale ID invalidated against the filtered list),
-        // sync it back to TeamUI.
         if (pageVM.expandedTeamId !== expandedTeamId) {
             TeamUI.setExpandedTeamId(pageVM.expandedTeamId);
         }
 
-        // Full page replace. Delegation is scoped to _container, so
-        // replacing its innerHTML does not lose the delegated
-        // listeners.
         _container.innerHTML = TeamRender.renderContainer(pageVM);
 
-        // Re-render the filter bar into its slot, since the page VM
-        // does not embed it.
         var filterContainer = _container.querySelector('#filter-container');
         if (filterContainer) {
             var filterVM = TeamAggregator.getFilterBarViewModel(currentTab);
@@ -325,7 +372,7 @@
         bindTabSwitching();
         bindAddTeam();
         bindTeamActions();
-        bindModalCloseDelegation();   // NEW: single delegated close handler
+        bindModalCloseDelegation();
         bindTeamFormModal();
         bindMemberModal();
         bindEditMemberModal();
@@ -345,19 +392,6 @@
     // ============================================================
     // MODAL CLOSE DELEGATION
     // ============================================================
-    //
-    // All team modals live inside _container (rendered by
-    // TeamRender.getModalsHTML()). Every full-page render replaces
-    // their shells. Because delegation is scoped to _container and
-    // matches by class, this one handler covers every modal's
-    // `.close-modal` button across every re-render.
-    //
-    // Backdrop click and escape key are installed per-modal by
-    // Modal.modalSetup(); they are not handled here.
-    //
-    // When a modal is closed this way, we also clear TeamUI's modal
-    // state. That keeps the UI-state model consistent with the DOM:
-    // no phantom "modal open" state pointing at a hidden modal.
 
     function bindModalCloseDelegation() {
         delegate('.modal .close-modal', 'click', function(e, target) {
@@ -371,19 +405,6 @@
         });
     }
 
-    /**
-     * Close a modal and clear transient UI state.
-     *
-     * Shared by the delegated close handler and any per-modal
-     * close wrapper (e.g. closeMemberModal's explicit path). Uses
-     * Modal.hideModal() rather than closeModal() when available, so
-     * the modal element is hidden but not removed — its shell
-     * persists in the container and will be reused on next open.
-     *
-     * If Modal.hideModal is unavailable (defensive), falls back to
-     * toggling the hidden class directly, mirroring the previous
-     * local wrapper's behavior.
-     */
     function closeModalAndClearState(modal) {
         if (!modal) return;
 
@@ -408,11 +429,6 @@
     // ============================================================
     // MODAL SHOW HELPER
     // ============================================================
-    //
-    // SINGLE place this module opens a modal. Always installs the
-    // Modal lifecycle (backdrop click, escape key, focus trap) before
-    // showing. Bypassing this helper — by calling Modal.showModal
-    // directly — leaves the modal without a close path.
 
     function showModal(modal) {
         if (!modal) return;
@@ -434,8 +450,6 @@
             console.warn('[TeamEvents] Modal.showModal failed:', err);
         }
 
-        // Defensive fallback: show without lifecycle.
-        // This should not be reached in normal operation.
         modal.classList.remove('hidden');
         modal.style.display = 'flex';
     }
@@ -451,8 +465,6 @@
 
             TeamUI.setCurrentTab(tab);
 
-            // The whole page re-renders, including the tab buttons
-            // and the filter bar. No manual class twiddling needed.
             refreshUI();
         });
     }
@@ -474,11 +486,8 @@
             return;
         }
 
-        // The shell exists in the DOM (from getModalsHTML). Reuse it.
         var modal = document.getElementById('team-form-modal');
         if (!modal) {
-            // Defensive: if a caller invokes showTeamForm before the
-            // page has rendered its modal shells, create one.
             modal = Modal.createModal('team-form-modal');
             modal.id = 'team-form-modal';
             document.body.appendChild(modal);
@@ -502,8 +511,6 @@
             titleEl.textContent = formVM.isEdit ? 'Edit Team' : 'Add Team';
         }
 
-        // Sync TeamUI modal state BEFORE showing, so any handler
-        // that fires from modalSetup/showModal sees the right team.
         TeamUI.setModalTeamId(formVM.isEdit ? formVM.teamId : null);
 
         showModal(modal);
@@ -536,9 +543,6 @@
         var form = modal.querySelector('#team-form-inner');
         if (!form) return;
 
-        // Modal-scoped listeners. These are not delegated because the
-        // form exists only while the modal is open and is destroyed
-        // when the modal closes. Direct listeners are correct here.
         var closeBtn = modal.querySelector('#close-team-form');
         if (closeBtn) {
             closeBtn.addEventListener('click', closeTeamForm);
@@ -608,7 +612,6 @@
 
         promise.then(function(result) {
             if (!result || !result.success) {
-                // Pipeline already notified.
                 return;
             }
             closeTeamForm();
@@ -691,8 +694,6 @@
     }
 
     function deleteTeam(teamId) {
-        // Confirmation is a UX concern, but the name should come from
-        // a VM, not a query. Resolve from the current page VM.
         var currentTab = TeamUI.getCurrentTab();
         var period = getCurrentPeriod(currentTab);
         var pageVM = TeamAggregator.getTeamPageViewModel({
@@ -730,7 +731,7 @@
     }
 
     // ============================================================
-    // MEMBER MODAL
+    // MEMBER MODAL (Teams tab)
     // ============================================================
 
     function showMemberModal(teamId) {
@@ -756,7 +757,6 @@
 
         populateMemberCandidates(modal, vm.candidates);
 
-        // Reset the input fields.
         var roleEl = modal.querySelector('#member-role');
         if (roleEl) roleEl.value = '';
         var joinEl = modal.querySelector('#member-join');
@@ -764,7 +764,6 @@
         var leaveEl = modal.querySelector('#member-leave');
         if (leaveEl) leaveEl.value = '';
 
-        // Render the current members.
         var listContainer = modal.querySelector('#members-list');
         if (listContainer) {
             listContainer.innerHTML = TeamRender.renderMemberList(vm);
@@ -772,7 +771,6 @@
 
         TeamUI.setModalTeamId(teamId);
 
-        // showModal installs the lifecycle before displaying.
         showModal(modal);
     }
 
@@ -890,7 +888,7 @@
     }
 
     // ============================================================
-    // EDIT MEMBER MODAL
+    // EDIT MEMBER MODAL (Teams tab)
     // ============================================================
 
     function showEditMemberModal(teamId, charId) {
@@ -932,10 +930,8 @@
 
         TeamUI.setModalMemberId(charId);
 
-        // showModal installs the lifecycle before displaying.
         showModal(modal);
 
-        // Fresh form was just inserted — bind its submit handler.
         bindEditMemberFormSubmit();
     }
 
@@ -962,8 +958,6 @@
         var form = modal.querySelector('#edit-member-form');
         if (!form) return;
 
-        // Guard against double-binding when the form is re-rendered
-        // while the modal stays open (e.g. rapid edit → edit).
         if (form._submitBound) {
             return;
         }
@@ -1005,7 +999,7 @@
     }
 
     // ============================================================
-    // RANKING MODAL
+    // RANKING MODAL (Teams tab)
     // ============================================================
 
     function showRankingModal(teamId) {
@@ -1040,7 +1034,6 @@
 
         TeamUI.setModalTeamId(teamId);
 
-        // showModal installs the lifecycle before displaying.
         showModal(modal);
     }
 
@@ -1159,12 +1152,10 @@
                 var yearRaw = yearEl.value.trim();
                 var yearNum = parseInt(yearRaw, 10);
                 if (yearRaw === '') {
-                    // No year filter.
                     TeamUI.setFilter(tab, 'filterYear', '');
                 } else if (!isNaN(yearNum) && yearNum >= 1) {
                     TeamUI.setFilter(tab, 'filterYear', yearNum);
                 }
-                // Invalid input: leave the previous filter in place.
             }
         }
 
@@ -1198,7 +1189,7 @@
     }
 
     // ============================================================
-    // ESCAPING (only used to build small option lists in-place)
+    // ESCAPING
     // ============================================================
 
     function escapeHtml(value) {
@@ -1207,6 +1198,518 @@
 
     function escapeAttr(value) {
         return DomUtils.escapeAttribute(value);
+    }
+
+    // ============================================================
+    // EXTERNAL ENTRY POINT - MEMBER MANAGER
+    // ============================================================
+    //
+    // Container-based. Does not use TeamUI. Does not require the
+    // Teams tab to be mounted. Renders into the caller's container,
+    // wires add/remove to TeamCore, and re-renders in place after
+    // mutations.
+    //
+    // The caller owns the modal shell. This function does not call
+    // Modal.createModal; it only manipulates what's inside the
+    // provided container.
+    //
+    // CONTAINER: an element that will hold the modal content (usually
+    //   a .modal-content). Its innerHTML is replaced on every render.
+    //
+    // TEAM ID: the team to manage.
+    //
+    // PERIOD: the period used to compute active members. If null, the
+    //   manager renders the roster without active/inactive marking.
+    //
+    // OPTIONS:
+    //   - onClose: called when the user clicks Close. The caller
+    //     decides what "close" means (hide the modal, remove it,
+    //     etc.). If omitted, nothing happens on Close.
+    //   - onMutation: called after every successful add/remove/edit.
+    //     The caller can use this to refresh an outer view (e.g. the
+    //     Academy tab's sidebar).
+    //
+    // Returns an object with:
+    //   - refresh(): re-render the manager in place
+    //   - close(): invoke the onClose handler (if any)
+    //   - isOpen(): true while the manager is mounted
+
+    function openMemberManager(container, teamId, period, options) {
+        if (!container || !teamId) {
+            return null;
+        }
+
+        options = options || {};
+        var onClose = (typeof options.onClose === 'function')
+            ? options.onClose
+            : null;
+        var onMutation = (typeof options.onMutation === 'function')
+            ? options.onMutation
+            : null;
+
+        var disposed = false;
+
+        function render() {
+            if (disposed || !container.parentNode) {
+                return;
+            }
+
+            var vm = TeamAggregator.getMemberModalViewModel(teamId, period);
+
+            if (!vm) {
+                container.innerHTML =
+                    renderMemberManagerHeader('Manage Members') +
+                    '<div class="modal-body">' +
+                        '<p class="empty-state small">Team not found.</p>' +
+                    '</div>';
+                bindCloseOnly(container);
+                return;
+            }
+
+            container.innerHTML = renderMemberManagerBody(vm);
+
+            bindManagerEvents(container, vm, {
+                onMutation: onMutation,
+                refresh: render
+            });
+        }
+
+        function close() {
+            disposed = true;
+            if (typeof onClose === 'function') {
+                try { onClose(); } catch (e) {
+                    console.warn('[TeamEvents] onClose threw:', e);
+                }
+            }
+        }
+
+        function isOpen() {
+            return !disposed && !!container.parentNode;
+        }
+
+        // First render.
+        render();
+
+        return {
+            refresh: render,
+            close: close,
+            isOpen: isOpen
+        };
+    }
+
+    function renderMemberManagerHeader(title) {
+        return (
+            '<div class="modal-header">' +
+                '<h3>' + escapeHtml(title) + '</h3>' +
+                '<button type="button" class="close-modal team-events-close-btn">&times;</button>' +
+            '</div>'
+        );
+    }
+
+    function renderMemberManagerBody(vm) {
+        var members = Array.isArray(vm.members) ? vm.members : [];
+        var candidates = Array.isArray(vm.candidates) ? vm.candidates : [];
+
+        var html = '';
+
+        html += renderMemberManagerHeader(
+            'Manage Members \u2014 ' + (vm.teamName || 'Team')
+        );
+
+        html += '<div class="modal-body">';
+
+        // ---- Current members ----
+        html += '<div class="form-group">';
+        html += '<label>Current Members (' + members.length + ')</label>';
+
+        if (members.length === 0) {
+            html += '<p class="empty-state small">No members yet.</p>';
+        } else {
+            html += '<div class="academy-team-members-list">';
+            for (var i = 0; i < members.length; i++) {
+                html += renderMemberRow(members[i], vm.teamId);
+            }
+            html += '</div>';
+        }
+
+        html += '</div>';
+
+        // ---- Add member ----
+        html += '<div class="form-group">';
+        html += '<label for="te-member-select">Add Member</label>';
+
+        if (candidates.length === 0) {
+            html += '<p class="field-hint">' +
+                        'No more characters available to add.' +
+                    '</p>';
+        } else {
+            html += '<select id="te-member-select" class="te-member-select">';
+            html += '<option value="">Select a character...</option>';
+            for (var j = 0; j < candidates.length; j++) {
+                var c = candidates[j];
+                html += '<option value="' + escapeAttr(c.id) + '">' +
+                            escapeHtml(c.name + (isNonEmptyString(c.status) ? ' (' + c.status + ')' : '')) +
+                        '</option>';
+            }
+            html += '</select>';
+
+            html += '<div class="te-member-add-row">';
+            html += '<input type="text" class="te-member-role" ' +
+                        'placeholder="Role (optional)">';
+            html += '<input type="text" class="te-member-join" ' +
+                        'placeholder="Join period (optional)">';
+            html += '<input type="text" class="te-member-leave" ' +
+                        'placeholder="Leave period (optional)">';
+            html += '<button type="button" ' +
+                        'class="small primary te-member-add-btn">Add</button>';
+            html += '</div>';
+        }
+
+        html += '</div>';
+
+        // ---- Actions ----
+        html += '<div class="form-actions">';
+        html += '<button type="button" ' +
+                    'class="secondary te-member-close-btn">Close</button>';
+        html += '</div>';
+
+        html += '</div>';
+
+        return html;
+    }
+
+    function renderMemberRow(member, teamId) {
+        if (!member || !member.characterId) { return ''; }
+
+        var name = member.displayName || 'Unknown';
+        var role = isNonEmptyString(member.role) && member.role !== 'Member'
+            ? member.role
+            : '';
+
+        var period = '';
+        if (isNonEmptyString(member.joinPeriod)) {
+            period += 'from ' + member.joinPeriod;
+        }
+        if (isNonEmptyString(member.leavePeriod)) {
+            period += (period ? ' ' : '') + 'until ' + member.leavePeriod;
+        }
+
+        var html = '';
+        html += '<div class="academy-team-member-row" ' +
+                    'data-character-id="' + escapeAttr(member.characterId) + '">';
+        html += '<span class="academy-team-member-name">' +
+                    escapeHtml(name) +
+                '</span>';
+        if (role) {
+            html += '<span class="academy-team-member-role">' +
+                        escapeHtml(role) +
+                    '</span>';
+        }
+        if (period) {
+            html += '<span class="academy-team-member-period">' +
+                        escapeHtml(period) +
+                    '</span>';
+        }
+        html += '<button type="button" ' +
+                    'class="small danger te-member-remove-btn" ' +
+                    'data-character-id="' + escapeAttr(member.characterId) + '">' +
+                    'Remove' +
+                '</button>';
+        html += '</div>';
+        return html;
+    }
+
+    function bindCloseOnly(container) {
+        var closeBtns = container.querySelectorAll(
+            '.team-events-close-btn, .te-member-close-btn'
+        );
+        for (var i = 0; i < closeBtns.length; i++) {
+            closeBtns[i].addEventListener('click', function() {
+                if (_activeMemberManagerClose) {
+                    _activeMemberManagerClose();
+                }
+            });
+        }
+    }
+
+    var _activeMemberManagerClose = null;
+
+    function bindManagerEvents(container, vm, ctx) {
+        // Close buttons
+        var closeBtns = container.querySelectorAll(
+            '.team-events-close-btn, .te-member-close-btn'
+        );
+        for (var i = 0; i < closeBtns.length; i++) {
+            closeBtns[i].addEventListener('click', function() {
+                if (_activeMemberManagerClose) {
+                    _activeMemberManagerClose();
+                }
+            });
+        }
+
+        // Remove buttons
+        var removeBtns = container.querySelectorAll('.te-member-remove-btn');
+        for (var j = 0; j < removeBtns.length; j++) {
+            (function(btn) {
+                btn.addEventListener('click', function() {
+                    var charId = btn.dataset.characterId;
+                    if (!charId) { return; }
+                    if (!confirm('Remove this member from the team?')) {
+                        return;
+                    }
+                    TeamCore.removeMember(vm.teamId, charId).then(function(result) {
+                        if (result && result.success) {
+                            ctx.refresh();
+                            if (typeof ctx.onMutation === 'function') {
+                                try { ctx.onMutation(); } catch (e) {
+                                    console.warn('[TeamEvents] onMutation threw:', e);
+                                }
+                            }
+                        }
+                    }).catch(function(err) {
+                        console.warn('[TeamEvents] removeMember failed:', err);
+                        notify('Failed to remove member.', 'error');
+                    });
+                });
+            })(removeBtns[j]);
+        }
+
+        // Add button
+        var addBtn = container.querySelector('.te-member-add-btn');
+        if (addBtn) {
+            addBtn.addEventListener('click', function() {
+                var select = container.querySelector('.te-member-select');
+                var roleInput = container.querySelector('.te-member-role');
+                var joinInput = container.querySelector('.te-member-join');
+                var leaveInput = container.querySelector('.te-member-leave');
+
+                var charId = select ? select.value : '';
+                if (!charId) {
+                    notify('Select a character to add.', 'error');
+                    return;
+                }
+
+                TeamCore.addMember(vm.teamId, {
+                    characterId: charId,
+                    role: roleInput ? roleInput.value.trim() : '',
+                    joinPeriod: joinInput ? joinInput.value.trim() : '',
+                    leavePeriod: leaveInput ? leaveInput.value.trim() : ''
+                }).then(function(result) {
+                    if (result && result.success) {
+                        ctx.refresh();
+                        if (typeof ctx.onMutation === 'function') {
+                            try { ctx.onMutation(); } catch (e) {
+                                console.warn('[TeamEvents] onMutation threw:', e);
+                            }
+                        }
+                    }
+                }).catch(function(err) {
+                    console.warn('[TeamEvents] addMember failed:', err);
+                    notify('Failed to add member.', 'error');
+                });
+            });
+        }
+    }
+
+    // ============================================================
+    // EXTERNAL ENTRY POINT - MEMBER EDITOR
+    // ============================================================
+    //
+    // Same container-based pattern as openMemberManager. Renders a
+    // form for a single member into the caller's container and wires
+    // the submit to TeamCore.updateMember.
+    //
+    // The caller is responsible for opening a modal shell and
+    // providing the .modal-content (or any container) to render into.
+
+    function openMemberEditor(container, teamId, charId, period, options) {
+        if (!container || !teamId || !charId) {
+            return null;
+        }
+
+        options = options || {};
+        var onClose = (typeof options.onClose === 'function')
+            ? options.onClose
+            : null;
+        var onMutation = (typeof options.onMutation === 'function')
+            ? options.onMutation
+            : null;
+
+        var disposed = false;
+
+        function render() {
+            if (disposed || !container.parentNode) {
+                return;
+            }
+
+            var vm = TeamAggregator.getMemberModalViewModel(teamId, period);
+            if (!vm) {
+                container.innerHTML =
+                    renderMemberManagerHeader('Edit Member') +
+                    '<div class="modal-body">' +
+                        '<p class="empty-state small">Team not found.</p>' +
+                    '</div>';
+                return;
+            }
+
+            var member = null;
+            for (var i = 0; i < vm.members.length; i++) {
+                if (String(vm.members[i].characterId) === String(charId)) {
+                    member = vm.members[i];
+                    break;
+                }
+            }
+
+            if (!member) {
+                container.innerHTML =
+                    renderMemberEditorHeader(vm.teamName) +
+                    '<div class="modal-body">' +
+                        '<p class="empty-state small">Member not found.</p>' +
+                    '</div>';
+                bindEditorClose(container);
+                return;
+            }
+
+            container.innerHTML = renderMemberEditorBody(member, teamId, charId);
+            bindEditorEvents(container, member, {
+                onMutation: onMutation,
+                onClose: onClose
+            });
+        }
+
+        function close() {
+            disposed = true;
+            if (typeof onClose === 'function') {
+                try { onClose(); } catch (e) {
+                    console.warn('[TeamEvents] onClose threw:', e);
+                }
+            }
+        }
+
+        function isOpen() {
+            return !disposed && !!container.parentNode;
+        }
+
+        render();
+
+        return {
+            refresh: render,
+            close: close,
+            isOpen: isOpen
+        };
+    }
+
+    function renderMemberEditorHeader(teamName) {
+        return (
+            '<div class="modal-header">' +
+                '<h3>Edit Member \u2014 ' + escapeHtml(teamName || 'Team') + '</h3>' +
+                '<button type="button" class="close-modal te-member-editor-close">&times;</button>' +
+            '</div>'
+        );
+    }
+
+    function renderMemberEditorBody(member, teamId, charId) {
+        var html = '';
+        html += renderMemberEditorHeader(charId ? '' : '');
+        html += '<div class="modal-body">';
+
+        html += '<div class="form-group">';
+        html += '<label>Character</label>';
+        html += '<p style="margin:4px 0 12px 0;font-weight:600;">' +
+                    escapeHtml(member.displayName || 'Unknown') +
+                '</p>';
+        html += '</div>';
+
+        html += '<div class="form-group">';
+        html += '<label for="te-edit-member-role">Role</label>';
+        html += '<input type="text" id="te-edit-member-role" ' +
+                    'value="' + escapeAttr(member.role || '') + '">';
+        html += '</div>';
+
+        html += '<div class="form-group">';
+        html += '<label for="te-edit-member-join">Join Period</label>';
+        html += '<input type="text" id="te-edit-member-join" ' +
+                    'value="' + escapeAttr(member.joinPeriod || '') + '">';
+        html += '</div>';
+
+        html += '<div class="form-group">';
+        html += '<label for="te-edit-member-leave">Leave Period</label>';
+        html += '<input type="text" id="te-edit-member-leave" ' +
+                    'value="' + escapeAttr(member.leavePeriod || '') + '">';
+        html += '</div>';
+
+        html += '<div class="form-actions">';
+        html += '<button type="button" ' +
+                    'class="secondary te-member-editor-cancel">Cancel</button>';
+        html += '<button type="button" ' +
+                    'class="primary te-member-editor-save">Save Changes</button>';
+        html += '</div>';
+
+        html += '</div>';
+        return html;
+    }
+
+    function bindEditorClose(container) {
+        var closeBtns = container.querySelectorAll(
+            '.te-member-editor-close, .te-member-editor-cancel'
+        );
+        for (var i = 0; i < closeBtns.length; i++) {
+            closeBtns[i].addEventListener('click', function() {
+                if (_activeMemberEditorClose) {
+                    _activeMemberEditorClose();
+                }
+            });
+        }
+    }
+
+    var _activeMemberEditorClose = null;
+
+    function bindEditorEvents(container, member, ctx) {
+        // Close / cancel
+        var closeBtns = container.querySelectorAll(
+            '.te-member-editor-close, .te-member-editor-cancel'
+        );
+        for (var i = 0; i < closeBtns.length; i++) {
+            closeBtns[i].addEventListener('click', function() {
+                if (typeof ctx.onClose === 'function') {
+                    try { ctx.onClose(); } catch (e) {
+                        console.warn('[TeamEvents] onClose threw:', e);
+                    }
+                }
+            });
+        }
+
+        // Save
+        var saveBtn = container.querySelector('.te-member-editor-save');
+        if (saveBtn) {
+            saveBtn.addEventListener('click', function() {
+                var roleInput = container.querySelector('#te-edit-member-role');
+                var joinInput = container.querySelector('#te-edit-member-join');
+                var leaveInput = container.querySelector('#te-edit-member-leave');
+
+                TeamCore.updateMember(member.teamId || null, member.characterId, {
+                    role: roleInput ? roleInput.value.trim() : '',
+                    joinPeriod: joinInput ? joinInput.value.trim() : '',
+                    leavePeriod: leaveInput ? leaveInput.value.trim() : ''
+                }).then(function(result) {
+                    if (result && result.success) {
+                        if (typeof ctx.onMutation === 'function') {
+                            try { ctx.onMutation(); } catch (e) {
+                                console.warn('[TeamEvents] onMutation threw:', e);
+                            }
+                        }
+                        if (typeof ctx.onClose === 'function') {
+                            try { ctx.onClose(); } catch (e) {
+                                console.warn('[TeamEvents] onClose threw:', e);
+                            }
+                        }
+                    }
+                }).catch(function(err) {
+                    console.warn('[TeamEvents] updateMember failed:', err);
+                    notify('Failed to update member.', 'error');
+                });
+            });
+        }
     }
 
     // ============================================================
@@ -1219,13 +1722,17 @@
 
         refreshUI: refreshUI,
 
-        // Modal controls (exposed for external use)
+        // Modal controls (Teams tab internal)
         showTeamForm: showTeamForm,
         closeTeamForm: closeTeamForm,
         showMemberModal: showMemberModal,
         closeMemberModal: closeMemberModal,
         showRankingModal: showRankingModal,
-        closeRankingModal: closeRankingModal
+        closeRankingModal: closeRankingModal,
+
+        // External entry points (container-based)
+        openMemberManager: openMemberManager,
+        openMemberEditor: openMemberEditor
     };
 
     // ============================================================
@@ -1240,7 +1747,8 @@
             'init', 'destroy', 'refreshUI',
             'showTeamForm', 'closeTeamForm',
             'showMemberModal', 'closeMemberModal',
-            'showRankingModal', 'closeRankingModal'
+            'showRankingModal', 'closeRankingModal',
+            'openMemberManager', 'openMemberEditor'
         ];
 
         for (var i = 0; i < required.length; i++) {
