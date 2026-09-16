@@ -33,6 +33,19 @@
  *   assigned at import time. The old check required the first cell
  *   (CharacterId) to be non-empty, which dropped every fresh row.
  * 
+ * ID ASSIGNMENT:
+ *   When a row is accepted and its CharacterId cell is empty, this
+ *   module assigns a fresh ID via IdUtils.generateId('char') BEFORE
+ *   adding the candidate to the valid list. This matches the prefix
+ *   used by CharacterCRUD.createNewCharacter, so imported characters
+ *   are indistinguishable from ones created through the form.
+ * 
+ *   Without this assignment, imported characters enter the store with
+ *   id: null, and every consumer that routes through
+ *   CharacterQueries.getCharacterById(id) silently fails — including
+ *   the character list click handler, which reads data-id from the
+ *   rendered row and passes it to getCharacterById.
+ * 
  * DEPENDENCIES:
  *   - window.CSV (from csv-parser.js) - MANDATORY
  *   - window.ImportResult (from import-result.js) - MANDATORY
@@ -91,6 +104,7 @@
     var SECTION = '# CHARACTERS';
     var MAX_ROWS = 10000;
     var BOM_CHAR_CODE = 0xFEFF;
+    var ID_PREFIX = 'char';
 
     // ============================================================
     // COLUMN DEFINITIONS
@@ -599,6 +613,20 @@
 
             if (parsed.valid) {
                 if (isValidCandidate(parsed.character)) {
+                    // ---- ID ASSIGNMENT ----
+                    // A row with an empty CharacterId cell is the normal
+                    // case for a fresh template or a hand-authored file.
+                    // Assign a stable ID here so the candidate enters the
+                    // store with a valid identifier, matching the prefix
+                    // and format used by CharacterCRUD.createNewCharacter.
+                    //
+                    // Without this, the character would be persisted with
+                    // id: null, and every lookup that routes through
+                    // CharacterQueries.getCharacterById(id) would silently
+                    // fail — including the character list click handler.
+                    if (!parsed.character.id) {
+                        parsed.character.id = IdUtils.generateId(ID_PREFIX);
+                    }
                     result.addValid(parsed.character, { row: rowNumber });
                 } else {
                     result.addError('Invalid character data (missing name)', { row: rowNumber });
@@ -920,6 +948,7 @@
         // ---- Constants ----
         SECTION: SECTION,
         COLUMNS: COLUMNS,
+        ID_PREFIX: ID_PREFIX,
 
         // ---- Schema helpers ----
         getColumns: getColumns,
