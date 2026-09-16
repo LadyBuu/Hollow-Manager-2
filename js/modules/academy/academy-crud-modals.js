@@ -43,7 +43,7 @@
  * MODAL CLOSE SEMANTICS:
  *   Modal.hideModal is ASYNCHRONOUS. closeModal below awaits the
  *   returned Promise before removing the element from the DOM.
- *   Falling back to Modal.closeModal when available gives the full
+ *   Preferring Modal.closeModal when available gives the full
  *   teardown path (cleanups, focus restore, listener removal).
  *
  * ADD CHARACTER TO CLASS — SORTING AND OPTGROUP:
@@ -70,6 +70,19 @@
  *   label adds nothing. Same for the "In Other Classes" partition
  *   alone. This keeps the common case (a class with mostly unassigned
  *   characters) visually simple.
+ *
+ * ADD CHARACTER TO CLASS — OPTION LABEL:
+ *   Each option shows the character's display name and, when
+ *   available, their age in parentheses:
+ *
+ *     Alice Blackwood (22 yrs)
+ *
+ *   Age comes from CharacterQueries.getCharacterAge(char), which
+ *   returns a string like '22 yrs' or '-' when the birth year is
+ *   unknown. The '-' sentinel is suppressed, so a character with no
+ *   birth year just shows the name. This matches the rest of the
+ *   Academy UI's age formatting and keeps the dropdown readable
+ *   when the age is unavailable.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -154,6 +167,9 @@
     if (!CharacterQueries || typeof CharacterQueries.getCharacters !== 'function') {
         _missing.push('CharacterQueries.getCharacters');
     }
+    if (!CharacterQueries || typeof CharacterQueries.getCharacterAge !== 'function') {
+        _missing.push('CharacterQueries.getCharacterAge');
+    }
     if (!AcademyAggregator || typeof AcademyAggregator.getClassStudentsViewModel !== 'function') {
         _missing.push('AcademyAggregator.getClassStudentsViewModel');
     }
@@ -206,13 +222,33 @@
 
     /**
      * Compare two strings for alphabetical ordering. Case-insensitive,
-     * locale-aware. Falls back to `-1/1` on null inputs so callers
-     * don't need to guard.
+     * locale-aware. Null/undefined coalesce to '' so callers don't
+     * need to guard.
      */
     function compareAlpha(a, b) {
         var sa = isNonEmptyString(a) ? a : '';
         var sb = isNonEmptyString(b) ? b : '';
         return sa.localeCompare(sb);
+    }
+
+    /**
+     * Format the label for a character in a candidate dropdown.
+     *
+     * Returns "<name> (<age>)" when the age is a real value, or just
+     * "<name>" when the age is missing or the '-' sentinel.
+     *
+     * The age string comes from CharacterQueries.getCharacterAge,
+     * which returns something like '22 yrs' or '-' for unknown.
+     */
+    function formatCharacterOptionLabel(name, age) {
+        var safeName = isNonEmptyString(name) ? name : 'Unknown';
+        var safeAge = isNonEmptyString(age) && age !== '-'
+            ? age
+            : '';
+        if (safeAge === '') {
+            return safeName;
+        }
+        return safeName + ' (' + safeAge + ')';
     }
 
     // ============================================================
@@ -473,10 +509,10 @@
     // NOT query the roster; the aggregator does that.
     //
     // The VM carries `candidatesUnassigned` and `candidatesAssigned`
-    // as two separate arrays. The builder renders them as two
-    // <optgroup> blocks when both are non-empty, a single <optgroup>
-    // when only one is non-empty, and a flat list when the VM has a
-    // legacy `candidates` array.
+    // as two separate arrays. Each entry is { id, name, age, status }.
+    // The builder renders them as two <optgroup> blocks when both are
+    // non-empty, a single <optgroup> when only one is non-empty, and
+    // a flat list when the VM has only the legacy `candidates` array.
 
     function buildAddCharacterToClassHTML(vm) {
         var html = '';
@@ -512,16 +548,13 @@
 
             html += '<option value="">Select a character...</option>';
 
-            if (total === 0) {
-                // No candidates — the "already in the class" empty state
-                // is handled by the surrounding hint below.
-            } else if (free.length > 0 && assigned.length > 0) {
+            if (total > 0 && free.length > 0 && assigned.length > 0) {
                 html += renderCharacterOptgroup('Unassigned', free);
                 html += renderCharacterOptgroup('In Other Classes', assigned);
             } else if (free.length > 0) {
                 // Only unassigned; a label adds nothing.
                 html += renderCharacterOptions(free);
-            } else {
+            } else if (assigned.length > 0) {
                 // Only assigned.
                 html += renderCharacterOptgroup('In Other Classes', assigned);
             }
@@ -555,8 +588,9 @@
             return html;
         }
 
-        // Legacy path: the VM has a flat `candidates` array. Kept so a
-        // partially-migrated deployment doesn't produce an empty modal.
+        // Legacy path: the VM has a flat `candidates` array. Kept so
+        // a partially-migrated deployment doesn't produce an empty
+        // modal.
         var candidates = Array.isArray(vm.candidates) ? vm.candidates : [];
 
         html += '<option value="">Select a character...</option>';
@@ -590,8 +624,9 @@
         for (var i = 0; i < candidates.length; i++) {
             var cand = candidates[i];
             if (!cand || !cand.id) { continue; }
+            var label = formatCharacterOptionLabel(cand.name, cand.age);
             html += '<option value="' + escapeAttribute(cand.id) + '">' +
-                        escapeHtml(cand.name) +
+                        escapeHtml(label) +
                     '</option>';
         }
         return html;
@@ -617,12 +652,14 @@
      *                           target class, since the target class's
      *                           roster is already excluded).
      *
-     * Both partitions are sorted alphabetically by display name.
+     * Each candidate entry carries { id, name, age, status }.
+     * Age is the display string from CharacterQueries.getCharacterAge
+     * (e.g. '22 yrs' or '-'), unmodified. The renderer suppresses the
+     * '-' sentinel so an unknown age produces just the name.
      *
      * The roster of the TARGET class is excluded entirely — both its
      * students (from the aggregator) and its instructor (from the
-     * class record). "Already in a class" here means "in some OTHER
-     * class".
+     * class record).
      */
     function buildAddCharacterToClassViewModel(classId) {
         var cls = getClassRecord(classId);
@@ -652,7 +689,9 @@
 
             var entry = {
                 id: c.id,
-                name: CharacterQueries.getDisplayName(c)
+                name: CharacterQueries.getDisplayName(c),
+                age: CharacterQueries.getCharacterAge(c),
+                status: CharacterQueries.getCurrentStatus(c)
             };
 
             var hasAnyClass = Array.isArray(c.classIds) && c.classIds.length > 0;
