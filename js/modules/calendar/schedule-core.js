@@ -16,6 +16,22 @@
  *   - All operations commit changes to window.data.curriculum
  *   - Caller owns persistence through MutationUtils
  * 
+ * BLOCK TYPE VOCABULARY:
+ *   Instructor blocks carry a `type` field. Valid values:
+ *     'blocked'       — general unavailable time (default)
+ *     'office_hours'  — student-facing availability
+ *     'research'      — non-teaching work time
+ *   Missing or invalid type on write defaults to 'blocked'. The
+ *   read path (CalendarQueries.getInstructorBlocks) normalizes
+ *   legacy records that predate the type field.
+ * 
+ * DUPLICATE SEMANTICS:
+ *   duplicateInstructorSchedule and duplicateLocationSchedule
+ *   OVERWRITE the target week. They do not merge. The caller is
+ *   responsible for warning the user about overwriting existing
+ *   data. Student schedule duplication is unchanged from the
+ *   original duplicateStudentSchedule.
+ * 
  * DEPENDENCIES:
  *   - ObjectUtils
  *   - CalendarConstants
@@ -32,6 +48,22 @@
     var CC = window.CalendarConstants;
     var CV = window.CalendarValidation;
 
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    /**
+     * Valid instructor block types. Extensible. If a future build
+     * adds a type, extend this list and the read-path normalizer in
+     * calendar-queries.js.
+     */
+    var VALID_BLOCK_TYPES = ['blocked', 'office_hours', 'research'];
+    var DEFAULT_BLOCK_TYPE = 'blocked';
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
     function isNonEmptyString(value) {
         return typeof value === 'string' && value.trim() !== '';
     }
@@ -46,6 +78,17 @@
 
     function failure(message) {
         return { success: false, message: message };
+    }
+
+    function isValidBlockType(type) {
+        return VALID_BLOCK_TYPES.indexOf(type) !== -1;
+    }
+
+    function normaliseBlockType(type) {
+        if (typeof type !== 'string') { return DEFAULT_BLOCK_TYPE; }
+        var trimmed = type.trim();
+        if (isValidBlockType(trimmed)) { return trimmed; }
+        return DEFAULT_BLOCK_TYPE;
     }
 
     function getCurriculum() {
@@ -706,7 +749,20 @@
         });
     }
 
-    function setInstructorBlock(instructorId, week, day, hour, duration, label) {
+    /**
+     * Set an instructor block.
+     *
+     * @param {string} instructorId
+     * @param {number|string} week
+     * @param {number|string} day
+     * @param {number|string} hour
+     * @param {number|string} duration
+     * @param {string} label
+     * @param {string} [type] - 'blocked' | 'office_hours' | 'research'.
+     *   Defaults to 'blocked' when absent or invalid.
+     * @returns {object} { success, data?, message? }
+     */
+    function setInstructorBlock(instructorId, week, day, hour, duration, label, type) {
         var instructorValidation = validateInstructorId(instructorId);
         if (!instructorValidation.valid) {
             return failure(instructorValidation.message);
@@ -716,6 +772,8 @@
         if (!slotValidation.valid) {
             return failure(slotValidation.message);
         }
+
+        var blockType = normaliseBlockType(type);
 
         var weekNum = slotValidation.week;
         var dayNum = slotValidation.day;
@@ -738,7 +796,8 @@
 
         candidateBlocks[instructorId][weekNum][dayNum][hourNum] = {
             duration: durationNum,
-            label: label || 'Blocked'
+            label: label || '',
+            type: blockType
         };
 
         curriculum.instructorBlocks = candidateBlocks;
@@ -749,7 +808,8 @@
             day: dayNum,
             hour: hourNum,
             duration: durationNum,
-            label: label || 'Blocked'
+            label: label || '',
+            type: blockType
         });
     }
 
@@ -809,6 +869,99 @@
             day: dayNum,
             hour: hourNum,
             removed: true
+        });
+    }
+
+    /**
+     * Duplicate an instructor's schedule from one week to another.
+     *
+     * Copies templates and (optionally) blocks. OVERWRITES the target
+     * week — no merge. The caller is responsible for warning the user
+     * when the target week already has data.
+     *
+     * @param {string} instructorId
+     * @param {number|string} fromWeek
+     * @param {number|string} toWeek
+     * @param {object} [options] - { includeBlocks: boolean } (default true)
+     * @returns {object} { success, data?, message? }
+     */
+    function duplicateInstructorSchedule(instructorId, fromWeek, toWeek, options) {
+        var instructorValidation = validateInstructorId(instructorId);
+        if (!instructorValidation.valid) {
+            return failure(instructorValidation.message);
+        }
+
+        var fromWeekNum = CV.parseWeek(fromWeek);
+        var toWeekNum = CV.parseWeek(toWeek);
+
+        if (fromWeekNum === null || fromWeekNum < CC.MIN_WEEK || fromWeekNum > CC.MAX_WEEK) {
+            return failure('Valid source week is required (' + CC.MIN_WEEK + '-' + CC.MAX_WEEK + ').');
+        }
+        if (toWeekNum === null || toWeekNum < CC.MIN_WEEK || toWeekNum > CC.MAX_WEEK) {
+            return failure('Valid target week is required (' + CC.MIN_WEEK + '-' + CC.MAX_WEEK + ').');
+        }
+        if (fromWeekNum === toWeekNum) {
+            return failure('Source and target weeks must be different.');
+        }
+
+        options = options || {};
+        var includeBlocks = options.includeBlocks !== false;
+
+        var curriculum = ensureCurriculumStructure();
+        if (!curriculum) { return failure('Curriculum data is not available.'); }
+
+        // ---- Templates ----
+        var sourceTemplates = null;
+        var templates = curriculum.instructorTemplates || {};
+        if (templates[instructorId] && templates[instructorId][fromWeekNum]) {
+            sourceTemplates = templates[instructorId][fromWeekNum];
+        }
+
+        var candidateTemplates = deepClone(curriculum.instructorTemplates);
+        if (!candidateTemplates) { return failure('Failed to prepare template data.'); }
+
+        if (sourceTemplates) {
+            if (!candidateTemplates[instructorId]) { candidateTemplates[instructorId] = {}; }
+            // Overwrite the target week completely.
+            candidateTemplates[instructorId][toWeekNum] = deepClone(sourceTemplates);
+        } else {
+            // Source week has no templates. Clear the target week so the
+            // operation is a faithful copy of "nothing".
+            if (candidateTemplates[instructorId] && candidateTemplates[instructorId][toWeekNum]) {
+                delete candidateTemplates[instructorId][toWeekNum];
+            }
+        }
+
+        // ---- Blocks ----
+        var candidateBlocks = deepClone(curriculum.instructorBlocks);
+        if (!candidateBlocks) { return failure('Failed to prepare block data.'); }
+
+        if (includeBlocks) {
+            var sourceBlocks = null;
+            var blocks = curriculum.instructorBlocks || {};
+            if (blocks[instructorId] && blocks[instructorId][fromWeekNum]) {
+                sourceBlocks = blocks[instructorId][fromWeekNum];
+            }
+
+            if (sourceBlocks) {
+                if (!candidateBlocks[instructorId]) { candidateBlocks[instructorId] = {}; }
+                candidateBlocks[instructorId][toWeekNum] = deepClone(sourceBlocks);
+            } else {
+                if (candidateBlocks[instructorId] && candidateBlocks[instructorId][toWeekNum]) {
+                    delete candidateBlocks[instructorId][toWeekNum];
+                }
+            }
+        }
+
+        curriculum.instructorTemplates = candidateTemplates;
+        curriculum.instructorBlocks = candidateBlocks;
+
+        return success({
+            instructorId: instructorId,
+            fromWeek: fromWeekNum,
+            toWeek: toWeekNum,
+            includeBlocks: includeBlocks,
+            duplicated: true
         });
     }
 
@@ -1001,6 +1154,105 @@
         return success({ cleared: true, week: weekNum });
     }
 
+    /**
+     * Duplicate a location's schedule from one week to another.
+     *
+     * Copies both the schedule cells and the associated metadata
+     * entries (slot metadata is keyed by `<locationId>_<week>_<day>_<hour>`
+     * and would otherwise dangle in the source week). OVERWRITES the
+     * target week — no merge.
+     *
+     * @param {string} locationId
+     * @param {number|string} fromWeek
+     * @param {number|string} toWeek
+     * @returns {object} { success, data?, message? }
+     */
+    function duplicateLocationSchedule(locationId, fromWeek, toWeek) {
+        if (!isNonEmptyString(locationId)) {
+            return failure('Location ID is required.');
+        }
+
+        var fromWeekNum = CV.parseWeek(fromWeek);
+        var toWeekNum = CV.parseWeek(toWeek);
+
+        if (fromWeekNum === null || fromWeekNum < CC.MIN_WEEK || fromWeekNum > CC.MAX_WEEK) {
+            return failure('Valid source week is required (' + CC.MIN_WEEK + '-' + CC.MAX_WEEK + ').');
+        }
+        if (toWeekNum === null || toWeekNum < CC.MIN_WEEK || toWeekNum > CC.MAX_WEEK) {
+            return failure('Valid target week is required (' + CC.MIN_WEEK + '-' + CC.MAX_WEEK + ').');
+        }
+        if (fromWeekNum === toWeekNum) {
+            return failure('Source and target weeks must be different.');
+        }
+
+        var curriculum = ensureCurriculumStructure();
+        if (!curriculum) { return failure('Curriculum data is not available.'); }
+
+        // ---- Schedule cells ----
+        var sourceSchedule = null;
+        var schedules = curriculum.locationSchedules || {};
+        if (schedules[locationId] && schedules[locationId][fromWeekNum]) {
+            sourceSchedule = schedules[locationId][fromWeekNum];
+        }
+
+        var candidateSchedules = deepClone(curriculum.locationSchedules);
+        if (!candidateSchedules) { return failure('Failed to prepare location schedule data.'); }
+
+        if (sourceSchedule) {
+            if (!candidateSchedules[locationId]) { candidateSchedules[locationId] = {}; }
+            candidateSchedules[locationId][toWeekNum] = deepClone(sourceSchedule);
+        } else {
+            if (candidateSchedules[locationId] && candidateSchedules[locationId][toWeekNum]) {
+                delete candidateSchedules[locationId][toWeekNum];
+            }
+        }
+
+        // ---- Metadata ----
+        // Copy metadata entries whose key starts with
+        // `<locationId>_<fromWeek>_`, re-keyed to the target week. Also
+        // clear any target-week metadata that would otherwise dangle
+        // over the overwritten cells.
+        var candidateMetadata = deepClone(curriculum.metadata);
+        if (!candidateMetadata) { candidateMetadata = {}; }
+
+        var sourcePrefix = String(locationId) + '_' + String(fromWeekNum) + '_';
+        var targetPrefix = String(locationId) + '_' + String(toWeekNum) + '_';
+
+        // First, drop every target-week entry for this location. The
+        // schedule cells are being replaced; stale metadata must not
+        // survive.
+        for (var key in candidateMetadata) {
+            if (Object.prototype.hasOwnProperty.call(candidateMetadata, key) &&
+                key.indexOf(targetPrefix) === 0) {
+                delete candidateMetadata[key];
+            }
+        }
+
+        // Then, copy source-week entries under the target prefix.
+        for (var srcKey in candidateMetadata) {
+            if (Object.prototype.hasOwnProperty.call(candidateMetadata, srcKey) &&
+                srcKey.indexOf(sourcePrefix) === 0) {
+                var suffix = srcKey.substring(sourcePrefix.length);
+                var newKey = targetPrefix + suffix;
+                candidateMetadata[newKey] = deepClone(candidateMetadata[srcKey]);
+            }
+        }
+
+        curriculum.locationSchedules = candidateSchedules;
+        curriculum.metadata = candidateMetadata;
+
+        return success({
+            locationId: locationId,
+            fromWeek: fromWeekNum,
+            toWeek: toWeekNum,
+            duplicated: true
+        });
+    }
+
+    // ============================================================
+    // EXPOSE
+    // ============================================================
+
     window.ScheduleCore = {
         // Validation
         validateSlot: validateSlot,
@@ -1028,11 +1280,19 @@
         removeInstructorTemplate: removeInstructorTemplate,
         setInstructorBlock: setInstructorBlock,
         removeInstructorBlock: removeInstructorBlock,
+        duplicateInstructorSchedule: duplicateInstructorSchedule,
 
         // Location
         setLocationClass: setLocationClass,
         removeLocationClass: removeLocationClass,
         clearLocationSchedule: clearLocationSchedule,
+        duplicateLocationSchedule: duplicateLocationSchedule,
+
+        // Block type helpers (exposed for the view layer)
+        VALID_BLOCK_TYPES: VALID_BLOCK_TYPES,
+        DEFAULT_BLOCK_TYPE: DEFAULT_BLOCK_TYPE,
+        isValidBlockType: isValidBlockType,
+        normaliseBlockType: normaliseBlockType,
 
         // Constants
         MIN_WEEK: CC.MIN_WEEK,
