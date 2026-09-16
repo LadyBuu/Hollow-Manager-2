@@ -51,6 +51,15 @@
  *   an id) and within a tournament (no two rounds share an id).
  *   Duplicate IDs are rejected with the offending value named.
  *
+ * SCHEMA VERSION ON OUTPUT:
+ *   The repaired output carries `_schemaVersion: Schema.SCHEMA_VERSION`
+ *   when Schema exposes the constant, or a hardcoded fallback (3) when
+ *   it does not. Repair must NEVER write a stale schema version.
+ *   The prior implementation hardcoded `2`; that produced records that
+ *   failed the final strict validation gate because the current schema
+ *   is version 3. Reading the constant from Schema keeps the output
+ *   versioned correctly without a second place to maintain it.
+ *
  * SEMANTIC NOTES:
  *   - roundNumber is POSITIONAL per schema definition (index + 1).
  *     Repair recomputes it from the array index; it does not trust
@@ -82,11 +91,9 @@
     // MANDATORY DEPENDENCY CHECK
     // ============================================================
     //
-    // The header claims these are mandatory. The prior version
-    // loaded lazily and could operate with missing dependencies
-    // (dropping to JSON clone, skipping the final validation gate,
-    // etc.). This version checks them at load and throws when any
-    // is absent, matching the header's stated contract.
+    // The header claims these are mandatory. This version checks
+    // them at load and throws when any is absent, matching the
+    // header's stated contract.
 
     var Schema = window.TournamentSchema || window.TournamentsSchema || null;
     var IdUtils = window.IdUtils || null;
@@ -124,6 +131,22 @@
             _missing.join(', ')
         );
     }
+
+    // ============================================================
+    // SCHEMA VERSION CONSTANT
+    // ============================================================
+    //
+    // Read once at load time. Repair output uses this value for
+    // `_schemaVersion` so a schema bump does not require editing
+    // this file. The fallback only fires if Schema exposes the
+    // contract surface (validateTournament, normaliseId) but omits
+    // SCHEMA_VERSION — which would be a bug in Schema.
+
+    var SCHEMA_VERSION_FOR_OUTPUT = (typeof Schema.SCHEMA_VERSION === 'number' &&
+        Number.isInteger(Schema.SCHEMA_VERSION) &&
+        Schema.SCHEMA_VERSION >= 1)
+        ? Schema.SCHEMA_VERSION
+        : 3;
 
     // ============================================================
     // HELPERS
@@ -1095,7 +1118,7 @@
                 createdAt: createdAt,
                 graduatingClassId: graduatingClassId,
                 classFilterEnabled: classFilterEnabled,
-                _schemaVersion: 2
+                _schemaVersion: SCHEMA_VERSION_FOR_OUTPUT
             };
 
             // ---- REPAIR PARTICIPANTS ----
