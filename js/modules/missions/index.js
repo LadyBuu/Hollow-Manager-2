@@ -1,171 +1,210 @@
 /**
  * js/modules/missions/index.js - Missions Module Entry Point
- * Single entry point for all mission functionality.
- * Registers with TabManager and delegates to sub-modules.
- * 
- * IMPORTANT:
- *   - This module is the ONLY external entry point for missions
- *   - All mission logic lives in the sub-modules
- *   - This module does NOT implement mission logic directly
- *   - It delegates to MissionUI for all operations
- *   - TabManager is the single source of truth for lifecycle
- *   - Missing dependencies fail visibly (no silent returns)
- * 
- * DEPENDENCIES:
- *   - MissionUI (from mission-ui.js)
- *   - MissionCore (from mission-core.js)
- *   - MissionQueries (from mission-queries.js)
- *   - MissionRender (from mission-render.js)
- *   - MissionSchema (from mission-schema.js)
- *   - MissionViews (from mission-views.js)
- *   - MissionAggregator (from mission-aggregator.js)
- *   - MissionId (from mission-id.js)
- * 
- * USAGE:
- *   // Mount the missions module
- *   window.renderMissions(container);
- * 
- *   // View a mission
- *   window.viewMission('miss_123');
- * 
- *   // Destroy the module (clean up event listeners)
- *   window.destroyMissions();
+ *
+ * Path: js/modules/missions/index.js
+ *
+ * Registration and lifecycle entry point for the missions module.
+ *
+ * WHAT THIS MODULE OWNS:
+ *   - Registering the missions tab with TabManager.
+ *   - Delegating every public API call to MissionUI.
+ *   - Exposing a small, stable public surface on window.Missions
+ *     and legacy global functions for callers that still use them.
+ *
+ * WHAT THIS MODULE DOES NOT DO:
+ *   - Any mission logic. That lives in MissionUI and below.
+ *   - Any rendering. That lives in MissionRender.
+ *   - Any state. That lives in MissionUI.
+ *   - Any domain reads or writes. That lives in MissionQueries and
+ *     MissionCore.
+ *
+ * DESIGN NOTES:
+ *   - MissionUI is the single mandatory dependency. Every other
+ *     module in the missions stack is validated at its own load
+ *     time and would have already thrown if it were missing. This
+ *     entry point does not attempt to re-validate the whole graph.
+ *   - TabManager is mandatory here. The missions tab cannot
+ *     function without a tab to register with, and hiding the
+ *     failure would mean the tab silently never appears.
+ *   - The public API is deliberately small: mount, destroy, and
+ *     the four actions that the rest of the application calls
+ *     (view, close, showForm, refresh). Anything else is reachable
+ *     through MissionUI.
+ *
+ * LIFECYCLE:
+ *   - On load, this module registers with TabManager.
+ *   - TabManager calls the registered render function when the
+ *     user switches to the missions tab.
+ *   - destroy() is called by TabManager (or by the caller) when the
+ *     tab is torn down. It delegates to MissionUI.destroy(), which
+ *     removes listeners and clears UI state.
+ *
+ * LOAD ORDER:
+ *   - mission-constants.js
+ *   - mission-id.js
+ *   - mission-schema.js
+ *   - mission-rules.js
+ *   - mission-queries.js
+ *   - mission-cascade.js
+ *   - mission-core.js
+ *   - mission-views.js
+ *   - mission-render.js
+ *   - mission-aggregator.js
+ *   - mission-ui.js
+ *   - index.js   (this file)
+ *
+ * DEPENDENCIES (MANDATORY):
+ *   - window.TabManager
+ *   - window.MissionUI
  */
 
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__missionsModuleLoaded) {
         return;
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - NO FALLBACKS
+    // MANDATORY DEPENDENCY CHECK
     // ============================================================
 
     var missing = [];
 
-    // Primary dependency - MissionUI is the only required dependency
-    // for the entry point to function. All other dependencies are
-    // validated by MissionUI itself.
-    if (!window.MissionUI || typeof window.MissionUI.render !== 'function') {
-        missing.push('MissionUI');
+    if (!window.TabManager ||
+        typeof window.TabManager.register !== 'function') {
+        missing.push('TabManager.register');
+    }
+
+    if (!window.MissionUI) {
+        missing.push('MissionUI (module)');
+    } else {
+        if (typeof window.MissionUI.render !== 'function') {
+            missing.push('MissionUI.render');
+        }
+        if (typeof window.MissionUI.destroy !== 'function') {
+            missing.push('MissionUI.destroy');
+        }
     }
 
     if (missing.length > 0) {
-        throw new Error('[MissionsModule] Missing required dependencies: ' + missing.join(', '));
+        throw new Error(
+            '[MissionsModule] Missing mandatory dependencies: ' +
+            missing.join(', ')
+        );
     }
 
     window.__missionsModuleLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // SHORTHAND IMPORTS
     // ============================================================
 
+    var TabManager = window.TabManager;
     var MissionUI = window.MissionUI;
 
-    // Internal module access for debugging/development only.
-    // These are not part of the public API and should not be used
-    // by application code. They are exposed for diagnostic purposes.
-    var _debugModules = {
-        Core: window.MissionCore || null,
-        Queries: window.MissionQueries || null,
-        Render: window.MissionRender || null,
-        Schema: window.MissionSchema || null,
-        Views: window.MissionViews || null,
-        Aggregator: window.MissionAggregator || null,
-        Id: window.MissionId || null,
-        UI: window.MissionUI || null
-    };
-
     // ============================================================
-    // PUBLIC API - Delegate to MissionUI
+    // PUBLIC API - delegates to MissionUI
     // ============================================================
 
     /**
-     * Render the missions module in the given container.
-     * 
-     * @param {HTMLElement} container - Container element
-     * @returns {void}
+     * Mount the missions view into the given container. Called by
+     * TabManager when the missions tab is activated, and callable
+     * directly by callers that want to render the view into a
+     * different host.
+     *
+     * @param {HTMLElement} container
      */
     function renderMissions(container) {
         MissionUI.render(container);
     }
 
     /**
-     * View a mission by ID.
-     * 
-     * @param {string} id - Mission ID
-     * @returns {void}
-     */
-    function viewMission(id) {
-        MissionUI.viewMission(id);
-    }
-
-    /**
-     * Close the mission detail modal.
-     * 
-     * @returns {void}
-     */
-    function closeMissionDetail() {
-        MissionUI.closeMissionDetail();
-    }
-
-    /**
-     * Show the mission form for creating or editing a mission.
-     * 
-     * @param {string} editId - Mission ID to edit (optional)
-     * @returns {void}
-     */
-    function showMissionForm(editId) {
-        MissionUI.showMissionForm(editId);
-    }
-
-    /**
-     * Destroy the missions module (clean up event listeners).
-     * 
-     * @returns {void}
+     * Tear down the missions view. Removes listeners and clears
+     * controller state. Called by TabManager when the tab is torn
+     * down, and callable directly.
      */
     function destroyMissions() {
         MissionUI.destroy();
     }
 
-    // ============================================================
-    // REGISTER WITH TABMANAGER - Single lifecycle path
-    // ============================================================
-
-    if (window.TabManager && typeof window.TabManager.register === 'function') {
-        window.TabManager.register('missions', renderMissions);
+    /**
+     * Refresh the missions list from current data.
+     *
+     * The controller does not expose an explicit refresh on its
+     * public surface; the standard pattern is to re-render the tab.
+     * This is a thin re-render for callers that need to force it.
+     */
+    function refreshMissions() {
+        var container = document.getElementById('tab-missions');
+        if (container) {
+            MissionUI.render(container);
+        }
     }
 
     // ============================================================
-    // EXPOSE - Controlled public API only
+    // REGISTER WITH TABMANAGER
     // ============================================================
+    //
+    // Single lifecycle path. The application shell activates the
+    // tab; TabManager calls renderMissions with the tab container.
 
-    // Main render function
+    TabManager.register('missions', renderMissions);
+
+    // ============================================================
+    // EXPOSE
+    // ============================================================
+    //
+    // Two surfaces:
+    //
+    //   window.Missions
+    //     The forward-looking namespace. New callers use this.
+    //
+    //   window.renderMissions / destroyMissions
+    //     Legacy globals. Kept because existing callers use them.
+    //     Both delegate to the same functions as window.Missions.
+    //
+    // The two surfaces are intentionally identical. When legacy
+    // callers are migrated, the globals can be removed.
+
+    window.Missions = Object.freeze({
+        mount: renderMissions,
+        destroy: destroyMissions,
+        refresh: refreshMissions
+    });
+
+    // Legacy globals.
     window.renderMissions = renderMissions;
-
-    // Lifecycle
     window.destroyMissions = destroyMissions;
 
-    // Mission actions
-    window.viewMission = viewMission;
-    window.closeMissionDetail = closeMissionDetail;
-    window.showMissionForm = showMissionForm;
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
 
-    // Module access (for debugging and advanced use)
-    // NOTE: These are for diagnostic purposes only.
-    // Application code should use the public API functions above.
-    window.MissionsModule = {
-        render: renderMissions,
-        destroy: destroyMissions,
-        view: viewMission,
-        closeDetail: closeMissionDetail,
-        showForm: showMissionForm,
+    (function verify() {
+        var exports = window.Missions;
+        var missing = [];
 
-        // Debug access only - not intended for application use
-        _debug: _debugModules
-    };
+        var required = ['mount', 'destroy', 'refresh'];
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push('Missions.' + required[i]);
+            }
+        }
+
+        if (typeof window.renderMissions !== 'function') {
+            missing.push('window.renderMissions');
+        }
+        if (typeof window.destroyMissions !== 'function') {
+            missing.push('window.destroyMissions');
+        }
+
+        if (missing.length > 0) {
+            console.warn(
+                '[MissionsModule] Verification failed:',
+                missing.join(', ')
+            );
+        }
+    })();
 
 })();
