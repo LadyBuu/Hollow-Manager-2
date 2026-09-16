@@ -21,8 +21,7 @@
  *     render when the Schedule tab is active
  *   - Handle exam pair-picker DOM mutations (exam-pair-add /
  *     exam-pair-remove)
- *   - Handle Weekly Teams create/delete/manage-members by delegating
- *     to TeamCore and TeamEvents
+ *   - Handle Weekly Teams create/delete/manage-members
  *   - Handle Auto-Distribute for Weekly Teams
  *   - Handle character class membership mutations
  *     (character-remove-from-class)
@@ -35,11 +34,23 @@
  * ROLE VOCABULARY (CANONICAL):
  *   'student' | 'instructor'. There is no 'trainee'.
  *
+ * WEEKLY TEAMS MEMBER MANAGEMENT:
+ *   Manage Members for a weekly team routes to
+ *   AcademyWeeklyTeamsMembers, which is Academy-scoped. It reads the
+ *   candidate pool from the class roster, writes membership to
+ *   academy.weeklyTeams via AcademyWeeklyTeams.setWeeklyTeams, and
+ *   never touches the persistent Team entity or its roster. This
+ *   preserves the Option 1 split: week-scoped assignments live in
+ *   weeklyTeams; persistent membership lives on team.members; the
+ *   two stores are intentionally independent.
+ *
  * TEAM CORE CONFIGURATION:
  *   TeamCore requires a characterProvider via configure(). The Teams
- *   tab normally injects it on mount. When Academy creates or modifies
- *   teams and the Teams tab was never opened, this module injects the
- *   provider itself via ensureTeamCoreConfigured(). Idempotent.
+ *   tab normally injects it on mount. When Academy creates teams and
+ *   the Teams tab was never opened, this module injects the provider
+ *   itself via ensureTeamCoreConfigured(). Idempotent. This is still
+ *   needed for weekly-teams-create-team and the Auto-Distribute
+ *   workflow, which both call TeamCore.
  *
  * WEEK SEMANTICS:
  *   Week values are owned by AcademyUI.setDisplayWeek, which enforces
@@ -103,8 +114,9 @@
  *   - AcademyCharacterDetail / AcademyClassDetail
  *   - AcademyDisciplineView / AcademyLocationView / AcademyRankingView /
  *     AcademyWeeklyTeamsView / AcademyTournamentView
+ *   - AcademyWeeklyTeamsMembers (Academy-scoped member manager)
  *   - CalendarRenderer
- *   - TeamCore / TeamEvents / TeamQueries
+ *   - TeamCore / TeamQueries / TeamConstants
  *   - Modal / NotificationSystem
  */
 
@@ -219,6 +231,9 @@
     function getAcademyEnrolments() { return window.AcademyEnrolments || null; }
     function getAcademyGroups() { return window.AcademyGroups || null; }
     function getAcademyWeeklyTeams() { return window.AcademyWeeklyTeams || null; }
+    function getAcademyWeeklyTeamsMembers() {
+        return window.AcademyWeeklyTeamsMembers || null;
+    }
     function getAcademyCRUDModals() { return window.AcademyCRUDModals || null; }
     function getAcademyTournamentEvents() { return window.AcademyTournamentEvents || null; }
     function getAcademyGradesEditor() { return window.AcademyGradesEditor || null; }
@@ -232,7 +247,6 @@
     function getNotificationSystem() { return window.NotificationSystem || null; }
     function getCalendarRenderer() { return window.CalendarRenderer || null; }
     function getTeamCore() { return window.TeamCore || null; }
-    function getTeamEvents() { return window.TeamEvents || null; }
     function getTeamQueries() { return window.TeamQueries || null; }
     function getTeamConstants() { return window.TeamConstants || null; }
     function getModal() { return window.Modal || null; }
@@ -318,9 +332,9 @@
     //
     // TeamCore requires a characterProvider injected via configure().
     // The Teams module (modules/teams/index.js) configures it when
-    // its tab mounts. When Academy creates or modifies teams and the
-    // Teams tab was never opened, this helper bootstraps the provider
-    // so TeamCore's dependency check passes.
+    // its tab mounts. When Academy creates teams and the Teams tab
+    // was never opened, this helper bootstraps the provider so
+    // TeamCore's dependency check passes.
     //
     // Idempotent: only the first call runs configure(). Subsequent
     // calls return the cached result.
@@ -1424,10 +1438,11 @@
     // create-team and delete-team are Academy-side: they build a
     // minimal modal and call TeamCore directly.
     //
-    // manage-members is delegated entirely to TeamEvents'
-    // openMemberManager. Academy supplies the modal container and
-    // period; Teams owns the member UI, the picker, the mutation
-    // calls, and the re-render logic.
+    // manage-members is delegated to AcademyWeeklyTeamsMembers,
+    // which is Academy-scoped and writes to academy.weeklyTeams
+    // only. It never touches the persistent Team entity. This
+    // preserves the Option 1 split: week-scoped assignments live
+    // in weeklyTeams; persistent membership lives on team.members.
     //
     // auto-distribute is Academy-side: it partitions unassigned
     // students into existing teams (or new teams) and writes both
@@ -1604,54 +1619,51 @@
     }
 
     // ------------------------------------------------------------
-    // Manage Members (delegated to TeamEvents)
+    // Manage Members (delegated to AcademyWeeklyTeamsMembers)
     // ------------------------------------------------------------
     //
-    // Academy owns the modal shell and the period. Teams owns the
-    // member UI, the picker, the add/remove/edit mutations, and the
-    // internal re-render logic. Academy does not know what a member
-    // is; it just hands off a container.
+    // Academy owns the modal shell. AcademyWeeklyTeamsMembers owns
+    // the member UI, the picker, the add/remove operations, and the
+    // in-place re-render. It writes ONLY to academy.weeklyTeams. The
+    // persistent Team entity is untouched by this path.
     //
-    // If TeamEvents.openMemberManager is unavailable, we surface the
-    // failure instead of falling back to an Academy-local member
-    // editor. The fallback would duplicate the Teams domain's member
-    // shape knowledge in the Academy module, which is exactly the
-    // coupling we're avoiding.
+    // If AcademyWeeklyTeamsMembers is unavailable, we surface the
+    // failure rather than falling back to a Teams-domain member
+    // manager, which would route writes to team.members and
+    // reintroduce the counter/store divergence.
 
     function openWeeklyTeamMembersModal(teamId) {
         if (!isNonEmptyString(teamId)) { return; }
 
-        var TeamEvents = getTeamEvents();
-        var TeamQ = getTeamQueries();
+        var MembersManager = getAcademyWeeklyTeamsMembers();
         var Modal = getModal();
 
-        if (!TeamEvents ||
-            typeof TeamEvents.openMemberManager !== 'function') {
-            notify('Team member manager is not available.', 'error');
+        if (!MembersManager ||
+            typeof MembersManager.openMemberManager !== 'function') {
+            notify('Weekly team member manager is not available.', 'error');
             return;
         }
         if (!Modal || typeof Modal.createModal !== 'function') {
             notify('Modal module not available.', 'error');
             return;
         }
-
-        if (!ensureTeamCoreConfigured()) {
-            notify(
-                'Character module not available. Cannot manage members.',
-                'error'
-            );
+        if (!_selectedWeeklyTeamsClassId) {
+            notify('Select a class first.', 'error');
             return;
         }
 
+        var week = AcademyUI.getDisplayWeek();
+
+        // Resolve the team name for the modal header. Read-only
+        // convenience; the member manager does not need it to function.
+        var teamName = 'Team';
+        var TeamQ = getTeamQueries();
         if (TeamQ && typeof TeamQ.getTeamById === 'function') {
             var team = TeamQ.getTeamById(teamId);
-            if (!team) {
-                notify('Team not found.', 'error');
-                return;
+            if (team && team.name) {
+                teamName = team.name;
             }
         }
-
-        var period = AcademyUI.getDisplayWeek();
 
         var modal = Modal.createModal('academy-weekly-team-members-modal');
         var contentEl = document.createElement('div');
@@ -1680,16 +1692,21 @@
             refreshView();
         };
 
-        // Hand the container to Teams. Academy does not touch the
-        // member DOM after this call.
-        TeamEvents.openMemberManager(contentEl, teamId, period, {
-            onClose: close,
-            onMutation: function() {
-                // The manager re-renders itself in place. Refresh the
-                // Academy sidebar so member counts update live.
-                refreshView();
+        MembersManager.openMemberManager(
+            contentEl,
+            _selectedWeeklyTeamsClassId,
+            week,
+            teamId,
+            {
+                teamName: teamName,
+                onClose: close,
+                onChange: function() {
+                    // The manager re-renders itself in place. Refresh
+                    // the Academy sidebar so member counts update live.
+                    refreshView();
+                }
             }
-        });
+        );
     }
 
     // ------------------------------------------------------------
