@@ -1,36 +1,41 @@
 /**
- * modules/academy/academy-tournament-events.js - Academy Exams Event Wiring
- * Mutation orchestration for the Academy-embedded Exams view.
+ * modules/academy/academy-tournament-events.js
+ * Academy Exams Event Wiring
  *
  * Path: js/modules/academy/academy-tournament-events.js
  *
+ * Mutation orchestration for the Academy-embedded Exams view.
+ *
  * RESPONSIBILITIES:
- *   - Route user actions from the Exams view to TournamentCore and
- *     TournamentMatches
- *   - Route elimination restore actions to TournamentEliminationWorkflow
- *   - Open and close the modal shells the Exams view uses
+ *   - Route user actions from the Exams view to the domain
+ *   - Build the modal view models the view needs
+ *   - Open and close the modal shells
  *   - Read the collected form payload from the view's collector
- *     function and hand it to the domain
  *   - Notify the caller's onChange callback when a mutation succeeds
+ *   - Surface rejected mutations as console warnings + toasts
  *
  * NOT RESPONSIBILITIES:
- *   - HTML construction. The view module builds all modal content.
- *   - Eligibility computation. The domain owns it.
- *   - Name resolution. The view or the aggregator owns it.
+ *   - HTML construction. The view module builds all modal HTML.
+ *   - Domain validation. Schema / Rules own it.
  *   - Domain reads via window.data. TournamentQueries owns reads.
+ *   - Identity computation. Queries and Schema own it.
+ *   - Eligibility computation for the pool panel. The aggregator
+ *     owns the pool VM. The events module only computes eligibility
+ *     for the Add-Match / Edit-Match modals, which need the "still
+ *     eligible for a new match in this round" set — a distinct
+ *     question from "eligible to be added to the exam".
  *
  * ACTION NAMING:
  *   Every action element carries data-action with an 'exam-' prefix.
- *   Example: data-action="exam-add-round". The dispatcher in
- *   academy-view.js routes by prefix; this module receives the
- *   unprefixed verb.
+ *   The dispatcher in academy-view.js routes by prefix; this module
+ *   receives the unprefixed verb.
  *
  *   Every action element also carries the identity it needs:
- *     data-exam-id      — on every exam-scoped action
- *     data-round-id     — on every round- and match-scoped action
- *     data-match-id     — on every match-scoped action
- *     data-pool-id      — on pool toggle actions
- *     data-character-id — on elimination restore actions
+ *     data-exam-id      on every exam-scoped action
+ *     data-round-id     on every round- and match-scoped action
+ *     data-match-id     on every match-scoped action
+ *     data-pool-id      on pool toggle actions
+ *     data-character-id on elimination restore actions
  *
  * MODAL CONTENT CONTRACT:
  *   Modal.createModal(className) returns a bare .modal shell. This
@@ -45,74 +50,60 @@
  *   restore) when available.
  *
  * MUTATION FEEDBACK:
- *   Every mutation's .then handler checks `result.success`. On success,
- *   the modal closes and the caller's onChange runs. On failure, the
- *   result's message is logged to console AND surfaced as a toast.
- *   This is why there is a console log for every rejection: a silent
- *   UI in the face of a rejected mutation is a support nightmare.
- *
- * ADD ROUND — TOTAL ROUNDS SEMANTICS:
- *   The lifecycle no longer caps rounds at totalRounds. totalRounds
- *   is a planning hint. This module just calls TournamentCore.addRound
- *   and surfaces whatever the domain says.
- *
- * ADD CHARACTER TO EXAM — DIAGNOSTICS:
- *   The Add Character button calls togglePoolMember, which reads
- *   the exam, decides add vs remove, and calls
- *   TournamentCore.addParticipant or removeParticipant. When the
- *   domain call fails, the pipeline has already shown a
- *   notification, so a silent UI is a symptom of the domain
- *   rejecting the add, not of the button being unwired.
+ *   Every mutation's .then handler checks `result.success`. On
+ *   success, the modal closes and the caller's onChange runs. On
+ *   failure, the result's message is logged and toasted.
  *
  * RESTORE ELIMINATED PARTICIPANT:
- *   The Eliminated section in the exam panel renders a Restore
- *   button per row. This module routes the click to
- *   TournamentEliminationWorkflow.unmarkCharacterEliminated, which
- *   removes the elimination record on BOTH the tournament and
- *   character sides inside a single pipeline transaction.
+ *   The Restore button in the Eliminated section routes to
+ *   TournamentEliminationCascade.restoreCharacterElimination inside
+ *   a MutationPipeline transaction. The cascade removes the
+ *   elimination record on both the tournament side and the character
+ *   side.
  *
- *   This is the MANUAL override path. It is distinct from the
- *   cascade reversal that runs inside removeMatch / removeRound /
- *   deleteTournament:
+ *   This is DISTINCT from the cascade reversal that runs inside
+ *   removeMatch / removeRound / purgeTournament:
  *
- *     - The cascade reversal removes eliminations by provenance
- *       (fromMatchId or fromRoundId). It runs when the match or
- *       round that produced the elimination is removed.
- *     - The manual restore removes eliminations by
- *       (tournamentId, characterId). It runs when the user clicks
- *       Restore. It doesn't care which match produced the record.
+ *     - Cascade reversal removes eliminations by provenance
+ *       (fromMatchId / fromRoundId). Runs when the match, round, or
+ *       tournament is removed.
+ *     - Manual restore removes eliminations by
+ *       (tournamentId, characterId). Runs when the user clicks
+ *       Restore. Provenance-agnostic.
  *
- *   Both paths are provenance-tolerant: a legacy elimination
- *   without fromMatchId can be restored manually, and if the user
- *   manually restores first, the cascade reversal on a later match
- *   removal is a no-op. They compose safely.
+ *   Both compose safely. If the user restores first, the later
+ *   cascade reversal is a no-op for that participant.
  *
- *   The manual restore does NOT re-enable the character for past
- *   rounds. It removes the record. Subsequent matches can include
- *   the character again; past matches are unchanged.
+ * ARCHIVE vs DELETE:
+ *   The "Delete Exam" button routes to TournamentCore.archiveTournament.
+ *   Archive sets archivedAt and status 'completed'. All history —
+ *   rounds, matches, eliminations — is preserved. The archived exam
+ *   disappears from the pool panel and from getExamForClassAndWeek.
+ *   Physical destruction is available via TournamentCore.purgeTournament
+ *   but is not wired to any UI button.
  *
  * ERROR HANDLING:
  *   - Domain mutations resolve to { success, data?, message? }. On
  *     success this module closes the modal and calls onChange. On
  *     failure the message is logged and toasted.
  *   - A thrown error from a mutation is logged and toasted.
- *   - The onChange callback is wrapped in try/catch so a throwing
- *     consumer does not break the events module.
+ *   - The onChange callback is wrapped in try/catch.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
  *   - window.Modal
  *   - window.NotificationSystem
+ *   - window.AcademyTournamentView
+ *   - window.AcademyClasses
  *   - window.TournamentCore
  *   - window.TournamentMatches
  *   - window.TournamentQueries
- *   - window.TournamentEliminationWorkflow
- *   - window.AcademyClasses
- *
- * DEPENDENCIES (OPTIONAL):
- *   - window.AcademyTournamentView — supplies modal HTML and form
- *     collectors. When absent, modal-opening functions are no-ops
- *     that log a warning.
+ *   - window.TournamentEliminationCascade
+ *   - window.TournamentSchema
+ *   - window.CharacterQueries
+ *   - window.TeamQueries
+ *   - window.MutationPipeline
+ *   - window.CalendarValidation
  */
 
 (function() {
@@ -129,14 +120,21 @@
     var DomUtils = window.DomUtils;
     var Modal = window.Modal;
     var NotificationSystem = window.NotificationSystem;
+    var View = window.AcademyTournamentView;
+    var AcademyClasses = window.AcademyClasses;
     var TournamentCore = window.TournamentCore;
     var TournamentMatches = window.TournamentMatches;
     var TournamentQueries = window.TournamentQueries;
-    var TournamentEliminationWorkflow = window.TournamentEliminationWorkflow;
-    var AcademyClasses = window.AcademyClasses;
+    var EliminationCascade = window.TournamentEliminationCascade;
+    var Schema = window.TournamentSchema;
+    var CharacterQueries = window.CharacterQueries;
+    var TeamQueries = window.TeamQueries;
+    var MutationPipeline = window.MutationPipeline;
+    var CalendarValidation = window.CalendarValidation;
 
     var _missing = [];
 
+    // UI infrastructure
     if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
         _missing.push('DomUtils.escapeHtml');
     }
@@ -152,11 +150,71 @@
     if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
         _missing.push('NotificationSystem.notify');
     }
+
+    // View layer
+    if (!View || typeof View.renderHTML !== 'function') {
+        _missing.push('AcademyTournamentView.renderHTML');
+    }
+    if (!View || typeof View.buildCreateExamModalHTML !== 'function') {
+        _missing.push('AcademyTournamentView.buildCreateExamModalHTML');
+    }
+    if (!View || typeof View.buildDeleteExamModalHTML !== 'function') {
+        _missing.push('AcademyTournamentView.buildDeleteExamModalHTML');
+    }
+    if (!View || typeof View.buildAddRoundModalHTML !== 'function') {
+        _missing.push('AcademyTournamentView.buildAddRoundModalHTML');
+    }
+    if (!View || typeof View.buildRemoveRoundModalHTML !== 'function') {
+        _missing.push('AcademyTournamentView.buildRemoveRoundModalHTML');
+    }
+    if (!View || typeof View.buildAutoGenerateRoundModalHTML !== 'function') {
+        _missing.push('AcademyTournamentView.buildAutoGenerateRoundModalHTML');
+    }
+    if (!View || typeof View.buildAddMatchModalHTML !== 'function') {
+        _missing.push('AcademyTournamentView.buildAddMatchModalHTML');
+    }
+    if (!View || typeof View.buildEditMatchModalHTML !== 'function') {
+        _missing.push('AcademyTournamentView.buildEditMatchModalHTML');
+    }
+    if (!View || typeof View.buildCompleteMatchModalHTML !== 'function') {
+        _missing.push('AcademyTournamentView.buildCompleteMatchModalHTML');
+    }
+    if (!View || typeof View.buildRemoveMatchModalHTML !== 'function') {
+        _missing.push('AcademyTournamentView.buildRemoveMatchModalHTML');
+    }
+    if (!View || typeof View.collectCreateExamForm !== 'function') {
+        _missing.push('AcademyTournamentView.collectCreateExamForm');
+    }
+    if (!View || typeof View.collectAddRoundForm !== 'function') {
+        _missing.push('AcademyTournamentView.collectAddRoundForm');
+    }
+    if (!View || typeof View.collectAutoGenerateRoundForm !== 'function') {
+        _missing.push('AcademyTournamentView.collectAutoGenerateRoundForm');
+    }
+    if (!View || typeof View.collectAddMatchForm !== 'function') {
+        _missing.push('AcademyTournamentView.collectAddMatchForm');
+    }
+    if (!View || typeof View.collectEditMatchForm !== 'function') {
+        _missing.push('AcademyTournamentView.collectEditMatchForm');
+    }
+    if (!View || typeof View.collectCompleteMatchForm !== 'function') {
+        _missing.push('AcademyTournamentView.collectCompleteMatchForm');
+    }
+
+    // Academy
+    if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function') {
+        _missing.push('AcademyClasses.getClass');
+    }
+
+    // Domain
     if (!TournamentCore || typeof TournamentCore.createTournament !== 'function') {
         _missing.push('TournamentCore.createTournament');
     }
-    if (!TournamentCore || typeof TournamentCore.deleteTournament !== 'function') {
-        _missing.push('TournamentCore.deleteTournament');
+    if (!TournamentCore || typeof TournamentCore.archiveTournament !== 'function') {
+        _missing.push('TournamentCore.archiveTournament');
+    }
+    if (!TournamentCore || typeof TournamentCore.updateTournament !== 'function') {
+        _missing.push('TournamentCore.updateTournament');
     }
     if (!TournamentCore || typeof TournamentCore.addRound !== 'function') {
         _missing.push('TournamentCore.addRound');
@@ -169,12 +227,6 @@
     }
     if (!TournamentCore || typeof TournamentCore.removeParticipant !== 'function') {
         _missing.push('TournamentCore.removeParticipant');
-    }
-    if (!TournamentCore || typeof TournamentCore.completeTournament !== 'function') {
-        _missing.push('TournamentCore.completeTournament');
-    }
-    if (!TournamentCore || typeof TournamentCore.updateTournament !== 'function') {
-        _missing.push('TournamentCore.updateTournament');
     }
     if (!TournamentMatches || typeof TournamentMatches.createMatch !== 'function') {
         _missing.push('TournamentMatches.createMatch');
@@ -191,18 +243,44 @@
     if (!TournamentMatches || typeof TournamentMatches.generateMatches !== 'function') {
         _missing.push('TournamentMatches.generateMatches');
     }
+    if (!TournamentMatches || typeof TournamentMatches.getEligibleParticipants !== 'function') {
+        _missing.push('TournamentMatches.getEligibleParticipants');
+    }
     if (!TournamentQueries || typeof TournamentQueries.getTournament !== 'function') {
         _missing.push('TournamentQueries.getTournament');
+    }
+    if (!TournamentQueries || typeof TournamentQueries.getRound !== 'function') {
+        _missing.push('TournamentQueries.getRound');
+    }
+    if (!TournamentQueries || typeof TournamentQueries.getMatch !== 'function') {
+        _missing.push('TournamentQueries.getMatch');
     }
     if (!TournamentQueries || typeof TournamentQueries.isParticipantInTournament !== 'function') {
         _missing.push('TournamentQueries.isParticipantInTournament');
     }
-    if (!TournamentEliminationWorkflow ||
-        typeof TournamentEliminationWorkflow.unmarkCharacterEliminated !== 'function') {
-        _missing.push('TournamentEliminationWorkflow.unmarkCharacterEliminated');
+    if (!EliminationCascade ||
+        typeof EliminationCascade.restoreCharacterElimination !== 'function') {
+        _missing.push(
+            'TournamentEliminationCascade.restoreCharacterElimination'
+        );
     }
-    if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function') {
-        _missing.push('AcademyClasses.getClass');
+    if (!Schema || typeof Schema.findRoundById !== 'function') {
+        _missing.push('TournamentSchema.findRoundById');
+    }
+    if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+        _missing.push('CharacterQueries.getCharacterById');
+    }
+    if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+        _missing.push('CharacterQueries.getDisplayName');
+    }
+    if (!TeamQueries || typeof TeamQueries.getTeamById !== 'function') {
+        _missing.push('TeamQueries.getTeamById');
+    }
+    if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
+        _missing.push('MutationPipeline.performMutation');
+    }
+    if (!CalendarValidation || typeof CalendarValidation.parseWeek !== 'function') {
+        _missing.push('CalendarValidation.parseWeek');
     }
 
     if (_missing.length > 0) {
@@ -215,14 +293,6 @@
     window.__academyTournamentEventsLoaded = true;
 
     // ============================================================
-    // OPTIONAL DEPENDENCY ACCESSORS
-    // ============================================================
-
-    function getViewModule() {
-        return window.AcademyTournamentView || null;
-    }
-
-    // ============================================================
     // HELPERS
     // ============================================================
 
@@ -230,15 +300,33 @@
         return typeof value === 'string' && value.trim() !== '';
     }
 
+    function isArray(value) {
+        return Array.isArray(value);
+    }
+
     function notify(message, type) {
         NotificationSystem.notify(message, type || 'info');
     }
 
-    function warnOnce(label) {
-        console.warn(
-            '[AcademyTournamentEvents] ' + label + ' not available. ' +
-            'The corresponding UI action will be a no-op.'
-        );
+    function getCharacterName(characterId) {
+        if (!isNonEmptyString(characterId)) { return 'Unknown'; }
+        var char = CharacterQueries.getCharacterById(characterId);
+        if (!char) { return 'Unknown'; }
+        return CharacterQueries.getDisplayName(char);
+    }
+
+    function getTeamName(teamId) {
+        if (!isNonEmptyString(teamId)) { return 'Unknown Team'; }
+        var team = TeamQueries.getTeamById(teamId);
+        if (!team) { return 'Unknown Team'; }
+        return isNonEmptyString(team.name) ? team.name : 'Unnamed Team';
+    }
+
+    function resolveParticipantName(participantId, participantType) {
+        if (participantType === 'team') {
+            return getTeamName(participantId);
+        }
+        return getCharacterName(participantId);
     }
 
     function getCanonicalParticipantTypeForExam(exam) {
@@ -249,22 +337,25 @@
 
     /**
      * Surface a rejected mutation. Logs to console AND toasts the
-     * message. Used by every mutation's .then handler.
+     * message.
      */
     function rejectMutation(label, result) {
         var message = (result && result.message)
             ? result.message
             : 'Mutation was rejected without a message.';
-        console.warn('[AcademyTournamentEvents] ' + label + ' rejected:', message);
+        console.warn(
+            '[AcademyTournamentEvents] ' + label + ' rejected:', message
+        );
         notify(message, 'error');
     }
 
     /**
-     * Surface a thrown error from a mutation. Logs to console AND
-     * toasts a generic failure.
+     * Surface a thrown error from a mutation.
      */
     function failMutation(label, err, userMessage) {
-        console.warn('[AcademyTournamentEvents] ' + label + ' failed:', err);
+        console.warn(
+            '[AcademyTournamentEvents] ' + label + ' failed:', err
+        );
         notify(userMessage || 'Operation failed.', 'error');
     }
 
@@ -283,8 +374,39 @@
         try {
             _onChange();
         } catch (e) {
-            console.warn('[AcademyTournamentEvents] onChange callback threw:', e);
+            console.warn(
+                '[AcademyTournamentEvents] onChange callback threw:', e
+            );
         }
+    }
+
+    // ============================================================
+    // MUTATION RESULT HANDLER
+    // ============================================================
+    //
+    // Uniform success/failure handling for every mutation.
+    //
+    //   onSuccess(result) runs on result.success
+    //   rejectMutation(label, result) runs on !result.success
+    //   failMutation(label, err, errorMessage) runs on throw
+
+    function handleMutation(promise, options) {
+        options = options || {};
+        var label = options.label || 'mutation';
+        var errorMessage = options.errorMessage || 'Operation failed.';
+        var onSuccess = options.onSuccess;
+
+        return promise.then(function(result) {
+            if (result && result.success) {
+                if (typeof onSuccess === 'function') {
+                    onSuccess(result);
+                }
+                return;
+            }
+            rejectMutation(label, result);
+        }).catch(function(err) {
+            failMutation(label, err, errorMessage);
+        });
     }
 
     // ============================================================
@@ -330,7 +452,9 @@
                 teardownPromise = Modal.hideModal(modal);
             }
         } catch (e) {
-            console.warn('[AcademyTournamentEvents] Modal teardown threw:', e);
+            console.warn(
+                '[AcademyTournamentEvents] Modal teardown threw:', e
+            );
             teardownPromise = null;
         }
 
@@ -346,7 +470,9 @@
 
         if (teardownPromise && typeof teardownPromise.then === 'function') {
             teardownPromise.then(finalize).catch(function(err) {
-                console.warn('[AcademyTournamentEvents] Modal teardown failed:', err);
+                console.warn(
+                    '[AcademyTournamentEvents] Modal teardown failed:', err
+                );
                 finalize();
             });
         } else {
@@ -375,17 +501,112 @@
     }
 
     // ============================================================
+    // MODAL VM BUILDERS
+    // ============================================================
+    //
+    // These build the small VMs the modal builders consume. They live
+    // here because the events module is the coordinator: it knows
+    // which exam, which round, which match, and what the user is
+    // trying to do.
+
+    /**
+     * Build the eligible-participant list for the Add-Match /
+     * Edit-Match modal.
+     *
+     * This is the set of tournament participants who are:
+     *   - still in the tournament
+     *   - not eliminated
+     *   - not already assigned to a match in this round
+     *
+     * @returns {array} [ { id, name } ]
+     */
+    function buildEligibleForNewMatch(examId, roundId) {
+        var rawIds = TournamentMatches.getEligibleParticipants(examId)
+            || [];
+        var exam = TournamentQueries.getTournament(examId);
+        if (!exam) { return []; }
+
+        var mode = exam.mode || 'individuals';
+
+        // Exclude participants already in a match in this round.
+        var alreadyAssigned = Object.create(null);
+        var round = TournamentQueries.getRound(examId, roundId);
+        if (round && isArray(round.matches)) {
+            for (var m = 0; m < round.matches.length; m++) {
+                var match = round.matches[m];
+                if (!match || !isArray(match.participants)) {
+                    continue;
+                }
+                for (var p = 0; p < match.participants.length; p++) {
+                    alreadyAssigned[String(match.participants[p])] = true;
+                }
+            }
+        }
+
+        var result = [];
+        for (var i = 0; i < rawIds.length; i++) {
+            var id = String(rawIds[i]);
+            if (alreadyAssigned[id]) { continue; }
+            result.push({
+                id: id,
+                name: resolveParticipantName(
+                    id,
+                    mode === 'teams' ? 'team' : 'character'
+                )
+            });
+        }
+        return result;
+    }
+
+    /**
+     * Build the team VM list the Complete-Match modal needs for a
+     * team_vs_team match. Each team carries its current teamResult
+     * and each member's current individualResult.
+     */
+    function buildTeamCompletionVMs(match) {
+        var teamIds = isArray(match.participants)
+            ? match.participants
+            : [];
+        var existingTeamResults = match.teamResults || {};
+        var existingIndividualResults = match.individualResults || {};
+        var result = [];
+
+        for (var i = 0; i < teamIds.length; i++) {
+            var teamId = teamIds[i];
+            if (!teamId) { continue; }
+
+            var team = TeamQueries.getTeamById(teamId);
+            var members = [];
+
+            if (team && isArray(team.members)) {
+                for (var j = 0; j < team.members.length; j++) {
+                    var member = team.members[j];
+                    if (!member || !member.characterId) { continue; }
+                    members.push({
+                        id: member.characterId,
+                        name: getCharacterName(member.characterId)
+                    });
+                }
+            }
+
+            result.push({
+                id: String(teamId),
+                name: getTeamName(teamId),
+                members: members
+            });
+        }
+
+        return result;
+    }
+
+    // ============================================================
     // EXAM CRUD
     // ============================================================
 
     function createExam(classId, week, mode) {
-        var View = getViewModule();
-        if (!View || typeof View.buildCreateExamModalHTML !== 'function') {
-            warnOnce('AcademyTournamentView.buildCreateExamModalHTML');
-            return;
-        }
-
-        if (!isNonEmptyString(classId) || week === undefined || week === null) {
+        if (!isNonEmptyString(classId) ||
+            week === undefined ||
+            week === null) {
             notify('Class and week are required.', 'error');
             return;
         }
@@ -412,34 +633,32 @@
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
 
-                var payload = (typeof View.collectCreateExamForm === 'function')
-                    ? View.collectCreateExamForm(form)
-                    : null;
-
+                var payload = View.collectCreateExamForm(form);
                 if (!payload || !payload.name) {
                     notify('Exam name is required.', 'error');
                     return;
                 }
 
-                TournamentCore.createTournament({
-                    name: payload.name,
-                    mode: payload.mode,
-                    startWeek: week,
-                    endWeek: week,
-                    totalRounds: payload.totalRounds,
-                    graduatingClassId: classId,
-                    classFilterEnabled: true,
-                    status: 'draft'
-                }).then(function(result) {
-                    if (result && result.success) {
-                        close();
-                        notifyChange();
-                    } else {
-                        rejectMutation('createTournament', result);
+                handleMutation(
+                    TournamentCore.createTournament({
+                        name: payload.name,
+                        mode: payload.mode,
+                        startWeek: week,
+                        endWeek: week,
+                        totalRounds: payload.totalRounds,
+                        graduatingClassId: classId,
+                        classFilterEnabled: true,
+                        status: 'draft'
+                    }),
+                    {
+                        label: 'createTournament',
+                        errorMessage: 'Failed to create exam.',
+                        onSuccess: function() {
+                            close();
+                            notifyChange();
+                        }
                     }
-                }).catch(function(err) {
-                    failMutation('createTournament', err, 'Failed to create exam.');
-                });
+                );
             });
         });
     }
@@ -453,25 +672,9 @@
             return;
         }
 
-        var View = getViewModule();
-        var html = (View && typeof View.buildDeleteExamModalHTML === 'function')
-            ? View.buildDeleteExamModalHTML(exam)
-            : '<form id="at-delete-exam-form">' +
-                '<div class="modal-header">' +
-                    '<h3>Delete Exam</h3>' +
-                    '<button type="button" class="close-modal">&times;</button>' +
-                '</div>' +
-                '<div class="modal-body">' +
-                    '<p>Delete <strong>' +
-                        DomUtils.escapeHtml(exam.name || 'this exam') +
-                    '</strong> permanently?</p>' +
-                    '<div class="form-actions">' +
-                        '<button type="button" class="cancel-modal-btn secondary">' +
-                            'Cancel</button>' +
-                        '<button type="submit" class="danger">Delete Exam</button>' +
-                    '</div>' +
-                '</div>' +
-            '</form>';
+        var html = View.buildDeleteExamModalHTML({
+            name: exam.name || 'this exam'
+        });
 
         openModal('at-delete-exam-modal', html, function(modal, close) {
             bindCommonModalControls(modal, close);
@@ -482,16 +685,17 @@
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
 
-                TournamentCore.deleteTournament(examId).then(function(result) {
-                    if (result && result.success) {
-                        close();
-                        notifyChange();
-                    } else {
-                        rejectMutation('deleteTournament', result);
+                handleMutation(
+                    TournamentCore.archiveTournament(examId),
+                    {
+                        label: 'archiveTournament',
+                        errorMessage: 'Failed to delete exam.',
+                        onSuccess: function() {
+                            close();
+                            notifyChange();
+                        }
                     }
-                }).catch(function(err) {
-                    failMutation('deleteTournament', err, 'Failed to delete exam.');
-                });
+                );
             });
         });
     }
@@ -501,7 +705,8 @@
     // ============================================================
 
     function togglePoolMember(examId, participantId) {
-        if (!isNonEmptyString(examId) || !isNonEmptyString(participantId)) {
+        if (!isNonEmptyString(examId) ||
+            !isNonEmptyString(participantId)) {
             console.warn(
                 '[AcademyTournamentEvents] togglePoolMember: missing ids',
                 { examId: examId, participantId: participantId }
@@ -515,82 +720,61 @@
             return;
         }
 
-        var participantType = getCanonicalParticipantTypeForExam(exam);
-        var inExam = false;
-
-        try {
-            inExam = TournamentQueries.isParticipantInTournament(
-                examId,
-                participantId
-            ) === true;
-        } catch (e) {
-            console.warn(
-                '[AcademyTournamentEvents] isParticipantInTournament threw:',
-                e
-            );
-            inExam = false;
-        }
+        var participantType =
+            getCanonicalParticipantTypeForExam(exam);
+        var inExam = TournamentQueries.isParticipantInTournament(
+            examId,
+            participantId
+        ) === true;
 
         if (inExam) {
-            TournamentCore.removeParticipant(examId, participantId)
-                .then(function(result) {
-                    if (result && result.success) {
+            handleMutation(
+                TournamentCore.removeParticipant(examId, participantId),
+                {
+                    label: 'removeParticipant',
+                    errorMessage: 'Could not remove participant.',
+                    onSuccess: function() {
                         notifyChange();
-                    } else {
-                        rejectMutation('removeParticipant', result);
                     }
-                })
-                .catch(function(err) {
-                    failMutation('removeParticipant', err, 'Could not remove participant.');
-                });
+                }
+            );
             return;
         }
 
-        TournamentCore.addParticipant(examId, {
-            id: participantId,
-            type: participantType
-        })
-            .then(function(result) {
-                if (result && result.success) {
+        handleMutation(
+            TournamentCore.addParticipant(examId, {
+                id: participantId,
+                type: participantType
+            }),
+            {
+                label: 'addParticipant',
+                errorMessage: 'Could not add participant.',
+                onSuccess: function() {
                     notifyChange();
-                } else {
-                    rejectMutation('addParticipant', result);
                 }
-            })
-            .catch(function(err) {
-                failMutation('addParticipant', err, 'Could not add participant.');
-            });
+            }
+        );
     }
 
     // ============================================================
     // RESTORE ELIMINATED PARTICIPANT
     // ============================================================
     //
-    // Manual override path. Removes the elimination record for
-    // (examId, characterId) on both the tournament and character
-    // sides, inside a single pipeline transaction owned by
-    // TournamentEliminationWorkflow.
+    // Manual override. Removes the elimination record for
+    // (examId, characterId) on both the tournament side and the
+    // character side, inside a MutationPipeline transaction.
     //
     // This is DISTINCT from the cascade reversal that runs inside
-    // removeMatch / removeRound / deleteTournament:
+    // removeMatch / removeRound / purgeTournament:
     //
     //   - Cascade reversal: keyed by provenance (fromMatchId or
-    //     fromRoundId). Runs when the match or round is removed.
+    //     fromRoundId). Runs when the match, round, or tournament
+    //     is removed.
     //   - Manual restore: keyed by (tournamentId, characterId).
-    //     Runs when the user clicks Restore.
+    //     Runs when the user clicks Restore. Provenance-agnostic.
     //
     // Both compose safely. If the user restores first, the later
     // cascade reversal is a no-op for that participant.
-    //
-    // The character is NOT re-enabled for past rounds. Only the
-    // elimination record is removed. Subsequent matches can include
-    // the character; past matches are unchanged.
-    //
-    // VALIDATION:
-    //   - Both IDs must be non-empty strings.
-    //   - The workflow module validates that the character is a
-    //     participant in the tournament and that the elimination
-    //     record exists on both sides before mutating.
 
     function restoreEliminatedParticipant(examId, characterId) {
         if (!isNonEmptyString(examId)) {
@@ -602,21 +786,54 @@
             return;
         }
 
-        TournamentEliminationWorkflow.unmarkCharacterEliminated(
-            examId,
-            characterId
-        ).then(function(result) {
-            if (result && result.success) {
+        var promise = MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+                if (!Array.isArray(appData.tournaments)) {
+                    return {
+                        valid: false,
+                        message: 'Tournament store is not available.'
+                    };
+                }
+                var found = false;
+                for (var i = 0; i < appData.tournaments.length; i++) {
+                    var t = appData.tournaments[i];
+                    if (t && String(t.id) === String(examId)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    return {
+                        valid: false,
+                        message: 'Exam no longer exists.'
+                    };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                return EliminationCascade.restoreCharacterElimination(
+                    appData,
+                    examId,
+                    characterId
+                );
+            },
+            logMessage: 'Restored character from tournament elimination',
+            successMessage: 'Character restored from elimination.',
+            failureMessage: 'Failed to restore character.'
+        });
+
+        handleMutation(promise, {
+            label: 'restoreCharacterElimination',
+            errorMessage: 'Could not restore character from elimination.',
+            onSuccess: function() {
                 notifyChange();
-            } else {
-                rejectMutation('unmarkCharacterEliminated', result);
             }
-        }).catch(function(err) {
-            failMutation(
-                'unmarkCharacterEliminated',
-                err,
-                'Could not restore character from elimination.'
-            );
         });
     }
 
@@ -633,12 +850,6 @@
             return;
         }
 
-        var View = getViewModule();
-        if (!View || typeof View.buildAddRoundModalHTML !== 'function') {
-            warnOnce('AcademyTournamentView.buildAddRoundModalHTML');
-            return;
-        }
-
         var html = View.buildAddRoundModalHTML({
             isTeamMode: exam.mode === 'teams'
         });
@@ -652,52 +863,35 @@
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
 
-                var payload = (typeof View.collectAddRoundForm === 'function')
-                    ? View.collectAddRoundForm(form)
-                    : null;
-
+                var payload = View.collectAddRoundForm(form);
                 if (!payload) { return; }
 
-                TournamentCore.addRound(examId, {
-                    matchSize: payload.matchSize,
-                    matchType: payload.matchType,
-                    isPairExam: payload.isPairExam
-                }).then(function(result) {
-                    if (result && result.success) {
-                        close();
-                        notifyChange();
-                    } else {
-                        rejectMutation('addRound', result);
+                handleMutation(
+                    TournamentCore.addRound(examId, {
+                        matchSize: payload.matchSize,
+                        matchType: payload.matchType,
+                        isPairExam: payload.isPairExam
+                    }),
+                    {
+                        label: 'addRound',
+                        errorMessage: 'Failed to add round.',
+                        onSuccess: function() {
+                            close();
+                            notifyChange();
+                        }
                     }
-                }).catch(function(err) {
-                    failMutation('addRound', err, 'Failed to add round.');
-                });
+                );
             });
         });
     }
 
     function removeRound(examId, roundId) {
-        if (!isNonEmptyString(examId) || !isNonEmptyString(roundId)) {
+        if (!isNonEmptyString(examId) ||
+            !isNonEmptyString(roundId)) {
             return;
         }
 
-        var View = getViewModule();
-        var html = (View && typeof View.buildRemoveRoundModalHTML === 'function')
-            ? View.buildRemoveRoundModalHTML({ roundId: roundId })
-            : '<form id="at-remove-round-form">' +
-                '<div class="modal-header">' +
-                    '<h3>Remove Round</h3>' +
-                    '<button type="button" class="close-modal">&times;</button>' +
-                '</div>' +
-                '<div class="modal-body">' +
-                    '<p>Remove this round and all its matches?</p>' +
-                    '<div class="form-actions">' +
-                        '<button type="button" class="cancel-modal-btn secondary">' +
-                            'Cancel</button>' +
-                        '<button type="submit" class="danger">Remove Round</button>' +
-                    '</div>' +
-                '</div>' +
-            '</form>';
+        var html = View.buildRemoveRoundModalHTML();
 
         openModal('at-remove-round-modal', html, function(modal, close) {
             bindCommonModalControls(modal, close);
@@ -708,16 +902,17 @@
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
 
-                TournamentCore.removeRound(examId, roundId).then(function(result) {
-                    if (result && result.success) {
-                        close();
-                        notifyChange();
-                    } else {
-                        rejectMutation('removeRound', result);
+                handleMutation(
+                    TournamentCore.removeRound(examId, roundId),
+                    {
+                        label: 'removeRound',
+                        errorMessage: 'Failed to remove round.',
+                        onSuccess: function() {
+                            close();
+                            notifyChange();
+                        }
                     }
-                }).catch(function(err) {
-                    failMutation('removeRound', err, 'Failed to remove round.');
-                });
+                );
             });
         });
     }
@@ -727,7 +922,8 @@
     // ============================================================
 
     function autoGenerateRound(examId, roundId) {
-        if (!isNonEmptyString(examId) || !isNonEmptyString(roundId)) {
+        if (!isNonEmptyString(examId) ||
+            !isNonEmptyString(roundId)) {
             return;
         }
 
@@ -737,15 +933,12 @@
             return;
         }
 
-        var View = getViewModule();
-        if (!View || typeof View.buildAutoGenerateRoundModalHTML !== 'function') {
-            warnOnce('AcademyTournamentView.buildAutoGenerateRoundModalHTML');
-            return;
-        }
+        var eligible = buildEligibleForNewMatch(examId, roundId);
 
         var html = View.buildAutoGenerateRoundModalHTML({
             examId: examId,
-            roundId: roundId
+            roundId: roundId,
+            eligibleParticipants: eligible
         });
 
         openModal('at-auto-generate-modal', html, function(modal, close) {
@@ -757,22 +950,24 @@
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
 
-                var payload = (typeof View.collectAutoGenerateRoundForm === 'function')
-                    ? View.collectAutoGenerateRoundForm(form)
-                    : { matchSize: null };
+                var payload = View.collectAutoGenerateRoundForm(form);
 
-                TournamentMatches.generateMatches(examId, roundId, {
-                    matchSize: payload.matchSize
-                }).then(function(result) {
-                    if (result && result.success) {
-                        close();
-                        notifyChange();
-                    } else {
-                        rejectMutation('generateMatches', result);
+                handleMutation(
+                    TournamentMatches.generateMatches(
+                        examId,
+                        roundId,
+                        { matchSize: payload.matchSize }
+                    ),
+                    {
+                        label: 'generateMatches',
+                        errorMessage:
+                            'Failed to auto-generate matches.',
+                        onSuccess: function() {
+                            close();
+                            notifyChange();
+                        }
                     }
-                }).catch(function(err) {
-                    failMutation('generateMatches', err, 'Failed to auto-generate matches.');
-                });
+                );
             });
         });
     }
@@ -782,7 +977,8 @@
     // ============================================================
 
     function addMatchManual(examId, roundId) {
-        if (!isNonEmptyString(examId) || !isNonEmptyString(roundId)) {
+        if (!isNonEmptyString(examId) ||
+            !isNonEmptyString(roundId)) {
             return;
         }
 
@@ -792,15 +988,20 @@
             return;
         }
 
-        var View = getViewModule();
-        if (!View || typeof View.buildAddMatchModalHTML !== 'function') {
-            warnOnce('AcademyTournamentView.buildAddMatchModalHTML');
+        var round = TournamentQueries.getRound(examId, roundId);
+        if (!round) {
+            notify('Round not found.', 'error');
             return;
         }
 
+        var eligible = buildEligibleForNewMatch(examId, roundId);
+
         var html = View.buildAddMatchModalHTML({
             examId: examId,
-            roundId: roundId
+            roundId: roundId,
+            mode: exam.mode || 'individuals',
+            isPairExam: round.isPairExam === true,
+            eligibleParticipants: eligible
         });
 
         openModal('at-add-match-modal', html, function(modal, close) {
@@ -812,31 +1013,33 @@
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
 
-                var payload = (typeof View.collectAddMatchForm === 'function')
-                    ? View.collectAddMatchForm(form)
-                    : null;
-
-                if (!payload || !Array.isArray(payload.participants) ||
+                var payload = View.collectAddMatchForm(form);
+                if (!payload ||
+                    !isArray(payload.participants) ||
                     payload.participants.length < 2) {
-                    notify('Please select at least 2 participants.', 'error');
+                    notify(
+                        'Please select at least 2 participants.',
+                        'error'
+                    );
                     return;
                 }
 
-                TournamentMatches.createMatch(examId, roundId, {
-                    participants: payload.participants,
-                    type: payload.matchType,
-                    isPairExam: payload.isPairExam === true,
-                    pairings: payload.pairings || undefined
-                }).then(function(result) {
-                    if (result && result.success) {
-                        close();
-                        notifyChange();
-                    } else {
-                        rejectMutation('createMatch', result);
+                handleMutation(
+                    TournamentMatches.createMatch(examId, roundId, {
+                        participants: payload.participants,
+                        type: payload.matchType,
+                        isPairExam: payload.isPairExam === true,
+                        pairings: payload.pairings || undefined
+                    }),
+                    {
+                        label: 'createMatch',
+                        errorMessage: 'Failed to add match.',
+                        onSuccess: function() {
+                            close();
+                            notifyChange();
+                        }
                     }
-                }).catch(function(err) {
-                    failMutation('createMatch', err, 'Failed to add match.');
-                });
+                );
             });
         });
     }
@@ -858,16 +1061,33 @@
             return;
         }
 
-        var View = getViewModule();
-        if (!View || typeof View.buildEditMatchModalHTML !== 'function') {
-            warnOnce('AcademyTournamentView.buildEditMatchModalHTML');
+        var round = TournamentQueries.getRound(examId, roundId);
+        if (!round) {
+            notify('Round not found.', 'error');
             return;
         }
+
+        var match = TournamentQueries.getMatch(
+            examId, roundId, matchId
+        );
+        if (!match) {
+            notify('Match not found.', 'error');
+            return;
+        }
+
+        var eligible = buildEligibleForNewMatch(examId, roundId);
+        var currentParticipants = isArray(match.participants)
+            ? match.participants.slice()
+            : [];
 
         var html = View.buildEditMatchModalHTML({
             examId: examId,
             roundId: roundId,
-            matchId: matchId
+            matchId: matchId,
+            mode: exam.mode || 'individuals',
+            isPairExam: match.isPairExam === true,
+            eligibleParticipants: eligible,
+            currentParticipants: currentParticipants
         });
 
         openModal('at-edit-match-modal', html, function(modal, close) {
@@ -879,13 +1099,14 @@
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
 
-                var payload = (typeof View.collectEditMatchForm === 'function')
-                    ? View.collectEditMatchForm(form)
-                    : null;
-
-                if (!payload || !Array.isArray(payload.participants) ||
+                var payload = View.collectEditMatchForm(form);
+                if (!payload ||
+                    !isArray(payload.participants) ||
                     payload.participants.length < 2) {
-                    notify('Please select at least 2 participants.', 'error');
+                    notify(
+                        'Please select at least 2 participants.',
+                        'error'
+                    );
                     return;
                 }
 
@@ -895,24 +1116,25 @@
 
                 if (payload.isPairExam === true) {
                     updatePayload.isPairExam = true;
-                    if (Array.isArray(payload.pairings) &&
+                    if (isArray(payload.pairings) &&
                         payload.pairings.length > 0) {
                         updatePayload.pairings = payload.pairings;
                     }
                 }
 
-                TournamentMatches.updateMatch(
-                    examId, roundId, matchId, updatePayload
-                ).then(function(result) {
-                    if (result && result.success) {
-                        close();
-                        notifyChange();
-                    } else {
-                        rejectMutation('updateMatch', result);
+                handleMutation(
+                    TournamentMatches.updateMatch(
+                        examId, roundId, matchId, updatePayload
+                    ),
+                    {
+                        label: 'updateMatch',
+                        errorMessage: 'Failed to update match.',
+                        onSuccess: function() {
+                            close();
+                            notifyChange();
+                        }
                     }
-                }).catch(function(err) {
-                    failMutation('updateMatch', err, 'Failed to update match.');
-                });
+                );
             });
         });
     }
@@ -934,17 +1156,44 @@
             return;
         }
 
-        var View = getViewModule();
-        if (!View || typeof View.buildCompleteMatchModalHTML !== 'function') {
-            warnOnce('AcademyTournamentView.buildCompleteMatchModalHTML');
+        var match = TournamentQueries.getMatch(
+            examId, roundId, matchId
+        );
+        if (!match) {
+            notify('Match not found.', 'error');
             return;
         }
 
-        var html = View.buildCompleteMatchModalHTML({
+        var mode = exam.mode || 'individuals';
+        var matchType = match.type || 'group_exam';
+
+        var modalOptions = {
             examId: examId,
             roundId: roundId,
-            matchId: matchId
-        });
+            matchId: matchId,
+            matchType: matchType,
+            mode: mode
+        };
+
+        if (matchType === 'team_vs_team') {
+            modalOptions.teams = buildTeamCompletionVMs(match);
+            modalOptions.existingTeamResults = match.teamResults || {};
+            modalOptions.existingIndividualResults =
+                match.individualResults || {};
+        } else {
+            var participants = isArray(match.participants)
+                ? match.participants
+                : [];
+            modalOptions.participants = participants.map(function(pid) {
+                return {
+                    id: String(pid),
+                    name: getCharacterName(pid)
+                };
+            });
+            modalOptions.existingResults = match.results || {};
+        }
+
+        var html = View.buildCompleteMatchModalHTML(modalOptions);
 
         openModal('at-complete-match-modal', html, function(modal, close) {
             bindCommonModalControls(modal, close);
@@ -955,27 +1204,28 @@
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
 
-                var payload = (typeof View.collectCompleteMatchForm === 'function')
-                    ? View.collectCompleteMatchForm(form)
-                    : null;
-
+                var payload = View.collectCompleteMatchForm(form);
                 if (!payload) {
-                    notify('Could not read match results.', 'error');
+                    notify(
+                        'Could not read match results.',
+                        'error'
+                    );
                     return;
                 }
 
-                TournamentMatches.completeMatch(examId, roundId, matchId, payload)
-                    .then(function(result) {
-                        if (result && result.success) {
+                handleMutation(
+                    TournamentMatches.completeMatch(
+                        examId, roundId, matchId, payload
+                    ),
+                    {
+                        label: 'completeMatch',
+                        errorMessage: 'Failed to complete match.',
+                        onSuccess: function() {
                             close();
                             notifyChange();
-                        } else {
-                            rejectMutation('completeMatch', result);
                         }
-                    })
-                    .catch(function(err) {
-                        failMutation('completeMatch', err, 'Failed to complete match.');
-                    });
+                    }
+                );
             });
         });
     }
@@ -991,23 +1241,7 @@
             return;
         }
 
-        var View = getViewModule();
-        var html = (View && typeof View.buildRemoveMatchModalHTML === 'function')
-            ? View.buildRemoveMatchModalHTML({ roundId: roundId, matchId: matchId })
-            : '<form id="at-remove-match-form">' +
-                '<div class="modal-header">' +
-                    '<h3>Remove Match</h3>' +
-                    '<button type="button" class="close-modal">&times;</button>' +
-                '</div>' +
-                '<div class="modal-body">' +
-                    '<p>Remove this match?</p>' +
-                    '<div class="form-actions">' +
-                        '<button type="button" class="cancel-modal-btn secondary">' +
-                            'Cancel</button>' +
-                        '<button type="submit" class="danger">Remove Match</button>' +
-                    '</div>' +
-                '</div>' +
-            '</form>';
+        var html = View.buildRemoveMatchModalHTML();
 
         openModal('at-remove-match-modal', html, function(modal, close) {
             bindCommonModalControls(modal, close);
@@ -1018,18 +1252,19 @@
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
 
-                TournamentMatches.removeMatch(examId, roundId, matchId)
-                    .then(function(result) {
-                        if (result && result.success) {
+                handleMutation(
+                    TournamentMatches.removeMatch(
+                        examId, roundId, matchId
+                    ),
+                    {
+                        label: 'removeMatch',
+                        errorMessage: 'Failed to remove match.',
+                        onSuccess: function() {
                             close();
                             notifyChange();
-                        } else {
-                            rejectMutation('removeMatch', result);
                         }
-                    })
-                    .catch(function(err) {
-                        failMutation('removeMatch', err, 'Failed to remove match.');
-                    });
+                    }
+                );
             });
         });
     }
@@ -1037,19 +1272,26 @@
     // ============================================================
     // EXAM COMPLETION
     // ============================================================
+    //
+    // Status is a soft label. "Complete" is an updateTournament
+    // call that sets status to 'completed'. There is no dedicated
+    // transition API.
 
     function completeExam(examId) {
         if (!isNonEmptyString(examId)) { return; }
 
-        TournamentCore.completeTournament(examId).then(function(result) {
-            if (result && result.success) {
-                notifyChange();
-            } else {
-                rejectMutation('completeTournament', result);
+        handleMutation(
+            TournamentCore.updateTournament(examId, {
+                status: 'completed'
+            }),
+            {
+                label: 'completeExam',
+                errorMessage: 'Could not complete the exam.',
+                onSuccess: function() {
+                    notifyChange();
+                }
             }
-        }).catch(function(err) {
-            failMutation('completeTournament', err, 'Could not complete the exam.');
-        });
+        );
     }
 
     // ============================================================
@@ -1075,5 +1317,43 @@
 
         completeExam: completeExam
     };
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.AcademyTournamentEvents;
+        var missing = [];
+
+        var required = [
+            'setOnChangeCallback',
+            'createExam',
+            'deleteExam',
+            'togglePoolMember',
+            'addRound',
+            'removeRound',
+            'autoGenerateRound',
+            'addMatchManual',
+            'editMatch',
+            'completeMatch',
+            'removeMatch',
+            'restoreEliminatedParticipant',
+            'completeExam'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        if (missing.length > 0) {
+            console.warn(
+                '[AcademyTournamentEvents] Verification - some exports ' +
+                'may be missing:', missing.join(', ')
+            );
+        }
+    })();
 
 })();
