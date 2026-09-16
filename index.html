@@ -243,6 +243,12 @@
 
          The character-detail aggregator must load before
          academy-view.js, which requires it at load time.
+
+         academy-weekly-teams-members.js must load before
+         academy-view.js. It is accessed lazily at call time by
+         academy-view's weekly-teams-manage-members handler, but
+         loading it in the shell block keeps the Academy view
+         dependencies co-located.
          ============================================================ -->
     <script src="js/modules/academy/academy-character-detail-aggregator.js"></script>
     <script src="js/modules/academy/academy-class-detail.js"></script>
@@ -253,6 +259,7 @@
     <script src="js/modules/academy/academy-ranking-view.js"></script>
 
     <script src="js/modules/academy/academy-weekly-teams-view.js"></script>
+    <script src="js/modules/academy/academy-weekly-teams-members.js"></script>
 
     <script src="js/modules/academy/academy-tournament-view.js"></script>
     <script src="js/modules/academy/academy-tournament-events.js"></script>
