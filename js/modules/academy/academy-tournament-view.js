@@ -6,7 +6,7 @@
  *
  * RESPONSIBILITIES:
  *   - Rendering the Exams view body (top bar, pool panel, exam panel,
- *     rounds, matches, final passers)
+ *     rounds, matches, eliminations, final passers)
  *   - Building the modal HTML for exam, round, and match interactions
  *   - Collecting form field values from the rendered modals
  *
@@ -26,6 +26,23 @@
  *   Each row carries a .at-pair-remove button that emits
  *   data-action="exam-pair-remove". The collector reads the rows.
  *
+ * ELIMINATED SECTION:
+ *   The exam VM carries `eliminations` (built by
+ *   AcademyTournamentAggregator.buildEliminationsVM). Each entry is a
+ *   character-side elimination with:
+ *     { participantId, participantName, week, reason,
+ *       standalone, fromRoundId, fromMatchId, hasProvenance }
+ *
+ *   The section renders between the rounds list and the Final Passers
+ *   section: eliminations are a running record, final passers are a
+ *   terminal outcome. Each row carries a Restore button emitting
+ *   data-action="exam-restore-eliminated" with data-exam-id and
+ *   data-character-id.
+ *
+ *   Teams are never rendered here: the cascade only eliminates
+ *   individual characters, and the aggregator filters non-character
+ *   entries before they reach this renderer.
+ *
  * IMPORTANT:
  *   - RENDER ONLY. No mutations. The one domain read (pool fallback) is
  *     documented and isolated.
@@ -41,6 +58,7 @@
  *   data-round-id  on every round- and match-scoped action
  *   data-match-id  on every match-scoped action
  *   data-pool-id   on pool toggle actions
+ *   data-character-id on elimination restore actions
  *
  * MODAL CONTENT CONTRACT:
  *   Modal.createModal returns a bare .modal shell. The events module
@@ -462,6 +480,7 @@
                     'data-exam-id="' + escapeAttribute(exam.id) + '">';
         html += renderExamHeader(exam, week);
         html += renderExamRounds(exam, week);
+        html += renderEliminations(exam, week);
         html += renderFinalPassers(exam);
         html += '</div>';
 
@@ -871,6 +890,119 @@
     }
 
     // ============================================================
+    // ELIMINATED SECTION
+    // ============================================================
+    //
+    // Renders between the rounds list and Final Passers. Each row
+    // carries a Restore button that emits
+    // data-action="exam-restore-eliminated" with data-exam-id and
+    // data-character-id.
+    //
+    // The exam VM's `eliminations` array is built by
+    // AcademyTournamentAggregator.buildEliminationsVM. Entries are
+    // already filtered to character-side eliminations and sorted by
+    // week descending, then name ascending.
+    //
+    // When there are no eliminations, the section still renders with
+    // a "None" line so the user can confirm nobody has been
+    // eliminated. This is distinct from the Final Passers section,
+    // which renders nothing until at least one round exists.
+    //
+    // Teams are never rendered here. The cascade only eliminates
+    // individuals; the aggregator filters non-character entries
+    // before they reach this renderer.
+
+    function renderEliminations(exam, week) {
+        if (!exam) { return ''; }
+
+        var eliminations = Array.isArray(exam.eliminations)
+            ? exam.eliminations
+            : [];
+
+        var html = '';
+        html += '<div class="at-eliminations-section">';
+
+        html += '<div class="at-eliminations-header">';
+        html += '<h4 class="at-eliminations-title">Eliminated</h4>';
+        html += '<span class="at-eliminations-count">' +
+                    eliminations.length +
+                '</span>';
+        html += '</div>';
+
+        if (eliminations.length === 0) {
+            html += '<p class="empty-state small at-eliminations-empty">' +
+                        'No characters have been eliminated from this exam.' +
+                    '</p>';
+            html += '</div>';
+            return html;
+        }
+
+        html += '<div class="at-eliminations-list">';
+        for (var i = 0; i < eliminations.length; i++) {
+            html += renderEliminationRow(eliminations[i], exam);
+        }
+        html += '</div>';
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderEliminationRow(elimination, exam) {
+        if (!elimination || !elimination.participantId) { return ''; }
+
+        var name = isNonEmptyString(elimination.participantName)
+            ? elimination.participantName
+            : 'Unknown';
+
+        var weekDisplay = isFiniteNumber(elimination.week)
+            ? String(elimination.week)
+            : '\u2014';
+
+        var reason = isNonEmptyString(elimination.reason)
+            ? elimination.reason
+            : '';
+
+        var rowClass = 'at-elimination-row';
+        if (elimination.standalone === true) {
+            rowClass += ' at-elimination-standalone';
+        }
+
+        var html = '';
+        html += '<div class="' + rowClass + '" ' +
+                    'data-character-id="' +
+                        escapeAttribute(elimination.participantId) + '">';
+
+        html += '<div class="at-elimination-main">';
+        html += '<span class="at-elimination-name">' +
+                    escapeHtml(name) +
+                '</span>';
+        html += '<span class="at-elimination-week">' +
+                    'Week ' + escapeHtml(weekDisplay) +
+                '</span>';
+        html += '</div>';
+
+        if (reason) {
+            html += '<div class="at-elimination-reason">' +
+                        escapeHtml(reason) +
+                    '</div>';
+        }
+
+        html += '<div class="at-elimination-actions">';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-action="exam-restore-eliminated" ' +
+                    'data-exam-id="' + escapeAttribute(exam.id) + '" ' +
+                    'data-character-id="' +
+                        escapeAttribute(elimination.participantId) + '" ' +
+                    'title="Restore this character from elimination">' +
+                    'Restore' +
+                '</button>';
+        html += '</div>';
+
+        html += '</div>';
+        return html;
+    }
+
+    // ============================================================
     // FINAL PASSERS
     // ============================================================
 
@@ -1160,7 +1292,9 @@
         html += '<p>Delete <strong>' + escapeHtml(name) +
                 '</strong> permanently?</p>';
         html += '<p class="text-dim" style="font-size:0.75rem;">' +
-                    'All rounds, matches, and results will be removed.' +
+                    'All rounds, matches, and results will be removed. ' +
+                    'Any character eliminations produced by this exam ' +
+                    'will be reversed.' +
                 '</p>';
         html += '<div class="form-actions">';
         html += '<button type="button" ' +
@@ -1263,6 +1397,10 @@
         html += renderModalHeader('Remove Round');
         html += '<div class="modal-body">';
         html += '<p>Remove this round and all its matches?</p>';
+        html += '<p class="text-dim" style="font-size:0.75rem;">' +
+                    'Any eliminations produced by completed matches in ' +
+                    'this round will be reversed.' +
+                '</p>';
         html += '<div class="form-actions">';
         html += '<button type="button" ' +
                     'class="cancel-modal-btn secondary">Cancel</button>';
@@ -1735,7 +1873,8 @@
 
         var html = '';
         html += '<p class="at-picker-hint">' +
-                    'Set the result for each participant. Default is Pass.' +
+                    'Set the result for each participant. Default is Pass. ' +
+                    'A Fail marks the participant as eliminated from the exam.' +
                 '</p>';
 
         if (participants.length === 0) {
@@ -1771,7 +1910,9 @@
         var html = '';
         html += '<p class="at-picker-hint">' +
                     'Set the result for each team and each member. ' +
-                    'All default to Pass.' +
+                    'All default to Pass. A Fail on an individual member ' +
+                    'marks that member as eliminated; a Fail on the team ' +
+                    'does not eliminate its members.' +
                 '</p>';
 
         if (teams.length === 0) {
@@ -1906,6 +2047,10 @@
         html += renderModalHeader('Remove Match');
         html += '<div class="modal-body">';
         html += '<p>Remove this match?</p>';
+        html += '<p class="text-dim" style="font-size:0.75rem;">' +
+                    'If the match was completed, any eliminations it ' +
+                    'produced will be reversed.' +
+                '</p>';
         html += '<div class="form-actions">';
         html += '<button type="button" ' +
                     'class="cancel-modal-btn secondary">Cancel</button>';
