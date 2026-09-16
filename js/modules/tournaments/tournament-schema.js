@@ -34,11 +34,15 @@
  *   - Elimination identity is (participantId, tournamentId); no separate
  *     elimination ID.
  *
- *   When a persisted tournament lacks IDs (created before this schema
- *   version), normalisation assigns them in memory. The next mutation
- *   writes them back. Reads without a subsequent write leave the IDs
- *   ephemeral, which is safe but not durable. Callers that require
- *   durable IDs immediately should trigger a save.
+ * MATCH TYPE — PARTICIPANT COUNT RULES:
+ *   'group_exam'  : participants.length === round.matchSize
+ *   'team_vs_team': participants.length >= 2 (no upper bound from matchSize;
+ *                   matchSize is a hint for group_exam sizing only)
+ *   'standard'    : participants.length === 2 (legacy)
+ *
+ *   The round's `matchSize` field is authoritative ONLY for group_exam.
+ *   A team match with 3 teams in a round whose matchSize is 2 is valid.
+ *   A standard match always has exactly 2 participants by definition.
  *
  * SCHEMA vs LIFECYCLE vs RULES DISTINCTION:
  *   - Schema: "Is this tournament structurally valid?"
@@ -135,7 +139,6 @@
     var VALID_STATUSES = Object.freeze(['draft', 'active', 'completed']);
     var VALID_MODES = Object.freeze(['teams', 'individuals']);
 
-    // 'standard' is legacy — readable but not produced by the UI.
     var VALID_MATCH_TYPES = Object.freeze([
         'standard',
         'group_exam',
@@ -151,10 +154,8 @@
     var VALID_PARTICIPANT_TYPES = Object.freeze(['character', 'team']);
     var VALID_RESULTS = Object.freeze(['pass', 'fail', 'retry']);
 
-    // Legacy alias. Same array as VALID_RESULTS.
     var VALID_GROUP_EXAM_RESULTS = VALID_RESULTS;
 
-    // Pairings constraints.
     var MIN_PAIR_SIZE = 2;
     var MAX_PAIR_SIZE = 3;
 
@@ -184,7 +185,7 @@
     }
 
     // ============================================================
-    // CLONING - Exact defensive copies
+    // CLONING
     // ============================================================
 
     function deepClone(value) {
@@ -254,7 +255,6 @@
         return VALID_RESULTS.indexOf(value) !== -1;
     }
 
-    // Legacy alias.
     function isValidGroupExamResult(value) {
         return isValidResult(value);
     }
@@ -364,10 +364,6 @@
     // CANONICAL NORMALISATION
     // ============================================================
 
-    /**
-     * Normalise a participant to canonical form.
-     * Preserves unknown properties.
-     */
     function normaliseParticipant(participant, mode) {
         if (!participant || typeof participant !== 'object') {
             return null;
@@ -388,7 +384,6 @@
             type: canonicalType
         };
 
-        // Preserve unknown properties.
         var knownKeys = ['id', 'type'];
         Object.keys(participant).forEach(function(key) {
             if (knownKeys.indexOf(key) === -1) {
@@ -399,27 +394,14 @@
         return result;
     }
 
-    /**
-     * Normalise a match to canonical form.
-     *
-     * ROUND/MATCH IDENTITY:
-     *   - If the match has a valid `id`, it is preserved.
-     *   - Otherwise a new match id is generated.
-     *
-     * Handles all three match types (plus the pair-exam hint).
-     * Deprecated winner/loser are stripped to null for non-standard
-     * match types.
-     */
     function normaliseMatch(match, expectedSize) {
         if (!match || typeof match !== 'object') {
             return null;
         }
 
-        // ---- id ----
         var existingId = normaliseId(match.id);
         var id = existingId !== null ? existingId : generateMatchId();
 
-        // ---- participants ----
         var participants = [];
         if (Array.isArray(match.participants)) {
             var seen = {};
@@ -432,29 +414,23 @@
             }
         }
 
-        // ---- type ----
         var type = match.type || 'group_exam';
         if (VALID_MATCH_TYPES.indexOf(type) === -1) {
             return null;
         }
 
-        // ---- status ----
         var status = match.status || 'pending';
         if (VALID_MATCH_STATUSES.indexOf(status) === -1) {
             return null;
         }
 
-        // ---- pair exam hint ----
         var isPairExam = match.isPairExam === true;
 
-        // ---- result shape depends on type ----
         var result = {
             id: id,
             participants: participants,
             type: type,
             status: status,
-            // Deprecated. Always null in normalised output for
-            // non-standard types.
             winner: null,
             loser: null,
             advancing: []
@@ -465,7 +441,6 @@
         }
 
         if (type === 'standard') {
-            // Legacy shape. Preserve winner/loser for read compat.
             var winnerId = match.winner !== undefined && match.winner !== null
                 ? normaliseId(match.winner)
                 : null;
@@ -516,14 +491,16 @@
                 : {};
         }
 
-        // ---- expected size ----
-        if (typeof expectedSize === 'number' && expectedSize >= 2) {
+        // Participant count check: only group_exam is strictly tied to
+        // the round's matchSize. team_vs_team and standard have their
+        // own rules.
+        if (type === 'group_exam' &&
+            typeof expectedSize === 'number' && expectedSize >= 2) {
             if (participants.length !== expectedSize) {
                 return null;
             }
         }
 
-        // ---- preserve unknown properties ----
         var knownKeys = [
             'id',
             'participants',
@@ -547,39 +524,24 @@
         return result;
     }
 
-    /**
-     * Normalise a round to canonical form.
-     *
-     * ROUND IDENTITY:
-     *   - If the round has a valid `id`, it is preserved.
-     *   - Otherwise a new round id is generated.
-     *
-     * roundNumber is POSITIONAL (index + 1) and is always overwritten
-     * from the caller-supplied `index`. If `index` is not supplied,
-     * the existing roundNumber is used, or 1 as a last resort.
-     */
     function normaliseRound(round, index) {
         if (!round || typeof round !== 'object') {
             return null;
         }
 
-        // ---- id ----
         var existingId = normaliseId(round.id);
         var id = existingId !== null ? existingId : generateRoundId();
 
-        // ---- status ----
         var status = round.status || 'pending';
         if (VALID_MATCH_STATUSES.indexOf(status) === -1) {
             return null;
         }
 
-        // ---- matchSize ----
         var matchSize = (typeof round.matchSize === 'number' &&
             round.matchSize >= 2)
             ? round.matchSize
             : 2;
 
-        // ---- matchType ----
         var matchType = round.matchType || 'group_exam';
         if (VALID_MATCH_TYPES.indexOf(matchType) === -1) {
             return null;
@@ -587,7 +549,6 @@
 
         var isPairExam = round.isPairExam === true;
 
-        // ---- matches ----
         var matches = [];
         if (Array.isArray(round.matches)) {
             for (var i = 0; i < round.matches.length; i++) {
@@ -601,7 +562,6 @@
             }
         }
 
-        // ---- roundNumber is POSITIONAL ----
         var roundNumber;
         if (typeof index === 'number' && isFinite(index) && index >= 0) {
             roundNumber = index + 1;
@@ -625,7 +585,6 @@
             result.isPairExam = true;
         }
 
-        // ---- preserve unknown properties ----
         var knownKeys = [
             'id',
             'roundNumber',
@@ -644,9 +603,6 @@
         return result;
     }
 
-    /**
-     * Normalise an elimination record.
-     */
     function normaliseElimination(elimination) {
         if (!elimination || typeof elimination !== 'object') {
             return null;
@@ -700,12 +656,6 @@
         return result;
     }
 
-    /**
-     * Normalise a tournament to canonical form.
-     *
-     * Every round and match is guaranteed to carry a stable `id`.
-     * If the persisted record lacks IDs, they are generated here.
-     */
     function normaliseTournament(tournament) {
         if (!tournament || typeof tournament !== 'object') {
             return null;
@@ -747,7 +697,6 @@
         var status = tournament.status || 'draft';
         if (VALID_STATUSES.indexOf(status) === -1) { return null; }
 
-        // ---- participants ----
         var participants = [];
         if (Array.isArray(tournament.participants)) {
             for (var i = 0; i < tournament.participants.length; i++) {
@@ -770,7 +719,6 @@
             }
         }
 
-        // ---- rounds ----
         var rounds = [];
         if (Array.isArray(tournament.rounds)) {
             for (var r = 0; r < tournament.rounds.length; r++) {
@@ -781,7 +729,6 @@
             }
         }
 
-        // ---- eliminations ----
         var eliminations = [];
         if (Array.isArray(tournament.eliminations)) {
             for (var e = 0; e < tournament.eliminations.length; e++) {
@@ -806,7 +753,6 @@
             }
         }
 
-        // ---- graduating class fields ----
         var graduatingClassId = tournament.graduatingClassId !== undefined &&
             tournament.graduatingClassId !== null
             ? normaliseId(tournament.graduatingClassId)
@@ -832,7 +778,6 @@
             participants: participants,
             rounds: rounds,
             eliminations: eliminations,
-            // Deprecated. Always null going forward.
             winner: null,
             graduatingClassId: graduatingClassId,
             classFilterEnabled: classFilterEnabled,
@@ -840,7 +785,6 @@
             _schemaVersion: SCHEMA_VERSION
         };
 
-        // ---- preserve unknown top-level properties ----
         var knownTopKeys = [
             'id',
             'name',
@@ -950,11 +894,6 @@
     // ROUND AND MATCH LOOKUP BY ID
     // ============================================================
 
-    /**
-     * Find a round by its stable id.
-     * Returns the live record (not a clone). Callers that need a
-     * defensive copy use getRounds() or cloneRound().
-     */
     function findRoundById(tournament, roundId) {
         if (!tournament || !Array.isArray(tournament.rounds)) {
             return null;
@@ -987,9 +926,6 @@
         return -1;
     }
 
-    /**
-     * Find a match by its stable id within a round.
-     */
     function findMatchById(round, matchId) {
         if (!round || !Array.isArray(round.matches)) {
             return null;
@@ -1073,10 +1009,6 @@
         });
     }
 
-    /**
-     * @deprecated Use getFinalPassers instead. Returns the deprecated
-     * winner field for legacy read compat, always null on new data.
-     */
     function getWinner(tournament) {
         if (!tournament || !tournament.winner) {
             return null;
@@ -1088,15 +1020,6 @@
     // DERIVATION
     // ============================================================
 
-    /**
-     * Derive advancing participants from a match state.
-     * SINGLE SOURCE OF TRUTH for advancement.
-     *
-     * Rules by type:
-     *   group_exam  : participants whose results[id] is 'pass' or 'retry'
-     *   team_vs_team: teams whose teamResults[teamId] is 'pass' or 'retry'
-     *   standard    : legacy. The winner advances (if set).
-     */
     function deriveAdvancing(match) {
         if (!match || typeof match !== 'object') {
             return [];
@@ -1149,11 +1072,6 @@
         return [];
     }
 
-    /**
-     * Derive the final passers from a tournament's last round.
-     * Returns the union of advancing IDs across all matches in the
-     * last round.
-     */
     function deriveFinalPassers(tournament) {
         if (!tournament || !Array.isArray(tournament.rounds)) {
             return [];
@@ -1182,10 +1100,6 @@
         return result;
     }
 
-    /**
-     * @deprecated Use deriveAdvancing or deriveFinalPassers. Kept for
-     * legacy callers that used deriveLoser for standard matches.
-     */
     function deriveLoser(participants, winner) {
         if (!Array.isArray(participants) || participants.length !== 2) {
             return null;
@@ -1270,6 +1184,18 @@
         return errors;
     }
 
+    /**
+     * Validate a match against its round.
+     *
+     * PARTICIPANT COUNT RULES BY TYPE:
+     *   group_exam   : participants.length === round.matchSize
+     *   team_vs_team : participants.length >= 2
+     *   standard     : participants.length === 2
+     *
+     * The round's matchSize is authoritative ONLY for group_exam. A
+     * team match with 3 teams in a round whose matchSize is 2 is valid.
+     * A standard match always has exactly 2 participants by definition.
+     */
     function validateMatch(match, round, strict) {
         var errors = [];
 
@@ -1296,15 +1222,31 @@
         var participants = Array.isArray(match.participants)
             ? match.participants
             : [];
-        var expectedSize = round && typeof round.matchSize === 'number'
-            ? round.matchSize
-            : null;
 
-        if (type !== 'standard' && expectedSize !== null) {
-            if (participants.length !== expectedSize) {
+        // Participant count per type.
+        if (type === 'group_exam') {
+            var expectedSize = round && typeof round.matchSize === 'number'
+                ? round.matchSize
+                : null;
+            if (expectedSize !== null &&
+                participants.length !== expectedSize) {
                 errors.push(
                     'Match has ' + participants.length +
                     ' participants, expected ' + expectedSize
+                );
+            }
+        } else if (type === 'team_vs_team') {
+            if (participants.length < 2) {
+                errors.push(
+                    'Team match requires at least 2 teams, has ' +
+                    participants.length
+                );
+            }
+        } else if (type === 'standard') {
+            if (participants.length !== 2) {
+                errors.push(
+                    'Standard match requires exactly 2 participants, has ' +
+                    participants.length
                 );
             }
         }
@@ -1665,10 +1607,6 @@
         return errors;
     }
 
-    /**
-     * Validate a tournament against the schema.
-     * STRUCTURAL ONLY - no lifecycle or business rules.
-     */
     function validateTournament(tournament, options) {
         options = options || {};
         var strict = options.strict !== false;
@@ -1922,7 +1860,6 @@
     // ============================================================
 
     window.TournamentSchema = {
-        // Constants (frozen)
         VALID_STATUSES: VALID_STATUSES,
         VALID_MODES: VALID_MODES,
         VALID_MATCH_TYPES: VALID_MATCH_TYPES,
@@ -1936,14 +1873,10 @@
         MAX_PAIR_SIZE: MAX_PAIR_SIZE,
         SCHEMA_VERSION: SCHEMA_VERSION,
 
-        // ID generation
         generateRoundId: generateRoundId,
         generateMatchId: generateMatchId,
-
-        // ID normalisation
         normaliseId: normaliseId,
 
-        // Cloning
         deepClone: deepClone,
         cloneTournament: cloneTournament,
         cloneParticipant: cloneParticipant,
@@ -1951,7 +1884,6 @@
         cloneRound: cloneRound,
         cloneElimination: cloneElimination,
 
-        // Canonical Normalisation
         normaliseTournament: normaliseTournament,
         normaliseParticipant: normaliseParticipant,
         normaliseMatch: normaliseMatch,
@@ -1961,7 +1893,6 @@
         normalisePairings: normalisePairings,
         normaliseResultsMap: normaliseResultsMap,
 
-        // Participant Identity
         getCanonicalParticipantType: getCanonicalParticipantType,
         isParticipantTypeCanonical: isParticipantTypeCanonical,
         getParticipantTypeFromRecord: getParticipantTypeFromRecord,
@@ -1970,25 +1901,21 @@
         getParticipantIdKeyFromParts: getParticipantIdKeyFromParts,
         participantMatches: participantMatches,
 
-        // Round and Match Lookup by ID
         findRoundById: findRoundById,
         findRoundIndexById: findRoundIndexById,
         findMatchById: findMatchById,
         findMatchIndexById: findMatchIndexById,
 
-        // Structural Getters
         getParticipants: getParticipants,
         getRounds: getRounds,
         getEliminations: getEliminations,
-        getWinner: getWinner,   // @deprecated
+        getWinner: getWinner,
 
-        // Derivation
         deriveAdvancing: deriveAdvancing,
         deriveFinalPassers: deriveFinalPassers,
-        deriveLoser: deriveLoser,   // @deprecated
+        deriveLoser: deriveLoser,
         pairingsCoverParticipants: pairingsCoverParticipants,
 
-        // Structural Validation
         isValidMode: isValidMode,
         isValidStatus: isValidStatus,
         isValidMatchType: isValidMatchType,
