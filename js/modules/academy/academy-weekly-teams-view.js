@@ -9,7 +9,7 @@
  *   - Rendering the team list (left panel) with actions
  *   - Rendering the team detail (right panel) with members
  *   - Rendering an empty state when no class or team is selected
- *   - Building the Create Team and Auto-Distribute modals
+ *   - Building the Create / Edit Team and Auto-Distribute modals
  *   - Collecting form values from those modals
  *
  * NOT RESPONSIBILITIES:
@@ -24,9 +24,27 @@
  *   - .academy-weekly-team-row            [data-team-id]
  *   - .academy-weekly-team-member-row     [data-character-id]
  *   - [data-action="weekly-teams-create-team"]     (click)
+ *   - [data-action="weekly-teams-edit-team"]  [data-team-id]  (click)
  *   - [data-action="weekly-teams-auto-distribute"] (click)
  *   - [data-action="weekly-teams-delete-team"] [data-team-id]  (click)
  *   - [data-action="weekly-teams-manage-members"] [data-team-id] (click)
+ *
+ * CREATE / EDIT MODE:
+ *   buildTeamModalHTML accepts an optional `team` object.
+ *     - team absent  → "Create Academic Team" / "Create Team"
+ *     - team present → "Edit Academic Team" / "Save Team"
+ *
+ *   The form fields are identical in both modes:
+ *     - Name (required)
+ *     - Team Number (optional)
+ *     - Start Week (required, defaults to the current display week
+ *       on create; preserved from the team on edit)
+ *     - End Week (optional, blank = ongoing)
+ *
+ *   The class and type are FIXED after creation:
+ *     - Weekly Teams only shows academic teams of one class.
+ *     - Changing type or class would orphan the team from this view.
+ *     The edit form does not expose a picker for either.
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
@@ -74,6 +92,11 @@
 
     function isFiniteNumber(value) {
         return typeof value === 'number' && isFinite(value);
+    }
+
+    function safeString(value) {
+        if (value === undefined || value === null) { return ''; }
+        return String(value);
     }
 
     function getTeamTypeBadgeClass(type) {
@@ -356,6 +379,11 @@
         // Detail actions
         html += '<div class="academy-weekly-team-detail-actions">';
         html += '<button type="button" class="small secondary" ' +
+                    'data-action="weekly-teams-edit-team" ' +
+                    'data-team-id="' + escapeAttribute(team.id) + '">' +
+                    'Edit Team' +
+                '</button>';
+        html += '<button type="button" class="small secondary" ' +
                     'data-action="weekly-teams-manage-members" ' +
                     'data-team-id="' + escapeAttribute(team.id) + '">' +
                     'Manage Members' +
@@ -444,51 +472,100 @@
     }
 
     // ============================================================
-    // MODAL BUILDERS - Create Team
+    // MODAL BUILDER - Create / Edit Team
     // ============================================================
+    //
+    // Same form for both modes. When `options.team` is present, the
+    // form is pre-filled from the team and the title / button label
+    // switch to edit.
+    //
+    // The form does NOT expose a class picker or a type picker.
+    // Weekly Teams operates on academic teams of one class; moving a
+    // team to a different class or changing its type would orphan it
+    // from this view. If the user needs that, they delete the team
+    // and create a new one.
 
-    function buildCreateTeamModalHTML(options) {
+    function buildTeamModalHTML(options) {
         options = options || {};
-        var classId = options.classId || '';
+
+        var team = options.team || null;
+        var isEdit = !!team;
+        var t = team || {};
+
+        var classId = options.classId || (team && team.classId) || '';
         var className = options.className || 'Class';
         var week = options.week;
+
+        var defaultStartWeek = (week !== undefined && week !== null)
+            ? String(week)
+            : '1';
+
+        var nameValue = isEdit ? (t.name || '') : '';
+        var numberValue = isEdit ? (t.teamNumber || '') : '';
+        var startValue = isEdit
+            ? (t.startPeriod !== undefined && t.startPeriod !== null
+                ? String(t.startPeriod)
+                : '')
+            : defaultStartWeek;
+        var endValue = isEdit
+            ? (t.endPeriod !== undefined && t.endPeriod !== null
+                ? String(t.endPeriod)
+                : '')
+            : '';
+
+        var title = isEdit ? 'Edit Academic Team' : 'Create Academic Team';
+        var submitLabel = isEdit ? 'Save Team' : 'Create Team';
 
         var html = '';
         html += '<form id="weekly-teams-create-team-form" ' +
                     'data-class-id="' + escapeAttribute(classId) + '" ' +
-                    'data-week="' + escapeAttribute(String(week || '')) + '">';
+                    'data-week="' + escapeAttribute(String(week || '')) + '" ' +
+                    'data-edit-id="' +
+                        (isEdit ? escapeAttribute(t.id) : '') + '">';
 
         html += '<div class="modal-header">';
-        html += '<h3>Create Academic Team</h3>';
+        html += '<h3>' + escapeHtml(title) + '</h3>';
         html += '<button type="button" class="close-modal">&times;</button>';
         html += '</div>';
 
         html += '<div class="modal-body">';
 
-        html += '<p class="field-hint">' +
-                    'Creates a persistent Team entity of type "academic" ' +
-                    'for <strong>' + escapeHtml(className) + '</strong>.' +
-                '</p>';
+        if (isEdit) {
+            html += '<p class="field-hint">' +
+                        'Editing <strong>' +
+                        escapeHtml(t.name || 'Unnamed Team') +
+                        '</strong> in ' +
+                        escapeHtml(className) +
+                        '. Class and type are fixed after creation.' +
+                    '</p>';
+        } else {
+            html += '<p class="field-hint">' +
+                        'Creates a persistent Team entity of type "academic" ' +
+                        'for <strong>' + escapeHtml(className) + '</strong>.' +
+                    '</p>';
+        }
 
         html += '<div class="form-group">';
         html += '<label for="weekly-team-name">Team Name *</label>';
         html += '<input type="text" id="weekly-team-name" ' +
                     'class="weekly-team-name" ' +
-                    'placeholder="e.g., Team Alpha" required>';
+                    'placeholder="e.g., Team Alpha" ' +
+                    'value="' + escapeAttribute(nameValue) + '" required>';
         html += '</div>';
 
         html += '<div class="form-group">';
         html += '<label for="weekly-team-number">Team Number</label>';
         html += '<input type="text" id="weekly-team-number" ' +
                     'class="weekly-team-number" ' +
-                    'placeholder="Optional, e.g., A, 1, Alpha">';
+                    'placeholder="Optional, e.g., A, 1, Alpha" ' +
+                    'value="' + escapeAttribute(numberValue) + '">';
         html += '</div>';
 
         html += '<div class="form-group">';
         html += '<label for="weekly-team-start-period">Start Week</label>';
         html += '<input type="number" id="weekly-team-start-period" ' +
                     'class="weekly-team-start-period" ' +
-                    'value="' + escapeAttribute(String(week || 1)) + '" ' +
+                    'value="' + escapeAttribute(startValue) + '" ' +
                     'min="1" max="52">';
         html += '</div>';
 
@@ -496,19 +573,27 @@
         html += '<label for="weekly-team-end-period">End Week (optional)</label>';
         html += '<input type="number" id="weekly-team-end-period" ' +
                     'class="weekly-team-end-period" ' +
+                    'value="' + escapeAttribute(endValue) + '" ' +
                     'min="1" max="52" placeholder="Leave blank for ongoing">';
         html += '</div>';
 
         html += '<div class="form-actions">';
         html += '<button type="button" ' +
                     'class="cancel-modal-btn secondary">Cancel</button>';
-        html += '<button type="submit" class="primary">Create Team</button>';
+        html += '<button type="submit" class="primary">' +
+                    escapeHtml(submitLabel) +
+                '</button>';
         html += '</div>';
 
         html += '</div>';
         html += '</form>';
 
         return html;
+    }
+
+    // Alias: existing callers still get the create modal.
+    function buildCreateTeamModalHTML(options) {
+        return buildTeamModalHTML(options);
     }
 
     function collectCreateTeamForm(form) {
@@ -530,6 +615,11 @@
             startPeriod: startPeriod,
             endPeriod: endPeriod
         };
+    }
+
+    // Alias: same collector works for create and edit.
+    function collectTeamForm(form) {
+        return collectCreateTeamForm(form);
     }
 
     // ============================================================
@@ -642,11 +732,13 @@
         renderHTML: renderHTML,
 
         // Modal builders
-        buildCreateTeamModalHTML: buildCreateTeamModalHTML,
+        buildTeamModalHTML: buildTeamModalHTML,
+        buildCreateTeamModalHTML: buildCreateTeamModalHTML, // alias
         buildAutoDistributeModalHTML: buildAutoDistributeModalHTML,
 
         // Form collectors
         collectCreateTeamForm: collectCreateTeamForm,
+        collectTeamForm: collectTeamForm,                   // alias
         collectAutoDistributeForm: collectAutoDistributeForm
     };
 
