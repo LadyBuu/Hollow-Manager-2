@@ -1,390 +1,458 @@
 /**
  * js/modules/missions/mission-schema.js - Mission Schema
- * SINGLE SOURCE OF TRUTH for all mission validation rules and constants.
  *
- * SCHEMA PHILOSOPHY:
- *   - One constitution for all mission data
- *   - Used by Core, Queries, and UI
- *   - All validation rules are centralised here
- *   - PURE: no side effects, no mutation
- *   - CRASH-SAFE: never throws on malformed input; returns errors
- *   - Validates STRUCTURE and CONTENTS, not just container types
- *   - canonicaliseMissionShape() transforms structurally valid input
- *   - Does NOT derive business state (progress, pay, completedAt) - that belongs in MissionCore
- *   - Does NOT handle calendar validation - use CalendarValidation
- *   - Does NOT handle ID normalisation - use IdUtils
+ * Path: js/modules/missions/mission-schema.js
  *
- * MISSION TYPE TAXONOMY:
- *   1. Combat - Elimination, Defence, Protection
- *   2. Recovery - Retrieval, Rescue, Recovery of materials/artifacts
- *   3. Investigation - Investigation, Reconnaissance, Surveillance
- *   4. Exploration - Exploration, Survey, Expedition
- *   5. Infiltration - Stealth entry, Social infiltration, Theft/recovery, Espionage
- *   6. Containment - Capture, Magical containment, Quarantine
- *   7. Acquisition - Ingredients, Resources, Specimens
- *   8. Research - Observation, Field research, Field testing
- *   9. Diplomatic - Negotiation, Mediation, Representation
- *   10. Assassination
+ * Structural validation and canonicalisation for missions.
  *
- * DIFFICULTY CODES:
- *   E = Easy, M = Medium, H = Hard, X = Expert
+ * WHAT THIS MODULE OWNS:
+ *   - The canonical mission shape.
+ *   - Structural validation of a mission record.
+ *   - Structural validation of nested records (objectives, log
+ *     entries, reports, tags, support personnel, pairings).
+ *   - Conservative canonicalisation: given a structurally valid
+ *     input, produce the canonical representation.
  *
- * YEAR SEMANTICS:
- *   - Years are UNBOUNDED positive integers.
- *   - There is no MIN_YEAR or MAX_YEAR.
- *   - Any integer >= 1 is a valid year.
- *   - A null or missing year is also valid (means "year not specified").
- *   - Year validation is delegated to MissionId.isValidYear when
- *     MissionId is loaded. A local fallback is used otherwise.
+ * WHAT THIS MODULE DOES NOT OWN:
+ *   - Vocabulary. Every enum, label, and default lives in
+ *     MissionConstants. This module imports and re-checks those
+ *     values but does not redefine them.
+ *   - Year validation. MissionId.isValidYear owns the rule.
+ *   - Domain rules. Whether a mission is ready to complete, whether
+ *     an objective can be edited, whether a team is eligible, how
+ *     progress is derived, how pay is derived — MissionRules owns
+ *     all of that. This module only checks that stored values are
+ *     structurally valid, not that they satisfy business rules.
+ *   - Mutations. MissionCore owns those.
+ *   - Reads. MissionQueries owns those.
+ *   - Cross-domain existence checks. Whether a team exists, whether
+ *     a character exists, whether a support personnel entry refers
+ *     to a live character — none of that is here. This module
+ *     validates structure only. Cross-domain concerns belong to the
+ *     caller and are re-checked against the transaction snapshot.
  *
- * DERIVED FIELDS (validated but not calculated by schema):
- *   - progress: MUST match calculateProgress(objectives) (validation only)
- *   - pay: MUST match calculatePay(basePay, surchargePay) (validation only)
- *   - completedAt: MUST be consistent with status (validation only)
+ * CANONICAL MISSION SHAPE:
  *
- * CANONICALISATION:
- *   - canonicaliseMissionShape() only transforms structurally valid input
- *   - Invalid nested records are rejected (not silently discarded)
- *   - Unknown fields are stripped (schema is authoritative)
- *   - Returns { valid, errors, value } with detailed error reporting
- *   - Does NOT derive progress, pay, or completedAt
+ *   {
+ *     id:                 string,       // UUID (IdUtils)
+ *     title:              string,       // required, non-empty
+ *     description:        string,
+ *
+ *     year:               number|null,  // unbounded positive integer
+ *     month:              number|null,  // 1..12
+ *     day:                number|null,  // 1..31
+ *
+ *     sequence:           number,       // >= 1, scoped to (year, difficulty)
+ *
+ *     primaryType:        string,       // '' or a MissionConstants type id
+ *     subtype:            string,       // '' or a valid subtype of primaryType
+ *     secondaryType:      string,       // '' or a MissionConstants type id
+ *
+ *     escalation:         string,       // VALID_ESCALATION_TIERS
+ *     threatType:         string,
+ *     environment:        string,
+ *     location:           string,
+ *     duration:           string,
+ *
+ *     difficulty:         string,       // VALID_DIFFICULTIES
+ *     priority:           string,       // VALID_PRIORITIES
+ *
+ *     basePay:            string,       // raw user-entered string
+ *     surchargePay:       string,       // raw user-entered string
+ *     pay:                string,       // derived by MissionRules
+ *     billing:            string,       // VALID_BILLING_TYPES
+ *
+ *     assignedTeamId:     string|null,  // UUID, or null
+ *     supportPersonnel:   [string],     // character UUIDs, unique
+ *
+ *     status:             string,       // VALID_STATUSES
+ *     objectives:         [{ text, done }],
+ *     progress:           number,       // 0..100, derived by MissionRules
+ *
+ *     notes:              string,
+ *     tags:               [string],     // non-empty, trimmed
+ *
+ *     createdAt:          string,       // ISO 8601
+ *     completedAt:        string|null,  // ISO 8601 or null
+ *     archivedAt:         string|null,  // ISO 8601 or null
+ *
+ *     reports:            [{
+ *       id,                // UUID (IdUtils)
+ *       authorId,          // character UUID, or null when redacted
+ *       authorRedacted,    // boolean; true iff authorId === null
+ *       text,              // required, non-empty
+ *       createdAt,         // ISO 8601
+ *       updatedAt          // ISO 8601
+ *     }],
+ *
+ *     log:                [{ timestamp, message }],
+ *
+ *     graduatingClassId:  string|null,  // UUID, or null
+ *     classFilterEnabled: boolean
+ *   }
+ *
+ * DERIVED FIELDS:
+ *
+ *   `pay` and `progress` are derived. They are structurally checked
+ *   here (as strings and numbers, respectively) but their value is
+ *   not compared against the calculation. That comparison is a
+ *   domain-rule concern and belongs to MissionRules, called from
+ *   MissionCore's pipeline validate.
+ *
+ *   `missionId` is NOT a canonical field. It is derived at read time
+ *   by MissionId.derive(mission). It is never stored. The schema
+ *   rejects a stored `missionId` field to catch a migration bug that
+ *   would reintroduce the drift problem.
+ *
+ * CANONICALISATION CONTRACT:
+ *
+ *   canonicaliseMissionShape(input) returns:
+ *
+ *     { valid: true,  errors: [], value: <canonical mission> }
+ *
+ *   or:
+ *
+ *     { valid: false, errors: [...], value: null }
+ *
+ *   On failure, `value` is null. The caller MUST NOT persist or
+ *   otherwise use a partially-transformed object. There is no partial
+ *   success.
+ *
+ *   The canonicaliser does NOT:
+ *     - Apply semantic defaults (status, priority, difficulty,
+ *       billing, escalation). Creation defaults belong to
+ *       MissionCore, applied before canonicalisation.
+ *     - Generate timestamps. If `createdAt` is missing or invalid,
+ *       the result is `valid: false`, not "invent the current time."
+ *     - Generate IDs. If `id` is missing or invalid, the result is
+ *       `valid: false`.
+ *     - Generate sequence numbers. Sequence is assigned at creation
+ *       by MissionCore via MissionId.generate.
+ *     - Silently drop malformed nested records. A bad objective,
+ *       log entry, report, or support personnel entry makes the
+ *       whole canonicalisation fail.
+ *     - Compare `pay` / `progress` to their derived values.
+ *       MissionRules owns that comparison.
+ *
+ *   What it DOES do:
+ *     - Trim strings.
+ *     - Coerce numeric strings to numbers when the canonical type
+ *       is number (e.g. `month: "9"` -> `month: 9`).
+ *     - Normalise support personnel IDs via IdUtils.
+ *     - Drop duplicate support personnel IDs after surfacing the
+ *       error, so that the reported errors contain the specific
+ *       duplicate.
+ *     - Drop empty tags after surfacing the error.
+ *     - Preserve unknown top-level fields (deep-cloned) so future
+ *       schema extensions and domain-specific metadata survive a
+ *       round trip.
+ *
+ * DEPENDENCIES (MANDATORY):
+ *   - window.CalendarValidation
+ *   - window.IdUtils
+ *   - window.ObjectUtils
+ *   - window.MissionConstants
+ *   - window.MissionId
  */
 
 (function() {
     'use strict';
 
-    if (window.__missionSchemaLoaded) return;
-    window.__missionSchemaLoaded = true;
+    if (window.__missionSchemaLoaded) {
+        return;
+    }
 
     // ============================================================
-    // DEPENDENCY CHECK - NO FALLBACKS
+    // MANDATORY DEPENDENCIES
     // ============================================================
-
-    var missing = [];
-
-    if (!window.CalendarValidation) {
-        missing.push('CalendarValidation');
-    }
-
-    if (!window.IdUtils || typeof window.IdUtils.normaliseId !== 'function') {
-        missing.push('IdUtils.normaliseId');
-    }
-
-    if (missing.length > 0) {
-        throw new Error('[MissionSchema] Missing dependencies: ' + missing.join(', '));
-    }
 
     var CalendarValidation = window.CalendarValidation;
     var IdUtils = window.IdUtils;
+    var ObjectUtils = window.ObjectUtils;
+    var MissionConstants = window.MissionConstants;
+    var MissionId = window.MissionId;
+
+    var _missing = [];
+
+    if (!CalendarValidation) {
+        _missing.push('CalendarValidation (module)');
+    } else {
+        if (typeof CalendarValidation.parseWeek !== 'function') {
+            _missing.push('CalendarValidation.parseWeek');
+        }
+        if (typeof CalendarValidation.isValidCalendarDate !== 'function') {
+            _missing.push('CalendarValidation.isValidCalendarDate');
+        }
+    }
+
+    if (!IdUtils) {
+        _missing.push('IdUtils (module)');
+    } else {
+        if (typeof IdUtils.normaliseId !== 'function') {
+            _missing.push('IdUtils.normaliseId');
+        }
+        if (typeof IdUtils.generateId !== 'function') {
+            _missing.push('IdUtils.generateId');
+        }
+    }
+
+    if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
+        _missing.push('ObjectUtils.deepClone');
+    }
+
+    if (!MissionConstants) {
+        _missing.push('MissionConstants (module)');
+    } else {
+        if (!Array.isArray(MissionConstants.VALID_STATUSES)) {
+            _missing.push('MissionConstants.VALID_STATUSES');
+        }
+        if (!Array.isArray(MissionConstants.VALID_PRIORITIES)) {
+            _missing.push('MissionConstants.VALID_PRIORITIES');
+        }
+        if (!Array.isArray(MissionConstants.VALID_DIFFICULTIES)) {
+            _missing.push('MissionConstants.VALID_DIFFICULTIES');
+        }
+        if (!Array.isArray(MissionConstants.VALID_BILLING_TYPES)) {
+            _missing.push('MissionConstants.VALID_BILLING_TYPES');
+        }
+        if (!Array.isArray(MissionConstants.VALID_ESCALATION_TIERS)) {
+            _missing.push('MissionConstants.VALID_ESCALATION_TIERS');
+        }
+        if (typeof MissionConstants.isValidMissionType !== 'function') {
+            _missing.push('MissionConstants.isValidMissionType');
+        }
+        if (typeof MissionConstants.isValidSubtype !== 'function') {
+            _missing.push('MissionConstants.isValidSubtype');
+        }
+    }
+
+    if (!MissionId || typeof MissionId.isValidYear !== 'function') {
+        _missing.push('MissionId.isValidYear');
+    }
+
+    if (_missing.length > 0) {
+        throw new Error(
+            '[MissionSchema] Missing mandatory dependencies: ' +
+            _missing.join(', ')
+        );
+    }
+
+    window.__missionSchemaLoaded = true;
 
     // ============================================================
-    // CONSTANTS - DEEP FROZEN
+    // SHORTHAND IMPORTS
     // ============================================================
+
+    var VALID_STATUSES = MissionConstants.VALID_STATUSES;
+    var VALID_PRIORITIES = MissionConstants.VALID_PRIORITIES;
+    var VALID_DIFFICULTIES = MissionConstants.VALID_DIFFICULTIES;
+    var VALID_BILLING_TYPES = MissionConstants.VALID_BILLING_TYPES;
+    var VALID_ESCALATION_TIERS = MissionConstants.VALID_ESCALATION_TIERS;
+    var isValidMissionType = MissionConstants.isValidMissionType;
+    var isValidSubtype = MissionConstants.isValidSubtype;
+    var isValidYear = MissionId.isValidYear;
 
     var SCHEMA_VERSION = 1;
 
-    var VALID_STATUSES = Object.freeze(['active', 'completed', 'cancelled']);
-    var VALID_PRIORITIES = Object.freeze(['low', 'medium', 'high', 'critical']);
-    var VALID_DIFFICULTIES = Object.freeze(['easy', 'medium', 'hard', 'expert']);
-    var VALID_BILLING_TYPES = Object.freeze(['original', 'escalated', 'emergency', 'internal']);
-    var VALID_ESCALATION_TIERS = Object.freeze(['tier_i', 'tier_ii', 'tier_iii', 'tier_iv', 'tier_v']);
-
-    var DIFFICULTY_CODES = Object.freeze({
-        'easy': 'E',
-        'medium': 'M',
-        'hard': 'H',
-        'expert': 'X'
-    });
-
     // ============================================================
-    // MISSION TYPE TAXONOMY - DEEP FROZEN
+    // LOW-LEVEL HELPERS
     // ============================================================
 
-    var MISSION_TYPES = Object.freeze({
-        'combat': Object.freeze({
-            id: 'combat',
-            label: 'Combat',
-            description: 'Direct combat operations, elimination, defence, protection',
-            subtypes: Object.freeze(['elimination', 'defence', 'protection'])
-        }),
-        'recovery': Object.freeze({
-            id: 'recovery',
-            label: 'Recovery',
-            description: 'Retrieval of people, materials, or artifacts',
-            subtypes: Object.freeze(['retrieval', 'rescue', 'material_recovery', 'artifact_recovery'])
-        }),
-        'investigation': Object.freeze({
-            id: 'investigation',
-            label: 'Investigation',
-            description: 'Investigations, reconnaissance, surveillance',
-            subtypes: Object.freeze(['investigation', 'reconnaissance', 'surveillance'])
-        }),
-        'exploration': Object.freeze({
-            id: 'exploration',
-            label: 'Exploration',
-            description: 'Exploration, surveys, expeditions',
-            subtypes: Object.freeze(['exploration', 'survey', 'expedition'])
-        }),
-        'infiltration': Object.freeze({
-            id: 'infiltration',
-            label: 'Infiltration',
-            description: 'Stealth entry, social infiltration, espionage',
-            subtypes: Object.freeze(['stealth_entry', 'social_infiltration', 'theft_recovery', 'espionage'])
-        }),
-        'containment': Object.freeze({
-            id: 'containment',
-            label: 'Containment',
-            description: 'Capture, magical containment, quarantine',
-            subtypes: Object.freeze(['capture', 'magical_containment', 'quarantine'])
-        }),
-        'acquisition': Object.freeze({
-            id: 'acquisition',
-            label: 'Acquisition',
-            description: 'Gathering ingredients, resources, or specimens',
-            subtypes: Object.freeze(['ingredients', 'resources', 'specimens'])
-        }),
-        'research': Object.freeze({
-            id: 'research',
-            label: 'Research',
-            description: 'Observation, field research, field testing',
-            subtypes: Object.freeze(['observation', 'field_research', 'field_testing'])
-        }),
-        'diplomatic': Object.freeze({
-            id: 'diplomatic',
-            label: 'Diplomatic',
-            description: 'Negotiation, mediation, representation',
-            subtypes: Object.freeze(['negotiation', 'mediation', 'representation'])
-        }),
-        'assassination': Object.freeze({
-            id: 'assassination',
-            label: 'Assassination',
-            description: 'Targeted elimination',
-            subtypes: Object.freeze(['targeted_elimination'])
-        })
-    });
-
-    // ============================================================
-    // SUBTYPE LABELS - DEEP FROZEN
-    // ============================================================
-
-    var SUBTYPE_LABELS = Object.freeze({
-        'elimination': 'Elimination',
-        'defence': 'Defence',
-        'protection': 'Protection',
-        'retrieval': 'Retrieval',
-        'rescue': 'Rescue',
-        'material_recovery': 'Material Recovery',
-        'artifact_recovery': 'Artifact Recovery',
-        'investigation': 'Investigation',
-        'reconnaissance': 'Reconnaissance',
-        'surveillance': 'Surveillance',
-        'exploration': 'Exploration',
-        'survey': 'Survey',
-        'expedition': 'Expedition',
-        'stealth_entry': 'Stealth Entry',
-        'social_infiltration': 'Social Infiltration',
-        'theft_recovery': 'Theft / Recovery',
-        'espionage': 'Espionage',
-        'capture': 'Capture',
-        'magical_containment': 'Magical Containment',
-        'quarantine': 'Quarantine',
-        'ingredients': 'Ingredients',
-        'resources': 'Resources',
-        'specimens': 'Specimens',
-        'observation': 'Observation',
-        'field_research': 'Field Research',
-        'field_testing': 'Field Testing',
-        'negotiation': 'Negotiation',
-        'mediation': 'Mediation',
-        'representation': 'Representation',
-        'targeted_elimination': 'Targeted Elimination'
-    });
-
-    // ============================================================
-    // ESCALATION LABELS - DEEP FROZEN
-    // ============================================================
-
-    var ESCALATION_LABELS = Object.freeze({
-        'tier_i': 'Tier I - Routine',
-        'tier_ii': 'Tier II - Complicated',
-        'tier_iii': 'Tier III - Dangerous',
-        'tier_iv': 'Tier IV - Critical',
-        'tier_v': 'Tier V - Catastrophic'
-    });
-
-    // ============================================================
-    // BILLING LABELS - DEEP FROZEN
-    // ============================================================
-
-    var BILLING_LABELS = Object.freeze({
-        'original': 'Original Contract',
-        'escalated': 'Escalated / Surcharge',
-        'emergency': 'Emergency Intervention',
-        'internal': 'Internal / Research'
-    });
-
-    // ============================================================
-    // HELPER FUNCTIONS
-    // ============================================================
-
-    function isObject(value) {
-        return value !== null && typeof value === 'object' && !Array.isArray(value);
+    function isPlainObject(value) {
+        return value !== null &&
+               typeof value === 'object' &&
+               !Array.isArray(value);
     }
 
     function isNonEmptyString(value) {
         return typeof value === 'string' && value.trim() !== '';
     }
 
-    function isString(value) {
-        return typeof value === 'string';
+    function isNonEmptyStringTrimmedEqual(value, expected) {
+        return typeof value === 'string' && value.trim() === expected;
     }
 
-    function isBoolean(value) {
-        return typeof value === 'boolean';
-    }
-
-    function isFiniteNumber(value) {
-        return typeof value === 'number' && Number.isFinite(value);
-    }
-
-    // ============================================================
-    // YEAR VALIDATION
-    // ============================================================
-    //
-    // Years are UNBOUNDED positive integers. A null or missing year
-    // is also accepted (means "year not specified").
-    //
-    // If MissionId.isValidYear is available, delegate to it so the
-    // year rule has a single source of truth across the module.
-    // Otherwise use the inline fallback, which implements the same
-    // rule (positive integer or null).
-
-    function parseYear(value) {
-        if (value === undefined || value === null || value === '') {
-            return { valid: true, value: null };
+    function deepClone(value) {
+        var result = ObjectUtils.deepClone(value);
+        if (result === value &&
+            value !== null &&
+            typeof value === 'object') {
+            throw new Error(
+                '[MissionSchema] deepClone returned the original reference.'
+            );
         }
+        return result;
+    }
 
-        var MissionId = window.MissionId;
-        if (MissionId && typeof MissionId.isValidYear === 'function') {
-            var parsed = MissionId.isValidYear(value);
-            if (parsed === null) {
-                return { valid: false, value: null };
+    function normaliseId(value) {
+        return IdUtils.normaliseId(value);
+    }
+
+    /**
+     * Coerce a value to a canonical integer, or return null.
+     *
+     * Accepts integers and pure-digit strings. Rejects everything
+     * else. Does not accept trailing characters, decimals, or signs.
+     */
+    function coerceInteger(value) {
+        if (typeof value === 'number') {
+            return Number.isSafeInteger(value) ? value : null;
+        }
+        if (typeof value === 'string') {
+            var trimmed = value.trim();
+            if (trimmed === '' || !/^-?\d+$/.test(trimmed)) {
+                return null;
             }
-            return { valid: true, value: parsed };
+            var n = Number(trimmed);
+            return Number.isSafeInteger(n) ? n : null;
         }
-
-        var num = Number(value);
-        if (!Number.isInteger(num) || num < 1) {
-            return { valid: false, value: null };
-        }
-
-        return { valid: true, value: num };
+        return null;
     }
 
-    // ============================================================
-    // VALID PREDICATES - Return proper booleans
-    // ============================================================
-
-    function isValidStatus(status) {
-        return typeof status === 'string' && VALID_STATUSES.indexOf(status) !== -1;
-    }
-
-    function isValidPriority(priority) {
-        return typeof priority === 'string' && VALID_PRIORITIES.indexOf(priority) !== -1;
-    }
-
-    function isValidDifficulty(difficulty) {
-        return typeof difficulty === 'string' && VALID_DIFFICULTIES.indexOf(difficulty) !== -1;
-    }
-
-    function isValidBilling(billing) {
-        return typeof billing === 'string' && VALID_BILLING_TYPES.indexOf(billing) !== -1;
-    }
-
-    function isValidEscalation(escalation) {
-        return typeof escalation === 'string' && VALID_ESCALATION_TIERS.indexOf(escalation) !== -1;
-    }
-
-    function isValidMissionType(type) {
-        return typeof type === 'string' && MISSION_TYPES[type] !== undefined;
-    }
-
-    function isValidSubtype(typeId, subtype) {
-        if (typeof typeId !== 'string' || typeof subtype !== 'string') {
+    /**
+     * Is the value a valid ISO 8601 timestamp string?
+     *
+     * Strict: the string must parse as a Date AND the parsed Date's
+     * ISO representation must equal the input. This rejects formats
+     * Date accepts loosely (e.g. "Dec 25 2026") and requires the
+     * canonical form produced by Date.prototype.toISOString.
+     */
+    function isStrictIsoTimestamp(value) {
+        if (typeof value !== 'string' || value === '') {
             return false;
         }
-        var type = MISSION_TYPES[typeId];
-        if (!type) {
+        var parsed = new Date(value);
+        if (isNaN(parsed.getTime())) {
             return false;
         }
-        return type.subtypes.indexOf(subtype) !== -1;
+        return parsed.toISOString() === value;
     }
 
     // ============================================================
-    // MISSION TYPE HELPERS
+    // ENUM PREDICATES
     // ============================================================
 
-    function getMissionType(typeId) {
-        return MISSION_TYPES[typeId] || null;
+    function isValidStatus(value) {
+        return VALID_STATUSES.indexOf(value) !== -1;
     }
 
-    function getMissionTypeLabel(typeId) {
-        var type = getMissionType(typeId);
-        return type ? type.label : typeId || 'Unclassified';
+    function isValidPriority(value) {
+        return VALID_PRIORITIES.indexOf(value) !== -1;
     }
 
-    function getSubtypeLabel(subtypeId) {
-        return SUBTYPE_LABELS[subtypeId] || subtypeId || '';
+    function isValidDifficulty(value) {
+        return VALID_DIFFICULTIES.indexOf(value) !== -1;
     }
 
-    function getEscalationLabel(escalation) {
-        return ESCALATION_LABELS[escalation] || escalation || 'Tier II - Complicated';
+    function isValidBilling(value) {
+        return VALID_BILLING_TYPES.indexOf(value) !== -1;
     }
 
-    function getBillingLabel(billing) {
-        return BILLING_LABELS[billing] || billing || 'Original Contract';
-    }
-
-    function getDifficultyCode(difficulty) {
-        return DIFFICULTY_CODES[difficulty] || 'M';
+    function isValidEscalation(value) {
+        return VALID_ESCALATION_TIERS.indexOf(value) !== -1;
     }
 
     // ============================================================
-    // DEEP VALIDATION - Returns errors, does not mutate
+    // NESTED VALIDATORS
     // ============================================================
+    //
+    // Each validator appends to an `errors` array. None throws. None
+    // mutates the input.
 
     function validateObjective(objective, index, errors) {
-        if (!isObject(objective)) {
+        if (!isPlainObject(objective)) {
             errors.push('Objective ' + (index + 1) + ' must be an object.');
             return;
         }
-
         if (!isNonEmptyString(objective.text)) {
-            errors.push('Objective ' + (index + 1) + ' requires non-empty text.');
+            errors.push(
+                'Objective ' + (index + 1) + ' requires non-empty text.'
+            );
         }
-
-        if (objective.done !== undefined && !isBoolean(objective.done)) {
-            errors.push('Objective ' + (index + 1) + ' done status must be boolean.');
+        if (objective.done !== undefined &&
+            typeof objective.done !== 'boolean') {
+            errors.push(
+                'Objective ' + (index + 1) + ' done must be a boolean.'
+            );
         }
     }
 
     function validateLogEntry(entry, index, errors) {
-        if (!isObject(entry)) {
+        if (!isPlainObject(entry)) {
             errors.push('Log entry ' + (index + 1) + ' must be an object.');
             return;
         }
+        if (!isStrictIsoTimestamp(entry.timestamp)) {
+            errors.push(
+                'Log entry ' + (index + 1) +
+                ' timestamp must be an ISO 8601 string.'
+            );
+        }
+        if (!isNonEmptyString(entry.message)) {
+            errors.push(
+                'Log entry ' + (index + 1) + ' requires non-empty message.'
+            );
+        }
+    }
 
-        if (entry.timestamp !== undefined && typeof entry.timestamp !== 'string') {
-            errors.push('Log entry ' + (index + 1) + ' timestamp must be a string.');
+    function validateReport(report, index, errors) {
+        if (!isPlainObject(report)) {
+            errors.push('Report ' + (index + 1) + ' must be an object.');
+            return;
         }
 
-        if (!isNonEmptyString(entry.message)) {
-            errors.push('Log entry ' + (index + 1) + ' requires non-empty message.');
+        if (normaliseId(report.id) === null) {
+            errors.push('Report ' + (index + 1) + ' id is required.');
+        }
+
+        var hasAuthorId = report.authorId !== undefined &&
+                          report.authorId !== null;
+
+        if (hasAuthorId) {
+            if (normaliseId(report.authorId) === null) {
+                errors.push(
+                    'Report ' + (index + 1) + ' authorId must be a valid ' +
+                    'id or null.'
+                );
+            }
+            if (report.authorRedacted === true) {
+                errors.push(
+                    'Report ' + (index + 1) +
+                    ' cannot have both authorId and authorRedacted=true.'
+                );
+            }
+        } else {
+            if (report.authorRedacted !== true) {
+                errors.push(
+                    'Report ' + (index + 1) +
+                    ' must have authorId or authorRedacted=true.'
+                );
+            }
+        }
+
+        if (!isNonEmptyString(report.text)) {
+            errors.push('Report ' + (index + 1) + ' requires non-empty text.');
+        }
+
+        if (!isStrictIsoTimestamp(report.createdAt)) {
+            errors.push(
+                'Report ' + (index + 1) +
+                ' createdAt must be an ISO 8601 string.'
+            );
+        }
+
+        if (report.updatedAt !== undefined && report.updatedAt !== null) {
+            if (!isStrictIsoTimestamp(report.updatedAt)) {
+                errors.push(
+                    'Report ' + (index + 1) +
+                    ' updatedAt must be an ISO 8601 string or null.'
+                );
+            }
         }
     }
 
     function validateTag(tag, index, errors) {
-        if (!isString(tag)) {
+        if (typeof tag !== 'string') {
             errors.push('Tag ' + (index + 1) + ' must be a string.');
             return;
         }
@@ -394,651 +462,1006 @@
     }
 
     function validateSupportPersonnel(id, index, errors) {
-        var normalised = IdUtils.normaliseId(id);
-        if (normalised === null) {
-            errors.push('Support personnel ' + (index + 1) + ' has invalid ID.');
+        if (normaliseId(id) === null) {
+            errors.push(
+                'Support personnel entry ' + (index + 1) +
+                ' must be a valid id.'
+            );
+        }
+    }
+
+    function validateSupportPersonnelUniqueness(ids, errors) {
+        var seen = Object.create(null);
+        for (var i = 0; i < ids.length; i++) {
+            var normalised = normaliseId(ids[i]);
+            if (normalised === null) {
+                continue;
+            }
+            if (seen[normalised] === true) {
+                errors.push(
+                    'Duplicate support personnel id: ' + normalised + '.'
+                );
+            }
+            seen[normalised] = true;
         }
     }
 
     // ============================================================
-    // MISSION VALIDATION
+    // FULL MISSION VALIDATION
     // ============================================================
 
+    /**
+     * Validate a mission record.
+     *
+     * Does NOT require any particular field to be absent or present
+     * beyond what the canonical shape defines. Missing required
+     * fields are errors; missing optional fields are not.
+     *
+     * Does NOT check derived values against their derivation.
+     * MissionRules is responsible for that, when it matters.
+     *
+     * Returns { valid: boolean, errors: [...] }.
+     */
     function validateMission(mission) {
         var errors = [];
 
-        if (!mission || typeof mission !== 'object') {
+        if (!isPlainObject(mission)) {
             return { valid: false, errors: ['Mission must be an object.'] };
         }
 
-        // ---- TITLE ----
+        // ---- id ----
+        if (normaliseId(mission.id) === null) {
+            errors.push('Mission id is required.');
+        }
+
+        // ---- title ----
         if (!isNonEmptyString(mission.title)) {
             errors.push('Mission title is required.');
         }
 
-        // ---- PRIMARY TYPE ----
-        if (mission.primaryType && !isValidMissionType(mission.primaryType)) {
-            errors.push('Invalid primary type: "' + mission.primaryType + '"');
+        // ---- stored missionId is forbidden ----
+        // missionId is derived, not stored. A stored field means a
+        // migration or a caller re-introduced the old model.
+        if (mission.missionId !== undefined && mission.missionId !== null) {
+            errors.push(
+                'Mission must not carry a stored "missionId" field. ' +
+                'missionId is derived by MissionId.derive().'
+            );
         }
 
-        // ---- SUBTYPE ----
-        if (mission.subtype) {
-            if (!mission.primaryType) {
-                errors.push('Subtype requires a primary type.');
-            } else if (!isValidSubtype(mission.primaryType, mission.subtype)) {
-                errors.push('Invalid subtype "' + mission.subtype + '" for primary type "' + mission.primaryType + '".');
-            }
-        }
-
-        // ---- SECONDARY TYPE ----
-        if (mission.secondaryType && !isValidMissionType(mission.secondaryType)) {
-            errors.push('Invalid secondary type: "' + mission.secondaryType + '"');
-        }
-
-        // ---- STATUS ----
-        if (mission.status && !isValidStatus(mission.status)) {
-            errors.push('Invalid status: "' + mission.status + '"');
-        }
-
-        // ---- PRIORITY ----
-        if (mission.priority && !isValidPriority(mission.priority)) {
-            errors.push('Invalid priority: "' + mission.priority + '"');
-        }
-
-        // ---- DIFFICULTY ----
-        if (mission.difficulty && !isValidDifficulty(mission.difficulty)) {
-            errors.push('Invalid difficulty: "' + mission.difficulty + '"');
-        }
-
-        // ---- BILLING ----
-        if (mission.billing && !isValidBilling(mission.billing)) {
-            errors.push('Invalid billing type: "' + mission.billing + '"');
-        }
-
-        // ---- ESCALATION ----
-        if (mission.escalation && !isValidEscalation(mission.escalation)) {
-            errors.push('Invalid escalation tier: "' + mission.escalation + '"');
-        }
-
-        // ---- DATE ----
-        // Years are unbounded positive integers.
-        var yearResult = parseYear(mission.year);
-        if (!yearResult.valid) {
-            errors.push('Year must be a positive integer.');
-        }
-
-        if (mission.month !== undefined && mission.month !== null) {
-            var m = Number(mission.month);
-            if (!Number.isInteger(m) || m < 1 || m > 12) {
-                errors.push('Month must be between 1 and 12.');
-            }
-        }
-
-        if (mission.day !== undefined && mission.day !== null) {
-            var d = Number(mission.day);
-            if (!Number.isInteger(d) || d < 1 || d > 31) {
-                errors.push('Day must be between 1 and 31.');
-            }
-        }
-
-        // Actual date validation (if all components present and non-null)
-        var hasYear = yearResult.valid && yearResult.value !== null;
+        // ---- year / month / day ----
+        var hasYear = mission.year !== undefined && mission.year !== null;
         var hasMonth = mission.month !== undefined && mission.month !== null;
         var hasDay = mission.day !== undefined && mission.day !== null;
 
-        if (hasYear && hasMonth && hasDay) {
-            var dateValid = true;
-            if (typeof CalendarValidation.isValidCalendarDate === 'function') {
-                dateValid = CalendarValidation.isValidCalendarDate(
-                    yearResult.value,
-                    mission.month,
-                    mission.day
+        if (hasYear) {
+            if (isValidYear(mission.year) === null) {
+                errors.push('Year must be a positive integer.');
+            }
+        }
+
+        if (hasMonth) {
+            var month = coerceInteger(mission.month);
+            if (month === null || month < 1 || month > 12) {
+                errors.push('Month must be an integer between 1 and 12.');
+            }
+        }
+
+        if (hasDay) {
+            var day = coerceInteger(mission.day);
+            if (day === null || day < 1 || day > 31) {
+                errors.push('Day must be an integer between 1 and 31.');
+            }
+        }
+
+        if (hasYear && hasMonth && hasDay &&
+            isValidYear(mission.year) !== null) {
+            var yearNum = isValidYear(mission.year);
+            var monthNum = coerceInteger(mission.month);
+            var dayNum = coerceInteger(mission.day);
+            if (yearNum !== null && monthNum !== null && dayNum !== null) {
+                if (typeof CalendarValidation.isValidCalendarDate === 'function') {
+                    if (!CalendarValidation.isValidCalendarDate(
+                        yearNum, monthNum, dayNum
+                    )) {
+                        errors.push('Invalid calendar date.');
+                    }
+                }
+            }
+        }
+
+        // ---- sequence ----
+        var sequence = coerceInteger(mission.sequence);
+        if (sequence === null || sequence < 1) {
+            errors.push('Sequence must be an integer >= 1.');
+        }
+
+        // ---- difficulty ----
+        if (!isValidDifficulty(mission.difficulty)) {
+            errors.push(
+                'Invalid difficulty: "' + mission.difficulty + '".'
+            );
+        }
+
+        // ---- status ----
+        if (!isValidStatus(mission.status)) {
+            errors.push('Invalid status: "' + mission.status + '".');
+        }
+
+        // ---- priority ----
+        if (!isValidPriority(mission.priority)) {
+            errors.push('Invalid priority: "' + mission.priority + '".');
+        }
+
+        // ---- billing ----
+        if (!isValidBilling(mission.billing)) {
+            errors.push('Invalid billing type: "' + mission.billing + '".');
+        }
+
+        // ---- escalation ----
+        if (!isValidEscalation(mission.escalation)) {
+            errors.push(
+                'Invalid escalation tier: "' + mission.escalation + '".'
+            );
+        }
+
+        // ---- primaryType / subtype / secondaryType ----
+        var primaryType = mission.primaryType;
+        if (primaryType !== undefined && primaryType !== null &&
+            primaryType !== '') {
+            if (!isValidMissionType(primaryType)) {
+                errors.push(
+                    'Invalid primary type: "' + primaryType + '".'
                 );
             }
-            if (!dateValid) {
-                errors.push('Invalid calendar date.');
+        }
+
+        var subtype = mission.subtype;
+        if (subtype !== undefined && subtype !== null && subtype !== '') {
+            if (!primaryType) {
+                errors.push('Subtype requires a primary type.');
+            } else if (!isValidSubtype(primaryType, subtype)) {
+                errors.push(
+                    'Invalid subtype "' + subtype +
+                    '" for primary type "' + primaryType + '".'
+                );
             }
         }
 
-        // ---- OBJECTIVES ----
-        if (mission.objectives !== undefined) {
-            if (!Array.isArray(mission.objectives)) {
-                errors.push('Objectives must be an array.');
-            } else {
-                for (var i = 0; i < mission.objectives.length; i++) {
-                    validateObjective(mission.objectives[i], i, errors);
-                }
+        var secondaryType = mission.secondaryType;
+        if (secondaryType !== undefined && secondaryType !== null &&
+            secondaryType !== '') {
+            if (!isValidMissionType(secondaryType)) {
+                errors.push(
+                    'Invalid secondary type: "' + secondaryType + '".'
+                );
             }
         }
 
-        // ---- TAGS ----
-        if (mission.tags !== undefined) {
-            if (!Array.isArray(mission.tags)) {
-                errors.push('Tags must be an array.');
-            } else {
-                for (var i = 0; i < mission.tags.length; i++) {
-                    validateTag(mission.tags[i], i, errors);
-                }
+        // ---- objectives ----
+        if (!Array.isArray(mission.objectives)) {
+            errors.push('Objectives must be an array.');
+        } else {
+            for (var i = 0; i < mission.objectives.length; i++) {
+                validateObjective(mission.objectives[i], i, errors);
             }
         }
 
-        // ---- SUPPORT PERSONNEL ----
-        if (mission.supportPersonnel !== undefined) {
-            if (!Array.isArray(mission.supportPersonnel)) {
-                errors.push('Support personnel must be an array.');
-            } else {
-                for (var i = 0; i < mission.supportPersonnel.length; i++) {
-                    validateSupportPersonnel(mission.supportPersonnel[i], i, errors);
-                }
+        // ---- support personnel ----
+        if (!Array.isArray(mission.supportPersonnel)) {
+            errors.push('Support personnel must be an array.');
+        } else {
+            for (var j = 0; j < mission.supportPersonnel.length; j++) {
+                validateSupportPersonnel(
+                    mission.supportPersonnel[j], j, errors
+                );
+            }
+            validateSupportPersonnelUniqueness(
+                mission.supportPersonnel, errors
+            );
+        }
+
+        // ---- tags ----
+        if (!Array.isArray(mission.tags)) {
+            errors.push('Tags must be an array.');
+        } else {
+            for (var k = 0; k < mission.tags.length; k++) {
+                validateTag(mission.tags[k], k, errors);
             }
         }
 
-        // ---- LOG ----
-        if (mission.log !== undefined) {
-            if (!Array.isArray(mission.log)) {
-                errors.push('Log must be an array.');
-            } else {
-                for (var i = 0; i < mission.log.length; i++) {
-                    validateLogEntry(mission.log[i], i, errors);
-                }
+        // ---- log ----
+        if (!Array.isArray(mission.log)) {
+            errors.push('Log must be an array.');
+        } else {
+            for (var l = 0; l < mission.log.length; l++) {
+                validateLogEntry(mission.log[l], l, errors);
             }
         }
 
-        // ---- PROGRESS ----
-        // Progress is DERIVED. Validate that if present, it's within range.
-        if (mission.progress !== undefined) {
-            var prog = Number(mission.progress);
-            if (!Number.isFinite(prog) || prog < 0 || prog > 100) {
-                errors.push('Progress must be a number between 0 and 100.');
+        // ---- reports ----
+        if (!Array.isArray(mission.reports)) {
+            errors.push('Reports must be an array.');
+        } else {
+            for (var m = 0; m < mission.reports.length; m++) {
+                validateReport(mission.reports[m], m, errors);
             }
         }
 
-        // ---- PAY ----
-        // Pay is DERIVED. Validate that if present, it's a string.
-        if (mission.pay !== undefined && mission.pay !== null) {
-            if (typeof mission.pay !== 'string') {
-                errors.push('Pay must be a string.');
+        // ---- progress ----
+        if (typeof mission.progress !== 'number' ||
+            !isFinite(mission.progress) ||
+            mission.progress < 0 ||
+            mission.progress > 100) {
+            errors.push('Progress must be a number between 0 and 100.');
+        }
+
+        // ---- pay ----
+        if (typeof mission.pay !== 'string') {
+            errors.push('Pay must be a string.');
+        }
+
+        // ---- basePay / surchargePay ----
+        if (mission.basePay !== undefined &&
+            mission.basePay !== null &&
+            typeof mission.basePay !== 'string') {
+            errors.push('basePay must be a string.');
+        }
+        if (mission.surchargePay !== undefined &&
+            mission.surchargePay !== null &&
+            typeof mission.surchargePay !== 'string') {
+            errors.push('surchargePay must be a string.');
+        }
+
+        // ---- createdAt ----
+        if (!isStrictIsoTimestamp(mission.createdAt)) {
+            errors.push('createdAt must be an ISO 8601 string.');
+        }
+
+        // ---- completedAt ----
+        if (mission.completedAt !== undefined &&
+            mission.completedAt !== null) {
+            if (!isStrictIsoTimestamp(mission.completedAt)) {
+                errors.push(
+                    'completedAt must be an ISO 8601 string or null.'
+                );
             }
         }
 
-        // ---- COMPLETED AT ----
-        if (mission.completedAt !== undefined && mission.completedAt !== null) {
-            if (typeof mission.completedAt !== 'string' || isNaN(new Date(mission.completedAt).getTime())) {
-                errors.push('CompletedAt must be a valid ISO date string.');
+        // ---- archivedAt ----
+        if (mission.archivedAt !== undefined &&
+            mission.archivedAt !== null) {
+            if (!isStrictIsoTimestamp(mission.archivedAt)) {
+                errors.push(
+                    'archivedAt must be an ISO 8601 string or null.'
+                );
             }
         }
 
-        // ---- CREATED AT ----
-        if (mission.createdAt !== undefined && mission.createdAt !== null) {
-            if (typeof mission.createdAt !== 'string' || isNaN(new Date(mission.createdAt).getTime())) {
-                errors.push('CreatedAt must be a valid ISO date string.');
+        // ---- assignedTeamId ----
+        if (mission.assignedTeamId !== undefined &&
+            mission.assignedTeamId !== null) {
+            if (normaliseId(mission.assignedTeamId) === null) {
+                errors.push('assignedTeamId must be a valid id or null.');
             }
         }
 
-        // ---- MISSION ID ----
-        if (mission.missionId !== undefined && mission.missionId !== null) {
-            if (!isNonEmptyString(mission.missionId)) {
-                errors.push('Mission ID must be a non-empty string.');
+        // ---- graduatingClassId ----
+        if (mission.graduatingClassId !== undefined &&
+            mission.graduatingClassId !== null) {
+            if (normaliseId(mission.graduatingClassId) === null) {
+                errors.push('graduatingClassId must be a valid id or null.');
             }
         }
 
-        // ---- ID ----
-        if (mission.id !== undefined && mission.id !== null) {
-            if (!isNonEmptyString(mission.id)) {
-                errors.push('ID must be a non-empty string.');
-            }
-        }
-
-        // ---- GRADUATING CLASS ----
-        if (mission.graduatingClassId !== undefined && mission.graduatingClassId !== null) {
-            var gradId = IdUtils.normaliseId(mission.graduatingClassId);
-            if (gradId === null) {
-                errors.push('Invalid graduatingClassId.');
-            }
-        }
-
-        // ---- CLASS FILTER ----
-        if (mission.classFilterEnabled !== undefined && typeof mission.classFilterEnabled !== 'boolean') {
+        // ---- classFilterEnabled ----
+        if (typeof mission.classFilterEnabled !== 'boolean') {
             errors.push('classFilterEnabled must be a boolean.');
+        }
+
+        // ---- textual fields ----
+        var textualFields = [
+            'description',
+            'threatType',
+            'environment',
+            'location',
+            'duration',
+            'notes'
+        ];
+        for (var t = 0; t < textualFields.length; t++) {
+            var field = textualFields[t];
+            if (mission[field] !== undefined &&
+                mission[field] !== null &&
+                typeof mission[field] !== 'string') {
+                errors.push(field + ' must be a string.');
+            }
         }
 
         return { valid: errors.length === 0, errors: errors };
     }
 
     // ============================================================
-    // CANONICALISE MISSION SHAPE - Structural only
+    // CANONICALISATION
     // ============================================================
+    //
+    // Conservative. Given structurally valid input, produce the
+    // canonical shape. On any error, return { valid: false, errors,
+    // value: null }.
+    //
+    // The canonicaliser is used by MissionCore.createMission and
+    // MissionCore.updateMission, after creation defaults have been
+    // applied by the caller. It is NOT a repair tool: malformed
+    // input is reported, not silently fixed.
+
+    function canonicaliseObjective(objective, index, errors) {
+        if (!isPlainObject(objective)) {
+            errors.push('Objective ' + (index + 1) + ' must be an object.');
+            return null;
+        }
+        var text = typeof objective.text === 'string'
+            ? objective.text.trim()
+            : '';
+        if (text === '') {
+            errors.push(
+                'Objective ' + (index + 1) + ' requires non-empty text.'
+            );
+            return null;
+        }
+        if (objective.done !== undefined &&
+            typeof objective.done !== 'boolean') {
+            errors.push(
+                'Objective ' + (index + 1) + ' done must be a boolean.'
+            );
+            return null;
+        }
+        return {
+            text: text,
+            done: objective.done === true
+        };
+    }
+
+    function canonicaliseLogEntry(entry, index, errors) {
+        if (!isPlainObject(entry)) {
+            errors.push('Log entry ' + (index + 1) + ' must be an object.');
+            return null;
+        }
+        if (!isStrictIsoTimestamp(entry.timestamp)) {
+            errors.push(
+                'Log entry ' + (index + 1) +
+                ' timestamp must be an ISO 8601 string.'
+            );
+            return null;
+        }
+        var message = typeof entry.message === 'string'
+            ? entry.message.trim()
+            : '';
+        if (message === '') {
+            errors.push(
+                'Log entry ' + (index + 1) + ' requires non-empty message.'
+            );
+            return null;
+        }
+        return {
+            timestamp: entry.timestamp,
+            message: message
+        };
+    }
+
+    function canonicaliseReport(report, index, errors) {
+        if (!isPlainObject(report)) {
+            errors.push('Report ' + (index + 1) + ' must be an object.');
+            return null;
+        }
+
+        var id = normaliseId(report.id);
+        if (id === null) {
+            errors.push('Report ' + (index + 1) + ' id is required.');
+            return null;
+        }
+
+        var authorId = null;
+        var authorRedacted = false;
+
+        var hasAuthorId = report.authorId !== undefined &&
+                          report.authorId !== null;
+
+        if (hasAuthorId) {
+            authorId = normaliseId(report.authorId);
+            if (authorId === null) {
+                errors.push(
+                    'Report ' + (index + 1) +
+                    ' authorId must be a valid id or null.'
+                );
+                return null;
+            }
+            if (report.authorRedacted === true) {
+                errors.push(
+                    'Report ' + (index + 1) +
+                    ' cannot have both authorId and authorRedacted=true.'
+                );
+                return null;
+            }
+        } else {
+            if (report.authorRedacted !== true) {
+                errors.push(
+                    'Report ' + (index + 1) +
+                    ' must have authorId or authorRedacted=true.'
+                );
+                return null;
+            }
+            authorRedacted = true;
+        }
+
+        var text = typeof report.text === 'string'
+            ? report.text.trim()
+            : '';
+        if (text === '') {
+            errors.push('Report ' + (index + 1) + ' requires non-empty text.');
+            return null;
+        }
+
+        if (!isStrictIsoTimestamp(report.createdAt)) {
+            errors.push(
+                'Report ' + (index + 1) +
+                ' createdAt must be an ISO 8601 string.'
+            );
+            return null;
+        }
+
+        var updatedAt = null;
+        if (report.updatedAt !== undefined && report.updatedAt !== null) {
+            if (!isStrictIsoTimestamp(report.updatedAt)) {
+                errors.push(
+                    'Report ' + (index + 1) +
+                    ' updatedAt must be an ISO 8601 string or null.'
+                );
+                return null;
+            }
+            updatedAt = report.updatedAt;
+        }
+
+        var result = {
+            id: id,
+            authorId: authorId,
+            authorRedacted: authorRedacted,
+            text: text,
+            createdAt: report.createdAt,
+            updatedAt: updatedAt
+        };
+
+        var knownKeys = [
+            'id',
+            'authorId',
+            'authorRedacted',
+            'text',
+            'createdAt',
+            'updatedAt'
+        ];
+        Object.keys(report).forEach(function(key) {
+            if (knownKeys.indexOf(key) === -1) {
+                result[key] = deepClone(report[key]);
+            }
+        });
+
+        return result;
+    }
+
+    function canonicaliseTag(tag, index, errors) {
+        if (typeof tag !== 'string') {
+            errors.push('Tag ' + (index + 1) + ' must be a string.');
+            return null;
+        }
+        var trimmed = tag.trim();
+        if (trimmed === '') {
+            errors.push('Tag ' + (index + 1) + ' cannot be empty.');
+            return null;
+        }
+        return trimmed;
+    }
+
+    function canonicaliseSupportPersonnelEntry(id, index, errors) {
+        var normalised = normaliseId(id);
+        if (normalised === null) {
+            errors.push(
+                'Support personnel entry ' + (index + 1) +
+                ' must be a valid id.'
+            );
+            return null;
+        }
+        return normalised;
+    }
 
     /**
-     * Canonicalise a mission object to canonical form.
+     * Canonicalise a mission.
      *
-     * IMPORTANT SEMANTICS:
-     *   - Preserves id and missionId if present (does not invent them)
-     *   - Does NOT invent missing date components
-     *   - Rejects invalid nested records (does not silently discard)
-     *   - Strips unknown fields (schema is authoritative)
-     *   - Does NOT derive progress, pay, or completedAt
-     *   - Returns { valid, errors, value }
-     *
-     * YEAR SEMANTICS:
-     *   - Years are UNBOUNDED positive integers, or null.
-     *   - Invalid year values are recorded as errors and cleared to null.
-     *
-     * This is a STRUCTURAL normaliser only.
-     * Business derivation belongs in MissionCore.
-     *
-     * @param {object} input - Input mission data
-     * @returns {object} { valid: boolean, errors: array, value: object|null }
+     * @param {object} input
+     * @returns {object} { valid, errors, value }
      */
     function canonicaliseMissionShape(input) {
         var errors = [];
-        var result = null;
 
-        if (!input || typeof input !== 'object') {
-            errors.push('Mission data must be an object.');
-            return { valid: false, errors: errors, value: null };
+        if (!isPlainObject(input)) {
+            return {
+                valid: false,
+                errors: ['Mission data must be an object.'],
+                value: null
+            };
         }
 
-        // ---- PRESERVE ID AND MISSION ID ----
-        var id = input.id !== undefined && input.id !== null && isNonEmptyString(input.id)
-            ? String(input.id).trim()
-            : null;
-
-        var missionId = input.missionId !== undefined && input.missionId !== null && isNonEmptyString(input.missionId)
-            ? String(input.missionId).trim()
-            : null;
-
-        // ---- PRESERVE INCOMPLETE DATES (no defaults) ----
-        // Years are unbounded positive integers, or null.
-        var yearResult = parseYear(input.year);
-        var year = yearResult.valid ? yearResult.value : null;
-        if (!yearResult.valid) {
-            errors.push('Invalid year value.');
+        // ---- id ----
+        var id = normaliseId(input.id);
+        if (id === null) {
+            errors.push('Mission id is required.');
         }
 
-        var month = input.month !== undefined && input.month !== null
-            ? Number(input.month)
-            : null;
-
-        var day = input.day !== undefined && input.day !== null
-            ? Number(input.day)
-            : null;
-
-        // Validate number conversions
-        if (month !== null && (!Number.isInteger(month) || month < 1 || month > 12)) {
-            errors.push('Invalid month value.');
-            month = null;
-        }
-        if (day !== null && (!Number.isInteger(day) || day < 1 || day > 31)) {
-            errors.push('Invalid day value.');
-            day = null;
+        // ---- title ----
+        var title = typeof input.title === 'string'
+            ? input.title.trim()
+            : '';
+        if (title === '') {
+            errors.push('Mission title is required.');
         }
 
-        // ---- CLEAN OBJECTIVES (reject invalid) ----
-        var objectives = [];
-        if (input.objectives !== undefined) {
-            if (!Array.isArray(input.objectives)) {
-                errors.push('Objectives must be an array.');
-            } else {
-                for (var i = 0; i < input.objectives.length; i++) {
-                    var o = input.objectives[i];
-                    if (!o || typeof o !== 'object') {
-                        errors.push('Objective ' + (i + 1) + ' must be an object.');
-                        continue;
-                    }
-                    var text = String(o.text || '').trim();
-                    if (!text) {
-                        errors.push('Objective ' + (i + 1) + ' requires non-empty text.');
-                        continue;
-                    }
-                    objectives.push({
-                        text: text,
-                        done: !!o.done
-                    });
-                }
+        // ---- reject stored missionId ----
+        if (input.missionId !== undefined && input.missionId !== null) {
+            errors.push(
+                'Mission must not carry a stored "missionId" field.'
+            );
+        }
+
+        // ---- year / month / day ----
+        var year = null;
+        if (input.year !== undefined && input.year !== null && input.year !== '') {
+            year = isValidYear(input.year);
+            if (year === null) {
+                errors.push('Year must be a positive integer.');
             }
-        } else {
-            objectives = [];
         }
 
-        // ---- CLEAN SUPPORT PERSONNEL (reject invalid) ----
-        var supportPersonnel = [];
-        if (input.supportPersonnel !== undefined) {
-            if (!Array.isArray(input.supportPersonnel)) {
-                errors.push('Support personnel must be an array.');
+        var month = null;
+        if (input.month !== undefined && input.month !== null && input.month !== '') {
+            var m = coerceInteger(input.month);
+            if (m === null || m < 1 || m > 12) {
+                errors.push('Month must be an integer between 1 and 12.');
             } else {
-                for (var i = 0; i < input.supportPersonnel.length; i++) {
-                    var idVal = IdUtils.normaliseId(input.supportPersonnel[i]);
-                    if (idVal === null) {
-                        errors.push('Support personnel ' + (i + 1) + ' has invalid ID.');
-                        continue;
-                    }
-                    supportPersonnel.push(idVal);
+                month = m;
+            }
+        }
+
+        var day = null;
+        if (input.day !== undefined && input.day !== null && input.day !== '') {
+            var d = coerceInteger(input.day);
+            if (d === null || d < 1 || d > 31) {
+                errors.push('Day must be an integer between 1 and 31.');
+            } else {
+                day = d;
+            }
+        }
+
+        if (year !== null && month !== null && day !== null) {
+            if (typeof CalendarValidation.isValidCalendarDate === 'function') {
+                if (!CalendarValidation.isValidCalendarDate(
+                    year, month, day
+                )) {
+                    errors.push('Invalid calendar date.');
                 }
             }
         }
 
-        // ---- CLEAN TAGS (reject invalid) ----
-        var tags = [];
-        if (input.tags !== undefined) {
-            if (!Array.isArray(input.tags)) {
-                errors.push('Tags must be an array.');
-            } else {
-                for (var i = 0; i < input.tags.length; i++) {
-                    var tag = input.tags[i];
-                    if (typeof tag !== 'string') {
-                        errors.push('Tag ' + (i + 1) + ' must be a string.');
-                        continue;
-                    }
-                    var trimmed = tag.trim();
-                    if (trimmed) {
-                        tags.push(trimmed);
-                    }
-                }
+        // ---- sequence ----
+        var sequence = coerceInteger(input.sequence);
+        if (sequence === null || sequence < 1) {
+            errors.push('Sequence must be an integer >= 1.');
+        }
+
+        // ---- difficulty ----
+        var difficulty = input.difficulty;
+        if (!isValidDifficulty(difficulty)) {
+            errors.push(
+                'Invalid difficulty: "' + difficulty + '".'
+            );
+        }
+
+        // ---- status ----
+        var status = input.status;
+        if (!isValidStatus(status)) {
+            errors.push('Invalid status: "' + status + '".');
+        }
+
+        // ---- priority ----
+        var priority = input.priority;
+        if (!isValidPriority(priority)) {
+            errors.push('Invalid priority: "' + priority + '".');
+        }
+
+        // ---- billing ----
+        var billing = input.billing;
+        if (!isValidBilling(billing)) {
+            errors.push('Invalid billing type: "' + billing + '".');
+        }
+
+        // ---- escalation ----
+        var escalation = input.escalation;
+        if (!isValidEscalation(escalation)) {
+            errors.push(
+                'Invalid escalation tier: "' + escalation + '".'
+            );
+        }
+
+        // ---- primaryType / subtype / secondaryType ----
+        var primaryType = typeof input.primaryType === 'string'
+            ? input.primaryType.trim()
+            : '';
+        if (primaryType !== '' && !isValidMissionType(primaryType)) {
+            errors.push('Invalid primary type: "' + primaryType + '".');
+            primaryType = '';
+        }
+
+        var subtype = typeof input.subtype === 'string'
+            ? input.subtype.trim()
+            : '';
+        if (subtype !== '') {
+            if (primaryType === '') {
+                errors.push('Subtype requires a primary type.');
+                subtype = '';
+            } else if (!isValidSubtype(primaryType, subtype)) {
+                errors.push(
+                    'Invalid subtype "' + subtype +
+                    '" for primary type "' + primaryType + '".'
+                );
+                subtype = '';
             }
         }
 
-        // ---- CLEAN LOG (reject invalid) ----
-        var log = [];
-        if (input.log !== undefined) {
-            if (!Array.isArray(input.log)) {
-                errors.push('Log must be an array.');
+        var secondaryType = typeof input.secondaryType === 'string'
+            ? input.secondaryType.trim()
+            : '';
+        if (secondaryType !== '' && !isValidMissionType(secondaryType)) {
+            errors.push('Invalid secondary type: "' + secondaryType + '".');
+            secondaryType = '';
+        }
+
+        // ---- textual fields ----
+        function readString(field) {
+            if (input[field] === undefined || input[field] === null) {
+                return '';
+            }
+            if (typeof input[field] !== 'string') {
+                errors.push(field + ' must be a string.');
+                return '';
+            }
+            return input[field];
+        }
+
+        var description = readString('description');
+        var threatType = readString('threatType');
+        var environment = readString('environment');
+        var location = readString('location');
+        var duration = readString('duration');
+        var notes = readString('notes');
+
+        // ---- pay fields ----
+        var basePay = '';
+        if (input.basePay !== undefined && input.basePay !== null) {
+            if (typeof input.basePay !== 'string') {
+                errors.push('basePay must be a string.');
             } else {
-                for (var i = 0; i < input.log.length; i++) {
-                    var entry = input.log[i];
-                    if (!entry || typeof entry !== 'object') {
-                        errors.push('Log entry ' + (i + 1) + ' must be an object.');
-                        continue;
-                    }
-                    var message = String(entry.message || '').trim();
-                    if (!message) {
-                        errors.push('Log entry ' + (i + 1) + ' requires non-empty message.');
-                        continue;
-                    }
-                    log.push({
-                        timestamp: entry.timestamp || new Date().toISOString(),
-                        message: message
-                    });
-                }
+                basePay = input.basePay;
             }
         }
 
-        // ---- DERIVED FIELDS (validated but not calculated) ----
-        var progress = null;
-        if (input.progress !== undefined && input.progress !== null) {
-            var prog = Number(input.progress);
-            if (Number.isFinite(prog) && prog >= 0 && prog <= 100) {
-                progress = prog;
+        var surchargePay = '';
+        if (input.surchargePay !== undefined && input.surchargePay !== null) {
+            if (typeof input.surchargePay !== 'string') {
+                errors.push('surchargePay must be a string.');
             } else {
-                errors.push('Progress must be a number between 0 and 100.');
-                progress = 0;
+                surchargePay = input.surchargePay;
             }
-        } else {
-            progress = 0;
         }
 
         var pay = '';
         if (input.pay !== undefined && input.pay !== null) {
-            if (typeof input.pay === 'string') {
-                pay = input.pay;
-            } else {
+            if (typeof input.pay !== 'string') {
                 errors.push('Pay must be a string.');
-            }
-        }
-
-        var status = input.status || 'active';
-        if (!isValidStatus(status)) {
-            errors.push('Invalid status: "' + status + '"');
-            status = 'active';
-        }
-
-        // ---- OTHER FIELDS (validated) ----
-        var title = input.title && typeof input.title === 'string' ? input.title.trim() : '';
-        if (!title) {
-            errors.push('Mission title is required.');
-        }
-
-        var description = input.description && typeof input.description === 'string' ? input.description.trim() : '';
-
-        var primaryType = input.primaryType || '';
-        if (primaryType && !isValidMissionType(primaryType)) {
-            errors.push('Invalid primary type: "' + primaryType + '"');
-            primaryType = '';
-        }
-
-        var subtype = input.subtype || '';
-        if (subtype && primaryType && !isValidSubtype(primaryType, subtype)) {
-            errors.push('Invalid subtype "' + subtype + '" for primary type "' + primaryType + '".');
-            subtype = '';
-        }
-
-        var secondaryType = input.secondaryType || '';
-        if (secondaryType && !isValidMissionType(secondaryType)) {
-            errors.push('Invalid secondary type: "' + secondaryType + '"');
-            secondaryType = '';
-        }
-
-        var escalation = input.escalation || 'tier_ii';
-        if (!isValidEscalation(escalation)) {
-            errors.push('Invalid escalation tier: "' + escalation + '"');
-            escalation = 'tier_ii';
-        }
-
-        var threatType = input.threatType || '';
-        var environment = input.environment || '';
-        var location = input.location || '';
-        var duration = input.duration || '';
-
-        var difficulty = input.difficulty || 'medium';
-        if (!isValidDifficulty(difficulty)) {
-            errors.push('Invalid difficulty: "' + difficulty + '"');
-            difficulty = 'medium';
-        }
-
-        var priority = input.priority || 'medium';
-        if (!isValidPriority(priority)) {
-            errors.push('Invalid priority: "' + priority + '"');
-            priority = 'medium';
-        }
-
-        var basePay = input.basePay !== undefined && input.basePay !== null ? String(input.basePay) : '';
-        var surchargePay = input.surchargePay !== undefined && input.surchargePay !== null ? String(input.surchargePay) : '';
-
-        var billing = input.billing || 'original';
-        if (!isValidBilling(billing)) {
-            errors.push('Invalid billing type: "' + billing + '"');
-            billing = 'original';
-        }
-
-        var assignedTeamId = input.assignedTeamId || null;
-        if (assignedTeamId !== null) {
-            var teamId = IdUtils.normaliseId(assignedTeamId);
-            if (teamId === null) {
-                errors.push('Invalid assignedTeamId.');
-                assignedTeamId = null;
             } else {
-                assignedTeamId = teamId;
+                pay = input.pay;
             }
         }
 
-        var notes = input.notes || '';
-
-        var createdAt = input.createdAt || new Date().toISOString();
-        if (typeof createdAt !== 'string' || isNaN(new Date(createdAt).getTime())) {
-            errors.push('CreatedAt must be a valid ISO date string.');
-            createdAt = new Date().toISOString();
+        // ---- progress ----
+        var progress = 0;
+        if (input.progress !== undefined && input.progress !== null) {
+            if (typeof input.progress !== 'number' ||
+                !isFinite(input.progress) ||
+                input.progress < 0 ||
+                input.progress > 100) {
+                errors.push('Progress must be a number between 0 and 100.');
+            } else {
+                progress = input.progress;
+            }
         }
 
-        var completedAt = input.completedAt !== undefined && input.completedAt !== null
-            ? input.completedAt
-            : null;
-        if (completedAt !== null && (typeof completedAt !== 'string' || isNaN(new Date(completedAt).getTime()))) {
-            errors.push('CompletedAt must be a valid ISO date string or null.');
-            completedAt = null;
+        // ---- objectives ----
+        var objectives = [];
+        if (input.objectives !== undefined && input.objectives !== null) {
+            if (!Array.isArray(input.objectives)) {
+                errors.push('Objectives must be an array.');
+            } else {
+                for (var oi = 0; oi < input.objectives.length; oi++) {
+                    var obj = canonicaliseObjective(
+                        input.objectives[oi], oi, errors
+                    );
+                    if (obj !== null) {
+                        objectives.push(obj);
+                    }
+                }
+            }
         }
 
-        // ---- GRADUATING CLASS ----
-        var graduatingClassId = input.graduatingClassId !== undefined && input.graduatingClassId !== null
-            ? IdUtils.normaliseId(input.graduatingClassId)
-            : null;
-        if (input.graduatingClassId !== undefined && input.graduatingClassId !== null && graduatingClassId === null) {
-            errors.push('Invalid graduatingClassId.');
+        // ---- support personnel ----
+        var supportPersonnel = [];
+        if (input.supportPersonnel !== undefined &&
+            input.supportPersonnel !== null) {
+            if (!Array.isArray(input.supportPersonnel)) {
+                errors.push('Support personnel must be an array.');
+            } else {
+                var spSeen = Object.create(null);
+                for (var si = 0; si < input.supportPersonnel.length; si++) {
+                    var sp = canonicaliseSupportPersonnelEntry(
+                        input.supportPersonnel[si], si, errors
+                    );
+                    if (sp === null) {
+                        continue;
+                    }
+                    if (spSeen[sp] === true) {
+                        errors.push(
+                            'Duplicate support personnel id: ' + sp + '.'
+                        );
+                        continue;
+                    }
+                    spSeen[sp] = true;
+                    supportPersonnel.push(sp);
+                }
+            }
         }
 
-        // ---- CLASS FILTER ----
-        var classFilterEnabled = typeof input.classFilterEnabled === 'boolean'
-            ? input.classFilterEnabled
-            : false;
+        // ---- tags ----
+        var tags = [];
+        if (input.tags !== undefined && input.tags !== null) {
+            if (!Array.isArray(input.tags)) {
+                errors.push('Tags must be an array.');
+            } else {
+                for (var ti = 0; ti < input.tags.length; ti++) {
+                    var tag = canonicaliseTag(input.tags[ti], ti, errors);
+                    if (tag !== null) {
+                        tags.push(tag);
+                    }
+                }
+            }
+        }
 
-        // ---- BUILD CANONICAL OBJECT ----
-        result = {
+        // ---- log ----
+        var log = [];
+        if (input.log !== undefined && input.log !== null) {
+            if (!Array.isArray(input.log)) {
+                errors.push('Log must be an array.');
+            } else {
+                for (var li = 0; li < input.log.length; li++) {
+                    var logEntry = canonicaliseLogEntry(
+                        input.log[li], li, errors
+                    );
+                    if (logEntry !== null) {
+                        log.push(logEntry);
+                    }
+                }
+            }
+        }
+
+        // ---- reports ----
+        var reports = [];
+        if (input.reports !== undefined && input.reports !== null) {
+            if (!Array.isArray(input.reports)) {
+                errors.push('Reports must be an array.');
+            } else {
+                for (var ri = 0; ri < input.reports.length; ri++) {
+                    var report = canonicaliseReport(
+                        input.reports[ri], ri, errors
+                    );
+                    if (report !== null) {
+                        reports.push(report);
+                    }
+                }
+            }
+        }
+
+        // ---- assignedTeamId ----
+        var assignedTeamId = null;
+        if (input.assignedTeamId !== undefined &&
+            input.assignedTeamId !== null) {
+            assignedTeamId = normaliseId(input.assignedTeamId);
+            if (assignedTeamId === null) {
+                errors.push('assignedTeamId must be a valid id or null.');
+            }
+        }
+
+        // ---- graduatingClassId ----
+        var graduatingClassId = null;
+        if (input.graduatingClassId !== undefined &&
+            input.graduatingClassId !== null) {
+            graduatingClassId = normaliseId(input.graduatingClassId);
+            if (graduatingClassId === null) {
+                errors.push('graduatingClassId must be a valid id or null.');
+            }
+        }
+
+        // ---- classFilterEnabled ----
+        var classFilterEnabled = false;
+        if (input.classFilterEnabled !== undefined &&
+            input.classFilterEnabled !== null) {
+            if (typeof input.classFilterEnabled !== 'boolean') {
+                errors.push('classFilterEnabled must be a boolean.');
+            } else {
+                classFilterEnabled = input.classFilterEnabled;
+            }
+        }
+
+        // ---- timestamps ----
+        var createdAt = input.createdAt;
+        if (!isStrictIsoTimestamp(createdAt)) {
+            errors.push('createdAt must be an ISO 8601 string.');
+        }
+
+        var completedAt = null;
+        if (input.completedAt !== undefined && input.completedAt !== null) {
+            if (!isStrictIsoTimestamp(input.completedAt)) {
+                errors.push(
+                    'completedAt must be an ISO 8601 string or null.'
+                );
+            } else {
+                completedAt = input.completedAt;
+            }
+        }
+
+        var archivedAt = null;
+        if (input.archivedAt !== undefined && input.archivedAt !== null) {
+            if (!isStrictIsoTimestamp(input.archivedAt)) {
+                errors.push(
+                    'archivedAt must be an ISO 8601 string or null.'
+                );
+            } else {
+                archivedAt = input.archivedAt;
+            }
+        }
+
+        // ---- If anything failed, return null value ----
+        if (errors.length > 0) {
+            return {
+                valid: false,
+                errors: errors,
+                value: null
+            };
+        }
+
+        // ---- Build canonical object ----
+        var result = {
             id: id,
-            missionId: missionId,
             title: title,
             description: description,
+
             year: year,
             month: month,
             day: day,
+            sequence: sequence,
+
             primaryType: primaryType,
             subtype: subtype,
             secondaryType: secondaryType,
+
             escalation: escalation,
             threatType: threatType,
             environment: environment,
             location: location,
             duration: duration,
+
             difficulty: difficulty,
             priority: priority,
+
             basePay: basePay,
             surchargePay: surchargePay,
             pay: pay,
             billing: billing,
+
             assignedTeamId: assignedTeamId,
             supportPersonnel: supportPersonnel,
+
             status: status,
             objectives: objectives,
             progress: progress,
+
             notes: notes,
             tags: tags,
+
             createdAt: createdAt,
             completedAt: completedAt,
+            archivedAt: archivedAt,
+
+            reports: reports,
             log: log,
+
             graduatingClassId: graduatingClassId,
             classFilterEnabled: classFilterEnabled
         };
 
-        return { valid: errors.length === 0, errors: errors, value: result };
-    }
+        // ---- Preserve unknown top-level fields ----
+        var knownKeys = [
+            'id',
+            'missionId',    // explicitly not part of the canonical shape
+            'title',
+            'description',
+            'year',
+            'month',
+            'day',
+            'sequence',
+            'primaryType',
+            'subtype',
+            'secondaryType',
+            'escalation',
+            'threatType',
+            'environment',
+            'location',
+            'duration',
+            'difficulty',
+            'priority',
+            'basePay',
+            'surchargePay',
+            'pay',
+            'billing',
+            'assignedTeamId',
+            'supportPersonnel',
+            'status',
+            'objectives',
+            'progress',
+            'notes',
+            'tags',
+            'createdAt',
+            'completedAt',
+            'archivedAt',
+            'reports',
+            'log',
+            'graduatingClassId',
+            'classFilterEnabled'
+        ];
 
-    // ============================================================
-    // DEFENSIVE GETTERS (copies, not live references)
-    // ============================================================
-
-    function getMissionTypes() {
-        var result = {};
-        Object.keys(MISSION_TYPES).forEach(function(key) {
-            var type = MISSION_TYPES[key];
-            result[key] = {
-                id: type.id,
-                label: type.label,
-                description: type.description,
-                subtypes: type.subtypes.slice()
-            };
+        Object.keys(input).forEach(function(key) {
+            if (knownKeys.indexOf(key) === -1) {
+                result[key] = deepClone(input[key]);
+            }
         });
-        return result;
-    }
 
-    function getSubtypesForType(typeId) {
-        var type = getMissionType(typeId);
-        return type ? type.subtypes.slice() : [];
-    }
-
-    function getSubtypeLabels() {
-        return Object.assign({}, SUBTYPE_LABELS);
-    }
-
-    function getValidDifficulties() {
-        return VALID_DIFFICULTIES.slice();
-    }
-
-    function getValidPriorities() {
-        return VALID_PRIORITIES.slice();
-    }
-
-    function getValidStatuses() {
-        return VALID_STATUSES.slice();
-    }
-
-    function getValidBillingTypes() {
-        return VALID_BILLING_TYPES.slice();
-    }
-
-    function getValidEscalationTiers() {
-        return VALID_ESCALATION_TIERS.slice();
+        return { valid: true, errors: [], value: result };
     }
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
-    window.MissionSchema = {
-        // Constants (frozen, read-only)
+    window.MissionSchema = Object.freeze({
         SCHEMA_VERSION: SCHEMA_VERSION,
-        VALID_STATUSES: VALID_STATUSES,
-        VALID_PRIORITIES: VALID_PRIORITIES,
-        VALID_DIFFICULTIES: VALID_DIFFICULTIES,
-        VALID_BILLING_TYPES: VALID_BILLING_TYPES,
-        VALID_ESCALATION_TIERS: VALID_ESCALATION_TIERS,
-        DIFFICULTY_CODES: DIFFICULTY_CODES,
-        MISSION_TYPES: MISSION_TYPES,
-        SUBTYPE_LABELS: SUBTYPE_LABELS,
-        ESCALATION_LABELS: ESCALATION_LABELS,
-        BILLING_LABELS: BILLING_LABELS,
 
-        // Defensive getters (copies, not live references)
-        getMissionTypes: getMissionTypes,
-        getSubtypesForType: getSubtypesForType,
-        getSubtypeLabels: getSubtypeLabels,
-        getValidDifficulties: getValidDifficulties,
-        getValidPriorities: getValidPriorities,
-        getValidStatuses: getValidStatuses,
-        getValidBillingTypes: getValidBillingTypes,
-        getValidEscalationTiers: getValidEscalationTiers,
+        // Full validation
+        validateMission: validateMission,
 
-        // Type helpers
-        isObject: isObject,
-        isNonEmptyString: isNonEmptyString,
-        isString: isString,
-        isBoolean: isBoolean,
-        isFiniteNumber: isFiniteNumber,
-        isValidStatus: isValidStatus,
-        isValidPriority: isValidPriority,
-        isValidDifficulty: isValidDifficulty,
-        isValidBilling: isValidBilling,
-        isValidEscalation: isValidEscalation,
-        isValidMissionType: isValidMissionType,
-        isValidSubtype: isValidSubtype,
-
-        // Type display helpers (labels only - no colors/icons)
-        getMissionType: getMissionType,
-        getMissionTypeLabel: getMissionTypeLabel,
-        getSubtypeLabel: getSubtypeLabel,
-        getEscalationLabel: getEscalationLabel,
-        getBillingLabel: getBillingLabel,
-        getDifficultyCode: getDifficultyCode,
-
-        // Deep validation
+        // Nested validation (used by MissionCore and by callers that
+        // want to validate a single nested record)
         validateObjective: validateObjective,
         validateLogEntry: validateLogEntry,
+        validateReport: validateReport,
         validateTag: validateTag,
         validateSupportPersonnel: validateSupportPersonnel,
 
-        // Main validation
-        validateMission: validateMission,
-
-        // Canonicalisation (structural only)
+        // Canonicalisation
         canonicaliseMissionShape: canonicaliseMissionShape
-    };
+    });
 
     // ============================================================
     // VERIFICATION
@@ -1048,43 +1471,107 @@
         var exports = window.MissionSchema;
         var missing = [];
 
-        // Check constants
-        var constants = [
-            'SCHEMA_VERSION', 'VALID_STATUSES', 'VALID_PRIORITIES',
-            'VALID_DIFFICULTIES', 'VALID_BILLING_TYPES', 'VALID_ESCALATION_TIERS',
-            'DIFFICULTY_CODES', 'MISSION_TYPES', 'SUBTYPE_LABELS',
-            'ESCALATION_LABELS', 'BILLING_LABELS'
+        var required = [
+            'validateMission',
+            'validateObjective',
+            'validateLogEntry',
+            'validateReport',
+            'validateTag',
+            'validateSupportPersonnel',
+            'canonicaliseMissionShape'
         ];
 
-        for (var i = 0; i < constants.length; i++) {
-            if (exports[constants[i]] === undefined) {
-                missing.push(constants[i]);
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
             }
         }
 
-        // Check functions
-        var functions = [
-            'getMissionTypes', 'getSubtypesForType', 'getSubtypeLabels',
-            'getValidDifficulties', 'getValidPriorities', 'getValidStatuses',
-            'getValidBillingTypes', 'getValidEscalationTiers',
-            'isObject', 'isNonEmptyString', 'isString', 'isBoolean', 'isFiniteNumber',
-            'isValidStatus', 'isValidPriority', 'isValidDifficulty',
-            'isValidBilling', 'isValidEscalation', 'isValidMissionType', 'isValidSubtype',
-            'getMissionType', 'getMissionTypeLabel', 'getSubtypeLabel',
-            'getEscalationLabel', 'getBillingLabel', 'getDifficultyCode',
-            'validateObjective', 'validateLogEntry', 'validateTag', 'validateSupportPersonnel',
-            'validateMission', 'canonicaliseMissionShape'
-        ];
+        // Smoke test: a minimal valid mission must round-trip cleanly.
+        try {
+            var sample = {
+                id: 'miss_abc',
+                title: 'Operation Test',
+                description: '',
+                year: 2026,
+                month: 9,
+                day: 17,
+                sequence: 1,
+                primaryType: '',
+                subtype: '',
+                secondaryType: '',
+                escalation: 'tier_ii',
+                threatType: '',
+                environment: '',
+                location: '',
+                duration: '',
+                difficulty: 'medium',
+                priority: 'medium',
+                basePay: '',
+                surchargePay: '',
+                pay: '',
+                billing: 'original',
+                assignedTeamId: null,
+                supportPersonnel: [],
+                status: 'active',
+                objectives: [],
+                progress: 0,
+                notes: '',
+                tags: [],
+                createdAt: '2026-09-17T12:00:00.000Z',
+                completedAt: null,
+                archivedAt: null,
+                reports: [],
+                log: [],
+                graduatingClassId: null,
+                classFilterEnabled: false
+            };
 
-        for (var j = 0; j < functions.length; j++) {
-            if (typeof exports[functions[j]] !== 'function') {
-                missing.push(functions[j]);
+            var canonical = canonicaliseMissionShape(sample);
+            if (!canonical.valid) {
+                missing.push(
+                    'smoke test: minimal valid mission failed canonicalisation: ' +
+                    canonical.errors.join('; ')
+                );
             }
+
+            var validated = validateMission(sample);
+            if (!validated.valid) {
+                missing.push(
+                    'smoke test: minimal valid mission failed validation: ' +
+                    validated.errors.join('; ')
+                );
+            }
+
+            // A mission with a stored missionId must be rejected.
+            var badMission = JSON.parse(JSON.stringify(sample));
+            badMission.missionId = '2026-001-M';
+            var badResult = validateMission(badMission);
+            if (badResult.valid) {
+                missing.push(
+                    'smoke test: mission with stored missionId was not rejected'
+                );
+            }
+
+            // Duplicate support personnel must be rejected.
+            var dupSupport = JSON.parse(JSON.stringify(sample));
+            dupSupport.supportPersonnel = ['char_1', 'char_1'];
+            var dupResult = validateMission(dupSupport);
+            if (dupResult.valid) {
+                missing.push(
+                    'smoke test: mission with duplicate support personnel ' +
+                    'was not rejected'
+                );
+            }
+        } catch (e) {
+            missing.push('smoke test threw: ' + e.message);
         }
 
         if (missing.length > 0) {
-            console.warn('[MissionSchema] Verification - some exports may be missing:', missing.join(', '));
-        } else {
+            console.warn(
+                '[MissionSchema] Verification failed:',
+                missing.join(', ')
+            );
         }
     })();
 
