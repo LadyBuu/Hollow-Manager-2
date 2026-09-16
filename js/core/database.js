@@ -63,39 +63,16 @@
  * - Version 15: Added canonical academy structure; consolidated class
  *               membership onto character.classIds; removed the legacy
  *               academy.classStudents roster as an independent authority.
- * - Version 16: Added academy.enrolments (Phase 4 class-scoped
- *               student↔discipline enrolment), academy.socialScores
- *               (Phase 5 class+week social scores), and
- *               academy.settings (academy-scoped settings such as
- *               ranking weights). These stores were introduced
- *               incrementally after v15 without a corresponding
- *               DATA_VERSION bump, which caused AcademyModule's
- *               mount-time structural check to fail on any database
- *               that predated them. v16 backfills them.
+ * - Version 16: Added academy.enrolments, academy.socialScores,
+ *               academy.settings.
  * - Version 17: Assigns stable IDs to tournament rounds and matches.
- *               Prior to schema version 3, tournaments stored rounds
- *               and matches without stable IDs; they were addressed
- *               positionally by array index. The current schema
- *               requires every round and match to carry an `id` so
- *               that operations survive sibling removal and
- *               reordering. v17 runs normaliseTournament on every
- *               tournament, which assigns any missing IDs in memory.
- *               Without this migration, tournament-repair.js rejects
- *               legacy tournaments because it refuses to fabricate
- *               identity.
  * - Version 18: Assigns stable IDs to characters whose id is null,
- *               undefined, or empty string. A prior version of
- *               character-csv.js did not assign an ID when a CSV row
- *               had an empty CharacterId cell, so imported characters
- *               entered the store with id: null. Every lookup that
- *               routes through CharacterQueries.getCharacterById(id)
- *               rejects empty IDs, which made those characters
- *               unclickable in the character list and unreachable
- *               from every cross-domain projection. v18 walks
- *               data.characters and assigns a fresh ID via
- *               IdUtils.generateId('char') to any record that lacks
- *               one. The forward fix lives in character-csv.js; this
- *               migration repairs records that were already persisted.
+ *               undefined, or empty string.
+ * - Version 19: Resets academy.weeklyTeams. The old shape
+ *               (per-week snapshots) is incompatible with the ranged
+ *               model that replaced it. The persistent Team entities
+ *               (window.data.teams) are NOT affected; only the
+ *               per-week assignment map is reset.
  * 
  * ACADEMY MEMBERSHIP MODEL (v15+):
  * - character.classIds[] is the SINGLE SOURCE OF TRUTH for class membership.
@@ -106,11 +83,12 @@
  * - normaliseDataStructure() enforces these invariants on every load and
  *   prunes orphaned classId references (with a dev-mode warning).
  * 
- * ACADEMY STORES (v16):
+ * ACADEMY STORES (v16, extended):
  *   academy.graduatingClasses  { [classId]: classRecord }
  *   academy.grades             { [gradeId]: gradeRecord }
  *   academy.rankings           { [rankingId]: rankingRecord }
- *   academy.weeklyTeams        { [classId]: { [week]: { [teamId]: [charId] } } }
+ *   academy.weeklyTeams        { [classId]: { [teamId]: teamRecord } }
+ *                              (v19+; the pre-v19 shape was nested by week)
  *   academy.enrolments         { [classId]: { [charId]: [disciplineId] } }
  *   academy.socialScores       { [classId]: { [charId]: { [week]: number } } }
  *   academy.settings           { ranking: { academic, social } }
@@ -121,7 +99,7 @@
 
     var DB_NAME = 'HollowBladesDB';
     var DB_VERSION = 1;  // IndexedDB structural version (only 1 object store)
-    var DATA_VERSION = 18;  // Application data schema version
+    var DATA_VERSION = 19;  // Application data schema version
     var STORE_NAME = 'appData';
 
     // INTERNAL: The actual IndexedDB connection (private)
@@ -221,11 +199,6 @@
      * 
      * NOTE: classStudents is NOT included. Class membership is derived from
      * character.classIds[]. The roster is a query, not stored data.
-     * 
-     * ALL stores consumed by AcademyModule.ensureAcademyStructure() must
-     * be present here. Adding a new academy store elsewhere requires
-     * updating this factory (and, for existing databases, a new
-     * migrateToVersionN).
      */
     function getDefaultAcademyData() {
         return {
@@ -326,12 +299,6 @@
     // DATABASE DELETION - Used for version-mismatch recovery
     // ============================================================
 
-    /**
-     * Delete the local IndexedDB database.
-     * Used during version-mismatch recovery to remove a stale database.
-     * 
-     * @returns {Promise<void>}
-     */
     function deleteDatabase() {
         return new Promise(function(resolve, reject) {
             try {
@@ -583,6 +550,7 @@
                 case 15: migrateToVersion16(data); break;
                 case 16: migrateToVersion17(data); break;
                 case 17: migrateToVersion18(data); break;
+                case 18: migrateToVersion19(data); break;
                 default: data._dataVersion = DATA_VERSION; break;
             }
         }
@@ -827,24 +795,8 @@
 
     /**
      * Version 15 migration — Academy data model consolidation.
-     * 
-     * This migration:
-     *   1. Ensures the canonical academy structure exists.
-     *   2. Reconciles class membership by UNION-ing the legacy
-     *      academy.classStudents roster with character.classIds[].
-     *      Both sides may be partially populated depending on which
-     *      UI path the user historically used; the union preserves
-     *      everything that either side knew about.
-     *   3. Removes academy.classStudents entirely. It is no longer
-     *      a persistent authority, and no code reads it after v15.
-     * 
-     * Post-migration invariants (also enforced by normaliseDataStructure):
-     *   - character.classIds is always an array.
-     *   - character.classIds is the single source of truth for membership.
-     *   - Academy rosters are derived, never stored.
      */
     function migrateToVersion15(data) {
-        // ---- 1. Ensure academy structure ----
         if (!data.academy || typeof data.academy !== 'object' || Array.isArray(data.academy)) {
             data.academy = {};
         }
@@ -863,7 +815,6 @@
             academy.weeklyTeams = {};
         }
 
-        // ---- 2. Union legacy classStudents into character.classIds ----
         var legacy = academy.classStudents;
         var legacyMergedCount = 0;
 
@@ -883,7 +834,6 @@
                         return c && String(c.id) === targetId;
                     });
                     if (!char) {
-                        // Orphaned reference — student no longer exists.
                         return;
                     }
 
@@ -891,7 +841,6 @@
                         char.classIds = [];
                     }
 
-                    // Avoid duplicates — the union must be idempotent.
                     var alreadyPresent = char.classIds.some(function(existingId) {
                         return String(existingId) === String(classId);
                     });
@@ -904,20 +853,14 @@
             });
         }
 
-        // ---- 3. Remove the legacy roster ----
         delete academy.classStudents;
 
-        // ---- 4. Ensure every character has a classIds array ----
-        //          (Belt-and-braces; normaliseDataStructure also does this.)
         data.characters.forEach(function(char) {
             if (!Array.isArray(char.classIds)) {
                 char.classIds = [];
             }
         });
 
-        // ---- 5. Prune classIds that reference non-existent classes ----
-        //          This is a repair, not a policy. If a class doesn't
-        //          exist, a character shouldn't reference it.
         var validClassIds = Object.create(null);
         Object.keys(academy.graduatingClasses).forEach(function(id) {
             validClassIds[id] = true;
@@ -932,8 +875,6 @@
             prunedCount += before - char.classIds.length;
         });
 
-        if (legacyMergedCount > 0) {
-        }
         if (prunedCount > 0) {
             console.warn('[Database] v15: pruned ' + prunedCount + ' classId references to non-existent classes.');
         }
@@ -943,22 +884,6 @@
 
     /**
      * Version 16 migration — Academy stores introduced after v15.
-     * 
-     * Adds the three academy subtrees that were introduced incrementally
-     * after the v15 canonical-structure pass but without their own
-     * DATA_VERSION bump:
-     * 
-     *   academy.enrolments   — Phase 4 class-scoped student↔discipline enrolment
-     *   academy.socialScores — Phase 5 class+week social scores
-     *   academy.settings     — academy-scoped settings (ranking weights)
-     * 
-     * Without this migration, any database written between v15 and now
-     * lacks these keys, and AcademyModule.ensureAcademyStructure() refuses
-     * to mount because its structural check requires all seven academy
-     * subtrees to be present.
-     * 
-     * Idempotent: safe to run on a database that already has some or all
-     * of these stores.
      */
     function migrateToVersion16(data) {
         if (!data.academy || typeof data.academy !== 'object' || Array.isArray(data.academy)) {
@@ -981,51 +906,6 @@
 
     /**
      * Version 17 migration — Stable IDs for tournament rounds and matches.
-     * 
-     * CONTEXT:
-     *   Before TournamentSchema version 3, tournament rounds and matches
-     *   were addressed positionally by array index. They carried no `id`
-     *   field. The current schema requires every round and match to have
-     *   a stable ID, because:
-     * 
-     *     - Round and match operations must survive sibling removal
-     *       and reordering.
-     *     - `tournament-repair.js` refuses to fabricate identity. It
-     *       rejects any record whose rounds or matches lack an ID,
-     *       so a legacy tournament reaching repair without IDs fails
-     *       closed.
-     *     - `TournamentQueries` exposes ID-based lookups; index-based
-     *       lookups are gone.
-     * 
-     * WHAT THIS MIGRATION DOES:
-     *   For every tournament in `data.tournaments`:
-     * 
-     *     1. Runs `TournamentSchema.normaliseTournament(t)`, which
-     *        walks the record and assigns a fresh stable ID to any
-     *        round or match that lacks one. It also normalises the
-     *        rest of the tournament shape (participants, results,
-     *        eliminations) to canonical form.
-     *     2. Replaces the tournament record in place with the
-     *        normalised result.
-     * 
-     * IDEMPOTENCY:
-     *   Running this migration twice produces the same output. Rounds
-     *   and matches that already have valid IDs are preserved verbatim;
-     *   only missing IDs are generated.
-     * 
-     * SAFETY:
-     *   If `TournamentSchema` is not loaded (which should not happen
-     *   given the index.html load order — schema loads in the SHARED
-     *   CONSTANTS block, before `js/core/database.js`), the migration
-     *   logs a warning and bumps the version without transforming the
-     *   data. The legacy records will continue to exist without IDs;
-     *   `tournament-repair.js` will reject them if repair is attempted,
-     *   which is the correct fail-closed behavior.
-     * 
-     *   Malformed tournaments (null, non-object) are left untouched.
-     *   `normaliseTournament` returns null for records it cannot
-     *   canonicalise; those records are preserved as-is and the
-     *   caller will see them fail validation on read.
      */
     function migrateToVersion17(data) {
         if (!Array.isArray(data.tournaments)) {
@@ -1039,9 +919,7 @@
         if (!Schema || typeof Schema.normaliseTournament !== 'function') {
             console.warn(
                 '[Database] v17 skipped: TournamentSchema.normaliseTournament ' +
-                'is not available. Legacy tournaments will remain without ' +
-                'stable round/match IDs. Tournament repair will reject them ' +
-                'until this migration runs successfully.'
+                'is not available.'
             );
             data._dataVersion = 17;
             return;
@@ -1053,7 +931,6 @@
         for (var i = 0; i < data.tournaments.length; i++) {
             var t = data.tournaments[i];
             if (!t || typeof t !== 'object' || Array.isArray(t)) {
-                // Malformed record. Preserve verbatim.
                 preservedCount++;
                 continue;
             }
@@ -1072,8 +949,6 @@
             }
 
             if (normalised === null) {
-                // Schema rejected the record. Preserve verbatim; the
-                // record will fail validation on read.
                 preservedCount++;
                 continue;
             }
@@ -1082,65 +957,11 @@
             normalisedCount++;
         }
 
-        if (normalisedCount > 0 || preservedCount > 0) {
-        }
-
         data._dataVersion = 17;
     }
 
     /**
      * Version 18 migration — Assign IDs to characters with id: null.
-     * 
-     * CONTEXT:
-     *   A prior version of character-csv.js did not assign an ID to
-     *   imported characters when the CharacterId CSV cell was empty.
-     *   Those characters entered the store with id: null, which broke
-     *   every click handler and every downstream lookup that routes
-     *   through CharacterQueries.getCharacterById (which rejects
-     *   empty IDs). Symptoms included:
-     * 
-     *     - The character list item rendered with data-id="".
-     *     - Clicking it did nothing, because handleCharacterSelect(id)
-     *       was guarded by `if (id)` and "" is falsy.
-     *     - The form would not populate.
-     *     - Cross-domain projections (grades, enrolments, eliminations,
-     *       team memberships) silently returned empty for those
-     *       characters, because their lookups also reject empty IDs.
-     * 
-     *   The forward fix lives in character-csv.js, which now assigns an
-     *   ID before adding a candidate to the valid list. This migration
-     *   repairs records that were already persisted.
-     * 
-     * WHAT THIS MIGRATION DOES:
-     *   Walks data.characters and assigns a fresh stable ID to any
-     *   record whose id is null, undefined, or empty string. Uses
-     *   IdUtils.generateId('char'), matching the prefix and format
-     *   used by CharacterCRUD.createNewCharacter. Imported characters
-     *   then become indistinguishable from ones created through the
-     *   form.
-     * 
-     * ID COLLISION HANDLING:
-     *   Before assigning, the migration builds a set of every existing
-     *   valid ID. Each generated ID is checked against the set, and
-     *   regenerated on collision. In practice collisions are essentially
-     *   impossible (crypto.randomUUID or timestamp+random), but the
-     *   check is cheap and makes the migration robust against a future
-     *   change to IdUtils that might weaken its guarantees.
-     * 
-     * IDEMPOTENCY:
-     *   Running this migration twice produces the same output. Characters
-     *   with valid IDs are untouched.
-     * 
-     * SAFETY:
-     *   If IdUtils is not loaded when this migration runs, it logs a
-     *   warning and bumps the version without transforming the data.
-     *   This is extremely unlikely given the load order, but the
-     *   migration does not fail closed — it prefers to leave the data
-     *   readable in-session rather than reject the database. Characters
-     *   left with id: null remain unclickable until IdUtils is available
-     *   and the migration can run. If that happens, a future version
-     *   bump (or a manual re-run in a session with IdUtils loaded) will
-     *   repair them.
      */
     function migrateToVersion18(data) {
         if (!Array.isArray(data.characters)) {
@@ -1151,15 +972,12 @@
         var IdUtils = window.IdUtils;
         if (!IdUtils || typeof IdUtils.generateId !== 'function') {
             console.warn(
-                '[Database] v18 skipped: IdUtils.generateId is not available. ' +
-                'Characters with id: null remain unrepairable in this session.'
+                '[Database] v18 skipped: IdUtils.generateId is not available.'
             );
             data._dataVersion = 18;
             return;
         }
 
-        // Pass 1: collect every existing valid ID so we can detect
-        // collisions when generating new ones.
         var seenIds = Object.create(null);
         for (var i = 0; i < data.characters.length; i++) {
             var existing = data.characters[i];
@@ -1168,7 +986,6 @@
             }
         }
 
-        // Pass 2: assign IDs to records that don't have one.
         var repairedCount = 0;
         var collisionCount = 0;
 
@@ -1185,7 +1002,6 @@
 
             var newId = IdUtils.generateId('char');
 
-            // Defensive: guarantee no collision with an existing ID.
             while (seenIds[newId]) {
                 collisionCount++;
                 newId = IdUtils.generateId('char');
@@ -1218,27 +1034,71 @@
         data._dataVersion = 18;
     }
 
+    /**
+     * Version 19 migration — Reset the weekly-teams store.
+     *
+     * WHY:
+     *   The original academy.weeklyTeams shape was a per-week snapshot:
+     *
+     *     weeklyTeams[classId][week][teamId] = [charId, ...]
+     *
+     *   This shape could not represent membership with a duration.
+     *   It was replaced by a ranged model:
+     *
+     *     weeklyTeams[classId][teamId] = {
+     *       members: [{ characterId, startWeek, endWeek }]
+     *     }
+     *
+     *   The two shapes are not compatible. The old shape carried no
+     *   temporal information, so any migration would have to fabricate
+     *   ranges. Fabricated ranges are indistinguishable from real ones,
+     *   and would corrupt any future historical query.
+     *
+     *   The persistent Team entities (window.data.teams) are NOT
+     *   affected. Only the per-week assignment map is reset.
+     *
+     *   After this migration, the store starts empty and repopulates
+     *   from the new API.
+     *
+     * @param {object} data
+     */
+    function migrateToVersion19(data) {
+        if (!data.academy || typeof data.academy !== 'object') {
+            data._dataVersion = 19;
+            return;
+        }
+
+        var oldStore = data.academy.weeklyTeams;
+        var classCount = 0;
+        var keyCount = 0;
+
+        if (oldStore && typeof oldStore === 'object' && !Array.isArray(oldStore)) {
+            classCount = Object.keys(oldStore).length;
+            Object.keys(oldStore).forEach(function(classId) {
+                var byClass = oldStore[classId];
+                if (byClass && typeof byClass === 'object') {
+                    keyCount += Object.keys(byClass).length;
+                }
+            });
+        }
+
+        if (classCount > 0 || keyCount > 0) {
+            console.warn(
+                '[Database] v19: resetting academy.weeklyTeams. ' +
+                'Old shape (per-week snapshots) is incompatible with the ' +
+                'ranged model. ' + classCount + ' class bucket(s) and ' +
+                keyCount + ' key(s) removed. Team entities are unaffected.'
+            );
+        }
+
+        data.academy.weeklyTeams = {};
+        data._dataVersion = 19;
+    }
+
     // ============================================================
     // NORMALISE DATA STRUCTURE - Current schema defaults
     // ============================================================
 
-    /**
-     * Repair and enforce current-schema invariants.
-     * 
-     * Runs on every load (after migration). Idempotent. Sets `repaired = true`
-     * if any change was made, which triggers a save so the repaired structure
-     * is persisted.
-     * 
-     * MERGE SEMANTICS:
-     *   deepMergeDefaults returns a NEW object every time (it does not
-     *   mutate its target). We therefore cannot distinguish "merge
-     *   changed nothing" from "merge added fields" without a deep
-     *   structural compare. We conservatively treat every merge as a
-     *   repair. The alternative — a missed repair — silently drops
-     *   fields on databases written before a key was added, which is a
-     *   worse failure mode than one extra save on first load after a
-     *   version bump.
-     */
     function normaliseDataStructure(data) {
         var repaired = false;
 
@@ -1295,7 +1155,6 @@
                 repaired = true;
             }
 
-            // v14 — HP / MP / combatNotes / weapons
             if (typeof char.hp !== 'number' || isNaN(char.hp) || char.hp < 0) {
                 char.hp = 0;
                 repaired = true;
@@ -1349,7 +1208,6 @@
         });
 
         // ---- Curriculum ----
-        // Always mark repaired after a merge (see function header).
         if (!data.curriculum || typeof data.curriculum !== 'object' || Array.isArray(data.curriculum)) {
             data.curriculum = getDefaultCurriculumData();
             repaired = true;
@@ -1377,10 +1235,6 @@
         }
 
         // ---- Academy (v15+, extended in v16) ----
-        // academy.classStudents is DELIBERATELY absent. If a legacy database
-        // somehow reaches this point with it still present (e.g. a database
-        // written by an intermediate build), it's dropped here — class
-        // membership is derived, never stored.
         if (!data.academy || typeof data.academy !== 'object' || Array.isArray(data.academy)) {
             data.academy = getDefaultAcademyData();
             repaired = true;
@@ -1388,8 +1242,6 @@
             data.academy = deepMergeDefaults(data.academy, getDefaultAcademyData());
             repaired = true;
 
-            // Drop any lingering legacy roster — it is not part of the
-            // current schema and must not be reintroduced.
             if (data.academy.classStudents !== undefined) {
                 delete data.academy.classStudents;
                 repaired = true;
@@ -1397,9 +1249,6 @@
         }
 
         // ---- Class-membership invariants (v15+) ----
-        // Enforce: every classId on a character refers to an existing class.
-        // Orphaned references are pruned. A dev-mode warning fires so that
-        // a buggy mutation path becomes visible instead of silently healing.
         var validClassIds = Object.create(null);
         Object.keys(data.academy.graduatingClasses).forEach(function(id) {
             validClassIds[id] = true;
@@ -1428,8 +1277,6 @@
         }
 
         // ---- Prune orphaned weeklyTeams entries ----
-        // A weeklyTeams entry for a class that no longer exists is
-        // unreachable data. Clean it up.
         if (data.academy.weeklyTeams && typeof data.academy.weeklyTeams === 'object') {
             Object.keys(data.academy.weeklyTeams).forEach(function(classId) {
                 if (!validClassIds[classId]) {
@@ -1440,8 +1287,6 @@
         }
 
         // ---- Prune orphaned grades / rankings ----
-        // Grades and rankings carry a classId. If the class is gone,
-        // the grade/ranking is unreachable. Prune.
         function pruneByClassId(storeName) {
             var store = data.academy[storeName];
             if (!store || typeof store !== 'object') {
@@ -1462,10 +1307,6 @@
         pruneByClassId('rankings');
 
         // ---- Prune orphaned enrolments / socialScores (v16) ----
-        // Same reasoning as grades / rankings: entries keyed to a
-        // nonexistent class are unreachable. Prune the top-level class
-        // bucket. Per-character and per-discipline orphans are not
-        // pruned here — that is a concern for the domain modules.
         function pruneClassBucket(storeName) {
             var store = data.academy[storeName];
             if (!store || typeof store !== 'object') {
