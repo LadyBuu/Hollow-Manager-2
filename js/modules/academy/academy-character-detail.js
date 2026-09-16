@@ -35,6 +35,27 @@
  * MODE VOCABULARY:
  *   'student' | 'instructor'. There is no 'trainee'.
  *
+ * CLASS REMOVAL:
+ *   Each class chip on the Main tab carries a small "x" button that
+ *   emits data-action="character-remove-from-class" with the class
+ *   ID and character ID. AcademyView's dispatcher routes it to
+ *   CharacterClasses.removeClassById, which is the canonical
+ *   membership mutation.
+ *
+ *   This is DISTINCT from "Drop Out":
+ *
+ *     - Drop Out adds a standalone elimination record. The character
+ *       stays on every class roster and remains a class member; they
+ *       are marked eliminated from the Academy timeline.
+ *
+ *     - Remove from class strips the classId from the character's
+ *       classIds array. The character is no longer a member of that
+ *       class. They keep any eliminations they had.
+ *
+ *   Both actions live in this panel. Drop Out is under the
+ *   Enrollment section; Remove from class is on each chip. They are
+ *   visually separate and semantically orthogonal.
+ *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
  */
@@ -310,7 +331,7 @@
     function renderMainTab(vm, mode) {
         var html = '';
 
-        html += renderClassChips(vm.classes);
+        html += renderClassChips(vm.classes, vm.character);
 
         if (mode === 'student' && vm.performance) {
             html += renderPerformanceScores(vm.performance);
@@ -323,25 +344,71 @@
         return html;
     }
 
-    function renderClassChips(classes) {
-        if (!Array.isArray(classes) || classes.length === 0) {
-            return '';
-        }
+    // ============================================================
+    // CLASS CHIPS
+    // ============================================================
+    //
+    // Each chip carries:
+    //   - data-class-id: the class the character is a member of
+    //   - a remove button that emits data-action="character-remove-from-class"
+    //     with the class ID and character ID
+    //
+    // The chip name is displayed. The remove button is at the end of
+    // the chip, inline, so removing a class doesn't require selecting
+    // the chip first.
+    //
+    // When the character has no classes, an empty state message
+    // renders instead. The message explains that the character is not
+    // a member of any class — which is different from "not enrolled",
+    // because enrollment is class-scoped.
 
+    function renderClassChips(classes, character) {
         var html = '';
         html += '<div class="academy-character-detail-section academy-character-class-chips">';
+
         html += '<div class="academy-character-detail-section-header">';
         html += '<h4 class="academy-character-detail-section-title">Classes</h4>';
         html += '</div>';
+
+        if (!Array.isArray(classes) || classes.length === 0) {
+            html += '<p class="empty-state small">' +
+                        'Not a member of any class.' +
+                    '</p>';
+            html += '</div>';
+            return html;
+        }
+
         html += '<div class="academy-character-chip-row">';
 
         for (var i = 0; i < classes.length; i++) {
             var cls = classes[i];
             if (!cls || !cls.id) { continue; }
+
             html += '<span class="academy-character-class-chip" ' +
-                        'data-class-id="' + escapeAttribute(cls.id) + '">' +
+                        'data-class-id="' + escapeAttribute(cls.id) + '">';
+
+            html += '<span class="academy-character-class-chip-name">' +
                         escapeHtml(cls.name) +
                     '</span>';
+
+            // Remove-from-class button. Emits the character ID and
+            // class ID so the dispatcher has everything it needs
+            // without walking the DOM.
+            html += '<button type="button" ' +
+                        'class="academy-character-class-chip-remove" ' +
+                        'data-action="character-remove-from-class" ' +
+                        'data-character-id="' +
+                            escapeAttribute(character.id) + '" ' +
+                        'data-class-id="' +
+                            escapeAttribute(cls.id) + '" ' +
+                        'title="Remove from ' +
+                            escapeAttribute(cls.name) + '" ' +
+                        'aria-label="Remove from ' +
+                            escapeAttribute(cls.name) + '">' +
+                        '\u2715' +
+                    '</button>';
+
+            html += '</span>';
         }
 
         html += '</div>';
@@ -431,6 +498,13 @@
     // ============================================================
     // DROP OUT
     // ============================================================
+    //
+    // Drop Out is an ELIMINATION action, not a membership action.
+    // It adds a standalone elimination record. The character remains
+    // on every class roster they were on.
+    //
+    // The "Remove from Class" action is separate and lives on each
+    // class chip (see renderClassChips).
 
     function renderDropOutSection(character, elimination) {
         var isEliminated = elimination !== null && elimination !== undefined;
@@ -660,9 +734,6 @@
     // mountScheduleGridIfPresent() reads the host, gets a grid VM from
     // AcademyCharacterDetailAggregator.getScheduleGridViewModel, and
     // injects the rendered grid via CalendarRenderer.renderGrid.
-    //
-    // The host is a plain container. The Academy view decides whether
-    // to render the grid into it; the renderer only emits the anchor.
 
     function renderScheduleTab(vm) {
         var html = '';
@@ -681,7 +752,6 @@
 
         html += '</div>';
 
-        // Host element. Academy view populates this with the grid.
         html += '<div id="academy-schedule-host" ' +
                     'class="academy-schedule-host"></div>';
 
