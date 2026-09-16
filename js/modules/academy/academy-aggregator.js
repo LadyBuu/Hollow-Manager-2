@@ -40,6 +40,24 @@
  *   - The class VM is deliberately small (header fields only).
  *     Rosters, teams, and rankings live in their own projections.
  *
+ * CLASS VM SHAPE:
+ *   {
+ *     id,
+ *     name,
+ *     status,
+ *     year,
+ *     description,
+ *     instructorId,
+ *     instructorName,
+ *     studentCount,     ← student roster size (instructor excluded)
+ *     createdAt
+ *   }
+ *
+ *   studentCount is derived from the roster projection. The
+ *   instructor is NOT counted, even when the class record carries
+ *   an instructorId. The instructor is a separate relationship;
+ *   the "Students" count reflects only student members.
+ *
  * ROLE VOCABULARY:
  *   Canonical role values are 'student' and 'instructor'. There is no
  *   'trainee' anywhere in this module.
@@ -197,41 +215,43 @@
     }
 
     // ============================================================
-    // CLASS LIST
-    // ============================================================
-
-    function getClassListViewModel() {
-        var classes = AcademyClasses.getClasses() || [];
-        classes = classes.slice().sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
-        });
-
-        return classes.map(function(c) {
-            return {
-                id: c.id,
-                name: c.name || 'Unnamed Class',
-                status: c.status || 'active',
-                year: c.year || null
-            };
-        });
-    }
-
-    // ============================================================
-    // CLASS STUDENTS
+    // ROSTER DERIVATION
     // ============================================================
     //
-    // Roster derivation: characters whose classIds include classId.
-    // The class INSTRUCTOR is excluded by design.
+    // The roster is DERIVED from character.classIds. There is no
+    // separate roster store; the derivation walks the character list
+    // and returns the ones whose classIds include the target class.
+    //
+    // The class INSTRUCTOR is excluded from the student roster. Even
+    // if the class record carries instructorId and that instructor
+    // also has the class in their classIds (which happens after
+    // "add instructor to class" flows), the instructor is not a
+    // student and is not counted in studentCount.
 
-    function getClassStudentsViewModel(classId) {
-        if (!classId) { return []; }
+    /**
+     * Internal helper: derive the roster for a class.
+     *
+     * Returns an array of { id, name, status, age, deceased, role }.
+     * The instructor is excluded. Sorted alphabetically by name.
+     *
+     * This is the SINGLE derivation used by both
+     * getClassStudentsViewModel and getClassViewModel's studentCount.
+     */
+    function deriveClassRoster(classId) {
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
 
         var cls = AcademyClasses.getClass(classId);
-        if (!cls) { return []; }
+        if (!cls) {
+            return [];
+        }
 
         var all = CharacterQueries.getCharacters() || [];
         var target = String(classId);
-        var instructorId = cls.instructorId ? String(cls.instructorId) : null;
+        var instructorId = cls.instructorId
+            ? String(cls.instructorId)
+            : null;
         var result = [];
 
         for (var i = 0; i < all.length; i++) {
@@ -263,10 +283,41 @@
         }
 
         result.sort(function(a, b) {
-            return a.name.localeCompare(b.name);
+            return (a.name || '').localeCompare(b.name || '');
         });
 
         return result;
+    }
+
+    // ============================================================
+    // CLASS LIST
+    // ============================================================
+
+    function getClassListViewModel() {
+        var classes = AcademyClasses.getClasses() || [];
+        classes = classes.slice().sort(function(a, b) {
+            return (a.name || '').localeCompare(b.name || '');
+        });
+
+        return classes.map(function(c) {
+            return {
+                id: c.id,
+                name: c.name || 'Unnamed Class',
+                status: c.status || 'active',
+                year: c.year || null
+            };
+        });
+    }
+
+    // ============================================================
+    // CLASS STUDENTS
+    // ============================================================
+    //
+    // Roster derivation: characters whose classIds include classId.
+    // The class INSTRUCTOR is excluded by design.
+
+    function getClassStudentsViewModel(classId) {
+        return deriveClassRoster(classId);
     }
 
     // ============================================================
@@ -275,12 +326,21 @@
     //
     // Deliberately small. Header fields only. Rosters, teams, and
     // rankings are separate projections.
+    //
+    // studentCount is the size of the derived roster. It excludes
+    // the instructor. When the class has no instructor and no
+    // students, studentCount is 0 — the class detail panel renders
+    // "Students: 0" which is truthful.
 
     function getClassViewModel(classId) {
         if (!classId) { return null; }
 
         var cls = AcademyClasses.getClass(classId);
         if (!cls) { return null; }
+
+        // Derive the roster once; reuse the length.
+        var roster = deriveClassRoster(classId);
+        var studentCount = roster.length;
 
         return {
             id: cls.id,
@@ -292,6 +352,7 @@
             instructorName: cls.instructorId
                 ? getCharacterDisplayName(cls.instructorId)
                 : 'Not assigned',
+            studentCount: studentCount,
             createdAt: cls.createdAt || ''
         };
     }
@@ -342,8 +403,8 @@
             };
         }
 
-        // Build the roster: students from classIds, then instructor
-        // stitched in for display.
+        // Build the roster: students from the derived roster, then
+        // instructor stitched in for display.
         var students = getClassStudentsViewModel(selectedClass.id);
 
         var cls = AcademyClasses.getClass(selectedClass.id);
@@ -535,15 +596,6 @@
     // ============================================================
     // DISCIPLINE EDITOR VIEW MODEL
     // ============================================================
-    //
-    // Builds the editor VM for the inline discipline editor. Consumes:
-    //   - the current draft (owned by AcademyView)
-    //   - the instructor list from CharacterQueries
-    //   - the grade scheme presets and validators from AcademyGradeSchemes
-    //   - the assessment type list and defaults from AcademyDisciplines
-    //
-    // The renderer (AcademyDisciplineView) consumes the result directly.
-    // AcademyView does not perform domain reads.
 
     function getDisciplineEditorViewModel(options) {
         options = options || {};
