@@ -16,6 +16,23 @@
  *   - Import returns candidates (does NOT mutate)
  *   - Export is read-only (does NOT access window.data directly)
  * 
+ * SECTION MARKER HANDLING:
+ *   The section marker is compared via normalizeSectionMarker, which:
+ *     - strips a leading UTF-8 BOM if one survived the CSV parser
+ *     - trims surrounding whitespace
+ *     - collapses the space between '#' and the section name
+ *     - uppercases the result
+ *   This makes "# MISSIONS", "#MISSIONS", "# missions", and
+ *   "﻿# MISSIONS" all match. The old strict `===` comparison failed
+ *   on any variation, silently skipping every row in the file.
+ * 
+ * ROW ACCEPTANCE:
+ *   A data row is accepted when at least one cell has content. The
+ *   MissionId column may be empty — that is the normal case for a
+ *   newly exported template or a hand-authored file, where the ID is
+ *   assigned at import time. The old check required the first cell
+ *   (MissionId) to be non-empty, which dropped every fresh row.
+ * 
  * DEPENDENCIES:
  *   - window.CSV (from csv-parser.js) - MANDATORY
  *   - window.ImportResult (from import-result.js) - MANDATORY
@@ -73,6 +90,7 @@
 
     var SECTION = '# MISSIONS';
     var MAX_ROWS = 10000;
+    var BOM_CHAR_CODE = 0xFEFF;
 
     var VALID_STATUSES = ['active', 'completed', 'cancelled', 'on_hold', ''];
     var VALID_PRIORITIES = ['low', 'medium', 'high', 'critical', ''];
@@ -109,6 +127,58 @@
         9: 'progress',
         10: 'objectives'
     };
+
+    // ============================================================
+    // SECTION MARKER NORMALIZATION
+    // ============================================================
+    //
+    // The section marker in the file may appear in several equivalent
+    // forms. This normalization produces a single canonical string
+    // for comparison.
+    //
+    //   "﻿# MISSIONS"  → "#MISSIONS"
+    //   "# MISSIONS"   → "#MISSIONS"
+    //   "#MISSIONS"    → "#MISSIONS"
+    //   "# missions"   → "#MISSIONS"
+    //   "  #MISSIONS " → "#MISSIONS"
+    //
+    // Returns '' for null, undefined, or empty input.
+
+    function normalizeSectionMarker(value) {
+        var str = String(value == null ? '' : value);
+
+        // Strip a leading BOM that may have survived the CSV parser.
+        if (str.length > 0 && str.charCodeAt(0) === BOM_CHAR_CODE) {
+            str = str.substring(1);
+        }
+
+        str = str.trim();
+        if (str === '') { return ''; }
+
+        // Collapse whitespace between '#' and the section name.
+        if (str.charAt(0) === '#') {
+            str = '#' + str.substring(1).trim();
+        }
+
+        return str.toUpperCase();
+    }
+
+    /**
+     * Does this cell look like the start of a section?
+     * Any cell beginning with '#' (after normalization) counts.
+     * Used to detect when the MISSIONS section ends and another
+     * section begins.
+     */
+    function isSectionMarker(value) {
+        var normalized = normalizeSectionMarker(value);
+        return normalized.length > 0 && normalized.charAt(0) === '#';
+    }
+
+    // Pre-computed canonical target marker for this module's section.
+    var TARGET_SECTION_MARKER = normalizeSectionMarker(SECTION);
+
+    // Pre-computed canonical header marker for the first column.
+    var HEADER_MARKER_FIRST_COLUMN = 'MISSIONID';
 
     // ============================================================
     // SCHEMA HELPERS
@@ -378,17 +448,17 @@
         }
 
         return [
-            mission.id ?? '',
-            mission.title ?? '',
-            mission.status ?? '',
-            mission.priority ?? '',
-            mission.difficulty ?? '',
-            mission.assignedTeamId ?? '',
-            mission.location ?? '',
-            mission.duration ?? '',
-            mission.pay ?? '',
-            mission.progress ?? 0,
-            JSON.stringify(mission.objectives || [])
+            mission.id != null ? mission.id : '',
+            mission.title != null ? mission.title : '',
+            mission.status != null ? mission.status : '',
+            mission.priority != null ? mission.priority : '',
+            mission.difficulty != null ? mission.difficulty : '',
+            mission.assignedTeamId != null ? mission.assignedTeamId : '',
+            mission.location != null ? mission.location : '',
+            mission.duration != null ? mission.duration : '',
+            mission.pay != null ? mission.pay : '',
+            mission.progress != null ? mission.progress : 0,
+            JSON.stringify(mission.objectives != null ? mission.objectives : [])
         ];
     }
 
@@ -500,9 +570,21 @@
     // ============================================================
 
     /**
-     * Extract mission rows from CSV records.
-     * 
-     * @param {Array} records - All CSV records
+     * Extract mission rows from parsed CSV records.
+     *
+     * SEMANTICS:
+     *   - Skips rows until the "# MISSIONS" section marker is found.
+     *     The marker comparison is normalized (BOM-tolerant, whitespace-
+     *     tolerant, case-insensitive).
+     *   - Skips the header row (whose first cell normalizes to
+     *     "MISSIONID").
+     *   - Accepts any non-blank row as a mission row. The first cell
+     *     (MissionId) may be empty — that is the normal case for
+     *     newly-created missions in a fresh template.
+     *   - Stops when a different section marker (# at the start of a
+     *     cell) is encountered.
+     *
+     * @param {Array} records - All CSV records (2D array of strings)
      * @returns {Array} Array of mission data rows
      */
     function extractRows(records) {
@@ -516,26 +598,29 @@
                 continue;
             }
 
-            var first = String(row[0] || '').trim();
+            var first = String(row[0] == null ? '' : row[0]);
 
-            if (first === SECTION) {
-                inSection = true;
+            if (!inSection) {
+                // Looking for the MISSIONS section marker.
+                if (normalizeSectionMarker(first) === TARGET_SECTION_MARKER) {
+                    inSection = true;
+                }
                 continue;
             }
 
-            if (inSection && first.startsWith('#')) {
+            // We are inside the MISSIONS section.
+            // A new section marker terminates us.
+            if (isSectionMarker(first)) {
                 break;
             }
 
-            if (inSection && first === 'MissionId') {
+            // Skip the header row.
+            if (normalizeSectionMarker(first) === HEADER_MARKER_FIRST_COLUMN) {
                 continue;
             }
 
-            if (inSection) {
-                if (row.length > 0 && String(row[0] || '').trim()) {
-                    rows.push(row);
-                }
-            }
+            // Accept any non-blank row.
+            rows.push(row);
         }
 
         return rows;
@@ -1257,7 +1342,6 @@
 
         if (missing.length > 0) {
             console.warn('[MissionCSV] Verification - some exports may be missing:', missing.join(', '));
-        } else {
         }
     })();
 
