@@ -72,6 +72,17 @@
  *               DATA_VERSION bump, which caused AcademyModule's
  *               mount-time structural check to fail on any database
  *               that predated them. v16 backfills them.
+ * - Version 17: Assigns stable IDs to tournament rounds and matches.
+ *               Prior to schema version 3, tournaments stored rounds
+ *               and matches without stable IDs; they were addressed
+ *               positionally by array index. The current schema
+ *               requires every round and match to carry an `id` so
+ *               that operations survive sibling removal and
+ *               reordering. v17 runs normaliseTournament on every
+ *               tournament, which assigns any missing IDs in memory.
+ *               Without this migration, tournament-repair.js rejects
+ *               legacy tournaments because it refuses to fabricate
+ *               identity.
  * 
  * ACADEMY MEMBERSHIP MODEL (v15+):
  * - character.classIds[] is the SINGLE SOURCE OF TRUTH for class membership.
@@ -97,7 +108,7 @@
 
     var DB_NAME = 'HollowBladesDB';
     var DB_VERSION = 1;  // IndexedDB structural version (only 1 object store)
-    var DATA_VERSION = 16;  // Application data schema version
+    var DATA_VERSION = 17;  // Application data schema version
     var STORE_NAME = 'appData';
 
     // INTERNAL: The actual IndexedDB connection (private)
@@ -209,8 +220,7 @@
             grades: {},
             rankings: {},
             weeklyTeams: {},
-            // FIX: v16 stores. Previously missing, which caused
-            // AcademyModule.ensureAcademyStructure() to refuse to mount.
+            // v16 stores.
             enrolments: {},
             socialScores: {},
             settings: {}
@@ -557,7 +567,8 @@
                 case 12: migrateToVersion13(data); break;
                 case 13: migrateToVersion14(data); break;
                 case 14: migrateToVersion15(data); break;
-                case 15: migrateToVersion16(data); break;   // FIX: v16 migration
+                case 15: migrateToVersion16(data); break;
+                case 16: migrateToVersion17(data); break;
                 default: data._dataVersion = DATA_VERSION; break;
             }
         }
@@ -954,6 +965,115 @@
         data._dataVersion = 16;
     }
 
+    /**
+     * Version 17 migration — Stable IDs for tournament rounds and matches.
+     * 
+     * CONTEXT:
+     *   Before TournamentSchema version 3, tournament rounds and matches
+     *   were addressed positionally by array index. They carried no `id`
+     *   field. The current schema requires every round and match to have
+     *   a stable ID, because:
+     * 
+     *     - Round and match operations must survive sibling removal
+     *       and reordering.
+     *     - `tournament-repair.js` refuses to fabricate identity. It
+     *       rejects any record whose rounds or matches lack an ID,
+     *       so a legacy tournament reaching repair without IDs fails
+     *       closed.
+     *     - `TournamentQueries` exposes ID-based lookups; index-based
+     *       lookups are gone.
+     * 
+     * WHAT THIS MIGRATION DOES:
+     *   For every tournament in `data.tournaments`:
+     * 
+     *     1. Runs `TournamentSchema.normaliseTournament(t)`, which
+     *        walks the record and assigns a fresh stable ID to any
+     *        round or match that lacks one. It also normalises the
+     *        rest of the tournament shape (participants, results,
+     *        eliminations) to canonical form.
+     *     2. Replaces the tournament record in place with the
+     *        normalised result.
+     * 
+     * IDEMPOTENCY:
+     *   Running this migration twice produces the same output. Rounds
+     *   and matches that already have valid IDs are preserved verbatim;
+     *   only missing IDs are generated.
+     * 
+     * SAFETY:
+     *   If `TournamentSchema` is not loaded (which should not happen
+     *   given the index.html load order — schema loads in the SHARED
+     *   CONSTANTS block, before `js/core/database.js`), the migration
+     *   logs a warning and bumps the version without transforming the
+     *   data. The legacy records will continue to exist without IDs;
+     *   `tournament-repair.js` will reject them if repair is attempted,
+     *   which is the correct fail-closed behavior.
+     * 
+     *   Malformed tournaments (null, non-object) are left untouched.
+     *   `normaliseTournament` returns null for records it cannot
+     *   canonicalise; those records are preserved as-is and the
+     *   caller will see them fail validation on read.
+     */
+    function migrateToVersion17(data) {
+        if (!Array.isArray(data.tournaments)) {
+            data.tournaments = [];
+            data._dataVersion = 17;
+            return;
+        }
+
+        var Schema = window.TournamentSchema;
+
+        if (!Schema || typeof Schema.normaliseTournament !== 'function') {
+            console.warn(
+                '[Database] v17 skipped: TournamentSchema.normaliseTournament ' +
+                'is not available. Legacy tournaments will remain without ' +
+                'stable round/match IDs. Tournament repair will reject them ' +
+                'until this migration runs successfully.'
+            );
+            data._dataVersion = 17;
+            return;
+        }
+
+        var normalisedCount = 0;
+        var preservedCount = 0;
+
+        for (var i = 0; i < data.tournaments.length; i++) {
+            var t = data.tournaments[i];
+            if (!t || typeof t !== 'object' || Array.isArray(t)) {
+                // Malformed record. Preserve verbatim.
+                preservedCount++;
+                continue;
+            }
+
+            var normalised = null;
+            try {
+                normalised = Schema.normaliseTournament(t);
+            } catch (err) {
+                console.warn(
+                    '[Database] v17: normaliseTournament threw for tournament ' +
+                    (t.id ? '"' + t.id + '"' : 'at index ' + i) + ': ' +
+                    (err && err.message ? err.message : 'unknown error')
+                );
+                preservedCount++;
+                continue;
+            }
+
+            if (normalised === null) {
+                // Schema rejected the record. Preserve verbatim; the
+                // record will fail validation on read.
+                preservedCount++;
+                continue;
+            }
+
+            data.tournaments[i] = normalised;
+            normalisedCount++;
+        }
+
+        if (normalisedCount > 0 || preservedCount > 0) {
+        }
+
+        data._dataVersion = 17;
+    }
+
     // ============================================================
     // NORMALISE DATA STRUCTURE - Current schema defaults
     // ============================================================
@@ -1085,7 +1205,7 @@
         });
 
         // ---- Curriculum ----
-        // FIX: always mark repaired after a merge (see function header).
+        // Always mark repaired after a merge (see function header).
         if (!data.curriculum || typeof data.curriculum !== 'object' || Array.isArray(data.curriculum)) {
             data.curriculum = getDefaultCurriculumData();
             repaired = true;
