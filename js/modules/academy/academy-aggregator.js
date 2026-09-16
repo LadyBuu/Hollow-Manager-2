@@ -36,9 +36,16 @@
  *   - Composes domain modules. Never walks raw storage.
  *   - No fallback values for missing domain data. When a source is
  *     absent, the projection returns null or an empty collection.
- *     Never invents a default (no `week || 1`, no `totalRounds || 1`).
  *   - The class VM is deliberately small (header fields only).
- *     Rosters, teams, and rankings live in their own projections.
+ *
+ * WEEKLY TEAMS WEEK FILTER:
+ *   The team list for a given (class, week) is filtered by the
+ *   PERSISTENT Team entity's own startPeriod / endPeriod. A team
+ *   whose endPeriod is week 2 does not appear in week 3's list,
+ *   even if a weekly-team record still exists in the store.
+ *
+ *   The filter uses TeamQueries.isTeamActiveAtPeriod(team, week).
+ *   This is the SINGLE SOURCE OF TRUTH for team period visibility.
  *
  * CLASS VM SHAPE:
  *   {
@@ -49,18 +56,9 @@
  *     description,
  *     instructorId,
  *     instructorName,
- *     studentCount,     ← student roster size (instructor excluded)
+ *     studentCount,
  *     createdAt
  *   }
- *
- *   studentCount is derived from the roster projection. The
- *   instructor is NOT counted, even when the class record carries
- *   an instructorId. The instructor is a separate relationship;
- *   the "Students" count reflects only student members.
- *
- * ROLE VOCABULARY:
- *   Canonical role values are 'student' and 'instructor'. There is no
- *   'trainee' anywhere in this module.
  *
  * DEPENDENCIES:
  *   - AcademyClasses       (class entities)
@@ -198,14 +196,6 @@
         return CharacterQueries.getDisplayName(char);
     }
 
-    function getTeamTypeLabel(type) {
-        return TeamConstants.getTypeLabel(type);
-    }
-
-    function getTeamPeriodLabel(type) {
-        return TeamConstants.getPeriodLabel(type);
-    }
-
     function getTeamPeriodDisplay(team) {
         var TA = getTeamAggregator();
         if (TA && typeof TA.getTeamPeriodDisplay === 'function') {
@@ -218,25 +208,9 @@
     // ROSTER DERIVATION
     // ============================================================
     //
-    // The roster is DERIVED from character.classIds. There is no
-    // separate roster store; the derivation walks the character list
-    // and returns the ones whose classIds include the target class.
-    //
-    // The class INSTRUCTOR is excluded from the student roster. Even
-    // if the class record carries instructorId and that instructor
-    // also has the class in their classIds (which happens after
-    // "add instructor to class" flows), the instructor is not a
-    // student and is not counted in studentCount.
+    // The roster is DERIVED from character.classIds. The class
+    // INSTRUCTOR is excluded from the student roster.
 
-    /**
-     * Internal helper: derive the roster for a class.
-     *
-     * Returns an array of { id, name, status, age, deceased, role }.
-     * The instructor is excluded. Sorted alphabetically by name.
-     *
-     * This is the SINGLE derivation used by both
-     * getClassStudentsViewModel and getClassViewModel's studentCount.
-     */
     function deriveClassRoster(classId) {
         if (!isNonEmptyString(classId)) {
             return [];
@@ -312,9 +286,6 @@
     // ============================================================
     // CLASS STUDENTS
     // ============================================================
-    //
-    // Roster derivation: characters whose classIds include classId.
-    // The class INSTRUCTOR is excluded by design.
 
     function getClassStudentsViewModel(classId) {
         return deriveClassRoster(classId);
@@ -323,14 +294,6 @@
     // ============================================================
     // CLASS VIEW MODEL
     // ============================================================
-    //
-    // Deliberately small. Header fields only. Rosters, teams, and
-    // rankings are separate projections.
-    //
-    // studentCount is the size of the derived roster. It excludes
-    // the instructor. When the class has no instructor and no
-    // students, studentCount is 0 — the class detail panel renders
-    // "Students: 0" which is truthful.
 
     function getClassViewModel(classId) {
         if (!classId) { return null; }
@@ -338,7 +301,6 @@
         var cls = AcademyClasses.getClass(classId);
         if (!cls) { return null; }
 
-        // Derive the roster once; reuse the length.
         var roster = deriveClassRoster(classId);
         var studentCount = roster.length;
 
@@ -360,13 +322,6 @@
     // ============================================================
     // PEOPLE VIEW MODEL
     // ============================================================
-    //
-    // Composes the class roster and applies People filters.
-    //
-    // The People layout uses the class VM's roster (students +
-    // instructor) and filters it by search, role, and status.
-    //
-    // ROLE VOCABULARY: 'student' | 'instructor'.
 
     function getPeopleViewModel(classId, options) {
         options = options || {};
@@ -403,8 +358,6 @@
             };
         }
 
-        // Build the roster: students from the derived roster, then
-        // instructor stitched in for display.
         var students = getClassStudentsViewModel(selectedClass.id);
 
         var cls = AcademyClasses.getClass(selectedClass.id);
@@ -610,7 +563,6 @@
             ? options.errors
             : {};
 
-        // Instructors for the picker.
         var availableInstructors = [];
         if (typeof CharacterQueries.getInstructors === 'function') {
             var instructors = CharacterQueries.getInstructors() || [];
@@ -622,7 +574,6 @@
             });
         }
 
-        // Grade scheme preview and preset id.
         var GradeSchemes = getGradeSchemes();
         var schemePreview = '';
         var schemePresetId = 'numeric';
@@ -649,7 +600,6 @@
             schemePresetId = draft.gradeScheme.id;
         }
 
-        // Assessment types and weights.
         var assessmentTypes = [];
         var defaultAssessmentWeights = {};
         if (typeof AcademyDisciplines.getValidAssessmentTypes === 'function') {
@@ -663,7 +613,6 @@
             ? draft.assessmentWeights
             : defaultAssessmentWeights;
 
-        // Instructor names for the currently selected instructors.
         var instructorNames = getInstructorNamesForDiscipline({
             instructorIds: Array.isArray(draft.instructorIds) ? draft.instructorIds : []
         });
@@ -876,6 +825,12 @@
     // ============================================================
     // WEEKLY TEAMS VIEW MODEL
     // ============================================================
+    //
+    // The team list is filtered by the PERSISTENT Team entity's
+    // own startPeriod / endPeriod, via TeamQueries.isTeamActiveAtPeriod.
+    // A team whose endPeriod is week 2 does not appear in week 3's
+    // list. The weekly-team record (membership map) is a separate
+    // concern, handled by AcademyWeeklyTeams.getWeeklyTeams.
 
     function getWeeklyTeamsViewModel(classId, week, selectedTeamId) {
         var classList = getClassListViewModel();
@@ -967,6 +922,15 @@
             var team = raw[i];
             if (!team || !team.id) { continue; }
             if (team.type !== 'academic') { continue; }
+
+            // WEEK FILTER: skip teams whose persistent window does
+            // not cover the requested week. This is the fix — a team
+            // with endPeriod = 2 does not appear in week 3 or later.
+            if (typeof TeamQueries.isTeamActiveAtPeriod === 'function') {
+                if (!TeamQueries.isTeamActiveAtPeriod(team, week)) {
+                    continue;
+                }
+            }
 
             var memberIds = Array.isArray(assignments[String(team.id)])
                 ? assignments[String(team.id)]
