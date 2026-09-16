@@ -35,10 +35,12 @@
  *
  * MATCH TYPES:
  *   'standard'    : legacy 2-participant match. Read-only compat.
- *   'group_exam'  : open assessment. 2+ participants. Per-participant
- *                   results (pass | fail | retry).
- *   'team_vs_team': adversarial team match. 2+ teams. Two-layer
- *                   results: teamResults + individualResults.
+ *   'group_exam'  : open assessment. participants.length === round.matchSize.
+ *                   Per-participant results (pass | fail | retry).
+ *   'team_vs_team': adversarial team match. participants.length >= 2.
+ *                   The round's matchSize is NOT a constraint for
+ *                   team matches. Two-layer results: teamResults +
+ *                   individualResults.
  *
  * PAIR EXAM:
  *   'group_exam' with isPairExam: true. Pairings partition participants
@@ -169,17 +171,6 @@
         return result;
     }
 
-    function parsePositiveInteger(value) {
-        if (value === undefined || value === null) {
-            return null;
-        }
-        var num = parseInt(value, 10);
-        if (isNaN(num) || num < 1) {
-            return null;
-        }
-        return num;
-    }
-
     function failure(message) {
         return { success: false, message: message };
     }
@@ -199,12 +190,19 @@
         return Schema.isValidResult(value);
     }
 
+    /**
+     * Is the round's matchSize an actual constraint for this type?
+     *   group_exam   → yes
+     *   team_vs_team → no
+     *   standard     → no (fixed at 2 by definition)
+     */
+    function matchSizeApplies(type) {
+        return type === 'group_exam';
+    }
+
     // ============================================================
     // SNAPSHOT-AWARE LOOKUP
     // ============================================================
-    //
-    // Every mutation re-reads from the pipeline snapshot. These helpers
-    // resolve entities within a snapshot rather than from live queries.
 
     function findTournamentInSnapshot(appData, tournamentId) {
         if (!appData || !Array.isArray(appData.tournaments)) {
@@ -227,25 +225,9 @@
         return Schema.findRoundById(tournament, roundId);
     }
 
-    function findMatchInSnapshot(appData, tournamentId, roundId, matchId) {
-        var round = findRoundInSnapshot(appData, tournamentId, roundId);
-        if (!round) { return null; }
-        return Schema.findMatchById(round, matchId);
-    }
-
     // ============================================================
     // ELIGIBILITY
     // ============================================================
-    //
-    // A participant is eligible for a NEW match in a round when:
-    //   - They are in the tournament roster.
-    //   - They have not been individually eliminated.
-    //   - They have not failed any prior completed match in this
-    //     tournament.
-    //
-    // Reads via TournamentQueries. This is a pre-flight helper used by
-    // generateMatches and the pool preview; it is not part of the
-    // mutation critical path.
 
     function isEligibleForNewMatch(tournamentId, participantId) {
         if (!participantId) { return false; }
@@ -418,12 +400,6 @@
     // INTERNAL PURE BUILDERS
     // ============================================================
 
-    /**
-     * Build an empty match for a given round configuration.
-     *
-     * Generates a stable match ID. Participants and results are
-     * populated by the caller.
-     */
     function buildMatch(participants, roundConfig) {
         roundConfig = roundConfig || {};
         var matchType = roundConfig.matchType || 'group_exam';
@@ -457,12 +433,6 @@
         return result;
     }
 
-    /**
-     * Build an empty round.
-     *
-     * Generates a stable round ID. The round has ZERO matches.
-     * Matches are added explicitly via createMatch or generateMatches.
-     */
     function buildRound(roundData, participants) {
         roundData = roundData || {};
         var matchSize = roundData.matchSize || 2;
@@ -488,10 +458,6 @@
         return round;
     }
 
-    /**
-     * Build a complete proposed match state.
-     * Preserves the base match's ID.
-     */
     function buildProposedMatch(base, updates, tournament, round, options) {
         options = options || {};
         var allowCompletion = options.allowCompletion === true;
@@ -512,14 +478,12 @@
 
         var normalisedUpdates = {};
 
-        // ---- participants ----
         if (updates.participants !== undefined) {
             var participants = normaliseIdArrayStrict(updates.participants);
             if (participants === null) { return null; }
             normalisedUpdates.participants = participants;
         }
 
-        // ---- type ----
         var proposedType = updates.type !== undefined
             ? updates.type
             : (base.type || round.matchType || 'group_exam');
@@ -536,7 +500,6 @@
 
         normalisedUpdates.type = proposedType;
 
-        // ---- status ----
         var currentStatus = base.status || 'pending';
         if (updates.status !== undefined &&
             updates.status !== currentStatus) {
@@ -551,7 +514,6 @@
             normalisedUpdates.status = updates.status;
         }
 
-        // ---- isPairExam ----
         if (updates.isPairExam !== undefined) {
             if (proposedType !== 'group_exam') {
                 return null;
@@ -559,7 +521,6 @@
             normalisedUpdates.isPairExam = updates.isPairExam === true;
         }
 
-        // ---- results (group_exam) ----
         if (updates.results !== undefined) {
             if (proposedType !== 'group_exam') {
                 return null;
@@ -573,7 +534,6 @@
             normalisedUpdates.results = resultCheck.map;
         }
 
-        // ---- teamResults (team_vs_team) ----
         if (updates.teamResults !== undefined) {
             if (proposedType !== 'team_vs_team') {
                 return null;
@@ -587,7 +547,6 @@
             normalisedUpdates.teamResults = teamCheck.map;
         }
 
-        // ---- individualResults (team_vs_team) ----
         if (updates.individualResults !== undefined) {
             if (proposedType !== 'team_vs_team') {
                 return null;
@@ -601,7 +560,6 @@
             normalisedUpdates.individualResults = indCheck.map;
         }
 
-        // ---- pairings (group_exam + isPairExam) ----
         if (updates.pairings !== undefined) {
             var isPairExamFinal = normalisedUpdates.isPairExam !== undefined
                 ? normalisedUpdates.isPairExam
@@ -616,9 +574,7 @@
             normalisedUpdates.pairings = pairings;
         }
 
-        // ---- build proposed ----
         var proposed = {
-            // ID is preserved from the base.
             id: base.id,
             participants: normalisedUpdates.participants !== undefined
                 ? normalisedUpdates.participants
@@ -640,7 +596,6 @@
             proposed.isPairExam = true;
         }
 
-        // ---- per-type payloads ----
         if (proposed.type === 'group_exam') {
             proposed.results = normalisedUpdates.results !== undefined
                 ? normalisedUpdates.results
@@ -669,16 +624,15 @@
                         : {});
         }
 
-        // ---- size check against round.matchSize ----
-        var matchSize = round && round.matchSize ? round.matchSize : 2;
-        if (proposed.participants.length > 0 &&
-            proposed.participants.length !== matchSize) {
-            if (proposed.status === 'completed') {
+        // MatchSize is only a constraint for group_exam.
+        if (matchSizeApplies(proposed.type)) {
+            var matchSize = round && round.matchSize ? round.matchSize : 2;
+            if (proposed.participants.length > 0 &&
+                proposed.participants.length !== matchSize) {
                 return null;
             }
         }
 
-        // ---- participant eligibility check ----
         var expectedType = tournament.mode === 'teams'
             ? 'team'
             : 'character';
@@ -696,7 +650,6 @@
             }
         }
 
-        // ---- result participant check ----
         if (proposed.type === 'group_exam') {
             if (!validateMatchResultParticipants(
                 proposed.participants,
@@ -706,7 +659,6 @@
             }
         }
 
-        // ---- derive advancing ----
         if (Schema &&
             typeof Schema.deriveAdvancing === 'function') {
             proposed.advancing = Schema.deriveAdvancing(proposed);
@@ -717,6 +669,15 @@
 
     /**
      * Validate a complete proposed match state.
+     *
+     * Delegates structural validation to Schema.validateMatch, which
+     * applies per-type participant-count rules:
+     *   group_exam   → participants.length === round.matchSize
+     *   team_vs_team → participants.length >= 2
+     *   standard     → participants.length === 2
+     *
+     * We do NOT double-validate here beyond that. Any field-level
+     * validation was done by buildProposedMatch before we got here.
      */
     function validateProposedMatch(proposed, tournament, round, matchId) {
         var errors = [];
@@ -817,16 +778,6 @@
     // ============================================================
     // ROUND PROMOTION
     // ============================================================
-    //
-    // When every match in a round is completed, the round's own status
-    // is promoted to 'completed'. This is required by
-    // TournamentRules.validateCompletionReadiness, which requires every
-    // round to be complete before a tournament can be marked complete.
-    //
-    // If the round has zero matches, promotion is NOT applied. A round
-    // with no matches is not "complete" in the domain's sense; the
-    // lifecycle requires every round to have at least one completed
-    // match.
 
     function promoteRoundIfComplete(round) {
         if (!round || !Array.isArray(round.matches)) { return false; }
@@ -866,14 +817,6 @@
     // PUBLIC COMMAND - Create Match
     // ============================================================
 
-    /**
-     * Create a single match in a round.
-     *
-     * @param {string} tournamentId
-     * @param {string} roundId
-     * @param {object} matchData - { participants, type?, isPairExam?, pairings? }
-     * @returns {Promise<object>}
-     */
     function createMatch(tournamentId, roundId, matchData) {
         if (!isObject(matchData)) {
             return Promise.resolve(failure('Invalid match data.'));
@@ -887,7 +830,6 @@
             return Promise.resolve(failure('Tournament not found.'));
         }
 
-        var rounds = Queries.getRounds(tournamentId);
         var round = Schema.findRoundById(tournament, roundId);
         if (!round) {
             return Promise.resolve(failure('Round not found.'));
@@ -948,7 +890,6 @@
             );
         }
 
-        // Auto-partition pair exam if no explicit pairings.
         if (proposed.isPairExam &&
             (!proposed.pairings || proposed.pairings.length === 0)) {
             var autoPairings = partitionIntoPairs(proposed.participants);
@@ -1018,21 +959,9 @@
             return Promise.resolve(failure('Round not found.'));
         }
 
-        if (round.status === 'completed') {
-            return Promise.resolve(
-                failure('Cannot remove matches from a completed round.')
-            );
-        }
-
         var match = Schema.findMatchById(round, matchId);
         if (!match) {
             return Promise.resolve(failure('Match not found.'));
-        }
-
-        if (match.status === 'completed') {
-            return Promise.resolve(
-                failure('Cannot remove a completed match.')
-            );
         }
 
         var targetTournamentId = normaliseId(tournamentId);
@@ -1048,9 +977,6 @@
                 );
                 if (!snapshotRound) {
                     return { valid: false, message: 'Round no longer exists.' };
-                }
-                if (snapshotRound.status === 'completed') {
-                    return { valid: false, message: 'Round is completed.' };
                 }
                 if (!Schema.findMatchById(snapshotRound, targetMatchId)) {
                     return { valid: false, message: 'Match no longer exists.' };
@@ -1080,9 +1006,6 @@
                 }
 
                 snapshotRound.matches.splice(idx, 1);
-                // Round status remains as-is; removing a match from an
-                // 'in_progress' or 'pending' round does not change the
-                // round status.
                 return { removed: true };
             },
             logMessage: 'Removed match from round',
@@ -1239,12 +1162,6 @@
             return Promise.resolve(failure('Round not found.'));
         }
 
-        if (round.status === 'completed') {
-            return Promise.resolve(
-                failure('Cannot modify matches in a completed round.')
-            );
-        }
-
         var match = Schema.findMatchById(round, matchId);
         if (!match) {
             return Promise.resolve(failure('Match not found.'));
@@ -1396,9 +1313,6 @@
                 if (!snapshotRound) {
                     return { valid: false, message: 'Round no longer exists.' };
                 }
-                if (snapshotRound.status === 'completed') {
-                    return { valid: false, message: 'Round is completed.' };
-                }
                 var snapshotMatch = Schema.findMatchById(
                     snapshotRound,
                     targetMatchId
@@ -1438,8 +1352,6 @@
                     completedMatch
                 );
 
-                // Round promotion: if every match is now completed, the
-                // round's own status is set to 'completed'.
                 var promoted = promoteRoundIfComplete(snapshotRound);
 
                 return {
@@ -1480,7 +1392,6 @@
             );
         }
 
-        // ---- determine match size ----
         var matchSize = parseInt(options.matchSize, 10);
         if (isNaN(matchSize) || matchSize < 2) {
             matchSize = round.matchSize || 2;
@@ -1492,10 +1403,8 @@
             matchSize = 2;
         }
 
-        // ---- eligible pool ----
         var pool = getEligibleParticipants(tournamentId);
 
-        // Exclude anyone already placed in a match within this round.
         var alreadyInRound = {};
         if (Array.isArray(round.matches)) {
             for (var m = 0; m < round.matches.length; m++) {
@@ -1522,7 +1431,6 @@
             ));
         }
 
-        // ---- partition ----
         var partitions;
         if (isPairExam) {
             partitions = partitionIntoPairs(eligible);
@@ -1536,7 +1444,6 @@
             );
         }
 
-        // ---- build proposed matches ----
         var proposedMatches = [];
         var matchType = round.matchType || 'group_exam';
         if (isPairExam && matchType !== 'group_exam') {
@@ -1682,10 +1589,6 @@
     // INTERNAL HELPERS
     // ============================================================
 
-    /**
-     * Apply the fields of `updated` to `target`, preserving the
-     * target's ID.
-     */
     function applyMatchUpdate(target, updated) {
         var keys = [
             'participants',
@@ -1708,8 +1611,6 @@
                 delete target[key];
             }
         }
-        // ID is preserved. It is not in the updateable key list, so it
-        // is never overwritten or removed by an update.
     }
 
     // ============================================================
@@ -1741,36 +1642,30 @@
     // ============================================================
 
     window.TournamentMatches = {
-        // Public mutation commands
         createMatch: createMatch,
         removeMatch: removeMatch,
         updateMatch: updateMatch,
         completeMatch: completeMatch,
         generateMatches: generateMatches,
 
-        // Eligibility helpers
         isEligibleForNewMatch: isEligibleForNewMatch,
         getEligibleParticipants: getEligibleParticipants,
 
-        // Internal pure builders
         buildMatch: buildMatch,
         buildRound: buildRound,
         buildProposedMatch: buildProposedMatch,
 
-        // Validation
         validateProposedMatch: validateProposedMatch,
         validateMatchParticipants: validateMatchParticipants,
         validateResultMap: validateResultMap,
         isTypeChangeAllowed: isTypeChangeAllowed,
+        matchSizeApplies: matchSizeApplies,
 
-        // Partition helpers
         partitionIntoGroups: partitionIntoGroups,
         partitionIntoPairs: partitionIntoPairs,
 
-        // Round promotion (exposed for testing)
         promoteRoundIfComplete: promoteRoundIfComplete,
 
-        // Read operations
         getRoundMatches: getRoundMatches,
         getMatch: getMatchWrapper,
         isMatchComplete: isMatchComplete,
