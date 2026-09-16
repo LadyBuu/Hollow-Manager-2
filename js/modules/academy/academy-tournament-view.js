@@ -1,63 +1,164 @@
 /**
- * modules/academy/academy-tournament-view.js - Academy Tournament (Exams) View
- * Pure renderer and modal builder for the Academy-embedded Exams view.
+ * modules/academy/academy-tournament-view.js
+ * Academy Tournament (Exams) View
  *
  * Path: js/modules/academy/academy-tournament-view.js
  *
+ * Pure renderer and modal builder for the Academy-embedded Exams
+ * view.
+ *
  * RESPONSIBILITIES:
- *   - Rendering the Exams view body (top bar, pool panel, exam panel,
+ *   - Render the Exams view body (top bar, pool panel, exam panel,
  *     rounds, matches, eliminations, final passers)
- *   - Building the modal HTML for exam, round, and match interactions
- *   - Collecting form field values from the rendered modals
+ *   - Build modal HTML from a VM
+ *   - Collect raw form values from modals
  *
  * NOT RESPONSIBILITIES:
  *   - Event binding. AcademyView binds; this module emits data-*.
- *   - Domain reads beyond the pool fallback. The aggregator owns
- *     interaction VMs; until those land, one clearly-marked helper
- *     reads eligible participants from TournamentQueries.
- *   - Validation. Every collector returns raw field values; the
- *     domain validates.
+ *   - Domain reads. All data arrives in the VM.
+ *   - Domain validation. Collectors return raw field values.
+ *   - Name resolution. The aggregator resolves display names.
+ *   - Eligibility computation. The aggregator builds the pool.
  *
- * PAIR-PICKER CONTRACT:
- *   The pair picker emits a "+ Add" button with data-action="exam-pair-add".
- *   AcademyView handles the click: it reads the three selects, validates
- *   distinctness, and appends a .at-pair-row to .at-pair-list with
- *   data-pair set to a JSON-stringified array of participant IDs.
- *   Each row carries a .at-pair-remove button that emits
- *   data-action="exam-pair-remove". The collector reads the rows.
+ * VM CONTRACT:
+ *   The main page VM (from AcademyTournamentAggregator.getExamViewModel):
+ *   {
+ *     classList: [ { id, name } ],
+ *     classId: string | null,
+ *     className: string | null,
+ *     week: number | null,
+ *     exam: ExamVM | null,
+ *     pool: [ PoolItemVM ]
+ *   }
  *
- * ELIMINATED SECTION:
- *   The exam VM carries `eliminations` (built by
- *   AcademyTournamentAggregator.buildEliminationsVM). Each entry is a
- *   character-side elimination with:
- *     { participantId, participantName, week, reason,
- *       standalone, fromRoundId, fromMatchId, hasProvenance }
+ *   ExamVM:
+ *   {
+ *     id, name,
+ *     status, statusLabel,
+ *     mode, modeLabel,
+ *     startWeek, endWeek,
+ *     archivedAt,
+ *     participantCount,
+ *     roundCount, totalRounds,
+ *     participants: [ { id, name, type, typeLabel } ],
+ *     eliminations: [ EliminationVM ],
+ *     eliminationCount,
+ *     finalPassers: [ { id, name, type, typeLabel } ],
+ *     finalPasserCount,
+ *     rounds: [ RoundVM ]
+ *   }
  *
- *   The section renders between the rounds list and the Final Passers
- *   section: eliminations are a running record, final passers are a
- *   terminal outcome. Each row carries a Restore button emitting
- *   data-action="exam-restore-eliminated" with data-exam-id and
- *   data-character-id.
+ *   RoundVM:
+ *   {
+ *     id, index, roundNumber,
+ *     status, statusLabel,
+ *     matchSize,
+ *     matchType, matchTypeLabel,
+ *     isPairExam,
+ *     matches: [ MatchVM ],
+ *     matchCount
+ *   }
  *
- *   Teams are never rendered here: the cascade only eliminates
- *   individual characters, and the aggregator filters non-character
- *   entries before they reach this renderer.
+ *   MatchVM:
+ *   {
+ *     id, index,
+ *     type, typeLabel,
+ *     status, statusLabel,
+ *     isPairExam, isGroupExam, isTeamMatch,
+ *     isComplete,
+ *     participantCount,
+ *     participants?: [ ParticipantVM ],   // group_exam
+ *     pairings?: [ [ ParticipantVM ] ],   // group_exam + isPairExam
+ *     teams?: [ TeamVM ]                  // team_vs_team
+ *   }
  *
- * IMPORTANT:
- *   - RENDER ONLY. No mutations. The one domain read (pool fallback) is
- *     documented and isolated.
- *   - Uses DomUtils for escaping (MANDATORY, no fallback).
- *   - Returns HTML strings. Never touches the DOM.
+ *   ParticipantVM:
+ *   {
+ *     id, name, type, typeLabel,
+ *     result, resultCategory, outcomeDisplay,
+ *     isPassing, isRetrying, isFailing
+ *   }
+ *
+ *   TeamVM:
+ *   {
+ *     teamId, name,
+ *     result, resultCategory, outcomeDisplay,
+ *     isPassing, isRetrying, isFailing,
+ *     members: [ {
+ *       characterId, name, role,
+ *       result, resultCategory, outcomeDisplay,
+ *       isPassing, isRetrying, isFailing
+ *     } ],
+ *     memberCount
+ *   }
+ *
+ *   EliminationVM:
+ *   {
+ *     participantId, participantType, participantName,
+ *     week, reason, standalone,
+ *     fromRoundId, fromMatchId, hasProvenance
+ *   }
+ *
+ *   PoolItemVM:
+ *   {
+ *     id, name, subtitle,
+ *     inExam, eliminated
+ *   }
+ *
+ * MODAL VM CONTRACT:
+ *   The modal builders receive everything they need on the options
+ *   object. They do NOT query the domain.
+ *
+ *   buildAddMatchModalHTML({
+ *     examId, roundId,
+ *     mode,                  // 'individuals' | 'teams'
+ *     isPairExam,            // boolean
+ *     eligibleParticipants   // [ { id, name } ]
+ *   })
+ *
+ *   buildEditMatchModalHTML({
+ *     examId, roundId, matchId,
+ *     mode, isPairExam,
+ *     eligibleParticipants,  // [ { id, name } ]
+ *     currentParticipants    // [ id, ... ]
+ *   })
+ *
+ *   buildCompleteMatchModalHTML({
+ *     examId, roundId, matchId,
+ *     matchType,             // 'group_exam' | 'team_vs_team'
+ *     mode,
+ *     participants,          // [ { id, name } ]  (group_exam)
+ *     existingResults,       // { [id]: 'pass'|'fail'|'retry' }
+ *     teams,                 // [ { id, name, members: [ { id, name } ] } ]
+ *     existingTeamResults,   // { [teamId]: result }
+ *     existingIndividualResults // { [charId]: result }
+ *   })
  *
  * ACTION NAMING:
  *   Every action carries the 'exam-' prefix so AcademyView's
  *   prefix-based dispatcher routes them deterministically.
  *
+ *   Action strings emitted by this module:
+ *     exam-create
+ *     exam-delete
+ *     exam-toggle-pool-member
+ *     exam-add-round
+ *     exam-remove-round
+ *     exam-auto-generate-round
+ *     exam-add-match
+ *     exam-edit-match
+ *     exam-complete-match
+ *     exam-remove-match
+ *     exam-restore-eliminated
+ *     exam-complete
+ *     exam-pair-add
+ *     exam-pair-remove
+ *
  * ID SEMANTICS:
- *   data-exam-id   on every exam-scoped action
- *   data-round-id  on every round- and match-scoped action
- *   data-match-id  on every match-scoped action
- *   data-pool-id   on pool toggle actions
+ *   data-exam-id      on every exam-scoped action
+ *   data-round-id     on every round- and match-scoped action
+ *   data-match-id     on every match-scoped action
+ *   data-pool-id      on pool toggle actions
  *   data-character-id on elimination restore actions
  *
  * MODAL CONTENT CONTRACT:
@@ -65,49 +166,17 @@
  *   appends a .modal-content wrapper. Every builder here returns the
  *   inner content of that wrapper, not a full modal shell.
  *
- * VM LABEL SEMANTICS:
- *   The VM supplies display labels. The renderer prefers them and
- *   falls back to raw enum values only when the label is absent and
- *   the raw value is a real value.
- *
- * RESULT VOCABULARY:
- *   'pass' | 'retry' | 'fail'
- *
- * CREATE EXAM MODAL — UX NOTES:
- *   The modal opens after the user has already picked a class and week
- *   in the top bar, so those are fixed and displayed as read-only
- *   context rather than as editable fields.
- *
- *   Total Rounds is presented with a short explanation of what a
- *   round is. It defaults to 5 rather than 1, because most users add
- *   more than one round and the domain now auto-bumps the capacity
- *   when the user adds a round beyond the current total. The default
- *   is a starting point, not a hard ceiling.
- *
- *   Mode is presented last, after the user has read the other fields,
- *   so the choice is made with full context.
- *
- * ADD ROUND MODAL — CAPACITY NOTE:
- *   The modal does not surface the tournament's totalRounds. If the
- *   user is at capacity, the events module auto-bumps totalRounds
- *   before adding the round. The modal is unaware of the capacity
- *   rule; it just submits a round configuration.
+ * PAIR-PICKER CONTRACT:
+ *   The pair picker emits a "+ Add" button with
+ *   data-action="exam-pair-add". AcademyView handles the click: it
+ *   reads the three selects, validates distinctness, and appends a
+ *   .at-pair-row to .at-pair-list with data-pair set to a
+ *   JSON-stringified array of participant IDs. Each row carries a
+ *   .at-pair-remove button emitting data-action="exam-pair-remove".
+ *   The collector reads the rows.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
- *
- * DEPENDENCIES (OPTIONAL, used by modal builders):
- *   - window.TournamentQueries
- *   - window.TournamentAggregator
- *   - window.CharacterQueries
- *   - window.TeamQueries
- *
- * USAGE:
- *   var html = AcademyTournamentView.renderHTML(vm);
- *   container.innerHTML = html;
- *
- *   var modalHTML = AcademyTournamentView.buildCreateExamModalHTML(opts);
- *   var payload = AcademyTournamentView.collectCreateExamForm(formEl);
  */
 
 (function() {
@@ -131,16 +200,7 @@
     window.__academyTournamentViewLoaded = true;
 
     // ============================================================
-    // OPTIONAL DEPENDENCY ACCESSORS
-    // ============================================================
-
-    function getTournamentQueries() { return window.TournamentQueries || null; }
-    function getTournamentAggregator() { return window.TournamentAggregator || null; }
-    function getCharacterQueries() { return window.CharacterQueries || null; }
-    function getTeamQueries() { return window.TeamQueries || null; }
-
-    // ============================================================
-    // ESCAPING HELPERS
+    // ESCAPING
     // ============================================================
 
     function escapeHtml(value) {
@@ -168,6 +228,17 @@
         return String(value);
     }
 
+    function isArray(value) {
+        return Array.isArray(value);
+    }
+
+    // ============================================================
+    // CSS CLASS HELPERS
+    // ============================================================
+    //
+    // Presentation only. The VM carries display labels; the view
+    // maps them to CSS classes.
+
     function getExamStatusClass(status) {
         switch (status) {
             case 'draft':     return 'at-exam-status at-exam-status-draft';
@@ -193,9 +264,25 @@
         return 'at-team at-team-pending';
     }
 
+    function getRankBadgeClass(rank) {
+        if (!isFiniteNumber(rank) || rank < 1) {
+            return 'academy-rank-badge academy-rank-unknown';
+        }
+        if (rank === 1) return 'academy-rank-badge academy-rank-gold';
+        if (rank === 2) return 'academy-rank-badge academy-rank-silver';
+        if (rank === 3) return 'academy-rank-badge academy-rank-bronze';
+        return 'academy-rank-badge academy-rank-default';
+    }
+
+    // ============================================================
+    // OUTCOME BADGE
+    // ============================================================
+
     function renderOutcomeBadge(vm) {
         if (!vm || !vm.outcomeDisplay) {
-            return '<span class="at-outcome-badge at-outcome-unknown">?</span>';
+            return '<span class="at-outcome-badge at-outcome-unknown">' +
+                        '?' +
+                    '</span>';
         }
         var display = vm.outcomeDisplay;
         var cls = 'at-outcome-badge ' + (display.class || 'outcome-unknown');
@@ -207,79 +294,19 @@
                 '</span>';
     }
 
-    function resolveExamStatusLabel(exam) {
-        if (!exam) { return ''; }
-        if (isNonEmptyString(exam.statusLabel)) { return exam.statusLabel; }
-        return exam.status || 'unknown';
-    }
-
-    function resolveExamModeLabel(exam) {
-        if (!exam) { return ''; }
-        if (isNonEmptyString(exam.modeLabel)) { return exam.modeLabel; }
-        if (exam.mode === 'teams') { return 'Teams'; }
-        if (exam.mode === 'individuals') { return 'Individuals'; }
-        return '';
-    }
-
-    function resolveRoundStatusLabel(round) {
-        if (!round) { return ''; }
-        if (isNonEmptyString(round.statusLabel)) { return round.statusLabel; }
-        return round.status || 'pending';
-    }
-
-    function resolveMatchStatusLabel(match) {
-        if (!match) { return ''; }
-        if (isNonEmptyString(match.statusLabel)) { return match.statusLabel; }
-        return match.status || 'pending';
-    }
-
-    function resolveMatchTypeLabel(match) {
-        if (!match) { return ''; }
-        if (isNonEmptyString(match.typeLabel)) { return match.typeLabel; }
-        if (match.isPairExam) { return 'Pair Exam'; }
-        if (match.type === 'team_vs_team') { return 'Team Match'; }
-        if (match.type === 'group_exam') { return 'Group Exam'; }
-        if (match.type === 'standard') { return 'Standard'; }
-        return match.type || '';
-    }
-
     // ============================================================
-    // DISPLAY NAME RESOLUTION
-    // ============================================================
-
-    function getParticipantDisplayName(participantId, mode) {
-        var Aggregator = getTournamentAggregator();
-        if (Aggregator && typeof Aggregator.getParticipantName === 'function') {
-            var name = Aggregator.getParticipantName(null, participantId);
-            if (isNonEmptyString(name) && name !== 'Unknown') { return name; }
-        }
-
-        if (mode === 'teams') {
-            var TeamQ = getTeamQueries();
-            if (TeamQ && typeof TeamQ.getTeamById === 'function') {
-                var team = TeamQ.getTeamById(participantId);
-                if (team) { return team.name || 'Unknown Team'; }
-            }
-            return 'Unknown Team';
-        }
-
-        var CQ = getCharacterQueries();
-        if (CQ && typeof CQ.getCharacterById === 'function') {
-            var char = CQ.getCharacterById(participantId);
-            if (char && typeof CQ.getDisplayName === 'function') {
-                return CQ.getDisplayName(char);
-            }
-        }
-        return 'Unknown';
-    }
-
-    // ============================================================
-    // RENDER - Top-level
+    // TOP-LEVEL RENDER
     // ============================================================
 
     function renderHTML(viewModel) {
-        var vm = viewModel || {};
-        var classId = vm.classId || null;
+        if (!viewModel || typeof viewModel !== 'object') {
+            throw new Error(
+                '[AcademyTournamentView] renderHTML requires a view model.'
+            );
+        }
+
+        var vm = viewModel;
+        var classId = isNonEmptyString(vm.classId) ? vm.classId : null;
 
         var html = '';
         html += '<div class="academy-body academy-exams-layout">';
@@ -305,13 +332,13 @@
     }
 
     // ============================================================
-    // TOP BAR - Class + Week
+    // TOP BAR
     // ============================================================
 
     function renderTopBar(vm) {
-        var classes = Array.isArray(vm.classes) ? vm.classes : [];
-        var classId = vm.classId || null;
-        var week = vm.week;
+        var classes = isArray(vm.classList) ? vm.classList : [];
+        var classId = isNonEmptyString(vm.classId) ? vm.classId : null;
+        var week = isFiniteNumber(vm.week) ? vm.week : null;
 
         var html = '';
         html += '<div class="academy-exams-top-bar">';
@@ -325,12 +352,13 @@
         for (var i = 0; i < classes.length; i++) {
             var cls = classes[i];
             if (!cls || !cls.id) { continue; }
-            var selected = classId && String(classId) === String(cls.id)
+            var selected = classId &&
+                String(classId) === String(cls.id)
                 ? ' selected'
                 : '';
             html += '<option value="' + escapeAttribute(cls.id) + '"' +
                         selected + '>' +
-                        escapeHtml(cls.name || 'Unnamed Class') +
+                        escapeHtml(cls.name || '') +
                     '</option>';
         }
         html += '</select>';
@@ -343,7 +371,7 @@
         html += '<input type="number" id="at-week-input" ' +
                     'class="academy-week-input" ' +
                     'value="' + escapeAttribute(
-                        isFiniteNumber(week) ? String(week) : ''
+                        week !== null ? String(week) : ''
                     ) + '" ' +
                     'min="1" max="52">';
         html += '</div>';
@@ -357,8 +385,8 @@
     // ============================================================
 
     function renderPoolPanel(vm) {
-        var pool = Array.isArray(vm.pool) ? vm.pool : [];
-        var exam = vm.exam;
+        var pool = isArray(vm.pool) ? vm.pool : [];
+        var exam = vm.exam || null;
 
         var title = 'Eligible This Week';
         var modeLabel = '';
@@ -369,9 +397,8 @@
             } else if (exam.mode === 'individuals') {
                 title = 'Characters This Week';
             }
-            modeLabel = resolveExamModeLabel(exam);
-            if (modeLabel) {
-                modeLabel = modeLabel + ' exam';
+            if (isNonEmptyString(exam.modeLabel)) {
+                modeLabel = exam.modeLabel + ' exam';
             }
         }
 
@@ -423,7 +450,7 @@
 
         html += '<div class="at-pool-row-main">';
         html += '<span class="at-pool-name">' +
-                    escapeHtml(item.name || 'Unknown') +
+                    escapeHtml(item.name || '') +
                 '</span>';
         if (exam && inExam) {
             html += '<span class="at-pool-badge at-pool-badge-in">' +
@@ -464,14 +491,14 @@
     // ============================================================
 
     function renderExamPanel(vm) {
-        var exam = vm.exam;
-        var week = vm.week;
+        var exam = vm.exam || null;
+        var week = isFiniteNumber(vm.week) ? vm.week : null;
 
         var html = '';
         html += '<div class="academy-exams-detail">';
 
         if (!exam) {
-            html += renderNoExamState(vm);
+            html += renderNoExamState(week);
             html += '</div>';
             return html;
         }
@@ -479,8 +506,8 @@
         html += '<div class="academy-exams-detail-block" ' +
                     'data-exam-id="' + escapeAttribute(exam.id) + '">';
         html += renderExamHeader(exam, week);
-        html += renderExamRounds(exam, week);
-        html += renderEliminations(exam, week);
+        html += renderExamRounds(exam);
+        html += renderEliminations(exam);
         html += renderFinalPassers(exam);
         html += '</div>';
 
@@ -488,15 +515,16 @@
         return html;
     }
 
-    function renderNoExamState(vm) {
-        var weekDisplay = isFiniteNumber(vm.week) ? String(vm.week) : '';
+    function renderNoExamState(week) {
+        var weekDisplay = week !== null ? String(week) : '';
         var html = '';
         html += '<div class="academy-exams-no-exam">';
         html += '<h3 class="academy-exams-no-exam-title">' +
                     'No Exam for Week ' + escapeHtml(weekDisplay) +
                 '</h3>';
         html += '<p class="empty-state small">' +
-                    'Create an exam to run eliminations for this class this week.' +
+                    'Create an exam to run eliminations for this class ' +
+                    'this week.' +
                 '</p>';
         html += '<button type="button" class="primary" ' +
                     'data-action="exam-create">' +
@@ -508,8 +536,8 @@
 
     function renderExamHeader(exam, week) {
         var statusClass = getExamStatusClass(exam.status);
-        var statusLabel = resolveExamStatusLabel(exam);
-        var modeLabel = resolveExamModeLabel(exam);
+        var statusLabel = exam.statusLabel || '';
+        var modeLabel = exam.modeLabel || '';
 
         var html = '';
         html += '<div class="academy-exams-detail-header">';
@@ -529,7 +557,7 @@
         html += '</div>';
 
         html += '<div class="academy-exams-detail-meta">';
-        if (isFiniteNumber(week)) {
+        if (week !== null) {
             html += '<span class="at-meta-item">' +
                         '<span class="meta-label">Week:</span> ' +
                         escapeHtml(String(week)) +
@@ -544,7 +572,8 @@
                     escapeHtml(String(exam.roundCount || 0)) + ' / ' +
                     escapeHtml(String(exam.totalRounds || 1)) +
                 '</span>';
-        if (isFiniteNumber(exam.finalPasserCount) && exam.finalPasserCount > 0) {
+        if (isFiniteNumber(exam.finalPasserCount) &&
+            exam.finalPasserCount > 0) {
             html += '<span class="at-meta-item at-meta-final">' +
                         '<span class="meta-label">Final Passers:</span> ' +
                         escapeHtml(String(exam.finalPasserCount)) +
@@ -564,7 +593,8 @@
             if (exam.roundCount > 0) {
                 html += '<button type="button" class="small secondary" ' +
                             'data-action="exam-complete" ' +
-                            'data-exam-id="' + escapeAttribute(exam.id) + '">' +
+                            'data-exam-id="' +
+                                escapeAttribute(exam.id) + '">' +
                             'Mark Completed' +
                         '</button>';
             }
@@ -585,15 +615,16 @@
     // ROUNDS
     // ============================================================
 
-    function renderExamRounds(exam, week) {
-        var rounds = Array.isArray(exam.rounds) ? exam.rounds : [];
+    function renderExamRounds(exam) {
+        var rounds = isArray(exam.rounds) ? exam.rounds : [];
 
         var html = '';
         html += '<div class="academy-exams-rounds">';
 
         if (rounds.length === 0) {
             html += '<p class="empty-state small">' +
-                        'No rounds yet. Add a round to start running matches.' +
+                        'No rounds yet. Add a round to start running ' +
+                        'matches.' +
                     '</p>';
             html += '</div>';
             return html;
@@ -614,7 +645,8 @@
 
         var html = '';
         html += '<div class="at-round" ' +
-                    'data-round-id="' + escapeAttribute(round.id || '') + '">';
+                    'data-round-id="' +
+                        escapeAttribute(round.id || '') + '">';
 
         html += '<div class="at-round-header">';
         html += '<div class="at-round-title">';
@@ -622,14 +654,7 @@
                     escapeHtml(String(round.roundNumber || '')) +
                 '</strong>';
 
-        var matchTypeLabel = isNonEmptyString(round.matchTypeLabel)
-            ? round.matchTypeLabel
-            : (round.isPairExam
-                ? 'Pair Exam'
-                : (round.matchType === 'team_vs_team'
-                    ? 'Team Match'
-                    : 'Group Exam'));
-
+        var matchTypeLabel = round.matchTypeLabel || 'Group Exam';
         var matchTypeClass = 'at-round-type';
         if (round.isPairExam) {
             matchTypeClass += ' at-round-pair';
@@ -647,9 +672,9 @@
                     '</span>';
         }
 
-        var matchCount = Array.isArray(round.matches) ? round.matches.length : 0;
         html += ' <span class="at-round-count">' +
-                    matchCount + ' match' + (matchCount === 1 ? '' : 'es') +
+                    round.matchCount + ' match' +
+                    (round.matchCount === 1 ? '' : 'es') +
                 '</span>';
         html += '</div>';
 
@@ -681,7 +706,7 @@
 
         html += '</div>';
 
-        var matches = Array.isArray(round.matches) ? round.matches : [];
+        var matches = isArray(round.matches) ? round.matches : [];
         if (matches.length === 0) {
             html += '<p class="empty-state small">No matches yet.</p>';
         } else {
@@ -704,7 +729,6 @@
         if (!match) { return ''; }
 
         var isEditable = !isExamComplete && !match.isComplete;
-        var statusLabel = resolveMatchStatusLabel(match);
 
         var html = '';
         html += '<div class="at-match" ' +
@@ -725,7 +749,7 @@
 
         html += '<span class="at-match-status at-match-status-' +
                     escapeAttribute(match.status || 'pending') + '">' +
-                    escapeHtml(statusLabel) +
+                    escapeHtml(match.statusLabel || '') +
                 '</span>';
 
         if (isEditable) {
@@ -770,7 +794,7 @@
     }
 
     function renderGroupExamBody(match) {
-        var participants = Array.isArray(match.participants)
+        var participants = isArray(match.participants)
             ? match.participants
             : [];
 
@@ -788,13 +812,13 @@
     }
 
     function renderPairExamBody(match) {
-        var pairings = Array.isArray(match.pairings) ? match.pairings : [];
+        var pairings = isArray(match.pairings) ? match.pairings : [];
 
-        var html = '';
         if (pairings.length === 0) {
             return renderGroupExamBody(match);
         }
 
+        var html = '';
         html += '<div class="at-pairs">';
         for (var i = 0; i < pairings.length; i++) {
             html += '<div class="at-pair-group">';
@@ -812,7 +836,7 @@
     }
 
     function renderTeamMatchBody(match) {
-        var teams = Array.isArray(match.teams) ? match.teams : [];
+        var teams = isArray(match.teams) ? match.teams : [];
 
         var html = '';
         html += '<div class="at-teams">';
@@ -833,12 +857,12 @@
 
         html += '<div class="at-team-header">';
         html += '<span class="at-team-name">' +
-                    escapeHtml(team.name || 'Unknown Team') +
+                    escapeHtml(team.name || '') +
                 '</span>';
         html += renderOutcomeBadge(team);
         html += '</div>';
 
-        var members = Array.isArray(team.members) ? team.members : [];
+        var members = isArray(team.members) ? team.members : [];
         if (members.length > 0) {
             html += '<div class="at-team-members">';
             for (var i = 0; i < members.length; i++) {
@@ -862,7 +886,7 @@
         var html = '';
         html += '<div class="' + cls + '">';
         html += '<span class="at-team-member-name">' +
-                    escapeHtml(member.name || 'Unknown') +
+                    escapeHtml(member.name || '') +
                 '</span>';
         if (isNonEmptyString(member.role) && member.role !== 'Member') {
             html += '<span class="at-team-member-role">' +
@@ -882,7 +906,7 @@
         var html = '';
         html += '<div class="' + cls + '">';
         html += '<span class="at-participant-name">' +
-                    escapeHtml(participant.name || 'Unknown') +
+                    escapeHtml(participant.name || '') +
                 '</span>';
         html += renderOutcomeBadge(participant);
         html += '</div>';
@@ -894,28 +918,20 @@
     // ============================================================
     //
     // Renders between the rounds list and Final Passers. Each row
-    // carries a Restore button that emits
+    // carries a Restore button emitting
     // data-action="exam-restore-eliminated" with data-exam-id and
     // data-character-id.
     //
-    // The exam VM's `eliminations` array is built by
-    // AcademyTournamentAggregator.buildEliminationsVM. Entries are
-    // already filtered to character-side eliminations and sorted by
-    // week descending, then name ascending.
+    // The VM's `eliminations` array is already filtered to character
+    // entries and sorted by week descending, then name ascending.
     //
     // When there are no eliminations, the section still renders with
-    // a "None" line so the user can confirm nobody has been
-    // eliminated. This is distinct from the Final Passers section,
-    // which renders nothing until at least one round exists.
-    //
-    // Teams are never rendered here. The cascade only eliminates
-    // individuals; the aggregator filters non-character entries
-    // before they reach this renderer.
+    // a "None" line so the user can confirm nobody is eliminated.
+    // This is distinct from the Final Passers section, which renders
+    // nothing until at least one round exists.
 
-    function renderEliminations(exam, week) {
-        if (!exam) { return ''; }
-
-        var eliminations = Array.isArray(exam.eliminations)
+    function renderEliminations(exam) {
+        var eliminations = isArray(exam.eliminations)
             ? exam.eliminations
             : [];
 
@@ -931,7 +947,8 @@
 
         if (eliminations.length === 0) {
             html += '<p class="empty-state small at-eliminations-empty">' +
-                        'No characters have been eliminated from this exam.' +
+                        'No characters have been eliminated from this ' +
+                        'exam.' +
                     '</p>';
             html += '</div>';
             return html;
@@ -1007,11 +1024,10 @@
     // ============================================================
 
     function renderFinalPassers(exam) {
-        var passers = Array.isArray(exam.finalPassers)
-            ? exam.finalPassers
-            : [];
+        var passers = isArray(exam.finalPassers) ? exam.finalPassers : [];
+        var rounds = isArray(exam.rounds) ? exam.rounds : [];
 
-        if (!Array.isArray(exam.rounds) || exam.rounds.length === 0) {
+        if (rounds.length === 0) {
             return '';
         }
 
@@ -1034,11 +1050,11 @@
                 var p = passers[i];
                 if (!p) { continue; }
                 html += '<span class="at-final-passer-chip">' +
-                            escapeHtml(p.name || 'Unknown') +
+                            escapeHtml(p.name || '') +
                             (isNonEmptyString(p.type) &&
                                 p.type !== 'character'
                                 ? ' <span class="at-final-passer-type">(' +
-                                    escapeHtml(p.type) +
+                                    escapeHtml(p.typeLabel || p.type) +
                                   ')</span>'
                                 : '') +
                         '</span>';
@@ -1054,14 +1070,11 @@
     // MODAL HELPERS - Shared fragments
     // ============================================================
 
-    function renderModalHeader(title, closeId) {
-        var idAttr = closeId
-            ? ' id="' + escapeAttribute(closeId) + '"'
-            : '';
+    function renderModalHeader(title) {
         return (
             '<div class="modal-header">' +
                 '<h3>' + escapeHtml(title) + '</h3>' +
-                '<button type="button" class="close-modal"' + idAttr + '>' +
+                '<button type="button" class="close-modal">' +
                     '&times;' +
                 '</button>' +
             '</div>'
@@ -1091,81 +1104,8 @@
     }
 
     // ============================================================
-    // MODAL HELPERS - Eligible participants (isolated fallback)
-    // ============================================================
-
-    function getEligibleParticipantsForModal(examId, roundId) {
-        var Queries = getTournamentQueries();
-        var Matches = window.TournamentMatches;
-
-        if (!Queries || !Matches) {
-            return [];
-        }
-
-        if (typeof Matches.getEligibleParticipants !== 'function') {
-            return [];
-        }
-
-        var pool = [];
-        try {
-            pool = Matches.getEligibleParticipants(examId) || [];
-        } catch (e) {
-            return [];
-        }
-
-        if (!roundId) {
-            return pool;
-        }
-
-        if (typeof Queries.getRound !== 'function') {
-            return pool;
-        }
-
-        var round = null;
-        try {
-            round = Queries.getRound(examId, roundId);
-        } catch (e) {
-            return pool;
-        }
-
-        if (!round || !Array.isArray(round.matches)) {
-            return pool;
-        }
-
-        var already = {};
-        for (var i = 0; i < round.matches.length; i++) {
-            var match = round.matches[i];
-            if (!match || !Array.isArray(match.participants)) { continue; }
-            for (var j = 0; j < match.participants.length; j++) {
-                already[String(match.participants[j])] = true;
-            }
-        }
-
-        var filtered = [];
-        for (var k = 0; k < pool.length; k++) {
-            if (!already[String(pool[k])]) {
-                filtered.push(pool[k]);
-            }
-        }
-        return filtered;
-    }
-
-    // ============================================================
     // MODAL BUILDER - Create Exam
     // ============================================================
-    //
-    // UX NOTES:
-    //   - The class and week are fixed (they came from the top bar).
-    //     The modal shows them as read-only context so the user knows
-    //     what they're creating the exam for.
-    //   - Total Rounds defaults to 5. This is a starting point, not a
-    //     ceiling: the events module auto-bumps capacity when the user
-    //     adds a round beyond the current total.
-    //   - Mode is presented last, after the user has read the other
-    //     fields, so the choice is made with full context.
-    //   - Field hints are written for a first-time user: they explain
-    //     what a round is, what the mode choices mean, and that
-    //     participants are added after creation.
 
     function buildCreateExamModalHTML(options) {
         options = options || {};
@@ -1187,7 +1127,6 @@
 
         html += '<div class="modal-body">';
 
-        // ---- Fixed context: class + week ----
         html += '<div class="form-group at-fixed-context">';
         html += '<label>Creating exam for</label>';
         html += '<p class="at-context-line">' +
@@ -1197,7 +1136,6 @@
                 '</p>';
         html += '</div>';
 
-        // ---- Name ----
         html += '<div class="form-group">';
         html += '<label for="at-exam-name">Exam Name</label>';
         html += '<input type="text" id="at-exam-name" class="at-exam-name" ' +
@@ -1207,7 +1145,6 @@
                 '</p>';
         html += '</div>';
 
-        // ---- Total Rounds ----
         html += '<div class="form-group">';
         html += '<label for="at-exam-total-rounds">Maximum Rounds</label>';
         html += '<input type="number" id="at-exam-total-rounds" ' +
@@ -1222,7 +1159,6 @@
                 '</p>';
         html += '</div>';
 
-        // ---- Mode ----
         html += '<div class="form-group">';
         html += '<label for="at-exam-mode">Mode</label>';
         html += '<select id="at-exam-mode" class="at-exam-mode">';
@@ -1244,7 +1180,6 @@
                 '</p>';
         html += '</div>';
 
-        // ---- Actions ----
         html += '<div class="form-actions">';
         html += '<button type="button" ' +
                     'class="cancel-modal-btn secondary">Cancel</button>';
@@ -1282,8 +1217,9 @@
     // MODAL BUILDER - Delete Exam
     // ============================================================
 
-    function buildDeleteExamModalHTML(exam) {
-        var name = (exam && exam.name) || 'this exam';
+    function buildDeleteExamModalHTML(options) {
+        options = options || {};
+        var name = options.name || 'this exam';
 
         var html = '';
         html += '<form id="at-delete-exam-form">';
@@ -1327,7 +1263,9 @@
                         'Team Match' +
                     '</option>';
         } else {
-            html += '<option value="group_exam" selected>Group Exam</option>';
+            html += '<option value="group_exam" selected>' +
+                        'Group Exam' +
+                    '</option>';
             html += '<option value="pair_exam">Pair Exam</option>';
         }
         html += '</select>';
@@ -1391,7 +1329,7 @@
     // MODAL BUILDER - Remove Round
     // ============================================================
 
-    function buildRemoveRoundModalHTML(options) {
+    function buildRemoveRoundModalHTML() {
         var html = '';
         html += '<form id="at-remove-round-form">';
         html += renderModalHeader('Remove Round');
@@ -1419,33 +1357,37 @@
         options = options || {};
         var examId = options.examId || '';
         var roundId = options.roundId || '';
+        var eligibleParticipants = isArray(options.eligibleParticipants)
+            ? options.eligibleParticipants
+            : [];
 
-        var eligible = getEligibleParticipantsForModal(examId, roundId);
-        var available = eligible.length;
+        var available = eligibleParticipants.length;
 
         var html = '';
-        html += '<form id="at-auto-generate-form">';
+        html += '<form id="at-auto-generate-form" ' +
+                    'data-exam-id="' + escapeAttribute(examId) + '" ' +
+                    'data-round-id="' + escapeAttribute(roundId) + '">';
         html += renderModalHeader('Auto-Generate Round');
         html += '<div class="modal-body">';
 
         html += '<p class="at-auto-info">' +
-                    'Eligible participants (not eliminated, not already in a match this round): ' +
+                    'Eligible participants (not eliminated, not ' +
+                    'already in a match this round): ' +
                     '<strong>' + available + '</strong>' +
                 '</p>';
 
         html += '<div class="form-group">';
-        html += '<label for="at-auto-match-size">Participants per Match</label>';
+        html += '<label for="at-auto-match-size">' +
+                    'Participants per Match' +
+                '</label>';
         html += '<input type="number" id="at-auto-match-size" ' +
                     'class="at-auto-match-size" value="2" min="2" max="20">';
         html += '</div>';
 
-        html += '<p class="at-auto-preview" id="at-auto-preview">' +
-                    'Will create approximately <strong>0</strong> matches.' +
-                '</p>';
-
         if (available < 2) {
             html += '<p class="at-auto-warning">' +
-                        'Not enough eligible participants to generate a match.' +
+                        'Not enough eligible participants to generate a ' +
+                        'match.' +
                     '</p>';
         }
 
@@ -1479,9 +1421,7 @@
     // MODAL HELPERS - Participant / Pair pickers
     // ============================================================
 
-    function renderParticipantPicker(examId, roundId, mode) {
-        var eligible = getEligibleParticipantsForModal(examId, roundId);
-
+    function renderParticipantPicker(eligible, mode) {
         var html = '';
         html += '<div class="at-picker">';
         html += '<p class="at-picker-hint">' +
@@ -1499,12 +1439,12 @@
 
         html += '<div class="at-picker-list">';
         for (var i = 0; i < eligible.length; i++) {
-            var id = eligible[i];
-            var name = getParticipantDisplayName(id, mode);
+            var item = eligible[i];
+            if (!item || !item.id) { continue; }
             html += '<label class="at-picker-item">' +
                         '<input type="checkbox" class="at-picker-check" ' +
-                            'value="' + escapeAttribute(id) + '">' +
-                        '<span>' + escapeHtml(name) + '</span>' +
+                            'value="' + escapeAttribute(item.id) + '">' +
+                        '<span>' + escapeHtml(item.name || '') + '</span>' +
                     '</label>';
         }
         html += '</div>';
@@ -1512,9 +1452,7 @@
         return html;
     }
 
-    function renderPairPicker(examId, roundId) {
-        var eligible = getEligibleParticipantsForModal(examId, roundId);
-
+    function renderPairPicker(eligible) {
         var html = '';
         html += '<div class="at-pair-picker">';
 
@@ -1544,11 +1482,10 @@
                             : 'Select participant...') +
                     '</option>';
             for (var i = 0; i < eligible.length; i++) {
-                var id = eligible[i];
-                html += '<option value="' + escapeAttribute(id) + '">' +
-                            escapeHtml(
-                                getParticipantDisplayName(id, 'individuals')
-                            ) +
+                var item = eligible[i];
+                if (!item || !item.id) { continue; }
+                html += '<option value="' + escapeAttribute(item.id) + '">' +
+                            escapeHtml(item.name || '') +
                         '</option>';
             }
             html += '</select>';
@@ -1588,7 +1525,7 @@
                     pairs.push(pair);
                 }
             } catch (e) {
-                // Ignore malformed
+                // Ignore malformed UI-generated JSON.
             }
         }
         return pairs;
@@ -1602,18 +1539,11 @@
         options = options || {};
         var examId = options.examId || '';
         var roundId = options.roundId || '';
-
-        var Queries = getTournamentQueries();
-        var exam = Queries ? Queries.getTournament(examId) : null;
-        var mode = exam ? exam.mode : 'individuals';
-
-        var isPairExam = false;
-        if (Queries && typeof Queries.getRound === 'function') {
-            var round = Queries.getRound(examId, roundId);
-            if (round) {
-                isPairExam = round.isPairExam === true;
-            }
-        }
+        var mode = options.mode || 'individuals';
+        var isPairExam = options.isPairExam === true;
+        var eligible = isArray(options.eligibleParticipants)
+            ? options.eligibleParticipants
+            : [];
 
         var html = '';
         html += '<form id="at-add-match-form" ' +
@@ -1624,9 +1554,9 @@
         html += '<div class="modal-body">';
 
         if (isPairExam) {
-            html += renderPairPicker(examId, roundId);
+            html += renderPairPicker(eligible);
         } else {
-            html += renderParticipantPicker(examId, roundId, mode);
+            html += renderParticipantPicker(eligible, mode);
         }
 
         html += '<div class="form-actions">';
@@ -1678,20 +1608,14 @@
         var examId = options.examId || '';
         var roundId = options.roundId || '';
         var matchId = options.matchId || '';
-
-        var Queries = getTournamentQueries();
-        var exam = Queries ? Queries.getTournament(examId) : null;
-        var mode = exam ? exam.mode : 'individuals';
-
-        var match = null;
-        if (Queries && typeof Queries.getMatch === 'function') {
-            match = Queries.getMatch(examId, roundId, matchId);
-        }
-
-        var currentParticipants = match && Array.isArray(match.participants)
-            ? match.participants
+        var mode = options.mode || 'individuals';
+        var isPairExam = options.isPairExam === true;
+        var eligible = isArray(options.eligibleParticipants)
+            ? options.eligibleParticipants
             : [];
-        var isPairExam = match && match.isPairExam === true;
+        var currentParticipants = isArray(options.currentParticipants)
+            ? options.currentParticipants
+            : [];
 
         var html = '';
         html += '<form id="at-edit-match-form" ' +
@@ -1703,10 +1627,10 @@
         html += '<div class="modal-body">';
 
         if (isPairExam) {
-            html += renderPairPicker(examId, roundId);
+            html += renderPairPicker(eligible);
         } else {
             html += renderEditParticipantPicker(
-                examId, roundId, mode, currentParticipants
+                eligible, currentParticipants, mode
             );
         }
 
@@ -1722,26 +1646,35 @@
         return html;
     }
 
-    function renderEditParticipantPicker(examId, roundId, mode, currentIds) {
-        var eligible = getEligibleParticipantsForModal(examId, roundId);
-
-        var combined = {};
+    function renderEditParticipantPicker(
+        eligible,
+        currentIds,
+        mode
+    ) {
+        var combined = Object.create(null);
         var ordered = [];
-        for (var i = 0; i < eligible.length; i++) {
-            if (!combined[eligible[i]]) {
-                combined[eligible[i]] = true;
-                ordered.push(eligible[i]);
-            }
-        }
-        for (var j = 0; j < currentIds.length; j++) {
-            var id = String(currentIds[j]);
-            if (!combined[id]) {
-                combined[id] = true;
-                ordered.push(id);
-            }
+
+        function addEntry(id, name) {
+            var key = String(id);
+            if (combined[key]) { return; }
+            combined[key] = { id: key, name: name };
+            ordered.push(combined[key]);
         }
 
-        var currentSet = {};
+        for (var i = 0; i < eligible.length; i++) {
+            var e = eligible[i];
+            if (!e || !e.id) { continue; }
+            addEntry(e.id, e.name || '');
+        }
+
+        for (var j = 0; j < currentIds.length; j++) {
+            var id = currentIds[j];
+            if (!id) { continue; }
+            if (combined[String(id)]) { continue; }
+            addEntry(id, String(id));
+        }
+
+        var currentSet = Object.create(null);
         for (var k = 0; k < currentIds.length; k++) {
             currentSet[String(currentIds[k])] = true;
         }
@@ -1763,14 +1696,13 @@
 
         html += '<div class="at-picker-list">';
         for (var m = 0; m < ordered.length; m++) {
-            var pid = ordered[m];
-            var name = getParticipantDisplayName(pid, mode);
-            var isChecked = currentSet[String(pid)] === true;
+            var item = ordered[m];
+            var isChecked = currentSet[String(item.id)] === true;
             html += '<label class="at-picker-item">' +
                         '<input type="checkbox" class="at-picker-check" ' +
-                            'value="' + escapeAttribute(pid) + '"' +
+                            'value="' + escapeAttribute(item.id) + '"' +
                             (isChecked ? ' checked' : '') + '>' +
-                        '<span>' + escapeHtml(name) + '</span>' +
+                        '<span>' + escapeHtml(item.name) + '</span>' +
                     '</label>';
         }
         html += '</div>';
@@ -1813,29 +1745,7 @@
         var examId = options.examId || '';
         var roundId = options.roundId || '';
         var matchId = options.matchId || '';
-
-        var Queries = getTournamentQueries();
-        var exam = Queries ? Queries.getTournament(examId) : null;
-        var mode = exam ? exam.mode : 'individuals';
-
-        var match = null;
-        if (Queries && typeof Queries.getMatch === 'function') {
-            match = Queries.getMatch(examId, roundId, matchId);
-        }
-
-        if (!match) {
-            return (
-                '<form id="at-complete-match-form">' +
-                    renderModalHeader('Complete Match') +
-                    '<div class="modal-body">' +
-                        '<p class="empty-state small">Match not found.</p>' +
-                    '</div>' +
-                '</form>'
-            );
-        }
-
-        var matchType = match.type || 'group_exam';
-        var isTeamMatch = matchType === 'team_vs_team';
+        var matchType = options.matchType || 'group_exam';
 
         var html = '';
         html += '<form id="at-complete-match-form" ' +
@@ -1847,16 +1757,18 @@
         html += renderModalHeader('Complete Match');
         html += '<div class="modal-body">';
 
-        if (isTeamMatch) {
-            html += renderTeamCompletionBody(match, mode);
+        if (matchType === 'team_vs_team') {
+            html += renderTeamCompletionBody(options);
         } else {
-            html += renderGroupCompletionBody(match, mode);
+            html += renderGroupCompletionBody(options);
         }
 
         html += '<div class="form-actions">';
         html += '<button type="button" ' +
                     'class="cancel-modal-btn secondary">Cancel</button>';
-        html += '<button type="submit" class="primary">Complete Match</button>';
+        html += '<button type="submit" class="primary">' +
+                    'Complete Match' +
+                '</button>';
         html += '</div>';
 
         html += '</div>';
@@ -1865,16 +1777,17 @@
         return html;
     }
 
-    function renderGroupCompletionBody(match, mode) {
-        var participants = Array.isArray(match.participants)
-            ? match.participants
+    function renderGroupCompletionBody(options) {
+        var participants = isArray(options.participants)
+            ? options.participants
             : [];
-        var existingResults = match.results || {};
+        var existingResults = options.existingResults || {};
 
         var html = '';
         html += '<p class="at-picker-hint">' +
                     'Set the result for each participant. Default is Pass. ' +
-                    'A Fail marks the participant as eliminated from the exam.' +
+                    'A Fail marks the participant as eliminated from the ' +
+                    'exam.' +
                 '</p>';
 
         if (participants.length === 0) {
@@ -1886,26 +1799,26 @@
 
         html += '<div class="at-completion-list">';
         for (var i = 0; i < participants.length; i++) {
-            var pid = participants[i];
-            var name = getParticipantDisplayName(pid, mode);
-            var current = existingResults[String(pid)] || '';
+            var p = participants[i];
+            if (!p || !p.id) { continue; }
+            var current = existingResults[String(p.id)] || '';
             html += '<div class="at-completion-row" ' +
-                        'data-participant-id="' + escapeAttribute(pid) + '">';
+                        'data-participant-id="' + escapeAttribute(p.id) + '">';
             html += '<span class="at-completion-name">' +
-                        escapeHtml(name) +
+                        escapeHtml(p.name || '') +
                     '</span>';
-            html += renderResultSelect('result_' + pid, current);
+            html += renderResultSelect('result_' + p.id, current);
             html += '</div>';
         }
         html += '</div>';
         return html;
     }
 
-    function renderTeamCompletionBody(match, mode) {
-        var teams = Array.isArray(match.participants) ? match.participants : [];
-        var existingTeamResults = match.teamResults || {};
-        var existingIndividualResults = match.individualResults || {};
-        var TeamQueries = getTeamQueries();
+    function renderTeamCompletionBody(options) {
+        var teams = isArray(options.teams) ? options.teams : [];
+        var existingTeamResults = options.existingTeamResults || {};
+        var existingIndividualResults =
+            options.existingIndividualResults || {};
 
         var html = '';
         html += '<p class="at-picker-hint">' +
@@ -1924,44 +1837,40 @@
 
         html += '<div class="at-team-completion-list">';
         for (var i = 0; i < teams.length; i++) {
-            var teamId = teams[i];
-            var teamName = getParticipantDisplayName(teamId, 'teams');
-            var teamCurrent = existingTeamResults[String(teamId)] || '';
+            var team = teams[i];
+            if (!team || !team.id) { continue; }
+            var teamCurrent = existingTeamResults[String(team.id)] || '';
 
             html += '<div class="at-team-completion-group" ' +
-                        'data-team-id="' + escapeAttribute(teamId) + '">';
+                        'data-team-id="' + escapeAttribute(team.id) + '">';
 
             html += '<div class="at-team-completion-team-row">';
             html += '<span class="at-team-completion-name">' +
-                        escapeHtml(teamName) +
+                        escapeHtml(team.name || '') +
                     '</span>';
-            html += renderResultSelect('team_result_' + teamId, teamCurrent);
+            html += renderResultSelect(
+                'team_result_' + team.id,
+                teamCurrent
+            );
             html += '</div>';
 
-            var team = (TeamQueries &&
-                typeof TeamQueries.getTeamById === 'function')
-                ? TeamQueries.getTeamById(teamId)
-                : null;
-
-            if (team && Array.isArray(team.members) && team.members.length > 0) {
+            var members = isArray(team.members) ? team.members : [];
+            if (members.length > 0) {
                 html += '<div class="at-team-completion-members">';
-                for (var j = 0; j < team.members.length; j++) {
-                    var member = team.members[j];
-                    if (!member || !member.characterId) { continue; }
-                    var charName = getParticipantDisplayName(
-                        member.characterId, 'individuals'
-                    );
+                for (var j = 0; j < members.length; j++) {
+                    var m = members[j];
+                    if (!m || !m.id) { continue; }
                     var charCurrent = existingIndividualResults[
-                        String(member.characterId)
+                        String(m.id)
                     ] || '';
                     html += '<div class="at-team-completion-member-row" ' +
                                 'data-character-id="' +
-                                    escapeAttribute(member.characterId) + '">';
+                                    escapeAttribute(m.id) + '">';
                     html += '<span class="at-team-completion-member-name">' +
-                                escapeHtml(charName) +
+                                escapeHtml(m.name || '') +
                             '</span>';
                     html += renderResultSelect(
-                        'member_result_' + member.characterId,
+                        'member_result_' + m.id,
                         charCurrent
                     );
                     html += '</div>';
@@ -2003,7 +1912,9 @@
     }
 
     function collectTeamCompletionPayload(form) {
-        var teamGroups = form.querySelectorAll('.at-team-completion-group');
+        var teamGroups = form.querySelectorAll(
+            '.at-team-completion-group'
+        );
         var teamResults = {};
         var individualResults = {};
 
@@ -2041,7 +1952,7 @@
     // MODAL BUILDER - Remove Match
     // ============================================================
 
-    function buildRemoveMatchModalHTML(options) {
+    function buildRemoveMatchModalHTML() {
         var html = '';
         html += '<form id="at-remove-match-form">';
         html += renderModalHeader('Remove Match');
@@ -2085,5 +1996,46 @@
         collectEditMatchForm: collectEditMatchForm,
         collectCompleteMatchForm: collectCompleteMatchForm
     };
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.AcademyTournamentView;
+        var missing = [];
+
+        var required = [
+            'renderHTML',
+            'buildCreateExamModalHTML',
+            'buildDeleteExamModalHTML',
+            'buildAddRoundModalHTML',
+            'buildRemoveRoundModalHTML',
+            'buildAutoGenerateRoundModalHTML',
+            'buildAddMatchModalHTML',
+            'buildEditMatchModalHTML',
+            'buildCompleteMatchModalHTML',
+            'buildRemoveMatchModalHTML',
+            'collectCreateExamForm',
+            'collectAddRoundForm',
+            'collectAutoGenerateRoundForm',
+            'collectAddMatchForm',
+            'collectEditMatchForm',
+            'collectCompleteMatchForm'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        if (missing.length > 0) {
+            console.warn(
+                '[AcademyTournamentView] Verification - some exports ' +
+                'may be missing:', missing.join(', ')
+            );
+        }
+    })();
 
 })();
