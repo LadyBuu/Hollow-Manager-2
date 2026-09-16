@@ -12,6 +12,7 @@
  *   - Status transitions
  *   - Cross-domain cascade helper (stripCharacterRefs)
  *   - Synchronous reads (defensive copies)
+ *   - Elimination reversal on removeRound and deleteTournament
  *
  * STATUS MODEL (SIMPLIFIED):
  *   Tournaments are RECORDS, not state machines. The status field is
@@ -47,6 +48,33 @@
  * YEAR SEMANTICS:
  *   Tournaments are scoped to WEEKS (bounded 1-52), not years.
  *
+ * ELIMINATION REVERSAL:
+ *   Two operations reverse eliminations produced by matches:
+ *
+ *     removeRound
+ *       Every completed match in the round may have produced
+ *       eliminations. Those eliminations are reversed BEFORE the
+ *       round is spliced out. The reversal is keyed by
+ *       (tournamentId, fromRoundId) on both the tournament and
+ *       character sides.
+ *
+ *     deleteTournament
+ *       The tournament record is going away, so every non-standalone
+ *       character-side elimination keyed to it must go too. Standalone
+ *       eliminations (standalone: true, tournamentId: null) are NOT
+ *       touched. The tournament's own eliminations[] disappears with
+ *       the record, so only the character side needs explicit cleanup.
+ *
+ *   Both reversals run inside the same transaction as the removal.
+ *   If persistence fails, both roll back together.
+ *
+ *   Legacy elimination records without provenance (fromRoundId) are
+ *   not touched by removeRound's per-round reversal. They are still
+ *   reversed by deleteTournament, which ignores provenance. This is
+ *   deliberate: legacy records predate the cascade, so we don't know
+ *   which round produced them, and guessing is worse than leaving
+ *   them alone.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.TournamentSchema
  *   - window.TournamentConstants
@@ -54,6 +82,7 @@
  *   - window.TournamentRules
  *   - window.TournamentMatches
  *   - window.TournamentQueries
+ *   - window.TournamentEliminationCascade
  *   - window.CharacterQueries
  *   - window.TeamQueries
  *   - window.CalendarValidation
@@ -79,6 +108,7 @@
     var Rules = window.TournamentRules;
     var Matches = window.TournamentMatches;
     var Queries = window.TournamentQueries;
+    var EliminationCascade = window.TournamentEliminationCascade;
     var CharacterQueries = window.CharacterQueries;
     var TeamQueries = window.TeamQueries;
     var CalendarValidation = window.CalendarValidation;
@@ -132,6 +162,14 @@
     }
     if (!Queries || typeof Queries.getRound !== 'function') {
         _missing.push('TournamentQueries.getRound');
+    }
+    if (!EliminationCascade ||
+        typeof EliminationCascade.reverseRoundEliminations !== 'function') {
+        _missing.push('TournamentEliminationCascade.reverseRoundEliminations');
+    }
+    if (!EliminationCascade ||
+        typeof EliminationCascade.reverseTournamentEliminations !== 'function') {
+        _missing.push('TournamentEliminationCascade.reverseTournamentEliminations');
     }
     if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
         _missing.push('CharacterQueries.getCharacterById');
@@ -694,6 +732,16 @@
 
     /**
      * Delete a tournament permanently.
+     *
+     * ELIMINATION REVERSAL:
+     *   Before the tournament is spliced out, every non-standalone
+     *   character-side elimination keyed to it is removed. Standalone
+     *   eliminations (standalone: true, tournamentId: null) are not
+     *   touched. The tournament's own eliminations[] disappears with
+     *   the record, so only the character side needs explicit cleanup.
+     *
+     *   The reversal runs inside the same transaction as the removal.
+     *   If persistence fails, both roll back together.
      */
     function deleteTournament(id) {
         var normalisedId_ = normaliseId(id);
@@ -728,6 +776,18 @@
                 if (!Array.isArray(appDataSnapshot.tournaments)) {
                     throw new Error('Tournament store is not available.');
                 }
+
+                // ---- Reverse character-side eliminations ----
+                // Runs BEFORE the splice so the reversal sees a
+                // consistent snapshot. The tournament record is about
+                // to disappear; its eliminations[] go with it. Only
+                // the character side needs explicit cleanup.
+                var reversal = EliminationCascade
+                    .reverseTournamentEliminations(
+                        appDataSnapshot,
+                        normalisedId_
+                    );
+
                 var idx = -1;
                 for (var i = 0; i < appDataSnapshot.tournaments.length; i++) {
                     if (normaliseId(appDataSnapshot.tournaments[i].id) ===
@@ -742,9 +802,21 @@
                     );
                 }
                 appDataSnapshot.tournaments.splice(idx, 1);
-                return { id: normalisedId_ };
+
+                return {
+                    id: normalisedId_,
+                    eliminationsReversed: reversal.reversed,
+                    reversedCharacterIds: reversal.characterIds
+                };
             },
-            logMessage: 'Deleted tournament: ' + tournamentName,
+            logMessage: function(result) {
+                if (result && result.eliminationsReversed > 0) {
+                    return 'Deleted tournament: ' + tournamentName +
+                        ' (reversed ' + result.eliminationsReversed +
+                        ' elimination(s))';
+                }
+                return 'Deleted tournament: ' + tournamentName;
+            },
             successMessage: 'Tournament deleted successfully!',
             failureMessage: 'Failed to delete tournament.'
         });
@@ -1095,6 +1167,17 @@
      *
      * The tournament status is NOT auto-reset when the last round is
      * removed. Status is the user's label.
+     *
+     * ELIMINATION REVERSAL:
+     *   Every completed match in the round may have produced
+     *   eliminations. Those eliminations are reversed BEFORE the
+     *   round is spliced out. The reversal is keyed by
+     *   (tournamentId, fromRoundId) on both sides. Standalone
+     *   eliminations and legacy eliminations without provenance are
+     *   not touched.
+     *
+     *   The reversal runs inside the same transaction as the removal.
+     *   If persistence fails, both roll back together.
      */
     function removeRound(tournamentId, roundId) {
         var normalisedRoundId = normaliseId(roundId);
@@ -1150,6 +1233,17 @@
                     );
                 }
 
+                // ---- Reverse eliminations produced by this round ----
+                // Runs BEFORE the splice. The reversal sees the round
+                // still in place, which is fine: it filters by
+                // fromRoundId, not by round position.
+                var reversal = EliminationCascade
+                    .reverseRoundEliminations(
+                        appDataSnapshot,
+                        current,
+                        normalisedRoundId
+                    );
+
                 var idx = Schema.findRoundIndexById(
                     current,
                     normalisedRoundId
@@ -1171,12 +1265,23 @@
 
                 return {
                     roundId: normalisedRoundId,
-                    roundDisplayNumber: roundDisplayNumber
+                    roundDisplayNumber: roundDisplayNumber,
+                    eliminationsReversed: reversal.reversed,
+                    reversedCharacterIds: reversal.characterIds
                 };
             },
-            logMessage: 'Removed round ' + roundDisplayNumber +
-                ' from tournament: ' +
-                (tournament.name || targetTournamentId),
+            logMessage: function(result) {
+                if (result && result.eliminationsReversed > 0) {
+                    return 'Removed round ' + roundDisplayNumber +
+                        ' from tournament: ' +
+                        (tournament.name || targetTournamentId) +
+                        ' (reversed ' + result.eliminationsReversed +
+                        ' elimination(s))';
+                }
+                return 'Removed round ' + roundDisplayNumber +
+                    ' from tournament: ' +
+                    (tournament.name || targetTournamentId);
+            },
             successMessage: 'Round removed successfully!',
             failureMessage: 'Failed to remove round.'
         });
