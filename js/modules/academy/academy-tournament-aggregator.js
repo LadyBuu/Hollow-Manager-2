@@ -1,66 +1,96 @@
 /**
- * modules/academy/academy-tournament-aggregator.js - Academy Tournament Aggregator
- * Academy-scoped projection builder for the Exams view.
+ * modules/academy/academy-tournament-aggregator.js
+ * Academy Tournament Aggregator
  *
  * Path: js/modules/academy/academy-tournament-aggregator.js
  *
- * This module is responsible for:
- *   - Building the exam view model for a class + week
- *   - Building the exam pool (eligible characters or teams)
- *   - Surfacing eliminations with enough data for the UI to render
- *     an "Eliminated" section and restore individual participants
+ * Academy-scoped projection builder for the Exams view.
  *
- * IMPORTANT:
- *   - Projection builder. No mutations. No persistence. No DOM.
- *   - Composes AcademyAggregator + TournamentQueries + TournamentAggregator
- *     + TeamQueries + EliminationQueries.
- *   - Does NOT depend on AcademyQueries. Class list comes from
- *     AcademyAggregator.getClassListViewModel().
- *   - Does NOT depend on CharacterQueries. Pool identity comes from
- *     AcademyAggregator.getClassStudentsViewModel(); elimination
- *     queries accept IDs directly; elimination names are resolved
- *     through TournamentAggregator.getParticipantName, which already
- *     handles both character and team participants.
+ * RESPONSIBILITIES:
+ *   - Build the exam view model for a class + week
+ *   - Build the exam pool (eligible characters or teams)
+ *   - Surface eliminations with provenance for the UI
+ *   - Surface final passers
+ *   - Resolve participant and team display names for the UI
+ *
+ * NOT RESPONSIBILITIES:
+ *   - Mutations
+ *   - Rendering
+ *   - Domain validation (Schema / Rules)
+ *   - Match generation (TournamentMatches)
+ *   - Elimination writes (TournamentEliminationCascade)
+ *
+ * ARCHITECTURE:
+ *
+ *     TournamentQueries            (reads)
+ *     TournamentSchema             (structural interpretation)
+ *     AcademyAggregator            (class + roster)
+ *     TeamQueries                  (team identity)
+ *     EliminationQueries           (cross-tournament elimination state)
+ *     CharacterQueries             (participant name resolution)
+ *              │
+ *              ▼
+ *     AcademyTournamentAggregator  (this module)
+ *              │
+ *              ▼
+ *     AcademyTournamentView
+ *
+ * NO INTERMEDIATE VM LAYER. The generic TournamentAggregator is gone.
+ * This module reads the canonical tournament record directly and
+ * produces exactly the projection the Academy Exams view needs.
  *
  * IDENTITY PRESERVATION:
- *   Round and match IDs are STABLE and are the dispatch keys for
- *   every round- and match-scoped action in the Academy Exams view.
- *   The TournamentAggregator VM carries `id` on every round and
- *   every match. This projection MUST pass those IDs through
- *   unchanged. A projection that drops the ID disables every such
- *   action silently.
+ *   Round and match IDs pass through unchanged. They are the dispatch
+ *   keys for every round- and match-scoped action in the Exams view.
+ *   A projection that drops the ID disables the corresponding action.
  *
- * EXAM MODE SEMANTICS:
+ * ARCHIVED TOURNAMENTS:
+ *   TournamentQueries.getExamForClassAndWeek excludes archived
+ *   tournaments. The Exams view therefore does not surface archived
+ *   exams as "the active exam for this week." A tournament retrieved
+ *   by ID is returned unfiltered; this module does not need to check
+ *   archivedAt because getExamForClassAndWeek already did.
+ *
+ * ELIMINATION PROVENANCE:
+ *   Every elimination record surfaced here carries fromRoundId and
+ *   fromMatchId when they exist. The UI may use them for debug
+ *   affordances; the Restore button does not require them.
+ *
+ *   Entries whose participantType is not 'character' are dropped.
+ *   The elimination cascade only eliminates individual characters,
+ *   and the Restore action targets a character ID.
+ *
+ * EXAM MODE:
  *   - When an exam exists, its `mode` field is authoritative.
  *   - When no exam exists, mode is 'individuals'.
  *   - Mode is NOT inferred from the presence of academic teams in
  *     the class.
  *
  * WEEK SEMANTICS:
- *   - No `week || 1` defaults. Callers must supply a valid week.
- *
- * ELIMINATION QUERIES:
- *   - EliminationQueries.isCharacterEliminatedByWeek accepts either a
- *     character ID or a character object. This module passes IDs.
+ *   - No `week || 1` fallback. Invalid weeks return a null exam VM.
+ *   - The canonical week parser is CalendarValidation.parseWeek.
  *
  * POOL MEMBERSHIP:
- *   - Character pool: students only. Instructors do NOT appear.
- *   - Team pool: persistent academic Team entities from TeamQueries.
+ *   Character pool: students only. Instructors do NOT appear.
+ *   Team pool: persistent academic Team entities active this week.
+ *   The pool is filtered against eliminations when EliminationQueries
+ *   is available. When it is not, the pool does not fabricate
+ *   "everyone is eligible" and does not fabricate "everyone is
+ *   eliminated"; it defers the elimination flag entirely.
  *
- * ELIMINATION PROVENANCE:
- *   Each elimination record carries fromRoundId and fromMatchId
- *   when it was produced by the elimination cascade. Legacy
- *   eliminations (produced by the manual mark path before the
- *   cascade existed) do not. The VM carries those fields through
- *   as-is, or null when absent, so the UI can decide whether to
- *   show provenance.
+ * DEPENDENCIES (MANDATORY):
+ *   - window.AcademyAggregator
+ *   - window.TournamentQueries
+ *   - window.TournamentSchema
+ *   - window.TeamQueries
+ *   - window.CharacterQueries
+ *   - window.CalendarValidation
  *
- * DEPENDENCIES:
- *   - window.AcademyAggregator (MANDATORY)
- *   - window.TeamQueries (MANDATORY)
- *   - window.TournamentQueries (MANDATORY)
- *   - window.TournamentAggregator (MANDATORY)
- *   - window.EliminationQueries (OPTIONAL)
+ * DEPENDENCIES (OPTIONAL):
+ *   - window.EliminationQueries
+ *     When present, characters eliminated before the displayed week
+ *     are filtered out of the character pool. When absent, the pool
+ *     includes everyone and does not misrepresent the state.
  */
 
 (function() {
@@ -69,82 +99,186 @@
     if (window.__academyTournamentAggregatorLoaded) {
         return;
     }
-    window.__academyTournamentAggregatorLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // MANDATORY DEPENDENCIES
     // ============================================================
 
     var AcademyAggregator = window.AcademyAggregator;
-    var TeamQueries = window.TeamQueries;
     var TournamentQueries = window.TournamentQueries;
-    var TournamentAggregator = window.TournamentAggregator;
-    var EliminationQueries = window.EliminationQueries || null;
+    var Schema = window.TournamentSchema;
+    var TeamQueries = window.TeamQueries;
+    var CharacterQueries = window.CharacterQueries;
+    var CalendarValidation = window.CalendarValidation;
+
+    var _missing = [];
+
+    if (!AcademyAggregator ||
+        typeof AcademyAggregator.getClassListViewModel !== 'function') {
+        _missing.push('AcademyAggregator.getClassListViewModel');
+    }
+    if (!AcademyAggregator ||
+        typeof AcademyAggregator.getClassStudentsViewModel !== 'function') {
+        _missing.push('AcademyAggregator.getClassStudentsViewModel');
+    }
+
+    if (!TournamentQueries ||
+        typeof TournamentQueries.getExamForClassAndWeek !== 'function') {
+        _missing.push('TournamentQueries.getExamForClassAndWeek');
+    }
+    if (!TournamentQueries ||
+        typeof TournamentQueries.getTournament !== 'function') {
+        _missing.push('TournamentQueries.getTournament');
+    }
+    if (!TournamentQueries ||
+        typeof TournamentQueries.getParticipants !== 'function') {
+        _missing.push('TournamentQueries.getParticipants');
+    }
+    if (!TournamentQueries ||
+        typeof TournamentQueries.getRounds !== 'function') {
+        _missing.push('TournamentQueries.getRounds');
+    }
+    if (!TournamentQueries ||
+        typeof TournamentQueries.getEliminations !== 'function') {
+        _missing.push('TournamentQueries.getEliminations');
+    }
+    if (!TournamentQueries ||
+        typeof TournamentQueries.getFinalPassers !== 'function') {
+        _missing.push('TournamentQueries.getFinalPassers');
+    }
+
+    if (!Schema ||
+        typeof Schema.isParticipantEliminated !== 'function') {
+        _missing.push('TournamentSchema.isParticipantEliminated');
+    }
+    if (!Schema ||
+        typeof Schema.getParticipantTypeFromRecord !== 'function') {
+        _missing.push('TournamentSchema.getParticipantTypeFromRecord');
+    }
+
+    if (!TeamQueries ||
+        typeof TeamQueries.getTeamsByClass !== 'function') {
+        _missing.push('TeamQueries.getTeamsByClass');
+    }
+    if (!TeamQueries ||
+        typeof TeamQueries.getTeamById !== 'function') {
+        _missing.push('TeamQueries.getTeamById');
+    }
+
+    if (!CharacterQueries ||
+        typeof CharacterQueries.getCharacterById !== 'function') {
+        _missing.push('CharacterQueries.getCharacterById');
+    }
+    if (!CharacterQueries ||
+        typeof CharacterQueries.getDisplayName !== 'function') {
+        _missing.push('CharacterQueries.getDisplayName');
+    }
+
+    if (!CalendarValidation ||
+        typeof CalendarValidation.parseWeek !== 'function') {
+        _missing.push('CalendarValidation.parseWeek');
+    }
+
+    if (_missing.length > 0) {
+        throw new Error(
+            '[AcademyTournamentAggregator] Missing mandatory ' +
+            'dependencies: ' + _missing.join(', ')
+        );
+    }
+
+    window.__academyTournamentAggregatorLoaded = true;
 
     // ============================================================
-    // DEPENDENCY CHECK
+    // OPTIONAL DEPENDENCIES
     // ============================================================
 
-    function checkDependencies() {
-        var missing = [];
-
-        if (!AcademyAggregator ||
-            typeof AcademyAggregator.getClassListViewModel !== 'function') {
-            missing.push('AcademyAggregator.getClassListViewModel');
-        }
-        if (!AcademyAggregator ||
-            typeof AcademyAggregator.getClassStudentsViewModel !== 'function') {
-            missing.push('AcademyAggregator.getClassStudentsViewModel');
-        }
-
-        if (!TeamQueries || typeof TeamQueries.getTeamsByClass !== 'function') {
-            missing.push('TeamQueries.getTeamsByClass');
-        }
-
-        if (!TournamentQueries ||
-            typeof TournamentQueries.getExamForClassAndWeek !== 'function') {
-            missing.push('TournamentQueries.getExamForClassAndWeek');
-        }
-        if (!TournamentQueries ||
-            typeof TournamentQueries.getTournament !== 'function') {
-            missing.push('TournamentQueries.getTournament');
-        }
-
-        if (!TournamentAggregator ||
-            typeof TournamentAggregator.getTournamentViewModel !== 'function') {
-            missing.push('TournamentAggregator.getTournamentViewModel');
-        }
-        if (!TournamentAggregator ||
-            typeof TournamentAggregator.getParticipantName !== 'function') {
-            missing.push('TournamentAggregator.getParticipantName');
-        }
-
-        if (missing.length > 0) {
-            console.warn('[AcademyTournamentAggregator] Missing dependencies:', missing.join(', '));
-            return false;
-        }
-
-        return true;
+    function getEliminationQueries() {
+        return window.EliminationQueries || null;
     }
 
     // ============================================================
-    // PUBLIC ENTRY POINT
+    // HELPERS
     // ============================================================
 
-    function getExamViewModel(classId, week) {
-        if (!checkDependencies()) {
-            return emptyViewModel(null);
-        }
+    function isNonEmptyString(value) {
+        return typeof value === 'string' && value.trim() !== '';
+    }
 
-        var weekNum = parseInt(week, 10);
-        if (isNaN(weekNum)) {
-            return emptyViewModel(null);
+    function isFiniteNumber(value) {
+        return typeof value === 'number' && isFinite(value);
+    }
+
+    function safeString(value) {
+        if (value === undefined || value === null) { return ''; }
+        return String(value);
+    }
+
+    /**
+     * Resolve the week using the canonical parser.
+     * Returns null when the week is invalid. Callers decide what to do.
+     */
+    function resolveWeek(week) {
+        return CalendarValidation.parseWeek(week);
+    }
+
+    // ============================================================
+    // NAME RESOLUTION
+    // ============================================================
+
+    function getCharacterName(characterId) {
+        if (!isNonEmptyString(characterId)) { return 'Unknown'; }
+        var char = CharacterQueries.getCharacterById(characterId);
+        if (!char) { return 'Unknown'; }
+        return CharacterQueries.getDisplayName(char);
+    }
+
+    function getTeamName(teamId) {
+        if (!isNonEmptyString(teamId)) { return 'Unknown Team'; }
+        var team = TeamQueries.getTeamById(teamId);
+        if (!team) { return 'Unknown Team'; }
+        return isNonEmptyString(team.name) ? team.name : 'Unnamed Team';
+    }
+
+    /**
+     * Resolve a participant's display name given its type.
+     * Character → CharacterQueries. Team → TeamQueries.
+     */
+    function resolveParticipantName(participantId, participantType) {
+        if (participantType === 'team') {
+            return getTeamName(participantId);
         }
+        return getCharacterName(participantId);
+    }
+
+    // ============================================================
+    // ENTRY POINT
+    // ============================================================
+
+    /**
+     * Build the Academy exam view model for a (class, week) pair.
+     *
+     * @param {string} classId
+     * @param {number|string} week
+     * @returns {object} View model
+     */
+    function getExamViewModel(classId, week) {
+        var weekNum = resolveWeek(week);
 
         var classListFull = AcademyAggregator.getClassListViewModel() || [];
         var classListVM = classListFull.map(function(c) {
             return { id: c.id, name: c.name };
         });
+
+        if (weekNum === null) {
+            return {
+                classList: classListVM,
+                classId: null,
+                className: null,
+                week: null,
+                exam: null,
+                pool: []
+            };
+        }
 
         var selectedClass = null;
         if (classId) {
@@ -167,8 +301,21 @@
             };
         }
 
-        var examVM = buildExamViewModel(selectedClass, weekNum);
-        var pool = buildExamPool(selectedClass, weekNum, examVM);
+        var examRecord = TournamentQueries.getExamForClassAndWeek(
+            selectedClass.id,
+            weekNum
+        );
+
+        var examVM = null;
+        if (examRecord) {
+            examVM = buildExamViewModel(examRecord);
+        }
+
+        var pool = buildExamPool(
+            selectedClass.id,
+            weekNum,
+            examVM
+        );
 
         return {
             classList: classListVM,
@@ -180,153 +327,227 @@
         };
     }
 
-    function emptyViewModel(week) {
-        return {
-            classList: [],
-            classId: null,
-            className: null,
-            week: week,
-            exam: null,
-            pool: []
-        };
-    }
-
     // ============================================================
     // EXAM VM
     // ============================================================
 
-    function buildExamViewModel(classRecord, week) {
-        var TQ = window.TournamentQueries;
-        var TA = window.TournamentAggregator;
-        if (!TQ || !TA) { return null; }
-
-        var examRecord = null;
-        if (typeof TQ.getExamForClassAndWeek === 'function') {
-            examRecord = TQ.getExamForClassAndWeek(classRecord.id, week);
-        }
+    function buildExamViewModel(examRecord) {
         if (!examRecord) { return null; }
 
-        var vm = TA.getTournamentViewModel(examRecord.id, {
-            includeParticipants: true,
-            includeRounds: true,
-            includeEliminations: true,
-            includeFinalPassers: true,
-            includeStatistics: false
-        });
-        if (!vm) { return null; }
+        var examId = examRecord.id;
+        var mode = examRecord.mode || 'individuals';
+
+        var participants = buildParticipantsVM(examId);
+        var eliminations = buildEliminationsVM(examId);
+        var finalPassers = buildFinalPassersVM(examId);
+
+        var roundsRaw = TournamentQueries.getRounds(examId) || [];
+        var rounds = [];
+        for (var i = 0; i < roundsRaw.length; i++) {
+            rounds.push(buildExamRoundVM(roundsRaw[i], i));
+        }
 
         return {
-            id: vm.id,
-            name: vm.name,
-            status: vm.status,
-            statusLabel: vm.statusDisplay ? vm.statusDisplay.text : vm.status,
-            mode: vm.mode,
-            modeLabel: vm.modeLabel,
-            participantCount: vm.participantCount || 0,
-            roundCount: vm.roundCount || 0,
-            totalRounds: vm.totalRounds || 1,
-            participants: vm.participants || [],
-            eliminations: buildEliminationsVM(vm.eliminations || [], vm.id),
-            finalPassers: vm.finalPassers || [],
-            finalPasserCount: vm.finalPasserCount || 0,
-            rounds: (vm.rounds || []).map(buildExamRoundVM)
+            id: examId,
+            name: isNonEmptyString(examRecord.name)
+                ? examRecord.name
+                : 'Exam',
+            status: examRecord.status || 'draft',
+            statusLabel: getStatusLabel(examRecord.status),
+            mode: mode,
+            modeLabel: getModeLabel(mode),
+            startWeek: examRecord.startWeek,
+            endWeek: examRecord.endWeek,
+            archivedAt: examRecord.archivedAt || null,
+            participantCount: participants.length,
+            roundCount: rounds.length,
+            totalRounds: isFiniteNumber(examRecord.totalRounds)
+                ? examRecord.totalRounds
+                : 1,
+            participants: participants,
+            eliminations: eliminations,
+            eliminationCount: eliminations.length,
+            finalPassers: finalPassers,
+            finalPasserCount: finalPassers.length,
+            rounds: rounds
         };
     }
 
-    function buildExamRoundVM(round) {
+    // ============================================================
+    // PARTICIPANTS
+    // ============================================================
+
+    function buildParticipantsVM(examId) {
+        var raw = TournamentQueries.getParticipants(examId) || [];
+        var result = [];
+        for (var i = 0; i < raw.length; i++) {
+            var p = raw[i];
+            if (!p || !p.id) { continue; }
+            result.push({
+                id: p.id,
+                name: resolveParticipantName(p.id, p.type),
+                type: p.type,
+                typeLabel: getParticipantTypeLabel(p.type)
+            });
+        }
+        return result;
+    }
+
+    // ============================================================
+    // ROUNDS AND MATCHES
+    // ============================================================
+
+    function buildExamRoundVM(round, index) {
         if (!round) { return null; }
+
+        var matches = [];
+        var matchesRaw = Array.isArray(round.matches) ? round.matches : [];
+        for (var i = 0; i < matchesRaw.length; i++) {
+            var m = buildExamMatchVM(matchesRaw[i], i);
+            if (m) { matches.push(m); }
+        }
 
         return {
             id: round.id,
-            index: round.index,
-            roundNumber: round.roundNumber,
-            status: round.status,
-            statusLabel: round.statusDisplay ? round.statusDisplay.text : round.status,
-            matchSize: round.matchSize,
-            matchType: round.matchType,
-            matchTypeLabel: round.matchTypeLabel,
+            index: index,
+            roundNumber: isFiniteNumber(round.roundNumber)
+                ? round.roundNumber
+                : (index + 1),
+            status: round.status || 'pending',
+            statusLabel: getMatchStatusLabel(round.status),
+            matchSize: isFiniteNumber(round.matchSize)
+                ? round.matchSize
+                : 2,
+            matchType: round.matchType || 'group_exam',
+            matchTypeLabel: getMatchTypeLabel(round.matchType),
             isPairExam: round.isPairExam === true,
-            matches: (round.matches || []).map(buildExamMatchVM)
+            matches: matches,
+            matchCount: matches.length
         };
     }
 
-    function buildExamMatchVM(match) {
+    function buildExamMatchVM(match, index) {
         if (!match) { return null; }
+
+        var type = match.type || 'group_exam';
+        var isTeamMatch = type === 'team_vs_team';
+        var isPairExam = match.isPairExam === true;
 
         var vm = {
             id: match.id,
-            index: match.index,
-            type: match.type,
-            typeLabel: match.typeLabel,
-            status: match.status,
-            statusLabel: match.statusDisplay ? match.statusDisplay.text : match.status,
-            isPairExam: match.isPairExam === true,
-            isGroupExam: match.isGroupExam === true,
-            isTeamMatch: match.isTeamMatch === true,
-            isComplete: match.isComplete === true,
-            participantCount: match.participantCount || 0
+            index: index,
+            type: type,
+            typeLabel: getMatchTypeLabel(type),
+            status: match.status || 'pending',
+            statusLabel: getMatchStatusLabel(match.status),
+            isPairExam: isPairExam,
+            isGroupExam: type === 'group_exam',
+            isTeamMatch: isTeamMatch,
+            isComplete: match.status === 'completed',
+            participantCount: Array.isArray(match.participants)
+                ? match.participants.length
+                : 0
         };
 
-        if (Array.isArray(match.participants)) {
-            vm.participants = match.participants.map(buildExamParticipantVM);
-        }
+        if (type === 'group_exam') {
+            var participantsRaw = Array.isArray(match.participants)
+                ? match.participants
+                : [];
+            var results = match.results || {};
 
-        if (Array.isArray(match.pairings)) {
-            vm.pairings = match.pairings.map(function(pair) {
-                return Array.isArray(pair)
-                    ? pair.map(buildExamParticipantVM)
-                    : [];
+            vm.participants = participantsRaw.map(function(pid) {
+                return buildGroupExamParticipantVM(pid, results[pid]);
             });
+
+            if (isPairExam && Array.isArray(match.pairings)) {
+                vm.pairings = match.pairings.map(function(pair) {
+                    if (!Array.isArray(pair)) { return []; }
+                    return pair.map(function(pid) {
+                        return buildGroupExamParticipantVM(
+                            pid,
+                            results[pid]
+                        );
+                    });
+                });
+            }
         }
 
-        if (Array.isArray(match.teams)) {
-            vm.teams = match.teams.map(buildExamTeamVM);
+        if (type === 'team_vs_team') {
+            var teamsRaw = Array.isArray(match.participants)
+                ? match.participants
+                : [];
+            var teamResults = match.teamResults || {};
+            var individualResults = match.individualResults || {};
+
+            vm.teams = teamsRaw.map(function(teamId) {
+                return buildTeamMatchTeamVM(
+                    teamId,
+                    teamResults[teamId],
+                    individualResults
+                );
+            });
         }
 
         return vm;
     }
 
-    function buildExamParticipantVM(participant) {
-        if (!participant) { return null; }
+    function buildGroupExamParticipantVM(participantId, result) {
+        if (!participantId) { return null; }
+        var resultValue = result || 'pending';
         return {
-            id: participant.id,
-            name: participant.name,
-            type: participant.type,
-            typeLabel: participant.typeLabel,
-            result: participant.result,
-            resultCategory: participant.resultCategory,
-            outcomeDisplay: participant.outcomeDisplay,
-            isPassing: participant.isPassing === true,
-            isRetrying: participant.isRetrying === true,
-            isFailing: participant.isFailing === true
+            id: String(participantId),
+            name: getCharacterName(participantId),
+            type: 'character',
+            typeLabel: 'Character',
+            result: result || null,
+            resultCategory: getResultCategory(result),
+            outcomeDisplay: getOutcomeDisplay(resultValue),
+            isPassing: result === 'pass',
+            isRetrying: result === 'retry',
+            isFailing: result === 'fail'
         };
     }
 
-    function buildExamTeamVM(team) {
-        if (!team) { return null; }
-        return {
-            teamId: team.teamId,
-            name: team.name,
-            result: team.result,
-            resultCategory: team.resultCategory,
-            outcomeDisplay: team.outcomeDisplay,
-            isPassing: team.isPassing === true,
-            isRetrying: team.isRetrying === true,
-            isFailing: team.isFailing === true,
-            members: (team.members || []).map(function(member) {
-                return {
+    function buildTeamMatchTeamVM(teamId, teamResult, individualResults) {
+        if (!teamId) { return null; }
+
+        var team = TeamQueries.getTeamById(teamId);
+        var members = [];
+
+        if (team && Array.isArray(team.members)) {
+            for (var i = 0; i < team.members.length; i++) {
+                var member = team.members[i];
+                if (!member || !member.characterId) { continue; }
+                var memberResult = individualResults[member.characterId];
+                members.push({
                     characterId: member.characterId,
-                    name: member.name,
-                    role: member.role,
-                    result: member.result,
-                    resultCategory: member.resultCategory,
-                    outcomeDisplay: member.outcomeDisplay,
-                    isPassing: member.isPassing === true,
-                    isRetrying: member.isRetrying === true,
-                    isFailing: member.isFailing === true
-                };
-            }),
-            memberCount: team.memberCount || 0
+                    name: getCharacterName(member.characterId),
+                    role: member.role || 'Member',
+                    result: memberResult || null,
+                    resultCategory: getResultCategory(memberResult),
+                    outcomeDisplay: getOutcomeDisplay(
+                        memberResult || 'pending'
+                    ),
+                    isPassing: memberResult === 'pass',
+                    isRetrying: memberResult === 'retry',
+                    isFailing: memberResult === 'fail'
+                });
+            }
+        }
+
+        var teamResultValue = teamResult || 'pending';
+
+        return {
+            teamId: String(teamId),
+            name: getTeamName(teamId),
+            result: teamResult || null,
+            resultCategory: getResultCategory(teamResult),
+            outcomeDisplay: getOutcomeDisplay(teamResultValue),
+            isPassing: teamResult === 'pass',
+            isRetrying: teamResult === 'retry',
+            isFailing: teamResult === 'fail',
+            members: members,
+            memberCount: members.length
         };
     }
 
@@ -334,86 +555,48 @@
     // ELIMINATIONS VM
     // ============================================================
     //
-    // The upstream TournamentAggregator produces eliminations with:
-    //   {
-    //     participantId, participantType,
-    //     participantName, week, reason, standalone
-    //   }
+    // Reads elimination records directly from TournamentQueries.
+    // Each entry carries provenance (fromRoundId, fromMatchId) as-is,
+    // or null when absent.
     //
-    // The raw tournament record additionally carries fromRoundId and
-    // fromMatchId on cascade-produced eliminations. The upstream VM
-    // does NOT surface those. This projection re-reads the raw
-    // tournament record to pick them up, so the UI can render
-    // provenance when it exists.
+    // Entries whose participantType is not 'character' are dropped:
+    // the elimination cascade only eliminates individuals, and the
+    // Restore action targets a character ID.
     //
-    // Each elimination VM exposes:
-    //   {
-    //     participantId,
-    //     participantType,
-    //     participantName,
-    //     week,
-    //     reason,
-    //     standalone,
-    //     fromRoundId,           // string or null
-    //     fromMatchId,           // string or null
-    //     hasProvenance          // true when fromMatchId is present
-    //   }
-    //
-    // Entries with participantType !== 'character' are dropped: the
-    // elimination cascade only eliminates individual characters. A
-    // team elimination record, if it ever appeared, would not be
-    // restorable through the character-side API anyway.
+    // Sorted by week descending, then name ascending. The UI wants
+    // newest eliminations first, with ties broken consistently.
 
-    function buildEliminationsVM(eliminationVMs, examId) {
-        if (!Array.isArray(eliminationVMs) || eliminationVMs.length === 0) {
-            return [];
-        }
-
-        // Read the raw tournament to pick up provenance fields that
-        // the upstream VM does not carry.
-        var rawById = Object.create(null);
-        try {
-            var rawExam = TournamentQueries.getTournament(examId);
-            if (rawExam && Array.isArray(rawExam.eliminations)) {
-                for (var r = 0; r < rawExam.eliminations.length; r++) {
-                    var raw = rawExam.eliminations[r];
-                    if (!raw || !raw.participantId) { continue; }
-                    var key = String(raw.participantId);
-                    rawById[key] = raw;
-                }
-            }
-        } catch (e) {
-            // If the raw read fails, we degrade to VMs without
-            // provenance. The UI still renders and restores work.
-            rawById = Object.create(null);
-        }
+    function buildEliminationsVM(examId) {
+        var raw = TournamentQueries.getEliminations(examId) || [];
+        if (raw.length === 0) { return []; }
 
         var result = [];
 
-        for (var i = 0; i < eliminationVMs.length; i++) {
-            var e = eliminationVMs[i];
+        for (var i = 0; i < raw.length; i++) {
+            var e = raw[i];
             if (!e) { continue; }
             if (e.participantType && e.participantType !== 'character') {
                 continue;
             }
 
-            var participantId = e.participantId ? String(e.participantId) : null;
+            var participantId = e.participantId
+                ? String(e.participantId)
+                : null;
             if (!participantId) { continue; }
 
-            var raw = rawById[participantId] || null;
-            var fromRoundId = (raw && typeof raw.fromRoundId === 'string' && raw.fromRoundId !== '')
-                ? raw.fromRoundId
+            var fromRoundId = isNonEmptyString(e.fromRoundId)
+                ? e.fromRoundId
                 : null;
-            var fromMatchId = (raw && typeof raw.fromMatchId === 'string' && raw.fromMatchId !== '')
-                ? raw.fromMatchId
+            var fromMatchId = isNonEmptyString(e.fromMatchId)
+                ? e.fromMatchId
                 : null;
 
             result.push({
                 participantId: participantId,
                 participantType: 'character',
-                participantName: e.participantName || 'Unknown',
-                week: e.week,
-                reason: e.reason || '',
+                participantName: getCharacterName(participantId),
+                week: isFiniteNumber(e.week) ? e.week : null,
+                reason: isNonEmptyString(e.reason) ? e.reason : '',
                 standalone: e.standalone === true,
                 fromRoundId: fromRoundId,
                 fromMatchId: fromMatchId,
@@ -421,12 +604,9 @@
             });
         }
 
-        // Stable sort by week descending, then by name ascending.
-        // The UI wants newest eliminations first, with ties broken
-        // consistently so re-renders don't shuffle the list.
         result.sort(function(a, b) {
-            var wa = (typeof a.week === 'number') ? a.week : -1;
-            var wb = (typeof b.week === 'number') ? b.week : -1;
+            var wa = isFiniteNumber(a.week) ? a.week : -1;
+            var wb = isFiniteNumber(b.week) ? b.week : -1;
             if (wa !== wb) { return wb - wa; }
             return String(a.participantName || '').localeCompare(
                 String(b.participantName || '')
@@ -437,28 +617,50 @@
     }
 
     // ============================================================
-    // EXAM POOL
+    // FINAL PASSERS VM
     // ============================================================
 
-    function buildExamPool(classRecord, week, examVM) {
+    function buildFinalPassersVM(examId) {
+        var ids = TournamentQueries.getFinalPassers(examId) || [];
+        var result = [];
+        for (var i = 0; i < ids.length; i++) {
+            var id = ids[i];
+            if (!isNonEmptyString(id)) { continue; }
+            var type = Schema.getParticipantTypeFromRecord(examId, id)
+                || 'character';
+            result.push({
+                id: id,
+                name: resolveParticipantName(id, type),
+                type: type,
+                typeLabel: getParticipantTypeLabel(type)
+            });
+        }
+        return result;
+    }
+
+    // ============================================================
+    // EXAM POOL
+    // ============================================================
+    //
+    // The pool is the set of candidates the Exams view can add to the
+    // exam or restore from elimination.
+    //
+    // When an exam exists, its mode determines whether the pool is
+    // characters or teams.
+    // When no exam exists, the pool is characters.
+    //
+    // Elimination filtering uses EliminationQueries when available.
+    // When it is absent, the pool does not misrepresent elimination
+    // state: characters are included, and the `eliminated` flag is
+    // false because we do not know. That is the honest answer.
+
+    function buildExamPool(classId, week, examVM) {
         var mode = 'individuals';
         if (examVM && examVM.mode) {
             mode = examVM.mode;
         }
 
-        if (examVM) {
-            return buildExamPoolWithExam(classRecord, week, examVM, mode);
-        }
-
-        if (mode === 'teams') {
-            return buildTeamPoolForClass(classRecord, week, {});
-        }
-        return buildCharacterPoolForClass(classRecord, week, {});
-    }
-
-    function buildExamPoolWithExam(classRecord, week, examVM, mode) {
-        var inExamSet = {};
-
+        var inExamSet = Object.create(null);
         if (examVM && Array.isArray(examVM.participants)) {
             for (var i = 0; i < examVM.participants.length; i++) {
                 var p = examVM.participants[i];
@@ -469,24 +671,39 @@
         }
 
         if (mode === 'teams') {
-            return buildTeamPoolForClass(classRecord, week, inExamSet);
+            return buildTeamPoolForClass(classId, week, inExamSet);
         }
-        return buildCharacterPoolForClass(classRecord, week, inExamSet);
+        return buildCharacterPoolForClass(classId, week, inExamSet);
     }
 
-    function buildCharacterPoolForClass(classRecord, week, inExamSet) {
-        var students = AcademyAggregator.getClassStudentsViewModel(classRecord.id) || [];
+    function buildCharacterPoolForClass(classId, week, inExamSet) {
+        var students = AcademyAggregator.getClassStudentsViewModel(
+            classId
+        ) || [];
+
+        var EQ = getEliminationQueries();
+        var canCheckElimination = EQ &&
+            typeof EQ.isCharacterEliminatedByWeek === 'function';
 
         var pool = [];
-
         for (var i = 0; i < students.length; i++) {
             var student = students[i];
             if (!student || !student.id) { continue; }
 
             var eliminated = false;
-            if (EliminationQueries &&
-                typeof EliminationQueries.isCharacterEliminatedByWeek === 'function') {
-                eliminated = EliminationQueries.isCharacterEliminatedByWeek(student.id, week) === true;
+            if (canCheckElimination) {
+                try {
+                    eliminated = EQ.isCharacterEliminatedByWeek(
+                        student.id,
+                        week
+                    ) === true;
+                } catch (e) {
+                    // A query failure is not equivalent to "not
+                    // eliminated". Fall back to false and continue.
+                    // The pool still renders; the flag is simply
+                    // not asserted.
+                    eliminated = false;
+                }
             }
 
             pool.push({
@@ -501,35 +718,34 @@
         return pool;
     }
 
-    function buildTeamPoolForClass(classRecord, week, inExamSet) {
-        var TeamQ = window.TeamQueries;
-        if (!TeamQ || typeof TeamQ.getTeamsByClass !== 'function') {
-            return [];
-        }
+    function buildTeamPoolForClass(classId, week, inExamSet) {
+        var teams = TeamQueries.getTeamsByClass(classId) || [];
 
-        var teams = TeamQ.getTeamsByClass(classRecord.id) || [];
         var pool = [];
-
         for (var i = 0; i < teams.length; i++) {
             var team = teams[i];
             if (!team || !team.id) { continue; }
             if (team.type !== 'academic') { continue; }
 
             var active = true;
-            if (TeamQ && typeof TeamQ.isTeamActiveAtPeriod === 'function') {
-                active = TeamQ.isTeamActiveAtPeriod(team, week) === true;
+            if (typeof TeamQueries.isTeamActiveAtPeriod === 'function') {
+                active = TeamQueries.isTeamActiveAtPeriod(team, week) === true;
             }
             if (!active) { continue; }
 
             var subtitleParts = [];
-            if (team.periodDisplay) { subtitleParts.push(team.periodDisplay); }
+            if (team.periodDisplay) {
+                subtitleParts.push(team.periodDisplay);
+            }
             if (team.status && team.status !== 'active') {
                 subtitleParts.push(team.status);
             }
 
             pool.push({
                 id: team.id,
-                name: team.name || 'Unnamed Team',
+                name: isNonEmptyString(team.name)
+                    ? team.name
+                    : 'Unnamed Team',
                 subtitle: subtitleParts.join(' \u00b7 '),
                 inExam: inExamSet[String(team.id)] === true,
                 eliminated: false
@@ -540,18 +756,75 @@
     }
 
     // ============================================================
+    // LABEL HELPERS
+    // ============================================================
+
+    function getStatusLabel(status) {
+        switch (status) {
+            case 'draft':     return 'Draft';
+            case 'active':    return 'Active';
+            case 'completed': return 'Completed';
+            default:          return safeString(status);
+        }
+    }
+
+    function getModeLabel(mode) {
+        if (mode === 'teams') { return 'Teams'; }
+        if (mode === 'individuals') { return 'Individuals'; }
+        return '';
+    }
+
+    function getMatchStatusLabel(status) {
+        switch (status) {
+            case 'pending':     return 'Pending';
+            case 'in_progress': return 'In Progress';
+            case 'completed':   return 'Completed';
+            default:            return safeString(status);
+        }
+    }
+
+    function getMatchTypeLabel(type) {
+        switch (type) {
+            case 'group_exam':   return 'Group Exam';
+            case 'team_vs_team': return 'Team Match';
+            default:             return safeString(type);
+        }
+    }
+
+    function getParticipantTypeLabel(type) {
+        if (type === 'character') { return 'Character'; }
+        if (type === 'team') { return 'Team'; }
+        return 'Unknown';
+    }
+
+    function getResultCategory(resultValue) {
+        if (resultValue === 'pass') { return 'passed'; }
+        if (resultValue === 'retry') { return 'retry'; }
+        if (resultValue === 'fail') { return 'failed'; }
+        return 'unknown';
+    }
+
+    function getOutcomeDisplay(outcome) {
+        var map = {
+            'pass':      { text: '\u2713', class: 'outcome-pass',    label: 'Pass' },
+            'retry':     { text: '\u21bb', class: 'outcome-retry',   label: 'Retry' },
+            'fail':      { text: '\u2717', class: 'outcome-fail',    label: 'Fail' },
+            'pending':   { text: '\u23f3', class: 'outcome-pending', label: 'Pending' },
+            'unknown':   { text: '?',      class: 'outcome-unknown', label: 'Unknown' }
+        };
+        return map[outcome] || {
+            text: '?',
+            class: 'outcome-unknown',
+            label: 'Unknown'
+        };
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
     window.AcademyTournamentAggregator = {
-        getExamViewModel: getExamViewModel,
-        buildExamViewModel: buildExamViewModel,
-        buildExamPool: buildExamPool,
-        buildCharacterPoolForClass: buildCharacterPoolForClass,
-        buildTeamPoolForClass: buildTeamPoolForClass,
-        buildExamRoundVM: buildExamRoundVM,
-        buildExamMatchVM: buildExamMatchVM,
-        buildEliminationsVM: buildEliminationsVM
+        getExamViewModel: getExamViewModel
     };
 
 })();
