@@ -6,58 +6,37 @@
  *
  * RESPONSIBILITIES:
  *   - Provide a container-based member manager for a specific
- *     (class, week, team) triple
+ *     (class, team) pair, viewed at a specific week
  *   - Read the candidate pool from the class roster
- *   - Write membership to academy.weeklyTeams via AcademyWeeklyTeams
+ *   - Write membership via AcademyWeeklyTeams (ranged model)
  *   - Re-render in place after each mutation
  *   - Invoke the caller's onChange callback so an outer view can
- *     refresh (sidebar member counters, for example)
+ *     refresh
+ *
+ * DROP-OUT vs DELETE RECORD:
+ *   - Drop Out: endMembership(classId, teamId, charId, effectiveWeek)
+ *     The member's active window becomes [startWeek, effectiveWeek - 1].
+ *     History survives. This is the ordinary "remove from team" action.
+ *
+ *   - Delete Record: removeMemberRecord(classId, teamId, charId)
+ *     Hard-deletes the membership entry as if it never existed.
+ *     Used for administrative cleanup.
+ *
+ *   The UI exposes both. Drop Out is the default action. Delete
+ *   Record is behind a confirmation and is not the common path.
  *
  * NOT RESPONSIBILITIES:
  *   - Persistent Team entity membership. This module does NOT call
  *     TeamCore.addMember. It does NOT touch team.members. The
  *     persistent roster and the week-scoped assignment map are
- *     DIFFERENT stores with DIFFERENT semantics. See Option 1 in
- *     the design notes.
- *   - Domain validation. AcademyWeeklyTeams.setWeeklyTeams validates.
- *   - Persistence. MutationPipeline (used by AcademyWeeklyTeams) owns it.
- *
- * CANDIDATE POOL:
- *   The pool is derived from the class roster
- *   (AcademyAggregator.getClassStudentsViewModel). It includes:
- *     - Students regardless of current career status.
- *       A "senior" is a student, not an instructor.
- *     - Deceased characters. Historical record-keeping requires
- *       being able to add a character who has since died to a team
- *       for a week they were alive.
- *     - Support staff. They are neither students nor instructors;
- *       if they're on the class roster, they're eligible.
- *
- *   The pool excludes:
- *     - The class's assigned instructor. The class record's
- *       instructorId is the only authoritative signal that a
- *       character teaches this class. Career status alone is not.
- *     - Characters already in this team at this week.
- *     - Characters already assigned to another academic team in the
- *       same class at the same week.
- *     - Characters eliminated at or before this week.
- *
- * ELIMINATION SEMANTICS:
- *   A character is eliminated-at-week if EliminationQueries says so.
- *   EliminationQueries.isCharacterEliminatedByWeek accepts an ID.
- *   This module passes IDs. No CharacterQueries round-trip.
- *
- * WRITE CONTRACT:
- *   Every mutation rewrites the full weekly assignment map for the
- *   (class, week) pair in one call to AcademyWeeklyTeams.setWeeklyTeams.
- *   That call re-normalizes and re-enforces the single-team-per-
- *   character invariant. A stale read cannot produce an invalid write.
+ *     DIFFERENT stores with DIFFERENT semantics.
+ *   - Domain validation. AcademyWeeklyTeams validates.
+ *   - Persistence. MutationPipeline (used by AcademyWeeklyTeams)
+ *     owns it.
  *
  * MODAL CONTRACT:
  *   The caller owns the modal shell. This module renders into a
- *   container the caller supplies (typically a .modal-content). It
- *   does not call Modal.createModal; it only manipulates what's
- *   inside the provided container.
+ *   container the caller supplies (typically a .modal-content).
  *
  * CLOSE SEMANTICS:
  *   The container's Close buttons invoke the caller-supplied
@@ -65,16 +44,15 @@
  *   managers open concurrently do not interfere.
  *
  * DEPENDENCIES (MANDATORY):
- *   - window.AcademyAggregator      (getClassStudentsViewModel)
- *   - window.AcademyWeeklyTeams     (weekly assignment map)
- *   - window.AcademyClasses         (class entity, instructorId)
- *   - window.CharacterQueries       (display names, status labels)
- *   - window.DomUtils               (escaping)
- *   - window.NotificationSystem     (notifications)
+ *   - window.AcademyAggregator
+ *   - window.AcademyWeeklyTeams
+ *   - window.AcademyClasses
+ *   - window.CharacterQueries
+ *   - window.DomUtils
+ *   - window.NotificationSystem
  *
  * DEPENDENCIES (OPTIONAL):
- *   - window.EliminationQueries     (eliminated-at-week filter)
- *     When absent, elimination filtering is skipped.
+ *   - window.EliminationQueries
  */
 
 (function() {
@@ -87,7 +65,6 @@
     // ============================================================
     // DIAGNOSTIC FLAG
     // ============================================================
-    // Set to true to emit tracing logs. Set to false in production.
     var _DIAGNOSTIC = true;
 
     function diag() {
@@ -122,8 +99,11 @@
     }
     if (!AcademyWeeklyTeams ||
         typeof AcademyWeeklyTeams.getWeeklyTeams !== 'function' ||
-        typeof AcademyWeeklyTeams.setWeeklyTeams !== 'function') {
-        _missing.push('AcademyWeeklyTeams.getWeeklyTeams/setWeeklyTeams');
+        typeof AcademyWeeklyTeams.addMember !== 'function' ||
+        typeof AcademyWeeklyTeams.endMembership !== 'function' ||
+        typeof AcademyWeeklyTeams.removeMemberRecord !== 'function' ||
+        typeof AcademyWeeklyTeams.getActiveMembers !== 'function') {
+        _missing.push('AcademyWeeklyTeams (ranged API)');
     }
     if (!AcademyClasses ||
         typeof AcademyClasses.getClass !== 'function') {
@@ -153,19 +133,11 @@
 
     window.__academyWeeklyTeamsMembersLoaded = true;
 
-    // ============================================================
-    // STARTUP DIAGNOSTIC
-    // ============================================================
-    // Emitted once per page load, so we know which module instance
-    // is actually loaded and where its dependencies point.
-
-    diag('Module loaded.');
-    diag('  AcademyWeeklyTeams object:', AcademyWeeklyTeams);
-    diag('  getWeeklyTeams fn:', AcademyWeeklyTeams.getWeeklyTeams);
-    diag('  setWeeklyTeams fn:', AcademyWeeklyTeams.setWeeklyTeams);
-    diag('  getTeamMembers fn:', AcademyWeeklyTeams.getTeamMembers);
-    diag('  window.data present:', !!window.data);
-    diag('  window.data.academy present:', !!(window.data && window.data.academy));
+    diag('Module loaded (ranged API).');
+    diag('  AcademyWeeklyTeams.addMember:', typeof AcademyWeeklyTeams.addMember);
+    diag('  AcademyWeeklyTeams.endMembership:', typeof AcademyWeeklyTeams.endMembership);
+    diag('  AcademyWeeklyTeams.removeMemberRecord:', typeof AcademyWeeklyTeams.removeMemberRecord);
+    diag('  AcademyWeeklyTeams.getActiveMembers:', typeof AcademyWeeklyTeams.getActiveMembers);
 
     // ============================================================
     // OPTIONAL DEPENDENCIES
@@ -199,78 +171,53 @@
     // CANDIDATE POOL
     // ============================================================
 
-    /**
-     * Build the candidate pool for (classId, week, teamId).
-     *
-     * Returns an array of { id, name, statusLabel, deceased, age }.
-     * Sorted alphabetically by name. Deceased candidates sort
-     * alphabetically within the same list; the caller decides
-     * whether to visually separate them.
-     *
-     * @param {string} classId
-     * @param {number} week
-     * @param {string} teamId
-     * @returns {array}
-     */
     function buildCandidatePool(classId, week, teamId) {
         diag('buildCandidatePool CALLED', { classId, week, teamId });
 
         if (!isNonEmptyString(classId) || !isNonEmptyString(teamId)) {
-            diagWarn('buildCandidatePool: invalid classId or teamId, returning [].',
-                { classId, teamId });
             return [];
         }
 
-        // ---- 1. Class roster ----
         var roster = AcademyAggregator.getClassStudentsViewModel(classId) || [];
-        diag('buildCandidatePool: roster size:', roster.length);
+        diag('  roster size:', roster.length);
         if (roster.length === 0) {
             return [];
         }
 
-        // ---- 2. Class instructor exclusion ----
         var cls = AcademyClasses.getClass(classId);
         var instructorId = cls && cls.instructorId
             ? String(cls.instructorId)
             : null;
-        diag('buildCandidatePool: class instructorId:', instructorId);
 
-        // ---- 3. Current team members ----
-        var currentMembers = AcademyWeeklyTeams.getTeamMembers(classId, week, teamId);
-        diag('buildCandidatePool: currentMembers for', teamId, ':', currentMembers);
+        var currentMembers = AcademyWeeklyTeams.getActiveMembers(
+            classId, teamId, week
+        );
+        diag('  current members at week', week, ':', currentMembers);
+
         var currentSet = Object.create(null);
         for (var i = 0; i < currentMembers.length; i++) {
             currentSet[String(currentMembers[i])] = true;
         }
 
-        // ---- 4. Assigned-elsewhere set ----
+        // Assigned elsewhere = active in any other team this week.
         var assignments = AcademyWeeklyTeams.getWeeklyTeams(classId, week);
-        diag('buildCandidatePool: full assignments map for week', week, ':',
-            JSON.stringify(assignments));
-
         var assignedElsewhere = Object.create(null);
         var teamIds = Object.keys(assignments);
         for (var t = 0; t < teamIds.length; t++) {
-            var thisTeamId = teamIds[t];
-            if (String(thisTeamId) === String(teamId)) {
+            if (String(teamIds[t]) === String(teamId)) {
                 continue;
             }
-            var members = assignments[thisTeamId];
+            var members = assignments[teamIds[t]];
             if (!Array.isArray(members)) { continue; }
             for (var m = 0; m < members.length; m++) {
                 assignedElsewhere[String(members[m])] = true;
             }
         }
-        diag('buildCandidatePool: assignedElsewhere keys:',
-            Object.keys(assignedElsewhere));
 
-        // ---- 5. Elimination queries ----
         var EQ = getEliminationQueries();
         var canCheckElimination = EQ &&
             typeof EQ.isCharacterEliminatedByWeek === 'function';
-        diag('buildCandidatePool: canCheckElimination:', canCheckElimination);
 
-        // ---- 6. Filter ----
         var pool = [];
         for (var r = 0; r < roster.length; r++) {
             var student = roster[r];
@@ -326,21 +273,18 @@
             return (a.name || '').localeCompare(b.name || '');
         });
 
-        diag('buildCandidatePool: pool size:', pool.length,
-            'ids:', pool.map(function(p) { return p.id; }));
-
         return pool;
     }
 
     /**
-     * Build the current-member view model for rendering.
+     * Build the current member view models for rendering.
+     * Uses getActiveMembers so only week-active members appear.
      */
     function buildCurrentMemberViewModels(classId, week, teamId) {
         diag('buildCurrentMemberViewModels CALLED', { classId, week, teamId });
 
-        var memberIds = AcademyWeeklyTeams.getTeamMembers(classId, week, teamId);
-        diag('buildCurrentMemberViewModels: memberIds from AWT.getTeamMembers:',
-            memberIds);
+        var memberIds = AcademyWeeklyTeams.getActiveMembers(classId, teamId, week);
+        diag('  active member ids:', memberIds);
 
         var result = [];
 
@@ -371,8 +315,6 @@
             return (a.name || '').localeCompare(b.name || '');
         });
 
-        diag('buildCurrentMemberViewModels: result:', result);
-
         return result;
     }
 
@@ -390,6 +332,13 @@
         html += '</div>';
 
         html += '<div class="modal-body">';
+
+        html += '<p class="field-hint">' +
+                    'Membership is week-scoped and range-based. ' +
+                    'Adding a member records their start from the ' +
+                    'displayed week. Dropping out ends their ' +
+                    'membership from the displayed week onward.' +
+                '</p>';
 
         // ---- Current members ----
         html += '<div class="form-group">';
@@ -439,16 +388,13 @@
             html += '</select>';
 
             html += '<div class="awtm-member-add-row">';
-            html += '<input type="text" class="awtm-member-role" ' +
-                        'placeholder="Role (optional)">';
             html += '<button type="button" ' +
                         'class="small primary awtm-member-add-btn">Add</button>';
             html += '</div>';
 
             html += '<p class="field-hint">' +
-                        'Members added here are assigned to this team for ' +
-                        'the selected week only. The persistent team roster ' +
-                        'is not modified.' +
+                        'Adds the character starting from week ' +
+                        escapeHtml(String(vm.week)) + '.' +
                     '</p>';
         }
         html += '</div>';
@@ -498,10 +444,19 @@
         }
 
         html += '<button type="button" ' +
-                    'class="small danger awtm-member-remove-btn" ' +
+                    'class="small danger awtm-member-dropout-btn" ' +
                     'data-character-id="' +
-                        escapeAttr(member.characterId) + '">' +
-                    'Remove' +
+                        escapeAttr(member.characterId) + '" ' +
+                    'title="Drop out: end membership from this week onward">' +
+                    'Drop Out' +
+                '</button>';
+
+        html += '<button type="button" ' +
+                    'class="small danger awtm-member-delete-btn" ' +
+                    'data-character-id="' +
+                        escapeAttr(member.characterId) + '" ' +
+                    'title="Delete record: remove all history">' +
+                    '\u2715' +
                 '</button>';
 
         html += '</div>';
@@ -509,129 +464,13 @@
     }
 
     // ============================================================
-    // MUTATIONS
-    // ============================================================
-
-    /**
-     * Add a character to the team for the (class, week).
-     *
-     * Rewrites the full weekly assignment map. setWeeklyTeams
-     * re-normalizes and re-enforces the single-team invariant.
-     */
-    function addMember(classId, week, teamId, charId) {
-        diag('addMember CALLED', { classId, week, teamId, charId });
-
-        var current = AcademyWeeklyTeams.getWeeklyTeams(classId, week);
-        diag('addMember: current map read:', JSON.stringify(current));
-
-        var next = deepCloneShallow(current);
-        diag('addMember: shallow clone:', JSON.stringify(next));
-
-        if (!Array.isArray(next[teamId])) {
-            next[teamId] = [];
-        }
-
-        var target = String(charId);
-        for (var i = 0; i < next[teamId].length; i++) {
-            if (String(next[teamId][i]) === target) {
-                diagWarn('addMember: character already in team (early exit).');
-                return Promise.resolve({
-                    success: false,
-                    message: 'Character is already in this team.'
-                });
-            }
-        }
-
-        next[teamId].push(target);
-        diag('addMember: next map to write:', JSON.stringify(next));
-
-        var promise = AcademyWeeklyTeams.setWeeklyTeams(classId, week, next);
-        diag('addMember: setWeeklyTeams returned:', promise);
-
-        return promise.then(function(result) {
-            diag('addMember: setWeeklyTeams RESOLVED:', result);
-
-            // Read back immediately to confirm the write landed
-            var afterRead = AcademyWeeklyTeams.getWeeklyTeams(classId, week);
-            diag('addMember: read-back after write:', JSON.stringify(afterRead));
-
-            var afterMembers = AcademyWeeklyTeams.getTeamMembers(classId, week, teamId);
-            diag('addMember: getTeamMembers after write:', afterMembers);
-
-            diag('addMember: window.data.academy.weeklyTeams:',
-                JSON.stringify(
-                    window.data &&
-                    window.data.academy &&
-                    window.data.academy.weeklyTeams
-                ));
-
-            return result;
-        });
-    }
-
-    /**
-     * Remove a character from the team for the (class, week).
-     */
-    function removeMember(classId, week, teamId, charId) {
-        diag('removeMember CALLED', { classId, week, teamId, charId });
-
-        var current = AcademyWeeklyTeams.getWeeklyTeams(classId, week);
-        var next = deepCloneShallow(current);
-
-        if (!Array.isArray(next[teamId])) {
-            return Promise.resolve({
-                success: false,
-                message: 'Character is not in this team.'
-            });
-        }
-
-        var target = String(charId);
-        var before = next[teamId].length;
-        next[teamId] = next[teamId].filter(function(id) {
-            return String(id) !== target;
-        });
-
-        if (next[teamId].length === before) {
-            return Promise.resolve({
-                success: false,
-                message: 'Character is not in this team.'
-            });
-        }
-
-        return AcademyWeeklyTeams.setWeeklyTeams(classId, week, next)
-            .then(function(result) {
-                diag('removeMember: setWeeklyTeams RESOLVED:', result);
-                return result;
-            });
-    }
-
-    /**
-     * Shallow clone of an assignment map. The values are arrays; we
-     * copy each array so we never mutate the caller's input.
-     */
-    function deepCloneShallow(map) {
-        var result = {};
-        var keys = Object.keys(map || {});
-        for (var i = 0; i < keys.length; i++) {
-            var k = keys[i];
-            var v = map[k];
-            result[k] = Array.isArray(v) ? v.slice() : [];
-        }
-        return result;
-    }
-
-    // ============================================================
     // PUBLIC ENTRY POINT
     // ============================================================
 
-    /**
-     * Open the member manager for a (class, week, team) triple.
-     */
     function openMemberManager(container, classId, week, teamId, options) {
-        diag('openMemberManager CALLED', { classId, week, teamId, options });
+        diag('openMemberManager CALLED', { classId, week, teamId });
 
         if (!container || !isNonEmptyString(classId) || !isNonEmptyString(teamId)) {
-            diagWarn('openMemberManager: invalid args, returning null.');
             return null;
         }
 
@@ -644,8 +483,6 @@
             : null;
 
         var weekNum = parseInt(week, 10);
-        diag('openMemberManager: parsed weekNum:', weekNum, 'from week:', week);
-
         if (isNaN(weekNum)) {
             container.innerHTML =
                 '<div class="modal-body">' +
@@ -675,11 +512,7 @@
         }
 
         function render() {
-            diag('render CALLED. disposed:', disposed,
-                'container.parentNode:', !!container.parentNode);
-
             if (disposed || !container.parentNode) {
-                diag('render: bailing out.');
                 return;
             }
 
@@ -687,18 +520,12 @@
                 ? options.teamName
                 : 'Team';
 
-            var members = buildCurrentMemberViewModels(
-                classId, weekNum, teamId
-            );
-            var candidates = buildCandidatePool(
-                classId, weekNum, teamId
-            );
-
-            diag('render: members count:', members.length,
-                'candidates count:', candidates.length);
+            var members = buildCurrentMemberViewModels(classId, weekNum, teamId);
+            var candidates = buildCandidatePool(classId, weekNum, teamId);
 
             var vm = {
                 teamName: teamName,
+                week: weekNum,
                 members: members,
                 candidates: candidates
             };
@@ -708,9 +535,6 @@
         }
 
         function bindEvents(rootEl, vm) {
-            diag('bindEvents CALLED. add-btn present:',
-                !!rootEl.querySelector('.awtm-member-add-btn'));
-
             // Close buttons.
             var closeBtns = rootEl.querySelectorAll('.awtm-close-btn');
             for (var i = 0; i < closeBtns.length; i++) {
@@ -719,53 +543,24 @@
                 });
             }
 
-            // Remove buttons.
-            var removeBtns = rootEl.querySelectorAll('.awtm-member-remove-btn');
-            for (var r = 0; r < removeBtns.length; r++) {
+            // Drop Out buttons: end membership from this week onward.
+            var dropOutBtns = rootEl.querySelectorAll('.awtm-member-dropout-btn');
+            for (var d = 0; d < dropOutBtns.length; d++) {
                 (function(btn) {
                     btn.addEventListener('click', function() {
                         var charId = btn.dataset.characterId;
                         if (!charId) { return; }
-                        if (!confirm('Remove this member from this team for this week?')) {
+                        if (!confirm(
+                            'Drop this member out from week ' + weekNum +
+                            ' onward? Their earlier membership is preserved.'
+                        )) {
                             return;
                         }
-                        removeMember(classId, weekNum, teamId, charId)
-                            .then(function(result) {
-                                if (result && result.success) {
-                                    render();
-                                    invokeOnChange();
-                                }
-                            })
-                            .catch(function(err) {
-                                console.warn(
-                                    '[AcademyWeeklyTeamsMembers] removeMember failed:',
-                                    err
-                                );
-                                notify('Could not remove member.', 'error');
-                            });
-                    });
-                })(removeBtns[r]);
-            }
 
-            // Add button.
-            var addBtn = rootEl.querySelector('.awtm-member-add-btn');
-            if (addBtn) {
-                addBtn.addEventListener('click', function() {
-                    diag('Add button CLICKED.');
-
-                    var select = rootEl.querySelector('.awtm-member-select');
-                    var charId = select ? select.value : '';
-                    diag('Add button: selected charId:', charId);
-
-                    if (!charId) {
-                        notify('Select a character to add.', 'error');
-                        return;
-                    }
-
-                    addMember(classId, weekNum, teamId, charId)
+                        AcademyWeeklyTeams.endMembership(
+                            classId, teamId, charId, weekNum
+                        )
                         .then(function(result) {
-                            diag('addMember resolved in click handler:', result);
-
                             if (result && result.success) {
                                 render();
                                 invokeOnChange();
@@ -773,11 +568,78 @@
                         })
                         .catch(function(err) {
                             console.warn(
-                                '[AcademyWeeklyTeamsMembers] addMember failed:',
+                                '[AcademyWeeklyTeamsMembers] endMembership failed:',
                                 err
                             );
-                            notify('Could not add member.', 'error');
+                            notify('Could not drop out member.', 'error');
                         });
+                    });
+                })(dropOutBtns[d]);
+            }
+
+            // Delete Record buttons: hard delete, no history.
+            var deleteBtns = rootEl.querySelectorAll('.awtm-member-delete-btn');
+            for (var r = 0; r < deleteBtns.length; r++) {
+                (function(btn) {
+                    btn.addEventListener('click', function() {
+                        var charId = btn.dataset.characterId;
+                        if (!charId) { return; }
+                        if (!confirm(
+                            'Permanently delete this membership record? ' +
+                            'This removes all history for this member in ' +
+                            'this team and cannot be undone.'
+                        )) {
+                            return;
+                        }
+
+                        AcademyWeeklyTeams.removeMemberRecord(
+                            classId, teamId, charId
+                        )
+                        .then(function(result) {
+                            if (result && result.success) {
+                                render();
+                                invokeOnChange();
+                            }
+                        })
+                        .catch(function(err) {
+                            console.warn(
+                                '[AcademyWeeklyTeamsMembers] removeMemberRecord failed:',
+                                err
+                            );
+                            notify('Could not delete membership record.', 'error');
+                        });
+                    });
+                })(deleteBtns[r]);
+            }
+
+            // Add button.
+            var addBtn = rootEl.querySelector('.awtm-member-add-btn');
+            if (addBtn) {
+                addBtn.addEventListener('click', function() {
+                    var select = rootEl.querySelector('.awtm-member-select');
+                    var charId = select ? select.value : '';
+
+                    if (!charId) {
+                        notify('Select a character to add.', 'error');
+                        return;
+                    }
+
+                    AcademyWeeklyTeams.addMember(
+                        classId, teamId, charId, weekNum
+                    )
+                    .then(function(result) {
+                        if (result && result.success) {
+                            render();
+                            invokeOnChange();
+                        }
+                    })
+                    .catch(function(err) {
+                        console.warn(
+                            '[AcademyWeeklyTeamsMembers] addMember failed:',
+                            err
+                        );
+                        notify('Could not add member.', 'error');
+                    });
                 });
             }
         }
@@ -809,9 +671,7 @@
 
         // Exposed for testing / advanced callers.
         buildCandidatePool: buildCandidatePool,
-        buildCurrentMemberViewModels: buildCurrentMemberViewModels,
-        addMember: addMember,
-        removeMember: removeMember
+        buildCurrentMemberViewModels: buildCurrentMemberViewModels
     };
 
 })();
