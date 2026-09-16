@@ -42,12 +42,17 @@
  *   Prefer Modal.closeModal (full teardown, cleanup list, focus
  *   restore) when available.
  *
+ * MUTATION FEEDBACK:
+ *   Every mutation's .then handler checks `result.success`. On success,
+ *   the modal closes and the caller's onChange runs. On failure, the
+ *   result's message is logged to console AND surfaced as a toast.
+ *   This is why there is a console log for every rejection: a silent
+ *   UI in the face of a rejected mutation is a support nightmare.
+ *
  * ADD ROUND — TOTAL ROUNDS SEMANTICS:
- *   TournamentLifecycle.canAddRound rejects a new round when
- *   `currentRoundCount >= totalRounds`. The Create Exam modal
- *   defaults totalRounds to 5, but a user who adds more than 5
- *   rounds hits the cap. This module auto-bumps totalRounds before
- *   adding when at capacity. Two sequential pipeline mutations.
+ *   The lifecycle no longer caps rounds at totalRounds. totalRounds
+ *   is a planning hint. This module just calls TournamentCore.addRound
+ *   and surfaces whatever the domain says.
  *
  * ADD CHARACTER TO EXAM — DIAGNOSTICS:
  *   The Add Character button calls togglePoolMember, which reads
@@ -60,9 +65,8 @@
  * ERROR HANDLING:
  *   - Domain mutations resolve to { success, data?, message? }. On
  *     success this module closes the modal and calls onChange. On
- *     failure the pipeline has already notified; this module does
- *     not double-notify, but does log to console for diagnosis.
- *   - A thrown error from a mutation is logged. It is a bug.
+ *     failure the message is logged and toasted.
+ *   - A thrown error from a mutation is logged and toasted.
  *   - The onChange callback is wrapped in try/catch so a throwing
  *     consumer does not break the events module.
  *
@@ -208,31 +212,25 @@
         return 'character';
     }
 
-    function resolveExamIdFromEl(el) {
-        if (!el) { return null; }
-        var direct = el.dataset ? el.dataset.examId : null;
-        if (isNonEmptyString(direct)) { return direct; }
-        var wrapper = el.closest ? el.closest('[data-exam-id]') : null;
-        if (!wrapper) { return null; }
-        return wrapper.dataset.examId || null;
+    /**
+     * Surface a rejected mutation. Logs to console AND toasts the
+     * message. Used by every mutation's .then handler.
+     */
+    function rejectMutation(label, result) {
+        var message = (result && result.message)
+            ? result.message
+            : 'Mutation was rejected without a message.';
+        console.warn('[AcademyTournamentEvents] ' + label + ' rejected:', message);
+        notify(message, 'error');
     }
 
-    function resolveRoundIdFromEl(el) {
-        if (!el) { return null; }
-        var direct = el.dataset ? el.dataset.roundId : null;
-        if (isNonEmptyString(direct)) { return direct; }
-        var wrapper = el.closest ? el.closest('[data-round-id]') : null;
-        if (!wrapper) { return null; }
-        return wrapper.dataset.roundId || null;
-    }
-
-    function resolveMatchIdFromEl(el) {
-        if (!el) { return null; }
-        var direct = el.dataset ? el.dataset.matchId : null;
-        if (isNonEmptyString(direct)) { return direct; }
-        var wrapper = el.closest ? el.closest('[data-match-id]') : null;
-        if (!wrapper) { return null; }
-        return wrapper.dataset.matchId || null;
+    /**
+     * Surface a thrown error from a mutation. Logs to console AND
+     * toasts a generic failure.
+     */
+    function failMutation(label, err, userMessage) {
+        console.warn('[AcademyTournamentEvents] ' + label + ' failed:', err);
+        notify(userMessage || 'Operation failed.', 'error');
     }
 
     // ============================================================
@@ -401,10 +399,11 @@
                     if (result && result.success) {
                         close();
                         notifyChange();
+                    } else {
+                        rejectMutation('createTournament', result);
                     }
                 }).catch(function(err) {
-                    console.warn('[AcademyTournamentEvents] createTournament failed:', err);
-                    notify('Failed to create exam.', 'error');
+                    failMutation('createTournament', err, 'Failed to create exam.');
                 });
             });
         });
@@ -452,10 +451,11 @@
                     if (result && result.success) {
                         close();
                         notifyChange();
+                    } else {
+                        rejectMutation('deleteTournament', result);
                     }
                 }).catch(function(err) {
-                    console.warn('[AcademyTournamentEvents] deleteTournament failed:', err);
-                    notify('Failed to delete exam.', 'error');
+                    failMutation('deleteTournament', err, 'Failed to delete exam.');
                 });
             });
         });
@@ -501,19 +501,12 @@
                 .then(function(result) {
                     if (result && result.success) {
                         notifyChange();
-                    } else if (result && result.message) {
-                        console.warn(
-                            '[AcademyTournamentEvents] removeParticipant rejected:',
-                            result.message
-                        );
+                    } else {
+                        rejectMutation('removeParticipant', result);
                     }
                 })
                 .catch(function(err) {
-                    console.warn(
-                        '[AcademyTournamentEvents] removeParticipant failed:',
-                        err
-                    );
-                    notify('Could not remove participant.', 'error');
+                    failMutation('removeParticipant', err, 'Could not remove participant.');
                 });
             return;
         }
@@ -525,25 +518,12 @@
             .then(function(result) {
                 if (result && result.success) {
                     notifyChange();
-                } else if (result && result.message) {
-                    console.warn(
-                        '[AcademyTournamentEvents] addParticipant rejected:',
-                        result.message,
-                        {
-                            examId: examId,
-                            examMode: exam.mode,
-                            participantId: participantId,
-                            participantType: participantType
-                        }
-                    );
+                } else {
+                    rejectMutation('addParticipant', result);
                 }
             })
             .catch(function(err) {
-                console.warn(
-                    '[AcademyTournamentEvents] addParticipant failed:',
-                    err
-                );
-                notify('Could not add participant.', 'error');
+                failMutation('addParticipant', err, 'Could not add participant.');
             });
     }
 
@@ -585,77 +565,22 @@
 
                 if (!payload) { return; }
 
-                var roundData = {
+                TournamentCore.addRound(examId, {
                     matchSize: payload.matchSize,
                     matchType: payload.matchType,
                     isPairExam: payload.isPairExam
-                };
-
-                submitRound(examId, roundData, close);
-            });
-        });
-    }
-
-    function submitRound(examId, roundData, close) {
-        var exam = TournamentQueries.getTournament(examId);
-        if (!exam) {
-            notify('Exam not found.', 'error');
-            return;
-        }
-
-        var currentRounds = Array.isArray(exam.rounds)
-            ? exam.rounds.length
-            : 0;
-        var totalRounds = typeof exam.totalRounds === 'number' && exam.totalRounds >= 1
-            ? exam.totalRounds
-            : 1;
-
-        var atCapacity = currentRounds >= totalRounds;
-
-        var proceed = function() {
-            TournamentCore.addRound(examId, roundData)
-                .then(function(result) {
+                }).then(function(result) {
                     if (result && result.success) {
                         close();
                         notifyChange();
-                    } else if (result && result.message) {
-                        console.warn(
-                            '[AcademyTournamentEvents] addRound rejected:',
-                            result.message
-                        );
+                    } else {
+                        rejectMutation('addRound', result);
                     }
-                })
-                .catch(function(err) {
-                    console.warn('[AcademyTournamentEvents] addRound failed:', err);
-                    notify('Failed to add round.', 'error');
+                }).catch(function(err) {
+                    failMutation('addRound', err, 'Failed to add round.');
                 });
-        };
-
-        if (!atCapacity) {
-            proceed();
-            return;
-        }
-
-        var newTotal = currentRounds + 1;
-
-        TournamentCore.updateTournament(examId, { totalRounds: newTotal })
-            .then(function(updateResult) {
-                if (updateResult && updateResult.success) {
-                    proceed();
-                } else if (updateResult && updateResult.message) {
-                    console.warn(
-                        '[AcademyTournamentEvents] updateTournament rejected:',
-                        updateResult.message
-                    );
-                }
-            })
-            .catch(function(err) {
-                console.warn(
-                    '[AcademyTournamentEvents] updateTournament failed:',
-                    err
-                );
-                notify('Failed to expand exam capacity.', 'error');
             });
+        });
     }
 
     function removeRound(examId, roundId) {
@@ -694,10 +619,11 @@
                     if (result && result.success) {
                         close();
                         notifyChange();
+                    } else {
+                        rejectMutation('removeRound', result);
                     }
                 }).catch(function(err) {
-                    console.warn('[AcademyTournamentEvents] removeRound failed:', err);
-                    notify('Failed to remove round.', 'error');
+                    failMutation('removeRound', err, 'Failed to remove round.');
                 });
             });
         });
@@ -748,10 +674,11 @@
                     if (result && result.success) {
                         close();
                         notifyChange();
+                    } else {
+                        rejectMutation('generateMatches', result);
                     }
                 }).catch(function(err) {
-                    console.warn('[AcademyTournamentEvents] generateMatches failed:', err);
-                    notify('Failed to auto-generate matches.', 'error');
+                    failMutation('generateMatches', err, 'Failed to auto-generate matches.');
                 });
             });
         });
@@ -811,10 +738,11 @@
                     if (result && result.success) {
                         close();
                         notifyChange();
+                    } else {
+                        rejectMutation('createMatch', result);
                     }
                 }).catch(function(err) {
-                    console.warn('[AcademyTournamentEvents] createMatch failed:', err);
-                    notify('Failed to add match.', 'error');
+                    failMutation('createMatch', err, 'Failed to add match.');
                 });
             });
         });
@@ -886,10 +814,11 @@
                     if (result && result.success) {
                         close();
                         notifyChange();
+                    } else {
+                        rejectMutation('updateMatch', result);
                     }
                 }).catch(function(err) {
-                    console.warn('[AcademyTournamentEvents] updateMatch failed:', err);
-                    notify('Failed to update match.', 'error');
+                    failMutation('updateMatch', err, 'Failed to update match.');
                 });
             });
         });
@@ -937,20 +866,22 @@
                     ? View.collectCompleteMatchForm(form)
                     : null;
 
-                if (!payload) { return; }
+                if (!payload) {
+                    notify('Could not read match results.', 'error');
+                    return;
+                }
 
                 TournamentMatches.completeMatch(examId, roundId, matchId, payload)
                     .then(function(result) {
                         if (result && result.success) {
                             close();
                             notifyChange();
+                        } else {
+                            rejectMutation('completeMatch', result);
                         }
                     })
                     .catch(function(err) {
-                        console.warn(
-                            '[AcademyTournamentEvents] completeMatch failed:', err
-                        );
-                        notify('Failed to complete match.', 'error');
+                        failMutation('completeMatch', err, 'Failed to complete match.');
                     });
             });
         });
@@ -999,13 +930,12 @@
                         if (result && result.success) {
                             close();
                             notifyChange();
+                        } else {
+                            rejectMutation('removeMatch', result);
                         }
                     })
                     .catch(function(err) {
-                        console.warn(
-                            '[AcademyTournamentEvents] removeMatch failed:', err
-                        );
-                        notify('Failed to remove match.', 'error');
+                        failMutation('removeMatch', err, 'Failed to remove match.');
                     });
             });
         });
@@ -1021,10 +951,11 @@
         TournamentCore.completeTournament(examId).then(function(result) {
             if (result && result.success) {
                 notifyChange();
+            } else {
+                rejectMutation('completeTournament', result);
             }
         }).catch(function(err) {
-            console.warn('[AcademyTournamentEvents] completeTournament failed:', err);
-            notify('Could not complete the exam.', 'error');
+            failMutation('completeTournament', err, 'Could not complete the exam.');
         });
     }
 
@@ -1047,11 +978,7 @@
         completeMatch: completeMatch,
         removeMatch: removeMatch,
 
-        completeExam: completeExam,
-
-        resolveExamIdFromEl: resolveExamIdFromEl,
-        resolveRoundIdFromEl: resolveRoundIdFromEl,
-        resolveMatchIdFromEl: resolveMatchIdFromEl
+        completeExam: completeExam
     };
 
 })();
