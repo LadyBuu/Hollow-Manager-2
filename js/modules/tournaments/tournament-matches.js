@@ -12,6 +12,11 @@
  *   - Internal pure builders for Core.addRound
  *   - Round promotion: when the last match in a round completes, the
  *     round's status is set to 'completed'
+ *   - Elimination cascade on completion: failing participants are
+ *     eliminated on both the tournament and character sides, inside
+ *     the same pipeline transaction
+ *   - Elimination reversal on removeMatch: if the removed match was
+ *     completed, its eliminations are reversed
  *
  * NOT RESPONSIBILITIES:
  *   - Tournament-level status transitions (TournamentCore)
@@ -47,12 +52,47 @@
  *   Passing an empty array here was a bug: `[].indexOf(anyId)` is
  *   always -1, so every result key was rejected as "not a participant".
  *
+ * ELIMINATION CASCADE:
+ *   When completeMatch succeeds and any participant's result is
+ *   'fail', the cascade writes elimination records:
+ *     - tournament.eliminations[]   { participantId, participantType,
+ *                                     week, reason, fromRoundId,
+ *                                     fromMatchId }
+ *     - character.eliminations[]    { id, tournamentId, fromRoundId,
+ *                                     fromMatchId, week, reason,
+ *                                     standalone: false, fromMatch: true }
+ *
+ *   The elimination week is the tournament's endWeek. Missing or
+ *   malformed endWeek causes the completion to fail, because an
+ *   elimination with a fabricated week is worse than a failed
+ *   completion.
+ *
+ *   For 'team_vs_team' matches, ONLY individualResults[charId] ===
+ *   'fail' eliminates. teamResults never eliminates anyone directly.
+ *   For 'group_exam', results[charId] === 'fail' eliminates.
+ *   For 'standard', no eliminations are produced (legacy).
+ *
+ *   The cascade runs inside completeMatch's mutate callback, in the
+ *   same transaction as the match status change. It does NOT go
+ *   through CharacterEliminations or TournamentEliminationWorkflow,
+ *   because both of those are pipeline entry points and nesting
+ *   pipelines deadlocks.
+ *
+ * ELIMINATION REVERSAL:
+ *   When removeMatch succeeds and the removed match was completed,
+ *   reverseMatchEliminations runs BEFORE the match is spliced out.
+ *   It removes eliminations whose provenance is this match, on both
+ *   sides. Standalone eliminations are not touched. Legacy elimination
+ *   records without fromMatchId are not touched by per-match reversal
+ *   (they predate the cascade and have no provenance to match against).
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.TournamentConstants
  *   - window.TournamentSchema
  *   - window.TournamentLifecycle
  *   - window.TournamentRules
  *   - window.TournamentQueries
+ *   - window.TournamentEliminationCascade
  *   - window.MutationPipeline
  *   - window.ObjectUtils
  *   - window.IdUtils
@@ -74,6 +114,7 @@
     var Lifecycle = window.TournamentLifecycle;
     var Rules = window.TournamentRules;
     var Queries = window.TournamentQueries;
+    var EliminationCascade = window.TournamentEliminationCascade;
     var MutationPipeline = window.MutationPipeline;
     var ObjectUtils = window.ObjectUtils;
     var IdUtils = window.IdUtils;
@@ -108,6 +149,14 @@
     if (!Lifecycle) { _missing.push('TournamentLifecycle'); }
     if (!Rules) { _missing.push('TournamentRules'); }
     if (!Queries) { _missing.push('TournamentQueries'); }
+    if (!EliminationCascade ||
+        typeof EliminationCascade.applyFailEliminations !== 'function') {
+        _missing.push('TournamentEliminationCascade.applyFailEliminations');
+    }
+    if (!EliminationCascade ||
+        typeof EliminationCascade.reverseMatchEliminations !== 'function') {
+        _missing.push('TournamentEliminationCascade.reverseMatchEliminations');
+    }
     if (!MutationPipeline ||
         typeof MutationPipeline.performMutation !== 'function') {
         _missing.push('MutationPipeline.performMutation');
@@ -907,6 +956,17 @@
     // ============================================================
     // PUBLIC COMMAND - Remove Match
     // ============================================================
+    //
+    // ELIMINATION REVERSAL:
+    //   If the removed match was completed, its eliminations are
+    //   reversed BEFORE the match is spliced out. Reversal touches
+    //   both tournament.eliminations[] and character.eliminations[],
+    //   keyed by (tournamentId, fromMatchId). Standalone eliminations
+    //   and legacy eliminations without provenance are not touched.
+    //
+    //   The reversal runs inside the same transaction as the removal.
+    //   If persistence fails, both the removal and the reversal roll
+    //   back together.
 
     function removeMatch(tournamentId, roundId, matchId) {
         if (!isNonEmptyString(roundId) || !isNonEmptyString(matchId)) {
@@ -933,6 +993,7 @@
         var targetTournamentId = normaliseId(tournamentId);
         var targetRoundId = normaliseId(roundId);
         var targetMatchId = normaliseId(matchId);
+        var matchWasCompleted = match.status === 'completed';
 
         return executeMutation({
             validate: function(appData) {
@@ -948,8 +1009,14 @@
                 return { valid: true };
             },
             mutate: function(appData) {
-                var snapshotRound = findRoundInSnapshot(
-                    appData, targetTournamentId, targetRoundId
+                var snapshotTournament = findTournamentInSnapshot(
+                    appData, targetTournamentId
+                );
+                if (!snapshotTournament) {
+                    throw new Error('Tournament not found in data store.');
+                }
+                var snapshotRound = Schema.findRoundById(
+                    snapshotTournament, targetRoundId
                 );
                 if (!snapshotRound || !Array.isArray(snapshotRound.matches)) {
                     throw new Error('Round not found in data store.');
@@ -966,10 +1033,36 @@
                     throw new Error('Match not found in data store.');
                 }
 
+                // ---- Reverse eliminations BEFORE splicing the match ----
+                // We check the LIVE match status in the snapshot, not
+                // the pre-flight status, because another mutation may
+                // have completed the match between pre-flight and now.
+                var liveMatch = snapshotRound.matches[idx];
+                var reversal = { reversed: 0, characterIds: [] };
+                if (liveMatch && liveMatch.status === 'completed') {
+                    reversal = EliminationCascade.reverseMatchEliminations(
+                        appData,
+                        snapshotTournament,
+                        targetMatchId
+                    );
+                }
+
                 snapshotRound.matches.splice(idx, 1);
-                return { removed: true };
+
+                return {
+                    removed: true,
+                    eliminationsReversed: reversal.reversed,
+                    reversedCharacterIds: reversal.characterIds
+                };
             },
-            logMessage: 'Removed match from round',
+            logMessage: function(result) {
+                if (result && result.eliminationsReversed > 0) {
+                    return 'Removed match (reversed ' +
+                        result.eliminationsReversed +
+                        ' elimination(s))';
+                }
+                return 'Removed match from round';
+            },
             successMessage: 'Match removed successfully.',
             failureMessage: 'Failed to remove match.'
         });
@@ -1090,6 +1183,25 @@
     // ============================================================
     // PUBLIC COMMAND - Complete Match
     // ============================================================
+    //
+    // ELIMINATION CASCADE:
+    //   After the match is marked completed, applyFailEliminations
+    //   writes elimination records for every failing participant:
+    //     - group_exam:   results[charId] === 'fail'
+    //     - team_vs_team: individualResults[charId] === 'fail'
+    //
+    //   teamResults is NOT consulted. A team failing a match does not
+    //   directly eliminate its members.
+    //
+    //   The elimination week is the tournament's endWeek. A missing or
+    //   malformed endWeek causes the completion to fail BEFORE the
+    //   mutation runs. An elimination with a fabricated week would be
+    //   a lie in the historical record.
+    //
+    //   Last-wins: if a participant already has an elimination for
+    //   this tournament (from an earlier failure, a second chance),
+    //   the existing elimination is removed and the new one is
+    //   written. One elimination per (characterId, tournamentId).
 
     function completeMatch(tournamentId, roundId, matchId, result) {
         if (!isObject(result)) {
@@ -1118,6 +1230,36 @@
 
         if (match.status === 'completed') {
             return Promise.resolve(failure('Match is already completed.'));
+        }
+
+        // ---- Elimination week ----
+        // The cascade needs a valid week to write. If the tournament
+        // has no endWeek, we refuse to complete the match rather than
+        // fabricate one. The caller fixes the tournament and retries.
+        var eliminationWeek = Schema.normaliseId(tournament.endWeek);
+        if (eliminationWeek === null) {
+            // Schema.normaliseId won't parse an integer; check directly.
+            var weekNum = parseInt(tournament.endWeek, 10);
+            if (isNaN(weekNum) || weekNum < 1) {
+                return Promise.resolve(failure(
+                    'Tournament has no valid endWeek. ' +
+                    'Cannot determine the elimination week. ' +
+                    'Set the tournament endWeek and retry.'
+                ));
+            }
+            eliminationWeek = weekNum;
+        } else {
+            // normaliseId returned a string; it's not a number. This
+            // shouldn't happen for a well-formed tournament, but we
+            // guard anyway.
+            var parsed = parseInt(eliminationWeek, 10);
+            if (isNaN(parsed) || parsed < 1) {
+                return Promise.resolve(failure(
+                    'Tournament endWeek is malformed. ' +
+                    'Cannot determine the elimination week.'
+                ));
+            }
+            eliminationWeek = parsed;
         }
 
         var type = match.type || 'group_exam';
@@ -1262,8 +1404,14 @@
                 return { valid: true };
             },
             mutate: function(appData) {
-                var snapshotRound = findRoundInSnapshot(
-                    appData, targetTournamentId, targetRoundId
+                var snapshotTournament = findTournamentInSnapshot(
+                    appData, targetTournamentId
+                );
+                if (!snapshotTournament) {
+                    throw new Error('Tournament not found in data store.');
+                }
+                var snapshotRound = Schema.findRoundById(
+                    snapshotTournament, targetRoundId
                 );
                 if (!snapshotRound || !Array.isArray(snapshotRound.matches)) {
                     throw new Error('Round not found in data store.');
@@ -1281,13 +1429,47 @@
                 }
 
                 applyMatchUpdate(snapshotRound.matches[idx], completedMatch);
+
+                // ---- Elimination cascade ----
+                // Runs inside this transaction. Failing participants
+                // are eliminated on both sides. See the module header
+                // for the full contract.
+                var cascade = EliminationCascade.applyFailEliminations(
+                    appData,
+                    snapshotTournament,
+                    snapshotRound.matches[idx],
+                    snapshotRound,
+                    eliminationWeek
+                );
+
+                if (cascade.error) {
+                    // The cascade refuses to write with a bad week. It
+                    // should not have been reachable here because we
+                    // already validated eliminationWeek above, but if
+                    // the snapshot's endWeek differs from the live one
+                    // we surface the error rather than write garbage.
+                    throw new Error(
+                        'Elimination cascade failed: ' + cascade.error
+                    );
+                }
+
                 var promoted = promoteRoundIfComplete(snapshotRound);
+
                 return {
                     match: snapshotRound.matches[idx],
-                    roundPromoted: promoted
+                    roundPromoted: promoted,
+                    eliminationsWritten: cascade.written,
+                    eliminationsReplaced: cascade.replaced,
+                    eliminatedCharacterIds: cascade.characterIds
                 };
             },
-            logMessage: 'Completed match',
+            logMessage: function(result) {
+                if (result && result.eliminationsWritten > 0) {
+                    return 'Completed match (eliminated ' +
+                        result.eliminationsWritten + ' participant(s))';
+                }
+                return 'Completed match';
+            },
             successMessage: 'Match completed successfully.',
             failureMessage: 'Failed to complete match.'
         });
