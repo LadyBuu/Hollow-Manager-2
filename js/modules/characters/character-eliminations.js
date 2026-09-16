@@ -8,8 +8,13 @@
  *   - Add standalone eliminations (via MutationPipeline)
  *   - Remove standalone eliminations (via MutationPipeline)
  *   - Mark / unmark tournament eliminations (via MutationPipeline)
- *   - Query elimination status
+ *   - Remove all eliminations (via MutationPipeline)
  *   - Provide a cascade strip helper for character deletion
+ *
+ *   QUERY functions are DELEGATED to EliminationQueries, which is the
+ *   single source of truth for elimination read semantics. This module
+ *   does NOT reimplement the week-boundary rule or the elimination
+ *   source-of-truth rule.
  *
  * IMPORTANT:
  *   All mutations use MutationPipeline:
@@ -17,14 +22,44 @@
  *   Returns structured results for caller handling.
  *   No UI dependencies. No DOM access.
  *
+ * ELIMINATION vs DECEASED:
+ *   These are separate concepts.
+ *     - An ELIMINATION is a competitive-exam outcome: the character
+ *       is knocked out of the running and cannot participate in
+ *       subsequent exams.
+ *     - DECEASED is a life event: the character is no longer alive.
+ *   A character can be deceased without being eliminated, eliminated
+ *   without being deceased, both, or neither.
+ *
+ *   This module operates on eliminations only. It does not read or
+ *   write character.deceased or character.deathWeek.
+ *
+ * WEEK BOUNDARY SEMANTICS:
+ *   A character eliminated in week N is ELIGIBLE during week N and
+ *   INELIGIBLE from week N+1 onward. "Eliminated at week N" means
+ *   "eliminated at the END of week N", not "at the START".
+ *
+ *   Concretely:
+ *     isCharacterEliminatedByWeek(char, N)       → false
+ *     isCharacterEliminatedByWeek(char, N + 1)   → true
+ *
+ *   The boundary is STRICTLY LESS THAN: an elimination at week E
+ *   counts as "before" week W when E < W.
+ *
  * ELIMINATION SOURCES OF TRUTH:
- *   1. character.eliminations[] — explicit elimination records
- *      (tournament or standalone).
- *   2. character.deceased + character.deathWeek — the death timeline
- *      as an implicit elimination boundary.
- *   Both are checked by isCharacterEliminatedByWeek. The derived
- *   character.eliminatedWeeks[] field is NOT a source of truth; it is
- *   rebuilt from (1) after every mutation.
+ *   character.eliminations[] is the ONLY source of truth. Each entry
+ *   is:
+ *     {
+ *       id: string,
+ *       tournamentId: string | null,
+ *       week: number,
+ *       reason: string,
+ *       standalone: boolean,
+ *       fromMatch: boolean
+ *     }
+ *
+ *   The derived character.eliminatedWeeks[] field is a cache rebuilt
+ *   from (1) after every mutation. It is NOT a source of truth.
  *
  * WEEK SEMANTICS:
  *   Weeks are bounded by CalendarConstants.MIN_WEEK / MAX_WEEK.
@@ -34,6 +69,7 @@
  * DEPENDENCIES (MANDATORY):
  *   - window.CharacterQueries
  *   - window.TournamentQueries
+ *   - window.EliminationQueries
  *   - window.MutationPipeline
  *   - window.IdUtils
  *   - window.CalendarConstants
@@ -46,6 +82,11 @@
  *
  *   CE.markTournamentEliminated('char_123', 'tourn_789', 3)
  *       .then(function(result) { ... });
+ *
+ *   // Read queries (delegated to EliminationQueries):
+ *   var eliminated = CE.isCharacterEliminatedByWeek(charObj, 5);
+ *   var week = CE.getEliminationWeek(charObj);
+ *   var reason = CE.getEliminationReason(charObj);
  */
 
 (function() {
@@ -61,6 +102,7 @@
 
     var CharacterQueries = window.CharacterQueries;
     var TournamentQueries = window.TournamentQueries;
+    var EliminationQueries = window.EliminationQueries;
     var MutationPipeline = window.MutationPipeline;
     var IdUtils = window.IdUtils;
     var CalendarConstants = window.CalendarConstants;
@@ -78,6 +120,22 @@
     if (!TournamentQueries ||
         typeof TournamentQueries.getTournament !== 'function') {
         _missing.push('TournamentQueries.getTournament');
+    }
+    if (!EliminationQueries ||
+        typeof EliminationQueries.isCharacterEliminatedByWeek !== 'function') {
+        _missing.push('EliminationQueries.isCharacterEliminatedByWeek');
+    }
+    if (!EliminationQueries ||
+        typeof EliminationQueries.getEliminationWeek !== 'function') {
+        _missing.push('EliminationQueries.getEliminationWeek');
+    }
+    if (!EliminationQueries ||
+        typeof EliminationQueries.getEliminationReason !== 'function') {
+        _missing.push('EliminationQueries.getEliminationReason');
+    }
+    if (!EliminationQueries ||
+        typeof EliminationQueries.getEliminatedCharacters !== 'function') {
+        _missing.push('EliminationQueries.getEliminatedCharacters');
     }
     if (!MutationPipeline ||
         typeof MutationPipeline.performMutation !== 'function') {
@@ -146,13 +204,18 @@
     }
 
     // ============================================================
-    // CORE QUERIES - Pure functions
+    // DERIVED-CACHE MAINTENANCE
     // ============================================================
 
     /**
      * Rebuild the derived eliminatedWeeks array from eliminations.
      * Mutates the character in place. Called only inside pipeline
      * mutate() callbacks.
+     *
+     * eliminatedWeeks is a convenience cache: a sorted, deduplicated
+     * list of every valid elimination week. It is NOT a source of
+     * truth. Readers that need the semantics should call
+     * EliminationQueries.
      */
     function rebuildEliminatedWeeks(char) {
         if (!char) return;
@@ -173,145 +236,55 @@
         char.eliminatedWeeks.sort(function(a, b) { return a - b; });
     }
 
-    /**
-     * Is the character eliminated by the given week?
-     *
-     * Checks explicit elimination records first, then the death
-     * timeline. A deceased character with no valid deathWeek is
-     * treated as eliminated from week 1.
-     */
-    function isCharacterEliminatedByWeek(char, week) {
-        if (!char) return false;
+    // ============================================================
+    // INTERNAL HELPERS
+    // ============================================================
 
-        var weekNum = parseWeek(week);
-        if (weekNum === null) {
+    /**
+     * Does this character have an elimination record with the given
+     * week? Used for preflight duplicate detection. This is a
+     * shape-level check, not a semantic one — it asks "is there an
+     * elimination at exactly this week", not "is this character
+     * eliminated at or before this week".
+     */
+    function hasEliminationAtWeek(char, weekNum) {
+        if (!char || !Array.isArray(char.eliminations)) {
             return false;
         }
-
-        // Explicit elimination records.
-        var eliminations = Array.isArray(char.eliminations)
-            ? char.eliminations
-            : [];
-        for (var i = 0; i < eliminations.length; i++) {
-            var elimWeek = parseWeek(eliminations[i].week);
-            if (elimWeek !== null && elimWeek <= weekNum) {
+        for (var i = 0; i < char.eliminations.length; i++) {
+            var w = parseWeek(char.eliminations[i].week);
+            if (w !== null && w === weekNum) {
                 return true;
             }
         }
-
-        // Death timeline.
-        if (char.deceased) {
-            var deathWeek = parseWeek(char.deathWeek);
-            var hasValidDeathWeek = (
-                char.deathWeek !== undefined &&
-                char.deathWeek !== null &&
-                char.deathWeek !== '' &&
-                deathWeek !== null
-            );
-
-            if (hasValidDeathWeek) {
-                return deathWeek <= weekNum;
-            }
-            return true;
-        }
-
         return false;
     }
 
-    /**
-     * Earliest week at which the character is eliminated.
-     * Considers explicit eliminations and the death timeline.
-     */
-    function getEliminationWeek(char) {
-        if (!char) return null;
+    // ============================================================
+    // QUERIES - DELEGATED TO EliminationQueries
+    // ============================================================
+    //
+    // These are pass-throughs. The canonical implementation lives in
+    // EliminationQueries. Any behaviour change to the week boundary,
+    // the source-of-truth rule, or the treatment of deceased
+    // characters belongs there, not here.
 
-        var eliminations = Array.isArray(char.eliminations)
-            ? char.eliminations
-            : [];
-        var earliest = null;
-
-        for (var i = 0; i < eliminations.length; i++) {
-            var week = parseWeek(eliminations[i].week);
-            if (week !== null) {
-                if (earliest === null || week < earliest) {
-                    earliest = week;
-                }
-            }
-        }
-
-        if (char.deceased) {
-            var deathWeek = parseWeek(char.deathWeek);
-            var hasValidDeathWeek = (
-                char.deathWeek !== undefined &&
-                char.deathWeek !== null &&
-                char.deathWeek !== '' &&
-                deathWeek !== null
-            );
-
-            if (hasValidDeathWeek) {
-                if (earliest === null || deathWeek < earliest) {
-                    earliest = deathWeek;
-                }
-            } else {
-                if (earliest === null || MIN_WEEK < earliest) {
-                    earliest = MIN_WEEK;
-                }
-            }
-        }
-
-        return earliest;
+    function isCharacterEliminatedByWeek(charIdOrObject, week) {
+        return EliminationQueries.isCharacterEliminatedByWeek(
+            charIdOrObject, week
+        );
     }
 
-    /**
-     * Human-readable reason for the character's elimination.
-     */
-    function getEliminationReason(char) {
-        if (!char) return 'Unknown';
-
-        var eliminations = Array.isArray(char.eliminations)
-            ? char.eliminations
-            : [];
-
-        for (var i = 0; i < eliminations.length; i++) {
-            if (eliminations[i] && eliminations[i].reason) {
-                return eliminations[i].reason;
-            }
-        }
-
-        if (char.deceased && char.deathCause) {
-            return 'Deceased: ' + char.deathCause;
-        }
-        if (char.deceased) {
-            return 'Deceased';
-        }
-
-        return 'Unknown';
+    function getEliminationWeek(charIdOrObject) {
+        return EliminationQueries.getEliminationWeek(charIdOrObject);
     }
 
-    /**
-     * IDs of every character eliminated at or before the given week.
-     */
+    function getEliminationReason(charIdOrObject) {
+        return EliminationQueries.getEliminationReason(charIdOrObject);
+    }
+
     function getEliminatedCharacters(week, characters) {
-        var weekNum = parseWeek(week);
-        if (weekNum === null) {
-            return [];
-        }
-
-        if (!characters) {
-            var data = window.data || {};
-            characters = Array.isArray(data.characters)
-                ? data.characters
-                : [];
-        }
-
-        var result = [];
-        for (var i = 0; i < characters.length; i++) {
-            var char = characters[i];
-            if (isCharacterEliminatedByWeek(char, weekNum)) {
-                result.push(char.id);
-            }
-        }
-        return result;
+        return EliminationQueries.getEliminatedCharacters(week, characters);
     }
 
     // ============================================================
@@ -347,11 +320,18 @@
             });
         }
 
-        if (isCharacterEliminatedByWeek(char, weekNum)) {
+        // Preflight duplicate check: reject when the character
+        // already has an elimination at exactly this week. This is
+        // independent of the "eliminated before week N" semantic:
+        // a character who is going to be eliminated at week N for
+        // the first time is not yet "eliminated before week N", so
+        // the strictly-less-than boundary would not catch a
+        // same-week duplicate.
+        if (hasEliminationAtWeek(char, weekNum)) {
             return Promise.resolve({
                 success: false,
-                message: 'This character is already eliminated at or ' +
-                    'before week ' + weekNum + '.'
+                message: 'This character already has an elimination ' +
+                    'recorded for week ' + weekNum + '.'
             });
         }
 
@@ -366,11 +346,11 @@
                         message: 'Character no longer exists.'
                     };
                 }
-                if (isCharacterEliminatedByWeek(currentChar, weekNum)) {
+                if (hasEliminationAtWeek(currentChar, weekNum)) {
                     return {
                         valid: false,
-                        message: 'Character is already eliminated at or ' +
-                            'before week ' + weekNum + '.'
+                        message: 'Character already has an elimination ' +
+                            'recorded for week ' + weekNum + '.'
                     };
                 }
                 return { valid: true };
@@ -580,14 +560,10 @@
             });
         }
 
-        if (isCharacterEliminatedByWeek(char, weekNum)) {
-            return Promise.resolve({
-                success: false,
-                message: 'Character is already eliminated at or ' +
-                    'before week ' + weekNum + '.'
-            });
-        }
-
+        // Preflight duplicate: reject when the character already has
+        // an elimination for this tournament. Tournaments span one
+        // week block; the (character, tournament) pair is the
+        // identity, not the week.
         var alreadyExists = false;
         if (Array.isArray(char.eliminations)) {
             alreadyExists = char.eliminations.some(function(e) {
@@ -621,13 +597,6 @@
                     return {
                         valid: false,
                         message: 'Tournament no longer exists.'
-                    };
-                }
-                if (isCharacterEliminatedByWeek(currentChar, weekNum)) {
-                    return {
-                        valid: false,
-                        message: 'Character is already eliminated at or ' +
-                            'before week ' + weekNum + '.'
                     };
                 }
                 var currentExists = false;
@@ -956,7 +925,7 @@
         unmarkTournamentEliminated: unmarkTournamentEliminated,
         removeAllEliminations: removeAllEliminations,
 
-        // Queries
+        // Queries (delegated to EliminationQueries)
         isCharacterEliminatedByWeek: isCharacterEliminatedByWeek,
         getEliminationWeek: getEliminationWeek,
         getEliminationReason: getEliminationReason,
