@@ -2,6 +2,22 @@
  * shared/constants/character-constants.js - Character Constants
  * Single source of truth for all character-related constants
  * 
+ * STATUS TIERS:
+ *   - STUDENT_STATUSES:     trainee, rookie, junior, senior, student
+ *   - INSTRUCTOR_STATUSES:  instructor, teacher, professor
+ *   - SUPPORT_STATUSES:     support
+ *   - All others fall through as civilian/unknown.
+ * 
+ *   `senior` is a STUDENT tier. A senior is a final-year student,
+ *   not a teacher. The previous classification as instructor was a
+ *   legacy conflation that excluded seniors from academic team
+ *   membership eligibility and from any other student-scoped query.
+ * 
+ *   `support` is its own tier. Support staff (medics, technicians,
+ *   administrative roles) are neither students nor instructors.
+ *   They are excluded from student-scoped and instructor-scoped
+ *   queries alike.
+ * 
  * DEPENDENCIES:
  *   - None (self-contained)
  */
@@ -192,8 +208,26 @@
         { value: 'support',    label: 'Support' }
     ];
 
-    var STUDENT_STATUSES = ['trainee', 'rookie', 'junior'];
-    var INSTRUCTOR_STATUSES = ['instructor', 'teacher', 'professor', 'senior'];
+    // ============================================================
+    // STATUS TIERS
+    // ============================================================
+    //
+    // The three tiers are DISJOINT. A status string belongs to at
+    // most one tier. The predicates below (isStudentStatus,
+    // isInstructorStatus, isSupportStatus) are mutually exclusive.
+    //
+    // `senior` is a student tier: final-year students, still enrolled,
+    // still members of academic teams, still participants in exams.
+    //
+    // `support` is its own tier: non-teaching, non-enrolled staff.
+    // Medics, technicians, administrators. They are excluded from
+    // both student-scoped and instructor-scoped queries.
+    //
+    // `instructor` and its synonyms are the only teaching tier.
+
+    var STUDENT_STATUSES = ['trainee', 'rookie', 'junior', 'senior', 'student'];
+    var INSTRUCTOR_STATUSES = ['instructor', 'teacher', 'professor'];
+    var SUPPORT_STATUSES = ['support'];
 
     // ============================================================
     // NAME FORMATS
@@ -286,6 +320,34 @@
     function isInstructorStatus(status) {
         if (!status || typeof status !== 'string') { return false; }
         return INSTRUCTOR_STATUSES.indexOf(status.toLowerCase()) !== -1;
+    }
+
+    function isSupportStatus(status) {
+        if (!status || typeof status !== 'string') { return false; }
+        return SUPPORT_STATUSES.indexOf(status.toLowerCase()) !== -1;
+    }
+
+    /**
+     * Classify a status string into one of the three tiers.
+     * Returns 'student', 'instructor', 'support', or null.
+     *
+     * Status strings with a ' (Former)' suffix are classified by
+     * their base tier. A former instructor is still classified as an
+     * instructor — they taught, they may still be referenced as one.
+     * If a caller wants "is currently an instructor," they should
+     * check the career status history directly, not this classifier.
+     */
+    function classifyStatus(status) {
+        if (!status || typeof status !== 'string') { return null; }
+        var base = status.toLowerCase();
+        var formerIndex = base.indexOf(' (former)');
+        if (formerIndex !== -1) {
+            base = base.substring(0, formerIndex).trim();
+        }
+        if (STUDENT_STATUSES.indexOf(base) !== -1) { return 'student'; }
+        if (INSTRUCTOR_STATUSES.indexOf(base) !== -1) { return 'instructor'; }
+        if (SUPPORT_STATUSES.indexOf(base) !== -1) { return 'support'; }
+        return null;
     }
 
     function getAttractionValues() { return ATTRACTION_VALUES.slice(); }
@@ -389,6 +451,30 @@
             errors.push('MP bounds invalid.');
         }
 
+        // ---- Status tier disjointness ----
+        // The three tiers must not overlap. A status string in two
+        // tiers would make classifyStatus non-deterministic.
+        var studentSet = Object.create(null);
+        STUDENT_STATUSES.forEach(function(s) { studentSet[s] = true; });
+        var instructorSet = Object.create(null);
+        INSTRUCTOR_STATUSES.forEach(function(s) { instructorSet[s] = true; });
+        var supportSet = Object.create(null);
+        SUPPORT_STATUSES.forEach(function(s) { supportSet[s] = true; });
+
+        STUDENT_STATUSES.forEach(function(s) {
+            if (instructorSet[s]) {
+                errors.push('Status "' + s + '" is in both STUDENT_STATUSES and INSTRUCTOR_STATUSES.');
+            }
+            if (supportSet[s]) {
+                errors.push('Status "' + s + '" is in both STUDENT_STATUSES and SUPPORT_STATUSES.');
+            }
+        });
+        INSTRUCTOR_STATUSES.forEach(function(s) {
+            if (supportSet[s]) {
+                errors.push('Status "' + s + '" is in both INSTRUCTOR_STATUSES and SUPPORT_STATUSES.');
+            }
+        });
+
         if (errors.length > 0) {
             console.warn('[CharacterConstants] Validation errors:', errors);
         }
@@ -408,6 +494,7 @@
     deepFreeze(CAREER_STATUS_OPTIONS);
     deepFreeze(STUDENT_STATUSES);
     deepFreeze(INSTRUCTOR_STATUSES);
+    deepFreeze(SUPPORT_STATUSES);
     deepFreeze(NAME_FORMATS);
     deepFreeze(ATTRACTION_VALUES);
     deepFreeze(SEXUALITY_VALUES);
@@ -457,6 +544,7 @@
         CAREER_STATUS_OPTIONS: CAREER_STATUS_OPTIONS,
         STUDENT_STATUSES: STUDENT_STATUSES,
         INSTRUCTOR_STATUSES: INSTRUCTOR_STATUSES,
+        SUPPORT_STATUSES: SUPPORT_STATUSES,
 
         // Names
         NAME_FORMATS: NAME_FORMATS,
@@ -487,6 +575,8 @@
         getCareerStatusLabels: getCareerStatusLabels,
         isStudentStatus: isStudentStatus,
         isInstructorStatus: isInstructorStatus,
+        isSupportStatus: isSupportStatus,
+        classifyStatus: classifyStatus,
 
         getAttractionValues: getAttractionValues,
         getSexualityValues: getSexualityValues,
