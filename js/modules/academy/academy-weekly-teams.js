@@ -32,29 +32,15 @@
  *
  *   - removeMemberRecord(classId, teamId, charId)
  *     Hard-deletes the membership entry as if it never existed.
- *     Used for administrative cleanup.
  *
  *   - removeTeamRecord(classId, teamId)
- *     Hard-deletes the entire weekly-team record. Used by the
- *     class-delete cascade and administrative cleanup.
- *
- * READ SAFETY:
- *   - Reads never create the store.
- *   - Public reads return DEEP CLONES.
- *   - Internal accessors used inside pipeline callbacks return
- *     live references from the appData snapshot.
+ *     Hard-deletes the entire weekly-team record.
  *
  * WEEK SEMANTICS:
  *   - Weeks are bounded [MIN_WEEK, MAX_WEEK].
  *   - startWeek and endWeek are integers in that range.
  *   - endWeek === null means "ongoing".
  *   - endWeek is INCLUSIVE.
- *
- * CASCADE SEMANTICS:
- *   stripCharacterRefs / stripClassRefs / stripTeamRefs are PURE
- *   with respect to appData. They mutate the snapshot, never touch
- *   window.data, and never throw. They run inside another module's
- *   pipeline transaction.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.ObjectUtils          (deepClone)
@@ -64,15 +50,6 @@
  *   - window.MutationPipeline     (performMutation)
  *   - window.TeamQueries          (getTeamById)
  *   - window.TeamConstants        (parsePeriod, getPeriodRange)
- *
- * USAGE:
- *   var AWT = window.AcademyWeeklyTeams;
- *
- *   AWT.addMember(classId, teamId, charId, week);
- *   AWT.endMembership(classId, teamId, charId, effectiveWeek);
- *   AWT.removeMemberRecord(classId, teamId, charId);
- *   AWT.getActiveMembers(classId, teamId, week);
- *   AWT.getWeeklyTeams(classId, week);   // roster map for the week
  */
 
 (function() {
@@ -82,9 +59,6 @@
         return;
     }
 
-    // ============================================================
-    // DIAGNOSTIC FLAG
-    // ============================================================
     var _DIAGNOSTIC = true;
 
     function diag() {
@@ -148,8 +122,6 @@
     window.__academyWeeklyTeamsLoaded = true;
 
     diag('Module loaded.');
-    diag('  TeamQueries:', !!TeamQueries);
-    diag('  MutationPipeline:', !!MutationPipeline);
 
     // ============================================================
     // CONSTANTS
@@ -201,11 +173,6 @@
         return parsed;
     }
 
-    /**
-     * Return the team's window from TeamQueries, as integers or null.
-     * Returns { start, end } where end === null means "no end period".
-     * Returns null when the team is not found.
-     */
     function getTeamWindow(teamId) {
         if (!isNonEmptyString(teamId)) {
             return null;
@@ -219,14 +186,10 @@
         return {
             team: team,
             start: start,
-            end: end  // null when not set
+            end: end
         };
     }
 
-    /**
-     * Is `week` inside the closed interval [start, end]?
-     * `start` is required. `end` may be null (unbounded).
-     */
     function weekInRange(week, start, end) {
         if (start === null || start === undefined) {
             return false;
@@ -240,10 +203,58 @@
         return true;
     }
 
-    function rangesOverlap(s1, e1, s2, e2) {
-        var endA = (e1 === null || e1 === undefined) ? Infinity : e1;
-        var endB = (e2 === null || e2 === undefined) ? Infinity : e2;
-        return s1 <= endB && s2 <= endA;
+    function memberActiveInWeek(member, week) {
+        if (!member || typeof member !== 'object') {
+            return false;
+        }
+        var start = member.startWeek;
+        if (start === null || start === undefined) {
+            return false;
+        }
+        if (week < start) {
+            return false;
+        }
+        if (member.endWeek !== null && member.endWeek !== undefined &&
+            week > member.endWeek) {
+            return false;
+        }
+        return true;
+    }
+
+    function recordActiveInWeek(record, week) {
+        if (!record) {
+            return false;
+        }
+        return weekInRange(week, record.startWeek, record.endWeek);
+    }
+
+    /**
+     * Is the persistent Team entity itself visible in the given week?
+     * This is the TEAM's own window, not the weekly-team record's
+     * window. Both must agree for a team to appear in a given week.
+     *
+     * A team with no startPeriod and no endPeriod is treated as
+     * "always visible" — there is nothing to constrain it.
+     */
+    function isPersistentTeamVisibleInWeek(teamId, week) {
+        var windowInfo = getTeamWindow(teamId);
+        if (!windowInfo) {
+            return false;
+        }
+
+        var start = windowInfo.start;
+        var end = windowInfo.end;
+
+        if (start === null && end === null) {
+            return true;
+        }
+        if (start !== null && week < start) {
+            return false;
+        }
+        if (end !== null && week > end) {
+            return false;
+        }
+        return true;
     }
 
     // ============================================================
@@ -310,56 +321,14 @@
     }
 
     // ============================================================
-    // MEMBER-RANGE HELPERS
-    // ============================================================
-
-    /**
-     * Is the member entry active in `week`?
-     */
-    function memberActiveInWeek(member, week) {
-        if (!member || typeof member !== 'object') {
-            return false;
-        }
-        var start = member.startWeek;
-        if (start === null || start === undefined) {
-            return false;
-        }
-        if (week < start) {
-            return false;
-        }
-        if (member.endWeek !== null && member.endWeek !== undefined &&
-            week > member.endWeek) {
-            return false;
-        }
-        return true;
-    }
-
-    /**
-     * Is the weekly-team record active in `week`?
-     */
-    function recordActiveInWeek(record, week) {
-        if (!record) {
-            return false;
-        }
-        return weekInRange(week, record.startWeek, record.endWeek);
-    }
-
-    // ============================================================
     // PUBLIC READS
     // ============================================================
 
-    /**
-     * Get the raw weekly-team record for a (class, team).
-     * Returns a deep clone or null.
-     */
     function getTeamRecord(classId, teamId) {
         var record = getTeamRecordInternal(classId, teamId);
         return record ? deepClone(record) : null;
     }
 
-    /**
-     * Get every weekly-team record for a class. Returns clones.
-     */
     function getAllTeamRecords(classId) {
         if (!isNonEmptyString(classId)) {
             return [];
@@ -383,10 +352,6 @@
         return result;
     }
 
-    /**
-     * Get members of a team active in a given week.
-     * Returns an array of characterId strings.
-     */
     function getActiveMembers(classId, teamId, week) {
         var weekNum = parseWeekStrict(week);
         if (weekNum === null) {
@@ -409,9 +374,6 @@
         return result;
     }
 
-    /**
-     * Get every member EVER, with their ranges. Includes historical.
-     */
     function getAllMembers(classId, teamId) {
         var record = getTeamRecordInternal(classId, teamId);
         if (!record || !Array.isArray(record.members)) {
@@ -424,7 +386,11 @@
      * Roster map for a class in a given week.
      *
      * Returns { [teamId]: [charId, ...] } for every team in the class
-     * whose weekly-team record is active that week.
+     * whose WEEKLY-TEAM RECORD is active that week AND whose
+     * PERSISTENT TEAM ENTITY is also active that week.
+     *
+     * A team that has ended (persistent endPeriod < week) does not
+     * appear in the map, even if a stale weekly-team record exists.
      */
     function getWeeklyTeams(classId, week) {
         var weekNum = parseWeekStrict(week);
@@ -448,9 +414,17 @@
             if (!isPlainObject(record)) {
                 continue;
             }
+
+            // The weekly-team record's own window.
             if (!recordActiveInWeek(record, weekNum)) {
                 continue;
             }
+
+            // The PERSISTENT Team entity's window.
+            if (!isPersistentTeamVisibleInWeek(teamId, weekNum)) {
+                continue;
+            }
+
             var members = Array.isArray(record.members) ? record.members : [];
             var active = [];
             for (var j = 0; j < members.length; j++) {
@@ -463,9 +437,6 @@
         return result;
     }
 
-    /**
-     * Is a character assigned to any team in a class in a given week?
-     */
     function isCharacterAssigned(classId, week, charId) {
         if (!isNonEmptyString(charId)) {
             return false;
@@ -484,9 +455,6 @@
         return false;
     }
 
-    /**
-     * Get the team ID the character is assigned to in a class for a week.
-     */
     function getAssignedTeamId(classId, week, charId) {
         if (!isNonEmptyString(charId)) {
             return null;
@@ -509,6 +477,26 @@
     function hasAssignments(classId, week) {
         var rosters = getWeeklyTeams(classId, week);
         return Object.keys(rosters).length > 0;
+    }
+
+    /**
+     * Every team ID that has a weekly-team record for this class,
+     * regardless of week. Used by list views that want to know which
+     * teams have ever been assigned at all.
+     */
+    function getAllAssignedTeamIds(classId) {
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
+        var store = getStore();
+        if (!store) {
+            return [];
+        }
+        var byClass = store[String(classId)];
+        if (!isPlainObject(byClass)) {
+            return [];
+        }
+        return Object.keys(byClass);
     }
 
     function getAssignedWeeksForClass(classId) {
@@ -602,17 +590,6 @@
     // MUTATIONS
     // ============================================================
 
-    /**
-     * Add a character to a team's weekly membership.
-     *
-     * Records "from `week` onward." If the character already has an
-     * active membership at `week` in this team, this is a no-op.
-     *
-     * If the character has an *ended* membership that overlaps with
-     * the requested start, the mutation is refused: the caller must
-     * decide whether to reopen the closed membership or add a new
-     * one after the end.
-     */
     function addMember(classId, teamId, charId, week) {
         diag('addMember CALLED', { classId, teamId, charId, week });
 
@@ -668,7 +645,6 @@
                     record.members = [];
                 }
 
-                // Check for an existing entry for this character.
                 var existingIndex = -1;
                 for (var i = 0; i < record.members.length; i++) {
                     if (String(record.members[i].characterId) === targetChar) {
@@ -681,27 +657,19 @@
                     var existing = record.members[existingIndex];
 
                     if (memberActiveInWeek(existing, weekNum)) {
-                        // Already a member at this week. No-op.
                         return { added: false, reason: 'already-active' };
                     }
 
                     if (existing.endWeek !== null && existing.endWeek !== undefined &&
                         existing.endWeek >= weekNum) {
-                        // Shouldn't happen since memberActiveInWeek would
-                        // have caught it. Defensive.
                         return { added: false, reason: 'already-active' };
                     }
 
-                    // Reopen the membership from `weekNum` onward.
-                    // The previous window is preserved by opening a
-                    // new entry immediately after it, so history
-                    // survives.
-                    var newMember = {
+                    record.members.push({
                         characterId: targetChar,
                         startWeek: weekNum,
                         endWeek: null
-                    };
-                    record.members.push(newMember);
+                    });
                 } else {
                     record.members.push({
                         characterId: targetChar,
@@ -720,16 +688,6 @@
         });
     }
 
-    /**
-     * End a member's participation from `effectiveWeek` onward.
-     *
-     * Their active window becomes [startWeek, effectiveWeek - 1].
-     * This is the ordinary "leave the team" operation. History
-     * survives; only the tail is truncated.
-     *
-     * If the membership already ended at or before effectiveWeek - 1,
-     * no change is made.
-     */
     function endMembership(classId, teamId, charId, effectiveWeek) {
         diag('endMembership CALLED',
             { classId, teamId, charId, effectiveWeek });
@@ -770,7 +728,6 @@
                     return { ended: false, reason: 'no-team' };
                 }
 
-                // Find the currently-active membership for this char.
                 var matchedIndex = -1;
                 for (var i = 0; i < record.members.length; i++) {
                     var m = record.members[i];
@@ -790,9 +747,6 @@
                 var member = record.members[matchedIndex];
 
                 if (member.startWeek >= weekNum) {
-                    // They start AT or AFTER the effective end week.
-                    // Nothing to end. This is defensive: we shouldn't
-                    // have matched in that case.
                     return { ended: false, reason: 'starts-after' };
                 }
 
@@ -812,11 +766,6 @@
         });
     }
 
-    /**
-     * Hard-delete a member's record entirely. Administrative cleanup.
-     *
-     * Does not preserve history.
-     */
     function removeMemberRecord(classId, teamId, charId) {
         if (!isNonEmptyString(classId) ||
             !isNonEmptyString(teamId) ||
@@ -863,10 +812,6 @@
         });
     }
 
-    /**
-     * Hard-delete an entire weekly-team record. Used by class-delete
-     * cascade and administrative cleanup.
-     */
     function removeTeamRecord(classId, teamId) {
         if (!isNonEmptyString(classId) || !isNonEmptyString(teamId)) {
             return Promise.resolve(failure('Class and team IDs are required.'));
@@ -909,17 +854,6 @@
     // CASCADE HELPERS
     // ============================================================
 
-    /**
-     * End all memberships for a character from `effectiveWeek`
-     * onward, across every class and team. Used when a character
-     * drops out of the academy.
-     *
-     * Historical records survive; only the tail of each active
-     * membership is truncated.
-     *
-     * If `effectiveWeek` is null, all memberships are ended with
-     * `endWeek = MAX_WEEK` (effectively "they never appear again").
-     */
     function stripCharacterRefs(appData, charId, effectiveWeek) {
         var result = { membershipsEnded: 0 };
 
@@ -957,12 +891,10 @@
                         continue;
                     }
                     if (member.endWeek !== null && member.endWeek !== undefined) {
-                        // Already ended.
                         continue;
                     }
                     if (weekNum !== null) {
                         if (member.startWeek >= weekNum) {
-                            // Membership hasn't started yet.
                             continue;
                         }
                         member.endWeek = weekNum - 1;
@@ -977,10 +909,6 @@
         return result;
     }
 
-    /**
-     * Strip the entire weeklyTeams subtree for a class.
-     * Hard delete. Used by the class-delete cascade.
-     */
     function stripClassRefs(appData, classId) {
         var result = { recordsRemoved: 0 };
 
@@ -1007,10 +935,6 @@
         return result;
     }
 
-    /**
-     * Hard delete a single team's weekly-team record from every class.
-     * Used by the team-delete cascade.
-     */
     function stripTeamRefs(appData, teamId) {
         var result = { recordsRemoved: 0 };
 
@@ -1057,8 +981,10 @@
         isCharacterAssigned: isCharacterAssigned,
         getAssignedTeamId: getAssignedTeamId,
         hasAssignments: hasAssignments,
+        getAllAssignedTeamIds: getAllAssignedTeamIds,
         getAssignedWeeksForClass: getAssignedWeeksForClass,
         getAssignedClassesForWeek: getAssignedClassesForWeek,
+        isPersistentTeamVisibleInWeek: isPersistentTeamVisibleInWeek,
 
         // Mutations
         addMember: addMember,
@@ -1076,30 +1002,17 @@
         MAX_WEEK: MAX_WEEK
     };
 
-    // ============================================================
-    // VERIFICATION
-    // ============================================================
-
     (function verify() {
         var exports = window.AcademyWeeklyTeams;
         var required = [
-            'getTeamRecord',
-            'getAllTeamRecords',
-            'getActiveMembers',
-            'getAllMembers',
-            'getWeeklyTeams',
-            'isCharacterAssigned',
-            'getAssignedTeamId',
-            'hasAssignments',
-            'getAssignedWeeksForClass',
-            'getAssignedClassesForWeek',
-            'addMember',
-            'endMembership',
-            'removeMemberRecord',
+            'getTeamRecord', 'getAllTeamRecords', 'getActiveMembers',
+            'getAllMembers', 'getWeeklyTeams', 'isCharacterAssigned',
+            'getAssignedTeamId', 'hasAssignments', 'getAllAssignedTeamIds',
+            'getAssignedWeeksForClass', 'getAssignedClassesForWeek',
+            'isPersistentTeamVisibleInWeek',
+            'addMember', 'endMembership', 'removeMemberRecord',
             'removeTeamRecord',
-            'stripCharacterRefs',
-            'stripClassRefs',
-            'stripTeamRefs'
+            'stripCharacterRefs', 'stripClassRefs', 'stripTeamRefs'
         ];
         var missing = [];
         for (var i = 0; i < required.length; i++) {
