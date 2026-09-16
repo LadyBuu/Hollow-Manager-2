@@ -18,10 +18,23 @@
  *   Every round- and match-scoped query takes the ID. Resolution goes
  *   through TournamentSchema.findRoundById / findMatchById.
  *
- *   The index-based versions of these functions (getRound with an
- *   index, getMatch with two indices) are GONE. Callers that need
- *   positional ordering use the `index` field on the returned VM or
- *   the `getRoundIndex` helper.
+ *   Positional ordering is provided as a separate concern via
+ *   getRoundIndex / getMatchIndex. Those return display-order
+ *   positions; they are NOT identity.
+ *
+ * ARCHIVED TOURNAMENTS:
+ *   A tournament with a non-null `archivedAt` is considered archived.
+ *   Archived tournaments:
+ *     - are EXCLUDED from getTournaments() and its status-filtered
+ *       variants by default,
+ *     - are EXCLUDED from getTournamentsByClass and
+ *       getTournamentsForWeek by default,
+ *     - are still returned by getTournament(id), which does not filter,
+ *     - can be INCLUDED by passing { includeArchived: true }.
+ *
+ *   getExamForClassAndWeek also excludes archived tournaments by
+ *   default, so the Academy Exams view does not surface archived exams
+ *   as "the active exam for this week."
  *
  * IMPORTANT:
  *   - READ ONLY. This module never mutates data.
@@ -34,24 +47,10 @@
  *   - 'retry' : advanced but not successful
  *   - 'fail'  : not advanced; eliminated from this tournament
  *
- * DEPRECATED FIELDS:
- *   - tournament.winner: accepted on read. Always null on new data.
- *   - match.winner / match.loser: accepted on read. Always null on
- *     new data. Only meaningful for legacy 'standard' matches.
- *
  * DEPENDENCIES (MANDATORY):
  *   - window.TournamentSchema
+ *   - window.CalendarValidation
  *   - window.ObjectUtils
- *   - window.IdUtils
- *
- * USAGE:
- *   var Queries = window.TournamentQueries;
- *
- *   var tournament = Queries.getTournament('tourn_123');
- *   var rounds = Queries.getRounds('tourn_123');
- *   var round = Queries.getRound('tourn_123', 'round_abc');
- *   var match = Queries.getMatch('tourn_123', 'round_abc', 'match_xyz');
- *   var passers = Queries.getFinalPassers('tourn_123');
  */
 
 (function() {
@@ -66,8 +65,8 @@
     // ============================================================
 
     var Schema = window.TournamentSchema;
+    var CalendarValidation = window.CalendarValidation;
     var ObjectUtils = window.ObjectUtils;
-    var IdUtils = window.IdUtils;
 
     var _missing = [];
 
@@ -76,6 +75,12 @@
     }
     if (!Schema || typeof Schema.findMatchById !== 'function') {
         _missing.push('TournamentSchema.findMatchById');
+    }
+    if (!Schema || typeof Schema.findRoundIndexById !== 'function') {
+        _missing.push('TournamentSchema.findRoundIndexById');
+    }
+    if (!Schema || typeof Schema.findMatchIndexById !== 'function') {
+        _missing.push('TournamentSchema.findMatchIndexById');
     }
     if (!Schema || typeof Schema.deriveAdvancing !== 'function') {
         _missing.push('TournamentSchema.deriveAdvancing');
@@ -95,11 +100,12 @@
     if (!Schema || typeof Schema.normaliseId !== 'function') {
         _missing.push('TournamentSchema.normaliseId');
     }
+    if (!CalendarValidation ||
+        typeof CalendarValidation.parseWeek !== 'function') {
+        _missing.push('CalendarValidation.parseWeek');
+    }
     if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
         _missing.push('ObjectUtils.deepClone');
-    }
-    if (!IdUtils || typeof IdUtils.normaliseId !== 'function') {
-        _missing.push('IdUtils.normaliseId');
     }
 
     if (_missing.length > 0) {
@@ -125,7 +131,9 @@
 
     function deepClone(value) {
         var result = ObjectUtils.deepClone(value);
-        if (result === value && value !== null && typeof value === 'object') {
+        if (result === value &&
+            value !== null &&
+            typeof value === 'object') {
             throw new Error(
                 '[TournamentQueries] deepClone aliased the input.'
             );
@@ -144,17 +152,29 @@
     }
 
     function parseWeek(value) {
-        var num = parseInt(value, 10);
-        if (isNaN(num) || num < 1 || num > 52) {
-            return null;
-        }
-        return num;
+        return CalendarValidation.parseWeek(value);
+    }
+
+    function isArchived(tournament) {
+        if (!tournament) { return false; }
+        return tournament.archivedAt !== undefined &&
+               tournament.archivedAt !== null &&
+               tournament.archivedAt !== '';
     }
 
     // ============================================================
     // TOURNAMENT READS
     // ============================================================
 
+    /**
+     * Get a tournament by ID.
+     *
+     * This is the ONE query that does NOT filter archived tournaments.
+     * Callers that want to hide archived tournaments should check
+     * `archivedAt` on the returned record.
+     *
+     * @returns {object|null} Defensive clone, or null.
+     */
     function getTournament(id) {
         var normalised = normaliseId(id);
         if (normalised === null) {
@@ -175,7 +195,20 @@
         return null;
     }
 
-    function getTournaments(status) {
+    /**
+     * Get all tournaments, optionally filtered by status.
+     *
+     * Archived tournaments are excluded by default. Pass
+     * { includeArchived: true } to include them.
+     *
+     * @param {string} [status] - filter by status
+     * @param {object} [options] - { includeArchived: boolean }
+     * @returns {array} Array of defensive clones.
+     */
+    function getTournaments(status, options) {
+        options = options || {};
+        var includeArchived = options.includeArchived === true;
+
         var store = getStore();
         if (!store) {
             return [];
@@ -187,26 +220,36 @@
         for (var i = 0; i < store.length; i++) {
             var t = store[i];
             if (!t) { continue; }
+
+            if (!includeArchived && isArchived(t)) { continue; }
             if (filterStatus && t.status !== filterStatus) { continue; }
+
             result.push(deepClone(t));
         }
 
         return result;
     }
 
-    function getActiveTournaments() {
-        return getTournaments('active');
+    function getActiveTournaments(options) {
+        return getTournaments('active', options);
     }
 
-    function getCompletedTournaments() {
-        return getTournaments('completed');
+    function getCompletedTournaments(options) {
+        return getTournaments('completed', options);
     }
 
-    function getDraftTournaments() {
-        return getTournaments('draft');
+    function getDraftTournaments(options) {
+        return getTournaments('draft', options);
     }
 
-    function getTournamentsByClass(classId) {
+    /**
+     * Get tournaments for a class.
+     * Archived tournaments excluded by default.
+     */
+    function getTournamentsByClass(classId, options) {
+        options = options || {};
+        var includeArchived = options.includeArchived === true;
+
         var normalised = normaliseId(classId);
         if (normalised === null) {
             return [];
@@ -221,6 +264,7 @@
         for (var i = 0; i < store.length; i++) {
             var t = store[i];
             if (!t) { continue; }
+            if (!includeArchived && isArchived(t)) { continue; }
             if (normaliseId(t.graduatingClassId) !== normalised) {
                 continue;
             }
@@ -229,7 +273,14 @@
         return result;
     }
 
-    function getTournamentsForWeek(week) {
+    /**
+     * Get tournaments active during a week.
+     * Archived tournaments excluded by default.
+     */
+    function getTournamentsForWeek(week, options) {
+        options = options || {};
+        var includeArchived = options.includeArchived === true;
+
         var weekNum = parseWeek(week);
         if (weekNum === null) {
             return [];
@@ -244,6 +295,7 @@
         for (var i = 0; i < store.length; i++) {
             var t = store[i];
             if (!t) { continue; }
+            if (!includeArchived && isArchived(t)) { continue; }
             var start = parseWeek(t.startWeek);
             var end = parseWeek(t.endWeek);
             if (start === null || end === null) { continue; }
@@ -254,6 +306,15 @@
         return result;
     }
 
+    /**
+     * Get the exam for a (class, week) pair.
+     *
+     * Archived tournaments are excluded. If multiple tournaments match
+     * (which should not happen under the current creation rules), the
+     * first match wins.
+     *
+     * @returns {object|null} Defensive clone, or null.
+     */
     function getExamForClassAndWeek(classId, week) {
         var normalised = normaliseId(classId);
         if (normalised === null) {
@@ -273,6 +334,7 @@
         for (var i = 0; i < store.length; i++) {
             var t = store[i];
             if (!t) { continue; }
+            if (isArchived(t)) { continue; }
             if (normaliseId(t.graduatingClassId) !== normalised) {
                 continue;
             }
@@ -354,7 +416,11 @@
         return null;
     }
 
-    function isParticipantInTournament(tournamentId, participantId, participantType) {
+    function isParticipantInTournament(
+        tournamentId,
+        participantId,
+        participantType
+    ) {
         var normalised = normaliseId(participantId);
         if (normalised === null) {
             return false;
@@ -457,8 +523,7 @@
      * Get a round's matches.
      * @param {string} tournamentId
      * @param {string} roundId
-     * @returns {array} Array of match records (clones of the round's
-     *   live matches).
+     * @returns {array} Array of match records (clones).
      */
     function getMatches(tournamentId, roundId) {
         var round = getRound(tournamentId, roundId);
@@ -514,26 +579,31 @@
     }
 
     /**
-     * @deprecated No winner concept anymore. Returns null on new data.
-     */
-    function getMatchWinner(tournamentId, roundId, matchId) {
-        var match = getMatch(tournamentId, roundId, matchId);
-        if (!match) { return null; }
-        return match.winner || null;
-    }
-
-    /**
      * Get the raw result value for a participant in a match.
      * Returns 'pass' | 'fail' | 'retry' | null.
+     *
+     * SEMANTICS:
+     *   group_exam   : results[participantId]
+     *   team_vs_team : teamResults[participantId] if present,
+     *                  otherwise individualResults[participantId]
+     *
+     * For team_vs_team, the participant may be either a team ID or a
+     * character ID (for individual member results). This function
+     * checks teamResults first, then individualResults.
      */
-    function getParticipantResult(tournamentId, roundId, matchId, participantId) {
+    function getParticipantResult(
+        tournamentId,
+        roundId,
+        matchId,
+        participantId
+    ) {
         var match = getMatch(tournamentId, roundId, matchId);
         if (!match) { return null; }
 
         var normalised = normaliseId(participantId);
         if (normalised === null) { return null; }
 
-        var type = match.type || 'group_exam';
+        var type = match.type;
 
         if (type === 'group_exam') {
             if (match.results &&
@@ -555,29 +625,21 @@
             return null;
         }
 
-        if (type === 'standard') {
-            if (match.winner &&
-                normaliseId(match.winner) === normalised) {
-                return 'pass';
-            }
-            if (match.loser &&
-                normaliseId(match.loser) === normalised) {
-                return 'fail';
-            }
-            return null;
-        }
-
         return null;
     }
 
     /**
      * Get the full result map for a match, keyed by participant ID.
+     *
+     * For team_vs_team, team results and individual results are
+     * merged into a single map. If a key appears in both maps, the
+     * individual result takes precedence (it is more specific).
      */
     function getMatchResults(tournamentId, roundId, matchId) {
         var match = getMatch(tournamentId, roundId, matchId);
         if (!match) { return {}; }
 
-        var type = match.type || 'group_exam';
+        var type = match.type;
 
         if (type === 'group_exam') {
             return deepClone(match.results || {});
@@ -594,17 +656,6 @@
                 combined[k] = indResults[k];
             });
             return combined;
-        }
-
-        if (type === 'standard') {
-            var legacy = {};
-            if (match.winner) {
-                legacy[normaliseId(match.winner)] = 'pass';
-            }
-            if (match.loser) {
-                legacy[normaliseId(match.loser)] = 'fail';
-            }
-            return legacy;
         }
 
         return {};
@@ -663,6 +714,10 @@
     // ELIMINATION READS
     // ============================================================
 
+    /**
+     * Get every elimination record for a tournament.
+     * @returns {array} Defensive clones of elimination records.
+     */
     function getEliminations(tournamentId) {
         var tournament = getTournament(tournamentId);
         if (!tournament || !Array.isArray(tournament.eliminations)) {
@@ -701,20 +756,46 @@
         return getEliminationRecord(tournamentId, participantId) !== null;
     }
 
-    // ============================================================
-    // WINNER (deprecated) AND FINAL PASSERS
-    // ============================================================
+    /**
+     * Get eliminations produced by a specific round.
+     * Useful for debugging and for round-level reversal audits.
+     */
+    function getEliminationsByRound(tournamentId, roundId) {
+        var normalised = normaliseId(roundId);
+        if (normalised === null) { return []; }
+
+        var all = getEliminations(tournamentId);
+        var result = [];
+        for (var i = 0; i < all.length; i++) {
+            var e = all[i];
+            if (e && normaliseId(e.fromRoundId) === normalised) {
+                result.push(e);
+            }
+        }
+        return result;
+    }
 
     /**
-     * @deprecated No winner concept anymore. Returns null on new data.
+     * Get eliminations produced by a specific match.
      */
-    function getWinner(tournamentId) {
-        var tournament = getTournament(tournamentId);
-        if (!tournament || !tournament.winner) {
-            return null;
+    function getEliminationsByMatch(tournamentId, matchId) {
+        var normalised = normaliseId(matchId);
+        if (normalised === null) { return []; }
+
+        var all = getEliminations(tournamentId);
+        var result = [];
+        for (var i = 0; i < all.length; i++) {
+            var e = all[i];
+            if (e && normaliseId(e.fromMatchId) === normalised) {
+                result.push(e);
+            }
         }
-        return deepClone(tournament.winner);
+        return result;
     }
+
+    // ============================================================
+    // FINAL PASSERS
+    // ============================================================
 
     function getFinalPassers(tournamentId) {
         var tournament = getTournament(tournamentId);
@@ -741,7 +822,7 @@
                 completedMatchCount: 0,
                 eliminationCount: 0,
                 finalPasserCount: 0,
-                hasWinner: false
+                archived: false
             };
         }
 
@@ -784,7 +865,7 @@
                 ? tournament.eliminations.length
                 : 0,
             finalPasserCount: getFinalPasserCount(tournamentId),
-            hasWinner: false
+            archived: isArchived(tournament)
         };
     }
 
@@ -822,6 +903,7 @@
         getTournamentsByClass: getTournamentsByClass,
         getTournamentsForWeek: getTournamentsForWeek,
         getExamForClassAndWeek: getExamForClassAndWeek,
+        isArchived: isArchived,
 
         // Participant reads
         getParticipants: getParticipants,
@@ -844,7 +926,6 @@
         getMatchCount: getMatchCount,
         getMatchIndex: getMatchIndex,
         isMatchComplete: isMatchComplete,
-        getMatchWinner: getMatchWinner,
         getParticipantResult: getParticipantResult,
         getMatchResults: getMatchResults,
         getTeamResults: getTeamResults,
@@ -859,9 +940,10 @@
         getEliminationCount: getEliminationCount,
         getEliminationRecord: getEliminationRecord,
         isParticipantEliminated: isParticipantEliminated,
+        getEliminationsByRound: getEliminationsByRound,
+        getEliminationsByMatch: getEliminationsByMatch,
 
-        // Winner (deprecated) and final passers
-        getWinner: getWinner,
+        // Final passers
         getFinalPassers: getFinalPassers,
         getFinalPasserCount: getFinalPasserCount,
 
@@ -874,5 +956,51 @@
         isValidResult: isValidResult,
         validateTournament: validateTournament
     };
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.TournamentQueries;
+        var missing = [];
+
+        var required = [
+            'getTournament', 'getTournaments',
+            'getActiveTournaments', 'getCompletedTournaments',
+            'getDraftTournaments',
+            'getTournamentsByClass', 'getTournamentsForWeek',
+            'getExamForClassAndWeek', 'isArchived',
+            'getParticipants', 'getParticipant', 'getParticipantIds',
+            'getParticipantCount', 'getParticipantTypeFromRecord',
+            'isParticipantInTournament', 'getActiveParticipants',
+            'getRounds', 'getRound', 'getRoundCount', 'getRoundIndex',
+            'getMatches', 'getMatch', 'getMatchCount', 'getMatchIndex',
+            'isMatchComplete', 'getParticipantResult',
+            'getMatchResults', 'getTeamResults', 'getIndividualResults',
+            'getPairings', 'getMatchAdvancing', 'getMatchPassers',
+            'getMatchFailers',
+            'getEliminations', 'getEliminationCount',
+            'getEliminationRecord', 'isParticipantEliminated',
+            'getEliminationsByRound', 'getEliminationsByMatch',
+            'getFinalPassers', 'getFinalPasserCount',
+            'getTournamentStatistics',
+            'isValidTournamentStatus', 'isValidMatchType',
+            'isValidResult', 'validateTournament'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        if (missing.length > 0) {
+            console.warn(
+                '[TournamentQueries] Verification - some exports may be ' +
+                'missing:', missing.join(', ')
+            );
+        }
+    })();
 
 })();
