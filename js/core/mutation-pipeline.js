@@ -55,12 +55,6 @@
  *   - window.ObjectUtils (for deepClone) - MANDATORY
  *   - window.ActivityLog (for activity logging) - MANDATORY
  *   - window.NotificationSystem (for notifications - optional, falls back to alert)
- * 
- * HISTORY:
- *   - Previously depended on window.CoreUtils.deepClone. CoreUtils no longer
- *     exists in the architecture; its responsibilities were split across
- *     ObjectUtils, ValidationUtils, and IdUtils. This module now uses
- *     ObjectUtils.deepClone, which is the canonical deep clone utility.
  */
 
 (function() {
@@ -70,6 +64,25 @@
         return;
     }
     window.__mutationPipelineLoaded = true;
+
+    // ============================================================
+    // DIAGNOSTIC FLAG
+    // ============================================================
+    // Set to true to emit tracing logs. Set to false in production.
+    var _DIAGNOSTIC = true;
+
+    function diag() {
+        if (!_DIAGNOSTIC) return;
+        var args = Array.prototype.slice.call(arguments);
+        args.unshift('[MP]');
+        console.log.apply(console, args);
+    }
+
+    function diagWarn() {
+        var args = Array.prototype.slice.call(arguments);
+        args.unshift('[MP]');
+        console.warn.apply(console, args);
+    }
 
     // ============================================================
     // DEPENDENCY IMPORTS
@@ -102,7 +115,6 @@
             missing.push('ActivityLog.record');
         }
 
-        // NotificationSystem is optional - falls back to alert()
         if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
             console.warn('[MutationPipeline] NotificationSystem not available - notifications will fall back to alert()');
         }
@@ -237,6 +249,27 @@
     }
 
     // ============================================================
+    // DIAGNOSTIC PROBE
+    // ============================================================
+
+    /**
+     * Snapshot the weeklyTeams subtree for logging.
+     * Returns a compact string, or a marker if the subtree is absent.
+     */
+    function probeWeeklyTeams(label) {
+        try {
+            var wt = window.data && window.data.academy && window.data.academy.weeklyTeams;
+            if (!wt) {
+                diag(label, 'weeklyTeams: <absent>');
+                return;
+            }
+            diag(label, 'weeklyTeams:', JSON.stringify(wt));
+        } catch (e) {
+            diag(label, 'weeklyTeams: <probe threw>', e);
+        }
+    }
+
+    // ============================================================
     // EXECUTE MUTATION - Single mutation execution
     // ============================================================
 
@@ -273,6 +306,13 @@
 
                 // ---- PHASE 3: RUN VALIDATION ----
                 var data = window.data;
+
+                diag('--- executeMutation START ---');
+                diag('window.data ref: data === window.data?', data === window.data);
+                diag('data.academy ref: data.academy === window.data.academy?',
+                    data && window.data && data.academy === window.data.academy);
+                probeWeeklyTeams('phase 3 (before validate)');
+
                 var validationResult;
 
                 try {
@@ -288,6 +328,8 @@
                     var errorMsg = validationResult && validationResult.message
                         ? validationResult.message
                         : 'Validation failed.';
+
+                    diagWarn('validation FAILED:', errorMsg);
 
                     if (!skipNotification) {
                         showNotification(errorMsg, 'error');
@@ -309,15 +351,27 @@
                     return;
                 }
 
+                diag('validation OK');
+
                 // ---- PHASE 4: CREATE SNAPSHOT ----
                 var backup = createSafeBackup(data);
+
+                diag('backup created. data === window.data?', data === window.data);
+                diag('backup is clone? backup !== data?', backup !== data);
 
                 // ---- PHASE 5: MUTATE ----
                 var mutationResult;
 
+                diag('--- PHASE 5: MUTATE ---');
+                diag('data === window.data (before mutate)?', data === window.data);
+                diag('data.academy === window.data.academy (before mutate)?',
+                    data && window.data && data.academy === window.data.academy);
+                probeWeeklyTeams('before mutate');
+
                 try {
                     mutationResult = config.mutate(data, backup);
                 } catch (err) {
+                    diagWarn('mutate THREW:', err);
                     try {
                         restoreFromBackup(data, backup);
                     } catch (rollbackErr) {
@@ -345,14 +399,26 @@
                     return;
                 }
 
+                diag('--- AFTER MUTATE ---');
+                diag('data === window.data (after mutate)?', data === window.data);
+                diag('data.academy === window.data.academy (after mutate)?',
+                    data && window.data && data.academy === window.data.academy);
+                probeWeeklyTeams('after mutate');
+
                 // ---- PHASE 6: PERSIST ----
                 var saveOptions = {};
                 if (config._testSaveFailure) {
                     saveOptions._testFailure = true;
                 }
 
+                diag('--- PHASE 6: PERSIST ---');
+                probeWeeklyTeams('before saveWithPromise');
+
                 saveWithPromise(saveOptions)
                     .then(function() {
+                        diag('--- SAVE RESOLVED ---');
+                        probeWeeklyTeams('after save resolves');
+
                         // ---- PHASE 7: LOG ----
                         if (!skipLog) {
                             try {
@@ -391,6 +457,8 @@
                             }
                         }
 
+                        diag('resolving with success:true');
+
                         resolve({
                             success: true,
                             data: dataToReturn,
@@ -400,9 +468,13 @@
                         });
                     })
                     .catch(function(err) {
+                        diagWarn('--- SAVE FAILED, ROLLING BACK ---', err);
+
                         // ---- PHASE 9: ROLLBACK ----
                         try {
                             restoreFromBackup(window.data, backup);
+                            diag('rollback completed');
+                            probeWeeklyTeams('after rollback');
                         } catch (rollbackErr) {
                             reject(new Error('Persistence failed and rollback failed: ' + rollbackErr.message));
                             return;
@@ -440,6 +512,7 @@
                     });
 
             } catch (err) {
+                diagWarn('executeMutation threw:', err);
                 reject(err);
             }
         });
