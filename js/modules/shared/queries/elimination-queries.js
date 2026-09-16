@@ -5,22 +5,43 @@
  * Path: js/shared/queries/elimination-queries.js
  * 
  * This module provides READ-ONLY access to character elimination data.
+ * It is the SINGLE SOURCE OF TRUTH for elimination read semantics.
  * 
- * IMPORTANT:
- *   - READ ONLY - no mutations.
- *   - Reads from window.data.characters directly.
- *   - No dependencies on other modules.
- *   - All query functions return primitive values (boolean, number, string)
- *     or null. No object references escape.
+ * ELIMINATION vs DECEASED:
+ *   These are separate concepts. This module answers questions about
+ *   ELIMINATION only. It does not consult character.deceased or
+ *   character.deathWeek. A character can be deceased without ever
+ *   being eliminated, and eliminated without ever being deceased.
+ *   Callers that want to ask "is this character dead?" use
+ *   CharacterQueries.isDeceased (year-aware) or check char.deceased.
  * 
- * ELIMINATION SOURCES OF TRUTH:
- *   1. character.eliminations[] — explicit elimination records
- *      (tournament or standalone).
- *   2. character.deceased + character.deathWeek — the death timeline
- *      as an implicit elimination boundary.
+ * WEEK BOUNDARY SEMANTICS:
+ *   A character eliminated in week N is ELIGIBLE during week N and
+ *   INELIGIBLE from week N+1 onward. "Eliminated at week N" means
+ *   "eliminated at the END of week N", not "eliminated at the START".
  * 
- *   Both are checked by isCharacterEliminatedByWeek. The derived
- *   character.eliminatedWeeks[] field is NOT the source of truth.
+ *   Concretely:
+ *     isCharacterEliminatedByWeek(char, N)       → false
+ *     isCharacterEliminatedByWeek(char, N + 1)   → true
+ * 
+ *   The boundary is STRICTLY LESS THAN: an elimination at week E is
+ *   "before" week W when E < W.
+ * 
+ * ELIMINATION SOURCE OF TRUTH:
+ *   character.eliminations[] is the ONLY source of truth. Each entry
+ *   is:
+ *     {
+ *       id: string,
+ *       tournamentId: string | null,
+ *       week: number,
+ *       reason: string,
+ *       standalone: boolean,   // true for non-tournament eliminations
+ *       fromMatch: boolean
+ *     }
+ * 
+ *   The derived character.eliminatedWeeks[] field is NOT the source
+ *   of truth. It is a convenience cache maintained by the mutation
+ *   module (character-eliminations.js) and must not be read here.
  * 
  * ID-OR-OBJECT ARGUMENTS:
  *   The primary query functions accept EITHER a character ID or a
@@ -32,16 +53,6 @@
  *   functions in a tight loop with IDs is O(N·M) where N is the
  *   number of calls and M is the character count. For hot paths,
  *   pass the character object.
- * 
- * DEATH-WEEK SEMANTICS:
- *   - Deceased with a valid deathWeek: eliminated from deathWeek.
- *   - Deceased with an invalid/missing deathWeek: eliminated from
- *     week 1 (the character was dead before the timeline started).
- *   - Not deceased: eliminations array is the only source.
- * 
- * WEEK BOUNDS:
- *   Weeks are 1-52. Values outside that range are treated as invalid
- *   and do not participate in elimination calculations.
  * 
  * DEPENDENCIES:
  *   - window.data (canonical state)
@@ -115,15 +126,22 @@
     // ============================================================
 
     /**
-     * Is the character eliminated at or before the given week?
+     * Is the character eliminated BEFORE the given week?
      *
      * SEMANTICS:
-     *   - Checks explicit eliminations first. Any elimination whose
-     *     week is valid and <= the requested week matches.
-     *   - Then checks the death timeline. Deceased with a valid
-     *     deathWeek: matches when deathWeek <= requested week.
-     *     Deceased with an invalid deathWeek: matches for any valid
-     *     requested week (eliminated from week 1).
+     *   A character eliminated in week E is considered "eliminated
+     *   before week W" when E < W. Elimination at week W itself does
+     *   NOT count as eliminated for week W — the character is
+     *   eligible during the week they are eliminated, and ineligible
+     *   from the following week onward.
+     *
+     *   This is the correct boundary for team membership, exam
+     *   eligibility, and ranking participation: a character
+     *   eliminated in week 5 still participates in week 5's events.
+     *
+     *   Only character.eliminations[] is consulted. The deceased
+     *   state is NOT considered. A deceased character with no
+     *   elimination records is NOT eliminated by this function.
      *
      * @param {string|object} charIdOrObject - Character ID or object
      * @param {number|string} week - Week number
@@ -138,45 +156,34 @@
             return false;
         }
 
-        // ---- Explicit eliminations ----
-        if (Array.isArray(char.eliminations)) {
-            for (var i = 0; i < char.eliminations.length; i++) {
-                var elim = char.eliminations[i];
-                if (!elim) { continue; }
-                var elimWeek = parseWeek(elim.week);
-                if (elimWeek !== null && elimWeek >= MIN_WEEK && elimWeek <= MAX_WEEK && elimWeek <= weekNum) {
-                    return true;
-                }
-            }
+        if (!Array.isArray(char.eliminations)) {
+            return false;
         }
 
-        // ---- Death timeline ----
-        if (char.deceased) {
-            var deathWeek = parseWeek(char.deathWeek);
-            var hasValidDeathWeek = (
-                char.deathWeek !== undefined &&
-                char.deathWeek !== null &&
-                char.deathWeek !== '' &&
-                deathWeek !== null &&
-                deathWeek >= MIN_WEEK &&
-                deathWeek <= MAX_WEEK
-            );
+        for (var i = 0; i < char.eliminations.length; i++) {
+            var elim = char.eliminations[i];
+            if (!elim) { continue; }
 
-            if (hasValidDeathWeek) {
-                return deathWeek <= weekNum;
+            var elimWeek = parseWeek(elim.week);
+            if (elimWeek === null) { continue; }
+            if (elimWeek < MIN_WEEK || elimWeek > MAX_WEEK) { continue; }
+
+            // Strictly less than: elimination at week E counts as
+            // "eliminated before week W" only when E < W.
+            if (elimWeek < weekNum) {
+                return true;
             }
-
-            // Deceased without a valid deathWeek: treated as eliminated
-            // from week 1.
-            return true;
         }
 
         return false;
     }
 
     /**
-     * Get the earliest week at which the character is eliminated.
-     * Considers both explicit eliminations and the death timeline.
+     * Get the week at which the character is eliminated.
+     *
+     * Returns the EARLIEST week across all explicit eliminations.
+     * Returns null when the character has no valid elimination
+     * records. The deceased state is NOT considered.
      *
      * @param {string|object} charIdOrObject - Character ID or object
      * @returns {number|null} Week number, or null if not eliminated
@@ -185,44 +192,22 @@
         var char = resolveCharacter(charIdOrObject);
         if (!char) { return null; }
 
-        var earliest = null;
-
-        // ---- Explicit eliminations ----
-        if (Array.isArray(char.eliminations)) {
-            for (var i = 0; i < char.eliminations.length; i++) {
-                var elim = char.eliminations[i];
-                if (!elim) { continue; }
-                var elimWeek = parseWeek(elim.week);
-                if (elimWeek !== null && elimWeek >= MIN_WEEK && elimWeek <= MAX_WEEK) {
-                    if (earliest === null || elimWeek < earliest) {
-                        earliest = elimWeek;
-                    }
-                }
-            }
+        if (!Array.isArray(char.eliminations)) {
+            return null;
         }
 
-        // ---- Death timeline ----
-        if (char.deceased) {
-            var deathWeek = parseWeek(char.deathWeek);
-            var hasValidDeathWeek = (
-                char.deathWeek !== undefined &&
-                char.deathWeek !== null &&
-                char.deathWeek !== '' &&
-                deathWeek !== null &&
-                deathWeek >= MIN_WEEK &&
-                deathWeek <= MAX_WEEK
-            );
+        var earliest = null;
 
-            if (hasValidDeathWeek) {
-                if (earliest === null || deathWeek < earliest) {
-                    earliest = deathWeek;
-                }
-            } else {
-                // Deceased without a valid deathWeek: eliminated from
-                // week 1.
-                if (earliest === null || MIN_WEEK < earliest) {
-                    earliest = MIN_WEEK;
-                }
+        for (var i = 0; i < char.eliminations.length; i++) {
+            var elim = char.eliminations[i];
+            if (!elim) { continue; }
+
+            var elimWeek = parseWeek(elim.week);
+            if (elimWeek === null) { continue; }
+            if (elimWeek < MIN_WEEK || elimWeek > MAX_WEEK) { continue; }
+
+            if (earliest === null || elimWeek < earliest) {
+                earliest = elimWeek;
             }
         }
 
@@ -232,11 +217,13 @@
     /**
      * Get a human-readable reason for the character's elimination.
      *
-     * SEMANTICS:
-     *   - Returns the first explicit elimination's reason when present.
-     *   - Falls back to the death timeline's deathCause.
-     *   - Falls back to 'Deceased' when deceased but no cause.
-     *   - Returns 'Unknown' when not eliminated or no reason found.
+     * Returns the reason from the earliest explicit elimination
+     * record when present. Returns 'Unknown' when the character has
+     * no eliminations with a usable reason.
+     *
+     * Does NOT fall back to character.deathCause. Death is a
+     * separate concept; callers that want the death cause should
+     * ask CharacterQueries.
      *
      * @param {string|object} charIdOrObject - Character ID or object
      * @returns {string}
@@ -245,23 +232,67 @@
         var char = resolveCharacter(charIdOrObject);
         if (!char) { return 'Unknown'; }
 
-        if (Array.isArray(char.eliminations)) {
-            for (var i = 0; i < char.eliminations.length; i++) {
-                var elim = char.eliminations[i];
-                if (elim && typeof elim.reason === 'string' && elim.reason.trim() !== '') {
-                    return elim.reason;
-                }
+        if (!Array.isArray(char.eliminations)) {
+            return 'Unknown';
+        }
+
+        // Prefer the reason from the earliest elimination. We need
+        // to scan once to find the earliest week with a reason, then
+        // return that reason. Records without a reason are skipped.
+        var earliestWeek = null;
+        var earliestReason = null;
+
+        for (var i = 0; i < char.eliminations.length; i++) {
+            var elim = char.eliminations[i];
+            if (!elim) { continue; }
+            if (typeof elim.reason !== 'string') { continue; }
+            if (elim.reason.trim() === '') { continue; }
+
+            var elimWeek = parseWeek(elim.week);
+            if (elimWeek === null) { continue; }
+            if (elimWeek < MIN_WEEK || elimWeek > MAX_WEEK) { continue; }
+
+            if (earliestWeek === null || elimWeek < earliestWeek) {
+                earliestWeek = elimWeek;
+                earliestReason = elim.reason;
             }
         }
 
-        if (char.deceased && char.deathCause) {
-            return 'Deceased: ' + char.deathCause;
-        }
-        if (char.deceased) {
-            return 'Deceased';
+        return earliestReason !== null ? earliestReason : 'Unknown';
+    }
+
+    /**
+     * Get the full elimination record for a character. Returns the
+     * earliest elimination record (an object with id, tournamentId,
+     * week, reason, standalone, fromMatch) or null.
+     *
+     * @param {string|object} charIdOrObject
+     * @returns {object|null}
+     */
+    function getEliminationRecord(charIdOrObject) {
+        var char = resolveCharacter(charIdOrObject);
+        if (!char) { return null; }
+
+        if (!Array.isArray(char.eliminations)) {
+            return null;
         }
 
-        return 'Unknown';
+        var earliest = null;
+
+        for (var i = 0; i < char.eliminations.length; i++) {
+            var elim = char.eliminations[i];
+            if (!elim) { continue; }
+
+            var elimWeek = parseWeek(elim.week);
+            if (elimWeek === null) { continue; }
+            if (elimWeek < MIN_WEEK || elimWeek > MAX_WEEK) { continue; }
+
+            if (earliest === null || elimWeek < earliest.week) {
+                earliest = elim;
+            }
+        }
+
+        return earliest;
     }
 
     // ============================================================
@@ -269,8 +300,11 @@
     // ============================================================
 
     /**
-     * Get the IDs of every character eliminated at or before the
-     * given week.
+     * Get the IDs of every character eliminated BEFORE the given week.
+     *
+     * Uses the same strictly-less-than boundary as
+     * isCharacterEliminatedByWeek: elimination at week W does not
+     * count as "eliminated before week W".
      *
      * @param {number|string} week - Week number
      * @param {array} [characters] - Optional character list. Uses
@@ -298,8 +332,9 @@
     }
 
     /**
-     * Get the IDs of every character who is NOT eliminated at or
-     * before the given week.
+     * Get the IDs of every character who is NOT eliminated before
+     * the given week. Includes characters eliminated AT the given
+     * week — they are still eligible during that week.
      *
      * @param {number|string} week - Week number
      * @param {array} [characters] - Optional character list
@@ -335,6 +370,7 @@
         isCharacterEliminated: isCharacterEliminatedByWeek, // alias
         getEliminationWeek: getEliminationWeek,
         getEliminationReason: getEliminationReason,
+        getEliminationRecord: getEliminationRecord,
 
         // Bulk queries
         getEliminatedCharacters: getEliminatedCharacters,
