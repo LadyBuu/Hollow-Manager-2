@@ -83,6 +83,19 @@
  *               Without this migration, tournament-repair.js rejects
  *               legacy tournaments because it refuses to fabricate
  *               identity.
+ * - Version 18: Assigns stable IDs to characters whose id is null,
+ *               undefined, or empty string. A prior version of
+ *               character-csv.js did not assign an ID when a CSV row
+ *               had an empty CharacterId cell, so imported characters
+ *               entered the store with id: null. Every lookup that
+ *               routes through CharacterQueries.getCharacterById(id)
+ *               rejects empty IDs, which made those characters
+ *               unclickable in the character list and unreachable
+ *               from every cross-domain projection. v18 walks
+ *               data.characters and assigns a fresh ID via
+ *               IdUtils.generateId('char') to any record that lacks
+ *               one. The forward fix lives in character-csv.js; this
+ *               migration repairs records that were already persisted.
  * 
  * ACADEMY MEMBERSHIP MODEL (v15+):
  * - character.classIds[] is the SINGLE SOURCE OF TRUTH for class membership.
@@ -108,7 +121,7 @@
 
     var DB_NAME = 'HollowBladesDB';
     var DB_VERSION = 1;  // IndexedDB structural version (only 1 object store)
-    var DATA_VERSION = 17;  // Application data schema version
+    var DATA_VERSION = 18;  // Application data schema version
     var STORE_NAME = 'appData';
 
     // INTERNAL: The actual IndexedDB connection (private)
@@ -569,6 +582,7 @@
                 case 14: migrateToVersion15(data); break;
                 case 15: migrateToVersion16(data); break;
                 case 16: migrateToVersion17(data); break;
+                case 17: migrateToVersion18(data); break;
                 default: data._dataVersion = DATA_VERSION; break;
             }
         }
@@ -1072,6 +1086,136 @@
         }
 
         data._dataVersion = 17;
+    }
+
+    /**
+     * Version 18 migration — Assign IDs to characters with id: null.
+     * 
+     * CONTEXT:
+     *   A prior version of character-csv.js did not assign an ID to
+     *   imported characters when the CharacterId CSV cell was empty.
+     *   Those characters entered the store with id: null, which broke
+     *   every click handler and every downstream lookup that routes
+     *   through CharacterQueries.getCharacterById (which rejects
+     *   empty IDs). Symptoms included:
+     * 
+     *     - The character list item rendered with data-id="".
+     *     - Clicking it did nothing, because handleCharacterSelect(id)
+     *       was guarded by `if (id)` and "" is falsy.
+     *     - The form would not populate.
+     *     - Cross-domain projections (grades, enrolments, eliminations,
+     *       team memberships) silently returned empty for those
+     *       characters, because their lookups also reject empty IDs.
+     * 
+     *   The forward fix lives in character-csv.js, which now assigns an
+     *   ID before adding a candidate to the valid list. This migration
+     *   repairs records that were already persisted.
+     * 
+     * WHAT THIS MIGRATION DOES:
+     *   Walks data.characters and assigns a fresh stable ID to any
+     *   record whose id is null, undefined, or empty string. Uses
+     *   IdUtils.generateId('char'), matching the prefix and format
+     *   used by CharacterCRUD.createNewCharacter. Imported characters
+     *   then become indistinguishable from ones created through the
+     *   form.
+     * 
+     * ID COLLISION HANDLING:
+     *   Before assigning, the migration builds a set of every existing
+     *   valid ID. Each generated ID is checked against the set, and
+     *   regenerated on collision. In practice collisions are essentially
+     *   impossible (crypto.randomUUID or timestamp+random), but the
+     *   check is cheap and makes the migration robust against a future
+     *   change to IdUtils that might weaken its guarantees.
+     * 
+     * IDEMPOTENCY:
+     *   Running this migration twice produces the same output. Characters
+     *   with valid IDs are untouched.
+     * 
+     * SAFETY:
+     *   If IdUtils is not loaded when this migration runs, it logs a
+     *   warning and bumps the version without transforming the data.
+     *   This is extremely unlikely given the load order, but the
+     *   migration does not fail closed — it prefers to leave the data
+     *   readable in-session rather than reject the database. Characters
+     *   left with id: null remain unclickable until IdUtils is available
+     *   and the migration can run. If that happens, a future version
+     *   bump (or a manual re-run in a session with IdUtils loaded) will
+     *   repair them.
+     */
+    function migrateToVersion18(data) {
+        if (!Array.isArray(data.characters)) {
+            data._dataVersion = 18;
+            return;
+        }
+
+        var IdUtils = window.IdUtils;
+        if (!IdUtils || typeof IdUtils.generateId !== 'function') {
+            console.warn(
+                '[Database] v18 skipped: IdUtils.generateId is not available. ' +
+                'Characters with id: null remain unrepairable in this session.'
+            );
+            data._dataVersion = 18;
+            return;
+        }
+
+        // Pass 1: collect every existing valid ID so we can detect
+        // collisions when generating new ones.
+        var seenIds = Object.create(null);
+        for (var i = 0; i < data.characters.length; i++) {
+            var existing = data.characters[i];
+            if (existing && typeof existing.id === 'string' && existing.id !== '') {
+                seenIds[existing.id] = true;
+            }
+        }
+
+        // Pass 2: assign IDs to records that don't have one.
+        var repairedCount = 0;
+        var collisionCount = 0;
+
+        for (var j = 0; j < data.characters.length; j++) {
+            var c = data.characters[j];
+            if (!c || typeof c !== 'object') {
+                continue;
+            }
+
+            var id = c.id;
+            if (id !== null && id !== undefined && id !== '') {
+                continue;
+            }
+
+            var newId = IdUtils.generateId('char');
+
+            // Defensive: guarantee no collision with an existing ID.
+            while (seenIds[newId]) {
+                collisionCount++;
+                newId = IdUtils.generateId('char');
+                if (collisionCount > 1000) {
+                    throw new Error(
+                        '[Database] v18: cannot generate a unique ID after ' +
+                        '1000 attempts. IdUtils may be broken.'
+                    );
+                }
+            }
+
+            seenIds[newId] = true;
+            c.id = newId;
+            repairedCount++;
+        }
+
+        if (repairedCount > 0) {
+            console.log(
+                '[Database] v18: assigned IDs to ' + repairedCount +
+                ' character(s) that had id: null.'
+            );
+        }
+        if (collisionCount > 0) {
+            console.warn(
+                '[Database] v18: resolved ' + collisionCount +
+                ' ID collision(s) while generating new character IDs.'
+            );
+        }
+
+        data._dataVersion = 18;
     }
 
     // ============================================================
