@@ -1,421 +1,232 @@
 /**
  * js/modules/missions/mission-ui.js - Mission UI Controller
- * Event wiring, modal management, user interactions for missions.
  *
- * UI PHILOSOPHY:
- *   - UI is the boundary between user and domain
- *   - All mutations go through MissionCore
- *   - All reads go through MissionQueries (preferred) or MissionCore
- *   - All rendering goes through MissionRender
- *   - Persistence is owned by MissionCore/MutationPipeline (UI has NO persistence knowledge)
- *   - Event handlers use delegation with CURRENT mission resolution
+ * Path: js/modules/missions/mission-ui.js
  *
- * PERSISTENCE CONTRACT:
- *   - UI does NOT call saveData() - this is handled by MutationPipeline
- *   - UI only calls MissionCore commands and waits for results
- *   - On success: refresh UI, show notification
- *   - On failure: show notification with error message
- *   - No optimistic updates that could diverge from persisted state
+ * UI controller for the missions tab.
  *
- * EVENT LISTENER LIFECYCLE:
- *   - All listeners go through addSafeEventListener, which tracks
- *     { element, eventName, handler, options } in _eventListeners.
- *   - removeAllEventListeners() removes every tracked listener and
- *     resets the internal tracking array.
- *   - attachListEvents / attachDetailEvents are IDEMPOTENT BY
- *     CONSTRUCTION: they first remove any tracked listener whose
- *     element matches the target, then add a fresh one. This replaces
- *     the previous "_listEventsAttached" flag pattern, which could go
- *     stale if removeAllEventListeners ran without the target DOM
- *     being recreated.
- *   - Calling either attach function multiple times produces exactly
- *     one live listener.
+ * RESPONSIBILITIES:
+ *   - Own transient UI state (current filter, current mission id,
+ *     which modal is open, pending input buffers).
+ *   - Render via MissionRender from VMs produced by
+ *     MissionAggregator.
+ *   - Dispatch user actions from data-action attributes.
+ *   - Call MissionCore mutations.
+ *   - Refresh the view after a successful mutation.
+ *   - Show notifications on success and failure.
+ *   - Manage modal lifecycle (open, close, DOM cleanup).
  *
- * DEPENDENCIES:
- *   - window.MissionCore (required)
- *   - window.MissionRender (required)
- *   - window.MissionQueries (required)
- *   - window.MissionAggregator (required)
- *   - window.NotificationSystem (from notification.js)
- *   - window.TabManager (from tab-manager.js)
- *   - window.Modal (from modal.js) - optional, falls back to DOM modals
+ * NOT RESPONSIBILITIES:
+ *   - Domain rules. MissionRules owns them.
+ *   - Domain validation. MissionSchema owns it.
+ *   - Mutations. MissionCore owns them.
+ *   - Projections. MissionAggregator owns them.
+ *   - Reads. MissionQueries owns them.
+ *   - Rendering. MissionRender owns it. This module never builds
+ *     HTML by string concatenation.
+ *   - Storage. Nothing here touches window.data.
  *
- * LOAD ORDER:
- *   - mission-schema.js (FIRST)
- *   - mission-queries.js
- *   - mission-core.js
- *   - mission-aggregator.js
- *   - mission-views.js
- *   - mission-render.js
- *   - mission-ui.js (LAST)
+ * EVENT DELEGATION:
+ *   One click listener on the container. One change listener. One
+ *   submit listener. Every interactive element carries
+ *   data-action, and the delegated handler reads it and dispatches.
+ *   No per-element addEventListener for the mission UI itself.
+ *   The only exceptions are the report and log modals, which have
+ *   their own form submit handlers bound to their own forms.
+ *
+ * LISTENER LIFECYCLE:
+ *   Every listener is registered through addSafeListener, which
+ *   records { element, type, handler, options } in a module-level
+ *   array. removeAllListeners walks that array and removes each
+ *   entry. Calling renderMissions() removes the previous batch
+ *   before installing a new one.
+ *
+ * MODAL LIFECYCLE:
+ *   The shells are rendered once by MissionRender.renderContainer.
+ *   The controller shows/hides them by toggling the `hidden`
+ *   class on the shell element and writing content into the
+ *   content host. Content is cleared on close so no stale DOM
+ *   hangs around.
+ *
+ * MODAL CONTENT:
+ *   Modal shells live inside the mission container. The mission
+ *   container itself is replaced on each renderMissions() call, so
+ *   the modal DOM is rebuilt from scratch. Any per-modal listeners
+ *   registered through addSafeListener are cleaned up
+ *   automatically by removeAllListeners at the top of
+ *   renderMissions.
+ *
+ * DEPENDENCIES (MANDATORY):
+ *   - window.TabManager
+ *   - window.NotificationSystem
+ *   - window.MissionCore
+ *   - window.MissionQueries
+ *   - window.MissionAggregator
+ *   - window.MissionRender
  */
 
 (function() {
     'use strict';
 
-    // Guard: Check dependencies BEFORE marking as loaded
     if (window.__missionUILoaded) {
         return;
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - NO FALLBACKS
+    // MANDATORY DEPENDENCIES
     // ============================================================
 
-    if (!window.MissionCore) {
-        return;
+    var TabManager = window.TabManager;
+    var NotificationSystem = window.NotificationSystem;
+    var MissionCore = window.MissionCore;
+    var MissionQueries = window.MissionQueries;
+    var MissionAggregator = window.MissionAggregator;
+    var MissionRender = window.MissionRender;
+
+    var _missing = [];
+
+    if (!TabManager || typeof TabManager.register !== 'function') {
+        _missing.push('TabManager.register');
+    }
+    if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
+        _missing.push('NotificationSystem.notify');
     }
 
-    if (!window.MissionRender) {
-        return;
+    if (!MissionCore) {
+        _missing.push('MissionCore (module)');
+    } else {
+        var coreRequired = [
+            'createMission',
+            'updateMission',
+            'archiveMission',
+            'unarchiveMission',
+            'setObjectiveDone',
+            'addObjective',
+            'removeObjective',
+            'addSupportPersonnel',
+            'removeSupportPersonnel',
+            'addLog',
+            'addReport',
+            'updateReport',
+            'removeReport',
+            'completeMission',
+            'cancelMission',
+            'reactivateMission'
+        ];
+        for (var c = 0; c < coreRequired.length; c++) {
+            if (typeof MissionCore[coreRequired[c]] !== 'function') {
+                _missing.push('MissionCore.' + coreRequired[c]);
+            }
+        }
     }
 
-    if (!window.MissionQueries) {
-        return;
+    if (!MissionQueries || typeof MissionQueries.getMission !== 'function') {
+        _missing.push('MissionQueries.getMission');
     }
 
-    if (!window.MissionAggregator) {
-        return;
+    if (!MissionAggregator) {
+        _missing.push('MissionAggregator (module)');
+    } else {
+        var aggRequired = [
+            'getMissionListViewModel',
+            'getMissionDetailViewModel',
+            'getMissionFormViewModel',
+            'getMissionStatisticsViewModel'
+        ];
+        for (var a = 0; a < aggRequired.length; a++) {
+            if (typeof MissionAggregator[aggRequired[a]] !== 'function') {
+                _missing.push('MissionAggregator.' + aggRequired[a]);
+            }
+        }
     }
 
-    if (!window.NotificationSystem || typeof window.NotificationSystem.notify !== 'function') {
-        return;
+    if (!MissionRender) {
+        _missing.push('MissionRender (module)');
+    } else {
+        var renderRequired = [
+            'renderContainer',
+            'renderList',
+            'renderDetail',
+            'renderForm',
+            'renderEmpty',
+            'renderLoading'
+        ];
+        for (var r = 0; r < renderRequired.length; r++) {
+            if (typeof MissionRender[renderRequired[r]] !== 'function') {
+                _missing.push('MissionRender.' + renderRequired[r]);
+            }
+        }
     }
 
-    if (!window.TabManager || typeof window.TabManager.register !== 'function') {
-        return;
+    if (_missing.length > 0) {
+        throw new Error(
+            '[MissionUI] Missing mandatory dependencies: ' +
+            _missing.join(', ')
+        );
     }
 
-    // Mark as loaded ONLY after all dependencies are confirmed
     window.__missionUILoaded = true;
 
-    var Core = window.MissionCore;
-    var Render = window.MissionRender;
-    var Queries = window.MissionQueries;
-    var Aggregator = window.MissionAggregator;
-    var NotificationSystem = window.NotificationSystem;
-    var TabManager = window.TabManager;
-
     // ============================================================
-    // CONSTANTS
-    // ============================================================
-
-    var VALID_STATUSES = ['active', 'completed', 'cancelled'];
-    var VALID_PRIORITIES = ['low', 'medium', 'high', 'critical'];
-    var VALID_DIFFICULTIES = ['easy', 'medium', 'hard', 'expert'];
-
-    // ============================================================
-    // PRIVATE STATE
+    // STATE
     // ============================================================
 
     var state = {
-        currentMissionId: null,
+        container: null,
         currentFilter: 'all',
-        isInitialized: false
+        currentMissionId: null
     };
 
-    var _eventListeners = [];
-    var _container = null;
+    var _listeners = [];
 
     // ============================================================
-    // NOTIFICATION SYSTEM
+    // LISTENER LIFECYCLE
     // ============================================================
 
-    function showNotification(message, type) {
-        type = type || 'info';
-        NotificationSystem.notify(message, type);
-    }
-
-    /**
-     * Show a confirmation dialog.
-     * Returns a Promise that resolves to true if confirmed, false otherwise.
-     *
-     * NOTE: The window.showConfirm and window.confirmModal branches
-     * are hooks for a future async modal system. Neither is currently
-     * wired up anywhere in the codebase, so in practice every call
-     * falls through to the native confirm().
-     */
-    function showConfirmation(message) {
-        if (typeof window.showConfirm === 'function') {
-            var result = window.showConfirm(message);
-            if (result && typeof result.then === 'function') {
-                return result;
-            }
-            return Promise.resolve(result);
-        }
-
-        if (typeof window.confirmModal === 'function') {
-            var result = window.confirmModal(message);
-            if (result && typeof result.then === 'function') {
-                return result;
-            }
-            return Promise.resolve(result);
-        }
-
-        return Promise.resolve(confirm(message));
-    }
-
-    // ============================================================
-    // SAFE EVENT BINDING WITH CLEANUP
-    // ============================================================
-
-    function addSafeEventListener(element, eventName, handler, options) {
-        if (!element) {
-            return;
-        }
-        element.addEventListener(eventName, handler, options || false);
-        _eventListeners.push({
+    function addSafeListener(element, type, handler, options) {
+        if (!element) { return; }
+        element.addEventListener(type, handler, options || false);
+        _listeners.push({
             element: element,
-            eventName: eventName,
+            type: type,
             handler: handler,
             options: options || false
         });
     }
 
-    function removeAllEventListeners() {
-        for (var i = 0; i < _eventListeners.length; i++) {
-            var item = _eventListeners[i];
+    function removeAllListeners() {
+        for (var i = 0; i < _listeners.length; i++) {
+            var entry = _listeners[i];
             try {
-                item.element.removeEventListener(item.eventName, item.handler, item.options);
+                entry.element.removeEventListener(
+                    entry.type,
+                    entry.handler,
+                    entry.options
+                );
             } catch (e) {
-                // Ignore errors during cleanup
+                // Ignore teardown errors.
             }
         }
-        _eventListeners = [];
+        _listeners = [];
     }
+
+    // ============================================================
+    // NOTIFICATIONS
+    // ============================================================
+
+    function notify(message, type) {
+        NotificationSystem.notify(message, type || 'info');
+    }
+
+    // ============================================================
+    // RENDER
+    // ============================================================
 
     /**
-     * Remove all tracked listeners whose element matches `element`.
-     * Used by attach functions to guarantee idempotency: calling an
-     * attach function twice on the same element leaves exactly one
-     * live listener.
+     * Render the missions tab.
+     *
+     * @param {HTMLElement} container
      */
-    function detachListenersFor(element) {
-        if (!element) {
-            return;
-        }
-
-        var remaining = [];
-        for (var i = 0; i < _eventListeners.length; i++) {
-            var item = _eventListeners[i];
-            if (item.element === element) {
-                try {
-                    item.element.removeEventListener(item.eventName, item.handler, item.options);
-                } catch (e) {
-                    // Ignore removal errors
-                }
-            } else {
-                remaining.push(item);
-            }
-        }
-        _eventListeners = remaining;
-    }
-
-    // ============================================================
-    // ID NORMALISATION
-    // ============================================================
-
-    function normaliseId(id) {
-        if (Queries && typeof Queries.normaliseId === 'function') {
-            return Queries.normaliseId(id);
-        }
-        if (id === null || id === undefined) {
-            return null;
-        }
-        return String(id).trim();
-    }
-
-    // ============================================================
-    // GET AVAILABLE TEAMS (delegates to Queries)
-    // ============================================================
-
-    function getAvailableTeams() {
-        return Queries.getEligibleTeams ? Queries.getEligibleTeams() : [];
-    }
-
-    function getTeamName(teamId) {
-        if (!teamId) {
-            return 'Unassigned';
-        }
-        // Use Aggregator if available
-        if (Aggregator && typeof Aggregator.resolveTeamName === 'function') {
-            return Aggregator.resolveTeamName(teamId);
-        }
-        // Fallback to Queries
-        if (Queries && typeof Queries.getTeamName === 'function') {
-            return Queries.getTeamName(teamId);
-        }
-        return 'Unknown Team';
-    }
-
-    // ============================================================
-    // MODAL SETUP
-    // ============================================================
-
-    function setupModalOutsideClick(modalId, closeFn) {
-        var modal = document.getElementById(modalId);
-        if (!modal) {
-            return;
-        }
-        if (modal._outsideListener) {
-            return;
-        }
-        modal._outsideListener = true;
-
-        addSafeEventListener(modal, 'click', function(e) {
-            if (e.target === modal) {
-                closeFn();
-            }
-        });
-    }
-
-    function setupModalCloseButton(modalId, closeFn) {
-        var modal = document.getElementById(modalId);
-        if (!modal) {
-            return;
-        }
-
-        var closeButtons = modal.querySelectorAll('.close-modal');
-        for (var i = 0; i < closeButtons.length; i++) {
-            var btn = closeButtons[i];
-            addSafeEventListener(btn, 'click', function(e) {
-                e.stopPropagation();
-                closeFn();
-            });
-        }
-    }
-
-    // ============================================================
-    // DETAIL EVENTS
-    // ============================================================
-    //
-    // IDEMPOTENT: detachListenersFor(container) runs first, so calling
-    // attachDetailEvents on the same container twice leaves exactly one
-    // live listener. The previous "_detailEventsAttached" flag could
-    // become stale if removeAllEventListeners ran without the DOM
-    // being recreated.
-
-    function attachDetailEvents(container) {
-        if (!container) {
-            return;
-        }
-
-        detachListenersFor(container);
-
-        addSafeEventListener(container, 'click', function(e) {
-            var missionId = container.dataset.missionId;
-            if (!missionId) {
-                return;
-            }
-
-            var target = e.target;
-
-            // Toggle objective
-            var checkbox = target.closest('.objective-item input[type="checkbox"]');
-            if (checkbox) {
-                var objIndex = parseInt(checkbox.dataset.index, 10);
-                if (!isNaN(objIndex)) {
-                    handleToggleObjective(missionId, objIndex, checkbox.checked);
-                }
-                return;
-            }
-
-            // Delete mission
-            var deleteBtn = target.closest('#delete-mission-from-detail');
-            if (deleteBtn) {
-                handleDeleteMission(missionId);
-                return;
-            }
-
-            // Edit mission
-            var editBtn = target.closest('#edit-mission-from-detail');
-            if (editBtn) {
-                showMissionForm(missionId);
-                return;
-            }
-        });
-    }
-
-    // ============================================================
-    // LIST EVENTS
-    // ============================================================
-    //
-    // IDEMPOTENT: same contract as attachDetailEvents.
-
-    function attachListEvents(container) {
-        if (!container) {
-            return;
-        }
-
-        detachListenersFor(container);
-
-        addSafeEventListener(container, 'click', function(e) {
-            var target = e.target;
-
-            // View mission - click on the whole item or view button
-            var item = target.closest('.mission-item');
-            if (item && !target.closest('button')) {
-                viewMission(item.dataset.id);
-                return;
-            }
-
-            // Edit button
-            var editBtn = target.closest('.edit-mission');
-            if (editBtn) {
-                e.preventDefault();
-                showMissionForm(editBtn.dataset.id);
-                return;
-            }
-
-            // Delete button
-            var deleteBtn = target.closest('.delete-mission');
-            if (deleteBtn) {
-                e.preventDefault();
-                handleDeleteMission(deleteBtn.dataset.id);
-                return;
-            }
-
-            // Complete button
-            var completeBtn = target.closest('.complete-mission');
-            if (completeBtn) {
-                e.preventDefault();
-                handleCompleteMission(completeBtn.dataset.id);
-                return;
-            }
-
-            // View button
-            var viewBtn = target.closest('.view-mission');
-            if (viewBtn) {
-                e.preventDefault();
-                viewMission(viewBtn.dataset.id);
-                return;
-            }
-        });
-
-        // Add mission button
-        var addBtn = document.getElementById('add-mission-btn');
-        if (addBtn && !addBtn._listener) {
-            addBtn._listener = true;
-            addSafeEventListener(addBtn, 'click', function() {
-                showMissionForm();
-            });
-        }
-
-        // Filter select
-        var filterSelect = document.getElementById('mission-filter');
-        if (filterSelect && !filterSelect._listener) {
-            filterSelect._listener = true;
-            addSafeEventListener(filterSelect, 'change', function() {
-                state.currentFilter = this.value;
-                renderMissionList();
-            });
-        }
-    }
-
-    // ============================================================
-    // RENDER FUNCTIONS
-    // ============================================================
-
     function renderMissions(container) {
         if (!container) {
             container = document.getElementById('tab-missions');
@@ -424,755 +235,942 @@
             return;
         }
 
-        if (!window.data) {
-            container.innerHTML = '<p class="empty-state">Loading mission data...</p>';
-            return;
-        }
+        removeAllListeners();
 
-        // Store container reference
-        _container = container;
+        state.container = container;
 
-        // Remove existing listeners before rendering
-        removeAllEventListeners();
+        var listVM = MissionAggregator.getMissionListViewModel({
+            filter: state.currentFilter
+        });
 
-        // Render container HTML
-        container.innerHTML = Render.renderContainer();
+        container.innerHTML = MissionRender.renderContainer({
+            filter: state.currentFilter,
+            counts: listVM.counts
+        });
 
-        // Render mission list
-        renderMissionList();
+        renderListInto(container);
 
-        // Setup modal close handlers
-        setupModalCloseButton('mission-form-modal', closeMissionForm);
-        setupModalCloseButton('mission-detail-modal', closeMissionDetail);
-        setupModalOutsideClick('mission-form-modal', closeMissionForm);
-        setupModalOutsideClick('mission-detail-modal', closeMissionDetail);
-
-        state.isInitialized = true;
+        bindContainerEvents(container);
     }
 
-    function renderMissionList() {
-        var listContainer = _container ? _container.querySelector('#missions-list') : document.getElementById('missions-list');
-        var countEl = _container ? _container.querySelector('#mission-count') : document.getElementById('mission-count');
-
-        if (!listContainer) {
-            return;
+    /**
+     * Re-render just the list. Called after mutations that affect
+     * the list but not the open detail panel.
+     */
+    function renderListInto(container) {
+        if (!container) {
+            container = state.container;
         }
+        if (!container) { return; }
 
-        var filter = state.currentFilter || 'all';
+        var listHost = container.querySelector('#missions-list');
+        if (!listHost) { return; }
 
-        // Use Aggregator for view model
-        var viewModel = Aggregator.getMissionListViewModel({ filter: filter });
+        var vm = MissionAggregator.getMissionListViewModel({
+            filter: state.currentFilter
+        });
 
-        var html = Render.renderList(viewModel.missions);
-        listContainer.innerHTML = html;
+        listHost.innerHTML = MissionRender.renderList(vm.missions);
 
-        if (countEl) {
-            countEl.textContent = viewModel.filtered;
+        var totalEl = container.querySelector('#mission-count-total');
+        if (totalEl) {
+            totalEl.textContent = String(vm.counts.total || 0);
         }
-
-        attachListEvents(listContainer);
+        var readyEl = container.querySelector('#mission-count-ready');
+        if (readyEl) {
+            readyEl.textContent = String(vm.counts.readyForCompletion || 0);
+        }
     }
 
-    function destroyMissions() {
-        removeAllEventListeners();
-        _container = null;
-        state.isInitialized = false;
+    function refreshDetailIfOpen() {
+        if (!state.container) { return; }
+        if (!state.currentMissionId) { return; }
+
+        var modal = state.container.querySelector('#mission-detail-modal');
+        if (!modal) { return; }
+        if (modal.classList.contains('hidden')) { return; }
+
+        openDetailModal(state.currentMissionId);
     }
 
     // ============================================================
-    // VIEW FUNCTIONS
+    // CONTAINER EVENTS
     // ============================================================
 
-    function viewMission(id) {
-        // Use Aggregator for detail view model
-        var viewModel = Aggregator.getMissionDetailViewModel(id);
-        if (!viewModel) {
-            showNotification('Mission not found.', 'error');
-            return;
-        }
-
-        state.currentMissionId = normaliseId(id);
-
-        var modal = document.getElementById('mission-detail-modal');
-        if (!modal) {
-            return;
-        }
-
-        var title = document.getElementById('detail-mission-title');
-        if (title) {
-            title.textContent = viewModel.mission.title;
-        }
-
-        var content = document.getElementById('mission-detail-content');
-        if (!content) {
-            return;
-        }
-
-        var html = Render.renderDetail(viewModel.mission);
-        content.innerHTML = html;
-
-        modal.dataset.missionId = id;
-        modal.classList.remove('hidden');
-
-        // Store missionId on content for event delegation
-        content.dataset.missionId = id;
-
-        attachDetailEvents(content);
+    function bindContainerEvents(container) {
+        addSafeListener(container, 'click', handleContainerClick);
+        addSafeListener(container, 'change', handleContainerChange);
     }
 
-    function closeMissionDetail() {
-        var modal = document.getElementById('mission-detail-modal');
-        if (modal) {
-            modal.classList.add('hidden');
-            var content = document.getElementById('mission-detail-content');
-            if (content) {
-                content.innerHTML = '';
-                content.dataset.missionId = '';
-            }
+    function handleContainerChange(event) {
+        var target = event.target;
+
+        if (target.id === 'mission-filter') {
+            state.currentFilter = target.value || 'all';
+            renderMissions(state.container);
+            return;
         }
+    }
+
+    function handleContainerClick(event) {
+        var actionEl = event.target.closest('[data-action]');
+        if (!actionEl) { return; }
+
+        var action = actionEl.dataset.action;
+        var missionId = actionEl.dataset.missionId || null;
+
+        switch (action) {
+            case 'mission-new':
+                event.preventDefault();
+                openFormModal(null);
+                return;
+
+            case 'mission-list-item':
+                event.preventDefault();
+                if (missionId) {
+                    openDetailModal(missionId);
+                }
+                return;
+
+            case 'mission-close-detail':
+                event.preventDefault();
+                closeDetailModal();
+                return;
+
+            case 'mission-close-form':
+                event.preventDefault();
+                closeFormModal();
+                return;
+
+            case 'mission-edit':
+                event.preventDefault();
+                openFormModal(missionId);
+                return;
+
+            case 'mission-archive':
+                event.preventDefault();
+                handleArchive(missionId);
+                return;
+
+            case 'mission-unarchive':
+                event.preventDefault();
+                handleUnarchive(missionId);
+                return;
+
+            case 'mission-complete':
+                event.preventDefault();
+                handleComplete(missionId);
+                return;
+
+            case 'mission-cancel':
+                event.preventDefault();
+                handleCancel(missionId);
+                return;
+
+            case 'mission-reactivate':
+                event.preventDefault();
+                handleReactivate(missionId);
+                return;
+
+            case 'mission-objective-toggle':
+                event.preventDefault();
+                handleObjectiveToggle(
+                    missionId,
+                    actionEl.dataset.objectiveIndex,
+                    actionEl.checked === true
+                );
+                return;
+
+            case 'mission-add-objective':
+                event.preventDefault();
+                handleAddObjective(missionId, actionEl);
+                return;
+
+            case 'mission-remove-objective':
+                event.preventDefault();
+                handleRemoveObjective(
+                    missionId,
+                    actionEl.dataset.objectiveIndex
+                );
+                return;
+
+            case 'mission-add-support':
+                event.preventDefault();
+                handleAddSupport(missionId, actionEl);
+                return;
+
+            case 'mission-remove-support':
+                event.preventDefault();
+                handleRemoveSupport(
+                    missionId,
+                    actionEl.dataset.characterId
+                );
+                return;
+
+            case 'mission-add-log':
+                event.preventDefault();
+                openLogModal(missionId);
+                return;
+
+            case 'mission-report-add':
+                event.preventDefault();
+                openReportFormModal(missionId, null);
+                return;
+
+            case 'mission-report-edit':
+                event.preventDefault();
+                openReportFormModal(
+                    missionId,
+                    actionEl.dataset.reportId
+                );
+                return;
+
+            case 'mission-report-delete':
+                event.preventDefault();
+                handleReportDelete(
+                    missionId,
+                    actionEl.dataset.reportId
+                );
+                return;
+
+            default:
+                return;
+        }
+    }
+
+    // ============================================================
+    // MODAL PLUMBING
+    // ============================================================
+
+    function showModal(modalEl) {
+        if (!modalEl) { return; }
+        modalEl.classList.remove('hidden');
+    }
+
+    function hideModal(modalEl) {
+        if (!modalEl) { return; }
+        modalEl.classList.add('hidden');
+    }
+
+    // ============================================================
+    // DETAIL MODAL
+    // ============================================================
+
+    function openDetailModal(missionId) {
+        if (!state.container || !missionId) { return; }
+
+        var vm = MissionAggregator.getMissionDetailViewModel(missionId);
+        if (!vm) {
+            notify('Mission not found.', 'error');
+            return;
+        }
+
+        state.currentMissionId = missionId;
+
+        var modal = state.container.querySelector('#mission-detail-modal');
+        var titleEl = state.container.querySelector('#mission-detail-title');
+        var contentEl = state.container.querySelector(
+            '#mission-detail-content'
+        );
+
+        if (!modal || !contentEl) { return; }
+
+        if (titleEl) {
+            titleEl.textContent = vm.title || 'Mission';
+        }
+
+        contentEl.innerHTML = MissionRender.renderDetail(vm);
+        showModal(modal);
+    }
+
+    function closeDetailModal() {
+        if (!state.container) { return; }
+
+        var modal = state.container.querySelector('#mission-detail-modal');
+        var contentEl = state.container.querySelector(
+            '#mission-detail-content'
+        );
+
+        if (modal) { hideModal(modal); }
+        if (contentEl) { contentEl.innerHTML = ''; }
         state.currentMissionId = null;
     }
 
     // ============================================================
-    // FORM FUNCTIONS
+    // FORM MODAL
     // ============================================================
 
-    function showMissionForm(editId) {
-        var modal = document.getElementById('mission-form-modal');
-        var title = document.getElementById('mission-form-title');
-        var content = document.getElementById('mission-form-content');
+    function openFormModal(editId) {
+        if (!state.container) { return; }
 
-        if (!modal || !title || !content) {
+        var vm = MissionAggregator.getMissionFormViewModel({
+            editId: editId
+        });
+
+        if (!vm) {
+            notify('Mission not found.', 'error');
             return;
         }
 
-        // Use Aggregator for form view model
-        var viewModel = Aggregator.getMissionFormViewModel({ editId: editId });
-        var mission = viewModel.mission;
+        var modal = state.container.querySelector('#mission-form-modal');
+        var titleEl = state.container.querySelector('#mission-form-title');
+        var contentEl = state.container.querySelector(
+            '#mission-form-content'
+        );
 
-        if (editId && !mission) {
-            showNotification('Mission not found.', 'error');
-            return;
+        if (!modal || !contentEl) { return; }
+
+        if (titleEl) {
+            titleEl.textContent = vm.isEdit
+                ? 'Edit Mission'
+                : 'Create Mission';
         }
 
-        title.textContent = mission ? 'Edit Mission' : 'Create Mission';
+        contentEl.innerHTML = MissionRender.renderForm(vm);
+        showModal(modal);
 
-        var formModel = {
-            mission: mission,
-            teams: viewModel.teams,
-            characters: viewModel.characters,
-            supportIds: viewModel.supportIds,
-            difficulties: VALID_DIFFICULTIES,
-            priorities: VALID_PRIORITIES,
-            statuses: VALID_STATUSES,
-            defaultYear: viewModel.defaultYear,
-            defaultMonth: viewModel.defaultMonth,
-            defaultDay: viewModel.defaultDay
+        var form = contentEl.querySelector('#mission-form-inner');
+        if (form) {
+            addSafeListener(form, 'submit', function(event) {
+                event.preventDefault();
+                handleFormSubmit(form, editId);
+            });
+        }
+
+        // Subtype select: when primary type changes, the options
+        // change. We rebuild the subtype select in place.
+        var primarySelect = contentEl.querySelector('#mission-primary-type');
+        var subtypeSelect = contentEl.querySelector('#mission-subtype');
+        if (primarySelect && subtypeSelect) {
+            addSafeListener(primarySelect, 'change', function() {
+                updateSubtypeOptions(primarySelect, subtypeSelect);
+            });
+        }
+    }
+
+    function closeFormModal() {
+        if (!state.container) { return; }
+
+        var modal = state.container.querySelector('#mission-form-modal');
+        var contentEl = state.container.querySelector(
+            '#mission-form-content'
+        );
+
+        if (modal) { hideModal(modal); }
+        if (contentEl) { contentEl.innerHTML = ''; }
+    }
+
+    function updateSubtypeOptions(primarySelect, subtypeSelect) {
+        var types = window.MissionConstants
+            ? window.MissionConstants.getMissionTypes()
+            : {};
+        var type = types[primarySelect.value];
+
+        subtypeSelect.innerHTML = '<option value="">Select...</option>';
+
+        if (!type || !Array.isArray(type.subtypes)) { return; }
+
+        for (var i = 0; i < type.subtypes.length; i++) {
+            var st = type.subtypes[i];
+            var opt = document.createElement('option');
+            opt.value = st.id;
+            opt.textContent = st.label;
+            subtypeSelect.appendChild(opt);
+        }
+    }
+
+    // ============================================================
+    // FORM SUBMIT
+    // ============================================================
+
+    function handleFormSubmit(form, editId) {
+        var data = collectFormData(form);
+        if (!data) { return; }
+
+        var promise = editId
+            ? MissionCore.updateMission(editId, data)
+            : MissionCore.createMission(data);
+
+        handleMutation(promise, {
+            onSuccess: function(result) {
+                closeFormModal();
+                refreshAfterMutation();
+                var savedId = result && result.data && result.data.id
+                    ? result.data.id
+                    : editId;
+                if (savedId && state.currentMissionId === savedId) {
+                    openDetailModal(savedId);
+                }
+            }
+        });
+    }
+
+    function collectFormData(form) {
+        var title = readValue(form, '#mission-title').trim();
+        if (!title) {
+            notify('Mission title is required.', 'warning');
+            return null;
+        }
+
+        var data = {
+            title: title,
+            description: readValue(form, '#mission-description'),
+            year: readInteger(form, '#mission-year'),
+            month: readInteger(form, '#mission-month'),
+            day: readInteger(form, '#mission-day'),
+            primaryType: readValue(form, '#mission-primary-type'),
+            subtype: readValue(form, '#mission-subtype'),
+            secondaryType: readValue(form, '#mission-secondary-type'),
+            escalation: readValue(form, '#mission-escalation'),
+            threatType: readValue(form, '#mission-threat-type'),
+            environment: readValue(form, '#mission-environment'),
+            location: readValue(form, '#mission-location'),
+            duration: readValue(form, '#mission-duration'),
+            difficulty: readValue(form, '#mission-difficulty'),
+            priority: readValue(form, '#mission-priority'),
+            basePay: readValue(form, '#mission-base-pay'),
+            surchargePay: readValue(form, '#mission-surcharge-pay'),
+            billing: readValue(form, '#mission-billing'),
+            status: readValue(form, '#mission-status'),
+            assignedTeamId: readValue(form, '#mission-team') || null,
+            notes: readValue(form, '#mission-notes')
         };
 
-        var html = Render.renderForm(formModel);
-        content.innerHTML = html;
+        // Tags: comma-separated input becomes an array.
+        var tagsRaw = readValue(form, '#mission-tags');
+        data.tags = tagsRaw
+            ? tagsRaw.split(',').map(function(s) { return s.trim(); })
+                .filter(function(s) { return s !== ''; })
+            : [];
 
-        modal.dataset.editId = editId || '';
-        modal.classList.remove('hidden');
+        // Support personnel: read from the DOM rows the user built
+        // via the "+ Add" button.
+        data.supportPersonnel = readSupportPersonnelFromForm(form);
 
-        attachFormEvents(modal, mission);
+        // Objectives: read from the DOM rows the user built.
+        data.objectives = readObjectivesFromForm(form);
+
+        return data;
     }
 
-    function attachFormEvents(modal, mission) {
-        var form = modal.querySelector('#mission-form-inner');
-        if (!form) {
+    function readValue(form, selector) {
+        var el = form.querySelector(selector);
+        if (!el) { return ''; }
+        if (typeof el.value !== 'string') { return ''; }
+        return el.value;
+    }
+
+    function readInteger(form, selector) {
+        var raw = readValue(form, selector);
+        if (raw === '') { return null; }
+        var n = parseInt(raw, 10);
+        if (isNaN(n)) { return null; }
+        return n;
+    }
+
+    function readSupportPersonnelFromForm(form) {
+        var host = form.querySelector('#mission-support-list');
+        if (!host) { return []; }
+        var rows = host.querySelectorAll('.support-row');
+        var ids = [];
+        for (var i = 0; i < rows.length; i++) {
+            var id = rows[i].dataset.characterId;
+            if (id) { ids.push(id); }
+        }
+        return ids;
+    }
+
+    function readObjectivesFromForm(form) {
+        var host = form.querySelector('#mission-objectives-list');
+        if (!host) { return []; }
+        var rows = host.querySelectorAll('.objective-row');
+        var objectives = [];
+        for (var i = 0; i < rows.length; i++) {
+            var textEl = rows[i].querySelector('.objective-text-input');
+            var checkEl = rows[i].querySelector('.objective-done');
+            var text = textEl ? textEl.value.trim() : '';
+            if (!text) { continue; }
+            objectives.push({
+                text: text,
+                done: checkEl ? checkEl.checked === true : false
+            });
+        }
+        return objectives;
+    }
+
+    // ============================================================
+    // FORM-SIDE SUPPORT / OBJECTIVE ROW MANAGEMENT
+    // ============================================================
+    //
+    // The + Support and + Objective buttons inside the form do not
+    // call the domain. They append DOM rows that
+    // collectFormData reads on submit. This keeps form state in
+    // the DOM rather than duplicating it in module state.
+
+    function handleAddSupport(missionId, actionEl) {
+        // If we're inside a form, this is a form-side row addition.
+        var form = actionEl.closest('#mission-form-inner');
+        if (form) {
+            appendSupportRowToForm(form);
             return;
         }
 
-        // Populate team select
-        var teamSelect = form.querySelector('#mission-team');
-        if (teamSelect) {
-            populateTeamSelect(teamSelect, mission ? mission.assignedTeamId : null);
-        }
-
-        // Populate support personnel
-        var supportList = form.querySelector('#mission-support-list');
-        if (supportList && mission && Array.isArray(mission.supportPersonnel)) {
-            renderSupportList(supportList, mission.supportPersonnel);
-        }
-
-        // Populate objectives
-        var objectivesList = form.querySelector('#mission-objectives-list');
-        if (objectivesList && mission && Array.isArray(mission.objectives)) {
-            renderObjectivesList(objectivesList, mission.objectives);
-        }
-
-        // Form submit
-        addSafeEventListener(form, 'submit', function(e) {
-            e.preventDefault();
-            handleFormSubmit(modal);
-        });
-
-        // Add objective button
-        var addObjBtn = form.querySelector('#add-objective-btn');
-        if (addObjBtn) {
-            addSafeEventListener(addObjBtn, 'click', function() {
-                var container = form.querySelector('#mission-objectives-list');
-                if (container) {
-                    addObjectiveRow(container);
-                }
-            });
-        }
-
-        // Add support button
-        var addSupportBtn = form.querySelector('#add-support-btn');
-        if (addSupportBtn) {
-            addSafeEventListener(addSupportBtn, 'click', function() {
-                var select = form.querySelector('#mission-support-select');
-                var list = form.querySelector('#mission-support-list');
-                if (select && list && select.value) {
-                    addSupportRow(list, select.value);
-                    select.value = '';
-                }
-            });
-        }
-
-        // Cancel button
-        var cancelBtn = form.querySelector('#cancel-mission-form');
-        if (cancelBtn) {
-            addSafeEventListener(cancelBtn, 'click', function() {
-                closeMissionForm();
-            });
-        }
+        // Otherwise it's the detail-panel version, which needs to
+        // prompt the user. We do this via a simple modal prompt
+        // pattern: open the form in edit mode.
+        if (!missionId) { return; }
+        openFormModal(missionId);
     }
 
-    function populateTeamSelect(select, currentValue) {
-        var teams = getAvailableTeams();
+    function appendSupportRowToForm(form) {
+        var select = form.querySelector('#mission-support-select');
+        var host = form.querySelector('#mission-support-list');
+        if (!select || !host) { return; }
 
-        select.innerHTML = '<option value="">Unassigned</option>';
-
-        var sortedTeams = teams.slice();
-        sortedTeams.sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
-        });
-
-        for (var i = 0; i < sortedTeams.length; i++) {
-            var team = sortedTeams[i];
-            var option = document.createElement('option');
-            option.value = team.id;
-            option.textContent = team.name || 'Unknown Team';
-            if (currentValue && String(team.id) === String(currentValue)) {
-                option.selected = true;
-            }
-            select.appendChild(option);
-        }
-
-        if (currentValue) {
-            var exists = false;
-            for (var j = 0; j < select.options.length; j++) {
-                if (select.options[j].value === currentValue) {
-                    exists = true;
-                    break;
-                }
-            }
-            if (!exists) {
-                select.value = '';
-            }
-        }
-    }
-
-    function renderSupportList(container, supportIds) {
-        container.innerHTML = '';
-
-        if (!Array.isArray(supportIds) || supportIds.length === 0) {
-            var empty = document.createElement('p');
-            empty.className = 'empty-state';
-            empty.textContent = 'No support personnel assigned.';
-            container.appendChild(empty);
+        var id = select.value;
+        if (!id) {
+            notify('Select a character first.', 'warning');
             return;
         }
 
-        for (var i = 0; i < supportIds.length; i++) {
-            var id = supportIds[i];
-            var name = getCharacterDisplayName(id);
-
-            var row = document.createElement('div');
-            row.className = 'support-row';
-            row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:2px 4px;border-bottom:1px solid var(--border-soft);';
-
-            var nameSpan = document.createElement('span');
-            nameSpan.textContent = name || 'Unknown';
-            nameSpan.style.cssText = 'font-size:0.75rem;';
-
-            var removeBtn = document.createElement('button');
-            removeBtn.type = 'button';
-            removeBtn.className = 'small danger remove-support';
-            removeBtn.textContent = 'x';
-            removeBtn.dataset.id = id;
-            removeBtn.style.cssText = 'font-size:0.6rem;padding:0 4px;';
-
-            addSafeEventListener(removeBtn, 'click', function(e) {
-                var targetId = this.dataset.id;
-                var list = this.closest('#mission-support-list');
-                if (list && targetId) {
-                    // Remove from DOM
-                    var row = this.closest('.support-row');
-                    if (row) {
-                        row.remove();
-                    }
-                    // Update hidden state or form data
-                }
-            });
-
-            row.appendChild(nameSpan);
-            row.appendChild(removeBtn);
-            container.appendChild(row);
-        }
-    }
-
-    function addSupportRow(container, characterId) {
-        // Check if already added
-        var existing = container.querySelectorAll('.support-row');
+        // Duplicate check.
+        var existing = host.querySelectorAll('.support-row');
         for (var i = 0; i < existing.length; i++) {
-            var btn = existing[i].querySelector('.remove-support');
-            if (btn && btn.dataset.id === characterId) {
-                showNotification('Character already added.', 'warning');
+            if (existing[i].dataset.characterId === id) {
+                notify('Character is already assigned as support.', 'warning');
                 return;
             }
         }
 
-        var name = getCharacterDisplayName(characterId);
+        var label = '';
+        for (var o = 0; o < select.options.length; o++) {
+            if (select.options[o].value === id) {
+                label = select.options[o].textContent;
+                break;
+            }
+        }
+
+        // Remove empty-state placeholder if present.
+        var empty = host.querySelector('.empty-state');
+        if (empty) { empty.remove(); }
 
         var row = document.createElement('div');
         row.className = 'support-row';
-        row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:2px 4px;border-bottom:1px solid var(--border-soft);';
+        row.dataset.characterId = id;
+        row.innerHTML =
+            '<span class="support-name">' +
+                escapeHtml(label || id) +
+            '</span>' +
+            '<button type="button" class="small danger" ' +
+                'data-action="mission-remove-support" ' +
+                'data-character-id="' +
+                    escapeAttribute(id) + '">' +
+                '×' +
+            '</button>';
 
-        var nameSpan = document.createElement('span');
-        nameSpan.textContent = name || 'Unknown';
-        nameSpan.style.cssText = 'font-size:0.75rem;';
-
-        var removeBtn = document.createElement('button');
-        removeBtn.type = 'button';
-        removeBtn.className = 'small danger remove-support';
-        removeBtn.textContent = 'x';
-        removeBtn.dataset.id = characterId;
-        removeBtn.style.cssText = 'font-size:0.6rem;padding:0 4px;';
-
-        addSafeEventListener(removeBtn, 'click', function(e) {
-            var targetId = this.dataset.id;
-            var list = this.closest('#mission-support-list');
-            if (list && targetId) {
-                var row = this.closest('.support-row');
-                if (row) {
-                    row.remove();
-                }
-            }
-        });
-
-        row.appendChild(nameSpan);
-        row.appendChild(removeBtn);
-
-        // Remove empty state if present
-        var empty = container.querySelector('.empty-state');
-        if (empty) {
-            empty.remove();
-        }
-
-        container.appendChild(row);
+        host.appendChild(row);
+        select.value = '';
     }
 
-    function renderObjectivesList(container, objectives) {
-        container.innerHTML = '';
-
-        if (!Array.isArray(objectives) || objectives.length === 0) {
-            var empty = document.createElement('p');
-            empty.className = 'empty-state';
-            empty.textContent = 'No objectives defined.';
-            container.appendChild(empty);
+    function handleAddObjective(missionId, actionEl) {
+        var form = actionEl.closest('#mission-form-inner');
+        if (form) {
+            appendObjectiveRowToForm(form);
             return;
         }
 
-        for (var i = 0; i < objectives.length; i++) {
-            var obj = objectives[i];
-            addObjectiveRow(container, obj.text, obj.done);
-        }
+        if (!missionId) { return; }
+        openFormModal(missionId);
     }
 
-    function addObjectiveRow(container, text, done) {
-        // Remove empty state if present
-        var empty = container.querySelector('.empty-state');
-        if (empty) {
-            empty.remove();
+    function appendObjectiveRowToForm(form) {
+        var input = form.querySelector('#mission-objective-input');
+        var host = form.querySelector('#mission-objectives-list');
+        if (!input || !host) { return; }
+
+        var text = input.value.trim();
+        if (!text) {
+            notify('Objective text is required.', 'warning');
+            return;
         }
+
+        var empty = host.querySelector('.empty-state');
+        if (empty) { empty.remove(); }
+
+        var index = host.querySelectorAll('.objective-row').length;
 
         var row = document.createElement('div');
         row.className = 'objective-row';
-        row.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:4px;';
+        row.innerHTML =
+            '<input type="checkbox" class="objective-done">' +
+            '<input type="text" class="objective-text-input" ' +
+                'value="' + escapeAttribute(text) + '">' +
+            '<button type="button" class="small danger" ' +
+                'data-action="mission-remove-objective" ' +
+                'data-objective-index="' +
+                    escapeAttribute(String(index)) + '">' +
+                '×' +
+            '</button>';
 
-        var checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.className = 'objective-done';
-        checkbox.checked = done || false;
-        checkbox.style.cssText = 'accent-color:var(--accent);';
+        host.appendChild(row);
+        input.value = '';
+    }
 
-        var input = document.createElement('input');
-        input.type = 'text';
-        input.className = 'objective-input';
-        input.value = text || '';
-        input.placeholder = 'Objective text...';
-        input.style.cssText = 'flex:1;padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;';
+    // ============================================================
+    // DOM-ONLY ROW REMOVAL (inside the form)
+    // ============================================================
 
-        var removeBtn = document.createElement('button');
-        removeBtn.type = 'button';
-        removeBtn.className = 'small danger remove-objective';
-        removeBtn.textContent = 'x';
-        removeBtn.style.cssText = 'font-size:0.6rem;padding:0 4px;';
+    function removeSupportRowFromForm(button) {
+        var row = button.closest('.support-row');
+        if (!row) { return; }
+        var host = row.parentNode;
+        row.remove();
 
-        addSafeEventListener(removeBtn, 'click', function() {
-            var parent = this.closest('.objective-row');
-            var container = parent ? parent.parentNode : null;
-            if (parent) {
-                parent.remove();
-            }
-            if (container && container.children.length === 0) {
-                var empty = document.createElement('p');
-                empty.className = 'empty-state';
-                empty.textContent = 'No objectives defined.';
-                container.appendChild(empty);
+        if (host && host.querySelectorAll('.support-row').length === 0) {
+            var empty = document.createElement('p');
+            empty.className = 'empty-state small';
+            empty.textContent = 'No support assigned.';
+            host.appendChild(empty);
+        }
+    }
+
+    function removeObjectiveRowFromForm(button) {
+        var row = button.closest('.objective-row');
+        if (!row) { return; }
+        var host = row.parentNode;
+        row.remove();
+
+        if (host && host.querySelectorAll('.objective-row').length === 0) {
+            var empty = document.createElement('p');
+            empty.className = 'empty-state small';
+            empty.textContent = 'No objectives.';
+            host.appendChild(empty);
+        }
+    }
+
+    // ============================================================
+    // DOMAIN MUTATIONS
+    // ============================================================
+
+    function handleArchive(missionId) {
+        if (!missionId) { return; }
+        if (!window.confirm('Archive this mission?')) { return; }
+
+        handleMutation(MissionCore.archiveMission(missionId), {
+            onSuccess: function() {
+                closeDetailModal();
+                refreshAfterMutation();
             }
         });
-
-        row.appendChild(checkbox);
-        row.appendChild(input);
-        row.appendChild(removeBtn);
-        container.appendChild(row);
     }
 
-    function getCharacterDisplayName(charId) {
-        if (window.CharacterQueries && typeof window.CharacterQueries.getDisplayName === 'function') {
-            var char = window.CharacterQueries.getCharacterById(charId);
-            if (char) {
-                return window.CharacterQueries.getDisplayName(char);
+    function handleUnarchive(missionId) {
+        if (!missionId) { return; }
+        if (!window.confirm('Unarchive this mission?')) { return; }
+
+        handleMutation(MissionCore.unarchiveMission(missionId), {
+            onSuccess: function() {
+                openDetailModal(missionId);
+                refreshAfterMutation();
+            }
+        });
+    }
+
+    function handleComplete(missionId) {
+        if (!missionId) { return; }
+        if (!window.confirm('Mark this mission as completed?')) { return; }
+
+        handleMutation(MissionCore.completeMission(missionId), {
+            onSuccess: function() {
+                openDetailModal(missionId);
+                refreshAfterMutation();
+            }
+        });
+    }
+
+    function handleCancel(missionId) {
+        if (!missionId) { return; }
+        if (!window.confirm('Cancel this mission?')) { return; }
+
+        handleMutation(MissionCore.cancelMission(missionId), {
+            onSuccess: function() {
+                openDetailModal(missionId);
+                refreshAfterMutation();
+            }
+        });
+    }
+
+    function handleReactivate(missionId) {
+        if (!missionId) { return; }
+        if (!window.confirm('Reactivate this mission?')) { return; }
+
+        handleMutation(MissionCore.reactivateMission(missionId), {
+            onSuccess: function() {
+                openDetailModal(missionId);
+                refreshAfterMutation();
+            }
+        });
+    }
+
+    function handleObjectiveToggle(missionId, indexStr, done) {
+        if (!missionId) { return; }
+        var index = parseInt(indexStr, 10);
+        if (isNaN(index) || index < 0) { return; }
+
+        handleMutation(MissionCore.setObjectiveDone(missionId, index, done), {
+            onSuccess: function() {
+                openDetailModal(missionId);
+                refreshAfterMutation();
+            }
+        });
+    }
+
+    function handleRemoveObjective(missionId, indexStr) {
+        if (!missionId) { return; }
+
+        // Detail-panel path: missionId is set, index is a number.
+        var index = parseInt(indexStr, 10);
+        if (!isNaN(index) && missionId) {
+            var detailModal = state.container
+                ? state.container.querySelector('#mission-detail-modal')
+                : null;
+            var inDetail = detailModal &&
+                !detailModal.classList.contains('hidden') &&
+                state.currentMissionId === missionId;
+
+            if (inDetail) {
+                if (!window.confirm('Remove this objective?')) { return; }
+                handleMutation(
+                    MissionCore.removeObjective(missionId, index),
+                    {
+                        onSuccess: function() {
+                            openDetailModal(missionId);
+                            refreshAfterMutation();
+                        }
+                    }
+                );
+                return;
             }
         }
-        return 'Unknown';
-    }
 
-    function closeMissionForm() {
-        var modal = document.getElementById('mission-form-modal');
-        if (modal) {
-            modal.classList.add('hidden');
-            var content = document.getElementById('mission-form-content');
-            if (content) {
-                content.innerHTML = '';
-            }
+        // Form path: the button lives inside the form and just
+        // removes the DOM row. The removal is not persisted until
+        // the form is submitted.
+        var btn = document.activeElement;
+        if (btn && btn.classList &&
+            btn.classList.contains('danger')) {
+            removeObjectiveRowFromForm(btn);
         }
     }
 
-    // ============================================================
-    // FORM SUBMIT HANDLER - NO PERSISTENCE KNOWLEDGE
-    // ============================================================
+    function handleAddSupport(missionId, actionEl) {
+        // Form-side addition path is handled above. This branch is
+        // never reached from the detail panel; the detail panel
+        // opens the form for support management.
+        var form = actionEl.closest('#mission-form-inner');
+        if (form) {
+            appendSupportRowToForm(form);
+            return;
+        }
+        if (missionId) {
+            openFormModal(missionId);
+        }
+    }
 
-    function handleFormSubmit(modal) {
-        var editId = modal.dataset.editId;
-        var form = modal.querySelector('#mission-form-inner');
+    function handleRemoveSupport(missionId, characterId) {
+        if (!characterId) { return; }
 
-        var data = {
-            title: form.querySelector('#mission-title').value.trim(),
-            status: form.querySelector('#mission-status').value,
-            priority: form.querySelector('#mission-priority').value,
-            difficulty: form.querySelector('#mission-difficulty').value,
-            assignedTeamId: form.querySelector('#mission-team').value || null,
-            location: form.querySelector('#mission-location').value.trim(),
-            duration: form.querySelector('#mission-duration').value.trim(),
-            description: form.querySelector('#mission-description').value.trim(),
-            notes: form.querySelector('#mission-notes').value.trim(),
-            basePay: form.querySelector('#mission-base-pay').value.trim(),
-            surchargePay: form.querySelector('#mission-surcharge-pay').value.trim(),
-            objectives: []
-        };
+        var actionEl = document.activeElement;
+        var form = actionEl ? actionEl.closest('#mission-form-inner') : null;
 
-        if (!data.title) {
-            showNotification('Mission title is required.', 'warning');
+        // If the button lives inside the form, remove the DOM row.
+        if (form) {
+            removeSupportRowFromForm(actionEl);
             return;
         }
 
-        // Collect objectives
-        var objectiveRows = form.querySelectorAll('.objective-row');
-        for (var i = 0; i < objectiveRows.length; i++) {
-            var row = objectiveRows[i];
-            var input = row.querySelector('.objective-input');
-            var checkbox = row.querySelector('.objective-done');
-            if (input && input.value.trim()) {
-                data.objectives.push({
-                    text: input.value.trim(),
-                    done: checkbox ? checkbox.checked : false
-                });
-            }
-        }
+        // Detail-panel path: missionId is required.
+        if (!missionId) { return; }
+        if (!window.confirm('Remove this support assignment?')) { return; }
 
-        if (data.objectives.length === 0) {
-            showNotification('At least one objective is required.', 'warning');
-            return;
-        }
-
-        // Collect support personnel
-        var supportList = form.querySelector('#mission-support-list');
-        var supportIds = [];
-        if (supportList) {
-            var removeBtns = supportList.querySelectorAll('.remove-support');
-            for (var j = 0; j < removeBtns.length; j++) {
-                var id = removeBtns[j].dataset.id;
-                if (id) {
-                    supportIds.push(id);
+        handleMutation(
+            MissionCore.removeSupportPersonnel(missionId, characterId),
+            {
+                onSuccess: function() {
+                    openDetailModal(missionId);
+                    refreshAfterMutation();
                 }
             }
-        }
-        data.supportPersonnel = supportIds;
+        );
+    }
 
-        // Collect tags
-        var tagsInput = form.querySelector('#mission-tags');
-        if (tagsInput && tagsInput.value.trim()) {
-            data.tags = tagsInput.value.split(',').map(function(t) {
-                return t.trim();
-            }).filter(function(t) {
-                return t !== '';
-            });
+    // ============================================================
+    // LOG MODAL
+    // ============================================================
+
+    function openLogModal(missionId) {
+        if (!missionId) { return; }
+        var message = window.prompt('Log entry:');
+        if (message === null) { return; }
+        message = message.trim();
+        if (!message) { return; }
+
+        handleMutation(MissionCore.addLog(missionId, message), {
+            onSuccess: function() {
+                openDetailModal(missionId);
+                refreshAfterMutation();
+            }
+        });
+    }
+
+    // ============================================================
+    // REPORT MODAL
+    // ============================================================
+
+    function openReportFormModal(missionId, reportId) {
+        if (!missionId) { return; }
+
+        var existing = null;
+        if (reportId) {
+            var detailVM = MissionAggregator.getMissionDetailViewModel(
+                missionId
+            );
+            if (!detailVM) { return; }
+            for (var i = 0; i < detailVM.reports.length; i++) {
+                if (detailVM.reports[i].id === reportId) {
+                    existing = detailVM.reports[i];
+                    break;
+                }
+            }
+            if (!existing) {
+                notify('Report not found.', 'error');
+                return;
+            }
         }
 
-        // Collect date
-        var yearInput = form.querySelector('#mission-year');
-        var monthSelect = form.querySelector('#mission-month');
-        var dayInput = form.querySelector('#mission-day');
-        if (yearInput && yearInput.value) {
-            data.year = parseInt(yearInput.value, 10);
-        }
-        if (monthSelect && monthSelect.value) {
-            data.month = parseInt(monthSelect.value, 10);
-        }
-        if (dayInput && dayInput.value) {
-            data.day = parseInt(dayInput.value, 10);
+        var prompt = existing
+            ? 'Edit report:'
+            : 'New report:';
+        var text = window.prompt(prompt, existing ? existing.text : '');
+        if (text === null) { return; }
+        text = text.trim();
+        if (!text) {
+            notify('Report text is required.', 'warning');
+            return;
         }
 
-        // Collect type fields
-        var primaryType = form.querySelector('#mission-primary-type');
-        var subtype = form.querySelector('#mission-subtype');
-        var secondaryType = form.querySelector('#mission-secondary-type');
-        var escalation = form.querySelector('#mission-escalation');
-        var threatType = form.querySelector('#mission-threat-type');
-        var environment = form.querySelector('#mission-environment');
-        var billing = form.querySelector('#mission-billing');
-
-        if (primaryType) data.primaryType = primaryType.value;
-        if (subtype) data.subtype = subtype.value;
-        if (secondaryType) data.secondaryType = secondaryType.value;
-        if (escalation) data.escalation = escalation.value;
-        if (threatType) data.threatType = threatType.value;
-        if (environment) data.environment = environment.value;
-        if (billing) data.billing = billing.value;
-
-        // ---- CALL CORE (NO saveData) ----
         var promise;
-        if (editId) {
-            promise = Core.updateMission(editId, data);
+        if (existing) {
+            promise = MissionCore.updateReport(
+                missionId,
+                existing.id,
+                text
+            );
         } else {
-            promise = Core.createMission(data);
+            // Author is not passed; the domain defaults to a
+            // redacted author for anonymous reports. Replace this
+            // with a proper author picker when the UI is ready.
+            promise = MissionCore.addReport(missionId, null, text);
         }
 
-        promise
-            .then(function(result) {
-                if (result && result.success) {
-                    closeMissionForm();
-                    renderMissionList();
-                    if (editId && state.currentMissionId === normaliseId(editId)) {
-                        viewMission(editId);
-                    }
-                    showNotification(
-                        editId ? 'Mission updated successfully!' : 'Mission created successfully!',
-                        'success'
-                    );
-                } else {
-                    showNotification(
-                        result && result.message ? result.message : 'Failed to save mission.',
-                        'error'
-                    );
-                }
-            })
-            .catch(function(err) {
-                showNotification('An unexpected error occurred: ' + err.message, 'error');
-            });
+        handleMutation(promise, {
+            onSuccess: function() {
+                openDetailModal(missionId);
+                refreshAfterMutation();
+            }
+        });
+    }
+
+    function handleReportDelete(missionId, reportId) {
+        if (!missionId || !reportId) { return; }
+        if (!window.confirm('Delete this report?')) { return; }
+
+        handleMutation(MissionCore.removeReport(missionId, reportId), {
+            onSuccess: function() {
+                openDetailModal(missionId);
+                refreshAfterMutation();
+            }
+        });
     }
 
     // ============================================================
-    // MISSION HANDLERS - NO PERSISTENCE KNOWLEDGE
+    // MUTATION HANDLER
     // ============================================================
 
-    function handleDeleteMission(id) {
-        var mission = Core.getMission(id);
-        if (!mission) {
-            showNotification('Mission not found.', 'error');
-            return;
-        }
+    function handleMutation(promise, options) {
+        options = options || {};
 
-        showConfirmation('Delete "' + mission.title + '" permanently? This action cannot be undone.')
-            .then(function(confirmed) {
-                if (confirmed) {
-                    Core.deleteMission(id)
-                        .then(function(result) {
-                            if (result && result.success) {
-                                renderMissionList();
-                                closeMissionDetail();
-                                showNotification('Mission deleted successfully!', 'success');
-                            } else {
-                                showNotification(
-                                    result && result.message ? result.message : 'Failed to delete mission.',
-                                    'error'
-                                );
-                            }
-                        })
-                        .catch(function(err) {
-                            showNotification('An unexpected error occurred: ' + err.message, 'error');
-                        });
+        promise.then(function(result) {
+            if (result && result.success) {
+                if (typeof options.onSuccess === 'function') {
+                    options.onSuccess(result);
                 }
-            })
-            .catch(function() {
-                // Ignore errors from confirmation
-            });
-    }
-
-    function handleCompleteMission(id) {
-        var mission = Core.getMission(id);
-        if (!mission) {
-            showNotification('Mission not found.', 'error');
-            return;
-        }
-
-        // Check if ready for completion
-        if (!Core.isReadyForCompletion(mission)) {
-            var progress = Core.calculateProgress(mission.objectives);
-            showNotification('Mission is ' + progress + '% complete. Complete all objectives first.', 'warning');
-            return;
-        }
-
-        showConfirmation('Complete "' + mission.title + '"?')
-            .then(function(confirmed) {
-                if (confirmed) {
-                    Core.completeMission(id)
-                        .then(function(result) {
-                            if (result && result.success) {
-                                renderMissionList();
-                                if (state.currentMissionId === normaliseId(id)) {
-                                    viewMission(id);
-                                }
-                                showNotification('Mission completed successfully!', 'success');
-                            } else {
-                                showNotification(
-                                    result && result.message ? result.message : 'Failed to complete mission.',
-                                    'error'
-                                );
-                            }
-                        })
-                        .catch(function(err) {
-                            showNotification('An unexpected error occurred: ' + err.message, 'error');
-                        });
-                }
-            })
-            .catch(function() {
-                // Ignore errors from confirmation
-            });
-    }
-
-    function handleCancelMission(id) {
-        var mission = Core.getMission(id);
-        if (!mission) {
-            showNotification('Mission not found.', 'error');
-            return;
-        }
-
-        showConfirmation('Cancel "' + mission.title + '"?')
-            .then(function(confirmed) {
-                if (confirmed) {
-                    Core.cancelMission(id)
-                        .then(function(result) {
-                            if (result && result.success) {
-                                renderMissionList();
-                                if (state.currentMissionId === normaliseId(id)) {
-                                    viewMission(id);
-                                }
-                                showNotification('Mission cancelled.', 'info');
-                            } else {
-                                showNotification(
-                                    result && result.message ? result.message : 'Failed to cancel mission.',
-                                    'error'
-                                );
-                            }
-                        })
-                        .catch(function(err) {
-                            showNotification('An unexpected error occurred: ' + err.message, 'error');
-                        });
-                }
-            })
-            .catch(function() {
-                // Ignore errors from confirmation
-            });
-    }
-
-    function handleReactivateMission(id) {
-        var mission = Core.getMission(id);
-        if (!mission) {
-            showNotification('Mission not found.', 'error');
-            return;
-        }
-
-        showConfirmation('Reactivate "' + mission.title + '"?')
-            .then(function(confirmed) {
-                if (confirmed) {
-                    Core.reactivateMission(id)
-                        .then(function(result) {
-                            if (result && result.success) {
-                                renderMissionList();
-                                if (state.currentMissionId === normaliseId(id)) {
-                                    viewMission(id);
-                                }
-                                showNotification('Mission reactivated.', 'success');
-                            } else {
-                                showNotification(
-                                    result && result.message ? result.message : 'Failed to reactivate mission.',
-                                    'error'
-                                );
-                            }
-                        })
-                        .catch(function(err) {
-                            showNotification('An unexpected error occurred: ' + err.message, 'error');
-                        });
-                }
-            })
-            .catch(function() {
-                // Ignore errors from confirmation
-            });
-    }
-
-    function handleToggleObjective(missionId, index, done) {
-        Core.toggleObjective(missionId, index)
-            .then(function(result) {
-                if (result && result.success) {
-                    if (state.currentMissionId === normaliseId(missionId)) {
-                        viewMission(missionId);
-                    }
-                    renderMissionList();
-                } else {
-                    showNotification(
-                        result && result.message ? result.message : 'Failed to toggle objective.',
-                        'error'
-                    );
-                }
-            })
-            .catch(function(err) {
-                showNotification('An unexpected error occurred: ' + err.message, 'error');
-            });
+                return;
+            }
+            notify(
+                result && result.message
+                    ? result.message
+                    : 'Operation failed.',
+                'error'
+            );
+        }).catch(function(err) {
+            console.warn('[MissionUI] Mutation threw:', err);
+            notify(
+                options.errorMessage || 'Operation failed.',
+                'error'
+            );
+        });
     }
 
     // ============================================================
-    // LIFECYCLE MANAGEMENT
+    // POST-MUTATION REFRESH
     // ============================================================
 
-    // TabManager is the single source of truth for lifecycle
+    function refreshAfterMutation() {
+        if (!state.container) { return; }
+        renderListInto(state.container);
+        refreshDetailIfOpen();
+    }
+
+    // ============================================================
+    // ESCAPING FOR DOM-BUILT ROWS
+    // ============================================================
+
+    function escapeHtml(value) {
+        if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
+            return window.DomUtils.escapeHtml(value);
+        }
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    function escapeAttribute(value) {
+        if (window.DomUtils &&
+            typeof window.DomUtils.escapeAttribute === 'function') {
+            return window.DomUtils.escapeAttribute(value);
+        }
+        return escapeHtml(value);
+    }
+
+    // ============================================================
+    // LIFECYCLE
+    // ============================================================
+
+    function destroyMissions() {
+        removeAllListeners();
+        state.container = null;
+        state.currentMissionId = null;
+        state.currentFilter = 'all';
+    }
+
+    // ============================================================
+    // REGISTER
+    // ============================================================
+
     TabManager.register('missions', renderMissions);
 
     // ============================================================
@@ -1180,18 +1178,34 @@
     // ============================================================
 
     window.renderMissions = renderMissions;
-    window.viewMission = viewMission;
-    window.closeMissionDetail = closeMissionDetail;
     window.destroyMissions = destroyMissions;
 
-    window.MissionUI = {
+    window.MissionUI = Object.freeze({
         render: renderMissions,
-        viewMission: viewMission,
-        closeMissionDetail: closeMissionDetail,
-        showMissionForm: showMissionForm,
-        renderMissionList: renderMissionList,
-        destroy: destroyMissions,
-        getState: function() { return state; }
-    };
+        destroy: destroyMissions
+    });
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.MissionUI;
+        var missing = [];
+
+        if (typeof exports.render !== 'function') {
+            missing.push('render');
+        }
+        if (typeof exports.destroy !== 'function') {
+            missing.push('destroy');
+        }
+
+        if (missing.length > 0) {
+            console.warn(
+                '[MissionUI] Verification failed:',
+                missing.join(', ')
+            );
+        }
+    })();
 
 })();
