@@ -7,7 +7,7 @@
  *   - Rendering tournament eliminations
  *   - Rendering standalone eliminations
  *   - Displaying elimination status
- *   - Managing elimination UI state
+ *   - Managing elimination UI state (form rendering)
  *
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no persistence
@@ -17,6 +17,39 @@
  *   - All user-controlled content uses textContent
  *   - No event binding here (delegated to CharacterEvents)
  *
+ * QUERY DELEGATION:
+ *   Elimination QUERIES are delegated to EliminationQueries, which is
+ *   the single source of truth for elimination read semantics. This
+ *   module does NOT reimplement the week boundary, the source-of-
+ *   truth rule, or the treatment of deceased characters.
+ *
+ *   Shape-level filters (getTournamentEliminations,
+ *   getStandaloneEliminations, getAllEliminations) are LOCAL: they
+ *   are predicates on the eliminations array shape, not semantic
+ *   queries about elimination status.
+ *
+ * ELIMINATION vs DECEASED:
+ *   These are separate concepts.
+ *     - An ELIMINATION is a competitive-exam outcome.
+ *     - DECEASED is a life event.
+ *   A character can be deceased without being eliminated, eliminated
+ *   without being deceased, both, or neither.
+ *
+ *   The elimination queries in this module do NOT consult
+ *   character.deceased or character.deathWeek. If a caller wants to
+ *   ask "is this character dead?", that is a separate question with
+ *   its own query (CharacterQueries.isDeceased).
+ *
+ * WEEK BOUNDARY SEMANTICS:
+ *   A character eliminated in week N is ELIGIBLE during week N and
+ *   INELIGIBLE from week N+1 onward.
+ *
+ *   Concretely:
+ *     isEliminatedByWeek(char, N)       → false
+ *     isEliminatedByWeek(char, N + 1)   → true
+ *
+ *   EliminationQueries owns this rule. This module delegates.
+ *
  * TOURNAMENT LOOKUP:
  *   TournamentQueries exposes getTournament(id). The older
  *   getTournamentById(id) name does not exist and has never existed
@@ -24,10 +57,11 @@
  *   getTournament. A missing tournament returns 'Unknown Tournament'.
  *
  * DEPENDENCIES:
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
- *   - window.TournamentQueries (from tournament-queries.js) - MANDATORY
- *   - window.DomUtils (from dom-utils.js) - MANDATORY
- *   - window.CalendarConstants (from constants.js) - MANDATORY
+ *   - window.CharacterQueries       (from character-queries.js) - MANDATORY
+ *   - window.TournamentQueries      (from tournament-queries.js) - MANDATORY
+ *   - window.EliminationQueries     (from elimination-queries.js) - MANDATORY
+ *   - window.DomUtils               (from dom-utils.js) - MANDATORY
+ *   - window.CalendarConstants      (from constants.js) - MANDATORY
  *
  * USAGE:
  *   var EV = window.CharacterEliminationView;
@@ -50,6 +84,7 @@
 
     var CharacterQueries = window.CharacterQueries;
     var TournamentQueries = window.TournamentQueries;
+    var EliminationQueries = window.EliminationQueries;
     var DomUtils = window.DomUtils;
     var CalendarConstants = window.CalendarConstants;
 
@@ -67,23 +102,47 @@
     function checkDependencies() {
         var missing = [];
 
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+        if (!CharacterQueries ||
+            typeof CharacterQueries.getCharacterById !== 'function') {
             missing.push('CharacterQueries.getCharacterById');
         }
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+        if (!CharacterQueries ||
+            typeof CharacterQueries.getDisplayName !== 'function') {
             missing.push('CharacterQueries.getDisplayName');
         }
 
-        if (!TournamentQueries || typeof TournamentQueries.getTournament !== 'function') {
+        if (!TournamentQueries ||
+            typeof TournamentQueries.getTournament !== 'function') {
             missing.push('TournamentQueries.getTournament');
         }
 
-        if (!DomUtils || typeof DomUtils.createElement !== 'function') {
+        if (!EliminationQueries ||
+            typeof EliminationQueries.isCharacterEliminatedByWeek !== 'function') {
+            missing.push('EliminationQueries.isCharacterEliminatedByWeek');
+        }
+        if (!EliminationQueries ||
+            typeof EliminationQueries.getEliminationWeek !== 'function') {
+            missing.push('EliminationQueries.getEliminationWeek');
+        }
+        if (!EliminationQueries ||
+            typeof EliminationQueries.getEliminationReason !== 'function') {
+            missing.push('EliminationQueries.getEliminationReason');
+        }
+        if (!EliminationQueries ||
+            typeof EliminationQueries.getEliminatedCharacters !== 'function') {
+            missing.push('EliminationQueries.getEliminatedCharacters');
+        }
+
+        if (!DomUtils ||
+            typeof DomUtils.createElement !== 'function') {
             missing.push('DomUtils.createElement');
         }
 
         if (missing.length > 0) {
-            console.warn('[CharacterEliminationView] Missing dependencies:', missing.join(', '));
+            console.warn(
+                '[CharacterEliminationView] Missing dependencies:',
+                missing.join(', ')
+            );
             return false;
         }
 
@@ -91,8 +150,15 @@
     }
 
     // ============================================================
-    // ELIMINATION HELPERS
+    // SHAPE FILTERS - predicates on the eliminations array
     // ============================================================
+    //
+    // These are NOT semantic queries. They split the eliminations
+    // array by record shape:
+    //   - standalone: true  → standalone eliminations (dropped out)
+    //   - standalone: false → tournament eliminations
+    //
+    // They do not consult the week boundary or the deceased state.
 
     function getTournamentEliminations(char) {
         if (!char || !Array.isArray(char.eliminations)) {
@@ -131,118 +197,29 @@
         return char.eliminations.slice();
     }
 
+    // ============================================================
+    // QUERIES - DELEGATED TO EliminationQueries
+    // ============================================================
+
     function isEliminatedByWeek(char, week) {
-        if (!char) {
-            return false;
-        }
-
-        var weekNum = Number(week);
-        if (!Number.isInteger(weekNum) || weekNum < MIN_WEEK) {
-            return false;
-        }
-
-        var eliminations = Array.isArray(char.eliminations) ? char.eliminations : [];
-
-        for (var i = 0; i < eliminations.length; i++) {
-            var elimWeek = Number(eliminations[i].week);
-            if (Number.isInteger(elimWeek) &&
-                elimWeek >= MIN_WEEK &&
-                elimWeek <= MAX_WEEK &&
-                elimWeek <= weekNum) {
-                return true;
-            }
-        }
-
-        // Check death timeline
-        if (char.deceased) {
-            var deathWeekNum = Number(char.deathWeek);
-            var hasValidDeathWeek = (
-                char.deathWeek !== undefined &&
-                char.deathWeek !== null &&
-                char.deathWeek !== '' &&
-                Number.isInteger(deathWeekNum) &&
-                deathWeekNum >= MIN_WEEK &&
-                deathWeekNum <= MAX_WEEK
-            );
-
-            if (hasValidDeathWeek) {
-                return deathWeekNum <= weekNum;
-            }
-
-            // Deceased with missing or invalid deathWeek = unavailable entirely
-            return true;
-        }
-
-        return false;
+        return EliminationQueries.isCharacterEliminatedByWeek(char, week);
     }
 
     function getEliminationWeek(char) {
-        if (!char) {
-            return null;
-        }
-
-        var eliminations = Array.isArray(char.eliminations) ? char.eliminations : [];
-        var earliestWeek = null;
-
-        for (var i = 0; i < eliminations.length; i++) {
-            var week = Number(eliminations[i].week);
-            if (Number.isInteger(week) && week >= MIN_WEEK && week <= MAX_WEEK) {
-                if (earliestWeek === null || week < earliestWeek) {
-                    earliestWeek = week;
-                }
-            }
-        }
-
-        // Check death
-        if (char.deceased) {
-            var deathWeekNum = Number(char.deathWeek);
-            var hasValidDeathWeek = (
-                char.deathWeek !== undefined &&
-                char.deathWeek !== null &&
-                char.deathWeek !== '' &&
-                Number.isInteger(deathWeekNum) &&
-                deathWeekNum >= MIN_WEEK &&
-                deathWeekNum <= MAX_WEEK
-            );
-
-            if (hasValidDeathWeek) {
-                if (earliestWeek === null || deathWeekNum < earliestWeek) {
-                    earliestWeek = deathWeekNum;
-                }
-            } else {
-                // Deceased with invalid deathWeek - consider eliminated from week 1
-                if (earliestWeek === null || 1 < earliestWeek) {
-                    earliestWeek = 1;
-                }
-            }
-        }
-
-        return earliestWeek;
+        return EliminationQueries.getEliminationWeek(char);
     }
 
     function getEliminationReason(char) {
-        if (!char) {
-            return 'Unknown';
-        }
-
-        var eliminations = Array.isArray(char.eliminations) ? char.eliminations : [];
-
-        for (var i = 0; i < eliminations.length; i++) {
-            if (eliminations[i] && eliminations[i].reason) {
-                return eliminations[i].reason;
-            }
-        }
-
-        if (char.deceased && char.deathCause) {
-            return 'Deceased: ' + char.deathCause;
-        }
-
-        if (char.deceased) {
-            return 'Deceased';
-        }
-
-        return 'Unknown';
+        return EliminationQueries.getEliminationReason(char);
     }
+
+    function getEliminatedCharacters(week, characters) {
+        return EliminationQueries.getEliminatedCharacters(week, characters);
+    }
+
+    // ============================================================
+    // TOURNAMENT LOOKUP
+    // ============================================================
 
     /**
      * Resolve a tournament ID to its display name.
@@ -259,7 +236,8 @@
             return 'Unknown Tournament';
         }
 
-        if (!TournamentQueries || typeof TournamentQueries.getTournament !== 'function') {
+        if (!TournamentQueries ||
+            typeof TournamentQueries.getTournament !== 'function') {
             return 'Unknown Tournament';
         }
 
@@ -477,11 +455,24 @@
 
             div.appendChild(document.createTextNode('Not eliminated'));
 
-            var statusSpan = document.createElement('span');
-            statusSpan.style.cssText =
-                'color:var(--text-dim);font-size:0.65rem;margin-left:4px;';
-            statusSpan.textContent = '(Week ' + weekNum + ')';
-            div.appendChild(statusSpan);
+            // Clarify the boundary: if the character has an
+            // elimination at exactly this week, they are still
+            // eligible during this week. Show it explicitly so the
+            // user understands the strictly-less-than rule.
+            if (elimWeek !== null && elimWeek === weekNum) {
+                var boundarySpan = document.createElement('span');
+                boundarySpan.style.cssText =
+                    'color:var(--text-dim);font-size:0.65rem;margin-left:4px;';
+                boundarySpan.textContent =
+                    '(eliminated at end of week ' + elimWeek + ')';
+                div.appendChild(boundarySpan);
+            } else {
+                var statusSpan = document.createElement('span');
+                statusSpan.style.cssText =
+                    'color:var(--text-dim);font-size:0.65rem;margin-left:4px;';
+                statusSpan.textContent = '(Week ' + weekNum + ')';
+                div.appendChild(statusSpan);
+            }
         }
 
         container.appendChild(div);
@@ -579,6 +570,11 @@
         return el;
     }
 
+    /**
+     * Local form-input validator. This is NOT the semantic week
+     * query — it just checks whether a value is a valid week number.
+     * The semantic queries live in EliminationQueries.
+     */
     function validateWeek(value) {
         var num = Number(value);
         return Number.isInteger(num) && num >= MIN_WEEK && num <= MAX_WEEK;
@@ -589,25 +585,6 @@
             return window.data.currentWeek;
         }
         return 1;
-    }
-
-    function getEliminatedCharacters(week, characters) {
-        var weekNum = Number(week);
-        if (!Number.isInteger(weekNum) || weekNum < MIN_WEEK) {
-            return [];
-        }
-
-        characters = characters || [];
-        var result = [];
-
-        for (var i = 0; i < characters.length; i++) {
-            var char = characters[i];
-            if (isEliminatedByWeek(char, weekNum)) {
-                result.push(char.id);
-            }
-        }
-
-        return result;
     }
 
     // ============================================================
@@ -621,10 +598,12 @@
         renderEliminationStatus: renderEliminationStatus,
         renderEliminationForm: renderEliminationForm,
 
-        // Queries
+        // Shape filters (local — predicates on the array shape)
         getTournamentEliminations: getTournamentEliminations,
         getStandaloneEliminations: getStandaloneEliminations,
         getAllEliminations: getAllEliminations,
+
+        // Queries (delegated to EliminationQueries)
         isEliminatedByWeek: isEliminatedByWeek,
         getEliminationWeek: getEliminationWeek,
         getEliminationReason: getEliminationReason,
