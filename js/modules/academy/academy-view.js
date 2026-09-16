@@ -17,11 +17,14 @@
  *     character tab)
  *   - Bind container-level event delegation for all views
  *   - Mount / unmount the inline grades editor after each render
+ *   - Mount / unmount the CalendarRenderer schedule grid after each
+ *     render when the Schedule tab is active
  *   - Handle exam pair-picker DOM mutations (exam-pair-add /
  *     exam-pair-remove)
- *   - Handle Weekly Teams create/delete via TeamCore
- *   - Handle CalendarRenderer grid mounting for the character
- *     detail panel's Schedule tab
+ *   - Handle Weekly Teams create/delete/manage-members by delegating
+ *     to TeamCore and TeamEvents
+ *   - Handle character class membership mutations
+ *     (character-remove-from-class)
  *
  * NOT RESPONSIBILITIES:
  *   - Domain reads. Those happen in the aggregators.
@@ -30,6 +33,12 @@
  *
  * ROLE VOCABULARY (CANONICAL):
  *   'student' | 'instructor'. There is no 'trainee'.
+ *
+ * TEAM CORE CONFIGURATION:
+ *   TeamCore requires a characterProvider via configure(). The Teams
+ *   tab normally injects it on mount. When Academy creates or modifies
+ *   teams and the Teams tab was never opened, this module injects the
+ *   provider itself via ensureTeamCoreConfigured(). Idempotent.
  *
  * WEEK SEMANTICS:
  *   Week values are owned by AcademyUI.setDisplayWeek, which enforces
@@ -50,9 +59,6 @@
  *   location-, ranking-, weekly-teams-, exam-) so dispatch is
  *   deterministic and does not rely on handler chaining.
  *
- *   exam-pair-add and exam-pair-remove are handled inline in
- *   handleExamAction. They mutate modal DOM, not domain state.
- *
  * DEPENDENCIES (MANDATORY):
  *   - AcademyUI
  *   - AcademyAggregator
@@ -62,22 +68,16 @@
  *   - CalendarConstants
  *
  * DEPENDENCIES (OPTIONAL, feature-scoped):
- *   - CharacterQueries
- *   - AcademyDisciplines
- *   - AcademyEnrolments
- *   - AcademyGroups
+ *   - CharacterQueries / CharacterClasses
+ *   - AcademyDisciplines / AcademyEnrolments / AcademyGroups
  *   - CharacterEliminations
- *   - AcademyCRUDModals
- *   - AcademyTournamentEvents
- *   - AcademyGradesEditor
+ *   - AcademyCRUDModals / AcademyTournamentEvents / AcademyGradesEditor
  *   - AcademyCharacterDetail / AcademyClassDetail
  *   - AcademyDisciplineView / AcademyLocationView / AcademyRankingView /
  *     AcademyWeeklyTeamsView / AcademyTournamentView
  *   - CalendarRenderer
- *   - TeamCore
- *   - TeamQueries
- *   - Modal
- *   - NotificationSystem
+ *   - TeamCore / TeamEvents / TeamQueries
+ *   - Modal / NotificationSystem
  */
 
 (function() {
@@ -186,6 +186,7 @@
     // ============================================================
 
     function getCharacterQueries() { return window.CharacterQueries || null; }
+    function getCharacterClasses() { return window.CharacterClasses || null; }
     function getAcademyDisciplines() { return window.AcademyDisciplines || null; }
     function getAcademyEnrolments() { return window.AcademyEnrolments || null; }
     function getAcademyGroups() { return window.AcademyGroups || null; }
@@ -202,6 +203,7 @@
     function getNotificationSystem() { return window.NotificationSystem || null; }
     function getCalendarRenderer() { return window.CalendarRenderer || null; }
     function getTeamCore() { return window.TeamCore || null; }
+    function getTeamEvents() { return window.TeamEvents || null; }
     function getTeamQueries() { return window.TeamQueries || null; }
     function getModal() { return window.Modal || null; }
 
@@ -222,6 +224,14 @@
         if (NS && typeof NS.notify === 'function') {
             NS.notify(message, type || 'info');
         }
+    }
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    function isNonEmptyString(value) {
+        return typeof value === 'string' && value.trim() !== '';
     }
 
     // ============================================================
@@ -269,6 +279,58 @@
 
     var _disciplineFilters = { type: 'all', search: '' };
     var _locationFilters = { type: 'all', search: '' };
+
+    var _teamCoreConfigured = false;
+
+    // ============================================================
+    // TEAM CORE CONFIGURATION (idempotent)
+    // ============================================================
+    //
+    // TeamCore requires a characterProvider injected via configure().
+    // The Teams module (modules/teams/index.js) configures it when
+    // its tab mounts. When Academy creates or modifies teams and the
+    // Teams tab was never opened, this helper bootstraps the provider
+    // so TeamCore's dependency check passes.
+    //
+    // Idempotent: only the first call runs configure(). Subsequent
+    // calls return the cached result.
+
+    function ensureTeamCoreConfigured() {
+        if (_teamCoreConfigured) { return true; }
+
+        var TeamCore = getTeamCore();
+        var CQ = getCharacterQueries();
+
+        if (!TeamCore || typeof TeamCore.configure !== 'function') {
+            return false;
+        }
+        if (!CQ || typeof CQ.getCharacterById !== 'function') {
+            return false;
+        }
+
+        var provider = {
+            exists: function(id) {
+                if (id === null || id === undefined || id === '') {
+                    return false;
+                }
+                var char = CQ.getCharacterById(id);
+                return char !== null && char !== undefined;
+            }
+        };
+
+        try {
+            var result = TeamCore.configure({ characterProvider: provider });
+            if (result === false) {
+                console.warn('[AcademyView] TeamCore.configure returned false.');
+                return false;
+            }
+            _teamCoreConfigured = true;
+            return true;
+        } catch (e) {
+            console.warn('[AcademyView] TeamCore.configure threw:', e);
+            return false;
+        }
+    }
 
     // ============================================================
     // ENTRY POINT
@@ -626,8 +688,6 @@
 
         var week = AcademyUI.getDisplayWeek();
 
-        // Seed from the People view's selected class when we have no
-        // local selection yet.
         if (!_selectedExamClassId) {
             var peopleClassId = AcademyUI.getSelectedClassId();
             if (peopleClassId) {
@@ -640,9 +700,6 @@
             week
         );
 
-        // Only sync back when the aggregator resolved a real class.
-        // Preserving null otherwise keeps the picker's selection
-        // stable across renders.
         if (vm.classId) {
             _selectedExamClassId = vm.classId;
         }
@@ -1081,6 +1138,12 @@
             case 'drop-out-character':
                 handleDropOut(el.dataset.characterId);
                 return;
+            case 'character-remove-from-class':
+                handleRemoveFromClass(
+                    el.dataset.characterId,
+                    el.dataset.classId
+                );
+                return;
             case 'enroll-discipline':
                 handleEnrollDiscipline(el.dataset.characterId);
                 return;
@@ -1190,9 +1253,6 @@
         }
     }
 
-    /**
-     * Handle the "+ Add" button in the tournament pair picker.
-     */
     function handlePairAdd(btn) {
         var form = btn.closest('form');
         if (!form) { return; }
@@ -1296,7 +1356,6 @@
     }
 
     function handleDisciplineEditorAction(action, el) {
-        // Unprefixed fallback for older markup.
         var canonical = 'discipline-' + action.split('-').slice(1).join('-');
         return handleDisciplineAction(canonical, el);
     }
@@ -1326,23 +1385,19 @@
     // WEEKLY TEAMS ACTION HANDLERS
     // ============================================================
     //
-    // The Weekly Teams view emits four actions:
+    // The Weekly Teams view emits:
     //   weekly-teams-create-team
     //   weekly-teams-auto-distribute
     //   weekly-teams-delete-team
     //   weekly-teams-manage-members
     //
-    // Create-team and delete-team are simple:
-    //   - create-team: build the modal from AcademyWeeklyTeamsView,
-    //     wire submit to TeamCore.createTeam with type 'academic',
-    //     refresh on success.
-    //   - delete-team: confirm, then TeamCore.deleteTeam, then refresh.
+    // create-team and delete-team are Academy-side: they build a
+    // minimal modal and call TeamCore directly.
     //
-    // Auto-distribute and manage-members are deferred: auto-distribute
-    // needs a multi-team workflow (create N teams, then write the
-    // weekly assignment map), and manage-members needs an Academy-local
-    // member modal because TeamEvents' member modal depends on TeamUI
-    // state that isn't the Academy's concern.
+    // manage-members is delegated entirely to TeamEvents'
+    // openMemberManager. Academy supplies the modal container and
+    // period; Teams owns the member UI, the picker, the mutation
+    // calls, and the re-render logic.
 
     function handleWeeklyTeamsAction(action, el) {
         switch (action) {
@@ -1356,7 +1411,7 @@
                 notify('Auto-Distribute is not yet available.', 'info');
                 return;
             case 'weekly-teams-manage-members':
-                notify('Manage Members is not yet available.', 'info');
+                openWeeklyTeamMembersModal(el.dataset.teamId);
                 return;
             default:
                 return;
@@ -1366,7 +1421,6 @@
     function openWeeklyTeamForm() {
         var View = getWeeklyTeamsViewModule();
         var TeamCore = getTeamCore();
-        var TeamQ = getTeamQueries();
         var Modal = getModal();
 
         if (!View || typeof View.buildCreateTeamModalHTML !== 'function') {
@@ -1381,9 +1435,16 @@
             notify('Modal module not available.', 'error');
             return;
         }
-
         if (!_selectedWeeklyTeamsClassId) {
             notify('Select a class first.', 'error');
+            return;
+        }
+
+        if (!ensureTeamCoreConfigured()) {
+            notify(
+                'Character module not available. Cannot create teams.',
+                'error'
+            );
             return;
         }
 
@@ -1413,10 +1474,10 @@
 
         var close = function() {
             try {
-                if (typeof Modal.hideModal === 'function') {
-                    Modal.hideModal(modal);
-                } else if (typeof Modal.closeModal === 'function') {
+                if (typeof Modal.closeModal === 'function') {
                     Modal.closeModal(modal);
+                } else if (typeof Modal.hideModal === 'function') {
+                    Modal.hideModal(modal);
                 }
             } catch (e) {
                 console.warn('[AcademyView] weekly team modal close failed:', e);
@@ -1464,7 +1525,6 @@
                     close();
                     refreshView();
                 }
-                // On failure, pipeline already notified.
             }).catch(function(err) {
                 console.warn('[AcademyView] createTeam failed:', err);
                 notify('Failed to create team.', 'error');
@@ -1504,6 +1564,95 @@
         }).catch(function(err) {
             console.warn('[AcademyView] deleteTeam failed:', err);
             notify('Failed to delete team.', 'error');
+        });
+    }
+
+    // ------------------------------------------------------------
+    // Manage Members (delegated to TeamEvents)
+    // ------------------------------------------------------------
+    //
+    // Academy owns the modal shell and the period. Teams owns the
+    // member UI, the picker, the add/remove/edit mutations, and the
+    // internal re-render logic. Academy does not know what a member
+    // is; it just hands off a container.
+    //
+    // If TeamEvents.openMemberManager is unavailable, we surface the
+    // failure instead of falling back to an Academy-local member
+    // editor. The fallback would duplicate the Teams domain's member
+    // shape knowledge in the Academy module, which is exactly the
+    // coupling we're avoiding.
+
+    function openWeeklyTeamMembersModal(teamId) {
+        if (!isNonEmptyString(teamId)) { return; }
+
+        var TeamEvents = getTeamEvents();
+        var TeamQ = getTeamQueries();
+        var Modal = getModal();
+
+        if (!TeamEvents ||
+            typeof TeamEvents.openMemberManager !== 'function') {
+            notify('Team member manager is not available.', 'error');
+            return;
+        }
+        if (!Modal || typeof Modal.createModal !== 'function') {
+            notify('Modal module not available.', 'error');
+            return;
+        }
+
+        if (!ensureTeamCoreConfigured()) {
+            notify(
+                'Character module not available. Cannot manage members.',
+                'error'
+            );
+            return;
+        }
+
+        if (TeamQ && typeof TeamQ.getTeamById === 'function') {
+            var team = TeamQ.getTeamById(teamId);
+            if (!team) {
+                notify('Team not found.', 'error');
+                return;
+            }
+        }
+
+        var period = AcademyUI.getDisplayWeek();
+
+        var modal = Modal.createModal('academy-weekly-team-members-modal');
+        var contentEl = document.createElement('div');
+        contentEl.className = 'modal-content';
+        modal.appendChild(contentEl);
+        Modal.modalSetup(modal);
+        Modal.showModal(modal);
+
+        var close = function() {
+            try {
+                if (typeof Modal.closeModal === 'function') {
+                    Modal.closeModal(modal);
+                } else if (typeof Modal.hideModal === 'function') {
+                    Modal.hideModal(modal);
+                }
+            } catch (e) {
+                console.warn(
+                    '[AcademyView] member modal close failed:', e
+                );
+            }
+            if (modal.parentNode) {
+                modal.parentNode.removeChild(modal);
+            }
+            // The sidebar count may have changed even if the modal is
+            // only being closed; refresh unconditionally.
+            refreshView();
+        };
+
+        // Hand the container to Teams. Academy does not touch the
+        // member DOM after this call.
+        TeamEvents.openMemberManager(contentEl, teamId, period, {
+            onClose: close,
+            onMutation: function() {
+                // The manager re-renders itself in place. Refresh the
+                // Academy sidebar so member counts update live.
+                refreshView();
+            }
         });
     }
 
@@ -2185,6 +2334,54 @@
         });
     }
 
+    /**
+     * Remove a character from a specific class.
+     *
+     * Distinct from Drop Out. Drop Out adds a standalone elimination
+     * and leaves the character on every class roster. This function
+     * strips the classId from character.classIds, which removes the
+     * character from THAT class only. The character keeps every
+     * elimination they had, and stays on any other class they were
+     * a member of.
+     *
+     * Routes through CharacterClasses.removeClassById, which is the
+     * canonical membership mutation. On success, refreshView()
+     * re-renders the panel; the removed class's chip no longer
+     * appears because the roster derivation no longer includes the
+     * character.
+     */
+    function handleRemoveFromClass(charId, classId) {
+        if (!charId || !classId) { return; }
+
+        var CharacterClasses = getCharacterClasses();
+        if (!CharacterClasses ||
+            typeof CharacterClasses.removeClassById !== 'function') {
+            notify('Character classes module not available.', 'error');
+            return;
+        }
+
+        var className = 'this class';
+        var classVM = AcademyAggregator.getClassViewModel(classId);
+        if (classVM && classVM.name) {
+            className = '"' + classVM.name + '"';
+        }
+
+        if (!confirm('Remove this character from ' + className + '?')) {
+            return;
+        }
+
+        CharacterClasses.removeClassById(charId, classId)
+            .then(function(result) {
+                if (result && result.success) {
+                    refreshView();
+                }
+            })
+            .catch(function(err) {
+                console.warn('[AcademyView] removeClassById failed:', err);
+                notify('Failed to remove character from class.', 'error');
+            });
+    }
+
     function handleEnrollDiscipline(charId) {
         if (!charId) { return; }
 
@@ -2440,16 +2637,6 @@
     // ============================================================
     // SCHEDULE GRID MOUNT
     // ============================================================
-    //
-    // When the character detail panel's Schedule tab is active, the
-    // panel renders an empty host element (#academy-schedule-host).
-    // This method asks the aggregator for a schedule VM and hands it
-    // to CalendarRenderer.renderGrid, which produces the same grid
-    // the Calendar tab uses.
-    //
-    // READ-ONLY: the grid is rendered without edit affordances. The
-    // Calendar tab owns schedule edits. Empty slots are rendered as
-    // static (no click handler), so the grid is inert.
 
     function mountScheduleGridIfPresent() {
         if (AcademyUI.getSelectedView() !== 'people') {
@@ -2476,9 +2663,6 @@
 
         var week = AcademyUI.getDisplayWeek();
 
-        // Build a grid VM. The aggregator's method is preferred; if
-        // it isn't available (older build), fall back to the
-        // AcademySchedule reads directly.
         var gridVM = null;
         if (typeof AcademyCharacterDetailAggregator.getScheduleGridViewModel === 'function') {
             gridVM = AcademyCharacterDetailAggregator.getScheduleGridViewModel(
@@ -2493,10 +2677,6 @@
             return;
         }
 
-        // The renderer expects { schedule, restDays, entityName,
-        // modeLabel, showEmptySlots, showRestDays, hours }.
-        // showEmptySlots=false renders a static grid with no "+"
-        // markers, which is what we want for a read-only view.
         var renderState = {
             selectedId: charId,
             week: week
