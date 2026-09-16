@@ -1,9 +1,10 @@
 /**
  * modules/tournaments/tournament-lifecycle.js - Tournament Lifecycle
- * Single source of truth for tournament lifecycle rules and permissions
+ * Single source of truth for tournament lifecycle rules and permissions.
+ *
  * Path: js/modules/tournaments/tournament-lifecycle.js
  *
- * This module is responsible for:
+ * RESPONSIBILITIES:
  *   - Tournament status lifecycle rules
  *   - Operation permissions by status (EXPLICIT capabilities)
  *   - Status transition validation
@@ -11,23 +12,20 @@
  *   - Permission checks for all operations
  *
  * IMPORTANT:
- *   - This is the CANONICAL authority for tournament lifecycle rules
- *   - All modules MUST use this for permission checks
- *   - Rules are declarative and immutable
- *   - No persistence, no DOM, no UI state
- *   - PURE functions - no side effects
- *   - Uses EXPLICIT capabilities, not vague "edit: true"
+ *   - This is the CANONICAL authority for tournament lifecycle rules.
+ *   - All modules MUST use this for permission checks.
+ *   - Rules are declarative and immutable.
+ *   - No persistence, no DOM, no UI state.
+ *   - PURE functions - no side effects.
+ *   - Uses EXPLICIT capabilities, not vague "edit: true".
  *   - Capabilities: canEditMetadata, canModifyParticipants, canAddRounds,
- *     canRemoveRounds, canModifyEliminations, canComplete
+ *     canRemoveRounds, canModifyEliminations, canComplete.
  *
  * DEPENDENCY CONTRACT (STRICT):
  *   TournamentConstants and TournamentSchema are MANDATORY. This module
  *   THROWS at load time when either is missing or malformed. There is
  *   no fallback rule table. A missing dependency is a boot-order bug,
- *   not a runtime condition to degrade from. Silent fallback would
- *   mean the lifecycle rules used by the running app might not match
- *   the rules the constants module declares, and no code path would
- *   ever notice.
+ *   not a runtime condition to degrade from.
  *
  *   The required surface from each dependency:
  *
@@ -37,13 +35,45 @@
  *                             description string
  *       STATUS_TRANSITIONS  — object keyed by status, each value an
  *                             array of allowed next statuses
- *       VALID_STATUSES      — array of status strings
+ *       VALID_STATUSES      — non-empty array of status strings
  *
  *     TournamentSchema:
  *       isValidStatus       — function(status) -> boolean
  *
- *   Any deviation throws. The exception lists which capability is
- *   missing and what was actually present.
+ *   Any deviation throws at load. The exception names the missing
+ *   field and, where possible, what was actually present.
+ *
+ * RULE TABLE VALIDATION:
+ *   At load time, this module walks LIFECYCLE_RULES for every entry in
+ *   VALID_STATUSES and verifies that each entry:
+ *     - exists and is an object
+ *     - has all six capability keys, each strictly boolean
+ *     - has a description string
+ *   and walks STATUS_TRANSITIONS to verify each entry is an array of
+ *   strings, each of which appears in VALID_STATUSES.
+ *
+ *   A malformed rule table throws. Silent tolerance of a malformed
+ *   table would mean the app runs with lifecycle rules that don't match
+ *   what the constants module declares, and no code path would ever
+ *   notice. Throwing on load is the only failure mode that lets a
+ *   developer catch the bug.
+ *
+ * FROZEN RULE TABLE:
+ *   This module captures deep-frozen copies of LIFECYCLE_RULES and
+ *   STATUS_TRANSITIONS. The copies are used for every read. This
+ *   means:
+ *
+ *     - A later mutation of window.TournamentConstants.LIFECYCLE_RULES
+ *       has no effect on this module. The rule table this module
+ *       checks against is fixed at load time.
+ *     - A caller that receives `getRulesTable()` cannot mutate the
+ *       live rules. The deep-freeze makes the returned object
+ *       immutable.
+ *
+ *   The trade-off: if the constants module is edited at runtime (which
+ *   it shouldn't be), this module keeps using the original table. That
+ *   is the correct semantics — a rule table is declared once, at load,
+ *   and every check must be consistent.
  *
  * COMPLETION SEMANTICS:
  *   - A tournament can be completed when its lifecycle permits it.
@@ -61,7 +91,6 @@
  * DEPENDENCIES:
  *   - window.TournamentConstants (from tournament-constants.js) - MANDATORY
  *   - window.TournamentSchema (from tournament-schema.js) - MANDATORY
- *     (used for isValidStatus delegation)
  *
  * USAGE:
  *   var Lifecycle = window.TournamentLifecycle;
@@ -102,8 +131,9 @@
             Array.isArray(Constants.STATUS_TRANSITIONS)) {
             _missing.push('TournamentConstants.STATUS_TRANSITIONS');
         }
-        if (!Array.isArray(Constants.VALID_STATUSES)) {
-            _missing.push('TournamentConstants.VALID_STATUSES');
+        if (!Array.isArray(Constants.VALID_STATUSES) ||
+            Constants.VALID_STATUSES.length === 0) {
+            _missing.push('TournamentConstants.VALID_STATUSES (must be a non-empty array)');
         }
     }
 
@@ -124,20 +154,135 @@
     }
 
     // ============================================================
-    // FROZEN REFERENCES
+    // CONSTANTS - FROZEN COPIES
     // ============================================================
-    //
-    // The lifecycle rules and status transitions are declared by the
-    // constants module and consumed by this module. We take references
-    // here (not copies) so that a constants-module edit is visible
-    // immediately. The constants module owns the freeze; if it doesn't
-    // freeze, we're not the layer that should fix that. We do read the
-    // arrays as immutable: `getAllowedTransitions` returns a slice,
-    // never the live array.
 
-    var LIFECYCLE_RULES = Constants.LIFECYCLE_RULES;
-    var STATUS_TRANSITIONS = Constants.STATUS_TRANSITIONS;
-    var VALID_STATUSES = Constants.VALID_STATUSES;
+    var CAPABILITY_KEYS = [
+        'canEditMetadata',
+        'canModifyParticipants',
+        'canAddRounds',
+        'canRemoveRounds',
+        'canModifyEliminations',
+        'canComplete'
+    ];
+
+    var VALID_STATUSES = Constants.VALID_STATUSES.slice();
+
+    /**
+     * Deep-freeze a value. Recursively freezes objects and arrays.
+     * Primitives pass through.
+     */
+    function deepFreeze(value) {
+        if (value === null || typeof value !== 'object') {
+            return value;
+        }
+        if (Object.isFrozen(value)) {
+            return value;
+        }
+
+        Object.freeze(value);
+
+        var keys = Object.keys(value);
+        for (var i = 0; i < keys.length; i++) {
+            deepFreeze(value[keys[i]]);
+        }
+
+        return value;
+    }
+
+    /**
+     * Build a frozen, validated copy of LIFECYCLE_RULES.
+     *
+     * Every status in VALID_STATUSES must have a corresponding entry.
+     * Each entry must be an object with all six capability keys, each
+     * strictly boolean, plus a description string. Anything else
+     * throws.
+     */
+    function buildFrozenRules(rawRules) {
+        var result = {};
+
+        for (var i = 0; i < VALID_STATUSES.length; i++) {
+            var status = VALID_STATUSES[i];
+            var raw = rawRules[status];
+
+            if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+                throw new Error(
+                    '[TournamentLifecycle] LIFECYCLE_RULES is missing a ' +
+                    'valid entry for status "' + status + '".'
+                );
+            }
+
+            var entry = {};
+
+            for (var k = 0; k < CAPABILITY_KEYS.length; k++) {
+                var key = CAPABILITY_KEYS[k];
+                if (typeof raw[key] !== 'boolean') {
+                    throw new Error(
+                        '[TournamentLifecycle] LIFECYCLE_RULES["' + status +
+                        '"].' + key + ' must be a boolean.'
+                    );
+                }
+                entry[key] = raw[key];
+            }
+
+            entry.description = (typeof raw.description === 'string')
+                ? raw.description
+                : '';
+
+            result[status] = entry;
+        }
+
+        return deepFreeze(result);
+    }
+
+    /**
+     * Build a frozen, validated copy of STATUS_TRANSITIONS.
+     *
+     * Every status in VALID_STATUSES must have a corresponding entry.
+     * Each entry must be an array of strings; every string must be a
+     * valid status. Anything else throws.
+     */
+    function buildFrozenTransitions(rawTransitions) {
+        var result = {};
+
+        for (var i = 0; i < VALID_STATUSES.length; i++) {
+            var status = VALID_STATUSES[i];
+            var raw = rawTransitions[status];
+
+            if (!Array.isArray(raw)) {
+                throw new Error(
+                    '[TournamentLifecycle] STATUS_TRANSITIONS is missing a ' +
+                    'valid array for status "' + status + '".'
+                );
+            }
+
+            var entry = [];
+            for (var j = 0; j < raw.length; j++) {
+                var target = raw[j];
+                if (typeof target !== 'string') {
+                    throw new Error(
+                        '[TournamentLifecycle] STATUS_TRANSITIONS["' +
+                        status + '"][' + j + '] must be a string.'
+                    );
+                }
+                if (VALID_STATUSES.indexOf(target) === -1) {
+                    throw new Error(
+                        '[TournamentLifecycle] STATUS_TRANSITIONS["' +
+                        status + '"] references unknown status "' +
+                        target + '".'
+                    );
+                }
+                entry.push(target);
+            }
+
+            result[status] = entry;
+        }
+
+        return deepFreeze(result);
+    }
+
+    var LIFECYCLE_RULES = buildFrozenRules(Constants.LIFECYCLE_RULES);
+    var STATUS_TRANSITIONS = buildFrozenTransitions(Constants.STATUS_TRANSITIONS);
 
     window.__tournamentLifecycleLoaded = true;
 
@@ -170,11 +315,6 @@
         return null;
     }
 
-    /**
-     * Internal status validity check. Delegates to
-     * TournamentSchema.isValidStatus, which is the canonical authority
-     * for the set of valid statuses.
-     */
     function isValidStatusInternal(status) {
         return Schema.isValidStatus(status);
     }
@@ -186,16 +326,13 @@
     /**
      * Get the lifecycle rule table for a status.
      *
-     * When the status is unknown (not a string, or a string that is
-     * not a key in LIFECYCLE_RULES), returns a fully-disabled rule
-     * object. This is stricter than the previous fallback to
-     * `LIFECYCLE_RULES.draft` — an unknown status should not silently
-     * grant draft-level permissions. Callers that want permissive
-     * behavior for a missing status should handle the null case
-     * themselves.
+     * When the status is unknown (not a string, or a string not in the
+     * rule table), returns a freshly-allocated fully-disabled rule
+     * object. The caller cannot mutate the shared rule table by
+     * writing to the returned object.
      *
-     * The disabled rule object is a fresh object every call, so a
-     * caller that mutates it cannot affect subsequent calls.
+     * The disabled fallback is intentionally restrictive: an unknown
+     * status should grant NO capabilities, not draft-like permissions.
      */
     function getLifecycleRules(status) {
         if (typeof status !== 'string' || status === '') {
@@ -209,6 +346,7 @@
                 description: 'Unknown status'
             };
         }
+
         var rule = LIFECYCLE_RULES[status];
         if (!rule || typeof rule !== 'object') {
             return {
@@ -221,6 +359,7 @@
                 description: 'Unknown status: ' + status
             };
         }
+
         return rule;
     }
 
@@ -260,9 +399,6 @@
      * NOTE: This does NOT inspect round or match state, and does NOT
      * require a winner. The domain condition (every match done) is
      * checked by TournamentRules.validateCompletionReadiness.
-     *
-     * @param {string|object} statusOrTournament
-     * @returns {boolean}
      */
     function canCompleteTournament(statusOrTournament) {
         var status = extractStatus(statusOrTournament);
@@ -296,8 +432,9 @@
         if (currentRoundCount === 0) { return false; }
         if (roundIndex < 0 || roundIndex >= currentRoundCount) { return false; }
 
-        // If tournament is active or completed, check round contents.
-        // A round that has started or finished cannot be removed.
+        // A round with any completed match cannot be removed, and a
+        // round whose own status is 'completed' cannot be removed,
+        // regardless of its matches.
         if (status === 'active' || status === 'completed') {
             if (!Array.isArray(rounds)) { return false; }
 
@@ -354,12 +491,14 @@
     /**
      * Get the complete lifecycle status of a tournament.
      *
-     * NOTE: The canComplete field on the returned object reflects
-     * ONLY the lifecycle permission. Callers must additionally check
+     * NOTE: The canComplete field on the returned object reflects ONLY
+     * the lifecycle permission. Callers must additionally check
      * TournamentRules.isReadyForCompletion for the domain condition.
      */
     function getLifecycleStatus(tournament) {
-        if (!tournament || typeof tournament !== 'object' || Array.isArray(tournament)) {
+        if (!tournament ||
+            typeof tournament !== 'object' ||
+            Array.isArray(tournament)) {
             return {
                 status: 'unknown',
                 valid: false,
@@ -407,7 +546,9 @@
                 return canAddRound(status, currentRoundCount, totalRounds);
             },
             canRemoveRound: function(currentRoundCount, roundIndex, rounds) {
-                return canRemoveRound(status, currentRoundCount, roundIndex, rounds);
+                return canRemoveRound(
+                    status, currentRoundCount, roundIndex, rounds
+                );
             },
             canCompleteTournament: function() {
                 return canCompleteTournament(status);
@@ -415,6 +556,12 @@
         };
     }
 
+    /**
+     * Return the frozen rule table.
+     *
+     * The returned object is deeply frozen. Callers cannot mutate it
+     * to change lifecycle behavior. This is intentional.
+     */
     function getRulesTable() {
         return LIFECYCLE_RULES;
     }
@@ -439,14 +586,19 @@
         return allowed.indexOf(toStatus) !== -1;
     }
 
+    /**
+     * Get the allowed transitions from a status.
+     *
+     * The status transitions table is frozen at load. The returned
+     * array is a fresh slice, so a caller cannot mutate the frozen
+     * table by pushing to the returned array.
+     */
     function getAllowedTransitions(status) {
         if (!isValidStatusInternal(status)) {
             return [];
         }
         var allowed = STATUS_TRANSITIONS[status];
         if (!Array.isArray(allowed)) { return []; }
-        // Return a slice so a caller cannot mutate the constants table
-        // by pushing to the returned array.
         return allowed.slice();
     }
 
@@ -484,8 +636,7 @@
     // Signature kept for backward compatibility with the previous
     // version, which took allRoundsComplete and hasWinner. Those
     // arguments are accepted but IGNORED — the lifecycle check is
-    // status-based only. Removing them entirely would break callers
-    // that still pass them.
+    // status-based only.
 
     function isReadyForCompletion(tournament, _allRoundsComplete, _hasWinner) {
         if (!tournament) { return false; }
@@ -524,7 +675,7 @@
         // Completion readiness (lifecycle-only)
         isReadyForCompletion: isReadyForCompletion,
 
-        // Constants (read-only references from TournamentConstants)
+        // Constants (frozen)
         LIFECYCLE_RULES: LIFECYCLE_RULES,
         STATUS_TRANSITIONS: STATUS_TRANSITIONS,
         VALID_STATUSES: VALID_STATUSES
@@ -553,7 +704,6 @@
             }
         }
 
-        // Smoke-test isValidStatus
         try {
             if (typeof exports.isValidStatus('draft') !== 'boolean') {
                 missing.push('isValidStatus (returned non-boolean)');
@@ -562,9 +712,6 @@
             missing.push('isValidStatus (threw: ' + e.message + ')');
         }
 
-        // Smoke-test that every status in VALID_STATUSES has a rules
-        // entry. A missing entry means the constants module is
-        // inconsistent with itself.
         for (var j = 0; j < VALID_STATUSES.length; j++) {
             var status = VALID_STATUSES[j];
             if (!LIFECYCLE_RULES[status]) {
