@@ -1,37 +1,79 @@
 /**
  * js/modules/missions/mission-render.js - Mission Rendering
- * PURE rendering functions. Takes data, returns HTML.
- * Does NOT mutate data or attach event handlers.
- * 
- * RENDER PHILOSOPHY:
- *   - All rendering is PURE: data in, HTML out
- *   - Uses Queries for data interpretation
- *   - Uses Views for presentation metadata
- *   - Escapes all user-controlled content
- *   - Does NOT attach event handlers (UI layer handles that)
- *   - Generates semantic HTML with CSS classes for styling
- *   - Uses defensive helpers for numeric values (progress, dates)
- *   - Form receives complete model (no domain filtering)
- * 
- * RENDER CONTRACT:
- *   - All functions return HTML strings
- *   - All user-controlled values are escaped
- *   - No DOM manipulation, no event listeners
- *   - Data interpretation is delegated to Queries
- *   - Presentation is delegated to Views
- *   - Inline styles are minimised; use CSS classes where possible
- *   - Progress values are clamped to 0-100 before rendering
- *   - Dates are validated before display
- * 
- * YEAR SEMANTICS:
- *   - Years are UNBOUNDED positive integers.
- *   - There is no MIN_YEAR or MAX_YEAR.
- *   - The mission year field does not carry min / max attributes.
- * 
- * DEPENDENCIES:
- *   - window.MissionQueries (required)
- *   - window.MissionViews (required)
- *   - window.DomUtils (required - for HTML escaping)
+ *
+ * Path: js/modules/missions/mission-render.js
+ *
+ * Pure HTML rendering for the mission UI.
+ *
+ * WHAT THIS MODULE OWNS:
+ *   - Turning a mission view model into HTML strings.
+ *   - Rendering the shell markup (list container, modals).
+ *   - Emitting data-* attributes for the UI controller to dispatch
+ *     on.
+ *
+ * WHAT THIS MODULE DOES NOT OWN:
+ *   - Data. Every value comes off the VM. No queries, no domain
+ *     reads, no team lookups, no character lookups, no date parsing.
+ *   - State. This module does not track which mission is selected,
+ *     which filter is applied, or which modal is open. The UI
+ *     controller owns that.
+ *   - Events. No addEventListener. All interaction is emitted as
+ *     data-action attributes.
+ *   - Composition. MissionAggregator builds VMs; this module only
+ *     formats them.
+ *
+ * VM CONTRACT:
+ *   The renderer trusts the VM shape the aggregator produces. It
+ *   does not default missing fields to fabricated values. When a
+ *   VM field is absent, the renderer either omits that region of
+ *   the markup or shows a clearly-marked empty state. It never
+ *   invents data.
+ *
+ * DATA-ACTION CONVENTION:
+ *   Every interactive element that the controller should respond to
+ *   carries data-action="<verb>". The controller's delegated
+ *   listener reads the attribute and dispatches.
+ *
+ *   Actions emitted here:
+ *     mission-list-item          (row click; opens detail)
+ *     mission-new                (new mission button)
+ *     mission-edit               (edit button on detail panel)
+ *     mission-delete             (delete button on detail panel)
+ *     mission-archive            (archive button on detail panel)
+ *     mission-unarchive          (unarchive button)
+ *     mission-complete           (complete button)
+ *     mission-cancel             (cancel button)
+ *     mission-reactivate         (reactivate button)
+ *     mission-objective-toggle   (objective checkbox)
+ *     mission-add-objective      (add-objective button)
+ *     mission-remove-objective   (remove-objective button)
+ *     mission-add-support        (add-support button)
+ *     mission-remove-support     (remove-support button)
+ *     mission-add-log            (add-log button)
+ *     mission-report-add         (add-report button)
+ *     mission-report-edit        (edit-report button)
+ *     mission-report-delete      (delete-report button)
+ *     mission-close-detail       (close button on detail modal)
+ *     mission-close-form         (close button on form modal)
+ *
+ *   Each action carries the identity it needs via data-* attributes:
+ *     data-mission-id            mission UUID
+ *     data-objective-index       objective index (integer)
+ *     data-character-id          character UUID
+ *     data-report-id             report UUID
+ *
+ * MODAL SHELL CONVENTION:
+ *   renderContainer() emits the modal shells. Each shell has a
+ *   stable id so the UI controller can find it:
+ *     #mission-detail-modal
+ *     #mission-form-modal
+ *   The controller opens and closes them by toggling the `hidden`
+ *   class. Modal content is written into stable host elements:
+ *     #mission-detail-content
+ *     #mission-form-content
+ *
+ * DEPENDENCIES (MANDATORY):
+ *   - window.DomUtils
  */
 
 (function() {
@@ -41,40 +83,21 @@
         return;
     }
 
-    // ============================================================
-    // DEPENDENCY CHECK - NO FALLBACKS
-    // ============================================================
+    var DomUtils = window.DomUtils;
 
-    var missing = [];
-
-    if (!window.MissionQueries) {
-        missing.push('MissionQueries');
-    }
-
-    if (!window.MissionViews) {
-        missing.push('MissionViews');
-    }
-
-    if (!window.DomUtils || typeof window.DomUtils.escapeHtml !== 'function') {
-        missing.push('DomUtils.escapeHtml');
-    }
-
-    if (missing.length > 0) {
-        throw new Error('[MissionRender] Missing dependencies: ' + missing.join(', '));
+    if (!DomUtils ||
+        typeof DomUtils.escapeHtml !== 'function' ||
+        typeof DomUtils.escapeAttribute !== 'function') {
+        throw new Error(
+            '[MissionRender] Missing mandatory dependency: ' +
+            'DomUtils.escapeHtml / DomUtils.escapeAttribute'
+        );
     }
 
     window.__missionRenderLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
-    // ============================================================
-
-    var Queries = window.MissionQueries;
-    var Views = window.MissionViews;
-    var DomUtils = window.DomUtils;
-
-    // ============================================================
-    // HELPERS
+    // ESCAPING
     // ============================================================
 
     function escapeHtml(value) {
@@ -82,755 +105,1193 @@
     }
 
     function escapeAttribute(value) {
-        if (typeof DomUtils.escapeAttribute === 'function') {
-            return DomUtils.escapeAttribute(value);
-        }
-        return String(value == null ? '' : value)
-            .replace(/&/g, '&amp;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
+        return DomUtils.escapeAttribute(value);
     }
 
-    function getSafeProgress(value) {
-        var progress = Number(value);
-        if (!Number.isFinite(progress)) {
-            return 0;
-        }
-        if (progress < 0) {
-            return 0;
-        }
-        if (progress > 100) {
-            return 100;
-        }
-        return Math.round(progress);
+    // ============================================================
+    // SMALL HELPERS
+    // ============================================================
+
+    function isNonEmptyString(value) {
+        return typeof value === 'string' && value.trim() !== '';
     }
 
-    function getSafeDateDisplay(mission) {
-        if (!mission) {
-            return 'Not specified';
-        }
-
-        var hasYear = mission.year !== undefined && mission.year !== null;
-        var hasMonth = mission.month !== undefined && mission.month !== null;
-        var hasDay = mission.day !== undefined && mission.day !== null;
-
-        if (hasYear && hasMonth && hasDay) {
-            // Use CalendarValidation for date validation if available
-            var valid = true;
-            if (window.CalendarValidation && typeof window.CalendarValidation.isValidCalendarDate === 'function') {
-                valid = window.CalendarValidation.isValidCalendarDate(mission.year, mission.month, mission.day);
-            }
-            if (valid) {
-                var monthNames = [
-                    'January', 'February', 'March', 'April', 'May', 'June',
-                    'July', 'August', 'September', 'October', 'November', 'December'
-                ];
-                var monthName = monthNames[(mission.month || 1) - 1] || '';
-                return monthName + ' ' + mission.day + ', ' + mission.year;
-            }
-        }
-
-        if (hasYear) {
-            return String(mission.year);
-        }
-
-        return 'Not specified';
+    function isArray(value) {
+        return Array.isArray(value);
     }
 
-    function formatDateTimeSafe(dateString) {
-        if (!dateString) {
-            return '';
+    function safeString(value) {
+        if (value === undefined || value === null) { return ''; }
+        return String(value);
+    }
+
+    // ============================================================
+    // SHELL
+    // ============================================================
+
+    /**
+     * Render the top-level container: header, filter bar, list
+     * host, and modal shells.
+     *
+     * @param {object} vm - Optional { filter, counts }
+     * @returns {string} HTML string
+     */
+    function renderContainer(vm) {
+        vm = vm || {};
+        var filter = isNonEmptyString(vm.filter) ? vm.filter : 'all';
+        var counts = vm.counts || {};
+
+        var html = '';
+
+        html += '<div class="page-header">';
+        html += '<h2>Mission Manager</h2>';
+        html += '<div class="header-actions">';
+        html += '<button type="button" class="primary" ' +
+                    'data-action="mission-new">' +
+                    '+ New Mission' +
+                '</button>';
+        html += '</div>';
+        html += '</div>';
+
+        html += '<div class="filter-section">';
+        html += '<label for="mission-filter">Filter:</label>';
+        html += '<select id="mission-filter" class="mission-filter-select">';
+        html += '<option value="all"' +
+                    (filter === 'all' ? ' selected' : '') +
+                    '>All Missions</option>';
+        html += '<option value="active"' +
+                    (filter === 'active' ? ' selected' : '') +
+                    '>Active</option>';
+        html += '<option value="completed"' +
+                    (filter === 'completed' ? ' selected' : '') +
+                    '>Completed</option>';
+        html += '<option value="cancelled"' +
+                    (filter === 'cancelled' ? ' selected' : '') +
+                    '>Cancelled</option>';
+        html += '</select>';
+
+        html += '<span class="mission-count">';
+        html += 'Total: <span id="mission-count-total">' +
+                    escapeHtml(safeString(counts.total || 0)) +
+                '</span>';
+        if (isNonEmptyString(String(counts.readyForCompletion))) {
+            html += ' &middot; Ready: ' +
+                '<span id="mission-count-ready">' +
+                    escapeHtml(safeString(counts.readyForCompletion)) +
+                '</span>';
         }
-        try {
-            var date = new Date(dateString);
-            if (isNaN(date.getTime())) {
-                return '';
+        html += '</span>';
+        html += '</div>';
+
+        html += '<div id="missions-list" class="missions-list"></div>';
+
+        html += renderModals();
+
+        return html;
+    }
+
+    function renderModals() {
+        var html = '';
+
+        html += '<div id="mission-detail-modal" class="modal hidden">' +
+                    '<div class="modal-content modal-detail-content">' +
+                        '<div class="modal-header">' +
+                            '<h3 id="mission-detail-title">Mission</h3>' +
+                            '<button type="button" class="close-modal" ' +
+                                    'data-action="mission-close-detail">' +
+                                '&times;' +
+                            '</button>' +
+                        '</div>' +
+                        '<div class="modal-body">' +
+                            '<div id="mission-detail-content"></div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+
+        html += '<div id="mission-form-modal" class="modal hidden">' +
+                    '<div class="modal-content modal-form-content">' +
+                        '<div class="modal-header">' +
+                            '<h3 id="mission-form-title">Mission</h3>' +
+                            '<button type="button" class="close-modal" ' +
+                                    'data-action="mission-close-form">' +
+                                '&times;' +
+                            '</button>' +
+                        '</div>' +
+                        '<div class="modal-body">' +
+                            '<div id="mission-form-content"></div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+
+        return html;
+    }
+
+    // ============================================================
+    // LIST
+    // ============================================================
+
+    /**
+     * Render the list of missions.
+     *
+     * @param {array} missions - List item VMs from
+     *   MissionAggregator.getMissionListViewModel
+     * @returns {string} HTML string
+     */
+    function renderList(missions) {
+        if (!isArray(missions) || missions.length === 0) {
+            return '<p class="empty-state">No missions found.</p>';
+        }
+
+        var html = '';
+
+        for (var i = 0; i < missions.length; i++) {
+            var item = missions[i];
+            if (!item) { continue; }
+            html += renderListItem(item);
+        }
+
+        return html;
+    }
+
+    function renderListItem(item) {
+        var classes = 'list-item mission-item';
+        if (item.isArchived) { classes += ' mission-archived'; }
+        if (item.isCompleted) { classes += ' mission-completed'; }
+        if (item.isCancelled) { classes += ' mission-cancelled'; }
+
+        var html = '';
+
+        html += '<div class="' + classes + '" ' +
+                    'data-action="mission-list-item" ' +
+                    'data-mission-id="' +
+                        escapeAttribute(item.id) + '">';
+
+        html += '<span class="mission-id">' +
+                    escapeHtml(item.missionId || '—') +
+                '</span>';
+
+        html += '<span class="mission-date">' +
+                    escapeHtml(item.dateDisplay || '') +
+                '</span>';
+
+        html += '<span class="mission-title">';
+        html += '<strong>' + escapeHtml(item.title || 'Untitled') + '</strong>';
+        if (item.isCompleted) {
+            html += ' <span class="mission-completed-badge">✓</span>';
+        }
+        if (item.isArchived) {
+            html += ' <span class="mission-archived-badge">Archived</span>';
+        }
+        if (item.supportCount > 0) {
+            html += ' <span class="mission-support-badge">+' +
+                        escapeHtml(String(item.supportCount)) +
+                        ' support</span>';
+        }
+        html += '</span>';
+
+        html += '<span class="mission-type">' +
+                    escapeHtml(item.typeDisplay || '') +
+                '</span>';
+
+        html += '<span class="mission-escalation">' +
+                    escapeHtml(item.escalationLabel || '') +
+                '</span>';
+
+        html += '<span class="mission-priority ' +
+                    escapeAttribute(item.priorityClass) + '">' +
+                    escapeHtml(item.priorityLabel) +
+                '</span>';
+
+        html += '<span class="mission-difficulty">' +
+                    escapeHtml(item.difficultyLabel) +
+                '</span>';
+
+        html += '<span class="mission-status ' +
+                    escapeAttribute(item.statusClass) + '">' +
+                    escapeHtml(item.statusLabel) +
+                '</span>';
+
+        html += '<span class="mission-team">' +
+                    escapeHtml(item.teamName || 'Unassigned') +
+                '</span>';
+
+        html += '<span class="mission-progress">';
+        html += '<div class="progress-bar">' +
+                    '<div class="progress-fill" ' +
+                        'style="width:' +
+                            escapeAttribute(String(item.progress || 0)) +
+                        '%;"></div>' +
+                '</div>';
+        html += '<span class="progress-label">' +
+                    escapeHtml(String(item.progress || 0)) +
+                    '%</span>';
+        html += '</span>';
+
+        html += '</div>';
+
+        return html;
+    }
+
+    // ============================================================
+    // DETAIL
+    // ============================================================
+
+    /**
+     * Render the mission detail panel.
+     *
+     * @param {object} vm - Detail VM from
+     *   MissionAggregator.getMissionDetailViewModel
+     * @returns {string} HTML string
+     */
+    function renderDetail(vm) {
+        if (!vm || !vm.id) {
+            return '<p class="empty-state">Mission not found.</p>';
+        }
+
+        var html = '';
+
+        html += '<div class="mission-detail" ' +
+                    'data-mission-id="' + escapeAttribute(vm.id) + '">';
+
+        html += renderDetailHeader(vm);
+        html += renderDetailFields(vm);
+        html += renderObjectives(vm);
+        html += renderSupportPersonnel(vm);
+        html += renderReports(vm);
+        html += renderLog(vm);
+        html += renderDetailActions(vm);
+
+        html += '</div>';
+
+        return html;
+    }
+
+    function renderDetailHeader(vm) {
+        var html = '';
+        html += '<div class="mission-detail-header">';
+
+        html += '<div class="mission-detail-title-row">';
+        html += '<h3 class="mission-detail-title">' +
+                    escapeHtml(vm.title || 'Untitled') +
+                '</h3>';
+        html += '<span class="mission-status ' +
+                    escapeAttribute(vm.statusClass) + '">' +
+                    escapeHtml(vm.statusLabel) +
+                '</span>';
+        html += '<span class="mission-priority ' +
+                    escapeAttribute(vm.priorityClass) + '">' +
+                    escapeHtml(vm.priorityLabel) +
+                '</span>';
+        html += '</div>';
+
+        if (isNonEmptyString(vm.missionId)) {
+            html += '<div class="mission-detail-id">' +
+                        'Mission ID: ' +
+                        '<span class="mission-id-display">' +
+                            escapeHtml(vm.missionId) +
+                        '</span>' +
+                    '</div>';
+        }
+
+        if (isNonEmptyString(vm.description)) {
+            html += '<p class="mission-detail-description">' +
+                        escapeHtml(vm.description) +
+                    '</p>';
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderDetailFields(vm) {
+        var html = '';
+        html += '<div class="mission-detail-fields">';
+
+        html += renderDetailRow('Date', vm.dateDisplay);
+        html += renderDetailRow('Difficulty', vm.difficultyLabel);
+        html += renderDetailRow('Type', vm.typeDisplay);
+        html += renderDetailRow('Escalation', vm.escalationLabel);
+        html += renderDetailRow('Team', vm.teamName);
+        html += renderDetailRow('Location', vm.location);
+        html += renderDetailRow('Duration', vm.duration);
+        html += renderDetailRow('Billing', vm.billingLabel);
+
+        if (isNonEmptyString(vm.pay)) {
+            html += renderDetailRow('Pay', vm.pay);
+        }
+
+        html += renderDetailRow('Created', vm.createdAtDisplay);
+        html += renderDetailRow('Completed', vm.completedAtDisplay);
+        if (isNonEmptyString(vm.archivedAtDisplay)) {
+            html += renderDetailRow('Archived', vm.archivedAtDisplay);
+        }
+
+        if (isNonEmptyString(vm.threatType)) {
+            html += renderDetailRow('Threat type', vm.threatType);
+        }
+        if (isNonEmptyString(vm.environment)) {
+            html += renderDetailRow('Environment', vm.environment);
+        }
+
+        if (isNonEmptyString(vm.notes)) {
+            html += '<div class="detail-row description-row">' +
+                        '<span class="label">Notes:</span>' +
+                        '<span class="description-text">' +
+                            escapeHtml(vm.notes) +
+                        '</span>' +
+                    '</div>';
+        }
+
+        if (isArray(vm.tags) && vm.tags.length > 0) {
+            html += '<div class="detail-row tags-row">' +
+                        '<span class="label">Tags:</span>' +
+                        '<span class="tags-list">';
+            for (var i = 0; i < vm.tags.length; i++) {
+                html += '<span class="tag">#' +
+                            escapeHtml(vm.tags[i]) +
+                        '</span>';
             }
-            return date.toLocaleString();
-        } catch (e) {
-            return '';
+            html += '</span></div>';
         }
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderDetailRow(label, value) {
+        if (!isNonEmptyString(value)) { return ''; }
+        return (
+            '<div class="detail-row">' +
+                '<span class="label">' + escapeHtml(label) + ':</span>' +
+                '<span>' + escapeHtml(value) + '</span>' +
+            '</div>'
+        );
+    }
+
+    function renderObjectives(vm) {
+        var html = '';
+        html += '<div class="objectives-section">';
+
+        html += '<div class="section-header">';
+        html += '<strong>Objectives</strong>';
+        html += '<span class="progress-label">' +
+                    escapeHtml(String(vm.progress || 0)) + '%' +
+                '</span>';
+        if (vm.capabilities && vm.capabilities.modifyObjectives) {
+            html += '<button type="button" class="small secondary" ' +
+                        'data-action="mission-add-objective" ' +
+                        'data-mission-id="' + escapeAttribute(vm.id) + '">' +
+                        '+ Objective' +
+                    '</button>';
+        }
+        html += '</div>';
+
+        html += '<div class="progress-bar">' +
+                    '<div class="progress-fill" ' +
+                        'style="width:' +
+                            escapeAttribute(String(vm.progress || 0)) +
+                        '%;"></div>' +
+                '</div>';
+
+        if (!isArray(vm.objectives) || vm.objectives.length === 0) {
+            html += '<p class="empty-state small">No objectives.</p>';
+            html += '</div>';
+            return html;
+        }
+
+        html += '<ul class="objectives-list">';
+
+        for (var i = 0; i < vm.objectives.length; i++) {
+            var obj = vm.objectives[i];
+            var doneClass = obj.done ? ' objective-done' : '';
+
+            html += '<li class="objective-item' + doneClass + '">';
+
+            if (vm.capabilities && vm.capabilities.modifyObjectives) {
+                html += '<input type="checkbox" class="objective-check" ' +
+                            (obj.done ? 'checked ' : '') +
+                            'data-action="mission-objective-toggle" ' +
+                            'data-mission-id="' +
+                                escapeAttribute(vm.id) + '" ' +
+                            'data-objective-index="' +
+                                escapeAttribute(String(obj.index)) + '">';
+            } else {
+                html += '<span class="objective-check-static">' +
+                            (obj.done ? '✓' : '·') +
+                        '</span>';
+            }
+
+            html += '<span class="objective-text">' +
+                        escapeHtml(obj.text) +
+                    '</span>';
+
+            if (vm.capabilities && vm.capabilities.modifyObjectives) {
+                html += '<button type="button" class="small danger" ' +
+                            'data-action="mission-remove-objective" ' +
+                            'data-mission-id="' +
+                                escapeAttribute(vm.id) + '" ' +
+                            'data-objective-index="' +
+                                escapeAttribute(String(obj.index)) + '">' +
+                            '×' +
+                        '</button>';
+            }
+
+            html += '</li>';
+        }
+
+        html += '</ul>';
+        html += '</div>';
+        return html;
+    }
+
+    function renderSupportPersonnel(vm) {
+        var html = '';
+        html += '<div class="support-section">';
+
+        html += '<div class="section-header">';
+        html += '<strong>Support Personnel</strong>';
+        html += '<span class="count">' +
+                    escapeHtml(String(vm.supportCount || 0)) +
+                '</span>';
+        if (vm.capabilities && vm.capabilities.edit) {
+            html += '<button type="button" class="small secondary" ' +
+                        'data-action="mission-add-support" ' +
+                        'data-mission-id="' + escapeAttribute(vm.id) + '">' +
+                        '+ Support' +
+                    '</button>';
+        }
+        html += '</div>';
+
+        if (!isArray(vm.supportPersonnel) ||
+            vm.supportPersonnel.length === 0) {
+            html += '<p class="empty-state small">' +
+                        'No support personnel assigned.' +
+                    '</p>';
+            html += '</div>';
+            return html;
+        }
+
+        html += '<ul class="support-list">';
+
+        for (var i = 0; i < vm.supportPersonnel.length; i++) {
+            var s = vm.supportPersonnel[i];
+            if (!s || !s.id) { continue; }
+
+            html += '<li class="support-item" ' +
+                        'data-character-id="' +
+                            escapeAttribute(s.id) + '">';
+            html += '<span class="support-name">' +
+                        escapeHtml(s.name || 'Unknown') +
+                    '</span>';
+
+            if (vm.capabilities && vm.capabilities.edit) {
+                html += '<button type="button" class="small danger" ' +
+                            'data-action="mission-remove-support" ' +
+                            'data-mission-id="' +
+                                escapeAttribute(vm.id) + '" ' +
+                            'data-character-id="' +
+                                escapeAttribute(s.id) + '">' +
+                            '×' +
+                        '</button>';
+            }
+
+            html += '</li>';
+        }
+
+        html += '</ul>';
+        html += '</div>';
+        return html;
+    }
+
+    // ============================================================
+    // REPORTS
+    // ============================================================
+
+    function renderReports(vm) {
+        var html = '';
+        html += '<div class="reports-section">';
+
+        html += '<div class="section-header">';
+        html += '<strong>Reports</strong>';
+        html += '<span class="count">' +
+                    escapeHtml(String(vm.reportCount || 0)) +
+                '</span>';
+        html += '<button type="button" class="small primary" ' +
+                    'data-action="mission-report-add" ' +
+                    'data-mission-id="' + escapeAttribute(vm.id) + '">' +
+                    '+ Add Report' +
+                '</button>';
+        html += '</div>';
+
+        if (!isArray(vm.reports) || vm.reports.length === 0) {
+            html += '<p class="empty-state small">' +
+                        'No reports yet.' +
+                    '</p>';
+            html += '</div>';
+            return html;
+        }
+
+        for (var i = 0; i < vm.reports.length; i++) {
+            html += renderReportRow(vm, vm.reports[i]);
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderReportRow(vm, report) {
+        if (!report || !report.id) { return ''; }
+
+        var rowClass = 'report-row';
+        if (report.authorRedacted) {
+            rowClass += ' report-author-redacted';
+        }
+
+        var html = '';
+        html += '<div class="' + rowClass + '" ' +
+                    'data-report-id="' +
+                        escapeAttribute(report.id) + '">';
+
+        html += '<div class="report-meta">';
+        html += '<span class="report-author">' +
+                    escapeHtml(report.authorName || 'Unknown') +
+                '</span>';
+        html += '<span class="report-timestamp">' +
+                    escapeHtml(report.createdAtDisplay || '') +
+                '</span>';
+        if (report.isEdited) {
+            html += '<span class="report-edited" ' +
+                        'title="Edited at ' +
+                            escapeAttribute(
+                                report.updatedAtDisplay || ''
+                            ) + '">' +
+                        '(edited)' +
+                    '</span>';
+        }
+        html += '</div>';
+
+        html += '<div class="report-body">' +
+                    escapeHtml(report.text || '') +
+                '</div>';
+
+        html += '<div class="report-actions">';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-action="mission-report-edit" ' +
+                    'data-mission-id="' + escapeAttribute(vm.id) + '" ' +
+                    'data-report-id="' +
+                        escapeAttribute(report.id) + '">' +
+                    'Edit' +
+                '</button>';
+        html += '<button type="button" class="small danger" ' +
+                    'data-action="mission-report-delete" ' +
+                    'data-mission-id="' + escapeAttribute(vm.id) + '" ' +
+                    'data-report-id="' +
+                        escapeAttribute(report.id) + '">' +
+                    'Delete' +
+                '</button>';
+        html += '</div>';
+
+        html += '</div>';
+        return html;
+    }
+
+    // ============================================================
+    // LOG
+    // ============================================================
+
+    function renderLog(vm) {
+        var html = '';
+        html += '<div class="log-section">';
+
+        html += '<div class="section-header">';
+        html += '<strong>Activity Log</strong>';
+        html += '<span class="count">' +
+                    escapeHtml(String(vm.logCount || 0)) +
+                '</span>';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-action="mission-add-log" ' +
+                    'data-mission-id="' + escapeAttribute(vm.id) + '">' +
+                    '+ Log Entry' +
+                '</button>';
+        html += '</div>';
+
+        if (!isArray(vm.log) || vm.log.length === 0) {
+            html += '<p class="empty-state small">No activity yet.</p>';
+            html += '</div>';
+            return html;
+        }
+
+        html += '<div class="log-list">';
+
+        for (var i = 0; i < vm.log.length; i++) {
+            var entry = vm.log[i];
+            if (!entry) { continue; }
+            html += '<div class="log-entry">';
+            html += '<span class="log-timestamp">' +
+                        escapeHtml(entry.timestampDisplay || '') +
+                    '</span>';
+            html += '<span class="log-message">' +
+                        escapeHtml(entry.message || '') +
+                    '</span>';
+            html += '</div>';
+        }
+
+        html += '</div>';
+        html += '</div>';
+        return html;
+    }
+
+    // ============================================================
+    // ACTIONS
+    // ============================================================
+
+    function renderDetailActions(vm) {
+        var caps = vm.capabilities || {};
+
+        var html = '';
+        html += '<div class="mission-detail-actions">';
+
+        if (caps.complete) {
+            html += '<button type="button" class="primary" ' +
+                        'data-action="mission-complete" ' +
+                        'data-mission-id="' + escapeAttribute(vm.id) + '">' +
+                        'Complete' +
+                    '</button>';
+        }
+
+        if (caps.cancel) {
+            html += '<button type="button" class="secondary" ' +
+                        'data-action="mission-cancel" ' +
+                        'data-mission-id="' + escapeAttribute(vm.id) + '">' +
+                        'Cancel Mission' +
+                    '</button>';
+        }
+
+        if (caps.reactivate) {
+            html += '<button type="button" class="secondary" ' +
+                        'data-action="mission-reactivate" ' +
+                        'data-mission-id="' + escapeAttribute(vm.id) + '">' +
+                        'Reactivate' +
+                    '</button>';
+        }
+
+        if (caps.edit) {
+            html += '<button type="button" class="secondary" ' +
+                        'data-action="mission-edit" ' +
+                        'data-mission-id="' + escapeAttribute(vm.id) + '">' +
+                        'Edit' +
+                    '</button>';
+        }
+
+        if (vm.isArchived) {
+            html += '<button type="button" class="secondary" ' +
+                        'data-action="mission-unarchive" ' +
+                        'data-mission-id="' + escapeAttribute(vm.id) + '">' +
+                        'Unarchive' +
+                    '</button>';
+        } else {
+            html += '<button type="button" class="danger" ' +
+                        'data-action="mission-archive" ' +
+                        'data-mission-id="' + escapeAttribute(vm.id) + '">' +
+                        'Archive' +
+                    '</button>';
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    // ============================================================
+    // FORM
+    // ============================================================
+
+    /**
+     * Render the mission form.
+     *
+     * @param {object} vm - Form VM from
+     *   MissionAggregator.getMissionFormViewModel
+     * @returns {string} HTML string
+     */
+    function renderForm(vm) {
+        if (!vm) {
+            return '<p class="empty-state">Form data not available.</p>';
+        }
+
+        var isEdit = vm.isEdit === true;
+        var m = vm.mission || {};
+
+        var html = '';
+        html += '<form id="mission-form-inner" class="mission-form">';
+        html += '<div class="form-grid">';
+
+        // ---- Title ----
+        html += '<div class="form-group full-width">';
+        html += '<label for="mission-title">Mission Title *</label>';
+        html += '<input type="text" id="mission-title" ' +
+                    'value="' + escapeAttribute(m.title || '') + '" ' +
+                    'required placeholder="e.g., Operation Nightfall">';
+        html += '</div>';
+
+        // ---- Description ----
+        html += '<div class="form-group full-width">';
+        html += '<label for="mission-description">Description</label>';
+        html += '<textarea id="mission-description" rows="2" ' +
+                    'placeholder="Brief description...">' +
+                    escapeHtml(m.description || '') +
+                '</textarea>';
+        html += '</div>';
+
+        // ---- Mission ID (read-only preview) ----
+        html += '<div class="form-group">';
+        html += '<label>Mission ID</label>';
+        html += '<input type="text" class="mission-id-preview" readonly ' +
+                    'value="' + escapeAttribute(vm.previewLabel || '') + '">';
+        html += '<span class="field-hint">' +
+                    'Derived from Year and Difficulty. Updates as you edit them.' +
+                '</span>';
+        html += '</div>';
+
+        // ---- Date ----
+        html += '<div class="form-group">';
+        html += '<label>Date</label>';
+        html += '<div class="date-input-group">';
+        html += '<div class="date-field">';
+        html += '<label class="date-label" ' +
+                    'for="mission-year">Year</label>';
+        html += '<input type="number" id="mission-year" class="date-year" ' +
+                    'value="' + escapeAttribute(safeString(
+                        m.year !== undefined && m.year !== null
+                            ? m.year
+                            : (vm.defaults ? vm.defaults.year : '')
+                    )) + '">';
+        html += '</div>';
+        html += '<div class="date-field">';
+        html += '<label class="date-label" ' +
+                    'for="mission-month">Month</label>';
+        html += '<input type="number" id="mission-month" class="date-month" ' +
+                    'min="1" max="12" value="' + escapeAttribute(safeString(
+                        m.month !== undefined && m.month !== null
+                            ? m.month
+                            : (vm.defaults ? vm.defaults.month : '')
+                    )) + '">';
+        html += '</div>';
+        html += '<div class="date-field">';
+        html += '<label class="date-label" ' +
+                    'for="mission-day">Day</label>';
+        html += '<input type="number" id="mission-day" class="date-day" ' +
+                    'min="1" max="31" value="' + escapeAttribute(safeString(
+                        m.day !== undefined && m.day !== null
+                            ? m.day
+                            : (vm.defaults ? vm.defaults.day : '')
+                    )) + '">';
+        html += '</div>';
+        html += '</div></div>';
+
+        // ---- Difficulty ----
+        html += '<div class="form-group">';
+        html += '<label for="mission-difficulty">Difficulty</label>';
+        html += '<select id="mission-difficulty">';
+        html += renderOptions(
+            vm.difficulties || [],
+            m.difficulty
+        );
+        html += '</select>';
+        html += '</div>';
+
+        // ---- Priority ----
+        html += '<div class="form-group">';
+        html += '<label for="mission-priority">Priority</label>';
+        html += '<select id="mission-priority">';
+        html += renderOptions(vm.priorities || [], m.priority);
+        html += '</select>';
+        html += '</div>';
+
+        // ---- Primary Type ----
+        html += '<div class="form-group">';
+        html += '<label for="mission-primary-type">Primary Category</label>';
+        html += '<select id="mission-primary-type">';
+        html += '<option value="">Select...</option>';
+        var types = vm.missionTypes || [];
+        for (var t = 0; t < types.length; t++) {
+            var type = types[t];
+            var selected = m.primaryType === type.id ? ' selected' : '';
+            html += '<option value="' + escapeAttribute(type.id) + '"' +
+                        selected + '>' +
+                        escapeHtml(type.label) +
+                    '</option>';
+        }
+        html += '</select>';
+        html += '</div>';
+
+        // ---- Subtype ----
+        html += '<div class="form-group">';
+        html += '<label for="mission-subtype">Subtype</label>';
+        html += '<select id="mission-subtype">';
+        html += '<option value="">Select...</option>';
+        // The subtype options for the current primary type. The UI
+        // controller refreshes these on primary-type change.
+        var currentType = null;
+        for (var tt = 0; tt < types.length; tt++) {
+            if (types[tt].id === m.primaryType) {
+                currentType = types[tt];
+                break;
+            }
+        }
+        if (currentType && isArray(currentType.subtypes)) {
+            for (var s = 0; s < currentType.subtypes.length; s++) {
+                var st = currentType.subtypes[s];
+                var stSel = m.subtype === st.id ? ' selected' : '';
+                html += '<option value="' + escapeAttribute(st.id) + '"' +
+                            stSel + '>' +
+                            escapeHtml(st.label) +
+                        '</option>';
+            }
+        }
+        html += '</select>';
+        html += '</div>';
+
+        // ---- Secondary Type ----
+        html += '<div class="form-group">';
+        html += '<label for="mission-secondary-type">' +
+                    'Secondary Category' +
+                '</label>';
+        html += '<select id="mission-secondary-type">';
+        html += '<option value="">None</option>';
+        for (var ts = 0; ts < types.length; ts++) {
+            var type2 = types[ts];
+            var sel2 = m.secondaryType === type2.id ? ' selected' : '';
+            html += '<option value="' + escapeAttribute(type2.id) + '"' +
+                        sel2 + '>' +
+                        escapeHtml(type2.label) +
+                    '</option>';
+        }
+        html += '</select>';
+        html += '</div>';
+
+        // ---- Escalation ----
+        html += '<div class="form-group">';
+        html += '<label for="mission-escalation">Escalation Level</label>';
+        html += '<select id="mission-escalation">';
+        html += renderOptions(vm.escalationTiers || [], m.escalation);
+        html += '</select>';
+        html += '</div>';
+
+        // ---- Threat Type ----
+        html += '<div class="form-group">';
+        html += '<label for="mission-threat-type">Threat Type</label>';
+        html += '<input type="text" id="mission-threat-type" ' +
+                    'value="' + escapeAttribute(m.threatType || '') + '" ' +
+                    'placeholder="e.g., Human / Magical / Construct">';
+        html += '</div>';
+
+        // ---- Environment ----
+        html += '<div class="form-group">';
+        html += '<label for="mission-environment">Environment</label>';
+        html += '<input type="text" id="mission-environment" ' +
+                    'value="' + escapeAttribute(m.environment || '') + '" ' +
+                    'placeholder="e.g., Rural / Ley-Line Site">';
+        html += '</div>';
+
+        // ---- Location ----
+        html += '<div class="form-group">';
+        html += '<label for="mission-location">Location</label>';
+        html += '<input type="text" id="mission-location" ' +
+                    'value="' + escapeAttribute(m.location || '') + '" ' +
+                    'placeholder="e.g., Berlin, Germany">';
+        html += '</div>';
+
+        // ---- Duration ----
+        html += '<div class="form-group">';
+        html += '<label for="mission-duration">Expected Duration</label>';
+        html += '<input type="text" id="mission-duration" ' +
+                    'value="' + escapeAttribute(m.duration || '') + '" ' +
+                    'placeholder="e.g., 3 days, 2 weeks">';
+        html += '</div>';
+
+        // ---- Base Pay ----
+        html += '<div class="form-group">';
+        html += '<label for="mission-base-pay">Base Contract Pay</label>';
+        html += '<input type="text" id="mission-base-pay" ' +
+                    'value="' + escapeAttribute(m.basePay || '') + '" ' +
+                    'placeholder="e.g., 5000">';
+        html += '</div>';
+
+        // ---- Surcharge Pay ----
+        html += '<div class="form-group">';
+        html += '<label for="mission-surcharge-pay">' +
+                    'Surcharge / Escalation Pay' +
+                '</label>';
+        html += '<input type="text" id="mission-surcharge-pay" ' +
+                    'value="' + escapeAttribute(m.surchargePay || '') + '" ' +
+                    'placeholder="e.g., 2000">';
+        html += '</div>';
+
+        // ---- Billing ----
+        html += '<div class="form-group">';
+        html += '<label for="mission-billing">Billing Status</label>';
+        html += '<select id="mission-billing">';
+        html += renderOptions(vm.billingTypes || [], m.billing);
+        html += '</select>';
+        html += '</div>';
+
+        // ---- Status ----
+        html += '<div class="form-group">';
+        html += '<label for="mission-status">Status</label>';
+        html += '<select id="mission-status">';
+        html += renderOptions(vm.statuses || [], m.status);
+        html += '</select>';
+        html += '</div>';
+
+        // ---- Assign Team ----
+        html += '<div class="form-group">';
+        html += '<label for="mission-team">Assign Team</label>';
+        html += '<p class="field-hint">' +
+                    'Missions may be assigned to Professional or Temporary teams.' +
+                '</p>';
+        html += '<select id="mission-team">';
+        html += '<option value="">Unassigned</option>';
+        var teams = vm.teams || [];
+        for (var tm = 0; tm < teams.length; tm++) {
+            var team = teams[tm];
+            var tSel = String(m.assignedTeamId || '') === String(team.id)
+                ? ' selected'
+                : '';
+            html += '<option value="' + escapeAttribute(team.id) + '"' +
+                        tSel + '>' +
+                        escapeHtml(team.name) +
+                    '</option>';
+        }
+        html += '</select>';
+        html += '</div>';
+
+        // ---- Support Personnel ----
+        html += '<div class="form-group full-width">';
+        html += '<label>Support Personnel</label>';
+        html += '<p class="field-hint">' +
+                    'Individual characters supporting this mission.' +
+                '</p>';
+        html += '<div class="support-input-group">';
+        html += '<select id="mission-support-select" class="support-select">';
+        html += '<option value="">Select character...</option>';
+        var characters = vm.characters || [];
+        for (var c = 0; c < characters.length; c++) {
+            var character = characters[c];
+            html += '<option value="' +
+                        escapeAttribute(character.id) + '">' +
+                        escapeHtml(character.name) +
+                    '</option>';
+        }
+        html += '</select>';
+        html += '<button type="button" class="small primary" ' +
+                    'data-action="mission-add-support">' +
+                    '+ Add' +
+                '</button>';
+        html += '</div>';
+        html += '<div id="mission-support-list" class="support-list">';
+        html += renderFormSupportList(vm);
+        html += '</div>';
+        html += '</div>';
+
+        // ---- Objectives ----
+        html += '<div class="form-group full-width">';
+        html += '<label>Objectives</label>';
+        html += '<div class="objective-input-group">';
+        html += '<input type="text" id="mission-objective-input" ' +
+                    'placeholder="Add objective..." class="objective-input">';
+        html += '<button type="button" class="small primary" ' +
+                    'data-action="mission-add-objective">' +
+                    '+ Add' +
+                '</button>';
+        html += '</div>';
+        html += '<div id="mission-objectives-list" class="objectives-list">';
+        html += renderFormObjectivesList(vm);
+        html += '</div>';
+        html += '</div>';
+
+        // ---- Notes ----
+        html += '<div class="form-group full-width">';
+        html += '<label for="mission-notes">Notes</label>';
+        html += '<textarea id="mission-notes" rows="2" ' +
+                    'placeholder="Additional notes...">' +
+                    escapeHtml(m.notes || '') +
+                '</textarea>';
+        html += '</div>';
+
+        // ---- Tags ----
+        html += '<div class="form-group full-width">';
+        html += '<label for="mission-tags">Tags (comma separated)</label>';
+        html += '<input type="text" id="mission-tags" ' +
+                    'value="' + escapeAttribute(
+                        isArray(m.tags) ? m.tags.join(', ') : ''
+                    ) + '" ' +
+                    'placeholder="e.g., covert, rescue, extraction">';
+        html += '</div>';
+
+        html += '</div>'; // form-grid
+
+        // ---- Actions ----
+        html += '<div class="form-actions">';
+        html += '<button type="button" class="secondary" ' +
+                    'data-action="mission-close-form">' +
+                    'Cancel' +
+                '</button>';
+        html += '<button type="submit" class="primary">' +
+                    (isEdit ? 'Update Mission' : 'Create Mission') +
+                '</button>';
+        html += '</div>';
+
+        html += '</form>';
+        return html;
+    }
+
+    function renderFormSupportList(vm) {
+        var m = vm.mission || {};
+        var supportIds = isArray(m.supportPersonnel)
+            ? m.supportPersonnel
+            : [];
+        var characters = vm.characters || [];
+
+        if (supportIds.length === 0) {
+            return '<p class="empty-state small">No support assigned.</p>';
+        }
+
+        var nameById = {};
+        for (var i = 0; i < characters.length; i++) {
+            nameById[characters[i].id] = characters[i].name;
+        }
+
+        var html = '';
+        for (var j = 0; j < supportIds.length; j++) {
+            var id = supportIds[j];
+            if (!id) { continue; }
+            html += '<div class="support-row" data-character-id="' +
+                        escapeAttribute(id) + '">';
+            html += '<span class="support-name">' +
+                        escapeHtml(nameById[id] || 'Unknown') +
+                    '</span>';
+            html += '<button type="button" class="small danger" ' +
+                        'data-action="mission-remove-support" ' +
+                        'data-character-id="' + escapeAttribute(id) + '">' +
+                        '×' +
+                    '</button>';
+            html += '</div>';
+        }
+        return html;
+    }
+
+    function renderFormObjectivesList(vm) {
+        var m = vm.mission || {};
+        var objectives = isArray(m.objectives) ? m.objectives : [];
+
+        if (objectives.length === 0) {
+            return '<p class="empty-state small">No objectives.</p>';
+        }
+
+        var html = '';
+        for (var i = 0; i < objectives.length; i++) {
+            var obj = objectives[i];
+            html += '<div class="objective-row">';
+            html += '<input type="checkbox" class="objective-done"' +
+                        (obj.done ? ' checked' : '') + '>';
+            html += '<input type="text" class="objective-text-input" ' +
+                        'value="' + escapeAttribute(obj.text || '') + '">';
+            html += '<button type="button" class="small danger" ' +
+                        'data-action="mission-remove-objective" ' +
+                        'data-objective-index="' +
+                            escapeAttribute(String(i)) + '">' +
+                        '×' +
+                    '</button>';
+            html += '</div>';
+        }
+        return html;
     }
 
     /**
-     * Get a team's display name.
-     * 
-     * Resolution order:
-     *   1. TeamQueries.getTeamName (canonical for teams)
-     *   2. Fallback to 'Unknown Team'
-     * 
-     * NOTE: MissionQueries does not currently export getTeamName.
-     * The first branch used to check for it, but it was dead code.
-     * If MissionQueries ever adds a getTeamName alias, restore the
-     * check above the TeamQueries branch.
-     * 
-     * @param {string} teamId - Team ID
-     * @returns {string} Team name or 'Unassigned' / 'Unknown Team'
+     * Render <option> elements from a list of { id, label } or
+     * { value, label } items. Selects the entry matching
+     * `selectedValue`.
      */
-    function getTeamName(teamId) {
-        if (!teamId) {
-            return 'Unassigned';
+    function renderOptions(options, selectedValue) {
+        if (!isArray(options)) { return ''; }
+
+        var html = '';
+        for (var i = 0; i < options.length; i++) {
+            var opt = options[i];
+            if (!opt) { continue; }
+            var value = opt.id !== undefined ? opt.id : opt.value;
+            var label = opt.label !== undefined ? opt.label : value;
+            if (value === undefined || value === null) { continue; }
+            var selected = String(value) === String(selectedValue)
+                ? ' selected'
+                : '';
+            html += '<option value="' + escapeAttribute(String(value)) +
+                        '"' + selected + '>' +
+                        escapeHtml(String(label)) +
+                    '</option>';
         }
-        if (window.TeamQueries && typeof window.TeamQueries.getTeamName === 'function') {
-            return window.TeamQueries.getTeamName(teamId);
-        }
-        return 'Unknown Team';
+        return html;
     }
 
     // ============================================================
-    // RENDER API
+    // SIMPLE STATES
     // ============================================================
 
-    var MissionRender = {
-        /**
-         * Render the mission list.
-         * 
-         * @param {array} missions - Array of mission objects
-         * @returns {string} HTML string
-         */
-        renderList: function(missions) {
-            if (!missions || missions.length === 0) {
-                return '<p class="empty-state">No missions found.</p>';
-            }
-
-            var html = '';
-
-            for (var i = 0; i < missions.length; i++) {
-                var mission = missions[i];
-                if (!mission || typeof mission !== 'object') {
-                    continue;
-                }
-
-                var priorityInfo = Views.getPriorityInfo(mission.priority);
-                var statusInfo = Views.getStatusInfo(mission.status);
-                var teamName = getTeamName(mission.assignedTeamId);
-                var difficultyLabel = Views.getDifficultyLabel(mission.difficulty);
-                var supportCount = mission.supportPersonnel ? mission.supportPersonnel.length : 0;
-
-                var primaryType = mission.primaryType ? Views.getMissionTypeLabel(mission.primaryType) : 'Unclassified';
-                var subtypeLabel = Views.getSubtypeLabel(mission.subtype);
-                var secondaryType = mission.secondaryType ? Views.getMissionTypeLabel(mission.secondaryType) : '';
-
-                var typeDisplay = primaryType;
-                if (subtypeLabel) {
-                    typeDisplay += ' | ' + subtypeLabel;
-                }
-                if (secondaryType) {
-                    typeDisplay += ' | ' + secondaryType;
-                }
-
-                var escalationLabel = Views.getEscalationLabel(mission.escalation);
-                var progressBar = getSafeProgress(mission.progress);
-
-                var dateDisplay = getSafeDateDisplay(mission);
-
-                html += '<div class="list-item mission-item" data-id="' + escapeAttribute(mission.id) + '">';
-                html += '<span class="mission-id">' + escapeHtml(mission.missionId || '—') + '</span>';
-                html += '<span class="mission-date">' + escapeHtml(dateDisplay) + '</span>';
-                html += '<span class="mission-title"><strong>' + escapeHtml(mission.title) + '</strong>';
-                if (mission.status === 'completed') {
-                    html += ' <span class="mission-completed-badge">✓</span>';
-                }
-                if (supportCount > 0) {
-                    html += ' <span class="mission-support-badge">+' + supportCount + ' support</span>';
-                }
-                html += '</span>';
-                html += '<span class="mission-type">' + escapeHtml(typeDisplay) + '</span>';
-                html += '<span class="mission-escalation">' + escapeHtml(escalationLabel) + '</span>';
-                html += '<span class="mission-priority ' + priorityInfo.class + '">' + escapeHtml(priorityInfo.label) + '</span>';
-                html += '<span class="mission-difficulty">' + escapeHtml(difficultyLabel) + '</span>';
-                html += '<span class="mission-status ' + statusInfo.class + '">' + escapeHtml(statusInfo.label) + '</span>';
-                html += '<span class="mission-team">' + escapeHtml(teamName) + '</span>';
-                html += '<span class="mission-progress">';
-                html += '<div class="progress-bar"><div class="progress-fill" style="width:' + progressBar + '%;"></div></div>';
-                html += '<span class="progress-label">' + progressBar + '%</span>';
-                html += '</span>';
-                html += '</div>';
-            }
-
-            return html;
-        },
-
-        /**
-         * Render the mission form.
-         * 
-         * @param {object} formModel - Form model with all data
-         * @param {object} formModel.mission - Mission object (null for new)
-         * @param {array} formModel.teams - Array of eligible team objects
-         * @param {array} formModel.characters - Array of character objects
-         * @param {array} formModel.supportIds - Array of support personnel IDs
-         * @param {array} formModel.difficulties - Array of valid difficulty values
-         * @param {array} formModel.priorities - Array of valid priority values
-         * @param {array} formModel.statuses - Array of valid status values
-         * @param {array} formModel.billingTypes - Array of valid billing types
-         * @param {array} formModel.escalationTiers - Array of valid escalation tiers
-         * @param {object} formModel.missionTypes - Mission type taxonomy
-         * @param {array} formModel.monthNames - Array of month names
-         * @param {number} formModel.defaultYear - Default year
-         * @param {number} formModel.defaultMonth - Default month
-         * @param {number} formModel.defaultDay - Default day
-         * @returns {string} HTML string
-         */
-        renderForm: function(formModel) {
-            formModel = formModel || {};
-
-            var mission = formModel.mission || null;
-            var teams = Array.isArray(formModel.teams) ? formModel.teams : [];
-            var characters = Array.isArray(formModel.characters) ? formModel.characters : [];
-            var supportIds = Array.isArray(formModel.supportIds) ? formModel.supportIds : [];
-            var difficulties = Array.isArray(formModel.difficulties) ? formModel.difficulties : ['easy', 'medium', 'hard', 'expert'];
-            var priorities = Array.isArray(formModel.priorities) ? formModel.priorities : ['low', 'medium', 'high', 'critical'];
-            var statuses = Array.isArray(formModel.statuses) ? formModel.statuses : ['active', 'completed', 'cancelled'];
-            var billingTypes = Array.isArray(formModel.billingTypes) ? formModel.billingTypes : ['original', 'escalated', 'emergency', 'internal'];
-            var escalationTiers = Array.isArray(formModel.escalationTiers) ? formModel.escalationTiers : ['tier_i', 'tier_ii', 'tier_iii', 'tier_iv', 'tier_v'];
-            var missionTypes = formModel.missionTypes || {};
-            var monthNames = Array.isArray(formModel.monthNames) ? formModel.monthNames : [
-                'January', 'February', 'March', 'April', 'May', 'June',
-                'July', 'August', 'September', 'October', 'November', 'December'
-            ];
-
-            var isEdit = !!mission;
-            var m = mission || {};
-
-            var year = m.year !== undefined && m.year !== null ? m.year : (formModel.defaultYear || new Date().getFullYear());
-            var month = m.month !== undefined && m.month !== null ? m.month : (formModel.defaultMonth || new Date().getMonth() + 1);
-            var day = m.day !== undefined && m.day !== null ? m.day : (formModel.defaultDay || new Date().getDate());
-
-            var html = '<form class="mission-form" id="mission-form-inner">';
-            html += '<div class="form-grid">';
-
-            // Title
-            html += '<div class="form-group full-width">';
-            html += '<label>Mission Title *</label>';
-            html += '<input type="text" id="mission-title" value="' + escapeHtml(m.title || '') + '" required placeholder="e.g., Operation Nightfall">';
-            html += '</div>';
-
-            // Description
-            html += '<div class="form-group full-width">';
-            html += '<label>Description</label>';
-            html += '<textarea id="mission-description" rows="2" placeholder="Brief description of the mission...">' + escapeHtml(m.description || '') + '</textarea>';
-            html += '</div>';
-
-            // Mission ID (read-only)
-            html += '<div class="form-group">';
-            html += '<label>Mission ID</label>';
-            html += '<input type="text" id="mission-id" readonly placeholder="Auto-generated" class="mission-id-preview" value="' + escapeHtml(m.missionId || '') + '">';
-            html += '<span class="field-hint">Auto-generated from Team, Year, Difficulty</span>';
-            html += '</div>';
-
-            // Date
-            html += '<div class="form-group">';
-            html += '<label>Date</label>';
-            html += '<div class="date-input-group">';
-            html += '<div class="date-field"><label class="date-label">Year</label><input type="number" id="mission-year" value="' + escapeHtml(year) + '" class="date-year"></div>';
-            html += '<div class="date-field"><label class="date-label">Month</label><select id="mission-month" class="date-month">';
-
-            for (var mi = 0; mi < monthNames.length; mi++) {
-                var monthNum = mi + 1;
-                var selected = monthNum === month ? 'selected' : '';
-                html += '<option value="' + monthNum + '" ' + selected + '>' + escapeHtml(monthNames[mi]) + '</option>';
-            }
-
-            html += '</select></div>';
-            html += '<div class="date-field"><label class="date-label">Day</label><input type="number" id="mission-day" value="' + escapeHtml(day) + '" min="1" max="31" class="date-day"></div>';
-            html += '</div></div>';
-
-            // Primary Type
-            html += '<div class="form-group">';
-            html += '<label>Primary Category</label>';
-            html += '<select id="mission-primary-type">';
-            html += '<option value="">Select...</option>';
-
-            var typeKeys = Object.keys(missionTypes);
-            for (var tk = 0; tk < typeKeys.length; tk++) {
-                var key = typeKeys[tk];
-                var type = missionTypes[key];
-                var selected2 = m.primaryType === key ? 'selected' : '';
-                html += '<option value="' + escapeHtml(key) + '" ' + selected2 + '>' + escapeHtml(type.label) + '</option>';
-            }
-
-            html += '</select></div>';
-
-            // Subtype
-            html += '<div class="form-group">';
-            html += '<label>Subtype</label>';
-            html += '<select id="mission-subtype">';
-            html += '<option value="">Select...</option>';
-
-            if (m.primaryType && missionTypes[m.primaryType]) {
-                var subtypes = missionTypes[m.primaryType].subtypes || [];
-                for (var si = 0; si < subtypes.length; si++) {
-                    var subtype = subtypes[si];
-                    var label = Views.getSubtypeLabel(subtype);
-                    var selected3 = m.subtype === subtype ? 'selected' : '';
-                    html += '<option value="' + escapeHtml(subtype) + '" ' + selected3 + '>' + escapeHtml(label) + '</option>';
-                }
-            }
-
-            html += '</select></div>';
-
-            // Secondary Type
-            html += '<div class="form-group">';
-            html += '<label>Secondary Category</label>';
-            html += '<select id="mission-secondary-type">';
-            html += '<option value="">None</option>';
-
-            for (var tk2 = 0; tk2 < typeKeys.length; tk2++) {
-                var key2 = typeKeys[tk2];
-                var type2 = missionTypes[key2];
-                var selected4 = m.secondaryType === key2 ? 'selected' : '';
-                html += '<option value="' + escapeHtml(key2) + '" ' + selected4 + '>' + escapeHtml(type2.label) + '</option>';
-            }
-
-            html += '</select></div>';
-
-            // Escalation
-            html += '<div class="form-group">';
-            html += '<label>Escalation Level</label>';
-            html += '<select id="mission-escalation">';
-
-            for (var ei = 0; ei < escalationTiers.length; ei++) {
-                var tier = escalationTiers[ei];
-                var label = Views.getEscalationLabel(tier);
-                var selected5 = m.escalation === tier ? 'selected' : '';
-                html += '<option value="' + escapeHtml(tier) + '" ' + selected5 + '>' + escapeHtml(label) + '</option>';
-            }
-
-            html += '</select></div>';
-
-            // Threat Type
-            html += '<div class="form-group">';
-            html += '<label>Threat Type</label>';
-            html += '<input type="text" id="mission-threat-type" value="' + escapeHtml(m.threatType || '') + '" placeholder="e.g., Human / Magical / Construct">';
-            html += '</div>';
-
-            // Environment
-            html += '<div class="form-group">';
-            html += '<label>Environment</label>';
-            html += '<input type="text" id="mission-environment" value="' + escapeHtml(m.environment || '') + '" placeholder="e.g., Rural / Ley-Line Site / Underground">';
-            html += '</div>';
-
-            // Location
-            html += '<div class="form-group">';
-            html += '<label>Location</label>';
-            html += '<input type="text" id="mission-location" value="' + escapeHtml(m.location || '') + '" placeholder="e.g., Berlin, Germany">';
-            html += '</div>';
-
-            // Duration
-            html += '<div class="form-group">';
-            html += '<label>Expected Duration</label>';
-            html += '<input type="text" id="mission-duration" value="' + escapeHtml(m.duration || '') + '" placeholder="e.g., 3 days, 2 weeks">';
-            html += '</div>';
-
-            // Difficulty
-            html += '<div class="form-group">';
-            html += '<label>Difficulty</label>';
-            html += '<select id="mission-difficulty">';
-
-            for (var di = 0; di < difficulties.length; di++) {
-                var diff = difficulties[di];
-                var label = Views.getDifficultyLabel(diff);
-                var selected6 = m.difficulty === diff ? 'selected' : '';
-                html += '<option value="' + escapeHtml(diff) + '" ' + selected6 + '>' + escapeHtml(label) + '</option>';
-            }
-
-            html += '</select></div>';
-
-            // Priority
-            html += '<div class="form-group">';
-            html += '<label>Priority</label>';
-            html += '<select id="mission-priority">';
-
-            for (var pi = 0; pi < priorities.length; pi++) {
-                var pri = priorities[pi];
-                var info = Views.getPriorityInfo(pri);
-                var selected7 = m.priority === pri ? 'selected' : '';
-                html += '<option value="' + escapeHtml(pri) + '" ' + selected7 + '>' + escapeHtml(info.label) + '</option>';
-            }
-
-            html += '</select></div>';
-
-            // Base Pay
-            html += '<div class="form-group">';
-            html += '<label>Base Contract Pay</label>';
-            html += '<input type="text" id="mission-base-pay" value="' + escapeHtml(m.basePay || '') + '" placeholder="e.g., 5000 credits">';
-            html += '</div>';
-
-            // Surcharge Pay
-            html += '<div class="form-group">';
-            html += '<label>Surcharge / Escalation Pay</label>';
-            html += '<input type="text" id="mission-surcharge-pay" value="' + escapeHtml(m.surchargePay || '') + '" placeholder="e.g., 2000 credits">';
-            html += '</div>';
-
-            // Total Pay (read-only)
-            html += '<div class="form-group">';
-            html += '<label>Total Pay</label>';
-            html += '<input type="text" id="mission-total-pay" readonly placeholder="Auto-calculated" class="total-pay-display" value="' + escapeHtml(m.pay || '') + '">';
-            html += '</div>';
-
-            // Billing
-            html += '<div class="form-group">';
-            html += '<label>Billing Status</label>';
-            html += '<select id="mission-billing">';
-
-            for (var bi = 0; bi < billingTypes.length; bi++) {
-                var bill = billingTypes[bi];
-                var label = Views.getBillingLabel(bill);
-                var selected8 = m.billing === bill ? 'selected' : '';
-                html += '<option value="' + escapeHtml(bill) + '" ' + selected8 + '>' + escapeHtml(label) + '</option>';
-            }
-
-            html += '</select></div>';
-
-            // Status
-            html += '<div class="form-group">';
-            html += '<label>Status</label>';
-            html += '<select id="mission-status">';
-
-            for (var si2 = 0; si2 < statuses.length; si2++) {
-                var status = statuses[si2];
-                var info = Views.getStatusInfo(status);
-                var selected9 = m.status === status ? 'selected' : '';
-                html += '<option value="' + escapeHtml(status) + '" ' + selected9 + '>' + escapeHtml(info.label) + '</option>';
-            }
-
-            html += '</select></div>';
-
-            // Assign Team - Uses pre-filtered eligible teams
-            html += '<div class="form-group">';
-            html += '<label>Assign Team</label>';
-            html += '<p class="field-hint">Missions can only be assigned to Professional or Temporary teams</p>';
-            html += '<select id="mission-team">';
-            html += '<option value="">Unassigned</option>';
-
-            if (teams.length > 0) {
-                // Sort teams
-                var sortedTeams = teams.slice();
-                sortedTeams.sort(function(a, b) {
-                    var nameA = a.name || '';
-                    var nameB = b.name || '';
-                    return nameA.localeCompare(nameB);
-                });
-
-                for (var ti = 0; ti < sortedTeams.length; ti++) {
-                    var team = sortedTeams[ti];
-                    var selected10 = Queries.normaliseId ? Queries.normaliseId(m.assignedTeamId) === Queries.normaliseId(team.id) : String(m.assignedTeamId) === String(team.id);
-                    var isSelected = selected10 ? 'selected' : '';
-                    html += '<option value="' + escapeHtml(team.id) + '" ' + isSelected + '>' + escapeHtml(team.name) + '</option>';
-                }
-            } else {
-                html += '<option value="" disabled>No Professional or Temporary teams available</option>';
-            }
-
-            html += '</select></div>';
-
-            // Support Personnel
-            html += '<div class="form-group full-width">';
-            html += '<label>Support Personnel</label>';
-            html += '<p class="field-hint">Individual characters assigned to support this mission</p>';
-            html += '<div class="support-input-group">';
-            html += '<select id="mission-support-select" class="support-select">';
-            html += '<option value="">Select character...</option>';
-
-            if (Array.isArray(characters)) {
-                var sortedChars = characters.slice();
-                sortedChars.sort(function(a, b) {
-                    var nameA = a.firstName || a.name || '';
-                    var nameB = b.firstName || b.name || '';
-                    return nameA.localeCompare(nameB);
-                });
-
-                for (var ci = 0; ci < sortedChars.length; ci++) {
-                    var char = sortedChars[ci];
-                    var name = char.firstName || char.name || 'Unknown';
-                    if (char.lastName) {
-                        name += ' ' + char.lastName;
-                    }
-                    html += '<option value="' + escapeHtml(char.id) + '">' + escapeHtml(name) + '</option>';
-                }
-            }
-
-            html += '</select>';
-            html += '<button type="button" id="add-support-btn" class="small primary">+ Add Support</button>';
-            html += '</div>';
-            html += '<div id="mission-support-list" class="support-list"></div></div>';
-
-            // Objectives
-            html += '<div class="form-group full-width">';
-            html += '<label>Objectives</label>';
-            html += '<div class="objective-input-group">';
-            html += '<input type="text" id="mission-objective" placeholder="Add objective..." class="objective-input">';
-            html += '<button type="button" id="add-objective-btn" class="small primary">+ Add Objective</button>';
-            html += '</div>';
-            html += '<div id="mission-objectives-list" class="objectives-list"></div></div>';
-
-            // Notes
-            html += '<div class="form-group full-width">';
-            html += '<label>Notes</label>';
-            html += '<textarea id="mission-notes" rows="2" placeholder="Additional notes...">' + escapeHtml(m.notes || '') + '</textarea>';
-            html += '</div>';
-
-            // Tags
-            html += '<div class="form-group full-width">';
-            html += '<label>Tags (comma separated)</label>';
-            html += '<input type="text" id="mission-tags" value="' + escapeHtml(Array.isArray(m.tags) ? m.tags.join(', ') : '') + '" placeholder="e.g., covert, rescue, extraction">';
-            html += '</div>';
-
-            html += '</div>';
-
-            // Actions
-            html += '<div class="form-actions">';
-            html += '<button type="button" id="cancel-mission-form" class="secondary">Cancel</button>';
-            html += '<button type="submit" id="save-mission-btn" class="primary">' + (isEdit ? 'Update' : 'Create') + ' Mission</button>';
-            html += '</div>';
-            html += '</form>';
-
-            return html;
-        },
-
-        /**
-         * Render mission detail view.
-         * 
-         * @param {object} mission - Mission object
-         * @returns {string} HTML string
-         */
-        renderDetail: function(mission) {
-            if (!mission) {
-                return '<p class="empty-state">Mission not found.</p>';
-            }
-
-            var priorityInfo = Views.getPriorityInfo(mission.priority);
-            var statusInfo = Views.getStatusInfo(mission.status);
-            var teamName = getTeamName(mission.assignedTeamId);
-            var difficultyLabel = Views.getDifficultyLabel(mission.difficulty);
-            var supportNames = Queries.getSupportPersonnelNames ? Queries.getSupportPersonnelNames(mission) : [];
-
-            var primaryType = mission.primaryType ? Views.getMissionTypeLabel(mission.primaryType) : 'Unclassified';
-            var secondaryType = mission.secondaryType ? Views.getMissionTypeLabel(mission.secondaryType) : 'None';
-            var subtypeLabel = Views.getSubtypeLabel(mission.subtype) || 'None';
-            var escalationLabel = Views.getEscalationLabel(mission.escalation);
-            var billingLabel = Views.getBillingLabel(mission.billing);
-
-            var progressBar = getSafeProgress(mission.progress);
-            var createdAt = formatDateTimeSafe(mission.createdAt);
-            var completedAt = mission.completedAt ? formatDateTimeSafe(mission.completedAt) : 'Not completed';
-
-            var dateDisplay = getSafeDateDisplay(mission);
-
-            var payDisplay = '';
-            if (mission.basePay && mission.surchargePay) {
-                payDisplay = 'Base: ' + mission.basePay + ' | Surcharge: ' + mission.surchargePay + ' | Total: ' + mission.pay;
-            } else if (mission.basePay) {
-                payDisplay = 'Base: ' + mission.basePay;
-            } else if (mission.pay) {
-                payDisplay = mission.pay;
-            } else {
-                payDisplay = 'Not specified';
-            }
-
-            var html = '<div class="mission-detail">';
-
-            // Basic info
-            html += '<div class="detail-row"><span class="label">Mission ID:</span> <span class="mission-id-display">' + escapeHtml(mission.missionId || 'N/A') + '</span></div>';
-            html += '<div class="detail-row"><span class="label">Date:</span> <span>' + escapeHtml(dateDisplay) + '</span></div>';
-            html += '<div class="detail-row"><span class="label">Status:</span> <span class="status-display ' + statusInfo.class + '">' + escapeHtml(statusInfo.label) + '</span></div>';
-            html += '<div class="detail-row"><span class="label">Priority:</span> <span class="priority-display ' + priorityInfo.class + '">' + escapeHtml(priorityInfo.label) + '</span></div>';
-            html += '<div class="detail-row"><span class="label">Difficulty:</span> <span>' + escapeHtml(difficultyLabel) + '</span></div>';
-            html += '<div class="detail-row"><span class="label">Primary Category:</span> <span>' + escapeHtml(primaryType) + '</span></div>';
-
-            if (mission.subtype) {
-                html += '<div class="detail-row"><span class="label">Subtype:</span> <span>' + escapeHtml(subtypeLabel) + '</span></div>';
-            }
-
-            if (mission.secondaryType) {
-                html += '<div class="detail-row"><span class="label">Secondary Category:</span> <span>' + escapeHtml(secondaryType) + '</span></div>';
-            }
-
-            html += '<div class="detail-row"><span class="label">Escalation Level:</span> <span>' + escapeHtml(escalationLabel) + '</span></div>';
-
-            if (mission.threatType) {
-                html += '<div class="detail-row"><span class="label">Threat Type:</span> <span>' + escapeHtml(mission.threatType) + '</span></div>';
-            }
-
-            if (mission.environment) {
-                html += '<div class="detail-row"><span class="label">Environment:</span> <span>' + escapeHtml(mission.environment) + '</span></div>';
-            }
-
-            html += '<div class="detail-row"><span class="label">Team:</span> <span>' + escapeHtml(teamName) + '</span></div>';
-
-            // Support personnel
-            if (supportNames.length > 0) {
-                html += '<div class="detail-row"><span class="label">Support Personnel:</span> <span>' + escapeHtml(supportNames.join(', ')) + '</span></div>';
-            }
-
-            html += '<div class="detail-row"><span class="label">Location:</span> <span>' + escapeHtml(mission.location || 'Not specified') + '</span></div>';
-            html += '<div class="detail-row"><span class="label">Duration:</span> <span>' + escapeHtml(mission.duration || 'Not specified') + '</span></div>';
-            html += '<div class="detail-row"><span class="label">Payment:</span> <span>' + escapeHtml(payDisplay) + '</span></div>';
-            html += '<div class="detail-row"><span class="label">Billing:</span> <span>' + escapeHtml(billingLabel) + '</span></div>';
-            html += '<div class="detail-row"><span class="label">Created:</span> <span>' + escapeHtml(createdAt) + '</span></div>';
-            html += '<div class="detail-row"><span class="label">Completed:</span> <span>' + escapeHtml(completedAt) + '</span></div>';
-
-            if (mission.description) {
-                html += '<div class="detail-row description-row"><span class="label">Description:</span><span class="description-text">' + escapeHtml(mission.description) + '</span></div>';
-            }
-
-            if (mission.notes) {
-                html += '<div class="detail-row notes-row"><span class="label">Notes:</span><span class="notes-text">' + escapeHtml(mission.notes) + '</span></div>';
-            }
-
-            // Tags
-            if (mission.tags && mission.tags.length > 0) {
-                html += '<div class="detail-row tags-row"><span class="label">Tags:</span><span class="tags-list">';
-
-                for (var tagIdx = 0; tagIdx < mission.tags.length; tagIdx++) {
-                    var tag = mission.tags[tagIdx];
-                    html += '<span class="tag">#' + escapeHtml(tag) + '</span>';
-                }
-
-                html += '</span></div>';
-            }
-
-            // Progress
-            html += '<div class="progress-section"><strong>Progress:</strong>';
-            html += '<div class="progress-bar-container">';
-            html += '<div class="progress-bar"><div class="progress-fill" style="width:' + progressBar + '%;"></div></div>';
-            html += '<span class="progress-label">' + progressBar + '%</span>';
-            html += '</div></div>';
-
-            // Objectives
-            if (mission.objectives && mission.objectives.length > 0) {
-                html += '<div class="objectives-section"><strong>Objectives:</strong><ul class="objectives-list">';
-
-                for (var objIdx = 0; objIdx < mission.objectives.length; objIdx++) {
-                    var obj = mission.objectives[objIdx];
-                    if (!obj || typeof obj !== 'object') {
-                        continue;
-                    }
-                    var doneClass = obj.done ? 'objective-done' : '';
-                    html += '<li class="objective-item ' + doneClass + '">';
-                    html += '<input type="checkbox" ' + (obj.done ? 'checked' : '') + ' data-mission="' + escapeAttribute(mission.id) + '" data-index="' + objIdx + '" class="objective-check">';
-                    html += '<span>' + escapeHtml(obj.text) + '</span>';
-                    html += '</li>';
-                }
-
-                html += '</ul></div>';
-            }
-
-            // Activity log
-            if (mission.log && mission.log.length > 0) {
-                html += '<div class="log-section"><strong>Activity Log:</strong><div class="log-list">';
-
-                // Reverse for newest first
-                for (var logIdx = mission.log.length - 1; logIdx >= 0; logIdx--) {
-                    var entry = mission.log[logIdx];
-                    if (!entry || typeof entry !== 'object') {
-                        continue;
-                    }
-                    var timestamp = formatDateTimeSafe(entry.timestamp);
-                    html += '<div class="log-entry">' + escapeHtml(timestamp) + ' - ' + escapeHtml(entry.message) + '</div>';
-                }
-
-                html += '</div></div>';
-            }
-
-            html += '</div>';
-            return html;
-        },
-
-        /**
-         * Render the main container HTML.
-         * 
-         * @returns {string} HTML string
-         */
-        renderContainer: function() {
-            var html = '';
-            html += '<div class="page-header">';
-            html += '<h2>Mission Manager</h2>';
-            html += '<div class="header-actions">';
-            html += '<button id="add-mission-btn" class="primary">+ New Mission</button>';
-            html += '<button id="export-missions-csv-btn" class="small">⌘ Export CSV</button>';
-            html += '<button id="import-missions-csv-btn" class="small">⌘ Import CSV</button>';
-            html += '<button id="template-missions-csv-btn" class="small secondary">⌘ Template CSV</button>';
-            html += '<input type="file" id="missions-csv-file-input" accept=".csv" style="display:none" />';
-            html += '</div>';
-            html += '</div>';
-            html += '<div class="filter-section">';
-            html += '<label for="mission-filter">Filter:</label>';
-            html += '<select id="mission-filter">';
-            html += '<option value="all">All Missions</option>';
-            html += '<option value="active">Active</option>';
-            html += '<option value="completed">Completed</option>';
-            html += '<option value="cancelled">Cancelled</option>';
-            html += '</select>';
-            html += '<span class="mission-count">Total: <span id="mission-count">0</span></span>';
-            html += '</div>';
-            html += '<div id="missions-list"></div>';
-            html += this.renderModals();
-            return html;
-        },
-
-        /**
-         * Render modal HTML.
-         * 
-         * @returns {string} HTML string
-         */
-        renderModals: function() {
-            var html = '';
-            html += '<div id="mission-form-modal" class="modal hidden">';
-            html += '<div class="modal-content modal-form-content">';
-            html += '<div class="modal-header">';
-            html += '<h3 id="mission-form-title">Create Mission</h3>';
-            html += '<button class="close-modal" id="close-mission-form">&times;</button>';
-            html += '</div>';
-            html += '<div class="modal-body">';
-            html += '<div id="mission-form-content"></div>';
-            html += '</div>';
-            html += '</div>';
-            html += '</div>';
-
-            html += '<div id="mission-detail-modal" class="modal hidden">';
-            html += '<div class="modal-content modal-detail-content">';
-            html += '<div class="modal-header">';
-            html += '<h3 id="detail-mission-title">Mission Details</h3>';
-            html += '<button class="close-modal" id="close-mission-detail">&times;</button>';
-            html += '</div>';
-            html += '<div class="modal-body">';
-            html += '<div id="mission-detail-content"></div>';
-            html += '<div class="form-actions">';
-            html += '<button type="button" id="edit-mission-from-detail" class="primary">Edit</button>';
-            html += '<button type="button" id="delete-mission-from-detail" class="danger">Delete Mission</button>';
-            html += '</div>';
-            html += '</div>';
-            html += '</div>';
-            html += '</div>';
-
-            return html;
-        },
-
-        /**
-         * Render an empty state message.
-         * 
-         * @param {string} message - Message to display
-         * @returns {string} HTML string
-         */
-        renderEmpty: function(message) {
-            return '<p class="empty-state">' + escapeHtml(message || 'No items found.') + '</p>';
-        },
-
-        /**
-         * Render a loading state.
-         * 
-         * @returns {string} HTML string
-         */
-        renderLoading: function() {
-            return '<p class="empty-state">Loading mission data...</p>';
-        }
-    };
+    function renderEmpty(message) {
+        return '<p class="empty-state">' +
+                    escapeHtml(message || 'No items found.') +
+                '</p>';
+    }
+
+    function renderLoading() {
+        return '<p class="empty-state">Loading mission data...</p>';
+    }
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
-    window.MissionRender = MissionRender;
+    window.MissionRender = Object.freeze({
+        renderContainer: renderContainer,
+        renderModals: renderModals,
+        renderList: renderList,
+        renderListItem: renderListItem,
+        renderDetail: renderDetail,
+        renderForm: renderForm,
+        renderEmpty: renderEmpty,
+        renderLoading: renderLoading
+    });
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.MissionRender;
+        var missing = [];
+
+        var required = [
+            'renderContainer',
+            'renderModals',
+            'renderList',
+            'renderListItem',
+            'renderDetail',
+            'renderForm',
+            'renderEmpty',
+            'renderLoading'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        if (missing.length > 0) {
+            console.warn(
+                '[MissionRender] Verification failed:',
+                missing.join(', ')
+            );
+        }
+    })();
 
 })();
