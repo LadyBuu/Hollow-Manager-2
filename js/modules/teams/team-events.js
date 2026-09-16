@@ -42,7 +42,7 @@
  *   `.modal .close-modal` plus the modal's own backdrop-click and
  *   escape-key handlers installed by modalSetup.
  *
- * EXTERNAL ENTRY POINTS (added in this revision):
+ * EXTERNAL ENTRY POINTS:
  *   The Teams module has two callers for its member UI:
  *
  *     1. The Teams tab itself, which mounts the whole Team Manager
@@ -66,7 +66,21 @@
  *   require the Teams tab to be mounted, and they do not use the
  *   modal shells from TeamRender.getModalsHTML.
  *
- * MODAL CLOSE SEMANTICS:
+ * CLOSE SEMANTICS (external entry points):
+ *   The caller owns the modal shell. This module does not call
+ *   Modal.closeModal / hideModal for those instances. Instead, the
+ *   close handlers invoke the caller-supplied `options.onClose`
+ *   callback, and the caller decides what "close" means (hide the
+ *   modal, remove it, etc.).
+ *
+ *   Internally, `openMemberManager` returns an object with a
+ *   `.close()` method that invokes the same `onClose`. The
+ *   container's Close buttons call this method. There is NO module-
+ *   level state tracking "the active manager" — two concurrent
+ *   managers would clash. Each manager instance owns its own close
+ *   callback via closure.
+ *
+ * MODAL CLOSE SEMANTICS (Teams tab entry points):
  *   Modal.hideModal is ASYNCHRONOUS. closeModal below awaits the
  *   returned Promise before removing the element from the DOM.
  *   When Modal.closeModal is available (full teardown, cleanup list,
@@ -92,10 +106,12 @@
  *
  *   // External caller:
  *   var content = document.querySelector('.modal-content');
- *   TE.openMemberManager(content, 'team_123', 2025, {
+ *   var manager = TE.openMemberManager(content, 'team_123', 2025, {
  *       onClose: function() { Modal.closeModal(modal); },
  *       onMutation: function() { refreshAcademyView(); }
  *   });
+ *   // later:
+ *   manager.close();
  */
 
 (function() {
@@ -1213,27 +1229,29 @@
     // Modal.createModal; it only manipulates what's inside the
     // provided container.
     //
-    // CONTAINER: an element that will hold the modal content (usually
-    //   a .modal-content). Its innerHTML is replaced on every render.
+    // CLOSE SEMANTICS:
+    //   The container's Close buttons (and the × in the header)
+    //   invoke the caller-supplied `options.onClose`. This module
+    //   does NOT use module-level state to track "the active
+    //   manager". Each instance owns its own close callback via
+    //   closure. Two managers open concurrently do not interfere.
     //
-    // TEAM ID: the team to manage.
-    //
-    // PERIOD: the period used to compute active members. If null, the
-    //   manager renders the roster without active/inactive marking.
-    //
-    // OPTIONS:
-    //   - onClose: called when the user clicks Close. The caller
-    //     decides what "close" means (hide the modal, remove it,
-    //     etc.). If omitted, nothing happens on Close.
+    // @param {HTMLElement} container - Element to render into
+    //   (typically a .modal-content). Its innerHTML is replaced.
+    // @param {string} teamId - Team to manage
+    // @param {number|string|null} period - Period for active-member
+    //   marking. Null is allowed: the roster renders without
+    //   active/inactive distinction.
+    // @param {object} options
+    //   - onClose: called when the user clicks Close / ×. The
+    //     caller decides what "close" means (hide the modal,
+    //     remove it, etc.). Optional.
     //   - onMutation: called after every successful add/remove/edit.
-    //     The caller can use this to refresh an outer view (e.g. the
-    //     Academy tab's sidebar).
+    //     Use this to refresh an outer view (e.g. the Academy
+    //     sidebar). Optional.
     //
-    // Returns an object with:
-    //   - refresh(): re-render the manager in place
-    //   - close(): invoke the onClose handler (if any)
-    //   - isOpen(): true while the manager is mounted
-
+    // @returns {object|null} Handle with { refresh, close, isOpen }
+    //   or null on invalid input.
     function openMemberManager(container, teamId, period, options) {
         if (!container || !teamId) {
             return null;
@@ -1249,6 +1267,22 @@
 
         var disposed = false;
 
+        function invokeOnClose() {
+            if (typeof onClose === 'function') {
+                try { onClose(); } catch (e) {
+                    console.warn('[TeamEvents] onClose threw:', e);
+                }
+            }
+        }
+
+        function invokeOnMutation() {
+            if (typeof onMutation === 'function') {
+                try { onMutation(); } catch (e) {
+                    console.warn('[TeamEvents] onMutation threw:', e);
+                }
+            }
+        }
+
         function render() {
             if (disposed || !container.parentNode) {
                 return;
@@ -1257,37 +1291,33 @@
             var vm = TeamAggregator.getMemberModalViewModel(teamId, period);
 
             if (!vm) {
-                container.innerHTML =
-                    renderMemberManagerHeader('Manage Members') +
-                    '<div class="modal-body">' +
-                        '<p class="empty-state small">Team not found.</p>' +
-                    '</div>';
-                bindCloseOnly(container);
+                container.innerHTML = renderMemberManagerBody({
+                    teamId: teamId,
+                    teamName: 'Team',
+                    members: [],
+                    candidates: []
+                }, { notFound: true });
+                bindCloseButtons(container, invokeOnClose);
                 return;
             }
 
-            container.innerHTML = renderMemberManagerBody(vm);
-
+            container.innerHTML = renderMemberManagerBody(vm, { notFound: false });
             bindManagerEvents(container, vm, {
-                onMutation: onMutation,
+                onMutation: invokeOnMutation,
+                onClose: invokeOnClose,
                 refresh: render
             });
         }
 
         function close() {
             disposed = true;
-            if (typeof onClose === 'function') {
-                try { onClose(); } catch (e) {
-                    console.warn('[TeamEvents] onClose threw:', e);
-                }
-            }
+            invokeOnClose();
         }
 
         function isOpen() {
             return !disposed && !!container.parentNode;
         }
 
-        // First render.
         render();
 
         return {
@@ -1297,75 +1327,181 @@
         };
     }
 
-    function renderMemberManagerHeader(title) {
-        return (
-            '<div class="modal-header">' +
-                '<h3>' + escapeHtml(title) + '</h3>' +
-                '<button type="button" class="close-modal team-events-close-btn">&times;</button>' +
-            '</div>'
-        );
+    // ============================================================
+    // EXTERNAL ENTRY POINT - MEMBER EDITOR
+    // ============================================================
+    //
+    // Same container-based pattern as openMemberManager. Renders a
+    // form for a single member into the caller's container and wires
+    // the save to TeamCore.updateMember.
+    //
+    // The caller is responsible for opening a modal shell and
+    // providing the .modal-content (or any container) to render into.
+    //
+    // @returns {object|null} Handle with { refresh, close, isOpen }
+    function openMemberEditor(container, teamId, charId, period, options) {
+        if (!container || !teamId || !charId) {
+            return null;
+        }
+
+        options = options || {};
+        var onClose = (typeof options.onClose === 'function')
+            ? options.onClose
+            : null;
+        var onMutation = (typeof options.onMutation === 'function')
+            ? options.onMutation
+            : null;
+
+        var disposed = false;
+
+        function invokeOnClose() {
+            if (typeof onClose === 'function') {
+                try { onClose(); } catch (e) {
+                    console.warn('[TeamEvents] onClose threw:', e);
+                }
+            }
+        }
+
+        function invokeOnMutation() {
+            if (typeof onMutation === 'function') {
+                try { onMutation(); } catch (e) {
+                    console.warn('[TeamEvents] onMutation threw:', e);
+                }
+            }
+        }
+
+        function render() {
+            if (disposed || !container.parentNode) {
+                return;
+            }
+
+            var vm = TeamAggregator.getMemberModalViewModel(teamId, period);
+            if (!vm) {
+                container.innerHTML = renderMemberEditorBody(null, {
+                    teamName: 'Team',
+                    notFound: true
+                });
+                bindEditorClose(container, invokeOnClose);
+                return;
+            }
+
+            var member = null;
+            for (var i = 0; i < vm.members.length; i++) {
+                if (String(vm.members[i].characterId) === String(charId)) {
+                    member = vm.members[i];
+                    break;
+                }
+            }
+
+            if (!member) {
+                container.innerHTML = renderMemberEditorBody(null, {
+                    teamName: vm.teamName,
+                    notFound: true
+                });
+                bindEditorClose(container, invokeOnClose);
+                return;
+            }
+
+            container.innerHTML = renderMemberEditorBody(member, {
+                teamName: vm.teamName,
+                notFound: false
+            });
+            bindEditorEvents(container, member, teamId, charId, {
+                onMutation: invokeOnMutation,
+                onClose: invokeOnClose
+            });
+        }
+
+        function close() {
+            disposed = true;
+            invokeOnClose();
+        }
+
+        function isOpen() {
+            return !disposed && !!container.parentNode;
+        }
+
+        render();
+
+        return {
+            refresh: render,
+            close: close,
+            isOpen: isOpen
+        };
     }
 
-    function renderMemberManagerBody(vm) {
+    // ============================================================
+    // EXTERNAL RENDERERS (not exported)
+    // ============================================================
+
+    function renderMemberManagerBody(vm, opts) {
+        opts = opts || {};
+        var notFound = opts.notFound === true;
+
         var members = Array.isArray(vm.members) ? vm.members : [];
         var candidates = Array.isArray(vm.candidates) ? vm.candidates : [];
 
         var html = '';
 
-        html += renderMemberManagerHeader(
-            'Manage Members \u2014 ' + (vm.teamName || 'Team')
-        );
+        html += '<div class="modal-header">';
+        html += '<h3>Manage Members \u2014 ' + escapeHtml(vm.teamName || 'Team') + '</h3>';
+        html += '<button type="button" class="close-modal team-events-close-btn">&times;</button>';
+        html += '</div>';
 
         html += '<div class="modal-body">';
 
-        // ---- Current members ----
-        html += '<div class="form-group">';
-        html += '<label>Current Members (' + members.length + ')</label>';
-
-        if (members.length === 0) {
-            html += '<p class="empty-state small">No members yet.</p>';
+        if (notFound) {
+            html += '<p class="empty-state small">Team not found.</p>';
         } else {
-            html += '<div class="academy-team-members-list">';
-            for (var i = 0; i < members.length; i++) {
-                html += renderMemberRow(members[i], vm.teamId);
+            // ---- Current members ----
+            html += '<div class="form-group">';
+            html += '<label>Current Members (' + members.length + ')</label>';
+
+            if (members.length === 0) {
+                html += '<p class="empty-state small">No members yet.</p>';
+            } else {
+                html += '<div class="academy-team-members-list">';
+                for (var i = 0; i < members.length; i++) {
+                    html += renderMemberRow(members[i]);
+                }
+                html += '</div>';
             }
+
+            html += '</div>';
+
+            // ---- Add member ----
+            html += '<div class="form-group">';
+            html += '<label for="te-member-select">Add Member</label>';
+
+            if (candidates.length === 0) {
+                html += '<p class="field-hint">' +
+                            'No more characters available to add.' +
+                        '</p>';
+            } else {
+                html += '<select id="te-member-select" class="te-member-select">';
+                html += '<option value="">Select a character...</option>';
+                for (var j = 0; j < candidates.length; j++) {
+                    var c = candidates[j];
+                    html += '<option value="' + escapeAttr(c.id) + '">' +
+                                escapeHtml(c.name + (isNonEmptyString(c.status) ? ' (' + c.status + ')' : '')) +
+                            '</option>';
+                }
+                html += '</select>';
+
+                html += '<div class="te-member-add-row">';
+                html += '<input type="text" class="te-member-role" ' +
+                            'placeholder="Role (optional)">';
+                html += '<input type="text" class="te-member-join" ' +
+                            'placeholder="Join period (optional)">';
+                html += '<input type="text" class="te-member-leave" ' +
+                            'placeholder="Leave period (optional)">';
+                html += '<button type="button" ' +
+                            'class="small primary te-member-add-btn">Add</button>';
+                html += '</div>';
+            }
+
             html += '</div>';
         }
-
-        html += '</div>';
-
-        // ---- Add member ----
-        html += '<div class="form-group">';
-        html += '<label for="te-member-select">Add Member</label>';
-
-        if (candidates.length === 0) {
-            html += '<p class="field-hint">' +
-                        'No more characters available to add.' +
-                    '</p>';
-        } else {
-            html += '<select id="te-member-select" class="te-member-select">';
-            html += '<option value="">Select a character...</option>';
-            for (var j = 0; j < candidates.length; j++) {
-                var c = candidates[j];
-                html += '<option value="' + escapeAttr(c.id) + '">' +
-                            escapeHtml(c.name + (isNonEmptyString(c.status) ? ' (' + c.status + ')' : '')) +
-                        '</option>';
-            }
-            html += '</select>';
-
-            html += '<div class="te-member-add-row">';
-            html += '<input type="text" class="te-member-role" ' +
-                        'placeholder="Role (optional)">';
-            html += '<input type="text" class="te-member-join" ' +
-                        'placeholder="Join period (optional)">';
-            html += '<input type="text" class="te-member-leave" ' +
-                        'placeholder="Leave period (optional)">';
-            html += '<button type="button" ' +
-                        'class="small primary te-member-add-btn">Add</button>';
-            html += '</div>';
-        }
-
-        html += '</div>';
 
         // ---- Actions ----
         html += '<div class="form-actions">';
@@ -1378,7 +1514,7 @@
         return html;
     }
 
-    function renderMemberRow(member, teamId) {
+    function renderMemberRow(member) {
         if (!member || !member.characterId) { return ''; }
 
         var name = member.displayName || 'Unknown';
@@ -1419,33 +1555,83 @@
         return html;
     }
 
-    function bindCloseOnly(container) {
+    function renderMemberEditorBody(member, opts) {
+        opts = opts || {};
+        var notFound = opts.notFound === true;
+        var teamName = opts.teamName || 'Team';
+
+        var html = '';
+        html += '<div class="modal-header">';
+        html += '<h3>Edit Member \u2014 ' + escapeHtml(teamName) + '</h3>';
+        html += '<button type="button" class="close-modal te-member-editor-close">&times;</button>';
+        html += '</div>';
+
+        html += '<div class="modal-body">';
+
+        if (notFound || !member) {
+            html += '<p class="empty-state small">Member not found.</p>';
+        } else {
+            html += '<div class="form-group">';
+            html += '<label>Character</label>';
+            html += '<p style="margin:4px 0 12px 0;font-weight:600;">' +
+                        escapeHtml(member.displayName || 'Unknown') +
+                    '</p>';
+            html += '</div>';
+
+            html += '<div class="form-group">';
+            html += '<label for="te-edit-member-role">Role</label>';
+            html += '<input type="text" id="te-edit-member-role" ' +
+                        'value="' + escapeAttr(member.role || '') + '">';
+            html += '</div>';
+
+            html += '<div class="form-group">';
+            html += '<label for="te-edit-member-join">Join Period</label>';
+            html += '<input type="text" id="te-edit-member-join" ' +
+                        'value="' + escapeAttr(member.joinPeriod || '') + '">';
+            html += '</div>';
+
+            html += '<div class="form-group">';
+            html += '<label for="te-edit-member-leave">Leave Period</label>';
+            html += '<input type="text" id="te-edit-member-leave" ' +
+                        'value="' + escapeAttr(member.leavePeriod || '') + '">';
+            html += '</div>';
+        }
+
+        html += '<div class="form-actions">';
+        html += '<button type="button" ' +
+                    'class="secondary te-member-editor-cancel">Cancel</button>';
+        if (!notFound && member) {
+            html += '<button type="button" ' +
+                        'class="primary te-member-editor-save">Save Changes</button>';
+        }
+        html += '</div>';
+
+        html += '</div>';
+        return html;
+    }
+
+    // ============================================================
+    // EXTERNAL BINDINGS (not exported)
+    // ============================================================
+    //
+    // These bind close/remove/add handlers to the container. They
+    // receive `onClose` as a parameter rather than reading module-
+    // level state. See the file header for why.
+
+    function bindCloseButtons(container, onClose) {
         var closeBtns = container.querySelectorAll(
             '.team-events-close-btn, .te-member-close-btn'
         );
         for (var i = 0; i < closeBtns.length; i++) {
             closeBtns[i].addEventListener('click', function() {
-                if (_activeMemberManagerClose) {
-                    _activeMemberManagerClose();
-                }
+                onClose();
             });
         }
     }
 
-    var _activeMemberManagerClose = null;
-
     function bindManagerEvents(container, vm, ctx) {
         // Close buttons
-        var closeBtns = container.querySelectorAll(
-            '.team-events-close-btn, .te-member-close-btn'
-        );
-        for (var i = 0; i < closeBtns.length; i++) {
-            closeBtns[i].addEventListener('click', function() {
-                if (_activeMemberManagerClose) {
-                    _activeMemberManagerClose();
-                }
-            });
-        }
+        bindCloseButtons(container, ctx.onClose);
 
         // Remove buttons
         var removeBtns = container.querySelectorAll('.te-member-remove-btn');
@@ -1460,11 +1646,7 @@
                     TeamCore.removeMember(vm.teamId, charId).then(function(result) {
                         if (result && result.success) {
                             ctx.refresh();
-                            if (typeof ctx.onMutation === 'function') {
-                                try { ctx.onMutation(); } catch (e) {
-                                    console.warn('[TeamEvents] onMutation threw:', e);
-                                }
-                            }
+                            ctx.onMutation();
                         }
                     }).catch(function(err) {
                         console.warn('[TeamEvents] removeMember failed:', err);
@@ -1497,11 +1679,7 @@
                 }).then(function(result) {
                     if (result && result.success) {
                         ctx.refresh();
-                        if (typeof ctx.onMutation === 'function') {
-                            try { ctx.onMutation(); } catch (e) {
-                                console.warn('[TeamEvents] onMutation threw:', e);
-                            }
-                        }
+                        ctx.onMutation();
                     }
                 }).catch(function(err) {
                     console.warn('[TeamEvents] addMember failed:', err);
@@ -1511,173 +1689,20 @@
         }
     }
 
-    // ============================================================
-    // EXTERNAL ENTRY POINT - MEMBER EDITOR
-    // ============================================================
-    //
-    // Same container-based pattern as openMemberManager. Renders a
-    // form for a single member into the caller's container and wires
-    // the submit to TeamCore.updateMember.
-    //
-    // The caller is responsible for opening a modal shell and
-    // providing the .modal-content (or any container) to render into.
-
-    function openMemberEditor(container, teamId, charId, period, options) {
-        if (!container || !teamId || !charId) {
-            return null;
-        }
-
-        options = options || {};
-        var onClose = (typeof options.onClose === 'function')
-            ? options.onClose
-            : null;
-        var onMutation = (typeof options.onMutation === 'function')
-            ? options.onMutation
-            : null;
-
-        var disposed = false;
-
-        function render() {
-            if (disposed || !container.parentNode) {
-                return;
-            }
-
-            var vm = TeamAggregator.getMemberModalViewModel(teamId, period);
-            if (!vm) {
-                container.innerHTML =
-                    renderMemberManagerHeader('Edit Member') +
-                    '<div class="modal-body">' +
-                        '<p class="empty-state small">Team not found.</p>' +
-                    '</div>';
-                return;
-            }
-
-            var member = null;
-            for (var i = 0; i < vm.members.length; i++) {
-                if (String(vm.members[i].characterId) === String(charId)) {
-                    member = vm.members[i];
-                    break;
-                }
-            }
-
-            if (!member) {
-                container.innerHTML =
-                    renderMemberEditorHeader(vm.teamName) +
-                    '<div class="modal-body">' +
-                        '<p class="empty-state small">Member not found.</p>' +
-                    '</div>';
-                bindEditorClose(container);
-                return;
-            }
-
-            container.innerHTML = renderMemberEditorBody(member, teamId, charId);
-            bindEditorEvents(container, member, {
-                onMutation: onMutation,
-                onClose: onClose
-            });
-        }
-
-        function close() {
-            disposed = true;
-            if (typeof onClose === 'function') {
-                try { onClose(); } catch (e) {
-                    console.warn('[TeamEvents] onClose threw:', e);
-                }
-            }
-        }
-
-        function isOpen() {
-            return !disposed && !!container.parentNode;
-        }
-
-        render();
-
-        return {
-            refresh: render,
-            close: close,
-            isOpen: isOpen
-        };
-    }
-
-    function renderMemberEditorHeader(teamName) {
-        return (
-            '<div class="modal-header">' +
-                '<h3>Edit Member \u2014 ' + escapeHtml(teamName || 'Team') + '</h3>' +
-                '<button type="button" class="close-modal te-member-editor-close">&times;</button>' +
-            '</div>'
-        );
-    }
-
-    function renderMemberEditorBody(member, teamId, charId) {
-        var html = '';
-        html += renderMemberEditorHeader(charId ? '' : '');
-        html += '<div class="modal-body">';
-
-        html += '<div class="form-group">';
-        html += '<label>Character</label>';
-        html += '<p style="margin:4px 0 12px 0;font-weight:600;">' +
-                    escapeHtml(member.displayName || 'Unknown') +
-                '</p>';
-        html += '</div>';
-
-        html += '<div class="form-group">';
-        html += '<label for="te-edit-member-role">Role</label>';
-        html += '<input type="text" id="te-edit-member-role" ' +
-                    'value="' + escapeAttr(member.role || '') + '">';
-        html += '</div>';
-
-        html += '<div class="form-group">';
-        html += '<label for="te-edit-member-join">Join Period</label>';
-        html += '<input type="text" id="te-edit-member-join" ' +
-                    'value="' + escapeAttr(member.joinPeriod || '') + '">';
-        html += '</div>';
-
-        html += '<div class="form-group">';
-        html += '<label for="te-edit-member-leave">Leave Period</label>';
-        html += '<input type="text" id="te-edit-member-leave" ' +
-                    'value="' + escapeAttr(member.leavePeriod || '') + '">';
-        html += '</div>';
-
-        html += '<div class="form-actions">';
-        html += '<button type="button" ' +
-                    'class="secondary te-member-editor-cancel">Cancel</button>';
-        html += '<button type="button" ' +
-                    'class="primary te-member-editor-save">Save Changes</button>';
-        html += '</div>';
-
-        html += '</div>';
-        return html;
-    }
-
-    function bindEditorClose(container) {
+    function bindEditorClose(container, onClose) {
         var closeBtns = container.querySelectorAll(
             '.te-member-editor-close, .te-member-editor-cancel'
         );
         for (var i = 0; i < closeBtns.length; i++) {
             closeBtns[i].addEventListener('click', function() {
-                if (_activeMemberEditorClose) {
-                    _activeMemberEditorClose();
-                }
+                onClose();
             });
         }
     }
 
-    var _activeMemberEditorClose = null;
-
-    function bindEditorEvents(container, member, ctx) {
+    function bindEditorEvents(container, member, teamId, charId, ctx) {
         // Close / cancel
-        var closeBtns = container.querySelectorAll(
-            '.te-member-editor-close, .te-member-editor-cancel'
-        );
-        for (var i = 0; i < closeBtns.length; i++) {
-            closeBtns[i].addEventListener('click', function() {
-                if (typeof ctx.onClose === 'function') {
-                    try { ctx.onClose(); } catch (e) {
-                        console.warn('[TeamEvents] onClose threw:', e);
-                    }
-                }
-            });
-        }
+        bindEditorClose(container, ctx.onClose);
 
         // Save
         var saveBtn = container.querySelector('.te-member-editor-save');
@@ -1687,22 +1712,14 @@
                 var joinInput = container.querySelector('#te-edit-member-join');
                 var leaveInput = container.querySelector('#te-edit-member-leave');
 
-                TeamCore.updateMember(member.teamId || null, member.characterId, {
+                TeamCore.updateMember(teamId, charId, {
                     role: roleInput ? roleInput.value.trim() : '',
                     joinPeriod: joinInput ? joinInput.value.trim() : '',
                     leavePeriod: leaveInput ? leaveInput.value.trim() : ''
                 }).then(function(result) {
                     if (result && result.success) {
-                        if (typeof ctx.onMutation === 'function') {
-                            try { ctx.onMutation(); } catch (e) {
-                                console.warn('[TeamEvents] onMutation threw:', e);
-                            }
-                        }
-                        if (typeof ctx.onClose === 'function') {
-                            try { ctx.onClose(); } catch (e) {
-                                console.warn('[TeamEvents] onClose threw:', e);
-                            }
-                        }
+                        ctx.onMutation();
+                        ctx.onClose();
                     }
                 }).catch(function(err) {
                     console.warn('[TeamEvents] updateMember failed:', err);
