@@ -7,6 +7,7 @@
  * RESPONSIBILITIES:
  *   - Route user actions from the Exams view to TournamentCore and
  *     TournamentMatches
+ *   - Route elimination restore actions to TournamentEliminationWorkflow
  *   - Open and close the modal shells the Exams view uses
  *   - Read the collected form payload from the view's collector
  *     function and hand it to the domain
@@ -25,10 +26,11 @@
  *   unprefixed verb.
  *
  *   Every action element also carries the identity it needs:
- *     data-exam-id   — on every exam-scoped action
- *     data-round-id  — on every round- and match-scoped action
- *     data-match-id  — on every match-scoped action
- *     data-pool-id   — on pool toggle actions
+ *     data-exam-id      — on every exam-scoped action
+ *     data-round-id     — on every round- and match-scoped action
+ *     data-match-id     — on every match-scoped action
+ *     data-pool-id      — on pool toggle actions
+ *     data-character-id — on elimination restore actions
  *
  * MODAL CONTENT CONTRACT:
  *   Modal.createModal(className) returns a bare .modal shell. This
@@ -62,6 +64,33 @@
  *   notification, so a silent UI is a symptom of the domain
  *   rejecting the add, not of the button being unwired.
  *
+ * RESTORE ELIMINATED PARTICIPANT:
+ *   The Eliminated section in the exam panel renders a Restore
+ *   button per row. This module routes the click to
+ *   TournamentEliminationWorkflow.unmarkCharacterEliminated, which
+ *   removes the elimination record on BOTH the tournament and
+ *   character sides inside a single pipeline transaction.
+ *
+ *   This is the MANUAL override path. It is distinct from the
+ *   cascade reversal that runs inside removeMatch / removeRound /
+ *   deleteTournament:
+ *
+ *     - The cascade reversal removes eliminations by provenance
+ *       (fromMatchId or fromRoundId). It runs when the match or
+ *       round that produced the elimination is removed.
+ *     - The manual restore removes eliminations by
+ *       (tournamentId, characterId). It runs when the user clicks
+ *       Restore. It doesn't care which match produced the record.
+ *
+ *   Both paths are provenance-tolerant: a legacy elimination
+ *   without fromMatchId can be restored manually, and if the user
+ *   manually restores first, the cascade reversal on a later match
+ *   removal is a no-op. They compose safely.
+ *
+ *   The manual restore does NOT re-enable the character for past
+ *   rounds. It removes the record. Subsequent matches can include
+ *   the character again; past matches are unchanged.
+ *
  * ERROR HANDLING:
  *   - Domain mutations resolve to { success, data?, message? }. On
  *     success this module closes the modal and calls onChange. On
@@ -77,6 +106,7 @@
  *   - window.TournamentCore
  *   - window.TournamentMatches
  *   - window.TournamentQueries
+ *   - window.TournamentEliminationWorkflow
  *   - window.AcademyClasses
  *
  * DEPENDENCIES (OPTIONAL):
@@ -102,6 +132,7 @@
     var TournamentCore = window.TournamentCore;
     var TournamentMatches = window.TournamentMatches;
     var TournamentQueries = window.TournamentQueries;
+    var TournamentEliminationWorkflow = window.TournamentEliminationWorkflow;
     var AcademyClasses = window.AcademyClasses;
 
     var _missing = [];
@@ -165,6 +196,10 @@
     }
     if (!TournamentQueries || typeof TournamentQueries.isParticipantInTournament !== 'function') {
         _missing.push('TournamentQueries.isParticipantInTournament');
+    }
+    if (!TournamentEliminationWorkflow ||
+        typeof TournamentEliminationWorkflow.unmarkCharacterEliminated !== 'function') {
+        _missing.push('TournamentEliminationWorkflow.unmarkCharacterEliminated');
     }
     if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function') {
         _missing.push('AcademyClasses.getClass');
@@ -525,6 +560,64 @@
             .catch(function(err) {
                 failMutation('addParticipant', err, 'Could not add participant.');
             });
+    }
+
+    // ============================================================
+    // RESTORE ELIMINATED PARTICIPANT
+    // ============================================================
+    //
+    // Manual override path. Removes the elimination record for
+    // (examId, characterId) on both the tournament and character
+    // sides, inside a single pipeline transaction owned by
+    // TournamentEliminationWorkflow.
+    //
+    // This is DISTINCT from the cascade reversal that runs inside
+    // removeMatch / removeRound / deleteTournament:
+    //
+    //   - Cascade reversal: keyed by provenance (fromMatchId or
+    //     fromRoundId). Runs when the match or round is removed.
+    //   - Manual restore: keyed by (tournamentId, characterId).
+    //     Runs when the user clicks Restore.
+    //
+    // Both compose safely. If the user restores first, the later
+    // cascade reversal is a no-op for that participant.
+    //
+    // The character is NOT re-enabled for past rounds. Only the
+    // elimination record is removed. Subsequent matches can include
+    // the character; past matches are unchanged.
+    //
+    // VALIDATION:
+    //   - Both IDs must be non-empty strings.
+    //   - The workflow module validates that the character is a
+    //     participant in the tournament and that the elimination
+    //     record exists on both sides before mutating.
+
+    function restoreEliminatedParticipant(examId, characterId) {
+        if (!isNonEmptyString(examId)) {
+            notify('Exam ID is required.', 'error');
+            return;
+        }
+        if (!isNonEmptyString(characterId)) {
+            notify('Character ID is required.', 'error');
+            return;
+        }
+
+        TournamentEliminationWorkflow.unmarkCharacterEliminated(
+            examId,
+            characterId
+        ).then(function(result) {
+            if (result && result.success) {
+                notifyChange();
+            } else {
+                rejectMutation('unmarkCharacterEliminated', result);
+            }
+        }).catch(function(err) {
+            failMutation(
+                'unmarkCharacterEliminated',
+                err,
+                'Could not restore character from elimination.'
+            );
+        });
     }
 
     // ============================================================
@@ -977,6 +1070,8 @@
         editMatch: editMatch,
         completeMatch: completeMatch,
         removeMatch: removeMatch,
+
+        restoreEliminatedParticipant: restoreEliminatedParticipant,
 
         completeExam: completeExam
     };
