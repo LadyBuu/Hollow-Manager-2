@@ -47,8 +47,13 @@
  *     description:     string,
  *     instructorId:    string | null,
  *     instructorName:  string,   // 'Not assigned' when no instructor
+ *     studentCount:    number,   // derived roster size (instructor excluded)
  *     createdAt:       string
  *   }
+ *
+ *   studentCount is always present on the VM. When the aggregator
+ *   is older and the field is absent, the renderer falls back to
+ *   omitting the count rather than inventing a zero.
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
@@ -96,6 +101,10 @@
 
     function isPositiveNumber(value) {
         return typeof value === 'number' && isFinite(value) && value > 0;
+    }
+
+    function isNonNegativeNumber(value) {
+        return typeof value === 'number' && isFinite(value) && value >= 0;
     }
 
     function getStatusBadgeClass(status) {
@@ -176,6 +185,19 @@
                     '</span>';
         }
 
+        // Student count. Rendered only when the VM carries a valid
+        // count. An older aggregator that doesn't populate the field
+        // yields no count line, which is truthful.
+        if (isNonNegativeNumber(classVM.studentCount)) {
+            var count = classVM.studentCount;
+            var countLabel = count === 1 ? 'Student' : 'Students';
+            html += '<span class="academy-class-detail-meta-item academy-class-detail-student-count">' +
+                        '<span class="meta-label">' + countLabel + ':</span> ' +
+                        escapeHtml(String(count)) +
+                    '</span>';
+        }
+
+        // Instructor
         if (classVM.instructorId && isNonEmptyString(classVM.instructorName)) {
             html += '<span class="academy-class-detail-meta-item" ' +
                         'data-instructor-id="' +
