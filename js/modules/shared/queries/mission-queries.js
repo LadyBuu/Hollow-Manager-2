@@ -1,124 +1,332 @@
 /**
  * shared/queries/mission-queries.js - Mission Queries
- * Read-only mission domain queries
+ *
  * Path: js/shared/queries/mission-queries.js
- * 
- * This module provides READ-ONLY access to mission data.
- * All mutations go through missions-core.js
- * 
- * OWNERSHIP: Mission domain
- * DEPENDENCIES: None (reads from window.data directly)
- * 
- * IMPORTANT: All getters return DEFENSIVE COPIES (clones)
- * to prevent external mutation of mission data.
+ *
+ * Read-only access to mission data.
+ *
+ * WHAT THIS MODULE OWNS:
+ *   - Reading missions from window.data.missions.
+ *   - Filtering, searching, sorting missions.
+ *   - Aggregating statistics over missions.
+ *   - Providing a preview of the next mission label for a given
+ *     (year, difficulty).
+ *
+ * WHAT THIS MODULE DOES NOT OWN:
+ *   - Mutations. MissionCore owns those.
+ *   - Domain rules. MissionRules owns those.
+ *   - Structural validation. MissionSchema owns that.
+ *   - ID grammar. MissionId owns that. This module composes with
+ *     MissionId for the label preview only.
+ *   - Cross-domain reads. This module does NOT query teams,
+ *     characters, or any other domain. Callers that need mission
+ *     data enriched with team or character information use
+ *     MissionAggregator.
+ *
+ * ARCHIVED MISSIONS:
+ *   A mission with a non-null `archivedAt` is archived. Archived
+ *   missions are EXCLUDED by default from every collection read.
+ *   Pass { includeArchived: true } to include them.
+ *
+ *   getMission(id) does NOT filter — it returns the mission if it
+ *   exists, archived or not. Callers who need to check archive
+ *   state read `mission.archivedAt` or use `isArchived(mission)`.
+ *
+ * RETURNS:
+ *   Every mission-returning function returns a DEEP CLONE. The
+ *   caller cannot mutate the live store through the returned
+ *   object. If cloning fails, the function throws; it never returns
+ *   the live reference as a fallback.
+ *
+ * SORTING:
+ *   Collection reads sort by `createdAt` descending (newest first)
+ *   before returning. This is the canonical list ordering for the
+ *   mission domain. Callers that need a different order sort the
+ *   returned array themselves.
+ *
+ * DERIVED LABEL:
+ *   The human-facing `missionId` label is not stored. When a caller
+ *   needs it, use `MissionId.derive(mission)`. This module does not
+ *   attach it to returned records; that composition belongs to
+ *   MissionAggregator.
+ *
+ * DEPENDENCIES (MANDATORY):
+ *   - window.ObjectUtils
+ *   - window.IdUtils
+ *   - window.MissionConstants
+ *   - window.MissionId
  */
 
 (function() {
     'use strict';
 
-    if (window.__missionQueriesLoaded) return;
+    if (window.__missionQueriesLoaded) {
+        return;
+    }
+
+    // ============================================================
+    // MANDATORY DEPENDENCIES
+    // ============================================================
+
+    var ObjectUtils = window.ObjectUtils;
+    var IdUtils = window.IdUtils;
+    var MissionConstants = window.MissionConstants;
+    var MissionId = window.MissionId;
+
+    var _missing = [];
+
+    if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
+        _missing.push('ObjectUtils.deepClone');
+    }
+    if (!IdUtils || typeof IdUtils.normaliseId !== 'function') {
+        _missing.push('IdUtils.normaliseId');
+    }
+    if (!MissionConstants || !Array.isArray(MissionConstants.VALID_STATUSES)) {
+        _missing.push('MissionConstants.VALID_STATUSES');
+    }
+    if (!MissionId || typeof MissionId.generate !== 'function') {
+        _missing.push('MissionId.generate');
+    }
+
+    if (_missing.length > 0) {
+        throw new Error(
+            '[MissionQueries] Missing mandatory dependencies: ' +
+            _missing.join(', ')
+        );
+    }
+
     window.__missionQueriesLoaded = true;
 
     // ============================================================
     // HELPERS
     // ============================================================
 
+    function isPlainObject(value) {
+        return value !== null &&
+               typeof value === 'object' &&
+               !Array.isArray(value);
+    }
+
     function isNonEmptyString(value) {
         return typeof value === 'string' && value.trim() !== '';
     }
 
     function normaliseId(value) {
-        if (value === null || value === undefined) return '';
-        return String(value).trim();
+        return IdUtils.normaliseId(value);
     }
 
+    /**
+     * Deep clone via ObjectUtils. Throws if cloning fails or if the
+     * clone aliases the input. The query layer must never hand back a
+     * live reference.
+     */
     function deepClone(value) {
-        if (value === null || typeof value !== 'object') return value;
-        if (typeof structuredClone === 'function') {
-            try { return structuredClone(value); } catch (_) {}
+        var result = ObjectUtils.deepClone(value);
+        if (result === value &&
+            value !== null &&
+            typeof value === 'object') {
+            throw new Error(
+                '[MissionQueries] deepClone returned the original reference.'
+            );
         }
-        try { return JSON.parse(JSON.stringify(value)); } catch (_) { return value; }
-    }
-
-    function getDataStore() {
-        return window.data || {};
-    }
-
-    function getMissionArray() {
-        var data = getDataStore();
-        return Array.isArray(data.missions) ? data.missions : [];
-    }
-
-    // ============================================================
-    // MISSION LOOKUP
-    // ============================================================
-
-    function getMission(missionId) {
-        if (!isNonEmptyString(missionId)) return null;
-        var target = normaliseId(missionId);
-        var missions = getMissionArray();
-
-        for (var i = 0; i < missions.length; i++) {
-            var m = missions[i];
-            if (!m) continue;
-            if (normaliseId(m.id) === target || normaliseId(m.missionId) === target) {
-                return deepClone(m);
-            }
-        }
-        return null;
-    }
-
-    function getMissions(filter) {
-        var missions = getMissionArray();
-        var result = [];
-
-        for (var i = 0; i < missions.length; i++) {
-            var m = missions[i];
-            if (!m) continue;
-
-            if (filter === 'active' && m.status !== 'active') continue;
-            if (filter === 'completed' && m.status !== 'completed') continue;
-            if (filter === 'cancelled' && m.status !== 'cancelled') continue;
-
-            result.push(deepClone(m));
-        }
-
-        // Sort by creation date (newest first)
-        result.sort(function(a, b) {
-            var dateA = a.createdAt || '';
-            var dateB = b.createdAt || '';
-            return dateB.localeCompare(dateA);
-        });
-
         return result;
     }
 
-    function getActiveMissions() {
-        return getMissions('active');
+    /**
+     * Access the mission store.
+     *
+     * Returns null when window.data is unavailable or missions is not
+     * an array. Reads never create the store.
+     */
+    function getMissionStore() {
+        if (!window.data || typeof window.data !== 'object') {
+            return null;
+        }
+        if (!Array.isArray(window.data.missions)) {
+            return null;
+        }
+        return window.data.missions;
     }
 
-    function getCompletedMissions() {
-        return getMissions('completed');
+    function isArchived(mission) {
+        if (!isPlainObject(mission)) {
+            return false;
+        }
+        return mission.archivedAt !== undefined &&
+               mission.archivedAt !== null &&
+               mission.archivedAt !== '';
     }
 
-    function getCancelledMissions() {
-        return getMissions('cancelled');
+    /**
+     * Compare two ISO timestamp strings, newest first. Missing or
+     * malformed timestamps sort to the end.
+     */
+    function compareByCreatedAtDesc(a, b) {
+        var ta = isNonEmptyString(a && a.createdAt) ? a.createdAt : '';
+        var tb = isNonEmptyString(b && b.createdAt) ? b.createdAt : '';
+        if (ta === tb) { return 0; }
+        if (ta === '') { return 1; }
+        if (tb === '') { return -1; }
+        return tb.localeCompare(ta);
+    }
+
+    function readIncludeArchived(options) {
+        return isPlainObject(options) && options.includeArchived === true;
     }
 
     // ============================================================
-    // MISSION BY TEAM
+    // SINGLE MISSION READ
     // ============================================================
 
-    function getMissionsByTeam(teamId, filter) {
-        if (!isNonEmptyString(teamId)) return [];
+    /**
+     * Get a mission by its UUID.
+     *
+     * This is the ONLY lookup that accepts a UUID. The human-facing
+     * label (missionId) is not a lookup key; callers that have a
+     * label should search (see searchMissions) or derive the UUID
+     * elsewhere.
+     *
+     * Archived missions are returned. Callers that need to hide
+     * archived missions check `mission.archivedAt` or use
+     * `isArchived(mission)`.
+     *
+     * @param {string} missionUuid
+     * @returns {object|null} Deep clone, or null when not found
+     */
+    function getMission(missionUuid) {
+        if (!isNonEmptyString(missionUuid)) {
+            return null;
+        }
 
-        var missions = getMissions(filter);
+        var target = normaliseId(missionUuid);
+        if (target === null) {
+            return null;
+        }
+
+        var store = getMissionStore();
+        if (!store) {
+            return null;
+        }
+
+        for (var i = 0; i < store.length; i++) {
+            var m = store[i];
+            if (!isPlainObject(m)) { continue; }
+            if (normaliseId(m.id) === target) {
+                return deepClone(m);
+            }
+        }
+
+        return null;
+    }
+
+    // ============================================================
+    // COLLECTION READS
+    // ============================================================
+
+    /**
+     * Get every mission, optionally filtered by status.
+     *
+     * @param {string|null} filter - 'active' | 'completed' |
+     *   'cancelled' | null/'all' for no status filter.
+     * @param {object} [options] - { includeArchived: boolean }
+     * @returns {array} Deep clones, sorted by createdAt desc
+     */
+    function getMissions(filter, options) {
+        var includeArchived = readIncludeArchived(options);
+        var store = getMissionStore();
+        if (!store) {
+            return [];
+        }
+
+        var wantStatus = null;
+        if (isNonEmptyString(filter) && filter !== 'all') {
+            wantStatus = filter;
+        }
+
+        var result = [];
+
+        for (var i = 0; i < store.length; i++) {
+            var m = store[i];
+            if (!isPlainObject(m)) { continue; }
+            if (!includeArchived && isArchived(m)) { continue; }
+            if (wantStatus !== null && m.status !== wantStatus) {
+                continue;
+            }
+            result.push(deepClone(m));
+        }
+
+        result.sort(compareByCreatedAtDesc);
+        return result;
+    }
+
+    function getActiveMissions(options) {
+        return getMissions('active', options);
+    }
+
+    function getCompletedMissions(options) {
+        return getMissions('completed', options);
+    }
+
+    function getCancelledMissions(options) {
+        return getMissions('cancelled', options);
+    }
+
+    /**
+     * Get every archived mission, regardless of status.
+     *
+     * @returns {array} Deep clones, sorted by createdAt desc
+     */
+    function getArchivedMissions() {
+        var store = getMissionStore();
+        if (!store) {
+            return [];
+        }
+
+        var result = [];
+
+        for (var i = 0; i < store.length; i++) {
+            var m = store[i];
+            if (!isPlainObject(m)) { continue; }
+            if (!isArchived(m)) { continue; }
+            result.push(deepClone(m));
+        }
+
+        result.sort(compareByCreatedAtDesc);
+        return result;
+    }
+
+    // ============================================================
+    // RELATIONSHIP READS
+    // ============================================================
+
+    /**
+     * Get missions assigned to a specific team.
+     *
+     * @param {string} teamId
+     * @param {object} [options] - { filter, includeArchived }
+     * @returns {array} Deep clones
+     */
+    function getMissionsByTeam(teamId, options) {
+        if (!isNonEmptyString(teamId)) {
+            return [];
+        }
+
         var target = normaliseId(teamId);
+        if (target === null) {
+            return [];
+        }
+
+        var filter = null;
+        if (isPlainObject(options) && isNonEmptyString(options.filter)) {
+            filter = options.filter;
+        }
+
+        var missions = getMissions(filter, options);
         var result = [];
 
         for (var i = 0; i < missions.length; i++) {
             var m = missions[i];
-            if (m && normaliseId(m.assignedTeamId) === target) {
+            if (normaliseId(m.assignedTeamId) === target) {
                 result.push(m);
             }
         }
@@ -126,19 +334,37 @@
         return result;
     }
 
-    function getMissionsForCharacter(characterId) {
-        if (!isNonEmptyString(characterId)) return [];
+    /**
+     * Get missions that list a specific character as support
+     * personnel.
+     *
+     * @param {string} characterId
+     * @param {object} [options] - { filter, includeArchived }
+     * @returns {array} Deep clones
+     */
+    function getMissionsBySupportPersonnel(characterId, options) {
+        if (!isNonEmptyString(characterId)) {
+            return [];
+        }
 
-        // Get all missions and check if character is support personnel
-        var missions = getMissions('all');
         var target = normaliseId(characterId);
+        if (target === null) {
+            return [];
+        }
+
+        var filter = null;
+        if (isPlainObject(options) && isNonEmptyString(options.filter)) {
+            filter = options.filter;
+        }
+
+        var missions = getMissions(filter, options);
         var result = [];
 
         for (var i = 0; i < missions.length; i++) {
             var m = missions[i];
-            if (!m) continue;
-
-            var support = Array.isArray(m.supportPersonnel) ? m.supportPersonnel : [];
+            var support = Array.isArray(m.supportPersonnel)
+                ? m.supportPersonnel
+                : [];
             for (var j = 0; j < support.length; j++) {
                 if (normaliseId(support[j]) === target) {
                     result.push(m);
@@ -151,19 +377,27 @@
     }
 
     // ============================================================
-    // MISSION BY TYPE
+    // TYPE AND TAG READS
     // ============================================================
 
-    function getMissionsByType(typeId, filter) {
-        if (!isNonEmptyString(typeId)) return [];
+    /**
+     * Get missions whose primaryType or secondaryType matches.
+     */
+    function getMissionsByType(typeId, options) {
+        if (!isNonEmptyString(typeId)) {
+            return [];
+        }
 
-        var missions = getMissions(filter);
+        var filter = null;
+        if (isPlainObject(options) && isNonEmptyString(options.filter)) {
+            filter = options.filter;
+        }
+
+        var missions = getMissions(filter, options);
         var result = [];
 
         for (var i = 0; i < missions.length; i++) {
             var m = missions[i];
-            if (!m) continue;
-
             if (m.primaryType === typeId || m.secondaryType === typeId) {
                 result.push(m);
             }
@@ -172,61 +406,91 @@
         return result;
     }
 
-    function getMissionsByTag(tag, filter) {
-        if (!isNonEmptyString(tag)) return [];
+    /**
+     * Get missions that carry a specific tag.
+     * Tag comparison is case-insensitive.
+     */
+    function getMissionsByTag(tag, options) {
+        if (!isNonEmptyString(tag)) {
+            return [];
+        }
 
-        var missions = getMissions(filter);
-        var searchTag = tag.toLowerCase().trim();
+        var target = tag.trim().toLowerCase();
+
+        var filter = null;
+        if (isPlainObject(options) && isNonEmptyString(options.filter)) {
+            filter = options.filter;
+        }
+
+        var missions = getMissions(filter, options);
         var result = [];
 
         for (var i = 0; i < missions.length; i++) {
             var m = missions[i];
-            if (!m || !Array.isArray(m.tags)) continue;
-
-            var found = false;
+            if (!Array.isArray(m.tags)) { continue; }
             for (var j = 0; j < m.tags.length; j++) {
-                if (typeof m.tags[j] === 'string' && m.tags[j].toLowerCase().trim() === searchTag) {
-                    found = true;
+                if (typeof m.tags[j] === 'string' &&
+                    m.tags[j].trim().toLowerCase() === target) {
+                    result.push(m);
                     break;
                 }
             }
-
-            if (found) {
-                result.push(m);
-            }
         }
 
         return result;
     }
 
     // ============================================================
-    // MISSION SEARCH
+    // SEARCH
     // ============================================================
 
-    function searchMissions(query, filter) {
-        if (!query || typeof query !== 'string') return getMissions(filter);
+    /**
+     * Free-text search over a mission's title, description, notes,
+     * location, and derived label.
+     *
+     * The derived label is computed for each candidate mission via
+     * MissionId.derive. This is the only place in the query layer
+     * where the label is materialised, and it is per-candidate (not
+     * stored). The cost is negligible for realistic mission counts.
+     *
+     * @param {string} query
+     * @param {object} [options] - { filter, includeArchived }
+     * @returns {array} Deep clones matching the query
+     */
+    function searchMissions(query, options) {
+        var filter = null;
+        if (isPlainObject(options) && isNonEmptyString(options.filter)) {
+            filter = options.filter;
+        }
 
-        var searchTerm = query.toLowerCase().trim();
-        if (!searchTerm) return getMissions(filter);
+        var missions = getMissions(filter, options);
 
-        var missions = getMissions(filter);
+        if (!isNonEmptyString(query)) {
+            return missions;
+        }
+
+        var term = query.trim().toLowerCase();
         var result = [];
 
         for (var i = 0; i < missions.length; i++) {
             var m = missions[i];
-            if (!m) continue;
+            var label = MissionId.derive(m) || '';
 
-            var title = (m.title || '').toLowerCase();
-            var description = (m.description || '').toLowerCase();
-            var notes = (m.notes || '').toLowerCase();
-            var missionId = (m.missionId || '').toLowerCase();
-            var location = (m.location || '').toLowerCase();
+            var title = typeof m.title === 'string'
+                ? m.title.toLowerCase() : '';
+            var description = typeof m.description === 'string'
+                ? m.description.toLowerCase() : '';
+            var notes = typeof m.notes === 'string'
+                ? m.notes.toLowerCase() : '';
+            var location = typeof m.location === 'string'
+                ? m.location.toLowerCase() : '';
+            var labelLower = label.toLowerCase();
 
-            if (title.indexOf(searchTerm) !== -1 ||
-                description.indexOf(searchTerm) !== -1 ||
-                notes.indexOf(searchTerm) !== -1 ||
-                missionId.indexOf(searchTerm) !== -1 ||
-                location.indexOf(searchTerm) !== -1) {
+            if (title.indexOf(term) !== -1 ||
+                description.indexOf(term) !== -1 ||
+                notes.indexOf(term) !== -1 ||
+                location.indexOf(term) !== -1 ||
+                labelLower.indexOf(term) !== -1) {
                 result.push(m);
             }
         }
@@ -235,102 +499,70 @@
     }
 
     // ============================================================
-    // SUPPORT PERSONNEL
+    // STATISTICS
     // ============================================================
 
-    function getSupportPersonnel(mission) {
-        var missionObj = typeof mission === 'string' ? getMission(mission) : mission;
-        if (!missionObj) return [];
-
-        var supportIds = Array.isArray(missionObj.supportPersonnel) ? missionObj.supportPersonnel : [];
-        var result = [];
-
-        for (var i = 0; i < supportIds.length; i++) {
-            var character = window.CharacterQueries ?
-                window.CharacterQueries.getCharacterById(supportIds[i]) : null;
-            if (character) {
-                result.push(character);
-            }
-        }
-
-        return result;
-    }
-
-    function getSupportPersonnelNames(mission) {
-        var characters = getSupportPersonnel(mission);
-        var names = [];
-
-        for (var i = 0; i < characters.length; i++) {
-            var name = window.CharacterQueries ?
-                window.CharacterQueries.getDisplayName(characters[i]) :
-                characters[i].firstName || 'Unknown';
-            names.push(name);
-        }
-
-        return names;
-    }
-
-    // ============================================================
-    // MISSION STATISTICS
-    // ============================================================
-
-    function getActiveCount() {
-        var missions = getMissions('all');
-        var count = 0;
-
-        for (var i = 0; i < missions.length; i++) {
-            if (missions[i].status === 'active') count++;
-        }
-
-        return count;
-    }
-
-    function getCompletedCount() {
-        var missions = getMissions('all');
-        var count = 0;
-
-        for (var i = 0; i < missions.length; i++) {
-            if (missions[i].status === 'completed') count++;
-        }
-
-        return count;
-    }
-
-    function getCancelledCount() {
-        var missions = getMissions('all');
-        var count = 0;
-
-        for (var i = 0; i < missions.length; i++) {
-            if (missions[i].status === 'cancelled') count++;
-        }
-
-        return count;
-    }
-
+    /**
+     * Compute statistics across all non-archived missions.
+     *
+     * @returns {object} {
+     *   total, active, completed, cancelled, archived,
+     *   byPriority, byDifficulty
+     * }
+     */
     function getStatistics() {
-        var allMissions = getMissions('all');
+        var store = getMissionStore();
         var stats = {
-            total: allMissions.length,
+            total: 0,
             active: 0,
             completed: 0,
             cancelled: 0,
-            byPriority: { critical: 0, high: 0, medium: 0, low: 0 },
-            byDifficulty: { easy: 0, medium: 0, hard: 0, expert: 0 }
+            archived: 0,
+            byPriority: {},
+            byDifficulty: {}
         };
 
-        for (var i = 0; i < allMissions.length; i++) {
-            var m = allMissions[i];
-            if (!m) continue;
+        // Initialise the by-* maps with zeroes for every canonical key
+        // so callers can read any known key without a missing-key
+        // check.
+        var priorities = MissionConstants.VALID_PRIORITIES;
+        for (var p = 0; p < priorities.length; p++) {
+            stats.byPriority[priorities[p]] = 0;
+        }
+        var difficulties = MissionConstants.VALID_DIFFICULTIES;
+        for (var d = 0; d < difficulties.length; d++) {
+            stats.byDifficulty[difficulties[d]] = 0;
+        }
 
-            if (m.status === 'active') stats.active++;
-            else if (m.status === 'completed') stats.completed++;
-            else if (m.status === 'cancelled') stats.cancelled++;
+        if (!store) {
+            return stats;
+        }
 
-            if (m.priority && stats.byPriority[m.priority] !== undefined) {
-                stats.byPriority[m.priority]++;
+        for (var i = 0; i < store.length; i++) {
+            var m = store[i];
+            if (!isPlainObject(m)) { continue; }
+
+            if (isArchived(m)) {
+                stats.archived++;
+                continue;
             }
 
-            if (m.difficulty && stats.byDifficulty[m.difficulty] !== undefined) {
+            stats.total++;
+
+            if (m.status === 'active') { stats.active++; }
+            else if (m.status === 'completed') { stats.completed++; }
+            else if (m.status === 'cancelled') { stats.cancelled++; }
+
+            if (typeof m.priority === 'string' &&
+                Object.prototype.hasOwnProperty.call(
+                    stats.byPriority, m.priority
+                )) {
+                stats.byPriority[m.priority]++;
+            }
+            if (typeof m.difficulty === 'string' &&
+                Object.prototype.hasOwnProperty.call(
+                    stats.byDifficulty, m.difficulty
+                )) {
                 stats.byDifficulty[m.difficulty]++;
             }
         }
@@ -339,100 +571,150 @@
     }
 
     // ============================================================
-    // TEAM ELIGIBILITY (Mission-specific)
-    // ============================================================
-
-    function getEligibleTeams() {
-        var teams = window.TeamQueries ?
-            window.TeamQueries.getTeams() : [];
-
-        var result = [];
-
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (!team) continue;
-
-            // Only Professional and Temporary teams can be assigned missions
-            if (team.type !== 'professional' && team.type !== 'temporary') continue;
-            if (team.status !== 'active') continue;
-
-            result.push(team);
-        }
-
-        return result;
-    }
-
-    function isTeamEligibleForMission(team) {
-        if (!team) return false;
-        if (team.type !== 'professional' && team.type !== 'temporary') return false;
-        if (team.status !== 'active') return false;
-        return true;
-    }
-
-    // ============================================================
     // UNIQUE TAGS
     // ============================================================
 
-    function getUniqueTags(filter) {
-        var missions = getMissions(filter);
-        var tagSet = {};
+    /**
+     * Get every distinct tag across missions matching the filter.
+     * Tags are compared case-insensitively and returned in
+     * lowercase, sorted alphabetically.
+     */
+    function getUniqueTags(options) {
+        var filter = null;
+        if (isPlainObject(options) && isNonEmptyString(options.filter)) {
+            filter = options.filter;
+        }
+
+        var missions = getMissions(filter, options);
+        var seen = Object.create(null);
 
         for (var i = 0; i < missions.length; i++) {
             var m = missions[i];
-            if (!m || !Array.isArray(m.tags)) continue;
-
+            if (!Array.isArray(m.tags)) { continue; }
             for (var j = 0; j < m.tags.length; j++) {
                 var tag = m.tags[j];
-                if (typeof tag === 'string' && tag.trim()) {
-                    tagSet[tag.trim().toLowerCase()] = true;
+                if (typeof tag === 'string' && tag.trim() !== '') {
+                    seen[tag.trim().toLowerCase()] = true;
                 }
             }
         }
 
-        var result = Object.keys(tagSet);
+        var result = Object.keys(seen);
         result.sort();
         return result;
+    }
+
+    // ============================================================
+    // ID PREVIEW
+    // ============================================================
+
+    /**
+     * Preview the next mission label for a (year, difficulty) pair.
+     *
+     * Reads the current mission list, computes the next sequence
+     * within the scope, and returns the label that would be assigned
+     * to a new mission right now.
+     *
+     * ARCHIVED MISSIONS ARE INCLUDED in the sequence calculation.
+     * Sequence allocation is monotonic and non-reusable, so an
+     * archived mission still consumes its sequence number. This is
+     * deliberate.
+     *
+     * RACE NOTE:
+     *   This is a PREVIEW. Two previews taken before either create
+     *   completes will return the same label. The authoritative
+     *   assignment happens inside MissionCore's pipeline validate
+     *   against the transaction snapshot, which is where uniqueness
+     *   is actually guaranteed.
+     *
+     * @param {number|string|null} year
+     * @param {string} difficulty
+     * @returns {string|null} The previewed label, or null when the
+     *   inputs are invalid
+     */
+    function getNextMissionId(year, difficulty) {
+        var store = getMissionStore() || [];
+        var generated = MissionId.generate(year, difficulty, store);
+        return generated ? generated.label : null;
     }
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
-    window.MissionQueries = {
-        // Mission lookup
+    window.MissionQueries = Object.freeze({
+        // Single-mission read
         getMission: getMission,
+
+        // Collection reads
         getMissions: getMissions,
         getActiveMissions: getActiveMissions,
         getCompletedMissions: getCompletedMissions,
         getCancelledMissions: getCancelledMissions,
+        getArchivedMissions: getArchivedMissions,
 
-        // By team
+        // Relationship reads
         getMissionsByTeam: getMissionsByTeam,
-        getMissionsForCharacter: getMissionsForCharacter,
+        getMissionsBySupportPersonnel: getMissionsBySupportPersonnel,
 
-        // By type
+        // Type and tag reads
         getMissionsByType: getMissionsByType,
         getMissionsByTag: getMissionsByTag,
 
         // Search
         searchMissions: searchMissions,
 
-        // Support personnel
-        getSupportPersonnel: getSupportPersonnel,
-        getSupportPersonnelNames: getSupportPersonnelNames,
-
         // Statistics
-        getActiveCount: getActiveCount,
-        getCompletedCount: getCompletedCount,
-        getCancelledCount: getCancelledCount,
         getStatistics: getStatistics,
 
-        // Team eligibility
-        getEligibleTeams: getEligibleTeams,
-        isTeamEligibleForMission: isTeamEligibleForMission,
-
         // Tags
-        getUniqueTags: getUniqueTags
-    };
+        getUniqueTags: getUniqueTags,
+
+        // ID preview
+        getNextMissionId: getNextMissionId,
+
+        // Archive-state helper
+        isArchived: isArchived
+    });
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.MissionQueries;
+        var missing = [];
+
+        var required = [
+            'getMission',
+            'getMissions',
+            'getActiveMissions',
+            'getCompletedMissions',
+            'getCancelledMissions',
+            'getArchivedMissions',
+            'getMissionsByTeam',
+            'getMissionsBySupportPersonnel',
+            'getMissionsByType',
+            'getMissionsByTag',
+            'searchMissions',
+            'getStatistics',
+            'getUniqueTags',
+            'getNextMissionId',
+            'isArchived'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        if (missing.length > 0) {
+            console.warn(
+                '[MissionQueries] Verification failed:',
+                missing.join(', ')
+            );
+        }
+    })();
 
 })();
