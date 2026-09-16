@@ -1,6 +1,7 @@
 /**
  * modules/tournaments/tournament-rules.js - Tournament Rules
- * Domain conditions for tournament operations (not state permissions)
+ * Domain conditions for tournament operations (not state permissions).
+ *
  * Path: js/modules/tournaments/tournament-rules.js
  *
  * This module is responsible for:
@@ -14,15 +15,24 @@
  *   - Validating match participant eligibility
  *
  * IMPORTANT:
- *   - This is the CANONICAL authority for domain conditions
- *   - All modules MUST use this for domain condition checks
- *   - Rules are declarative and immutable
- *   - No persistence, no DOM, no UI state
- *   - PURE functions - no side effects
- *   - Does NOT duplicate Lifecycle (state permissions) or Schema (structure)
+ *   - This is the CANONICAL authority for domain conditions.
+ *   - All modules MUST use this for domain condition checks.
+ *   - Rules are declarative and immutable.
+ *   - No persistence, no DOM, no UI state.
+ *   - PURE functions - no side effects.
+ *   - Does NOT duplicate Lifecycle (state permissions) or Schema (structure).
  *   - Lifecycle: "Can I do this in this state?"
  *   - Rules: "Are the domain conditions satisfied?"
  *   - Schema: "Is this structurally valid?"
+ *
+ * WEEK PARSING:
+ *   Week values go through CalendarValidation.parseWeek, which is the
+ *   canonical strict parser (integer-only, in-range, no silent coercion
+ *   of trailing characters). This module does not have a local parser.
+ *
+ * DEEP CLONING:
+ *   ObjectUtils.deepClone is the canonical deep-clone primitive. This
+ *   module does not have a local clone helper.
  *
  * RESULT VOCABULARY:
  *   - 'pass'  : advanced and successful
@@ -40,15 +50,27 @@
  *   - Years are UNBOUNDED positive integers.
  *   - There is no MIN_YEAR or MAX_YEAR.
  *   - Tournaments are scoped to WEEKS (bounded 1-52), not years.
- *   - Years are not stored on tournaments; this module never
- *     reads or writes year values.
+ *   - Years are not stored on tournaments; this module never reads or
+ *     writes year values.
+ *
+ * DEPENDENCY CONTRACT:
+ *   TournamentConstants, TournamentSchema, and CalendarValidation are
+ *   MANDATORY. Each is checked at load time. CharacterQueries and
+ *   TeamQueries are used only by the participant-eligibility helpers
+ *   (isCharacter / isTeam), which degrade gracefully to a "not found"
+ *   result when the query module is absent. That is intentional: an
+ *   eligibility check for a tournament operation should not throw just
+ *   because a character query module hasn't been registered yet. The
+ *   tournament mutation pipeline re-validates against the snapshot.
  *
  * DEPENDENCIES:
  *   - window.TournamentConstants (from tournament-constants.js) - MANDATORY
  *   - window.TournamentSchema (from tournament-schema.js) - MANDATORY
  *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
- *   - window.TeamQueries (from team-queries.js) - MANDATORY
+ *   - window.CharacterQueries (from character-queries.js) - LAZY
+ *     (used only for isCharacter)
+ *   - window.TeamQueries (from team-queries.js) - LAZY
+ *     (used only for isTeam)
  *
  * USAGE:
  *   var Rules = window.TournamentRules;
@@ -67,20 +89,75 @@
     }
 
     // ============================================================
-    // LAZY LOADING HELPERS
+    // DEPENDENCY CHECK - MANDATORY
     // ============================================================
 
-    function getConstants() {
-        return window.TournamentConstants || null;
+    var Constants = window.TournamentConstants;
+    var Schema = window.TournamentSchema;
+    var CalendarValidation = window.CalendarValidation;
+
+    var _missing = [];
+
+    if (!Constants) {
+        _missing.push('TournamentConstants (module)');
+    } else {
+        if (!Array.isArray(Constants.VALID_PARTICIPANT_TYPES)) {
+            _missing.push('TournamentConstants.VALID_PARTICIPANT_TYPES');
+        }
+        if (!Array.isArray(Constants.VALID_MATCH_TYPES)) {
+            _missing.push('TournamentConstants.VALID_MATCH_TYPES');
+        }
+        if (typeof Constants.getCanonicalParticipantType !== 'function') {
+            _missing.push('TournamentConstants.getCanonicalParticipantType');
+        }
+        if (typeof Constants.MIN_WEEK !== 'number' ||
+            typeof Constants.MAX_WEEK !== 'number') {
+            _missing.push('TournamentConstants.MIN_WEEK / MAX_WEEK');
+        }
     }
 
-    function getSchema() {
-        return window.TournamentSchema || null;
+    if (!Schema) {
+        _missing.push('TournamentSchema (module)');
+    } else {
+        if (typeof Schema.isValidResult !== 'function') {
+            _missing.push('TournamentSchema.isValidResult');
+        }
+        if (typeof Schema.isParticipantInTournament !== 'function') {
+            _missing.push('TournamentSchema.isParticipantInTournament');
+        }
+        if (typeof Schema.isParticipantEliminated !== 'function') {
+            _missing.push('TournamentSchema.isParticipantEliminated');
+        }
+        if (typeof Schema.getParticipantTypeFromRecord !== 'function') {
+            _missing.push('TournamentSchema.getParticipantTypeFromRecord');
+        }
+        if (typeof Schema.normaliseId !== 'function') {
+            _missing.push('TournamentSchema.normaliseId');
+        }
     }
 
-    function getCalendarValidation() {
-        return window.CalendarValidation || null;
+    if (!CalendarValidation ||
+        typeof CalendarValidation.parseWeek !== 'function') {
+        _missing.push('CalendarValidation.parseWeek');
     }
+
+    if (_missing.length > 0) {
+        throw new Error(
+            '[TournamentRules] Missing mandatory dependencies: ' +
+            _missing.join(', ')
+        );
+    }
+
+    window.__tournamentRulesLoaded = true;
+
+    // ============================================================
+    // OPTIONAL DEPENDENCY ACCESSORS
+    // ============================================================
+    //
+    // CharacterQueries and TeamQueries are used only by the
+    // participant-eligibility helpers. When absent, those helpers
+    // return false — the participant is treated as not found, which
+    // is the correct conservative answer for a rules check.
 
     function getCharacterQueries() {
         return window.CharacterQueries || null;
@@ -99,58 +176,52 @@
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - Warns but doesn't fail
-    // ============================================================
-
-    function checkDependencies() {
-        var missing = [];
-
-        if (!getConstants()) { missing.push('TournamentConstants (lazy)'); }
-        if (!getSchema()) { missing.push('TournamentSchema (lazy)'); }
-        if (!getCalendarValidation()) { missing.push('CalendarValidation (lazy)'); }
-
-        if (missing.length > 0) {
-            console.warn('[TournamentRules] Some dependencies not yet loaded:', missing.join(', '));
-            return false;
-        }
-
-        return true;
-    }
-
-    checkDependencies();
-
-    // ============================================================
     // HELPERS
     // ============================================================
 
     function isObject(value) {
-        return value !== null && typeof value === 'object' && !Array.isArray(value);
-    }
-
-    function normaliseId(value) {
-        var Schema = getSchema();
-        if (Schema && typeof Schema.normaliseId === 'function') {
-            return Schema.normaliseId(value);
-        }
-        if (value === null || value === undefined) {
-            return null;
-        }
-        var str = String(value).trim();
-        return str !== '' ? str : null;
+        return value !== null &&
+               typeof value === 'object' &&
+               !Array.isArray(value);
     }
 
     function isNonEmptyString(value) {
         return typeof value === 'string' && value.trim() !== '';
     }
 
+    /**
+     * Normalise an ID via Schema.normaliseId (the canonical source).
+     * Falls back to a local equivalent only if Schema returns undefined
+     * (which shouldn't happen — Schema was checked at load).
+     */
+    function normaliseId(value) {
+        return Schema.normaliseId(value);
+    }
+
+    /**
+     * Deep clone a value via ObjectUtils.deepClone.
+     *
+     * ObjectUtils is not a load-time dependency of this module (it's
+     * used only by a couple of helpers that build defensive copies of
+     * caller-supplied objects). When absent, this falls back to a
+     * structuredClone-based clone, then JSON, then the input. Every
+     * fallback is a genuine clone for the value shapes this module
+     * touches (plain JSON-compatible objects and arrays).
+     */
     function deepClone(value) {
         var ObjectUtils = getObjectUtils();
         if (ObjectUtils && typeof ObjectUtils.deepClone === 'function') {
             return ObjectUtils.deepClone(value);
         }
+
         if (value === null || typeof value !== 'object') {
             return value;
         }
+
+        if (typeof structuredClone === 'function') {
+            try { return structuredClone(value); } catch (_) {}
+        }
+
         try {
             return JSON.parse(JSON.stringify(value));
         } catch (_) {
@@ -158,78 +229,68 @@
         }
     }
 
+    /**
+     * Parse a week via CalendarValidation.parseWeek, the canonical
+     * strict parser. No local implementation.
+     */
     function parseWeek(value) {
-        var CalendarValidation = getCalendarValidation();
-        if (CalendarValidation && typeof CalendarValidation.parseWeek === 'function') {
-            return CalendarValidation.parseWeek(value);
-        }
-        var num = parseInt(value, 10);
-        return !isNaN(num) && num >= 1 && num <= 52 ? num : null;
+        return CalendarValidation.parseWeek(value);
     }
 
     function getParticipantType(tournament, participantId) {
-        var Schema = getSchema();
-        if (Schema && typeof Schema.getParticipantTypeFromRecord === 'function') {
-            return Schema.getParticipantTypeFromRecord(tournament, participantId);
-        }
-        return null;
+        return Schema.getParticipantTypeFromRecord(tournament, participantId);
     }
 
     function isParticipantInTournament(tournament, participantId) {
-        var Schema = getSchema();
-        if (Schema && typeof Schema.isParticipantInTournament === 'function') {
-            return Schema.isParticipantInTournament(tournament, participantId);
-        }
-        return false;
+        return Schema.isParticipantInTournament(tournament, participantId);
     }
 
     function isParticipantEliminated(tournament, participantId) {
-        var Schema = getSchema();
-        if (Schema && typeof Schema.isParticipantEliminated === 'function') {
-            return Schema.isParticipantEliminated(tournament, participantId);
-        }
-        return false;
+        return Schema.isParticipantEliminated(tournament, participantId);
     }
 
     function getParticipants(tournament) {
-        var Schema = getSchema();
-        if (Schema && typeof Schema.getParticipants === 'function') {
-            return Schema.getParticipants(tournament);
+        if (!tournament || !Array.isArray(tournament.participants)) {
+            return [];
         }
-        return [];
+        return deepClone(tournament.participants);
     }
 
     function getRounds(tournament) {
-        var Schema = getSchema();
-        if (Schema && typeof Schema.getRounds === 'function') {
-            return Schema.getRounds(tournament);
+        if (!tournament || !Array.isArray(tournament.rounds)) {
+            return [];
         }
-        return [];
+        return deepClone(tournament.rounds);
     }
 
     function isValidResult(value) {
-        var Schema = getSchema();
-        if (Schema && typeof Schema.isValidResult === 'function') {
-            return Schema.isValidResult(value);
-        }
-        // Fallback
-        return value === 'pass' || value === 'fail' || value === 'retry';
+        return Schema.isValidResult(value);
     }
 
+    /**
+     * Check whether a character ID exists in the wider application.
+     * Uses CharacterQueries when available. When CharacterQueries is
+     * absent, returns false — the participant is treated as not found.
+     */
     function isCharacter(participantId) {
-        var CharacterQueries = getCharacterQueries();
-        if (CharacterQueries && typeof CharacterQueries.getCharacterById === 'function') {
-            return CharacterQueries.getCharacterById(participantId) !== null;
+        var CQ = getCharacterQueries();
+        if (!CQ || typeof CQ.getCharacterById !== 'function') {
+            return false;
         }
-        return false;
+        return CQ.getCharacterById(participantId) !== null;
     }
 
+    /**
+     * Check whether a team ID exists in the wider application.
+     * Uses TeamQueries when available. When TeamQueries is absent,
+     * returns false.
+     */
     function isTeam(participantId) {
-        var TeamQueries = getTeamQueries();
-        if (TeamQueries && typeof TeamQueries.getTeamById === 'function') {
-            return TeamQueries.getTeamById(participantId) !== null;
+        var TQ = getTeamQueries();
+        if (!TQ || typeof TQ.getTeamById !== 'function') {
+            return false;
         }
-        return false;
+        return TQ.getTeamById(participantId) !== null;
     }
 
     // ============================================================
@@ -240,15 +301,15 @@
      * Validate tournament week range.
      */
     function validateWeekRange(startWeek, endWeek) {
-        var Constants = getConstants();
-        var minWeek = Constants ? Constants.MIN_WEEK || 1 : 1;
-        var maxWeek = Constants ? Constants.MAX_WEEK || 52 : 52;
+        var minWeek = Constants.MIN_WEEK;
+        var maxWeek = Constants.MAX_WEEK;
 
         var start = parseWeek(startWeek);
         if (start === null) {
             return {
                 valid: false,
-                message: 'Invalid start week. Must be between ' + minWeek + ' and ' + maxWeek + '.',
+                message: 'Invalid start week. Must be between ' +
+                    minWeek + ' and ' + maxWeek + '.',
                 start: null,
                 end: null
             };
@@ -258,7 +319,8 @@
         if (end === null) {
             return {
                 valid: false,
-                message: 'Invalid end week. Must be between ' + minWeek + ' and ' + maxWeek + '.',
+                message: 'Invalid end week. Must be between ' +
+                    minWeek + ' and ' + maxWeek + '.',
                 start: start,
                 end: null
             };
@@ -267,7 +329,8 @@
         if (start > end) {
             return {
                 valid: false,
-                message: 'Start week (' + start + ') cannot be after end week (' + end + ').',
+                message: 'Start week (' + start +
+                    ') cannot be after end week (' + end + ').',
                 start: start,
                 end: end
             };
@@ -299,7 +362,7 @@
     // ============================================================
 
     function validateParticipantAddition(tournament, participantId, participantType) {
-        var Constants = getConstants();
+        var validTypes = Constants.VALID_PARTICIPANT_TYPES;
 
         if (!tournament || typeof tournament !== 'object') {
             return { valid: false, message: 'Tournament is required.' };
@@ -318,12 +381,11 @@
             return { valid: false, message: 'Participant type is required.' };
         }
 
-        var validTypes = Constants
-            ? Constants.VALID_PARTICIPANT_TYPES
-            : ['character', 'team'];
-
         if (validTypes.indexOf(participantType) === -1) {
-            return { valid: false, message: 'Invalid participant type: ' + participantType };
+            return {
+                valid: false,
+                message: 'Invalid participant type: ' + participantType
+            };
         }
 
         // Verify participant exists in the wider application.
@@ -340,21 +402,25 @@
         }
 
         // Type must match tournament mode.
-        var canonicalType = Constants && typeof Constants.getCanonicalParticipantType === 'function'
-            ? Constants.getCanonicalParticipantType(tournament.mode)
-            : (tournament.mode === 'teams' ? 'team' : 'character');
+        var canonicalType = Constants.getCanonicalParticipantType(
+            tournament.mode
+        );
 
         if (canonicalType && participantType !== canonicalType) {
             return {
                 valid: false,
                 message: 'Participant type "' + participantType +
-                    '" does not match tournament mode "' + tournament.mode +
+                    '" does not match tournament mode "' +
+                    tournament.mode +
                     '" (expected "' + canonicalType + '").'
             };
         }
 
         if (isParticipantInTournament(tournament, id)) {
-            return { valid: false, message: 'Participant is already in this tournament.' };
+            return {
+                valid: false,
+                message: 'Participant is already in this tournament.'
+            };
         }
 
         var participants = getParticipants(tournament);
@@ -362,7 +428,8 @@
         if (participants.length >= maxParticipants) {
             return {
                 valid: false,
-                message: 'Maximum participant count (' + maxParticipants + ') reached.'
+                message: 'Maximum participant count (' +
+                    maxParticipants + ') reached.'
             };
         }
 
@@ -370,7 +437,9 @@
     }
 
     function canAddParticipant(tournament, participantId, participantType) {
-        var result = validateParticipantAddition(tournament, participantId, participantType);
+        var result = validateParticipantAddition(
+            tournament, participantId, participantType
+        );
         return result.valid;
     }
 
@@ -389,11 +458,17 @@
         }
 
         if (!isParticipantInTournament(tournament, id)) {
-            return { valid: false, message: 'Participant not found in tournament.' };
+            return {
+                valid: false,
+                message: 'Participant not found in tournament.'
+            };
         }
 
         if (isParticipantEliminated(tournament, id)) {
-            return { valid: false, message: 'Cannot remove an eliminated participant.' };
+            return {
+                valid: false,
+                message: 'Cannot remove an eliminated participant.'
+            };
         }
 
         // Cannot remove a participant who is in a match.
@@ -408,7 +483,8 @@
                     if (normaliseId(match.participants[k]) === id) {
                         return {
                             valid: false,
-                            message: 'Participant is in a match and cannot be removed.'
+                            message: 'Participant is in a match and ' +
+                                'cannot be removed.'
                         };
                     }
                 }
@@ -466,7 +542,8 @@
                 if (expectedIds.indexOf(id) === -1) {
                     return {
                         valid: false,
-                        message: 'Result for ' + id + ' does not match an expected participant.'
+                        message: 'Result for ' + id +
+                            ' does not match an expected participant.'
                     };
                 }
             }
@@ -495,10 +572,6 @@
 
     /**
      * Validate a match result payload against a match's shape.
-     *
-     * @param {object} match
-     * @param {object} result
-     * @returns {object} { valid, message? }
      */
     function validateMatchResult(match, result) {
         if (!match || typeof match !== 'object') {
@@ -510,25 +583,35 @@
         }
 
         var type = match.type || 'group_exam';
-        var participants = Array.isArray(match.participants) ? match.participants : [];
+        var participants = Array.isArray(match.participants)
+            ? match.participants
+            : [];
 
         if (type === 'group_exam') {
-            var check = validateResultMap(result.results, participants, { requireAll: true });
+            var check = validateResultMap(
+                result.results,
+                participants,
+                { requireAll: true }
+            );
             if (!check.valid) { return check; }
             return { valid: true };
         }
 
         if (type === 'team_vs_team') {
-            var teamCheck = validateResultMap(result.teamResults, participants, { requireAll: true });
+            var teamCheck = validateResultMap(
+                result.teamResults,
+                participants,
+                { requireAll: true }
+            );
             if (!teamCheck.valid) { return teamCheck; }
 
-            if (result.individualResults !== undefined && result.individualResults !== null) {
-                // Individual results are free-form: any character ID that
-                // is a member of one of the participating teams.
-                // Membership is validated at a higher level; here we
-                // only check the values.
+            if (result.individualResults !== undefined &&
+                result.individualResults !== null) {
                 if (!isObject(result.individualResults)) {
-                    return { valid: false, message: 'individualResults must be an object.' };
+                    return {
+                        valid: false,
+                        message: 'individualResults must be an object.'
+                    };
                 }
                 var indKeys = Object.keys(result.individualResults);
                 for (var i = 0; i < indKeys.length; i++) {
@@ -548,7 +631,10 @@
         if (type === 'standard') {
             // Legacy. Only the winner is required.
             if (!result.winner) {
-                return { valid: false, message: 'Winner is required for standard match.' };
+                return {
+                    valid: false,
+                    message: 'Winner is required for standard match.'
+                };
             }
             var winnerId = normaliseId(result.winner);
             if (winnerId === null || participants.indexOf(winnerId) === -1) {
@@ -578,7 +664,10 @@
         }
 
         if (!result || typeof result !== 'object') {
-            return { valid: false, message: 'Result is required to complete a match.' };
+            return {
+                valid: false,
+                message: 'Result is required to complete a match.'
+            };
         }
 
         return validateMatchResult(match, result);
@@ -619,14 +708,18 @@
                 if (match && match.status === 'completed') {
                     return {
                         valid: false,
-                        message: 'Round has completed matches and cannot be removed.'
+                        message: 'Round has completed matches and cannot ' +
+                            'be removed.'
                     };
                 }
             }
         }
 
         if (round.status === 'completed') {
-            return { valid: false, message: 'Round is completed and cannot be removed.' };
+            return {
+                valid: false,
+                message: 'Round is completed and cannot be removed.'
+            };
         }
 
         return { valid: true };
@@ -656,19 +749,20 @@
             if (roundData.matchSize !== undefined) {
                 var size = parseInt(roundData.matchSize, 10);
                 if (isNaN(size) || size < 2) {
-                    return { valid: false, message: 'Match size must be at least 2.' };
+                    return {
+                        valid: false,
+                        message: 'Match size must be at least 2.'
+                    };
                 }
             }
 
             if (roundData.matchType !== undefined) {
-                var Constants = getConstants();
-                var validTypes = Constants
-                    ? Constants.VALID_MATCH_TYPES
-                    : ['standard', 'group_exam', 'team_vs_team'];
+                var validTypes = Constants.VALID_MATCH_TYPES;
                 if (validTypes.indexOf(roundData.matchType) === -1) {
                     return {
                         valid: false,
-                        message: 'Invalid match type: ' + roundData.matchType
+                        message: 'Invalid match type: ' +
+                            roundData.matchType
                     };
                 }
             }
@@ -703,8 +797,8 @@
 
         var rounds = getRounds(tournament);
         if (rounds.length === 0) {
-            // A tournament with no rounds can still be completed —
-            // there is nothing to run.
+            // A tournament with no rounds can still be completed — there
+            // is nothing to run.
             return {
                 valid: true,
                 message: 'Tournament is ready for completion (no rounds).',
@@ -720,11 +814,14 @@
                 missing.push('Round ' + (i + 1) + ' not complete');
             }
 
-            if (Array.isArray(round.matches)) {
+            if (round && Array.isArray(round.matches)) {
                 for (var j = 0; j < round.matches.length; j++) {
                     var match = round.matches[j];
                     if (match && match.status !== 'completed') {
-                        missing.push('Match ' + (j + 1) + ' in Round ' + (i + 1) + ' not complete');
+                        missing.push(
+                            'Match ' + (j + 1) + ' in Round ' + (i + 1) +
+                            ' not complete'
+                        );
                     }
                 }
             }
@@ -734,8 +831,9 @@
 
         // Count final passers, if the Schema exposes the derivation.
         var finalPasserCount = 0;
-        var Schema = getSchema();
-        if (Schema && typeof Schema.deriveFinalPassers === 'function' && valid) {
+        if (Schema &&
+            typeof Schema.deriveFinalPassers === 'function' &&
+            valid) {
             try {
                 finalPasserCount = Schema.deriveFinalPassers(tournament).length;
             } catch (e) {
@@ -782,11 +880,17 @@
         }
 
         if (!isParticipantInTournament(tournament, id)) {
-            return { valid: false, message: 'Participant is not in this tournament.' };
+            return {
+                valid: false,
+                message: 'Participant is not in this tournament.'
+            };
         }
 
         if (isParticipantEliminated(tournament, id)) {
-            return { valid: false, message: 'Participant has been eliminated.' };
+            return {
+                valid: false,
+                message: 'Participant has been eliminated.'
+            };
         }
 
         if (participantType) {
@@ -804,7 +908,9 @@
     }
 
     function isParticipantEligible(tournament, participantId, participantType) {
-        var validation = validateParticipantEligibility(tournament, participantId, participantType);
+        var validation = validateParticipantEligibility(
+            tournament, participantId, participantType
+        );
         return validation.valid;
     }
 
@@ -828,11 +934,15 @@
         if (participants.length < 2) {
             return {
                 valid: false,
-                message: 'Tournament needs at least 2 participants to start.'
+                message: 'Tournament needs at least 2 participants ' +
+                    'to start.'
             };
         }
 
-        var weekValidation = validateWeekRange(tournament.startWeek, tournament.endWeek);
+        var weekValidation = validateWeekRange(
+            tournament.startWeek,
+            tournament.endWeek
+        );
         if (!weekValidation.valid) {
             return weekValidation;
         }
@@ -882,16 +992,9 @@
     // FINAL PASSERS HELPERS
     // ============================================================
 
-    /**
-     * Get the final passers of a tournament, using the Schema's
-     * canonical derivation.
-     *
-     * @param {object} tournament
-     * @returns {array} Array of participant IDs
-     */
     function getFinalPassers(tournament) {
-        var Schema = getSchema();
-        if (!Schema || typeof Schema.deriveFinalPassers !== 'function') {
+        if (!Schema ||
+            typeof Schema.deriveFinalPassers !== 'function') {
             return [];
         }
         try {
@@ -903,10 +1006,10 @@
 
     /**
      * Classify a result value into a semantic category.
-     * 'pass'    → 'passed'
-     * 'retry'   → 'retry'
-     * 'fail'    → 'failed'
-     * anything  → 'unknown'
+     *   'pass'   → 'passed'
+     *   'retry'  → 'retry'
+     *   'fail'   → 'failed'
+     *   other    → 'unknown'
      */
     function getResultCategory(resultValue) {
         if (resultValue === 'pass') { return 'passed'; }
@@ -987,7 +1090,8 @@
             'validateMatchCompletion', 'canCompleteMatch',
             'validateRoundRemoval', 'canRemoveRound',
             'validateRoundAddition', 'canAddRound',
-            'validateCompletionReadiness', 'isReadyForCompletion', 'getCompletionReadinessReport',
+            'validateCompletionReadiness', 'isReadyForCompletion',
+            'getCompletionReadinessReport',
             'validateParticipantEligibility', 'isParticipantEligible',
             'validateTournamentStart', 'canStartTournament',
             'getMinimumParticipants', 'getMaximumParticipants',
@@ -1002,7 +1106,10 @@
         }
 
         if (missing.length > 0) {
-            console.warn('[TournamentRules] Verification - some exports may be missing:', missing.join(', '));
+            console.warn(
+                '[TournamentRules] Verification - some exports may be ' +
+                'missing:', missing.join(', ')
+            );
         }
     })();
 
