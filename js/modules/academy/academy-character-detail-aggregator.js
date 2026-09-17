@@ -45,8 +45,13 @@
  *   TeamQueries               persistent Team entities
  *   EliminationQueries        elimination week, reason, state
  *   CalendarConstants         week bounds for current-week resolution
- *   AcademySchedule           week-scoped schedule reads (student classes,
- *                             rest days)
+ *   AcademyCalendarAggregator schedule grid reads (projector-backed)
+ *
+ * SCHEDULE SOURCE (v21):
+ *   buildScheduleGridViewModel reads from AcademyCalendarAggregator,
+ *   which is projector-backed. The retired stored-schedule map
+ *   (curriculum.schedules) is no longer consulted. The AcademySchedule
+ *   calendar-provider bridge has been retired.
  *
  * VIEW MODEL SHAPE:
  *
@@ -119,8 +124,8 @@
  *   - instructor is null unless mode is 'instructor'.
  *   - elimination is null when there is no elimination record.
  *   - classContext is null when no class is selected.
- *   - schedule grid returns null when CalendarConstants is absent
- *     (week bounds are required to build the grid).
+ *   - schedule grid returns null when the week is invalid or the
+ *     calendar aggregator is unavailable.
  *   - Display fields use '—' or null rather than invented numeric values.
  *
  * MODE SEMANTICS:
@@ -133,8 +138,7 @@
  *   - Week is required for class-scoped projections (grades, performance,
  *     schedule grid).
  *   - When week is invalid or absent, class-scoped sections return null
- *     or an empty grid rather than defaulting. The renderer displays an
- *     empty state.
+ *     or an empty grid rather than defaulting.
  *
  * ELIMINATION STATE:
  *   - 'current' when the displayed week equals the elimination week.
@@ -149,13 +153,13 @@
  *   - window.CalendarConstants
  *
  * DEPENDENCIES (optional, feature-scoped):
- *   - window.AcademyEnrolments     (student disciplines)
- *   - window.AcademyPerformance    (academic average, overall score)
- *   - window.AcademySocialScore    (social score)
- *   - window.AcademyGroups         (instructor auto-groups)
- *   - window.TeamQueries           (student teams)
- *   - window.EliminationQueries    (elimination state)
- *   - window.AcademySchedule       (schedule grid reads)
+ *   - window.AcademyEnrolments           (student disciplines)
+ *   - window.AcademyPerformance          (academic average, overall score)
+ *   - window.AcademySocialScore          (social score)
+ *   - window.AcademyGroups               (instructor auto-groups)
+ *   - window.TeamQueries                 (student teams)
+ *   - window.EliminationQueries          (elimination state)
+ *   - window.AcademyCalendarAggregator   (schedule grid reads)
  *
  *   Optional dependencies degrade to null sections or empty grids, not
  *   fabricated data. When a section's domain module is absent, the
@@ -242,7 +246,12 @@
     function getAcademyGroups() { return window.AcademyGroups || null; }
     function getTeamQueries() { return window.TeamQueries || null; }
     function getEliminationQueries() { return window.EliminationQueries || null; }
-    function getAcademySchedule() { return window.AcademySchedule || null; }
+
+    // v21: schedule reads go through the projector-backed aggregator.
+    // The old AcademySchedule calendar-provider bridge is retired.
+    function getAcademyCalendarAggregator() {
+        return window.AcademyCalendarAggregator || null;
+    }
 
     // ============================================================
     // SMALL HELPERS
@@ -764,27 +773,24 @@
     // view mounts the grid read-only into the character detail panel's
     // Schedule tab.
     //
-    // SOURCES:
-    //   - AcademySchedule.getStudentSchedule(charId, week)
-    //     → { day: { hour: disciplineId } }
-    //   - AcademySchedule.getStudentRestDays(charId, week)
-    //     → [day, ...]
-    //   - AcademySchedule.getStudentClasses(charId, week)
-    //     → flattened array with disciplineName/instructorName already
-    //       resolved, used to enrich each slot with display fields
-    //
-    // The raw schedule shape is what CalendarRenderer expects for
-    // `slotData` per cell — it reads `slotData.disciplineName`,
-    // `slotData.label`, `slotData.duration`, `slotData.instructorName`,
-    // `slotData.groupLabel`. So we build a "flat schedule" object where
-    // each occupied cell is a slot descriptor, not a bare discipline id.
+    // v21 SOURCE:
+    //   AcademyCalendarAggregator.getStudentScheduleViewModel(charId, week)
+    //   which reads the teaching projector. The old AcademySchedule
+    //   calendar-provider bridge is retired.
     //
     // NULL SEMANTICS:
-    //   Returns null when AcademySchedule is absent or the week is
-    //   invalid. Returns an empty-grid VM (schedule: {}) when the
+    //   Returns null when the week is invalid or the calendar aggregator
+    //   is unavailable. Returns an empty-grid VM (schedule: {}) when the
     //   student has no scheduled classes for the week — the renderer
     //   displays that as an empty week, which is truthful.
 
+    /**
+     * Build the schedule grid VM for a (charId, week) pair.
+     *
+     * @param {string} charId
+     * @param {number|string} week
+     * @returns {object|null}
+     */
     function buildScheduleGridViewModel(charId, week) {
         if (!isNonEmptyString(charId)) {
             return null;
@@ -804,84 +810,36 @@
             return null;
         }
 
-        var AS = getAcademySchedule();
-        if (!AS || typeof AS.getStudentClasses !== 'function') {
+        var ACA = getAcademyCalendarAggregator();
+        if (!ACA || typeof ACA.getStudentScheduleViewModel !== 'function') {
             return null;
         }
 
-        var char = CharacterQueries.getCharacterById(charId);
-        var entityName = char ? CharacterQueries.getDisplayName(char) : 'Character';
-
-        // Read rest days. AcademySchedule.getStudentRestDays returns
-        // an array of day numbers. If the module doesn't expose it,
-        // we degrade to [].
-        var restDays = [];
-        if (typeof AS.getStudentRestDays === 'function') {
-            try {
-                restDays = AS.getStudentRestDays(charId, weekNum) || [];
-            } catch (e) {
-                restDays = [];
-            }
-        }
-
-        // getStudentClasses returns per-hour entries with display
-        // fields already resolved. We pivot them into the flat
-        // schedule shape CalendarRenderer expects.
-        var classEntries = [];
+        var vm;
         try {
-            classEntries = AS.getStudentClasses(charId, weekNum) || [];
+            vm = ACA.getStudentScheduleViewModel(charId, weekNum);
         } catch (e) {
-            classEntries = [];
+            console.warn(
+                '[AcademyCharacterDetailAggregator] ' +
+                'getStudentScheduleViewModel failed:', e
+            );
+            return null;
         }
 
-        var schedule = {};
-
-        for (var i = 0; i < classEntries.length; i++) {
-            var entry = classEntries[i];
-            if (!entry || entry.day === undefined || entry.hour === undefined) {
-                continue;
-            }
-
-            var day = entry.day;
-            var hour = entry.hour;
-
-            if (!schedule[day]) {
-                schedule[day] = {};
-            }
-
-            schedule[day][hour] = {
-                disciplineId: entry.disciplineId || null,
-                disciplineName: entry.disciplineName || 'Unknown',
-                duration: isFiniteNumber(entry.duration) ? entry.duration : 1,
-                label: isNonEmptyString(entry.label) ? entry.label : '',
-                groupLabel: isNonEmptyString(entry.groupLabel) ? entry.groupLabel : '',
-                instructorId: entry.instructorId || null,
-                instructorName: isNonEmptyString(entry.instructorName)
-                    ? entry.instructorName
-                    : '',
-                isContinuation: entry.isContinuation === true
-            };
-        }
-
-        // Available hours: the calendar's canonical range. The renderer
-        // uses this to decide which rows to draw.
-        var hours = [];
-        var startH = (typeof CalendarConstants.CALENDAR_START_HOUR === 'number')
-            ? CalendarConstants.CALENDAR_START_HOUR
-            : 5;
-        var endH = (typeof CalendarConstants.CALENDAR_END_HOUR === 'number')
-            ? CalendarConstants.CALENDAR_END_HOUR
-            : 23;
-        for (var h = startH; h <= endH; h++) {
-            hours.push(h);
+        if (!vm) {
+            return null;
         }
 
         return {
-            schedule: schedule,
-            restDays: Array.isArray(restDays) ? restDays.slice() : [],
-            entityName: entityName,
-            modeLabel: 'Student Schedule',
-            hours: hours
+            schedule: vm.schedule || {},
+            restDays: Array.isArray(vm.restDays) ? vm.restDays.slice() : [],
+            entityName: isNonEmptyString(vm.entityName)
+                ? vm.entityName
+                : 'Character',
+            modeLabel: isNonEmptyString(vm.modeLabel)
+                ? vm.modeLabel
+                : 'Student Schedule',
+            hours: Array.isArray(vm.hours) ? vm.hours.slice() : []
         };
     }
 
