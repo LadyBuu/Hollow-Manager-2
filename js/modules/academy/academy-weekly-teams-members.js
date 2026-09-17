@@ -8,69 +8,44 @@
  * Container-based: the caller supplies the modal shell and this
  * module renders into it.
  *
- * RESPONSIBILITIES:
- *   - Fetch the member-manager VM from AcademyAggregator.
- *   - Render the VM into the caller's container.
- *   - Allow per-member editing of joinPeriod / leavePeriod.
- *   - Route add / drop-out / rejoin / purge / close interactions to
- *     AcademyWeeklyTeams.
- *   - Re-render in place after mutations.
- *   - Invoke the caller's onChange / onClose callbacks.
+ * LAYOUT:
+ *   - Current Members section: editable rows. Each row shows the
+ *     character name and two editable inputs (Join, Leave). No
+ *     per-row Save. A single footer Save commits every dirty row
+ *     in one transaction.
+ *   - Former Members section: read-only rows for entries whose
+ *     window closed strictly before the displayed week. Lighter
+ *     styling. Each row has a Restore button.
+ *   - Add Member picker: at the bottom of the Current Members
+ *     section.
+ *   - Footer: Revert / Save / Close.
  *
- * NOT RESPONSIBILITIES:
- *   - Candidate eligibility. The aggregator decides.
- *   - Elimination filtering. The aggregator decides, fail-closed.
- *   - Member VM construction. The aggregator decides.
- *   - Persistent roster writes. AcademyWeeklyTeams owns them.
- *   - Modal lifecycle. The caller owns the shell.
+ * SAVE SEMANTICS:
+ *   A row is "dirty" when either input differs from its VM value
+ *   (stored in data-initial-join / data-initial-leave).
+ *   Save collects every dirty row and calls
+ *   AcademyWeeklyTeams.updateMemberWindows with the list. One
+ *   transaction, all-or-nothing.
  *
- * EDITABLE PERIODS (v24):
- *   [FIX-M1] Each member row exposes two editable inputs: Join Wk
- *   and Leave Wk. Both accept an integer in [MIN_WEEK, MAX_WEEK] or
- *   blank (meaning unbounded on that side). The row is committed by
- *   pressing Enter inside either input or clicking the row's Save
- *   button. The commit calls
- *   AcademyWeeklyTeams.updateMemberWindow(classId, teamId, charId,
- *   { joinPeriod, leavePeriod }).
+ * RESTORE SEMANTICS:
+ *   The Restore button opens a small modal with two options:
  *
- *   [FIX-M2] Drop Out is a shortcut: it sets leavePeriod to
- *   displayedWeek - 1 and commits. Rejoin appears on rows whose
- *   leavePeriod is in the past relative to the display week; it
- *   asks for a new start week, purges the old interval, and opens
- *   a fresh one.
+ *     1. Correct the leave week — edits the former entry in place.
+ *        Use when the leave week was recorded wrong.
  *
- *   [FIX-M3] The Save handler validates both inputs strictly.
- *   Blank is valid. A non-blank value must be an integer in bounds.
- *   leave < join is rejected. Failures surface as toasts, never as
- *   silent no-ops.
+ *     2. Reopen with a new interval — appends a new entry. The
+ *        former entry survives as history. Use when the member
+ *        took a break and came back.
  *
- * DROP OUT vs DELETE RECORD:
- *   - Drop Out: endMembership. History survives.
- *   - Delete Record: purgeMemberRecords. Hard-deletes.
- *
- * CLOSE SEMANTICS:
- *   The caller owns the modal. This module does not call
- *   Modal.closeModal / hideModal. Container close buttons invoke
- *   options.onClose. The returned handle's .close() is idempotent.
- *
- * WEEK COERCION (v24):
- *   The week argument is validated strictly, using the same rule the
- *   AcademyAggregator uses:
- *     - integer in [CalendarConstants.MIN_WEEK, MAX_WEEK], OR
- *     - a pure-integer string whose value is in bounds.
- *   Anything else is rejected before the aggregator is called.
- *
- * ELIMINATION (v24):
- *   Candidate eligibility, including elimination, is resolved by
- *   AcademyAggregator.getWeeklyTeamMemberManagerViewModel. If the
- *   aggregator throws (because EliminationQueries is missing or
- *   throws internally), this module does NOT swallow the error.
- *   The throw propagates, and a console warning names the
- *   dependency so a load-order mistake is loud.
+ * MEMBER IDENTITY:
+ *   Every entry is addressed by its memberId when present, or by
+ *   the composite { characterId, joinPeriod } when it predates
+ *   memberId. The VM carries memberId per row.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.AcademyAggregator
  *   - window.AcademyWeeklyTeams
+ *   - window.Modal
  *   - window.DomUtils
  *   - window.NotificationSystem
  *   - window.CalendarConstants
@@ -89,6 +64,7 @@
 
     var AcademyAggregator = window.AcademyAggregator;
     var AcademyWeeklyTeams = window.AcademyWeeklyTeams;
+    var Modal = window.Modal;
     var DomUtils = window.DomUtils;
     var NotificationSystem = window.NotificationSystem;
     var CalendarConstants = window.CalendarConstants;
@@ -101,13 +77,14 @@
     }
     if (!AcademyWeeklyTeams ||
         typeof AcademyWeeklyTeams.addMember !== 'function' ||
-        typeof AcademyWeeklyTeams.endMembership !== 'function' ||
+        typeof AcademyWeeklyTeams.updateMemberWindows !== 'function' ||
         typeof AcademyWeeklyTeams.purgeMemberRecords !== 'function') {
         _missing.push('AcademyWeeklyTeams (ranged API)');
     }
-    if (!AcademyWeeklyTeams ||
-        typeof AcademyWeeklyTeams.updateMemberWindow !== 'function') {
-        _missing.push('AcademyWeeklyTeams.updateMemberWindow');
+    if (!Modal ||
+        typeof Modal.createModal !== 'function' ||
+        typeof Modal.showModal !== 'function') {
+        _missing.push('Modal');
     }
     if (!DomUtils ||
         typeof DomUtils.escapeHtml !== 'function' ||
@@ -156,80 +133,89 @@
     // ============================================================
     // STRICT WEEK PARSING
     // ============================================================
-    //
-    // Accepts integers in [MIN_WEEK, MAX_WEEK] and pure-integer
-    // strings whose value is in bounds. Rejects floats, trailing-
-    // character strings, empty strings, null, undefined, and
-    // out-of-range values.
 
     function parseWeekStrict(value) {
         if (value === undefined || value === null || value === '') {
             return null;
         }
-
         if (typeof value === 'number') {
-            if (!Number.isInteger(value)) {
-                return null;
-            }
+            if (!Number.isInteger(value)) { return null; }
             if (value < CalendarConstants.MIN_WEEK ||
                 value > CalendarConstants.MAX_WEEK) {
                 return null;
             }
             return value;
         }
-
         if (typeof value === 'string') {
             var trimmed = value.trim();
-            if (trimmed === '' || !/^\d+$/.test(trimmed)) {
-                return null;
-            }
+            if (trimmed === '' || !/^\d+$/.test(trimmed)) { return null; }
             var n = Number(trimmed);
-            if (!Number.isInteger(n)) {
-                return null;
-            }
+            if (!Number.isInteger(n)) { return null; }
             if (n < CalendarConstants.MIN_WEEK ||
                 n > CalendarConstants.MAX_WEEK) {
                 return null;
             }
             return n;
         }
-
         return null;
     }
 
     /**
      * Parse an optional week input. Blank means "unbounded".
      * Returns:
-     *   { ok: true, value: null } for blank
-     *   { ok: true, value: N }    for a valid week
-     *   { ok: false }             for invalid input
+     *   { ok: true, value: '' } for blank
+     *   { ok: true, value: 'N' } for a valid week (canonical string)
+     *   { ok: false } for invalid input
      */
     function parseOptionalWeekInput(raw) {
         if (raw === undefined || raw === null) {
-            return { ok: true, value: null };
+            return { ok: true, value: '' };
         }
         var str = String(raw).trim();
         if (str === '') {
-            return { ok: true, value: null };
+            return { ok: true, value: '' };
         }
         var parsed = parseWeekStrict(str);
         if (parsed === null) {
             return { ok: false };
         }
-        return { ok: true, value: parsed };
+        return { ok: true, value: String(parsed) };
     }
 
     // ============================================================
-    // RENDER
+    // IDENTIFIER CONSTRUCTION
+    // ============================================================
+    //
+    // A row identifies a member entry by memberId when it has one.
+    // Otherwise the composite { characterId, joinPeriod } is used.
+
+    function buildIdentifierFromRow(row) {
+        if (isNonEmptyString(row.dataset.memberId)) {
+            return row.dataset.memberId;
+        }
+        return {
+            characterId: row.dataset.characterId,
+            joinPeriod: row.dataset.initialJoin || ''
+        };
+    }
+
+    function buildIdentifierFromVM(member) {
+        if (member && isNonEmptyString(member.memberId)) {
+            return member.memberId;
+        }
+        return {
+            characterId: member.characterId,
+            joinPeriod: member.joinPeriod || ''
+        };
+    }
+
+    // ============================================================
+    // RENDER — TOP LEVEL
     // ============================================================
 
     function renderManagerBody(vm, opts) {
         opts = opts || {};
         var notFound = opts.notFound === true;
-
-        var members = Array.isArray(vm.members) ? vm.members : [];
-        var candidates = Array.isArray(vm.candidates) ? vm.candidates : [];
-        var displayedWeek = vm.week;
 
         var html = '';
 
@@ -246,71 +232,93 @@
 
         if (notFound) {
             html += '<p class="empty-state small">Team not found.</p>';
-        } else {
-            html += '<p class="field-hint">' +
-                        'Each member has an independent join and leave ' +
-                        'week. Edit either and press Enter or click ' +
-                        'Save on that row. Blank means unbounded on ' +
-                        'that side.' +
-                    '</p>';
-
-            // ---- Current members ----
-            html += '<div class="form-group">';
-            html += '<label>Current Members (' + members.length + ')</label>';
-
-            if (members.length === 0) {
-                html += '<p class="empty-state small">' +
-                            'No members assigned to this team this week.' +
-                        '</p>';
-            } else {
-                html += '<div class="academy-team-members-list">';
-                for (var i = 0; i < members.length; i++) {
-                    html += renderMemberRow(members[i], displayedWeek);
-                }
-                html += '</div>';
-            }
             html += '</div>';
+            return html;
+        }
 
-            // ---- Add member ----
-            html += '<div class="form-group">';
-            html += '<label for="awtm-member-select">Add Member</label>';
+        var members = Array.isArray(vm.members) ? vm.members : [];
+        var formerMembers = Array.isArray(vm.formerMembers)
+            ? vm.formerMembers
+            : [];
+        var candidates = Array.isArray(vm.candidates) ? vm.candidates : [];
 
-            if (candidates.length === 0) {
-                html += '<p class="field-hint">' +
-                            'No eligible characters available to add.' +
-                        '</p>';
-            } else {
-                html += '<select id="awtm-member-select" ' +
-                            'class="awtm-member-select">';
-                html += '<option value="">Select a character...</option>';
-                for (var j = 0; j < candidates.length; j++) {
-                    var c = candidates[j];
-                    var label = c.name;
-                    if (isNonEmptyString(c.status)) {
-                        label += ' (' + c.status + ')';
-                    }
-                    html += '<option value="' + escapeAttr(c.id) + '">' +
-                                escapeHtml(label) +
-                            '</option>';
-                }
-                html += '</select>';
+        html += '<p class="field-hint">' +
+                    'Edit any member\'s join or leave week, then ' +
+                    'click Save. Blank means unbounded on that side. ' +
+                    'Leave cannot be before join.' +
+                '</p>';
 
-                html += '<div class="awtm-member-add-row">';
-                html += '<button type="button" ' +
-                            'class="small primary" ' +
-                            'data-action="awtm-add">Add</button>';
-                html += '</div>';
+        // ---- Current members ----
+        html += '<div class="form-group">';
+        html += '<label>Current Members (' + members.length + ')</label>';
 
-                html += '<p class="field-hint">' +
-                            'Adds the character starting from week ' +
-                            escapeHtml(String(displayedWeek)) + '.' +
-                        '</p>';
+        if (members.length === 0) {
+            html += '<p class="empty-state small">' +
+                        'No members assigned to this team this week.' +
+                    '</p>';
+        } else {
+            html += '<div class="awtm-members-list">';
+            for (var i = 0; i < members.length; i++) {
+                html += renderCurrentMemberRow(members[i]);
             }
             html += '</div>';
         }
+        html += '</div>';
 
-        // ---- Actions ----
-        html += '<div class="form-actions">';
+        // ---- Add member ----
+        html += '<div class="form-group awtm-add-group">';
+        html += '<label for="awtm-member-select">Add Member</label>';
+
+        if (candidates.length === 0) {
+            html += '<p class="field-hint">' +
+                        'No eligible characters available to add.' +
+                    '</p>';
+        } else {
+            html += '<div class="awtm-add-row">';
+            html += '<select id="awtm-member-select" ' +
+                        'class="awtm-member-select">';
+            html += '<option value="">Select a character...</option>';
+            for (var j = 0; j < candidates.length; j++) {
+                var c = candidates[j];
+                var label = c.name;
+                if (isNonEmptyString(c.status)) {
+                    label += ' (' + c.status + ')';
+                }
+                html += '<option value="' + escapeAttr(c.id) + '">' +
+                            escapeHtml(label) +
+                        '</option>';
+            }
+            html += '</select>';
+            html += '<button type="button" ' +
+                        'class="small primary" ' +
+                        'data-action="awtm-add">Add</button>';
+            html += '</div>';
+            html += '<p class="field-hint">' +
+                        'Adds the character starting from week ' +
+                        escapeHtml(String(vm.week)) + '.' +
+                    '</p>';
+        }
+        html += '</div>';
+
+        // ---- Former members ----
+        if (formerMembers.length > 0) {
+            html += '<div class="form-group awtm-former-group">';
+            html += '<label>Former Members (' +
+                        formerMembers.length + ')</label>';
+            html += '<div class="awtm-former-list">';
+            for (var k = 0; k < formerMembers.length; k++) {
+                html += renderFormerMemberRow(formerMembers[k]);
+            }
+            html += '</div>';
+            html += '</div>';
+        }
+
+        // ---- Footer ----
+        html += '<div class="form-actions awtm-footer">';
+        html += '<button type="button" class="secondary" ' +
+                    'data-action="awtm-revert">Revert</button>';
+        html += '<button type="button" class="primary" ' +
+                    'data-action="awtm-save">Save</button>';
         html += '<button type="button" class="secondary" ' +
                     'data-action="awtm-close">Close</button>';
         html += '</div>';
@@ -321,25 +329,18 @@
     }
 
     /**
-     * Render one member row with editable period inputs.
+     * Editable row for a current member.
      *
-     * data-action values:
-     *   awtm-save    — commit the row's edits
-     *   awtm-dropout — shortcut: set leavePeriod = displayedWeek - 1
-     *   awtm-rejoin  — open a new interval after a closed one
-     *   awtm-purge   — hard-delete the member entry
+     * data-initial-join / data-initial-leave store the VM's
+     * canonical values so the Save handler can detect changes
+     * without keeping a parallel state object.
      *
-     * data-role values on inputs:
-     *   awtm-join-input
-     *   awtm-leave-input
+     * data-member-id / data-character-id are the identity for the
+     * change payload. When memberId is empty, the identifier is
+     * built from characterId + joinPeriod.
      */
-    function renderMemberRow(member, displayedWeek) {
+    function renderCurrentMemberRow(member) {
         if (!member || !member.characterId) { return ''; }
-
-        var statusLabel = isNonEmptyString(member.statusLabel)
-            ? member.statusLabel
-            : '';
-        var isDeceased = member.deceased === true;
 
         var joinVal = isNonEmptyString(member.joinPeriod)
             ? member.joinPeriod
@@ -348,106 +349,103 @@
             ? member.leavePeriod
             : '';
 
-        var rowClass = 'academy-team-member-row';
-        if (isDeceased) {
+        var statusLabel = isNonEmptyString(member.statusLabel)
+            ? member.statusLabel
+            : '';
+
+        var rowClass = 'awtm-member-row';
+        if (member.deceased === true) {
             rowClass += ' deceased';
         }
 
-        // Rejoin is offered when the member's leave week is in the
-        // past relative to the displayed week: their window is
-        // closed and they can start a fresh interval.
-        var leaveNum = parseWeekStrict(leaveVal);
-        var showRejoin =
-            leaveNum !== null &&
-            displayedWeek !== null &&
-            leaveNum < displayedWeek;
-
         var charIdAttr = escapeAttr(member.characterId);
+        var memberIdAttr = escapeAttr(member.memberId || '');
 
         var html = '';
         html += '<div class="' + rowClass + '" ' +
-                    'data-character-id="' + charIdAttr + '">';
+                    'data-character-id="' + charIdAttr + '" ' +
+                    'data-member-id="' + memberIdAttr + '" ' +
+                    'data-initial-join="' + escapeAttr(joinVal) + '" ' +
+                    'data-initial-leave="' + escapeAttr(leaveVal) + '">';
 
-        // ---- Name and status ----
-        html += '<span class="academy-team-member-name">' +
+        html += '<span class="awtm-member-name">' +
                     escapeHtml(member.name || 'Unknown') +
                 '</span>';
 
-        if (isDeceased) {
-            html += '<span class="academy-team-member-deceased-marker" ' +
+        if (member.deceased === true) {
+            html += '<span class="awtm-member-deceased" ' +
                         'title="Deceased">\u2020</span>';
         }
 
         if (statusLabel) {
-            html += '<span class="academy-team-member-status">' +
+            html += '<span class="awtm-member-status">' +
                         escapeHtml(statusLabel) +
                     '</span>';
         }
 
-        // ---- Editable join / leave ----
-        html += '<span class="awtm-member-period-fields">';
+        html += '<span class="awtm-member-fields">';
 
-        html += '<label class="awtm-period-label" ' +
-                    'for="awtm-join-' + charIdAttr + '">Join</label>';
+        html += '<label class="awtm-period-label">Join</label>';
         html += '<input type="number" ' +
                     'class="awtm-period-input awtm-join-input" ' +
-                    'id="awtm-join-' + charIdAttr + '" ' +
                     'data-role="awtm-join-input" ' +
-                    'data-character-id="' + charIdAttr + '" ' +
                     'min="' + CalendarConstants.MIN_WEEK + '" ' +
                     'max="' + CalendarConstants.MAX_WEEK + '" ' +
                     'value="' + escapeAttr(joinVal) + '" ' +
                     'placeholder="\u2014">';
 
-        html += '<label class="awtm-period-label" ' +
-                    'for="awtm-leave-' + charIdAttr + '">Leave</label>';
+        html += '<label class="awtm-period-label">Leave</label>';
         html += '<input type="number" ' +
                     'class="awtm-period-input awtm-leave-input" ' +
-                    'id="awtm-leave-' + charIdAttr + '" ' +
                     'data-role="awtm-leave-input" ' +
-                    'data-character-id="' + charIdAttr + '" ' +
                     'min="' + CalendarConstants.MIN_WEEK + '" ' +
                     'max="' + CalendarConstants.MAX_WEEK + '" ' +
                     'value="' + escapeAttr(leaveVal) + '" ' +
                     'placeholder="\u2014">';
 
-        html += '<button type="button" ' +
-                    'class="small primary awtm-save-btn" ' +
-                    'data-action="awtm-save" ' +
-                    'data-character-id="' + charIdAttr + '" ' +
-                    'title="Save this member\'s period">' +
-                    'Save' +
-                '</button>';
-
         html += '</span>';
 
-        // ---- Shortcut actions ----
-        html += '<button type="button" ' +
-                    'class="small secondary" ' +
-                    'data-action="awtm-dropout" ' +
-                    'data-character-id="' + charIdAttr + '" ' +
-                    'title="Set leave week to ' +
-                        (displayedWeek - 1) + '">' +
-                    'Drop Out' +
-                '</button>';
+        html += '</div>';
+        return html;
+    }
 
-        if (showRejoin) {
-            html += '<button type="button" ' +
-                        'class="small secondary" ' +
-                        'data-action="awtm-rejoin" ' +
-                        'data-character-id="' + charIdAttr + '" ' +
-                        'title="Open a new interval starting now">' +
-                        'Rejoin' +
-                    '</button>';
+    /**
+     * Read-only row for a former member.
+     *
+     * Carries the identity and period data the restore modal needs.
+     */
+    function renderFormerMemberRow(member) {
+        if (!member || !member.characterId) { return ''; }
+
+        var periodDisplay = isNonEmptyString(member.periodDisplay)
+            ? member.periodDisplay
+            : '';
+
+        var charIdAttr = escapeAttr(member.characterId);
+        var memberIdAttr = escapeAttr(member.memberId || '');
+        var joinAttr = escapeAttr(member.joinPeriod || '');
+        var leaveAttr = escapeAttr(member.leavePeriod || '');
+
+        var html = '';
+        html += '<div class="awtm-former-row" ' +
+                    'data-character-id="' + charIdAttr + '" ' +
+                    'data-member-id="' + memberIdAttr + '" ' +
+                    'data-join-period="' + joinAttr + '" ' +
+                    'data-leave-period="' + leaveAttr + '">';
+
+        html += '<span class="awtm-former-name">' +
+                    escapeHtml(member.name || 'Unknown') +
+                '</span>';
+
+        if (periodDisplay) {
+            html += '<span class="awtm-former-period">' +
+                        escapeHtml(periodDisplay) +
+                    '</span>';
         }
 
         html += '<button type="button" ' +
-                    'class="small danger" ' +
-                    'data-action="awtm-purge" ' +
-                    'data-character-id="' + charIdAttr + '" ' +
-                    'title="Delete record: remove all history">' +
-                    '\u2715' +
-                '</button>';
+                    'class="small secondary awtm-restore-btn" ' +
+                    'data-action="awtm-restore">Restore</button>';
 
         html += '</div>';
         return html;
@@ -483,7 +481,6 @@
 
         var disposed = false;
         var clickHandler = null;
-        var keydownHandler = null;
 
         function invokeOnClose() {
             if (typeof onClose === 'function') {
@@ -516,9 +513,7 @@
             } catch (e) {
                 console.error(
                     '[AcademyWeeklyTeamsMembers] Aggregator threw while ' +
-                    'building the member-manager VM. This usually means ' +
-                    'EliminationQueries is not loaded, or the candidate ' +
-                    'pool could not be computed. Original error:',
+                    'building the member-manager VM. Original error:',
                     e
                 );
                 throw e;
@@ -530,6 +525,7 @@
                     teamName: 'Team',
                     week: weekNum,
                     members: [],
+                    formerMembers: [],
                     candidates: []
                 }, { notFound: true });
                 bindEvents(container);
@@ -555,177 +551,112 @@
                         return;
                     case 'awtm-save':
                         e.preventDefault();
-                        handleSave(target.dataset.characterId);
+                        handleSaveAll();
                         return;
-                    case 'awtm-dropout':
+                    case 'awtm-revert':
                         e.preventDefault();
-                        handleDropOut(target.dataset.characterId);
-                        return;
-                    case 'awtm-rejoin':
-                        e.preventDefault();
-                        handleRejoin(target.dataset.characterId);
-                        return;
-                    case 'awtm-purge':
-                        e.preventDefault();
-                        handlePurge(target.dataset.characterId);
+                        handleRevert();
                         return;
                     case 'awtm-add':
                         e.preventDefault();
                         handleAdd();
+                        return;
+                    case 'awtm-restore':
+                        e.preventDefault();
+                        handleOpenRestore(target);
                         return;
                     default:
                         return;
                 }
             };
             rootEl.addEventListener('click', clickHandler);
-
-            if (keydownHandler) {
-                rootEl.removeEventListener('keydown', keydownHandler);
-            }
-            keydownHandler = function(e) {
-                if (e.key !== 'Enter') { return; }
-                var input = e.target;
-                if (!input) { return; }
-                var role = input.dataset ? input.dataset.role : '';
-                if (role !== 'awtm-join-input' &&
-                    role !== 'awtm-leave-input') {
-                    return;
-                }
-                e.preventDefault();
-                var charId = input.dataset.characterId;
-                if (charId) { handleSave(charId); }
-            };
-            rootEl.addEventListener('keydown', keydownHandler);
         }
 
         // ------------------------------------------------------------------
-        // Row-edit commit
+        // Save all
         // ------------------------------------------------------------------
-        //
-        // [FIX-M3] Reads the two inputs on the member's row, validates
-        // them, and calls AcademyWeeklyTeams.updateMemberWindow. On
-        // success, re-renders in place. On failure, notifies the user
-        // and leaves the inputs as-is.
 
-        function handleSave(charId) {
-            if (!charId) { return; }
+        function handleSaveAll() {
+            var rows = container.querySelectorAll('.awtm-member-row');
+            var changes = [];
+            var invalidMessage = null;
 
-            var joinInput = container.querySelector(
-                '.awtm-join-input[data-character-id="' + charId + '"]'
-            );
-            var leaveInput = container.querySelector(
-                '.awtm-leave-input[data-character-id="' + charId + '"]'
-            );
+            for (var i = 0; i < rows.length; i++) {
+                var row = rows[i];
+                var joinInput = row.querySelector('.awtm-join-input');
+                var leaveInput = row.querySelector('.awtm-leave-input');
 
-            var joinRaw = joinInput ? joinInput.value : '';
-            var leaveRaw = leaveInput ? leaveInput.value : '';
+                var joinRaw = joinInput ? joinInput.value : '';
+                var leaveRaw = leaveInput ? leaveInput.value : '';
 
-            var joinParse = parseOptionalWeekInput(joinRaw);
-            if (!joinParse.ok) {
-                notify(
-                    'Join week must be blank or an integer between ' +
-                    CalendarConstants.MIN_WEEK + ' and ' +
-                    CalendarConstants.MAX_WEEK + '.',
-                    'error'
-                );
-                return;
-            }
+                var initialJoin = row.dataset.initialJoin || '';
+                var initialLeave = row.dataset.initialLeave || '';
 
-            var leaveParse = parseOptionalWeekInput(leaveRaw);
-            if (!leaveParse.ok) {
-                notify(
-                    'Leave week must be blank or an integer between ' +
-                    CalendarConstants.MIN_WEEK + ' and ' +
-                    CalendarConstants.MAX_WEEK + '.',
-                    'error'
-                );
-                return;
-            }
+                var joinParse = parseOptionalWeekInput(joinRaw);
+                var leaveParse = parseOptionalWeekInput(leaveRaw);
 
-            var joinNum = joinParse.value;
-            var leaveNum = leaveParse.value;
-
-            if (joinNum !== null &&
-                leaveNum !== null &&
-                leaveNum < joinNum) {
-                notify(
-                    'Leave week cannot be before join week.',
-                    'error'
-                );
-                return;
-            }
-
-            // Both blank would leave the entry in a meaningless
-            // state. Reject rather than write.
-            if (joinNum === null && leaveNum === null) {
-                notify(
-                    'Set at least one of Join or Leave.',
-                    'error'
-                );
-                return;
-            }
-
-            AcademyWeeklyTeams.updateMemberWindow(
-                classId,
-                teamId,
-                charId,
-                {
-                    joinPeriod: joinNum === null ? '' : String(joinNum),
-                    leavePeriod: leaveNum === null ? '' : String(leaveNum)
+                if (!joinParse.ok) {
+                    invalidMessage =
+                        'Join week must be blank or an integer between ' +
+                        CalendarConstants.MIN_WEEK + ' and ' +
+                        CalendarConstants.MAX_WEEK + '.';
+                    break;
                 }
-            )
-            .then(function(result) {
-                if (result && result.success) {
-                    render();
-                    invokeOnChange();
+                if (!leaveParse.ok) {
+                    invalidMessage =
+                        'Leave week must be blank or an integer between ' +
+                        CalendarConstants.MIN_WEEK + ' and ' +
+                        CalendarConstants.MAX_WEEK + '.';
+                    break;
                 }
-                // On failure, MutationPipeline has already surfaced
-                // the reason; do not double-notify.
-            })
-            .catch(function(err) {
-                console.warn(
-                    '[AcademyWeeklyTeamsMembers] updateMemberWindow failed:',
-                    err
-                );
-            });
-        }
 
-        // ------------------------------------------------------------------
-        // Drop Out
-        // ------------------------------------------------------------------
-        //
-        // Shortcut: set leavePeriod = displayedWeek - 1. This uses the
-        // same updateMemberWindow mutation as Save, so the member entry
-        // is edited in place rather than replaced.
+                var joinCanonical = joinParse.value;
+                var leaveCanonical = leaveParse.value;
 
-        function handleDropOut(charId) {
-            if (!charId) return;
-            var dropLeave = weekNum - 1;
+                if (joinCanonical === initialJoin &&
+                    leaveCanonical === initialLeave) {
+                    continue;
+                }
 
-            if (dropLeave < CalendarConstants.MIN_WEEK) {
-                notify(
-                    'Cannot drop out: current week is already the first ' +
-                    'week of the calendar.',
-                    'error'
-                );
+                if (joinCanonical !== '' && leaveCanonical !== '') {
+                    var jn = parseInt(joinCanonical, 10);
+                    var lv = parseInt(leaveCanonical, 10);
+                    if (!isNaN(jn) && !isNaN(lv) && lv < jn) {
+                        var nameEl = row.querySelector('.awtm-member-name');
+                        invalidMessage =
+                            'Row "' + (nameEl ? nameEl.textContent : '?') +
+                            '": Leave cannot be before Join.';
+                        break;
+                    }
+                }
+
+                if (joinCanonical === '' && leaveCanonical === '') {
+                    var nameEl2 = row.querySelector('.awtm-member-name');
+                    invalidMessage =
+                        'Row "' + (nameEl2 ? nameEl2.textContent : '?') +
+                        '": set at least one of Join or Leave.';
+                    break;
+                }
+
+                changes.push({
+                    identifier: buildIdentifierFromRow(row),
+                    joinPeriod: joinCanonical,
+                    leavePeriod: leaveCanonical
+                });
+            }
+
+            if (invalidMessage) {
+                notify(invalidMessage, 'error');
                 return;
             }
 
-            if (!confirm(
-                'Drop this member out from week ' + weekNum +
-                ' onward? Their earlier membership is preserved.'
-            )) {
+            if (changes.length === 0) {
+                notify('No changes to save.', 'info');
                 return;
             }
 
-            AcademyWeeklyTeams.updateMemberWindow(
-                classId,
-                teamId,
-                charId,
-                {
-                    joinPeriod: undefined,
-                    leavePeriod: String(dropLeave)
-                }
+            AcademyWeeklyTeams.updateMemberWindows(
+                classId, teamId, changes
             )
             .then(function(result) {
                 if (result && result.success) {
@@ -735,105 +666,28 @@
             })
             .catch(function(err) {
                 console.warn(
-                    '[AcademyWeeklyTeamsMembers] drop out failed:',
+                    '[AcademyWeeklyTeamsMembers] updateMemberWindows failed:',
                     err
                 );
             });
+        }
+
+        /**
+         * Discard every dirty input by re-rendering from the VM.
+         * The VM is the source of truth; a plain render() reverts
+         * all uncommitted edits.
+         */
+        function handleRevert() {
+            render();
         }
 
         // ------------------------------------------------------------------
-        // Rejoin
+        // Add
         // ------------------------------------------------------------------
-        //
-        // [FIX-M2] The schema stores one window per member entry. A
-        // rejoin is therefore: purge the old entry, add a fresh one
-        // starting at the user-supplied week. The user is prompted
-        // for the start week; leave is unbounded.
-
-        function handleRejoin(charId) {
-            if (!charId) return;
-
-            var input = prompt(
-                'Rejoin starting at which week? (between ' +
-                CalendarConstants.MIN_WEEK + ' and ' +
-                CalendarConstants.MAX_WEEK + ')',
-                String(weekNum)
-            );
-
-            if (input === null) { return; }
-
-            var rejoinStart = parseWeekStrict(input);
-            if (rejoinStart === null) {
-                notify(
-                    'Rejoin week must be an integer between ' +
-                    CalendarConstants.MIN_WEEK + ' and ' +
-                    CalendarConstants.MAX_WEEK + '.',
-                    'error'
-                );
-                return;
-            }
-
-            // Purge first (removes the historical entry for this
-            // character in this team), then re-add with the new
-            // join week.
-            AcademyWeeklyTeams.purgeMemberRecords(
-                classId, teamId, charId
-            )
-            .then(function(purgeResult) {
-                if (!purgeResult || !purgeResult.success) {
-                    // Purge found nothing to remove; proceed anyway.
-                    return null;
-                }
-                return AcademyWeeklyTeams.addMember(
-                    classId, teamId, charId, rejoinStart
-                );
-            })
-            .then(function(addResult) {
-                if (!addResult) { return; }
-                if (addResult && addResult.success) {
-                    render();
-                    invokeOnChange();
-                }
-            })
-            .catch(function(err) {
-                console.warn(
-                    '[AcademyWeeklyTeamsMembers] rejoin failed:',
-                    err
-                );
-            });
-        }
-
-        function handlePurge(charId) {
-            if (!charId) return;
-            if (!confirm(
-                'Permanently delete this membership record? ' +
-                'This removes all history for this member in this team ' +
-                'and cannot be undone.'
-            )) {
-                return;
-            }
-
-            AcademyWeeklyTeams.purgeMemberRecords(
-                classId, teamId, charId
-            )
-            .then(function(result) {
-                if (result && result.success) {
-                    render();
-                    invokeOnChange();
-                }
-            })
-            .catch(function(err) {
-                console.warn(
-                    '[AcademyWeeklyTeamsMembers] purgeMemberRecords failed:',
-                    err
-                );
-            });
-        }
 
         function handleAdd() {
             var select = container.querySelector('.awtm-member-select');
             var charId = select ? select.value : '';
-
             if (!charId) {
                 notify('Select a character to add.', 'error');
                 return;
@@ -850,10 +704,310 @@
             })
             .catch(function(err) {
                 console.warn(
-                    '[AcademyWeeklyTeamsMembers] addMember failed:',
+                    '[AcademyWeeklyTeamsMembers] addMember failed:', err
+                );
+            });
+        }
+
+        // ------------------------------------------------------------------
+        // Restore
+        // ------------------------------------------------------------------
+
+        function handleOpenRestore(btnEl) {
+            var row = btnEl.closest('.awtm-former-row');
+            if (!row) { return; }
+
+            var characterId = row.dataset.characterId;
+            var memberId = row.dataset.memberId;
+            var joinPeriod = row.dataset.joinPeriod;
+            var leavePeriod = row.dataset.leavePeriod;
+
+            var identifier = isNonEmptyString(memberId)
+                ? memberId
+                : { characterId: characterId, joinPeriod: joinPeriod };
+
+            openRestoreModal({
+                characterId: characterId,
+                memberId: memberId,
+                joinPeriod: joinPeriod,
+                leavePeriod: leavePeriod,
+                identifier: identifier
+            });
+        }
+
+        function openRestoreModal(info) {
+            var modal = Modal.createModal('awtm-restore-modal');
+            if (!modal) {
+                notify('Could not open restore dialog.', 'error');
+                return;
+            }
+
+            var contentEl = document.createElement('div');
+            contentEl.className = 'modal-content';
+            contentEl.innerHTML = buildRestoreFormHTML(info);
+            modal.appendChild(contentEl);
+
+            Modal.modalSetup(modal);
+            Modal.showModal(modal);
+
+            var close = function() {
+                try {
+                    if (typeof Modal.closeModal === 'function') {
+                        Modal.closeModal(modal);
+                    } else if (typeof Modal.hideModal === 'function') {
+                        Modal.hideModal(modal);
+                    }
+                } catch (e) {
+                    console.warn(
+                        '[AcademyWeeklyTeamsMembers] restore modal close failed:',
+                        e
+                    );
+                }
+                if (modal.parentNode) {
+                    modal.parentNode.removeChild(modal);
+                }
+            };
+
+            var closeBtn = modal.querySelector('.close-modal');
+            if (closeBtn) { closeBtn.addEventListener('click', close); }
+
+            var cancelBtn = modal.querySelector('.cancel-modal-btn');
+            if (cancelBtn) { cancelBtn.addEventListener('click', close); }
+
+            modal.addEventListener('click', function(ev) {
+                if (ev.target === modal) { close(); }
+            });
+
+            var form = modal.querySelector('#awtm-restore-form');
+            if (!form) { return; }
+
+            form.addEventListener('submit', function(ev) {
+                ev.preventDefault();
+
+                var modeInput = form.querySelector(
+                    'input[name="awtm-restore-mode"]:checked'
+                );
+                var modeValue = modeInput ? modeInput.value : '';
+
+                if (modeValue === 'correct') {
+                    handleRestoreCorrect(form, info, close);
+                    return;
+                }
+                if (modeValue === 'new') {
+                    handleRestoreNew(form, info, close);
+                    return;
+                }
+            });
+        }
+
+        function handleRestoreCorrect(form, info, close) {
+            var leaveInput = form.querySelector(
+                '.awtm-restore-leave-input'
+            );
+            var leaveRaw = leaveInput ? leaveInput.value : '';
+
+            var parsed = parseOptionalWeekInput(leaveRaw);
+            if (!parsed.ok) {
+                notify(
+                    'Leave week must be blank or an integer between ' +
+                    CalendarConstants.MIN_WEEK + ' and ' +
+                    CalendarConstants.MAX_WEEK + '.',
+                    'error'
+                );
+                return;
+            }
+
+            AcademyWeeklyTeams.updateMemberWindows(
+                classId,
+                teamId,
+                [{
+                    identifier: info.identifier,
+                    leavePeriod: parsed.value
+                }]
+            )
+            .then(function(result) {
+                if (result && result.success) {
+                    close();
+                    render();
+                    invokeOnChange();
+                }
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[AcademyWeeklyTeamsMembers] restore (correct) failed:',
                     err
                 );
             });
+        }
+
+        function handleRestoreNew(form, info, close) {
+            var joinInput = form.querySelector(
+                '.awtm-restore-join-input'
+            );
+            var newLeaveInput = form.querySelector(
+                '.awtm-restore-newleave-input'
+            );
+
+            var joinRaw = joinInput ? joinInput.value : '';
+            var newLeaveRaw = newLeaveInput ? newLeaveInput.value : '';
+
+            var joinParsed = parseWeekStrict(joinRaw);
+            if (joinParsed === null) {
+                notify(
+                    'New join week must be an integer between ' +
+                    CalendarConstants.MIN_WEEK + ' and ' +
+                    CalendarConstants.MAX_WEEK + '.',
+                    'error'
+                );
+                return;
+            }
+
+            var newLeaveParsed = parseOptionalWeekInput(newLeaveRaw);
+            if (!newLeaveParsed.ok) {
+                notify(
+                    'New leave week must be blank or an integer between ' +
+                    CalendarConstants.MIN_WEEK + ' and ' +
+                    CalendarConstants.MAX_WEEK + '.',
+                    'error'
+                );
+                return;
+            }
+
+            if (newLeaveParsed.value !== '' &&
+                parseInt(newLeaveParsed.value, 10) < joinParsed) {
+                notify('Leave cannot be before join.', 'error');
+                return;
+            }
+
+            // Step 1: append a new stint via addMember. This creates
+            // an entry with joinPeriod = joinParsed and
+            // leavePeriod = ''.
+            AcademyWeeklyTeams.addMember(
+                classId, teamId, info.characterId, joinParsed
+            )
+            .then(function(addResult) {
+                if (!addResult || !addResult.success) {
+                    return;
+                }
+
+                if (newLeaveParsed.value === '') {
+                    // No leave to set; done.
+                    close();
+                    render();
+                    invokeOnChange();
+                    return;
+                }
+
+                // Step 2: patch the newly-created entry's leave week.
+                // Identify it by composite (characterId, joinPeriod) —
+                // unique per character per join week.
+                return AcademyWeeklyTeams.updateMemberWindows(
+                    classId,
+                    teamId,
+                    [{
+                        identifier: {
+                            characterId: info.characterId,
+                            joinPeriod: String(joinParsed)
+                        },
+                        leavePeriod: newLeaveParsed.value
+                    }]
+                ).then(function(updateResult) {
+                    if (updateResult && updateResult.success) {
+                        close();
+                        render();
+                        invokeOnChange();
+                    }
+                });
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[AcademyWeeklyTeamsMembers] restore (new) failed:',
+                    err
+                );
+            });
+        }
+
+        function buildRestoreFormHTML(info) {
+            var currentLeave = isNonEmptyString(info.leavePeriod)
+                ? info.leavePeriod
+                : '';
+
+            var html = '';
+            html += '<form id="awtm-restore-form">';
+
+            html += '<div class="modal-header">';
+            html += '<h3>Restore Member</h3>';
+            html += '<button type="button" class="close-modal">' +
+                        '&times;' +
+                    '</button>';
+            html += '</div>';
+
+            html += '<div class="modal-body">';
+
+            html += '<p class="field-hint">' +
+                        'Choose how to bring this member back.' +
+                    '</p>';
+
+            // ---- Option 1: correct the leave week ----
+            html += '<label class="awtm-restore-option">';
+            html += '<input type="radio" name="awtm-restore-mode" ' +
+                        'value="correct" checked>';
+            html += '<span class="awtm-restore-option-body">';
+            html += '<strong>Correct the leave week</strong>';
+            html += '<span class="awtm-restore-option-hint">' +
+                        'Edits this entry\'s existing window in place. ' +
+                        'Use this when the leave week was recorded wrong.' +
+                    '</span>';
+            html += '<span class="awtm-restore-input-row">';
+            html += '<label>Leave</label>';
+            html += '<input type="number" ' +
+                        'class="awtm-period-input awtm-restore-leave-input" ' +
+                        'min="' + CalendarConstants.MIN_WEEK + '" ' +
+                        'max="' + CalendarConstants.MAX_WEEK + '" ' +
+                        'value="' + escapeAttr(currentLeave) + '" ' +
+                        'placeholder="\u2014">';
+            html += '</span>';
+            html += '</span>';
+            html += '</label>';
+
+            // ---- Option 2: reopen with a new interval ----
+            html += '<label class="awtm-restore-option">';
+            html += '<input type="radio" name="awtm-restore-mode" ' +
+                        'value="new">';
+            html += '<span class="awtm-restore-option-body">';
+            html += '<strong>Reopen with a new interval</strong>';
+            html += '<span class="awtm-restore-option-hint">' +
+                        'Preserves the former window and starts a fresh ' +
+                        'one. Use this when they took a break and came ' +
+                        'back.' +
+                    '</span>';
+            html += '<span class="awtm-restore-input-row">';
+            html += '<label>Join</label>';
+            html += '<input type="number" ' +
+                        'class="awtm-period-input awtm-restore-join-input" ' +
+                        'min="' + CalendarConstants.MIN_WEEK + '" ' +
+                        'max="' + CalendarConstants.MAX_WEEK + '" ' +
+                        'value="' + escapeAttr(String(weekNum)) + '">';
+            html += '<label>Leave</label>';
+            html += '<input type="number" ' +
+                        'class="awtm-period-input awtm-restore-newleave-input" ' +
+                        'min="' + CalendarConstants.MIN_WEEK + '" ' +
+                        'max="' + CalendarConstants.MAX_WEEK + '" ' +
+                        'placeholder="\u2014">';
+            html += '</span>';
+            html += '</span>';
+            html += '</label>';
+
+            html += '<div class="form-actions">';
+            html += '<button type="button" ' +
+                        'class="cancel-modal-btn secondary">Cancel</button>';
+            html += '<button type="submit" class="primary">Restore</button>';
+            html += '</div>';
+
+            html += '</div>';
+            html += '</form>';
+
+            return html;
         }
 
         function close() {
@@ -864,13 +1018,7 @@
                     container.removeEventListener('click', clickHandler);
                 } catch (e) {}
             }
-            if (keydownHandler && container.parentNode) {
-                try {
-                    container.removeEventListener('keydown', keydownHandler);
-                } catch (e) {}
-            }
             clickHandler = null;
-            keydownHandler = null;
             invokeOnClose();
         }
 
