@@ -76,6 +76,11 @@
              the schema's enum arrays at load time. If the schema
              loads later, tournament-constants falls back to local
              lists and warns on every page load.
+
+           - mission-constants.js is loaded here (not in the
+             missions block) because mission-id.js, mission-schema.js,
+             mission-rules.js, mission-aggregator.js, mission-views.js,
+             and mission-render.js all read from it at load time.
          ============================================================ -->
     <script src="js/modules/shared/constants.js"></script>
     <script src="js/modules/shared/calendar-constants.js"></script>
@@ -84,15 +89,20 @@
     <script src="js/modules/shared/magic-constants.js"></script>
     <script src="js/modules/shared/social-constants.js"></script>
     <script src="js/modules/shared/team-constants.js"></script>
-        <script src="js/modules/shared/mission-constants.js"></script>
 
     <script src="js/modules/tournaments/tournament-schema.js"></script>
     <script src="js/modules/shared/tournament-constants.js"></script>
+
+    <script src="js/modules/shared/mission-constants.js"></script>
 
     <script src="js/utils/calendar-validation.js"></script>
 
     <!-- ============================================================
          SHARED QUERIES
+         ============================================================
+         mission-queries.js is loaded here, not in the missions
+         block, because the dashboard reads MissionQueries and is
+         loaded later in this file.
          ============================================================ -->
     <script src="js/modules/shared/queries/character-queries.js"></script>
     <script src="js/modules/shared/queries/team-queries.js"></script>
@@ -236,21 +246,12 @@
              Matches, Queries, EliminationCascade, CalendarValidation,
              IdUtils, ObjectUtils, MutationPipeline.
 
-         Removed from this block (no longer used):
+         Removed from this block (moved to js/modules/trash/):
 
-           - tournament-lifecycle.js      (dead — status is a soft
-                                           label, no permission gates)
-           - tournament-aggregator.js     (dead — no standalone
-                                           tournament tab; Academy
-                                           aggregator reads directly
-                                           from TournamentQueries)
+           - tournament-lifecycle.js
+           - tournament-aggregator.js
            - tournament-elimination-workflow.js
-                                          (dead — manual restore moved
-                                           into the elimination cascade
-                                           as restoreCharacterElimination)
-           - tournament-repair.js         (dead — no consumers; the
-                                           schema owns canonicalisation,
-                                           migrations own legacy data)
+           - tournament-repair.js
          ============================================================ -->
     <script src="js/modules/tournaments/tournament-elimination-cascade.js"></script>
     <script src="js/modules/tournaments/tournament-rules.js"></script>
@@ -270,18 +271,14 @@
              academy-view.js, which requires it at load time.
 
            - academy-weekly-teams-members.js must load before
-             academy-view.js. It is accessed lazily at call time by
-             academy-view's weekly-teams-manage-members handler, but
-             loading it in the shell block keeps the Academy view
-             dependencies co-located.
+             academy-view.js.
 
            - academy-tournament-view.js must load before
              academy-tournament-events.js, which requires it at
              IIFE time.
 
            - academy-tournament-aggregator.js must load before
-             academy-view.js. academy-view.js requires
-             AcademyTournamentAggregator at load time.
+             academy-view.js.
 
            - academy-tournament-events.js must load before
              academy-view.js, which routes exam actions to it.
@@ -332,13 +329,30 @@
 
     <!-- ============================================================
          MISSIONS DOMAIN
+         ============================================================
+         mission-constants.js and mission-queries.js have already
+         loaded in earlier blocks.
+
+         Load order within this block matters:
+
+           - mission-id.js must load before mission-schema.js and
+             mission-rules.js (both import isValidYear).
+           - mission-schema.js and mission-rules.js must load before
+             mission-core.js.
+           - mission-views.js must load before mission-render.js and
+             mission-aggregator.js.
+           - mission-render.js and mission-aggregator.js must load
+             before mission-ui.js.
+           - mission-ui.js must load before missions/index.js.
          ============================================================ -->
-    <script src="js/modules/missions/mission-schema.js"></script>
     <script src="js/modules/missions/mission-id.js"></script>
-    <script src="js/modules/missions/mission-views.js"></script>
+    <script src="js/modules/missions/mission-schema.js"></script>
+    <script src="js/modules/missions/mission-rules.js"></script>
+    <script src="js/modules/missions/mission-cascade.js"></script>
     <script src="js/modules/missions/mission-core.js"></script>
-    <script src="js/modules/missions/mission-aggregator.js"></script>
+    <script src="js/modules/missions/mission-views.js"></script>
     <script src="js/modules/missions/mission-render.js"></script>
+    <script src="js/modules/missions/mission-aggregator.js"></script>
     <script src="js/modules/missions/mission-ui.js"></script>
     <script src="js/modules/missions/index.js"></script>
 
@@ -367,6 +381,10 @@
 
     <!-- ============================================================
          DASHBOARD
+         ============================================================
+         The dashboard reads MissionQueries (already loaded above),
+         TeamQueries, CharacterQueries, AcademyQueries, and other
+         domain queries. Loads after all domain modules.
          ============================================================ -->
     <script src="js/modules/dashboard/dashboard-aggregator.js"></script>
     <script src="js/modules/dashboard/dashboard-render.js"></script>
