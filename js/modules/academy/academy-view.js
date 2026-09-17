@@ -35,6 +35,16 @@
  * ROLE VOCABULARY (CANONICAL):
  *   'student' | 'instructor'. There is no 'trainee'.
  *
+ * ENROLMENT MUTATIONS:
+ *   AcademyEnrolments.enrol and AcademyEnrolments.leave both take a
+ *   week argument. Both perform cheap pre-flight validation BEFORE
+ *   entering the mutation pipeline and return a rejected
+ *   { success: false, message } Promise when the week is missing or
+ *   malformed. Because the rejection resolves rather than throws,
+ *   the caller MUST surface result.success === false. Every
+ *   enrollment call below passes AcademyUI.getDisplayWeek() and
+ *   surfaces the rejection message on failure.
+ *
  * WEEKLY TEAMS MEMBER MANAGEMENT:
  *   Manage Members for a weekly team routes to
  *   AcademyWeeklyTeamsMembers, which is Academy-scoped. It reads the
@@ -95,11 +105,11 @@
  *       the two stores stay in sync.
  *
  *   CLEAR EXISTING:
- *     The Auto-Distribute modal exposes a "Clear existing teams"
- *     checkbox. When checked, every weekly-team window record for
- *     the class is deleted before distribution runs. Persistent Team
- *     entities are NOT deleted. This is the same operation as the
- *     "Empty Teams" button.
+ *     The Auto-Distribute modal exposes an "Empty the weekly schedule
+ *     first" checkbox. When checked, every weekly-team window record
+ *     for the class is deleted before distribution runs. Persistent
+ *     Team entities are NOT deleted. This is the same operation as
+ *     the "Empty Teams" button.
  *
  *   IDEMPOTENCY:
  *     Running Auto-Distribute twice in a row is safe. The second run
@@ -109,8 +119,6 @@
  *     Each mutation (createTeam, addMember) goes through
  *     MutationPipeline and is individually atomic. The sequence as a
  *     whole is not. If a step fails, earlier steps remain applied.
- *     This matches the semantics of the distribution workflow and is
- *     documented in the user-facing summary.
  *
  * ACTION ROUTING:
  *   Actions carry a prefix (people-, character-, discipline-,
@@ -1513,7 +1521,6 @@
             return;
         }
 
-        // Count the current windows so the confirmation is informative.
         var records = [];
         try {
             records = AWT.getAllTeamRecords(_selectedWeeklyTeamsClassId) || [];
@@ -1544,7 +1551,6 @@
                     _selectedWeeklyTeamId = null;
                     refreshView();
                 }
-                // On failure, MutationPipeline has already notified.
             })
             .catch(function(err) {
                 console.warn('[AcademyView] clearClassWindows failed:', err);
@@ -1693,8 +1699,6 @@
                     return;
                 }
 
-                // On create, open the week window so the new team
-                // immediately appears in the Weekly Teams list.
                 if (!isEdit) {
                     var createdId = result.data && result.data.id
                         ? String(result.data.id)
@@ -1717,8 +1721,6 @@
                                 '[AcademyView] ensureWindow for new team failed:',
                                 err
                             );
-                            // The team exists; it just may not show in
-                            // the current week. Still refresh.
                             close();
                             refreshView();
                         });
@@ -1970,24 +1972,6 @@
         });
     }
 
-    /**
-     * Auto-Distribute. Places unassigned students into existing
-     * academic teams, or creates new teams when no existing team has
-     * capacity.
-     *
-     * Distribution is PER STUDENT. For each unassigned student, the
-     * existing team with the lowest current active-member count that
-     * still has capacity is chosen. Capacity is
-     * `groupSize - currentCount`. New teams are only created when
-     * every existing team has reached groupSize.
-     *
-     * When `ctx.clearExisting` is true, every weekly-team window
-     * record for the class is deleted first. Persistent Team
-     * entities are NOT deleted; they simply become unscheduled for
-     * the weekly view. The distribution then runs against an empty
-     * set of existing week teams, so every student lands in a new
-     * team.
-     */
     function runAutoDistribute(ctx) {
         var TeamCore = getTeamCore();
         var TeamQ = getTeamQueries();
@@ -2010,28 +1994,24 @@
             });
         }
 
-        // ---- Clear existing week windows (optional) ----
         var preChain = Promise.resolve();
         if (ctx.clearExisting === true &&
             typeof AWT.clearClassWindows === 'function') {
             preChain = AWT.clearClassWindows(ctx.classId).then(function() {
-                // Recurse with clearExisting disabled. The clear
-                // operation is now done; the recursive call will see
-                // an empty set of week windows.
                 return null;
             }).catch(function(err) {
                 console.warn(
                     '[AcademyView] clearClassWindows failed during ' +
                     'Auto-Distribute:', err
                 );
-                // Continue anyway; the distribution will just treat
-                // existing windows as present.
                 return null;
             });
         }
 
         return preChain.then(function() {
-            return runAutoDistributeCore(ctx, groupSize, TeamCore, TeamQ, TeamConstants, AWT);
+            return runAutoDistributeCore(
+                ctx, groupSize, TeamCore, TeamQ, TeamConstants, AWT
+            );
         });
     }
 
@@ -2059,8 +2039,6 @@
             activeThisWeek.push(t);
         }
 
-        // Current active counts per team, and the set of students
-        // already assigned.
         var assignedIds = Object.create(null);
         var teamCounts = Object.create(null);
         for (var a = 0; a < activeThisWeek.length; a++) {
@@ -2075,7 +2053,6 @@
             }
         }
 
-        // Unassigned students, alphabetically.
         var unassigned = [];
         for (var r = 0; r < roster.length; r++) {
             var student = roster[r];
@@ -2098,7 +2075,6 @@
             });
         }
 
-        // Sort existing teams by current count ascending (best-fit).
         var rankedExisting = activeThisWeek.slice().sort(function(a2, b2) {
             var ca = teamCounts[String(a2.id)] || 0;
             var cb = teamCounts[String(b2.id)] || 0;
@@ -2110,7 +2086,6 @@
         var highestExistingNumber = findHighestTeamNumber(activeThisWeek, namePrefix);
         var nextNumber = highestExistingNumber + 1;
 
-        // Per-team assignment plan.
         var existingPlans = [];
         for (var e = 0; e < rankedExisting.length; e++) {
             existingPlans.push({
@@ -2122,7 +2097,6 @@
         }
         var newPlans = [];
 
-        // Per-student placement.
         for (var u = 0; u < unassigned.length; u++) {
             var studentId = String(unassigned[u].id);
 
@@ -2155,7 +2129,6 @@
             newPlans.push(newPlan);
         }
 
-        // Execute. Existing plans first, then new plans.
         var failed = false;
         var failureMessage = null;
         var addedToExisting = 0;
@@ -2228,10 +2201,6 @@
 
                     createdNewTeams++;
 
-                    // Open the week window first, then add members.
-                    // The window must exist for the team to appear in
-                    // the Weekly Teams list even if a member add
-                    // fails later.
                     return AWT.ensureWindow(
                         ctx.classId, newTeamId, ctx.week
                     ).then(function() {
@@ -3041,6 +3010,23 @@
             });
     }
 
+    /**
+     * Enroll the current character in a discipline.
+     *
+     * WEEK SEMANTICS:
+     *   AcademyEnrolments.enrol requires a startWeek. The current
+     *   display week is passed as the start. Enrolment is INCLUSIVE
+     *   from that week onward.
+     *
+     * ERROR SURFACING:
+     *   AcademyEnrolments.enrol performs pre-flight validation
+     *   BEFORE entering the pipeline. Pre-flight rejections resolve
+     *   with { success: false, message } and do not throw, so the
+     *   .catch handler below will not fire for them. The success
+     *   branch must therefore check result.success === false
+     *   explicitly and surface the message; otherwise the user sees
+     *   nothing when the pre-flight check fails.
+     */
     function handleEnrollDiscipline(charId) {
         if (!charId) { return; }
 
@@ -3106,9 +3092,13 @@
         }
 
         var picked = candidates[choice - 1];
-        AE.enrol(charId, classId, picked.id).then(function(result) {
+        var week = AcademyUI.getDisplayWeek();
+
+        AE.enrol(charId, classId, picked.id, week).then(function(result) {
             if (result && result.success) {
                 refreshView();
+            } else if (result && result.message) {
+                notify(result.message, 'error');
             }
         }).catch(function(err) {
             console.warn('[AcademyView] Enroll failed:', err);
@@ -3116,6 +3106,18 @@
         });
     }
 
+    /**
+     * Leave a discipline effective from the current display week.
+     *
+     * WEEK SEMANTICS:
+     *   AcademyEnrolments.leave takes an effectiveWeek, the FIRST
+     *   week the student is no longer enrolled. The interval's
+     *   endWeek is set to effectiveWeek - 1.
+     *
+     * ERROR SURFACING:
+     *   Same as enrol: pre-flight rejections resolve, they do not
+     *   throw. The success branch must check result.success === false.
+     */
     function handleLeaveDiscipline(charId, disciplineId) {
         if (!charId || !disciplineId) { return; }
 
@@ -3145,9 +3147,13 @@
             return;
         }
 
-        AE.leave(charId, classId, disciplineId).then(function(result) {
+        var week = AcademyUI.getDisplayWeek();
+
+        AE.leave(charId, classId, disciplineId, week).then(function(result) {
             if (result && result.success) {
                 refreshView();
+            } else if (result && result.message) {
+                notify(result.message, 'error');
             }
         }).catch(function(err) {
             console.warn('[AcademyView] Leave failed:', err);
