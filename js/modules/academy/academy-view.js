@@ -39,22 +39,27 @@
  *   AcademyUI.getDisplayWeek() and surfaces the rejection message on
  *   failure.
  *
- * WEEKLY TEAMS ACTIONS:
- *   weekly-teams-clear-windows       — remove weekly-team window
- *                                      records for the class (the
- *                                      persistent Team entities are
- *                                      kept).
- *   weekly-teams-empty-teams (legacy alias) — not dispatched.
- *   weekly-teams-assign-orphan-team  — assign an orphan academic
- *                                      team (classId: null) to the
- *                                      class selected in the row.
- *   weekly-teams-toggle-orphans      — expand / collapse the orphan
- *                                      section (pure UI).
+ * WEEKLY TEAMS WINDOW SYNC:
+ *   The weekly-team window record (academy.weeklyTeams[classId][teamId])
+ *   must stay in sync with the persistent Team's startPeriod/endPeriod.
+ *   On create and on edit, this module calls
+ *   AcademyWeeklyTeams.setWindow(classId, teamId, startWeek, endWeek)
+ *   AFTER TeamCore.createTeam / TeamCore.updateTeam succeeds.
+ *
+ *   setWindow REPLACES the window. ensureWindow only widens it.
+ *
+ * WEEKLY TEAMS CLEAR SEMANTICS:
+ *   - "Clear Schedule" (weekly-teams-clear-windows):
+ *       Removes weekly-team window records for the class. Persistent
+ *       Team entities and their rosters are untouched. Teams
+ *       disappear from the Weekly Teams list.
+ *   - "Clear Rosters" (weekly-teams-empty-teams): HARD-deletes every
+ *       member whose active window covers the current week. Teams
+ *       stay scheduled; weekly-team windows are untouched.
  *
  * AUTO-DISTRIBUTE SEMANTICS:
- *   Per student. Existing teams fill toward groupSize; new teams
- *   are created only when every existing team has reached groupSize.
- *   Existing team structure is never modified.
+ *   Per student. Existing teams fill toward groupSize; new teams are
+ *   created only when every existing team has reached groupSize.
  *
  * WEEK SEMANTICS:
  *   Week values are owned by AcademyUI.setDisplayWeek.
@@ -306,12 +311,21 @@
         }
 
         var provider = {
-            exists: function(id) {
+            exists: function(appData, id) {
+                if (!appData || !Array.isArray(appData.characters)) {
+                    return false;
+                }
                 if (id === null || id === undefined || id === '') {
                     return false;
                 }
-                var char = CQ.getCharacterById(id);
-                return char !== null && char !== undefined;
+                var target = String(id);
+                for (var i = 0; i < appData.characters.length; i++) {
+                    var c = appData.characters[i];
+                    if (c && String(c.id) === target) {
+                        return true;
+                    }
+                }
+                return false;
             }
         };
 
@@ -453,7 +467,8 @@
 
         var peopleVM = AcademyAggregator.getPeopleViewModel(classId, {
             filters: AcademyUI.getPeopleFilter(),
-            selectedCharacterId: charId
+            selectedCharacterId: charId,
+            week: AcademyUI.getDisplayWeek()
         });
 
         html += '<div class="academy-body academy-people-layout">';
@@ -587,6 +602,7 @@
         var classes = 'academy-character-row';
         if (person.isSelected) { classes += ' selected'; }
         if (person.deceased) { classes += ' deceased'; }
+        if (person.isEliminated) { classes += ' eliminated'; }
 
         var html = '';
         html += '<div class="' + classes + '" ' +
@@ -604,7 +620,18 @@
         }
         html += '</div>';
 
-        if (person.status) {
+        // Elimination warning line. Rendered only for eliminated
+        // characters. Uses the elim week when known.
+        if (person.isEliminated) {
+            var weekText = (typeof person.eliminationWeek === 'number')
+                ? ' (Wk ' + person.eliminationWeek + ')'
+                : '';
+            html += '<div class="academy-character-row-warning">' +
+                        '\u26a0 Eliminated' + escapeHtml(weekText) +
+                    '</div>';
+        }
+
+        if (person.status && !person.isEliminated) {
             html += '<div class="academy-character-row-status">' +
                         escapeHtml(person.status) +
                     '</div>';
@@ -1438,7 +1465,6 @@
             return;
         }
 
-        var week = AcademyUI.getDisplayWeek();
         var records = AWT.getAllTeamRecords(_selectedWeeklyTeamsClassId) || [];
         var count = records.length;
 
@@ -1603,6 +1629,15 @@
             });
     }
 
+    /**
+     * Open the Create / Edit Team modal.
+     *
+     * On successful save, the weekly-team window is synchronised:
+     *   - create: setWindow(classId, createdId, start, end)
+     *   - edit:   setWindow(classId, teamId, start, end)
+     * setWindow REPLACES the window. This is what makes an end-week
+     * change stick.
+     */
     function openWeeklyTeamForm(teamId) {
         var View = getWeeklyTeamsViewModule();
         var TeamCore = getTeamCore();
@@ -1742,6 +1777,9 @@
                     return;
                 }
 
+                var AWT = getAcademyWeeklyTeams();
+
+                // ---- CREATE ----
                 if (!isEdit) {
                     var createdId = result.data && result.data.id
                         ? String(result.data.id)
@@ -1749,26 +1787,81 @@
                             ? String(result.data.team.id)
                             : null);
 
-                    var AWT = getAcademyWeeklyTeams();
-                    if (createdId && AWT &&
-                        typeof AWT.ensureWindow === 'function') {
-                        AWT.ensureWindow(
-                            _selectedWeeklyTeamsClassId,
-                            createdId,
-                            week
-                        ).then(function() {
-                            close();
-                            refreshView();
-                        }).catch(function(err) {
-                            console.warn(
-                                '[AcademyView] ensureWindow for new team failed:',
-                                err
-                            );
-                            close();
-                            refreshView();
-                        });
-                        return;
+                    if (createdId && AWT) {
+                        var createStart = payload.startPeriod || String(week);
+                        var createEnd = payload.endPeriod || null;
+
+                        if (typeof AWT.setWindow === 'function') {
+                            AWT.setWindow(
+                                _selectedWeeklyTeamsClassId,
+                                createdId,
+                                createStart,
+                                createEnd
+                            ).then(function() {
+                                close();
+                                refreshView();
+                            }).catch(function(err) {
+                                console.warn(
+                                    '[AcademyView] setWindow for new team failed:',
+                                    err
+                                );
+                                close();
+                                refreshView();
+                            });
+                            return;
+                        }
+
+                        // Fallback for older AWT.
+                        if (typeof AWT.ensureWindow === 'function') {
+                            AWT.ensureWindow(
+                                _selectedWeeklyTeamsClassId,
+                                createdId,
+                                week
+                            ).then(function() {
+                                close();
+                                refreshView();
+                            }).catch(function(err) {
+                                console.warn(
+                                    '[AcademyView] ensureWindow for new team failed:',
+                                    err
+                                );
+                                close();
+                                refreshView();
+                            });
+                            return;
+                        }
                     }
+
+                    close();
+                    refreshView();
+                    return;
+                }
+
+                // ---- EDIT ----
+                // Re-sync the window to match the team's new range.
+                if (isEdit && team && AWT &&
+                    typeof AWT.setWindow === 'function') {
+                    var editClassId = team.classId || _selectedWeeklyTeamsClassId;
+                    var editStart = payload.startPeriod || team.startPeriod || String(week);
+                    var editEnd = payload.endPeriod || null;
+
+                    AWT.setWindow(
+                        editClassId,
+                        team.id,
+                        editStart,
+                        editEnd
+                    ).then(function() {
+                        close();
+                        refreshView();
+                    }).catch(function(err) {
+                        console.warn(
+                            '[AcademyView] setWindow for edited team failed:',
+                            err
+                        );
+                        close();
+                        refreshView();
+                    });
+                    return;
                 }
 
                 close();
@@ -2251,9 +2344,13 @@
 
                     createdNewTeams++;
 
-                    return AWT.ensureWindow(
-                        ctx.classId, newTeamId, ctx.week
-                    ).then(function() {
+                    var windowPromise = (typeof AWT.setWindow === 'function')
+                        ? AWT.setWindow(
+                            ctx.classId, newTeamId, ctx.week, null
+                        )
+                        : AWT.ensureWindow(ctx.classId, newTeamId, ctx.week);
+
+                    return windowPromise.then(function() {
                         var memberChain = Promise.resolve();
                         plan.charIds.forEach(function(charId) {
                             memberChain = memberChain.then(function() {
