@@ -61,8 +61,15 @@
  *   Per student. Existing teams fill toward groupSize; new teams are
  *   created only when every existing team has reached groupSize.
  *
- * WEEK SEMANTICS:
- *   Week values are owned by AcademyUI.setDisplayWeek.
+ * WEEK SEMANTICS (v24):
+ *   [FIX-A] Every aggregator projection that consumes a week passes
+ *   AcademyUI.getDisplayWeek(). This includes:
+ *     - getClassViewModel(classId, week)
+ *     - getClassStudentsViewModel(classId, week)
+ *     - getPeopleViewModel(classId, { ..., week })
+ *   The People sidebar Status filter ('eliminated') reads the week-
+ *   scoped elimination state on each person VM, which is computed by
+ *   the aggregator via EliminationQueries.isCharacterEliminatedByWeek.
  *
  * DEPENDENCIES (MANDATORY):
  *   - AcademyUI
@@ -440,13 +447,18 @@
     // ============================================================
     // PEOPLE VIEW
     // ============================================================
+    //
+    // [FIX-A] The display week is threaded into every aggregator call
+    // so elimination state, class rosters, and the People filter are
+    // all evaluated against the same week.
 
     function renderPeopleView() {
         var classId = AcademyUI.getSelectedClassId();
         var charId = AcademyUI.getSelectedCharacterId();
+        var week = AcademyUI.getDisplayWeek();
 
         var html = '';
-        html += renderPeopleTopBar(classId);
+        html += renderPeopleTopBar(classId, week);
 
         if (!classId) {
             html += '<div class="academy-body academy-body-empty">' +
@@ -457,7 +469,10 @@
             return html;
         }
 
-        var classVM = AcademyAggregator.getClassViewModel(classId);
+        // [FIX-A] Pass the display week so studentCount and the
+        // roster are week-scoped. The VM's `eliminated` field per
+        // person is populated from EliminationQueries at this week.
+        var classVM = AcademyAggregator.getClassViewModel(classId, week);
         if (!classVM) {
             html += '<div class="academy-body academy-body-empty">' +
                         '<p class="empty-state">Class not found.</p>' +
@@ -468,7 +483,7 @@
         var peopleVM = AcademyAggregator.getPeopleViewModel(classId, {
             filters: AcademyUI.getPeopleFilter(),
             selectedCharacterId: charId,
-            week: AcademyUI.getDisplayWeek()
+            week: week
         });
 
         html += '<div class="academy-body academy-people-layout">';
@@ -489,8 +504,7 @@
         return html;
     }
 
-    function renderPeopleTopBar(selectedClassId) {
-        var week = AcademyUI.getDisplayWeek();
+    function renderPeopleTopBar(selectedClassId, week) {
         var classes = AcademyAggregator.getClassListViewModel() || [];
 
         var html = '';
@@ -594,6 +608,16 @@
         return html;
     }
 
+    // ============================================================
+    // PERSON ROW
+    // ============================================================
+    //
+    // [FIX-B] The elimination warning reads `person.eliminated` (the
+    // new VM field), not `person.status === 'eliminated'`. The
+    // `status` field is the free-form character status string
+    // ("trainee", "rookie", etc.) and never carries the value
+    // "eliminated".
+
     function renderPersonRow(person) {
         if (!person || !person.id) {
             return '';
@@ -602,7 +626,7 @@
         var classes = 'academy-character-row';
         if (person.isSelected) { classes += ' selected'; }
         if (person.deceased) { classes += ' deceased'; }
-        if (person.isEliminated) { classes += ' eliminated'; }
+        if (person.eliminated) { classes += ' eliminated'; }
 
         var html = '';
         html += '<div class="' + classes + '" ' +
@@ -621,8 +645,8 @@
         html += '</div>';
 
         // Elimination warning line. Rendered only for eliminated
-        // characters. Uses the elim week when known.
-        if (person.isEliminated) {
+        // characters. Uses the elimination week from the VM.
+        if (person.eliminated) {
             var weekText = (typeof person.eliminationWeek === 'number')
                 ? ' (Wk ' + person.eliminationWeek + ')'
                 : '';
@@ -631,7 +655,7 @@
                     '</div>';
         }
 
-        if (person.status && !person.isEliminated) {
+        if (person.status && !person.eliminated) {
             html += '<div class="academy-character-row-status">' +
                         escapeHtml(person.status) +
                     '</div>';
@@ -2028,7 +2052,8 @@
         }
 
         var roster = AcademyAggregator.getClassStudentsViewModel(
-            _selectedWeeklyTeamsClassId
+            _selectedWeeklyTeamsClassId,
+            week
         ) || [];
         var eligibleCount = roster.length;
 
@@ -2159,7 +2184,10 @@
     }
 
     function runAutoDistributeCore(ctx, groupSize, TeamCore, TeamQ, TeamConstants, AWT) {
-        var roster = AcademyAggregator.getClassStudentsViewModel(ctx.classId) || [];
+        var roster = AcademyAggregator.getClassStudentsViewModel(
+            ctx.classId,
+            ctx.week
+        ) || [];
         if (roster.length === 0) {
             notify('The class has no students.', 'info');
             return Promise.resolve({
@@ -2544,6 +2572,9 @@
             return;
         }
 
+        // [FIX-C] The People sidebar Status filter. The id here
+        // must match the id rendered in renderPeopleSidebar above.
+        // Both use 'academy-people-status'.
         if (target.id === 'academy-people-role') {
             AcademyUI.setPeopleRole(target.value);
             refreshView();
@@ -2672,7 +2703,10 @@
         AcademyUI.selectClass(classId);
 
         if (prevCharId) {
-            var classVM = AcademyAggregator.getClassViewModel(classId);
+            var week = AcademyUI.getDisplayWeek();
+            var classVM = AcademyAggregator.getClassViewModel(
+                classId, week
+            );
             if (classVM && isCharacterInClassVM(prevCharId, classVM)) {
                 AcademyUI.selectCharacter(prevCharId);
             }
@@ -2690,8 +2724,10 @@
             return true;
         }
 
+        var week = AcademyUI.getDisplayWeek();
         var students = AcademyAggregator.getClassStudentsViewModel(
-            classVM.id
+            classVM.id,
+            week
         ) || [];
         for (var i = 0; i < students.length; i++) {
             if (students[i] && String(students[i].id) === target) {
@@ -3127,7 +3163,8 @@
         }
 
         var className = 'this class';
-        var classVM = AcademyAggregator.getClassViewModel(classId);
+        var week = AcademyUI.getDisplayWeek();
+        var classVM = AcademyAggregator.getClassViewModel(classId, week);
         if (classVM && classVM.name) {
             className = '"' + classVM.name + '"';
         }
