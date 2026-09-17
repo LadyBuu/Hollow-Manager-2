@@ -707,21 +707,6 @@
     // collectFormData reads on submit. This keeps form state in
     // the DOM rather than duplicating it in module state.
 
-    function handleAddSupport(missionId, actionEl) {
-        // If we're inside a form, this is a form-side row addition.
-        var form = actionEl.closest('#mission-form-inner');
-        if (form) {
-            appendSupportRowToForm(form);
-            return;
-        }
-
-        // Otherwise it's the detail-panel version, which needs to
-        // prompt the user. We do this via a simple modal prompt
-        // pattern: open the form in edit mode.
-        if (!missionId) { return; }
-        openFormModal(missionId);
-    }
-
     function appendSupportRowToForm(form) {
         var select = form.querySelector('#mission-support-select');
         var host = form.querySelector('#mission-support-list');
@@ -770,17 +755,6 @@
 
         host.appendChild(row);
         select.value = '';
-    }
-
-    function handleAddObjective(missionId, actionEl) {
-        var form = actionEl.closest('#mission-form-inner');
-        if (form) {
-            appendObjectiveRowToForm(form);
-            return;
-        }
-
-        if (!missionId) { return; }
-        openFormModal(missionId);
     }
 
     function appendObjectiveRowToForm(form) {
@@ -963,18 +937,39 @@
         }
     }
 
+    /**
+     * Handle the "+ Add Support" action.
+     *
+     * If the button lives inside the mission form, this appends a
+     * DOM row to the form's support list. If the button lives in
+     * the detail modal, this opens the form in edit mode so the
+     * user can manage support there.
+     *
+     * The form-side and detail-side paths are both legitimate: the
+     * form is where support is authored, and the detail modal is
+     * where it's reviewed.
+     */
     function handleAddSupport(missionId, actionEl) {
-        // Form-side addition path is handled above. This branch is
-        // never reached from the detail panel; the detail panel
-        // opens the form for support management.
         var form = actionEl.closest('#mission-form-inner');
         if (form) {
             appendSupportRowToForm(form);
             return;
         }
+
         if (missionId) {
             openFormModal(missionId);
         }
+    }
+
+    function handleAddObjective(missionId, actionEl) {
+        var form = actionEl.closest('#mission-form-inner');
+        if (form) {
+            appendObjectiveRowToForm(form);
+            return;
+        }
+
+        if (!missionId) { return; }
+        openFormModal(missionId);
     }
 
     function handleRemoveSupport(missionId, characterId) {
