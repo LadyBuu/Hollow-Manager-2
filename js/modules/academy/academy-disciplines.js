@@ -61,23 +61,17 @@
  *     Read-time normalization only.
  *   - The set of valid keys is owned by AcademyGrades.VALID_GRADE_TYPES.
  *
- * DELETE CASCADE (Phase 8):
+ * DELETE CASCADE (v21):
  *   Deleting a discipline is a CASCADE. In a single transaction it:
  *     1. Deletes the discipline from curriculum.disciplines.
  *     2. Removes auto-groups whose disciplineId matches.
- *     3. Strips the discipline ID from every student weekly schedule.
- *     4. Strips the discipline ID from every location weekly schedule.
- *     5. Prunes metadata keys whose target slot no longer exists.
- *     6. Deletes grades keyed to this discipline.
- *     7. Cross-domain cleanup: removes the disciplineId from every
- *        student's enrolment list. Delegated to
- *        AcademyCascade.disciplineDeleted.
+ *     3. Deletes grades keyed to this discipline.
+ *     4. Cross-domain cleanup (delegated to AcademyCascade): removes
+ *        enrolments, teaching groups, and teaching sessions.
  *
- *   Steps 2–6 stay inline: they operate on curriculum-internal
- *   structures that AcademyDisciplines owns.
- *   Step 7 is delegated so that future enrollment-related stores
- *   (per-course enrollment, etc.) can be handled by the coordinator
- *   without touching this file.
+ *   The retired stored-schedule maps (curriculum.schedules,
+ *   curriculum.locationSchedules, curriculum.metadata) are no longer
+ *   touched. They were removed in database v21.
  *
  * MUTATION CONTRACT:
  *   - create / update / delete / saveDisciplines all return
@@ -650,112 +644,8 @@
     // ============================================================
     //
     // These operate on curriculum.* structures that AcademyDisciplines
-    // owns. Cross-domain cleanup (enrolments) is delegated to
-    // AcademyCascade.disciplineDeleted.
-
-    function stripDisciplineFromSchedules(curriculum, disciplineId) {
-        var schedules = curriculum.schedules;
-        if (!schedules || typeof schedules !== 'object') {
-            return 0;
-        }
-
-        var target = String(disciplineId);
-        var removedCount = 0;
-
-        Object.keys(schedules).forEach(function(studentId) {
-            var byWeek = schedules[studentId];
-            if (!byWeek || typeof byWeek !== 'object') {
-                return;
-            }
-
-            Object.keys(byWeek).forEach(function(weekKey) {
-                var byDay = byWeek[weekKey];
-                if (!byDay || typeof byDay !== 'object') {
-                    return;
-                }
-
-                Object.keys(byDay).forEach(function(dayKey) {
-                    var byHour = byDay[dayKey];
-                    if (!byHour || typeof byHour !== 'object') {
-                        return;
-                    }
-
-                    Object.keys(byHour).forEach(function(hourKey) {
-                        if (String(byHour[hourKey]) === target) {
-                            delete byHour[hourKey];
-                            removedCount++;
-                        }
-                    });
-
-                    if (Object.keys(byHour).length === 0) {
-                        delete byDay[dayKey];
-                    }
-                });
-
-                if (Object.keys(byDay).length === 0) {
-                    delete byWeek[weekKey];
-                }
-            });
-
-            if (Object.keys(byWeek).length === 0) {
-                delete schedules[studentId];
-            }
-        });
-
-        return removedCount;
-    }
-
-    function stripDisciplineFromLocationSchedules(curriculum, disciplineId) {
-        var schedules = curriculum.locationSchedules;
-        if (!schedules || typeof schedules !== 'object') {
-            return 0;
-        }
-
-        var target = String(disciplineId);
-        var removedCount = 0;
-
-        Object.keys(schedules).forEach(function(locationId) {
-            var byWeek = schedules[locationId];
-            if (!byWeek || typeof byWeek !== 'object') {
-                return;
-            }
-
-            Object.keys(byWeek).forEach(function(weekKey) {
-                var byDay = byWeek[weekKey];
-                if (!byDay || typeof byDay !== 'object') {
-                    return;
-                }
-
-                Object.keys(byDay).forEach(function(dayKey) {
-                    var byHour = byDay[dayKey];
-                    if (!byHour || typeof byHour !== 'object') {
-                        return;
-                    }
-
-                    Object.keys(byHour).forEach(function(hourKey) {
-                        if (String(byHour[hourKey]) === target) {
-                            delete byHour[hourKey];
-                            removedCount++;
-                        }
-                    });
-
-                    if (Object.keys(byHour).length === 0) {
-                        delete byDay[dayKey];
-                    }
-                });
-
-                if (Object.keys(byDay).length === 0) {
-                    delete byWeek[weekKey];
-                }
-            });
-
-            if (Object.keys(byWeek).length === 0) {
-                delete schedules[locationId];
-            }
-        });
-
-        return removedCount;
-    }
+    // owns. Cross-domain cleanup (enrolments, teaching groups, teaching
+    // sessions) is delegated to AcademyCascade.disciplineDeleted.
 
     function stripDisciplineFromAutoGroups(curriculum, disciplineId) {
         var store = curriculum.autoGroups;
@@ -775,56 +665,6 @@
 
         for (var i = 0; i < keysToRemove.length; i++) {
             delete store[keysToRemove[i]];
-        }
-
-        return keysToRemove.length;
-    }
-
-    function pruneOrphanedMetadata(curriculum) {
-        var metadata = curriculum.metadata;
-        if (!metadata || typeof metadata !== 'object') {
-            return 0;
-        }
-
-        var schedules = curriculum.schedules || {};
-        var locationSchedules = curriculum.locationSchedules || {};
-        var keysToRemove = [];
-
-        Object.keys(metadata).forEach(function(key) {
-            var parts = String(key).split('_');
-            if (parts.length < 4) {
-                return;
-            }
-
-            var hour = parts[parts.length - 1];
-            var day = parts[parts.length - 2];
-            var week = parts[parts.length - 3];
-            var entityId = parts.slice(0, parts.length - 3).join('_');
-
-            var slotExists = false;
-
-            if (schedules[entityId] &&
-                schedules[entityId][week] &&
-                schedules[entityId][week][day] &&
-                schedules[entityId][week][day][hour] !== undefined) {
-                slotExists = true;
-            }
-
-            if (!slotExists &&
-                locationSchedules[entityId] &&
-                locationSchedules[entityId][week] &&
-                locationSchedules[entityId][week][day] &&
-                locationSchedules[entityId][week][day][hour] !== undefined) {
-                slotExists = true;
-            }
-
-            if (!slotExists) {
-                keysToRemove.push(key);
-            }
-        });
-
-        for (var i = 0; i < keysToRemove.length; i++) {
-            delete metadata[keysToRemove[i]];
         }
 
         return keysToRemove.length;
@@ -1125,19 +965,16 @@
     /**
      * Delete a discipline permanently.
      *
-     * CASCADE. In a single transaction it:
+     * CASCADE (v21). In a single transaction it:
      *   1. Deletes the discipline entity.
-     *   2. Strips the discipline from student schedules.
-     *   3. Strips the discipline from location schedules.
-     *   4. Removes auto-groups whose disciplineId matches.
-     *   5. Prunes orphaned metadata.
-     *   6. Removes grades keyed to this discipline.
-     *   7. Cross-domain: removes the disciplineId from every student's
-     *      enrolment list. Delegated to
-     *      AcademyCascade.disciplineDeleted.
+     *   2. Removes auto-groups whose disciplineId matches.
+     *   3. Deletes grades keyed to this discipline.
+     *   4. Cross-domain cleanup via AcademyCascade.disciplineDeleted,
+     *      which handles enrolments, teaching groups, and teaching
+     *      sessions.
      *
-     * Steps 2–6 stay inline: curriculum-internal concerns that
-     * AcademyDisciplines owns. Step 7 is delegated.
+     * The retired stored-schedule maps are NOT touched. They were
+     * removed in database v21.
      */
     function deleteDiscipline(id) {
         if (!isNonEmptyString(id)) {
@@ -1194,10 +1031,7 @@
                 var curriculum = appData.curriculum;
 
                 // ---- 3. Curriculum-internal cleanup ----
-                var scheduleSlotsRemoved = stripDisciplineFromSchedules(curriculum, target);
-                var locationSlotsRemoved = stripDisciplineFromLocationSchedules(curriculum, target);
                 var groupsRemoved = stripDisciplineFromAutoGroups(curriculum, target);
-                var metadataPruned = pruneOrphanedMetadata(curriculum);
                 var gradesRemoved = stripDisciplineFromGrades(appData, target);
 
                 // ---- 4. Cross-domain cascade ----
@@ -1211,10 +1045,7 @@
                     deleted: true,
                     discipline: disciplineInfo,
                     curriculum: {
-                        scheduleSlotsRemoved: scheduleSlotsRemoved,
-                        locationSlotsRemoved: locationSlotsRemoved,
                         autoGroupsRemoved: groupsRemoved,
-                        metadataEntriesPruned: metadataPruned,
                         gradesRemoved: gradesRemoved
                     },
                     academyCascade: cascade
@@ -1224,8 +1055,6 @@
                 var parts = [];
 
                 var c = result.curriculum || {};
-                if (c.scheduleSlotsRemoved > 0) parts.push(c.scheduleSlotsRemoved + ' slot(s)');
-                if (c.locationSlotsRemoved > 0) parts.push(c.locationSlotsRemoved + ' location slot(s)');
                 if (c.autoGroupsRemoved > 0) parts.push(c.autoGroupsRemoved + ' group(s)');
                 if (c.gradesRemoved > 0) parts.push(c.gradesRemoved + ' grade(s)');
 
