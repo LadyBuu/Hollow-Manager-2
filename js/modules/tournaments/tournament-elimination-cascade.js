@@ -94,11 +94,47 @@
  *   If a historical-event model is ever adopted, this module is the
  *   single place that changes.
  *
+ * FAILING-PARTICIPANT EXTRACTION (v21 FIX):
+ *   The set of "who gets eliminated" depends on the match type, and
+ *   the two types index their result maps differently:
+ *
+ *     group_exam
+ *       match.participants is a list of CHARACTER IDs.
+ *       match.results is keyed by CHARACTER IDs.
+ *       A character is eliminated when results[charId] === 'fail'.
+ *       The character must appear in match.participants; a stray key
+ *       in match.results that is not a participant is ignored.
+ *
+ *     team_vs_team
+ *       match.participants is a list of TEAM IDs.
+ *       match.teamResults is keyed by TEAM IDs.
+ *       match.individualResults is keyed by CHARACTER IDs.
+ *
+ *       A team is eliminated when teamResults[teamId] === 'fail',
+ *       but team elimination does NOT eliminate the team's members.
+ *
+ *       A character is eliminated when
+ *       individualResults[charId] === 'fail'. Individual results are
+ *       keyed by characters who are members of the participating
+ *       teams, NOT by the participants themselves. The
+ *       participant-set check therefore does NOT apply to team
+ *       matches. A character ID in individualResults is trusted; the
+ *       caller (TournamentMatches.completeMatch) is responsible for
+ *       ensuring the map only contains legitimate members.
+ *
+ *   Previous behaviour (bug, fixed in v21):
+ *     getFailingParticipantIds rejected any ID that was not in
+ *     match.participants, unconditionally. For team matches, the
+ *     individual results are keyed by characters, which are not
+ *     participants, so every entry was silently dropped and no
+ *     character was ever eliminated. This is the bug that this
+ *     version fixes.
+ *
  * TEAM MATCH SEMANTICS:
  *   For 'team_vs_team' matches, ONLY individualResults[charId] ===
- *   'fail' triggers an elimination. teamResults[] never eliminates
- *   anyone directly. A team can fail while every member passes; a
- *   team can pass while a member fails.
+ *   'fail' triggers a character elimination. teamResults[] never
+ *   eliminates anyone directly. A team can fail while every member
+ *   passes; a team can pass while a member fails.
  *
  * IDEMPOTENCE:
  *   applyFailEliminations is idempotent for a given match: calling
@@ -218,6 +254,23 @@
                !Array.isArray(value);
     }
 
+    /**
+     * Normalise an ID value to a trimmed string, or null.
+     *
+     * The cascade compares identifiers from tournament records
+     * against identifiers in character records. Both sides may carry
+     * the same logical ID in slightly different shapes (number vs
+     * string, whitespace). Normalising to a trimmed string on both
+     * sides makes the comparison structural.
+     */
+    function normaliseId(value) {
+        if (value === null || value === undefined || value === '') {
+            return null;
+        }
+        var str = String(value).trim();
+        return str === '' ? null : str;
+    }
+
     function buildReason(week) {
         return 'Eliminated on week ' + week;
     }
@@ -230,13 +283,13 @@
         if (!appData || !Array.isArray(appData.characters)) {
             return null;
         }
-        if (!isNonEmptyString(charId)) {
+        var target = normaliseId(charId);
+        if (target === null) {
             return null;
         }
-        var target = String(charId);
         for (var i = 0; i < appData.characters.length; i++) {
             var c = appData.characters[i];
-            if (c && String(c.id) === target) {
+            if (c && normaliseId(c.id) === target) {
                 return c;
             }
         }
@@ -285,17 +338,40 @@
     // ============================================================
 
     /**
-     * Given a completed match, return the array of participant IDs
+     * Given a completed match, return the array of CHARACTER IDs
      * whose result is 'fail'.
      *
-     * SEMANTICS:
-     *   - group_exam:   results[charId] === 'fail'
-     *   - team_vs_team: individualResults[charId] === 'fail'
-     *                   (teamResults is never consulted)
+     * SEMANTICS (v21):
      *
-     * The result is de-duplicated. Only IDs that appear in
-     * match.participants[] are returned; extraneous keys in the
-     * result maps are ignored.
+     *   group_exam:
+     *     match.participants is a list of CHARACTER IDs.
+     *     match.results is keyed by CHARACTER IDs.
+     *     A character is eliminated when results[charId] === 'fail'
+     *     AND the character appears in match.participants. Stray
+     *     keys that are not participants are ignored.
+     *
+     *   team_vs_team:
+     *     match.participants is a list of TEAM IDs.
+     *     match.teamResults is keyed by TEAM IDs.
+     *     match.individualResults is keyed by CHARACTER IDs, which
+     *     are members of the participating teams.
+     *
+     *     A character is eliminated when
+     *     individualResults[charId] === 'fail'.
+     *
+     *     The participant-set check does NOT apply: characters are
+     *     not in match.participants, teams are. Trusting the map's
+     *     keys is the correct behaviour. Any stray character ID in
+     *     the map is a caller error; validation belongs in
+     *     TournamentMatches.completeMatch, where team membership is
+     *     available.
+     *
+     *     A team failing (teamResults[teamId] === 'fail') does NOT
+     *     eliminate the team's members. Only individualResults
+     *     drives character elimination.
+     *
+     * The result is de-duplicated. Only IDs that normalise to a
+     * non-empty string are returned.
      *
      * Exposed for testing.
      */
@@ -305,50 +381,51 @@
         }
 
         var type = match.type || 'group_exam';
+        var failures = [];
+        var seen = Object.create(null);
+
+        if (type === 'team_vs_team') {
+            var indResults = isObject(match.individualResults)
+                ? match.individualResults
+                : {};
+            var iKeys = Object.keys(indResults);
+            for (var k = 0; k < iKeys.length; k++) {
+                if (indResults[iKeys[k]] !== 'fail') { continue; }
+                var tvId = normaliseId(iKeys[k]);
+                if (tvId === null) { continue; }
+                if (seen[tvId]) { continue; }
+                seen[tvId] = true;
+                failures.push(tvId);
+            }
+            return failures;
+        }
+
+        // group_exam — and any unknown type falls through to this
+        // branch. The schema rejects unknown types, but the cascade
+        // does not throw on malformed input from outside its own
+        // contract; it treats unknown types as group exams.
         var participants = Array.isArray(match.participants)
             ? match.participants
             : [];
 
         var participantSet = Object.create(null);
         for (var i = 0; i < participants.length; i++) {
-            var pid = isNonEmptyString(participants[i])
-                ? String(participants[i])
-                : '';
-            if (pid !== '') {
+            var pid = normaliseId(participants[i]);
+            if (pid !== null) {
                 participantSet[pid] = true;
             }
         }
 
-        var failures = [];
-        var seen = Object.create(null);
-
-        function addIfFailing(id) {
-            if (!isNonEmptyString(id)) { return; }
-            var key = String(id);
-            if (!participantSet[key]) { return; }
-            if (seen[key]) { return; }
-            seen[key] = true;
-            failures.push(key);
-        }
-
-        if (type === 'group_exam') {
-            var results = isObject(match.results) ? match.results : {};
-            var rKeys = Object.keys(results);
-            for (var r = 0; r < rKeys.length; r++) {
-                if (results[rKeys[r]] === 'fail') {
-                    addIfFailing(rKeys[r]);
-                }
-            }
-        } else if (type === 'team_vs_team') {
-            var indResults = isObject(match.individualResults)
-                ? match.individualResults
-                : {};
-            var iKeys = Object.keys(indResults);
-            for (var k = 0; k < iKeys.length; k++) {
-                if (indResults[iKeys[k]] === 'fail') {
-                    addIfFailing(iKeys[k]);
-                }
-            }
+        var results = isObject(match.results) ? match.results : {};
+        var rKeys = Object.keys(results);
+        for (var r = 0; r < rKeys.length; r++) {
+            if (results[rKeys[r]] !== 'fail') { continue; }
+            var grId = normaliseId(rKeys[r]);
+            if (grId === null) { continue; }
+            if (!participantSet[grId]) { continue; }
+            if (seen[grId]) { continue; }
+            seen[grId] = true;
+            failures.push(grId);
         }
 
         return failures;
@@ -488,17 +565,11 @@
             );
         }
 
-        var tournamentId = isNonEmptyString(tournament.id)
-            ? String(tournament.id)
-            : '';
-        var matchId = isNonEmptyString(match.id)
-            ? String(match.id)
-            : '';
-        var roundId = isNonEmptyString(round.id)
-            ? String(round.id)
-            : '';
+        var tournamentId = normaliseId(tournament.id);
+        var matchId = normaliseId(match.id);
+        var roundId = normaliseId(round.id);
 
-        if (tournamentId === '' || matchId === '' || roundId === '') {
+        if (tournamentId === null || matchId === null || roundId === null) {
             throw new Error(
                 '[TournamentEliminationCascade] Missing tournament, ' +
                 'round, or match ID.'
@@ -543,8 +614,7 @@
                 var tourE = tournament.eliminations[te];
                 if (tourE &&
                     tourE.participantType === 'character' &&
-                    isNonEmptyString(tourE.participantId) &&
-                    String(tourE.participantId) === charId) {
+                    normaliseId(tourE.participantId) === charId) {
                     tournamentRemoved++;
                     continue;
                 }
@@ -562,8 +632,7 @@
                     var charE = char.eliminations[ce];
                     if (charE &&
                         charE.standalone !== true &&
-                        isNonEmptyString(charE.tournamentId) &&
-                        String(charE.tournamentId) === tournamentId) {
+                        normaliseId(charE.tournamentId) === tournamentId) {
                         charRemoved++;
                         continue;
                     }
@@ -647,16 +716,13 @@
             );
         }
 
-        var target = String(matchId);
-        var tournamentId = isNonEmptyString(tournament.id)
-            ? String(tournament.id)
-            : '';
+        var target = normaliseId(matchId);
+        var tournamentId = normaliseId(tournament.id);
 
         var tournamentResult = removeTournamentEliminationsBy(
             tournament,
             function(e) {
-                return isNonEmptyString(e.fromMatchId) &&
-                    String(e.fromMatchId) === target;
+                return normaliseId(e.fromMatchId) === target;
             }
         );
 
@@ -664,10 +730,8 @@
             appData,
             function(e) {
                 return e.standalone !== true &&
-                    isNonEmptyString(e.tournamentId) &&
-                    String(e.tournamentId) === tournamentId &&
-                    isNonEmptyString(e.fromMatchId) &&
-                    String(e.fromMatchId) === target;
+                    normaliseId(e.tournamentId) === tournamentId &&
+                    normaliseId(e.fromMatchId) === target;
             }
         );
 
@@ -705,16 +769,13 @@
             );
         }
 
-        var target = String(roundId);
-        var tournamentId = isNonEmptyString(tournament.id)
-            ? String(tournament.id)
-            : '';
+        var target = normaliseId(roundId);
+        var tournamentId = normaliseId(tournament.id);
 
         var tournamentResult = removeTournamentEliminationsBy(
             tournament,
             function(e) {
-                return isNonEmptyString(e.fromRoundId) &&
-                    String(e.fromRoundId) === target;
+                return normaliseId(e.fromRoundId) === target;
             }
         );
 
@@ -722,10 +783,8 @@
             appData,
             function(e) {
                 return e.standalone !== true &&
-                    isNonEmptyString(e.tournamentId) &&
-                    String(e.tournamentId) === tournamentId &&
-                    isNonEmptyString(e.fromRoundId) &&
-                    String(e.fromRoundId) === target;
+                    normaliseId(e.tournamentId) === tournamentId &&
+                    normaliseId(e.fromRoundId) === target;
             }
         );
 
@@ -762,14 +821,13 @@
             );
         }
 
-        var target = String(tournamentId);
+        var target = normaliseId(tournamentId);
 
         var characterResult = removeCharacterEliminationsBy(
             appData,
             function(e) {
                 return e.standalone !== true &&
-                    isNonEmptyString(e.tournamentId) &&
-                    String(e.tournamentId) === target;
+                    normaliseId(e.tournamentId) === target;
             }
         );
 
@@ -821,15 +879,15 @@
             );
         }
 
-        var tId = String(tournamentId);
-        var cId = String(characterId);
+        var tId = normaliseId(tournamentId);
+        var cId = normaliseId(characterId);
 
         // Tournament side: find the tournament in the snapshot.
         var tournament = null;
         if (Array.isArray(appData.tournaments)) {
             for (var i = 0; i < appData.tournaments.length; i++) {
                 var t = appData.tournaments[i];
-                if (t && String(t.id) === tId) {
+                if (t && normaliseId(t.id) === tId) {
                     tournament = t;
                     break;
                 }
@@ -842,8 +900,7 @@
                 tournament,
                 function(e) {
                     return e.participantType === 'character' &&
-                        isNonEmptyString(e.participantId) &&
-                        String(e.participantId) === cId;
+                        normaliseId(e.participantId) === cId;
                 }
             );
         }
@@ -853,9 +910,7 @@
             appData,
             function(e) {
                 if (e.standalone === true) { return false; }
-                if (!isNonEmptyString(e.tournamentId)) { return false; }
-                if (String(e.tournamentId) !== tId) { return false; }
-                return true;
+                return normaliseId(e.tournamentId) === tId;
             }
         );
 
