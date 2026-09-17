@@ -77,10 +77,17 @@
              loads later, tournament-constants falls back to local
              lists and warns on every page load.
 
-           - mission-constants.js is loaded here (not in the
-             missions block) because mission-id.js, mission-schema.js,
-             mission-rules.js, mission-aggregator.js, mission-views.js,
-             and mission-render.js all read from it at load time.
+           - mission-constants.js and mission-id.js are loaded here
+             (not in the missions block) because the following files
+             read them at load time:
+               * mission-queries.js (SHARED QUERIES block below)
+                 reads MissionId.generate
+               * mission-schema.js and mission-rules.js (MISSIONS
+                 block below) read MissionId.isValidYear
+               * mission-aggregator.js (MISSIONS block below) reads
+                 MissionId.derive
+             Loading them here guarantees they exist before any of
+             the mission modules run.
          ============================================================ -->
     <script src="js/modules/shared/constants.js"></script>
     <script src="js/modules/shared/calendar-constants.js"></script>
@@ -93,18 +100,17 @@
     <script src="js/modules/tournaments/tournament-schema.js"></script>
     <script src="js/modules/shared/tournament-constants.js"></script>
 
-        <script src="js/modules/missions/mission-id.js"></script>
-
     <script src="js/modules/shared/mission-constants.js"></script>
+    <script src="js/modules/missions/mission-id.js"></script>
 
     <script src="js/utils/calendar-validation.js"></script>
 
     <!-- ============================================================
          SHARED QUERIES
          ============================================================
-         mission-queries.js is loaded here, not in the missions
-         block, because the dashboard reads MissionQueries and is
-         loaded later in this file.
+         mission-queries.js is loaded here (not in the missions
+         block) because the dashboard reads it and the dashboard
+         block loads last.
          ============================================================ -->
     <script src="js/modules/shared/queries/character-queries.js"></script>
     <script src="js/modules/shared/queries/team-queries.js"></script>
@@ -332,13 +338,13 @@
     <!-- ============================================================
          MISSIONS DOMAIN
          ============================================================
-         mission-constants.js and mission-queries.js have already
-         loaded in earlier blocks.
+         mission-constants.js, mission-id.js, and mission-queries.js
+         have already loaded in earlier blocks.
 
          Load order within this block matters:
 
-           - mission-id.js must load before mission-schema.js and
-             mission-rules.js (both import isValidYear).
+           - mission-schema.js and mission-rules.js both import
+             MissionId.isValidYear (already available).
            - mission-schema.js and mission-rules.js must load before
              mission-core.js.
            - mission-views.js must load before mission-render.js and
@@ -347,7 +353,6 @@
              before mission-ui.js.
            - mission-ui.js must load before missions/index.js.
          ============================================================ -->
-
     <script src="js/modules/missions/mission-schema.js"></script>
     <script src="js/modules/missions/mission-rules.js"></script>
     <script src="js/modules/missions/mission-cascade.js"></script>
@@ -384,9 +389,9 @@
     <!-- ============================================================
          DASHBOARD
          ============================================================
-         The dashboard reads MissionQueries (already loaded above),
-         TeamQueries, CharacterQueries, AcademyQueries, and other
-         domain queries. Loads after all domain modules.
+         The dashboard reads MissionQueries, TeamQueries,
+         CharacterQueries, AcademyQueries, and other domain queries.
+         Loads after all domain modules.
          ============================================================ -->
     <script src="js/modules/dashboard/dashboard-aggregator.js"></script>
     <script src="js/modules/dashboard/dashboard-render.js"></script>
