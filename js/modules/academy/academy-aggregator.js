@@ -45,18 +45,27 @@
  *   PERSISTENT Team entity's own startPeriod / endPeriod AND by the
  *   weekly-team window record. Both must contain the week.
  *
- * WEEKLY TEAMS ROSTER (v22):
+ * WEEKLY TEAMS ROSTER (v22 + v24):
  *   The roster for a team comes from the PERSISTENT Team entity's
  *   members[] array, filtered by week through
  *   TeamQueries.getActiveTeamMembers. The weekly-team record carries
  *   ONLY the week window.
  *
+ *   [FIX-P1] Each member VM carries the member's own joinPeriod and
+ *   leavePeriod, plus a derived periodDisplay string. The Academy
+ *   weekly-teams member manager renders those as editable inputs so
+ *   a member's window can be changed independently of the team's
+ *   window.
+ *
+ *   The team-window check lives in TeamQueries.getActiveTeamMembers
+ *   (as of the v24 fix to that module). A team whose own window has
+ *   ended returns no active members, so its former members are free
+ *   to appear in other teams' candidate pools.
+ *
  * ORPHAN TEAMS:
  *   Academic Teams with classId === null are surfaced by
  *   getUnassignedTeamsViewModel and by the orphanTeams field on the
- *   Weekly Teams VM. The Weekly Teams view shows them in a
- *   compact section until every orphan is assigned. Once assigned,
- *   the section disappears.
+ *   Weekly Teams VM.
  *
  * CLASS VM SHAPE:
  *   {
@@ -92,10 +101,6 @@
  *     'eliminated' — eliminated (as of week)
  *     'deceased'   — deceased
  *     'all'        — no filter
- *
- *   The 'active' filter excludes eliminated characters, matching the
- *   semantics of the "Hide Eliminated" checkbox in the character
- *   list sidebar.
  *
  * FAIL-CLOSED ELIGIBILITY:
  *   getWeeklyTeamMemberManagerViewModel treats EliminationQueries as
@@ -430,9 +435,6 @@
     // ============================================================
     // CLASS STUDENTS
     // ============================================================
-    //
-    // [FIX-1a] Accepts and forwards the week so callers get
-    // elimination-aware roster entries.
 
     function getClassStudentsViewModel(classId, week) {
         return deriveClassRoster(classId, week);
@@ -441,11 +443,6 @@
     // ============================================================
     // CLASS VIEW MODEL
     // ============================================================
-    //
-    // [FIX-1a] Accepts and forwards the week so studentCount is
-    // computed from the week-scoped roster. The count itself is not
-    // elimination-filtered (it is the roster size, not the eligible
-    // size); the roster entries carry elimination state.
 
     function getClassViewModel(classId, week) {
         if (!classId) { return null; }
@@ -474,21 +471,6 @@
     // ============================================================
     // PEOPLE VIEW MODEL
     // ============================================================
-    //
-    // [FIX-1b] The status filter now implements the 'eliminated'
-    // branch and treats 'active' as "not deceased AND not
-    // eliminated". The week is threaded through from options.week
-    // so elimination is evaluated against the displayed week.
-    //
-    // Filter semantics:
-    //   status === 'all'        → no filter
-    //   status === 'active'     → exclude deceased AND eliminated
-    //   status === 'deceased'   → exclude non-deceased
-    //   status === 'eliminated' → exclude non-eliminated
-    //
-    // Any unknown status value is treated as 'all'. This is a
-    // deliberate leniency for the UI vocabulary only; it does not
-    // fabricate data.
 
     function getPeopleViewModel(classId, options) {
         options = options || {};
@@ -1086,17 +1068,6 @@
     // ============================================================
     // WEEKLY TEAMS VIEW MODEL
     // ============================================================
-    //
-    // The team list is filtered by both the PERSISTENT Team entity's
-    // own startPeriod / endPeriod AND the weekly-team window record.
-    //
-    // ROSTER SOURCE (v22):
-    //   Member count and selected-team roster come from the
-    //   persistent Team entity's members[] array, filtered by week.
-    //
-    // ORPHAN TEAMS:
-    //   Academic teams with classId null appear in `orphanTeams` so
-    //   the view can surface them for assignment.
 
     function getWeeklyTeamsViewModel(classId, week, selectedTeamId) {
         var classList = getClassListViewModel();
@@ -1225,6 +1196,9 @@
             }
 
             // ROSTER SOURCE (v22): persistent Team entity.
+            // TeamQueries.getActiveTeamMembers also applies the team
+            // window (v24), so a team that has ended returns no
+            // active members at this week.
             var activeMembers = TeamQueries.getActiveTeamMembers(
                 team,
                 week
@@ -1264,7 +1238,9 @@
             week
         ) || [];
 
-        var members = buildTeamMembersVM(activeMembers);
+        // [FIX-P1] Pass the team type so member period display can
+        // be formatted correctly (Wk for academic, plain for other).
+        var members = buildTeamMembersVM(activeMembers, team.type);
 
         return {
             id: team.id,
@@ -1281,7 +1257,62 @@
         };
     }
 
-    function buildTeamMembersVM(activeMemberRecords) {
+    // ============================================================
+    // MEMBER PERIOD DISPLAY
+    // ============================================================
+    //
+    // [FIX-P3] Format a member's join/leave range for display.
+    //
+    // Academic team: "Wk 3 - Wk 8", "Wk 3 -", "Until Wk 8"
+    // Non-academic:  "1923 - 1925", "1923 -", "Until 1925"
+    //
+    // Empty string when both bounds are absent. The dash is an
+    // en-dash (\u2013), matching the team-level period format.
+
+    function formatMemberPeriodDisplay(joinPeriod, leavePeriod, teamType) {
+        var isAcademic = String(teamType) === 'academic';
+        var prefix = isAcademic ? 'Wk ' : '';
+
+        var hasJoin = joinPeriod !== undefined &&
+                      joinPeriod !== null &&
+                      joinPeriod !== '';
+        var hasLeave = leavePeriod !== undefined &&
+                       leavePeriod !== null &&
+                       leavePeriod !== '';
+
+        var joinStr = hasJoin ? String(joinPeriod) : '';
+        var leaveStr = hasLeave ? String(leavePeriod) : '';
+
+        if (joinStr && leaveStr) {
+            return prefix + joinStr + ' \u2013 ' + prefix + leaveStr;
+        }
+        if (joinStr) {
+            return prefix + joinStr + ' \u2013';
+        }
+        if (leaveStr) {
+            return 'Until ' + prefix + leaveStr;
+        }
+        return '';
+    }
+
+    // ============================================================
+    // TEAM MEMBERS VIEW MODEL
+    // ============================================================
+    //
+    // [FIX-P1] [FIX-P2] Each member VM carries:
+    //   - joinPeriod       — the member's own start week (or '')
+    //   - leavePeriod      — the member's own end week (or '')
+    //   - periodDisplay    — a formatted "Wk 3 - Wk 8" string
+    //   - role             — member role (defaults to 'Member')
+    //   - age              — character age display
+    //   - statusLabel      — character status string
+    //   - deceased         — boolean
+    //
+    // The member-manager UI consumes joinPeriod and leavePeriod for
+    // its editable inputs. periodDisplay is provided for read-only
+    // contexts (weekly-team detail view, member list, etc.).
+
+    function buildTeamMembersVM(activeMemberRecords, teamType) {
         if (!Array.isArray(activeMemberRecords)) {
             return [];
         }
@@ -1295,6 +1326,19 @@
             var charId = record.characterId;
             if (!charId) { continue; }
 
+            var joinPeriod = record.joinPeriod !== undefined &&
+                             record.joinPeriod !== null
+                ? String(record.joinPeriod)
+                : '';
+            var leavePeriod = record.leavePeriod !== undefined &&
+                              record.leavePeriod !== null
+                ? String(record.leavePeriod)
+                : '';
+
+            var periodDisplay = formatMemberPeriodDisplay(
+                joinPeriod, leavePeriod, teamType
+            );
+
             var char = CharacterQueries.getCharacterById(charId);
             if (!char) {
                 result.push({
@@ -1304,7 +1348,10 @@
                     roleLabel: '',
                     age: '',
                     statusLabel: '',
-                    deceased: false
+                    deceased: false,
+                    joinPeriod: joinPeriod,
+                    leavePeriod: leavePeriod,
+                    periodDisplay: periodDisplay
                 });
                 continue;
             }
@@ -1316,7 +1363,10 @@
                 roleLabel: '',
                 age: CharacterQueries.getCharacterAge(char),
                 statusLabel: CharacterQueries.getCurrentStatus(char),
-                deceased: char.deceased === true
+                deceased: char.deceased === true,
+                joinPeriod: joinPeriod,
+                leavePeriod: leavePeriod,
+                periodDisplay: periodDisplay
             });
         }
 
@@ -1330,10 +1380,6 @@
     // ============================================================
     // UNASSIGNED (ORPHAN) ACADEMIC TEAMS
     // ============================================================
-    //
-    // Academic teams with classId null. The Weekly Teams view
-    // surfaces them so the user can assign a class. When the array
-    // is empty, the section does not render.
 
     function getUnassignedTeamsViewModel(options) {
         options = options || {};
@@ -1373,21 +1419,16 @@
     //
     // Consumed by academy-weekly-teams-members.js. Builds:
     //   - members: currently active members (persistent roster,
-    //     filtered by week)
+    //     filtered by week), each carrying joinPeriod / leavePeriod
+    //     / periodDisplay for the editable row UI.
     //   - candidates: class roster minus instructor minus current
     //     members minus characters assigned elsewhere this week
     //     minus ELIMINATED characters.
     //
-    // [FIX-1c] ELIMINATION IS FAIL-CLOSED.
-    //
-    //   EliminationQueries is REQUIRED for this projection. If it is
-    //   absent or does not expose isCharacterEliminatedByWeek, this
-    //   function throws. If the query throws, the exception
-    //   propagates.
-    //
-    //   An eligibility gate that fails open is not a gate. Silent
-    //   "not eliminated" defaults are exactly how an eliminated
-    //   character ends up on a team roster.
+    // [FIX-1c] ELIMINATION IS FAIL-CLOSED. EliminationQueries is a
+    // required dependency. If it is absent or does not expose
+    // isCharacterEliminatedByWeek, this function throws. If the
+    // query throws, the exception propagates.
     //
     // Team must belong to the class; if not, returns null.
 
@@ -1432,11 +1473,14 @@
         }
 
         // ---- Members ----
+        // [FIX-P1] Pass team.type so each member VM carries a
+        // correctly-formatted periodDisplay and the raw join/leave
+        // weeks the editable UI needs.
         var activeMembers = TeamQueries.getActiveTeamMembers(
             team, weekNum
         ) || [];
 
-        var members = buildTeamMembersVM(activeMembers);
+        var members = buildTeamMembersVM(activeMembers, team.type);
 
         // ---- Candidate pool ----
         var activeIds = Object.create(null);
@@ -1460,6 +1504,11 @@
 
         // Assigned elsewhere = active in another academic team of
         // the same class this week.
+        //
+        // TeamQueries.getActiveTeamMembers applies the team-window
+        // check (v24), so a sibling whose own window has ended does
+        // NOT mark its former members as assigned elsewhere. They
+        // are freed up to appear as candidates here.
         var assignedElsewhere = Object.create(null);
         var classTeams = TeamQueries.getTeamsByClass(classId, 'operational') || [];
         for (var t = 0; t < classTeams.length; t++) {
@@ -1480,10 +1529,6 @@
             ? String(cls.instructorId)
             : null;
 
-        // [FIX-1a] Pass week through deriveClassRoster so the roster
-        // entries carry elimination state. We do NOT rely on that
-        // state here — we re-check below via EQ directly — but
-        // passing the week keeps the roster projection coherent.
         var roster = deriveClassRoster(classId, weekNum);
 
         var candidates = [];
@@ -1505,8 +1550,6 @@
             }
 
             // [FIX-1c] Fail-closed elimination check. No try/catch.
-            // If the query throws, the projection throws. If the
-            // query returns true, the character is not a candidate.
             if (EQ.isCharacterEliminatedByWeek(studentId, weekNum) === true) {
                 continue;
             }
