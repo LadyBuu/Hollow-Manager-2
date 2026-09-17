@@ -1,0 +1,1105 @@
+/**
+ * css/characters.css - Hollow Blades Manager
+ *
+ * The Characters tab.
+ *
+ * Covers:
+ *   - Character layout (.characters-layout, sidebar, form container)
+ *   - Character list (.char-list-item, filters, #char-list-panel)
+ *   - Character form shell (.form-header, .form-tabs, .form-tab-btn)
+ *   - Form panels (name, physical, personality, professional, combat,
+ *     social, notes, academic)
+ *   - Class chips (#class-tag-container, .class-tag)
+ *   - Career status entries (.career-status-entry)
+ *   - Weapons (.weapon-entry)
+ *   - Combat stats (.stat-block, .stat-input, .stat-modifier)
+ *   - Magic (.magic-type-block, .magic-category, .magic-grid)
+ *   - Special moves (.moves-column, .special-move-entry, .moves-list)
+ *   - Social tab (.relationship-groups, .relationship-group,
+ *     .relationship-row)
+ *   - Character detail modal (.detail-tabs, .detail-tab-btn,
+ *     .detail-tab-panel)
+ *   - Elimination controls (.elimination-controls, standalone list)
+ *   - Academic tab (.academic-section, .enrollment-chip)
+ *   - Grades tab host
+ *   - Schedule tab host
+ *
+ * Load order: shared.css → characters.css
+ */
+
+/* ============================================================
+   LAYOUT
+   ============================================================ */
+
+.characters-layout {
+    display: grid;
+    grid-template-columns: 300px 1fr;
+    gap: 16px;
+}
+
+@media (max-width: 768px) {
+    .characters-layout {
+        grid-template-columns: 1fr;
+        gap: 12px;
+    }
+}
+
+/* ============================================================
+   SIDEBAR
+   ============================================================ */
+
+.characters-sidebar {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px;
+    max-height: 640px;
+    overflow-y: auto;
+}
+
+@media (max-width: 480px) {
+    .characters-sidebar {
+        max-height: 300px;
+    }
+}
+
+.characters-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.characters-header h2 {
+    font-size: 1rem;
+    color: var(--accent);
+}
+
+.characters-header-actions {
+    display: flex;
+    gap: 4px;
+}
+
+/* ============================================================
+   FILTERS
+   ============================================================ */
+
+.characters-filters {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+.characters-filters input,
+.characters-filters select {
+    width: 100%;
+    padding: 3px 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.65rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.characters-filters input:focus,
+.characters-filters select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.filter-checkboxes {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+    padding: 4px 0;
+}
+
+.filter-check {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    cursor: pointer;
+}
+
+.filter-check input[type="checkbox"] {
+    width: auto;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+/* ============================================================
+   CHARACTER LIST
+   ============================================================ */
+
+#char-list-panel {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+#char-list-panel.open {
+    display: block;
+}
+
+#char-list-panel .empty-state {
+    padding: 10px;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+}
+
+#characters-container {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.char-list-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 8px;
+    background: transparent;
+    border-radius: 4px;
+    border-bottom: 1px solid var(--border-soft);
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.char-list-item:hover {
+    background: var(--panel-alt);
+}
+
+.char-list-item.selected,
+.char-list-item.active {
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    padding-left: 6px;
+}
+
+.char-list-item.deceased {
+    opacity: 0.5;
+}
+
+.char-list-item.eliminated {
+    border-left: 3px solid var(--danger);
+    padding-left: 6px;
+}
+
+.char-list-item .char-list-item-main {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+}
+
+.char-list-item .char-name {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text);
+}
+
+.char-list-item .char-status {
+    font-size: 0.55rem;
+    color: var(--text-dim);
+}
+
+.char-list-item .char-list-item-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+/* ============================================================
+   FORM CONTAINER
+   ============================================================ */
+
+.characters-form-container {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px;
+    max-height: 640px;
+    overflow-y: auto;
+}
+
+@media (max-width: 480px) {
+    .characters-form-container {
+        max-height: 500px;
+        padding: 6px;
+    }
+}
+
+#character-form {
+    display: block;
+}
+
+#character-form .form-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+#character-form .form-header h3 {
+    font-size: 0.95rem;
+    color: var(--accent);
+    margin: 0;
+}
+
+#character-form .form-header .char-name-display {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+}
+
+#character-form .form-header .form-actions {
+    display: flex;
+    gap: 4px;
+}
+
+/* ============================================================
+   FORM TABS
+   ============================================================ */
+
+.form-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    margin-bottom: 12px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+}
+
+.form-tab-btn {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 4px 4px 0 0;
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    font-weight: 500;
+    padding: 4px 10px;
+    cursor: pointer;
+    transition: 0.15s;
+    white-space: nowrap;
+}
+
+.form-tab-btn:hover {
+    color: var(--text);
+    background: var(--panel-alt);
+}
+
+.form-tab-btn.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+    background: var(--accent-soft);
+    font-weight: 600;
+}
+
+@media (max-width: 480px) {
+    .form-tab-btn {
+        font-size: 0.55rem;
+        padding: 3px 6px;
+    }
+}
+
+.tab-panel {
+    display: none;
+}
+
+.tab-panel.active,
+.tab-panel[style*="display:block"],
+.tab-panel[style*="display: block"] {
+    display: block;
+}
+
+/* ============================================================
+   CLASS CHIPS
+   ============================================================ */
+
+#class-tag-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 4px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    min-height: 36px;
+}
+
+.class-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    font-size: 0.7rem;
+    color: var(--accent);
+}
+
+.class-tag-orphan {
+    background: var(--danger-soft);
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+.class-tag .remove-class-tag {
+    background: none;
+    border: none;
+    color: var(--danger);
+    cursor: pointer;
+    font-size: 0.5rem;
+    padding: 0 2px;
+}
+
+/* ---------- New academic chip row (character class view) ---------- */
+
+.academic-section {
+    margin-bottom: 16px;
+}
+
+.academic-section:last-child {
+    margin-bottom: 0;
+}
+
+.academic-section > label,
+.academic-section > .academic-section-label {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--accent);
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+
+.academic-add-class {
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academic-classes {
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academic-teams {
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academic-enrollment {
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academic-grades {
+    /* No bottom border — last section */
+}
+
+.enrollment-chip {
+    display: inline-block;
+    padding: 2px 8px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    font-size: 0.65rem;
+    color: var(--text);
+}
+
+/* ============================================================
+   PREVIOUS NAME ROWS
+   ============================================================ */
+
+.previous-name-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.previous-name-input {
+    flex: 1;
+    padding: 6px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.75rem;
+}
+
+.previous-name-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* ============================================================
+   CAREER STATUS ROWS
+   ============================================================ */
+
+.career-status-entry {
+    display: grid;
+    grid-template-columns: 1.2fr 0.7fr 0.7fr 1.2fr auto;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+@media (max-width: 600px) {
+    .career-status-entry {
+        grid-template-columns: 1fr 1fr;
+    }
+    .career-status-entry .career-title {
+        grid-column: 1 / -1;
+    }
+    .career-status-entry .remove-career-entry {
+        grid-column: 2;
+        justify-self: end;
+    }
+}
+
+.career-status-entry select,
+.career-status-entry input {
+    width: 100%;
+    padding: 4px 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.career-status-entry select:focus,
+.career-status-entry input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* ============================================================
+   WEAPONS
+   ============================================================ */
+
+.weapon-entry {
+    display: grid;
+    grid-template-columns: 1.5fr 1fr 2fr auto;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+@media (max-width: 600px) {
+    .weapon-entry {
+        grid-template-columns: 1fr 1fr;
+    }
+    .weapon-entry .weapon-notes {
+        grid-column: 1 / -1;
+    }
+    .weapon-entry .remove-weapon {
+        grid-column: 2;
+        justify-self: end;
+    }
+}
+
+.weapon-entry input,
+.weapon-entry select {
+    width: 100%;
+    padding: 4px 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.weapon-entry input:focus,
+.weapon-entry select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* ============================================================
+   PHYSICAL STATS (Combat tab)
+   ============================================================ */
+
+.stat-input-group {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 4px;
+}
+
+@media (max-width: 500px) {
+    .stat-input-group {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
+
+.stat-input-group .form-group label {
+    text-align: center;
+    font-size: 0.55rem;
+}
+
+.stat-input-group .form-group input {
+    width: 100%;
+    text-align: center;
+    padding: 4px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.75rem;
+}
+
+/* ---------- New stat-block layout (character-form.js) ---------- */
+
+.stat-block {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    align-items: center;
+    padding: 6px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.stat-block label {
+    font-size: 0.6rem;
+    font-weight: 600;
+    color: var(--text-dim);
+}
+
+.stat-input {
+    width: 100%;
+    padding: 4px 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.9rem;
+    font-weight: 700;
+    text-align: center;
+}
+
+.stat-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.stat-modifier {
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: var(--text-dim);
+}
+
+/* ---------- Stat action rows ---------- */
+
+.stat-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-top: 8px;
+    padding: 8px;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+}
+
+.stat-label {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+}
+
+.suggested-class {
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 0.7rem;
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.suggested-class.empty {
+    background: transparent;
+    border-color: var(--border);
+    color: var(--text-dim);
+    font-weight: 400;
+}
+
+#class-description-display {
+    margin-top: 6px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+}
+
+/* ============================================================
+   COMBAT SECTIONS
+   ============================================================ */
+
+.combat-section {
+    margin-bottom: 12px;
+    padding: 10px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.combat-section:last-child {
+    margin-bottom: 0;
+}
+
+/* ============================================================
+   MAGIC
+   ============================================================ */
+
+.magic-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 6px;
+    margin-top: 12px;
+}
+
+@media (max-width: 600px) {
+    .magic-stats-grid {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
+
+.magic-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 4px;
+}
+
+@media (max-width: 600px) {
+    .magic-grid {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
+
+.magic-category {
+    margin-bottom: 10px;
+}
+
+.magic-type-block {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    align-items: center;
+    padding: 4px;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+}
+
+.magic-type-block label {
+    font-size: 0.55rem;
+    font-weight: 600;
+    color: var(--text-dim);
+}
+
+.magic-input {
+    width: 100%;
+    padding: 3px 4px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 3px;
+    font-size: 0.8rem;
+    text-align: center;
+    font-weight: 600;
+}
+
+.magic-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.magic-level {
+    font-size: 0.5rem;
+    color: var(--text-dim);
+}
+
+.magic-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-top: 8px;
+    padding: 8px;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+}
+
+.magic-power-display {
+    margin-top: 6px;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+}
+
+.magic-power-display span {
+    font-weight: 600;
+    color: var(--info);
+}
+
+/* ============================================================
+   SPECIAL MOVES
+   ============================================================ */
+
+.moves-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+@media (max-width: 500px) {
+    .moves-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.moves-column {
+    padding: 6px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+}
+
+.move-label {
+    font-size: 0.65rem;
+    font-weight: 600;
+}
+
+.move-label.physical {
+    color: var(--accent);
+}
+
+.move-label.magical {
+    color: var(--info);
+}
+
+.moves-list {
+    margin-top: 2px;
+    max-height: 120px;
+    overflow-y: auto;
+}
+
+.moves-list .empty-state {
+    padding: 4px;
+    font-size: 0.7rem;
+}
+
+.move-input-group {
+    margin-top: 4px;
+}
+
+.move-input-group input {
+    width: 100%;
+    padding: 2px 4px;
+    margin-bottom: 2px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.6rem;
+}
+
+.move-input-group input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.special-move-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 6px;
+    margin-bottom: 3px;
+    background: var(--bg);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    font-size: 0.7rem;
+}
+
+.special-move-entry .move-name {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.special-move-entry .move-desc {
+    padding-left: 4px;
+    font-size: 0.6rem;
+    color: var(--text-dim);
+}
+
+.remove-special-move {
+    background: none;
+    border: none;
+    color: var(--danger);
+    cursor: pointer;
+    font-size: 0.6rem;
+    padding: 0 4px;
+}
+
+/* ============================================================
+   SOCIAL TAB (character form)
+   ============================================================ */
+
+.relationship-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.relationship-group {
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.relationship-group-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    background: var(--panel);
+    border-left: 3px solid var(--accent);
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.relationship-group-header:hover {
+    background: var(--accent-soft);
+}
+
+.relationship-group-caret {
+    display: inline-block;
+    width: 12px;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+}
+
+.relationship-group-body {
+    padding: 6px 10px;
+}
+
+.relationship-subheader {
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border-soft);
+    margin-bottom: 4px;
+    font-size: 0.6rem;
+    font-weight: 600;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.relationship-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 0 4px 18px;
+    font-size: 0.72rem;
+}
+
+.relationship-row .edit-char-relationship,
+.relationship-row .delete-char-relationship {
+    font-size: 0.55rem;
+    padding: 1px 6px;
+}
+
+/* ============================================================
+   CHARACTER DETAIL MODAL
+   ============================================================ */
+
+#character-detail-modal .detail-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+
+.detail-tab-btn {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 4px 4px 0 0;
+    padding: 4px 12px;
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    cursor: pointer;
+    transition: 0.15s;
+}
+
+.detail-tab-btn:hover {
+    color: var(--text);
+    background: var(--panel-alt);
+}
+
+.detail-tab-btn.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+    background: var(--accent-soft);
+    font-weight: 600;
+}
+
+.detail-tab-panel {
+    display: none;
+}
+
+.detail-tab-panel.active {
+    display: block;
+}
+
+/* Detail rows inside the modal */
+#character-detail-modal .detail-section {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+#character-detail-modal .detail-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border-soft);
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+#character-detail-modal .detail-row .label {
+    color: var(--text-dim);
+    font-size: 0.8rem;
+}
+
+/* ============================================================
+   ELIMINATION CONTROLS
+   ============================================================ */
+
+.elimination-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+    padding: 4px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.elimination-controls label {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+}
+
+.elimination-controls input[type="number"] {
+    width: 40px;
+    padding: 2px 3px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+}
+
+.elimination-controls input[type="text"] {
+    flex: 1;
+    min-width: 60px;
+    padding: 2px 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+}
+
+/* Standalone elimination rows (character elimination view) */
+.standalone-elimination-entry {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 8px;
+    margin-bottom: 2px;
+    background: var(--warning-soft);
+    border-left: 3px solid var(--warning);
+    border-radius: 4px;
+}
+
+.tournament-elimination-entry {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 8px;
+    margin-bottom: 2px;
+    background: var(--info-soft);
+    border-left: 3px solid var(--info);
+    border-radius: 4px;
+}
+
+/* ============================================================
+   GRADES TAB HOST
+   ============================================================ */
+
+.academy-grades-editor-host {
+    /* The grades editor styles itself. This host only needs to
+       establish block display. */
+    display: block;
+}
+
+/* ============================================================
+   SCHEDULE TAB HOST
+   ============================================================ */
+
+.academy-schedule-host {
+    display: block;
+    min-height: 200px;
+}
+
+/* ============================================================
+   MOBILE
+   ============================================================ */
+
+@media (max-width: 480px) {
+    .characters-form-container {
+        padding: 6px;
+    }
+
+    .characters-layout {
+        gap: 8px;
+    }
+
+    .characters-sidebar {
+        max-height: 300px;
+    }
+
+    .form-tab-btn {
+        font-size: 0.55rem;
+        padding: 3px 6px;
+    }
+
+    .char-list-item {
+        font-size: 0.7rem;
+    }
+
+    .stat-input-group,
+    .magic-grid {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
