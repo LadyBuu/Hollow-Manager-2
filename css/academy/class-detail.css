@@ -1,0 +1,131 @@
+/**
+ * css/academy/class-detail.css - Academy class detail panel
+ *
+ * The right-hand panel of the Academy People view when a class is
+ * selected and no character is selected. Rendered by
+ * academy-class-detail.js.
+ *
+ * Covers:
+ *   - Panel container
+ *   - Header (title, status badge, meta row, actions)
+ *   - Description block
+ *
+ * Load order: shared.css → academy.css → academy/class-detail.css
+ *
+ * NOTE:
+ *   The status badge classes (.class-status-badge and its variants)
+ *   and the shared detail-section furniture live in academy.css.
+ *   This file adds the panel-specific container and layout.
+ */
+
+/* ============================================================
+   PANEL SHELL
+   ============================================================ */
+
+.academy-class-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* ============================================================
+   HEADER
+   ============================================================ */
+
+.academy-class-detail-header {
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-class-detail-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+}
+
+.academy-class-detail-title {
+    font-size: 1.15rem;
+    color: var(--accent);
+    margin: 0;
+    flex: 1;
+    min-width: 0;
+}
+
+/* ============================================================
+   META ROW
+   ============================================================ */
+
+.academy-class-detail-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    font-size: 0.72rem;
+    margin-bottom: 10px;
+}
+
+.academy-class-detail-meta-item .meta-label {
+    color: var(--text-dim);
+    font-size: 0.65rem;
+    font-weight: 500;
+}
+
+/* A specific class for the student-count item, so the counter
+   number can be styled independently if needed. */
+.academy-class-detail-student-count {
+    /* No default override. Present for future use. */
+}
+
+/* ============================================================
+   ACTIONS
+   ============================================================ */
+
+.academy-class-detail-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.academy-class-detail-actions button.small {
+    font-size: 0.7rem;
+    padding: 5px 14px;
+}
+
+/* ============================================================
+   DESCRIPTION
+   ============================================================ */
+
+.academy-class-detail-description {
+    padding: 10px 12px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    font-size: 0.78rem;
+    color: var(--text);
+    line-height: 1.5;
+}
+
+.academy-class-detail-description p {
+    margin: 0;
+    white-space: pre-wrap;
+}
+
+/* ============================================================
+   MOBILE
+   ============================================================ */
+
+@media (max-width: 600px) {
+    .academy-class-detail-title {
+        font-size: 1rem;
+    }
+
+    .academy-class-detail-actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .academy-class-detail-actions button.small {
+        width: 100%;
+    }
+}
