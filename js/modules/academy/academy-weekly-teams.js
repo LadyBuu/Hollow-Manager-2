@@ -18,48 +18,63 @@
  * WHAT THIS MODULE DOES NOT OWN:
  *   Team membership. The roster lives EXCLUSIVELY on the persistent
  *   Team entity's members[] array (with joinPeriod / leavePeriod as
- *   the week range). v22 collapsed the redundant local array that
- *   used to live on weekly-team records. The writers here route
- *   membership mutations through transaction-local helpers that
- *   operate on the persistent Team entity.
+ *   the week range). The writers here route membership mutations
+ *   through transaction-local helpers that operate on the persistent
+ *   Team entity.
  *
  * READS:
  *   - getWeeklyTeams(classId, week)
- *       Returns { [teamId]: [charId, ...] } for every team active
- *       in the week. Membership comes from
- *       TeamQueries.getActiveTeamMembers. The weekly-team record
- *       gates which teams are visible at all.
  *   - getActiveMembers(classId, teamId, week)
+ *   - getAllMembers(classId, teamId)
  *   - getOrphanAcademicTeams()
  *   - suggestClassForTeam(teamId)
  *
- * WRITES (v24):
+ * WRITES:
  *   - ensureWindow(classId, teamId, week)
  *       Creates the weekly-team window record if it does not exist;
  *       otherwise widens it to include the week. Does NOT shrink.
  *   - setWindow(classId, teamId, startWeek, endWeek)
  *       REPLACES the window for (classId, teamId). Used when a team's
- *       own startPeriod / endPeriod changes: the window is re-synced
- *       to match the persistent Team entity. Removes any existing
- *       window for this team from every class bucket first.
+ *       own startPeriod / endPeriod changes.
  *   - addMember(classId, teamId, charId, week)
+ *       Append a new stint starting at `week`. If the character is
+ *       already active at `week`, this is a no-op.
  *   - endMembership(classId, teamId, charId, effectiveWeek)
- *   - [FIX-W1] updateMemberWindow(classId, teamId, charId, updates)
- *       Edit the member's own joinPeriod / leavePeriod fields
- *       directly. Accepts either field as undefined (leave alone),
- *       empty (unbounded), or a week value. Used by the weekly-team
- *       member manager's editable period inputs.
- *   - purgeMemberRecords(classId, teamId, charId)
+ *       Truncate the currently-active stint at effectiveWeek - 1.
+ *   - [FIX-W2d] updateMemberWindows(classId, teamId, changes)
+ *       Apply a list of member-window edits in one transaction.
+ *       All-or-nothing. Preferred over updateMemberWindow when the
+ *       UI commits multiple rows at once.
+ *   - updateMemberWindow(classId, teamId, identifier, updates)
+ *       Single-row convenience wrapper around the bulk path.
+ *   - [FIX-W2e] purgeMemberRecords(classId, teamId, identifier)
+ *       Hard-delete ONE member entry, addressed by memberId or by
+ *       { characterId, joinPeriod } composite.
  *   - removeTeamRecord(classId, teamId)
  *   - clearClassWindows(classId)
  *   - clearAllMembershipsForClass(classId, week)
  *   - assignTeamToClass(classId, teamId)
  *
+ * MEMBER IDENTITY (v25):
+ *   [FIX-W2a] Every member entry gets a stable `memberId` when
+ *   written. Existing entries that predate memberId are lazily
+ *   upgraded on first write via ensureMemberId.
+ *
+ *   Mutation entry points accept either:
+ *     - a memberId string, or
+ *     - { characterId, joinPeriod } as a composite key.
+ *
+ *   The composite fallback lets the UI address entries that have not
+ *   been through a write since the memberId introduction. After the
+ *   first write, the entry's memberId is set and subsequent lookups
+ *   use it.
+ *
  * WEEK SEMANTICS:
  *   - Weeks are bounded [MIN_WEEK, MAX_WEEK].
- *   - startWeek and endWeek are integers in that range.
- *   - endWeek === null means "ongoing".
- *   - endWeek is INCLUSIVE.
+ *   - startWeek / endWeek / joinPeriod / leavePeriod are integers in
+ *     that range.
+ *   - endWeek / leavePeriod === null or '' means "ongoing".
+ *   - Both bounds are INCLUSIVE.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.ObjectUtils          (deepClone)
@@ -150,7 +165,7 @@
 
     window.__academyWeeklyTeamsLoaded = true;
 
-    diag('Module loaded (v24, no local member array, class-validated, editable windows).');
+    diag('Module loaded (v25, member-id aware, bulk writes, class-validated).');
 
     // ============================================================
     // CONSTANTS
@@ -239,6 +254,60 @@
             return false;
         }
         return weekInRange(week, record.startWeek, record.endWeek);
+    }
+
+    /**
+     * Canonicalise a member bound value.
+     *   undefined/null/'' → '' (unbounded).
+     *   Number or numeric string → canonical string in bounds.
+     *   Invalid → null.
+     */
+    function canonicaliseMemberBound(value) {
+        if (value === undefined || value === null || value === '') {
+            return '';
+        }
+        var n = parseWeekStrict(value);
+        if (n === null) {
+            return null;
+        }
+        return String(n);
+    }
+
+    // ============================================================
+    // MEMBER IDENTITY
+    // ============================================================
+    //
+    // [FIX-W2a]
+    //
+    // A memberId is a stable per-entry identifier. It is not the
+    // characterId — a character may appear multiple times in the
+    // same team's members[] array if they left and later rejoined.
+    //
+    // The ID format is `mem_<timestamp>_<random>`. Uniqueness is only
+    // required within a single team's members[] array; the timestamp
+    // + random suffix makes cross-team collisions negligible, and the
+    // UI resolves entries within a specific team.
+
+    function generateMemberId() {
+        return 'mem_' + Date.now() + '_' +
+            Math.random().toString(36).slice(2, 8);
+    }
+
+    /**
+     * Ensure a member entry has a memberId. Returns the entry's
+     * memberId (existing or newly generated). Mutates the entry in
+     * place when generating. Returns null if member is not an object.
+     */
+    function ensureMemberId(member) {
+        if (!member || typeof member !== 'object') {
+            return null;
+        }
+        if (isNonEmptyString(member.memberId)) {
+            return String(member.memberId);
+        }
+        var id = generateMemberId();
+        member.memberId = id;
+        return id;
     }
 
     // ============================================================
@@ -337,6 +406,68 @@
     }
 
     /**
+     * [FIX-W2b] Resolve a member entry from an identifier.
+     *
+     * identifier is either:
+     *   - a memberId string, or
+     *   - { characterId, joinPeriod } (composite key).
+     *
+     * Returns the LIVE entry, or null. On successful resolution the
+     * entry is guaranteed to have a memberId (existing or
+     * freshly-generated by ensureMemberId).
+     *
+     * Composite matching compares the canonical string form of the
+     * joinPeriod field. '' matches entries with no join bound.
+     */
+    function findMemberByIdentifier(team, identifier) {
+        if (!team || !Array.isArray(team.members) || !identifier) {
+            return null;
+        }
+
+        // Composite form.
+        if (typeof identifier === 'object') {
+            var charId = identifier.characterId !== undefined &&
+                         identifier.characterId !== null
+                ? String(identifier.characterId)
+                : null;
+            if (charId === null) { return null; }
+
+            var targetJoin = (identifier.joinPeriod === undefined ||
+                              identifier.joinPeriod === null)
+                ? ''
+                : String(identifier.joinPeriod);
+
+            for (var i = 0; i < team.members.length; i++) {
+                var m = team.members[i];
+                if (!m || typeof m !== 'object') { continue; }
+                if (String(m.characterId) !== charId) { continue; }
+                var mJoin = (m.joinPeriod === undefined ||
+                             m.joinPeriod === null)
+                    ? ''
+                    : String(m.joinPeriod);
+                if (mJoin === targetJoin) {
+                    ensureMemberId(m);
+                    return m;
+                }
+            }
+            return null;
+        }
+
+        // memberId form.
+        var targetId = String(identifier);
+        for (var j = 0; j < team.members.length; j++) {
+            var member = team.members[j];
+            if (!member || typeof member !== 'object') { continue; }
+            if (member.memberId !== undefined &&
+                member.memberId !== null &&
+                String(member.memberId) === targetId) {
+                return member;
+            }
+        }
+        return null;
+    }
+
+    /**
      * Validate inside a transaction that the team exists and belongs
      * to the given class. Returns null on success, or an error
      * message string on failure.
@@ -355,6 +486,12 @@
         return null;
     }
 
+    /**
+     * Add a member entry (or a new stint) to the persistent roster.
+     *
+     * [FIX-W2c] Every new entry gets a memberId. Any existing entry
+     * touched here is ensured to have one.
+     */
     function syncAddMemberToPersistentRoster(team, charId, startWeek, role) {
         if (!team) {
             return { added: false, updated: false };
@@ -373,30 +510,41 @@
             var joinNum = TeamConstants.parsePeriod(existing.joinPeriod);
             var leaveNum = TeamConstants.parsePeriod(existing.leavePeriod);
 
+            // If the character is already active at startWeek, no-op.
             if ((joinNum === null || startWeek >= joinNum) &&
                 (leaveNum === null || startWeek <= leaveNum)) {
+                ensureMemberId(existing);
                 return { added: false, updated: false };
             }
 
+            // Close the existing stint if the new start is after it.
             if (leaveNum === null || leaveNum >= startWeek) {
                 existing.leavePeriod = String(startWeek - 1);
             }
 
-            team.members.push({
+            ensureMemberId(existing);
+
+            // Append the new stint.
+            var newEntry = {
+                memberId: generateMemberId(),
                 characterId: target,
                 role: roleStr,
                 joinPeriod: startStr,
                 leavePeriod: ''
-            });
+            };
+            team.members.push(newEntry);
             return { added: true, updated: false };
         }
 
-        team.members.push({
+        // First stint for this character on this team.
+        var firstEntry = {
+            memberId: generateMemberId(),
             characterId: target,
             role: roleStr,
             joinPeriod: startStr,
             leavePeriod: ''
-        });
+        };
+        team.members.push(firstEntry);
         return { added: true, updated: false };
     }
 
@@ -431,19 +579,8 @@
         }
 
         matched.leavePeriod = String(effectiveWeek - 1);
+        ensureMemberId(matched);
         return { ended: true };
-    }
-
-    function syncPurgeMemberFromPersistentRoster(team, charId) {
-        if (!team || !Array.isArray(team.members)) {
-            return { removed: false };
-        }
-        var target = String(charId);
-        var before = team.members.length;
-        team.members = team.members.filter(function(m) {
-            return !m || String(m.characterId) !== target;
-        });
-        return { removed: before !== team.members.length };
     }
 
     // ============================================================
@@ -820,6 +957,124 @@
         };
     }
 
+    function touchTeamRecord(appData, classId, teamId) {
+        var store = getStoreFromSnapshot(appData);
+        if (!store) { return; }
+        var record = getTeamRecordInternalFromStore(store, classId, teamId);
+        if (record) {
+            record.updatedAt = new Date().toISOString();
+        }
+    }
+
+    // ============================================================
+    // CHANGE APPLICATION
+    // ============================================================
+    //
+    // [FIX-W2d]
+    //
+    // One function implements what a "member window change" is:
+    // validation, canonicalisation, comparison against the current
+    // entry, and the write. The bulk mutation's validate phase and
+    // mutate phase both call this. Because it is deterministic given
+    // the same team state, the two phases cannot diverge.
+    //
+    // Returns:
+    //   { ok: true, changed: bool }
+    //   { ok: false, message: string }
+
+    function applyMemberChange(team, change) {
+        if (!change || typeof change !== 'object') {
+            return { ok: false, message: 'Change must be an object.' };
+        }
+
+        var identifier = change.identifier;
+        if (!identifier) {
+            return { ok: false, message: 'Change is missing an identifier.' };
+        }
+
+        var member = findMemberByIdentifier(team, identifier);
+        if (!member) {
+            return { ok: false, message: 'Member not found on this team.' };
+        }
+
+        var joinProvided = change.joinPeriod !== undefined;
+        var leaveProvided = change.leavePeriod !== undefined;
+
+        if (!joinProvided && !leaveProvided) {
+            // No-op.
+            return { ok: true, changed: false };
+        }
+
+        var canonicalJoin;
+        var canonicalLeave;
+
+        if (joinProvided) {
+            canonicalJoin = canonicaliseMemberBound(change.joinPeriod);
+            if (canonicalJoin === null) {
+                return {
+                    ok: false,
+                    message: 'Join week must be blank or between ' +
+                        MIN_WEEK + ' and ' + MAX_WEEK + '.'
+                };
+            }
+        }
+        if (leaveProvided) {
+            canonicalLeave = canonicaliseMemberBound(change.leavePeriod);
+            if (canonicalLeave === null) {
+                return {
+                    ok: false,
+                    message: 'Leave week must be blank or between ' +
+                        MIN_WEEK + ' and ' + MAX_WEEK + '.'
+                };
+            }
+        }
+
+        // Proposed state after applying the change.
+        var proposedJoin = joinProvided
+            ? canonicalJoin
+            : (member.joinPeriod === undefined ||
+               member.joinPeriod === null
+                ? ''
+                : String(member.joinPeriod));
+
+        var proposedLeave = leaveProvided
+            ? canonicalLeave
+            : (member.leavePeriod === undefined ||
+               member.leavePeriod === null
+                ? ''
+                : String(member.leavePeriod));
+
+        if (proposedJoin === '' && proposedLeave === '') {
+            return {
+                ok: false,
+                message: 'Set at least one of Join or Leave.'
+            };
+        }
+
+        if (proposedJoin !== '' && proposedLeave !== '') {
+            var jn = parseInt(proposedJoin, 10);
+            var lv = parseInt(proposedLeave, 10);
+            if (!isNaN(jn) && !isNaN(lv) && lv < jn) {
+                return {
+                    ok: false,
+                    message: 'Leave week cannot be before join week.'
+                };
+            }
+        }
+
+        var changed = false;
+        if (joinProvided && member.joinPeriod !== canonicalJoin) {
+            member.joinPeriod = canonicalJoin;
+            changed = true;
+        }
+        if (leaveProvided && member.leavePeriod !== canonicalLeave) {
+            member.leavePeriod = canonicalLeave;
+            changed = true;
+        }
+
+        return { ok: true, changed: changed };
+    }
+
     // ============================================================
     // MUTATIONS
     // ============================================================
@@ -892,17 +1147,6 @@
         });
     }
 
-    /**
-     * REPLACE the weekly-team window for (classId, teamId) with the
-     * given range. Removes any existing window for this team from
-     * every class bucket first, so a re-range cannot leave a stale
-     * duplicate behind.
-     *
-     * Used when a team's own startPeriod / endPeriod changes: the
-     * window is re-synced to match the persistent Team entity.
-     *
-     * endWeek === null means ongoing.
-     */
     function setWindow(classId, teamId, startWeek, endWeek) {
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
@@ -952,8 +1196,6 @@
             mutate: function(appData) {
                 var store = ensureStore(appData);
 
-                // Purge any existing window for this team across all
-                // class buckets.
                 var classIds = Object.keys(store);
                 for (var c = 0; c < classIds.length; c++) {
                     var bucket = store[classIds[c]];
@@ -996,9 +1238,6 @@
         });
     }
 
-    /**
-     * Assign an orphan academic team to a class.
-     */
     function assignTeamToClass(classId, teamId) {
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
@@ -1199,13 +1438,7 @@
 
                 if (syncResult.ended) {
                     team.updatedAt = new Date().toISOString();
-                    var store = getStoreFromSnapshot(appData);
-                    var record = getTeamRecordInternalFromStore(
-                        store, targetClass, targetTeam
-                    );
-                    if (record) {
-                        record.updatedAt = new Date().toISOString();
-                    }
+                    touchTeamRecord(appData, targetClass, targetTeam);
                 }
 
                 return {
@@ -1223,86 +1456,41 @@
     }
 
     // ============================================================
-    // [FIX-W1] updateMemberWindow
+    // [FIX-W2d] updateMemberWindows (bulk)
     // ============================================================
     //
-    // Direct edit of a member entry's joinPeriod / leavePeriod.
+    // Applies a list of member-window changes in one transaction.
+    // All-or-nothing: if any change is rejected, no member is
+    // modified.
     //
-    // CONTRACT:
-    //   updates.joinPeriod / updates.leavePeriod are each:
-    //     undefined — leave that field alone.
-    //     null or '' — clear it (unbounded on that side).
-    //     number or numeric string in [MIN_WEEK, MAX_WEEK] — set it,
-    //       canonicalised to a string.
+    // Each change is:
+    //   {
+    //     identifier: string | { characterId, joinPeriod },
+    //     joinPeriod?: undefined | null | '' | number | string,
+    //     leavePeriod?: undefined | null | '' | number | string
+    //   }
     //
-    //   If both are undefined, this is a no-op (success: true with
-    //   { changed: false }). No write is performed.
-    //
-    //   If, after applying the updates, BOTH fields are empty, the
-    //   mutation is rejected: a member entry with no bounds at all
-    //   is meaningless. The caller must supply at least one bound.
-    //
-    //   If leavePeriod < joinPeriod with both present, the mutation
-    //   is rejected.
-    //
-    // The mutation is class-scoped: the team must belong to the
-    // given class.
+    // See applyMemberChange for the full validation contract.
 
-    function updateMemberWindow(classId, teamId, charId, updates) {
+    function updateMemberWindows(classId, teamId, changes) {
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
         }
         if (!isNonEmptyString(teamId)) {
             return Promise.resolve(failure('Team ID is required.'));
         }
-        if (!isNonEmptyString(charId)) {
-            return Promise.resolve(failure('Character ID is required.'));
+        if (!Array.isArray(changes)) {
+            return Promise.resolve(failure('Changes must be an array.'));
         }
-        if (!isPlainObject(updates)) {
-            return Promise.resolve(failure('Updates must be an object.'));
-        }
-
-        var joinProvided = updates.joinPeriod !== undefined;
-        var leaveProvided = updates.leavePeriod !== undefined;
-
-        if (!joinProvided && !leaveProvided) {
-            // No-op. Report success without a write.
+        if (changes.length === 0) {
             return Promise.resolve(success({
                 changed: false,
-                teamId: String(teamId),
-                characterId: String(charId)
+                count: 0
             }));
-        }
-
-        // Canonicalise each provided field.
-        // '' or null → '' (unbounded).
-        // Anything else → must parse as a valid week.
-        var canonicalJoin;
-        var canonicalLeave;
-
-        if (joinProvided) {
-            canonicalJoin = canonicaliseMemberBound(updates.joinPeriod);
-            if (canonicalJoin === null) {
-                return Promise.resolve(
-                    failure('Join week must be blank or between ' +
-                        MIN_WEEK + ' and ' + MAX_WEEK + '.')
-                );
-            }
-        }
-
-        if (leaveProvided) {
-            canonicalLeave = canonicaliseMemberBound(updates.leavePeriod);
-            if (canonicalLeave === null) {
-                return Promise.resolve(
-                    failure('Leave week must be blank or between ' +
-                        MIN_WEEK + ' and ' + MAX_WEEK + '.')
-                );
-            }
         }
 
         var targetClass = String(classId);
         var targetTeam = String(teamId);
-        var targetChar = String(charId);
 
         return MutationPipeline.performMutation({
             validate: function(appData) {
@@ -1321,40 +1509,15 @@
                     return { valid: false, message: 'Team no longer exists.' };
                 }
 
-                var member = findMemberInTeam(team, targetChar);
-                if (!member) {
-                    return { valid: false, message: 'Member not found on this team.' };
-                }
-
-                // Proposed state after applying the updates.
-                var proposedJoin = joinProvided
-                    ? canonicalJoin
-                    : (member.joinPeriod === undefined ||
-                       member.joinPeriod === null
-                        ? ''
-                        : String(member.joinPeriod));
-
-                var proposedLeave = leaveProvided
-                    ? canonicalLeave
-                    : (member.leavePeriod === undefined ||
-                       member.leavePeriod === null
-                        ? ''
-                        : String(member.leavePeriod));
-
-                if (proposedJoin === '' && proposedLeave === '') {
-                    return {
-                        valid: false,
-                        message: 'Set at least one of Join or Leave.'
-                    };
-                }
-
-                if (proposedJoin !== '' && proposedLeave !== '') {
-                    var jn = parseInt(proposedJoin, 10);
-                    var lv = parseInt(proposedLeave, 10);
-                    if (!isNaN(jn) && !isNaN(lv) && lv < jn) {
+                // Dry-run each change against the snapshot team.
+                // applyMemberChange is deterministic given the same
+                // team state, so this is a faithful preview.
+                for (var i = 0; i < changes.length; i++) {
+                    var probe = applyMemberChange(team, changes[i]);
+                    if (!probe.ok) {
                         return {
                             valid: false,
-                            message: 'Leave week cannot be before join week.'
+                            message: 'Change ' + (i + 1) + ': ' + probe.message
                         };
                     }
                 }
@@ -1367,76 +1530,97 @@
                     throw new Error('Team not found in data store.');
                 }
 
-                var member = findMemberInTeam(team, targetChar);
-                if (!member) {
-                    throw new Error('Member not found on team.');
-                }
-
-                var changed = false;
-
-                if (joinProvided && member.joinPeriod !== canonicalJoin) {
-                    member.joinPeriod = canonicalJoin;
-                    changed = true;
-                }
-                if (leaveProvided && member.leavePeriod !== canonicalLeave) {
-                    member.leavePeriod = canonicalLeave;
-                    changed = true;
-                }
-
-                if (changed) {
-                    team.updatedAt = new Date().toISOString();
-
-                    var store = getStoreFromSnapshot(appData);
-                    var record = getTeamRecordInternalFromStore(
-                        store, targetClass, targetTeam
-                    );
-                    if (record) {
-                        record.updatedAt = new Date().toISOString();
+                var changedCount = 0;
+                for (var i = 0; i < changes.length; i++) {
+                    var result = applyMemberChange(team, changes[i]);
+                    if (!result.ok) {
+                        // Should not happen: validate() already dry-ran
+                        // each change. If it does, the transaction
+                        // fails and nothing is committed.
+                        throw new Error(result.message);
                     }
+                    if (result.changed) { changedCount++; }
+                }
+
+                if (changedCount > 0) {
+                    team.updatedAt = new Date().toISOString();
+                    touchTeamRecord(appData, targetClass, targetTeam);
                 }
 
                 return {
-                    changed: changed,
-                    teamId: targetTeam,
-                    characterId: targetChar,
-                    joinPeriod: member.joinPeriod,
-                    leavePeriod: member.leavePeriod
+                    changed: changedCount > 0,
+                    count: changedCount
                 };
             },
-            logMessage: 'Updated member window on team ' + targetTeam +
-                ' for ' + targetChar,
-            successMessage: 'Member period updated.',
-            failureMessage: 'Failed to update member period.'
+            logMessage: function(result) {
+                if (result && result.count > 0) {
+                    return 'Updated ' + result.count +
+                        ' member window(s) on team ' + targetTeam;
+                }
+                return 'No member window changes on team ' + targetTeam;
+            },
+            successMessage: function(result) {
+                if (result && result.count > 0) {
+                    return 'Member periods updated.';
+                }
+                return 'No changes to save.';
+            },
+            failureMessage: 'Failed to update member periods.'
         });
     }
 
     /**
-     * Canonicalise a member bound value.
-     * undefined/null/'' → '' (unbounded).
-     * Number or numeric string → canonical string in bounds.
-     * Invalid → null.
+     * Single-member update. Convenience wrapper around the bulk
+     * path so there is one implementation of the change logic.
+     *
+     * `identifier` is a memberId string or a
+     * { characterId, joinPeriod } composite.
      */
-    function canonicaliseMemberBound(value) {
-        if (value === undefined || value === null || value === '') {
-            return '';
+    function updateMemberWindow(classId, teamId, identifier, updates) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
         }
-        var n = parseWeekStrict(value);
-        if (n === null) {
-            return null;
+        if (!isNonEmptyString(teamId)) {
+            return Promise.resolve(failure('Team ID is required.'));
         }
-        return String(n);
+        if (!identifier) {
+            return Promise.resolve(failure('Member identifier is required.'));
+        }
+        if (!updates || typeof updates !== 'object') {
+            return Promise.resolve(failure('Updates must be an object.'));
+        }
+
+        var change = {
+            identifier: identifier,
+            joinPeriod: updates.joinPeriod,
+            leavePeriod: updates.leavePeriod
+        };
+
+        return updateMemberWindows(classId, teamId, [change]);
     }
 
-    function purgeMemberRecords(classId, teamId, charId) {
+    // ============================================================
+    // [FIX-W2e] purgeMemberRecords (identifier-aware)
+    // ============================================================
+    //
+    // Hard-deletes ONE member entry, addressed by:
+    //   - a memberId string, or
+    //   - { characterId, joinPeriod } composite.
+    //
+    // A character's OTHER stints on the same team survive. To remove
+    // every entry for a character, use the cascade helper.
+
+    function purgeMemberRecords(classId, teamId, identifier) {
         if (!isNonEmptyString(classId) ||
-            !isNonEmptyString(teamId) ||
-            !isNonEmptyString(charId)) {
-            return Promise.resolve(failure('Class, team, and character IDs are required.'));
+            !isNonEmptyString(teamId)) {
+            return Promise.resolve(failure('Class and team IDs are required.'));
+        }
+        if (!identifier) {
+            return Promise.resolve(failure('Member identifier is required.'));
         }
 
         var targetClass = String(classId);
         var targetTeam = String(teamId);
-        var targetChar = String(charId);
 
         return MutationPipeline.performMutation({
             validate: function(appData) {
@@ -1449,35 +1633,38 @@
                 if (classError) {
                     return { valid: false, message: classError };
                 }
+                var team = findTeamInSnapshot(appData, targetTeam);
+                if (!team) {
+                    return { valid: false, message: 'Team no longer exists.' };
+                }
+                if (!findMemberByIdentifier(team, identifier)) {
+                    return { valid: false, message: 'Member not found on this team.' };
+                }
                 return { valid: true };
             },
             mutate: function(appData) {
                 var team = findTeamInSnapshot(appData, targetTeam);
-                if (!team) {
+                if (!team || !Array.isArray(team.members)) {
                     return { removed: false };
                 }
 
-                var syncResult = syncPurgeMemberFromPersistentRoster(
-                    team, targetChar
-                );
-
-                if (syncResult.removed) {
-                    team.updatedAt = new Date().toISOString();
-                    var store = getStoreFromSnapshot(appData);
-                    var record = getTeamRecordInternalFromStore(
-                        store, targetClass, targetTeam
-                    );
-                    if (record) {
-                        record.updatedAt = new Date().toISOString();
-                    }
+                var target = findMemberByIdentifier(team, identifier);
+                if (!target) {
+                    throw new Error('Member not found on team.');
                 }
 
-                return { removed: syncResult.removed };
+                team.members = team.members.filter(function(m) {
+                    return m !== target;
+                });
+
+                team.updatedAt = new Date().toISOString();
+                touchTeamRecord(appData, targetClass, targetTeam);
+
+                return { removed: true };
             },
-            logMessage: 'Purged membership records for ' + targetChar +
-                ' in team ' + targetTeam,
-            successMessage: 'Membership records removed.',
-            failureMessage: 'Failed to remove membership records.'
+            logMessage: 'Purged a member entry from team ' + targetTeam,
+            successMessage: 'Membership record removed.',
+            failureMessage: 'Failed to remove membership record.'
         });
     }
 
@@ -1655,6 +1842,10 @@
     // ============================================================
     // CASCADE HELPERS
     // ============================================================
+    //
+    // The cascade helpers affect EVERY entry for a character. They
+    // intentionally do not use identifiers — the target is "all
+    // stints for this character".
 
     function endCharacterMemberships(appData, charId, effectiveWeek) {
         var result = { membershipsEnded: 0 };
@@ -1787,6 +1978,7 @@
         addMember: addMember,
         endMembership: endMembership,
         updateMemberWindow: updateMemberWindow,
+        updateMemberWindows: updateMemberWindows,
         purgeMemberRecords: purgeMemberRecords,
         removeTeamRecord: removeTeamRecord,
         clearClassWindows: clearClassWindows,
@@ -1812,9 +2004,10 @@
             'isPersistentTeamVisibleInWeek',
             'getOrphanAcademicTeams', 'suggestClassForTeam',
             'ensureWindow', 'setWindow', 'assignTeamToClass',
-            'addMember', 'endMembership', 'updateMemberWindow',
-            'purgeMemberRecords', 'removeTeamRecord', 'clearClassWindows',
-            'clearAllMembershipsForClass',
+            'addMember', 'endMembership',
+            'updateMemberWindow', 'updateMemberWindows',
+            'purgeMemberRecords', 'removeTeamRecord',
+            'clearClassWindows', 'clearAllMembershipsForClass',
             'endCharacterMemberships', 'stripClassRefs', 'stripTeamRefs'
         ];
         var missing = [];
