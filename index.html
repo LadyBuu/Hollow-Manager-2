@@ -163,11 +163,10 @@
              AcademySocialScore are cross-cutting.
            - AcademyAutoGroupsRead must load before AcademyGroups
              (the read aliases delegate to it at call time).
-           - AcademyWeeklyTeams (week-scoped assignment data) must
-             load before AcademyAggregator, which reads it for the
-             Weekly Teams view model. AcademyModule's mount-time
-             dependency check requires it.
-
+           - AcademyWeeklyTeams (week-window gate) must load before
+             AcademyAggregator, which reads it for the Weekly Teams
+             view model. AcademyModule's mount-time dependency check
+             requires it.
            - The six teaching-model modules and academy-schedule.js
              form a single pipeline: class-disciplines → groups →
              sessions → projector → collisions → validation →
@@ -233,9 +232,10 @@
          ============================================================ -->
     <script src="js/modules/academy/academy-calendar-aggregator.js"></script>
 
-    <!-- Week-scoped assignment data. Required by AcademyModule's
-         mount-time dependency check and by AcademyAggregator for
-         the Weekly Teams view model. -->
+    <!-- Week-window gate. Required by AcademyModule's mount-time
+         dependency check and by AcademyAggregator for the Weekly
+         Teams view model. v22: carries only the week window; the
+         roster is read from the persistent Team entity. -->
     <script src="js/modules/academy/academy-weekly-teams.js"></script>
 
     <script src="js/modules/academy/academy-aggregator.js"></script>
@@ -389,17 +389,34 @@
          mission-constants.js, mission-id.js, and mission-queries.js
          have already loaded in earlier blocks.
 
-         Load order within this block matters:
+         Load order within this block is STRICT: each module depends
+         on every module above it.
 
-           - mission-schema.js and mission-rules.js both import
-             MissionId.isValidYear (already available).
-           - mission-schema.js and mission-rules.js must load before
-             mission-core.js.
-           - mission-views.js must load before mission-render.js and
-             mission-aggregator.js.
-           - mission-render.js and mission-aggregator.js must load
-             before mission-ui.js.
-           - mission-ui.js must load before missions/index.js.
+           mission-schema.js   — structural definitions and
+                                 normalisation; reads
+                                 MissionId.isValidYear.
+           mission-rules.js    — domain conditions; reads
+                                 MissionId.isValidYear.
+           mission-cascade.js  — transaction-local cleanup helpers;
+                                 reads MissionSchema.
+           mission-core.js     — canonical mutation API; reads
+                                 MissionSchema, MissionRules,
+                                 MissionCascade.
+           mission-views.js    — pure HTML renderers for the mission
+                                 panel and modals.
+           mission-render.js   — top-level render helpers; reads
+                                 MissionViews.
+           mission-aggregator.js — projection builder; reads
+                                 MissionQueries, MissionRender.
+           mission-ui.js       — event wiring and modal lifecycle;
+                                 reads MissionCore, MissionAggregator,
+                                 MissionRender.
+           index.js            — module entry point and TabManager
+                                 registration; reads MissionUI.
+
+         The order in the block below reflects exactly that chain.
+         Do not reorder without re-checking each module's IIFE-time
+         dependencies.
          ============================================================ -->
     <script src="js/modules/missions/mission-schema.js"></script>
     <script src="js/modules/missions/mission-rules.js"></script>
