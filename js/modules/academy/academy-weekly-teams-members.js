@@ -18,6 +18,7 @@
  *
  * NOT RESPONSIBILITIES:
  *   - Candidate eligibility. The aggregator decides.
+ *   - Elimination filtering. The aggregator decides, fail-closed.
  *   - Member VM construction. The aggregator decides.
  *   - Persistent roster writes. AcademyWeeklyTeams owns them.
  *   - Modal lifecycle. The caller owns the shell.
@@ -36,11 +37,30 @@
  *   Modal.closeModal / hideModal. Container close buttons invoke
  *   options.onClose. The returned handle's .close() is idempotent.
  *
+ * WEEK COERCION (v24):
+ *   [FIX-3a] The week argument is validated strictly, using the same
+ *   rule the AcademyAggregator uses:
+ *     - integer in [CalendarConstants.MIN_WEEK, MAX_WEEK], OR
+ *     - a pure-integer string whose value is in bounds.
+ *   Anything else ("3abc", "3.9", 3.5, null, "") is rejected before
+ *   the aggregator is called, so the caller gets "Valid week is
+ *   required." instead of a "Team not found" that hides the real
+ *   reason.
+ *
+ * ELIMINATION (v24):
+ *   [FIX-3b] Candidate eligibility — including elimination — is
+ *   resolved by AcademyAggregator.getWeeklyTeamMemberManagerViewModel.
+ *   If the aggregator throws (because EliminationQueries is missing
+ *   or throws internally), this module does NOT swallow the error.
+ *   The throw propagates, and a console warning names the
+ *   dependency so a load-order mistake is loud.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.AcademyAggregator
  *   - window.AcademyWeeklyTeams
  *   - window.DomUtils
  *   - window.NotificationSystem
+ *   - window.CalendarConstants
  */
 
 (function() {
@@ -58,6 +78,7 @@
     var AcademyWeeklyTeams = window.AcademyWeeklyTeams;
     var DomUtils = window.DomUtils;
     var NotificationSystem = window.NotificationSystem;
+    var CalendarConstants = window.CalendarConstants;
 
     var _missing = [];
 
@@ -79,6 +100,11 @@
     if (!NotificationSystem ||
         typeof NotificationSystem.notify !== 'function') {
         _missing.push('NotificationSystem.notify');
+    }
+    if (!CalendarConstants ||
+        typeof CalendarConstants.MIN_WEEK !== 'number' ||
+        typeof CalendarConstants.MAX_WEEK !== 'number') {
+        _missing.push('CalendarConstants.MIN_WEEK/MAX_WEEK');
     }
 
     if (_missing.length > 0) {
@@ -108,6 +134,51 @@
 
     function notify(message, type) {
         NotificationSystem.notify(message, type || 'info');
+    }
+
+    // ============================================================
+    // STRICT WEEK PARSING
+    // ============================================================
+    //
+    // [FIX-3a] Accepts integers in [MIN_WEEK, MAX_WEEK] and
+    // pure-integer strings whose value is in bounds. Rejects
+    // floats, trailing-character strings ("3abc"), empty strings,
+    // null, undefined, and out-of-range values. No silent
+    // coercion of "3.9" to 3.
+
+    function parseWeekStrict(value) {
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+
+        if (typeof value === 'number') {
+            if (!Number.isInteger(value)) {
+                return null;
+            }
+            if (value < CalendarConstants.MIN_WEEK ||
+                value > CalendarConstants.MAX_WEEK) {
+                return null;
+            }
+            return value;
+        }
+
+        if (typeof value === 'string') {
+            var trimmed = value.trim();
+            if (trimmed === '' || !/^\d+$/.test(trimmed)) {
+                return null;
+            }
+            var n = Number(trimmed);
+            if (!Number.isInteger(n)) {
+                return null;
+            }
+            if (n < CalendarConstants.MIN_WEEK ||
+                n > CalendarConstants.MAX_WEEK) {
+                return null;
+            }
+            return n;
+        }
+
+        return null;
     }
 
     // ============================================================
@@ -282,8 +353,9 @@
             ? options.onChange
             : null;
 
-        var weekNum = parseInt(week, 10);
-        if (isNaN(weekNum)) {
+        // [FIX-3a] Strict week parse. Rejects "3abc", "3.9", 3.5, etc.
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
             container.innerHTML =
                 '<div class="modal-body">' +
                     '<p class="empty-state small">' +
@@ -317,6 +389,13 @@
                 return;
             }
 
+            // [FIX-3b] Do NOT swallow aggregator throws. The
+            // aggregator now throws when EliminationQueries is
+            // missing (fail-closed candidate filtering). A caught-
+            // and-swallowed throw would render "Team not found",
+            // which hides the real problem. Let the throw propagate
+            // after logging a diagnostic line that names the likely
+            // cause.
             var vm;
             try {
                 vm = AcademyAggregator.getWeeklyTeamMemberManagerViewModel({
@@ -325,10 +404,15 @@
                     week: weekNum
                 });
             } catch (e) {
-                console.warn(
-                    '[AcademyWeeklyTeamsMembers] aggregator threw:', e
+                console.error(
+                    '[AcademyWeeklyTeamsMembers] Aggregator threw while ' +
+                    'building the member-manager VM. This usually means ' +
+                    'EliminationQueries is not loaded, or the candidate ' +
+                    'pool could not be computed. Original error:',
+                    e
                 );
-                vm = null;
+                // Re-throw so the caller sees the failure.
+                throw e;
             }
 
             if (!vm) {
