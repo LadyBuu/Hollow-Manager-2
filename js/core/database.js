@@ -76,10 +76,12 @@
  * - Version 20: Adds the teaching-model stores to academy:
  *               classDisciplines, teachingGroups, teachingGroupSequences,
  *               teachingSessions. These back the schedule redesign.
- *               The legacy curriculum.schedules and data.locationSchedules
- *               stores are NOT touched in this version. They will be
- *               retired in a future migration once the calendar UI
- *               is migrated to read from the teaching projector.
+ * - Version 21: Removes the retired stored-schedule maps:
+ *               curriculum.schedules, curriculum.locationSchedules,
+ *               curriculum.metadata, and the unused top-level
+ *               data.locationSchedules store.
+ *               The teaching projector is now the sole source of
+ *               schedule data.
  * 
  * ACADEMY MEMBERSHIP MODEL (v15+):
  * - character.classIds[] is the SINGLE SOURCE OF TRUTH for class membership.
@@ -90,43 +92,36 @@
  * - normaliseDataStructure() enforces these invariants on every load and
  *   prunes orphaned classId references (with a dev-mode warning).
  * 
- * ACADEMY STORES (v16, extended in v20):
+ * ACADEMY STORES (v20):
  *   academy.graduatingClasses      { [classId]: classRecord }
  *   academy.grades                 { [gradeId]: gradeRecord }
  *   academy.rankings               { [rankingId]: rankingRecord }
  *   academy.weeklyTeams            { [classId]: { [teamId]: teamRecord } }
- *                                  (v19+; the pre-v19 shape was nested by week)
- *   academy.enrolments             { [classId]: { [charId]: [enrolmentInterval] } }
- *                                  (ranged model: [{ disciplineId, startWeek, endWeek }])
+ *   academy.enrolments             { [classId]: { [charId]: [interval] } }
  *   academy.socialScores           { [classId]: { [charId]: { [week]: number } } }
  *   academy.settings               { ranking: { academic, social } }
- *   academy.classDisciplines       { [classId]: { [disciplineId]: classDisciplineRecord } } (v20)
- *   academy.teachingGroups         { [groupId]: teachingGroupRecord } (v20)
- *   academy.teachingGroupSequences { ["classId|disciplineId|instructorId"]: number } (v20)
- *   academy.teachingSessions       { [sessionId]: teachingSessionRecord } (v20)
+ *   academy.classDisciplines       { [classId]: { [disciplineId]: cdRecord } }
+ *   academy.teachingGroups         { [groupId]: groupRecord }
+ *   academy.teachingGroupSequences { ["classId|disc|inst"]: number }
+ *   academy.teachingSessions       { [sessionId]: sessionRecord }
  * 
- * LEGACY STORES (retirement pending):
- *   curriculum.schedules           The flat stored student schedule map.
- *                                  Superseded by the teaching projector.
- *   data.locationSchedules         The flat stored location schedule map.
- *                                  Superseded by the teaching projector.
- * 
- *   Both are still written by ScheduleCore and read by CalendarQueries.
- *   They will be removed in a future migration once the calendar UI
- *   has been migrated to read from AcademyCalendarAggregator.
+ * RETIRED STORES (removed in v21):
+ *   curriculum.schedules
+ *   curriculum.locationSchedules
+ *   curriculum.metadata
+ *   data.locationSchedules (top-level, unused duplicate)
  */
 
 (function() {
     'use strict';
 
     var DB_NAME = 'HollowBladesDB';
-    var DB_VERSION = 1;  // IndexedDB structural version (only 1 object store)
-    var DATA_VERSION = 20;  // Application data schema version  // v20
+    var DB_VERSION = 1;
+    var DATA_VERSION = 21;
     var STORE_NAME = 'appData';
 
-    // INTERNAL: The actual IndexedDB connection (private)
     var _indexedDB = null;
-    var _data = null;  // SINGLE SOURCE OF TRUTH for application state
+    var _data = null;
     var _dbOpenPromise = null;
     var _dbInitPromise = null;
     var _loadPromise = null;
@@ -134,11 +129,9 @@
     var _dbStatus = 'uninitialized';
     var _loadError = null;
 
-    // Save queue state - coalescing with frozen batches
     var _isSaving = false;
     var _saveWaiters = [];
 
-    // Recovery state - prevents infinite retry loops
     var _recoveryAttempted = false;
 
     // ============================================================
@@ -174,7 +167,6 @@
     function getDefaultCurriculumData() {
         return {
             disciplines: [],
-            schedules: {},
             restDays: {},
             examDays: {},
             grades: {},
@@ -216,26 +208,15 @@
         };
     }
 
-    /**
-     * Default empty Academy structure.
-     * 
-     * NOTE: classStudents is NOT included. Class membership is derived from
-     * character.classIds[]. The roster is a query, not stored data.
-     * 
-     * v20: adds the teaching-model stores. See the file header for the
-     * shape of each store.
-     */
     function getDefaultAcademyData() {
         return {
             graduatingClasses: {},
             grades: {},
             rankings: {},
             weeklyTeams: {},
-            // v16 stores.
             enrolments: {},
             socialScores: {},
             settings: {},
-            // v20 stores.
             classDisciplines: {},
             teachingGroups: {},
             teachingGroupSequences: {},
@@ -253,7 +234,6 @@
             activities: [],
             classes: [],
             locations: [],
-            locationSchedules: {},
             currentYear: new Date().getFullYear(),
             currentWeek: 1,
             curriculum: getDefaultCurriculumData(),
@@ -378,7 +358,6 @@
                     var error = event.target.error;
                     _dbOpenPromise = null;
 
-                    // ---- RECOVERY: Handle version mismatch ----
                     if (error && error.name === 'VersionError' && !_recoveryAttempted) {
                         _recoveryAttempted = true;
 
@@ -581,7 +560,8 @@
                 case 16: migrateToVersion17(data); break;
                 case 17: migrateToVersion18(data); break;
                 case 18: migrateToVersion19(data); break;
-                case 19: migrateToVersion20(data); break;  // v20
+                case 19: migrateToVersion20(data); break;
+                case 20: migrateToVersion21(data); break;
                 default: data._dataVersion = DATA_VERSION; break;
             }
         }
@@ -784,7 +764,6 @@
 
     function migrateToVersion14(data) {
         data.characters.forEach(function(char) {
-            // HP — number, default 0
             if (typeof char.hp !== 'number' || isNaN(char.hp) || char.hp < 0) {
                 char.hp = 0;
             }
@@ -792,7 +771,6 @@
                 char.hp = 999;
             }
 
-            // MP — number, default 0
             if (typeof char.mp !== 'number' || isNaN(char.mp) || char.mp < 0) {
                 char.mp = 0;
             }
@@ -800,12 +778,10 @@
                 char.mp = 999;
             }
 
-            // Combat notes — string, default ''
             if (typeof char.combatNotes !== 'string') {
                 char.combatNotes = '';
             }
 
-            // Weapons — array of { id, name, type, notes }
             if (!Array.isArray(char.weapons)) {
                 char.weapons = [];
             } else {
@@ -824,9 +800,6 @@
         data._dataVersion = 14;
     }
 
-    /**
-     * Version 15 migration — Academy data model consolidation.
-     */
     function migrateToVersion15(data) {
         if (!data.academy || typeof data.academy !== 'object' || Array.isArray(data.academy)) {
             data.academy = {};
@@ -913,9 +886,6 @@
         data._dataVersion = 15;
     }
 
-    /**
-     * Version 16 migration — Academy stores introduced after v15.
-     */
     function migrateToVersion16(data) {
         if (!data.academy || typeof data.academy !== 'object' || Array.isArray(data.academy)) {
             data.academy = {};
@@ -935,9 +905,6 @@
         data._dataVersion = 16;
     }
 
-    /**
-     * Version 17 migration — Stable IDs for tournament rounds and matches.
-     */
     function migrateToVersion17(data) {
         if (!Array.isArray(data.tournaments)) {
             data.tournaments = [];
@@ -991,9 +958,6 @@
         data._dataVersion = 17;
     }
 
-    /**
-     * Version 18 migration — Assign IDs to characters with id: null.
-     */
     function migrateToVersion18(data) {
         if (!Array.isArray(data.characters)) {
             data._dataVersion = 18;
@@ -1065,34 +1029,6 @@
         data._dataVersion = 18;
     }
 
-    /**
-     * Version 19 migration — Reset the weekly-teams store.
-     *
-     * WHY:
-     *   The original academy.weeklyTeams shape was a per-week snapshot:
-     *
-     *     weeklyTeams[classId][week][teamId] = [charId, ...]
-     *
-     *   This shape could not represent membership with a duration.
-     *   It was replaced by a ranged model:
-     *
-     *     weeklyTeams[classId][teamId] = {
-     *       members: [{ characterId, startWeek, endWeek }]
-     *     }
-     *
-     *   The two shapes are not compatible. The old shape carried no
-     *   temporal information, so any migration would have to fabricate
-     *   ranges. Fabricated ranges are indistinguishable from real ones,
-     *   and would corrupt any future historical query.
-     *
-     *   The persistent Team entities (window.data.teams) are NOT
-     *   affected. Only the per-week assignment map is reset.
-     *
-     *   After this migration, the store starts empty and repopulates
-     *   from the new API.
-     *
-     * @param {object} data
-     */
     function migrateToVersion19(data) {
         if (!data.academy || typeof data.academy !== 'object') {
             data._dataVersion = 19;
@@ -1126,48 +1062,6 @@
         data._dataVersion = 19;
     }
 
-    /**
-     * Version 20 migration — Add the teaching-model stores.
-     *
-     * WHAT THIS DOES:
-     *   Adds four empty stores to academy. No existing store is
-     *   modified. No data is destroyed. This is a purely additive
-     *   migration.
-     *
-     *   - academy.classDisciplines
-     *       { [classId]: { [disciplineId]: classDisciplineRecord } }
-     *       A class's offering of a discipline, with a bounded week
-     *       range and per-class overrides.
-     *
-     *   - academy.teachingGroups
-     *       { [groupId]: teachingGroupRecord }
-     *       Students studying a class-discipline with an instructor.
-     *
-     *   - academy.teachingGroupSequences
-     *       { ["classId|disciplineId|instructorId"]: number }
-     *       Monotonic per-triple numbering for new groups.
-     *
-     *   - academy.teachingSessions
-     *       { [sessionId]: teachingSessionRecord }
-     *       Recurring meetings of a group at a fixed day / time / room.
-     *
-     * WHAT THIS DOES NOT DO:
-     *   - It does NOT touch curriculum.schedules.
-     *   - It does NOT touch data.locationSchedules.
-     *   - It does NOT convert any existing schedule data.
-     *
-     *   The legacy flat schedule maps are retired when the calendar
-     *   UI is migrated to read from the teaching projector. That is a
-     *   later migration.
-     *
-     * WHY A DEDICATED VERSION:
-     *   The stores must exist before any module that reads or writes
-     *   them runs. Adding them here, gated by a version bump, means
-     *   the API contract is available from the first load after this
-     *   change.
-     *
-     * @param {object} data
-     */
     function migrateToVersion20(data) {
         if (!data.academy || typeof data.academy !== 'object' || Array.isArray(data.academy)) {
             data.academy = {};
@@ -1198,6 +1092,40 @@
         data._dataVersion = 20;
     }
 
+    /**
+     * Version 21 migration — Retire the stored-schedule maps.
+     *
+     * WHY:
+     *   The teaching model projects schedules on demand from
+     *   class-disciplines, enrolments, groups, and sessions. There
+     *   is no stored answer; the schedule is a computation.
+     *
+     *   Four stores existed only to hold the old stored answer:
+     *
+     *     curriculum.schedules
+     *     curriculum.locationSchedules
+     *     curriculum.metadata
+     *     data.locationSchedules (top-level, unused duplicate)
+     *
+     *   Nothing reads or writes them after this version ships.
+     *
+     * WHAT THIS DOES NOT DO:
+     *   - It does NOT touch curriculum.autoGroups.
+     *   - It does NOT touch curriculum.restDays or examDays.
+     *   - It does NOT touch any academy.* store.
+     *
+     * @param {object} data
+     */
+    function migrateToVersion21(data) {
+        if (data.curriculum && typeof data.curriculum === 'object') {
+            delete data.curriculum.schedules;
+            delete data.curriculum.locationSchedules;
+            delete data.curriculum.metadata;
+        }
+        delete data.locationSchedules;
+        data._dataVersion = 21;
+    }
+
     // ============================================================
     // NORMALISE DATA STRUCTURE - Current schema defaults
     // ============================================================
@@ -1213,10 +1141,13 @@
         if (!Array.isArray(data.activities)) { data.activities = []; repaired = true; }
         if (!Array.isArray(data.classes)) { data.classes = []; repaired = true; }
         if (!Array.isArray(data.locations)) { data.locations = []; repaired = true; }
-        if (!data.locationSchedules || typeof data.locationSchedules !== 'object') {
-            data.locationSchedules = {};
+
+        // v21: locationSchedules at the top level is retired.
+        if (data.locationSchedules !== undefined) {
+            delete data.locationSchedules;
             repaired = true;
         }
+
         if (data.currentYear === undefined || data.currentYear === null) {
             data.currentYear = new Date().getFullYear();
             repaired = true;
@@ -1315,6 +1246,20 @@
             data.curriculum = getDefaultCurriculumData();
             repaired = true;
         } else {
+            // v21: strip retired stores if they survived.
+            if (data.curriculum.schedules !== undefined) {
+                delete data.curriculum.schedules;
+                repaired = true;
+            }
+            if (data.curriculum.locationSchedules !== undefined) {
+                delete data.curriculum.locationSchedules;
+                repaired = true;
+            }
+            if (data.curriculum.metadata !== undefined) {
+                delete data.curriculum.metadata;
+                repaired = true;
+            }
+
             data.curriculum = deepMergeDefaults(data.curriculum, getDefaultCurriculumData());
             repaired = true;
         }
@@ -1337,7 +1282,7 @@
             repaired = true;
         }
 
-        // ---- Academy (v15+, extended in v16 and v20) ----
+        // ---- Academy ----
         if (!data.academy || typeof data.academy !== 'object' || Array.isArray(data.academy)) {
             data.academy = getDefaultAcademyData();
             repaired = true;
@@ -1352,9 +1297,6 @@
         }
 
         // ---- v20 shape guards ----
-        // Ensure the four teaching-model stores exist as objects.
-        // Pruning is deferred to the cascade coordinator, which is the
-        // single owner of cross-store cleanup.
         if (!data.academy.classDisciplines ||
             typeof data.academy.classDisciplines !== 'object' ||
             Array.isArray(data.academy.classDisciplines)) {
@@ -1380,7 +1322,7 @@
             repaired = true;
         }
 
-        // ---- Class-membership invariants (v15+) ----
+        // ---- Class-membership invariants ----
         var validClassIds = Object.create(null);
         Object.keys(data.academy.graduatingClasses).forEach(function(id) {
             validClassIds[id] = true;
@@ -1408,7 +1350,7 @@
             );
         }
 
-        // ---- Prune orphaned weeklyTeams entries ----
+        // ---- Prune orphaned weeklyTeams ----
         if (data.academy.weeklyTeams && typeof data.academy.weeklyTeams === 'object') {
             Object.keys(data.academy.weeklyTeams).forEach(function(classId) {
                 if (!validClassIds[classId]) {
@@ -1438,15 +1380,7 @@
         pruneByClassId('grades');
         pruneByClassId('rankings');
 
-        // ---- Prune orphaned enrolments / socialScores / classDisciplines (v16, v20) ----
-        // These stores are class-keyed at their top level, so a class
-        // that no longer exists leaves an orphaned bucket. Pruning is
-        // a shape concern, not a cascade concern: if the class is
-        // gone, the bucket has no reader.
-        //
-        // teachingGroups, teachingGroupSequences, and teachingSessions
-        // are NOT class-keyed, so they are not pruned here. Orphan
-        // pruning for those stores is owned by AcademyCascade.
+        // ---- Prune orphaned enrolments / socialScores / classDisciplines ----
         function pruneClassBucket(storeName) {
             var store = data.academy[storeName];
             if (!store || typeof store !== 'object') {
@@ -1461,13 +1395,13 @@
         }
         pruneClassBucket('enrolments');
         pruneClassBucket('socialScores');
-        pruneClassBucket('classDisciplines');  // v20
+        pruneClassBucket('classDisciplines');
 
         return repaired;
     }
 
     // ============================================================
-    // CREATE SAFE COPY - Strict structuredClone
+    // CREATE SAFE COPY
     // ============================================================
 
     function createSafeCopy(data) {
@@ -1809,7 +1743,7 @@
     window.getDefaultMagicProficiencies = getDefaultMagicProficiencies;
 
     // ============================================================
-    // INITIALIZE - SEQUENTIAL STARTUP
+    // INITIALIZE
     // ============================================================
 
     ensureDatabaseReady()
