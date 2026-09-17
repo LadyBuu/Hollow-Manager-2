@@ -60,6 +60,12 @@
  *     createdAt
  *   }
  *
+ * SCHEDULE SOURCE (v21):
+ *   Location schedule projections read from
+ *   AcademyCalendarAggregator, which is projector-backed.
+ *   The retired stored-schedule map (curriculum.schedules,
+ *   curriculum.locationSchedules) is no longer consulted.
+ *
  * DEPENDENCIES:
  *   - AcademyClasses       (class entities)
  *   - AcademyDisciplines   (discipline entities)
@@ -70,7 +76,7 @@
  *   - TeamAggregator       (period-display strings; lazy)
  *   - AcademyWeeklyTeams   (week-scoped assignments; lazy)
  *   - AcademyRanking       (ranking projection; lazy)
- *   - CalendarAggregator   (schedule projections; lazy)
+ *   - AcademyCalendarAggregator (schedule projections; lazy)
  *   - AcademyEnrolments    (enrolment read for discipline editor VM; lazy)
  *   - AcademyGrades        (grade read for discipline editor VM; lazy)
  */
@@ -161,8 +167,9 @@
         return window.AcademyRanking || null;
     }
 
-    function getCalendarAggregator() {
-        return window.CalendarAggregator || null;
+    // v21: schedule reads go through the projector-backed aggregator.
+    function getAcademyCalendarAggregator() {
+        return window.AcademyCalendarAggregator || null;
     }
 
     function getAcademyEnrolments() {
@@ -807,19 +814,88 @@
         return type.charAt(0).toUpperCase() + type.slice(1);
     }
 
+    // v21: reads through the projector-backed AcademyCalendarAggregator.
+    //
+    // The aggregator returns a schedule VM shaped as
+    //   { schedule: { day: { hour: slotDescriptor } }, ... }
+    //
+    // The location view renderer expects a flat, sorted array of
+    // schedule rows. This helper pivots the map into that shape.
     function getLocationScheduleForWeek(locationId, week) {
         if (!locationId || week === undefined || week === null) {
             return [];
         }
-        var CA = getCalendarAggregator();
-        if (!CA || typeof CA.getLocationScheduleViewModel !== 'function') {
+
+        var ACA = getAcademyCalendarAggregator();
+        if (!ACA || typeof ACA.getLocationScheduleViewModel !== 'function') {
             return [];
         }
+
+        var vm;
         try {
-            return CA.getLocationScheduleViewModel(locationId, week) || [];
+            vm = ACA.getLocationScheduleViewModel(locationId, week);
         } catch (e) {
+            console.warn(
+                '[AcademyAggregator] getLocationScheduleViewModel failed:',
+                e
+            );
             return [];
         }
+
+        if (!vm || !vm.schedule) {
+            return [];
+        }
+
+        return flattenScheduleMap(vm.schedule);
+    }
+
+    /**
+     * Pivot the calendar aggregator's schedule map
+     * ({ day: { hour: slotDescriptor } }) into the flat, sorted
+     * array of { day, hour, disciplineId, disciplineName, duration,
+     * label } rows the location view renderer expects.
+     */
+    function flattenScheduleMap(scheduleMap) {
+        var result = [];
+        if (!scheduleMap || typeof scheduleMap !== 'object') {
+            return result;
+        }
+
+        var dayKeys = Object.keys(scheduleMap);
+        for (var i = 0; i < dayKeys.length; i++) {
+            var dayKey = dayKeys[i];
+            var dayNum = parseInt(dayKey, 10);
+            if (isNaN(dayNum)) { continue; }
+
+            var daySchedule = scheduleMap[dayKey];
+            if (!daySchedule || typeof daySchedule !== 'object') { continue; }
+
+            var hourKeys = Object.keys(daySchedule);
+            for (var j = 0; j < hourKeys.length; j++) {
+                var hourKey = hourKeys[j];
+                var hourNum = parseInt(hourKey, 10);
+                if (isNaN(hourNum)) { continue; }
+
+                var slot = daySchedule[hourKey];
+                if (!slot) { continue; }
+
+                result.push({
+                    day: dayNum,
+                    hour: hourNum,
+                    disciplineId: slot.disciplineId || null,
+                    disciplineName: slot.disciplineName || 'Unknown',
+                    duration: isFiniteNumber(slot.duration) ? slot.duration : 1,
+                    label: isNonEmptyString(slot.label) ? slot.label : ''
+                });
+            }
+        }
+
+        result.sort(function(a, b) {
+            if (a.day !== b.day) { return a.day - b.day; }
+            return a.hour - b.hour;
+        });
+
+        return result;
     }
 
     // ============================================================
@@ -924,8 +1000,7 @@
             if (team.type !== 'academic') { continue; }
 
             // WEEK FILTER: skip teams whose persistent window does
-            // not cover the requested week. This is the fix — a team
-            // with endPeriod = 2 does not appear in week 3 or later.
+            // not cover the requested week.
             if (typeof TeamQueries.isTeamActiveAtPeriod === 'function') {
                 if (!TeamQueries.isTeamActiveAtPeriod(team, week)) {
                     continue;
