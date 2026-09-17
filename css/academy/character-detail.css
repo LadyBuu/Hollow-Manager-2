@@ -1,0 +1,728 @@
+/**
+ * css/academy/character-detail.css - Academy character detail panel
+ *
+ * The right-hand panel of the Academy People view. Rendered by
+ * academy-character-detail.js when a character is selected.
+ *
+ * Covers:
+ *   - Panel shell and header
+ *   - Role badge, mode toggle (instructor checkbox)
+ *   - Elimination warning banner
+ *   - Tab bar
+ *   - Main tab: class chips, performance scores, drop-out section
+ *   - Disciplines tab: student disciplines, instructor disciplines
+ *   - Grades tab: host element
+ *   - Schedule tab: host element
+ *   - Teams tab: student team list
+ *   - Auto-Groups tab: instructor group blocks
+ *
+ * Load order: shared.css → academy.css → academy/character-detail.css
+ */
+
+/* ============================================================
+   PANEL SHELL
+   ============================================================ */
+
+.academy-character-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* ============================================================
+   HEADER
+   ============================================================ */
+
+.academy-character-detail-header {
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-character-detail-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+
+.academy-character-detail-title {
+    font-size: 1.05rem;
+    color: var(--accent);
+    margin: 0;
+    flex: 1;
+    min-width: 0;
+}
+
+.academy-character-detail-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-size: 0.7rem;
+    margin-bottom: 4px;
+}
+
+.academy-character-detail-meta-item .meta-label {
+    color: var(--text-dim);
+    font-size: 0.65rem;
+}
+
+/* ============================================================
+   ROLE BADGES
+   ============================================================ */
+
+.academy-role-badge {
+    display: inline-block;
+    font-size: 0.55rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 8px;
+    border: 1px solid;
+    white-space: nowrap;
+}
+
+.academy-role-student {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.academy-role-instructor {
+    color: var(--info);
+    background: var(--info-soft);
+    border-color: var(--info);
+}
+
+/* ============================================================
+   MODE TOGGLE (instructor checkbox)
+   ============================================================ */
+
+.academy-character-mode-toggle {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-soft);
+}
+
+.academy-mode-checkbox-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    cursor: pointer;
+    user-select: none;
+}
+
+.academy-mode-checkbox-label:hover {
+    color: var(--text);
+}
+
+.academy-character-mode-checkbox {
+    width: auto;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.academy-mode-checkbox-text {
+    font-weight: 500;
+}
+
+/* ============================================================
+   ELIMINATION WARNING BANNER
+   ============================================================ */
+
+.academy-character-detail-warning {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-weight: 500;
+}
+
+.academy-warning-elimination-now {
+    color: var(--danger);
+    background: var(--danger-soft);
+    border-left: 3px solid var(--danger);
+}
+
+.academy-warning-eliminated {
+    color: var(--danger);
+    background: var(--danger-soft);
+    border-left: 3px solid var(--danger);
+    opacity: 0.75;
+}
+
+.academy-warning-icon {
+    font-size: 0.9rem;
+    flex: 0 0 auto;
+}
+
+.academy-warning-text {
+    flex: 1;
+    min-width: 0;
+}
+
+/* ============================================================
+   TAB BAR
+   ============================================================ */
+
+.academy-character-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    margin-bottom: 12px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+}
+
+.academy-character-tab-btn {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 4px 4px 0 0;
+    color: var(--text-dim);
+    font-size: 0.72rem;
+    font-weight: 500;
+    padding: 5px 12px;
+    cursor: pointer;
+    transition: 0.15s;
+    white-space: nowrap;
+}
+
+.academy-character-tab-btn:hover {
+    color: var(--text);
+    background: var(--panel-alt);
+}
+
+.academy-character-tab-btn.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+    background: var(--accent-soft);
+    font-weight: 600;
+}
+
+.academy-character-tab-body {
+    min-height: 100px;
+}
+
+@media (max-width: 600px) {
+    .academy-character-tab-btn {
+        font-size: 0.65rem;
+        padding: 4px 8px;
+    }
+}
+
+/* ============================================================
+   SHARED DETAIL SECTION (inside tabs)
+   ============================================================ */
+
+.academy-character-detail-section {
+    margin-bottom: 14px;
+}
+
+.academy-character-detail-section:last-child {
+    margin-bottom: 0;
+}
+
+.academy-character-detail-section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding-bottom: 4px;
+    margin-bottom: 6px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-character-detail-section-title {
+    font-size: 0.8rem;
+    color: var(--accent);
+    margin: 0;
+}
+
+.academy-character-detail-section-subtitle,
+.academy-character-detail-section-count {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+}
+
+/* ============================================================
+   MAIN TAB - CLASS CHIPS
+   ============================================================ */
+
+.academy-character-class-chips {
+    /* reuses .academy-character-detail-section */
+}
+
+.academy-character-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.academy-character-class-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 4px 3px 10px;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: 12px;
+    font-size: 0.68rem;
+    color: var(--accent);
+    font-weight: 500;
+}
+
+.academy-character-class-chip-name {
+    white-space: nowrap;
+}
+
+.academy-character-class-chip-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    color: var(--danger);
+    font-size: 0.55rem;
+    line-height: 1;
+    cursor: pointer;
+    border-radius: 50%;
+    transition: background 0.15s;
+}
+
+.academy-character-class-chip-remove:hover {
+    background: var(--danger-soft);
+    border-color: transparent;
+}
+
+/* ============================================================
+   MAIN TAB - PERFORMANCE SCORES
+   ============================================================ */
+
+.academy-character-scores {
+    /* reuses .academy-character-detail-section */
+}
+
+.academy-score-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 8px;
+}
+
+.academy-score-card {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+}
+
+.academy-score-label {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.academy-score-value {
+    font-size: 1.35rem;
+    font-weight: 700;
+    font-family: 'Fraunces', serif;
+    color: var(--text);
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+}
+
+.academy-score-value-academic-average {
+    color: var(--accent);
+}
+
+.academy-score-value-social-score {
+    color: var(--info);
+}
+
+.academy-score-value-overall-score {
+    color: var(--text);
+}
+
+.academy-score-value-empty {
+    color: var(--text-dim);
+    font-weight: 400;
+    font-size: 1rem;
+}
+
+.academy-score-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 2px;
+}
+
+.academy-score-actions button.small {
+    font-size: 0.6rem;
+    padding: 2px 8px;
+}
+
+/* ============================================================
+   MAIN TAB - DROP OUT SECTION
+   ============================================================ */
+
+.academy-character-dropout-section {
+    padding: 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+}
+
+.academy-dropout-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.academy-dropout-btn {
+    font-size: 0.72rem;
+    padding: 5px 14px;
+    flex: 0 0 auto;
+}
+
+.academy-dropout-hint {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-style: italic;
+    flex: 1;
+    min-width: 150px;
+    line-height: 1.4;
+}
+
+.academy-dropout-status {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 10px;
+    background: var(--danger-soft);
+    border-left: 3px solid var(--danger);
+    border-radius: 4px;
+}
+
+.academy-dropout-status-eliminated {
+    /* Modifier: kept for explicit override sites. Same as base
+       for now. */
+}
+
+.academy-dropout-status-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--danger);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.academy-dropout-status-detail {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+}
+
+/* ============================================================
+   DISCIPLINES TAB - STUDENT
+   ============================================================ */
+
+.academy-character-disciplines {
+    /* reuses .academy-character-detail-section */
+}
+
+.academy-character-discipline-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.academy-character-discipline-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    font-size: 0.75rem;
+    transition: background 0.15s;
+}
+
+.academy-character-discipline-row:hover {
+    background: var(--accent-soft);
+}
+
+.academy-character-discipline-name {
+    flex: 1;
+    min-width: 0;
+    font-weight: 500;
+    color: var(--text);
+}
+
+.academy-character-discipline-meta {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-style: italic;
+    white-space: nowrap;
+}
+
+.academy-character-discipline-row button.small {
+    font-size: 0.62rem;
+    padding: 2px 8px;
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+/* ============================================================
+   DISCIPLINES TAB - INSTRUCTOR
+   ============================================================ */
+
+.academy-character-instructor-disciplines {
+    /* reuses .academy-character-detail-section */
+}
+
+.academy-instructor-discipline-row {
+    cursor: pointer;
+    border-left-color: var(--info);
+}
+
+.academy-instructor-discipline-row:hover {
+    background: var(--info-soft);
+}
+
+/* ============================================================
+   GRADES TAB
+   ============================================================ */
+
+.academy-character-grades {
+    /* reuses .academy-character-detail-section */
+}
+
+.academy-grades-editor-host {
+    display: block;
+}
+
+/* ============================================================
+   SCHEDULE TAB
+   ============================================================ */
+
+.academy-character-schedule {
+    /* reuses .academy-character-detail-section */
+}
+
+.academy-schedule-host {
+    display: block;
+    min-height: 200px;
+}
+
+/* ============================================================
+   TEAMS TAB
+   ============================================================ */
+
+.academy-character-teams {
+    /* reuses .academy-character-detail-section */
+}
+
+.academy-character-team-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.academy-character-team-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--info);
+    border-radius: 4px;
+    font-size: 0.72rem;
+    transition: background 0.15s;
+}
+
+.academy-character-team-row:hover {
+    background: var(--info-soft);
+}
+
+.academy-character-team-name {
+    flex: 1;
+    min-width: 0;
+    font-weight: 500;
+    color: var(--text);
+}
+
+.academy-character-team-type {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+
+/* ============================================================
+   AUTO-GROUPS TAB
+   ============================================================ */
+
+.academy-character-auto-groups {
+    /* reuses .academy-character-detail-section */
+}
+
+.academy-instructor-group {
+    margin-bottom: 10px;
+    padding: 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-left: 3px solid var(--info);
+    border-radius: 6px;
+}
+
+.academy-instructor-group:last-child {
+    margin-bottom: 0;
+}
+
+.academy-instructor-group-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding-bottom: 8px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-instructor-group-name {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.academy-instructor-group-count {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+
+.academy-instructor-group-header button.small {
+    font-size: 0.65rem;
+    padding: 3px 10px;
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+/* ---------- Empty state inside a group ---------- */
+
+.academy-instructor-group-empty {
+    padding: 6px 4px;
+    font-size: 0.7rem;
+    font-style: italic;
+}
+
+/* ---------- Group roster ---------- */
+
+.academy-instructor-group-roster {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.academy-instructor-group-roster-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    background: var(--bg);
+    border-radius: 4px;
+    font-size: 0.72rem;
+}
+
+.academy-instructor-group-roster-name {
+    flex: 1;
+    min-width: 0;
+    font-weight: 500;
+    color: var(--text);
+}
+
+.academy-instructor-group-roster-status {
+    font-size: 0.62rem;
+    color: var(--text-dim);
+    font-style: italic;
+    white-space: nowrap;
+}
+
+.academy-instructor-group-roster-row button.small {
+    font-size: 0.6rem;
+    padding: 2px 8px;
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+/* ============================================================
+   MOBILE
+   ============================================================ */
+
+@media (max-width: 600px) {
+    .academy-character-detail-title {
+        font-size: 0.95rem;
+    }
+
+    .academy-character-class-chip {
+        padding: 2px 3px 2px 8px;
+    }
+
+    .academy-score-grid {
+        grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+    }
+
+    .academy-score-value {
+        font-size: 1.1rem;
+    }
+
+    .academy-character-discipline-row {
+        flex-wrap: wrap;
+    }
+
+    .academy-character-discipline-row button.small {
+        margin-left: auto;
+    }
+
+    .academy-dropout-controls {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .academy-dropout-btn {
+        width: 100%;
+    }
+
+    .academy-instructor-group-header {
+        gap: 4px;
+    }
+
+    .academy-instructor-group-header button.small {
+        width: 100%;
+        text-align: center;
+    }
+
+    .academy-instructor-group-roster-row {
+        flex-wrap: wrap;
+    }
+
+    .academy-instructor-group-roster-row button.small {
+        margin-left: auto;
+    }
+}
