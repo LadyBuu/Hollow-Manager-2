@@ -1,0 +1,489 @@
+/**
+ * css/dashboard.css - Hollow Blades Manager
+ *
+ * The Dashboard tab.
+ *
+ * Covers:
+ *   - Header with year control
+ *   - Statistics grid
+ *   - Recent activity feed
+ *   - Quick links grid
+ *
+ * Load order: shared.css → dashboard.css
+ *
+ * NOTE:
+ *   The Dashboard uses the "dashboard-" prefix for its own
+ *   containers. Some element classes (like .stat-card) are shared
+ *   vocabulary with .shared.css; where they overlap, this file
+ *   narrows the shape and the cascade applies the more specific
+ *   rule.
+ */
+
+/* ============================================================
+   SHELL
+   ============================================================ */
+
+.dashboard {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 12px;
+}
+
+@media (min-width: 768px) {
+    .dashboard {
+        padding: 20px;
+    }
+}
+
+/* ============================================================
+   HEADER
+   ============================================================ */
+
+.dashboard-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 14px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+}
+
+.dashboard-title {
+    font-size: 1.15rem;
+    color: var(--accent);
+    margin: 0;
+}
+
+@media (min-width: 768px) {
+    .dashboard-title {
+        font-size: 1.4rem;
+    }
+}
+
+/* ---------- Year control ---------- */
+
+.dashboard-year-control {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.dashboard-year-label {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.dashboard-year-input {
+    width: 90px;
+    padding: 5px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-family: 'Inter', sans-serif;
+    font-variant-numeric: tabular-nums;
+}
+
+.dashboard-year-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.dashboard-year-btn {
+    font-size: 0.7rem;
+    padding: 4px 12px;
+    white-space: nowrap;
+}
+
+/* ============================================================
+   STATISTICS GRID
+   ============================================================ */
+
+.dashboard-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 8px;
+}
+
+@media (min-width: 768px) {
+    .dashboard-stats {
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 12px;
+    }
+}
+
+/* ---------- Stat card ---------- */
+
+.dashboard-stats .stat-card {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px 12px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    transition: border-color 0.15s;
+}
+
+.dashboard-stats .stat-card:hover {
+    border-color: var(--accent);
+}
+
+.stat-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    font-family: 'Fraunces', serif;
+    color: var(--accent);
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+}
+
+@media (min-width: 768px) {
+    .stat-value {
+        font-size: 2rem;
+    }
+}
+
+.stat-label {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+}
+
+.stat-sublabel {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    margin-top: 2px;
+}
+
+/* ---------- Per-domain accent tints ---------- */
+
+.dashboard-stats .stat-card.stat-characters .stat-value {
+    color: var(--accent);
+}
+
+.dashboard-stats .stat-card.stat-students .stat-value {
+    color: var(--info);
+}
+
+.dashboard-stats .stat-card.stat-instructors .stat-value {
+    color: var(--warning);
+}
+
+.dashboard-stats .stat-card.stat-teams .stat-value {
+    color: var(--accent);
+}
+
+.dashboard-stats .stat-card.stat-tournaments .stat-value {
+    color: var(--info);
+}
+
+.dashboard-stats .stat-card.stat-missions .stat-value {
+    color: var(--warning);
+}
+
+.dashboard-stats .stat-card.stat-classes .stat-value {
+    color: var(--accent);
+}
+
+/* ============================================================
+   RECENT ACTIVITY
+   ============================================================ */
+
+.dashboard-recent-activity {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 14px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+}
+
+.dashboard-recent-activity .section-title {
+    font-size: 0.9rem;
+    color: var(--accent);
+    margin: 0 0 4px 0;
+}
+
+/* ---------- Feed ---------- */
+
+.activity-feed {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.activity-item {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 8px 10px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--border);
+    border-radius: 4px;
+    transition: background 0.15s;
+}
+
+.activity-item:hover {
+    background: var(--bg);
+}
+
+/* ---------- Per-type accent bar ---------- */
+
+.activity-item.activity-type-success {
+    border-left-color: var(--accent);
+}
+
+.activity-item.activity-type-info {
+    border-left-color: var(--info);
+}
+
+.activity-item.activity-type-warning {
+    border-left-color: var(--warning);
+}
+
+.activity-item.activity-type-error {
+    border-left-color: var(--danger);
+}
+
+/* ---------- Icon ---------- */
+
+.activity-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    font-size: 0.75rem;
+    flex: 0 0 auto;
+    background: var(--panel);
+    color: var(--text-dim);
+    line-height: 1;
+    border: 1px solid var(--border-soft);
+}
+
+.activity-item.activity-type-success .activity-icon {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.activity-item.activity-type-info .activity-icon {
+    color: var(--info);
+    border-color: var(--info);
+    background: var(--info-soft);
+}
+
+.activity-item.activity-type-warning .activity-icon {
+    color: var(--warning);
+    border-color: var(--warning);
+    background: var(--warning-soft);
+}
+
+.activity-item.activity-type-error .activity-icon {
+    color: var(--danger);
+    border-color: var(--danger);
+    background: var(--danger-soft);
+}
+
+/* ---------- Content ---------- */
+
+.activity-content {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+}
+
+.activity-message {
+    font-size: 0.75rem;
+    color: var(--text);
+    line-height: 1.4;
+    word-break: break-word;
+}
+
+.activity-timestamp {
+    font-size: 0.62rem;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+   QUICK LINKS
+   ============================================================ */
+
+.dashboard-quick-links {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 14px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+}
+
+.dashboard-quick-links .section-title {
+    font-size: 0.9rem;
+    color: var(--accent);
+    margin: 0 0 4px 0;
+}
+
+.quick-links-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 8px;
+}
+
+@media (min-width: 768px) {
+    .quick-links-grid {
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 10px;
+    }
+}
+
+/* ---------- Link card ---------- */
+
+.quick-links-grid .quick-link {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    padding: 10px 12px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    text-decoration: none;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+}
+
+.quick-links-grid .quick-link:hover {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    text-decoration: none;
+}
+
+.quick-link-icon {
+    font-size: 1.3rem;
+    line-height: 1;
+    margin-bottom: 2px;
+}
+
+.quick-link-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.quick-link-description {
+    font-size: 0.62rem;
+    color: var(--text-dim);
+    line-height: 1.3;
+}
+
+/* ============================================================
+   EMPTY STATE (dashboard-scoped)
+   ============================================================ */
+
+.dashboard .empty-state {
+    padding: 20px;
+    text-align: center;
+    background: var(--panel-alt);
+    border-radius: var(--radius);
+    font-size: 0.75rem;
+}
+
+/* ============================================================
+   MOBILE
+   ============================================================ */
+
+@media (max-width: 600px) {
+    .dashboard {
+        gap: 12px;
+        padding: 8px;
+    }
+
+    .dashboard-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+        padding: 8px 10px;
+    }
+
+    .dashboard-year-control {
+        justify-content: flex-start;
+    }
+
+    .dashboard-year-input {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .dashboard-stats {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 6px;
+    }
+
+    .dashboard-stats .stat-card {
+        padding: 8px 10px;
+    }
+
+    .stat-value {
+        font-size: 1.3rem;
+    }
+
+    .stat-label {
+        font-size: 0.55rem;
+    }
+
+    .stat-sublabel {
+        font-size: 0.55rem;
+    }
+
+    .quick-links-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 6px;
+    }
+
+    .quick-links-grid .quick-link {
+        padding: 8px 10px;
+    }
+
+    .quick-link-icon {
+        font-size: 1.1rem;
+    }
+
+    .quick-link-label {
+        font-size: 0.72rem;
+    }
+
+    .quick-link-description {
+        font-size: 0.58rem;
+    }
+
+    .activity-item {
+        padding: 6px 8px;
+    }
+
+    .activity-message {
+        font-size: 0.72rem;
+    }
+}
