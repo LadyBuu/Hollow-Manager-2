@@ -23,7 +23,8 @@
  *     exam-pair-remove)
  *   - Handle Weekly Teams create/edit/delete/manage-members
  *   - Handle Auto-Distribute for Weekly Teams
- *   - Handle Empty Teams (clear this class's weekly-team windows)
+ *   - Handle Clear Rosters (hard-remove every active member across
+ *     every academic team of the class for the current week)
  *   - Handle character class membership mutations
  *     (character-remove-from-class)
  *
@@ -56,12 +57,19 @@
  *   the persistent Team entity's members[] array, and the ranged
  *   API writes through to that array via transaction-local helpers.
  *
- * EMPTY TEAMS:
- *   "Empty Teams" clears every weekly-team window record for the
- *   current class in a single transaction. It does NOT delete the
- *   persistent Team entities; those remain and continue to appear
- *   in the Teams tab and the Tournaments view. It only removes the
- *   teams from the Weekly Teams schedule.
+ * CLEAR ROSTERS:
+ *   The Weekly Teams view exposes "Clear Rosters". It calls
+ *   AcademyWeeklyTeams.clearAllMembershipsForClass(classId, week),
+ *   which HARD-DELETES every member whose active window covers the
+ *   given week, across every academic team of the class whose own
+ *   startPeriod / endPeriod covers the week.
+ *
+ *   The teams themselves stay scheduled. The weekly-team window
+ *   records are untouched. Members that are not active at the week
+ *   (past leaves, future joins) are preserved.
+ *
+ *   This is used when rosters need to be rebuilt from scratch for a
+ *   week — typically after a data-entry mistake.
  *
  * TEAM CORE CONFIGURATION:
  *   TeamCore requires a characterProvider via configure(). The Teams
@@ -85,40 +93,23 @@
  *     - Existing teams' rosters only GROW, never shrink.
  *     - Only characters who are NOT already assigned to an academic
  *       team for this class at this week are considered.
- *     - "Assigned" is derived from TeamQueries.getActiveTeamMembers
- *       for every active academic team of the class at the week.
  *     - Distribution is PER STUDENT. For each unassigned student,
  *       the existing team with the lowest current active-member count
- *       that still has capacity is chosen. A team's capacity is
- *       `groupSize - currentCount`. When no existing team has
- *       capacity, a new team is created.
+ *       that still has capacity is chosen.
  *     - New teams are named `<namePrefix><N>`, continuing from the
- *       highest numeric suffix already in use (or starting at 1 if
- *       none exists).
- *     - New teams are academic, start at the current week, and have
- *       an open endPeriod.
+ *       highest numeric suffix already in use.
  *     - Newly-created teams are immediately opened for the current
- *       week via AcademyWeeklyTeams.ensureWindow, so they appear in
- *       the Weekly Teams list without waiting for a member add.
+ *       week via AcademyWeeklyTeams.ensureWindow.
  *     - Both TeamCore.addMember (persistent team entity) and
  *       AcademyWeeklyTeams.ensureWindow (week window) are written so
  *       the two stores stay in sync.
  *
  *   CLEAR EXISTING:
- *     The Auto-Distribute modal exposes an "Empty the weekly schedule
- *     first" checkbox. When checked, every weekly-team window record
- *     for the class is deleted before distribution runs. Persistent
- *     Team entities are NOT deleted. This is the same operation as
- *     the "Empty Teams" button.
- *
- *   IDEMPOTENCY:
- *     Running Auto-Distribute twice in a row is safe. The second run
- *     sees no unassigned characters and returns early.
- *
- *   NON-ATOMICITY:
- *     Each mutation (createTeam, addMember) goes through
- *     MutationPipeline and is individually atomic. The sequence as a
- *     whole is not. If a step fails, earlier steps remain applied.
+ *     The Auto-Distribute modal exposes a "Clear the schedule first"
+ *     checkbox. When checked, every weekly-team window record for
+ *     the class is deleted before distribution runs. Persistent Team
+ *     entities are NOT deleted. This is the same operation as the
+ *     "Clear Schedule" flow, used only by Auto-Distribute.
  *
  * ACTION ROUTING:
  *   Actions carry a prefix (people-, character-, discipline-,
@@ -131,7 +122,7 @@
  *     weekly-teams-delete-team       delete the persistent Team
  *     weekly-teams-auto-distribute   open the distribute modal
  *     weekly-teams-manage-members    open the member manager
- *     weekly-teams-empty-teams       clear this class's week windows
+ *     weekly-teams-empty-teams       clear rosters for this class week
  *
  *   Exam reopen verbs (v21):
  *     exam-reopen-exam     flips the exam status back to 'active'
@@ -155,7 +146,7 @@
  *   - AcademyDisciplineView / AcademyLocationView / AcademyRankingView /
  *     AcademyWeeklyTeamsView / AcademyTournamentView
  *   - AcademyWeeklyTeamsMembers (Academy-scoped member manager)
- *   - AcademyWeeklyTeams (window mutations)
+ *   - AcademyWeeklyTeams (window and membership mutations)
  *   - CalendarRenderer
  *   - TeamCore / TeamQueries / TeamConstants
  *   - Modal / NotificationSystem
@@ -1496,7 +1487,7 @@
                 openWeeklyTeamMembersModal(el.dataset.teamId);
                 return;
             case 'weekly-teams-empty-teams':
-                handleWeeklyTeamsEmpty();
+                handleWeeklyTeamsClearRosters();
                 return;
             default:
                 return;
@@ -1504,57 +1495,92 @@
     }
 
     /**
-     * Empty Teams: delete every weekly-team window record for the
-     * current class. Persistent Team entities are NOT touched; they
-     * remain and continue to appear in the Teams tab and Tournaments
-     * view. Only the Weekly Teams schedule is cleared.
+     * Clear Rosters: HARD-DELETE every member whose active window
+     * covers the current display week, across every academic team of
+     * the current class whose own startPeriod / endPeriod covers the
+     * week.
+     *
+     * Teams remain scheduled. The weekly-team windows are untouched.
+     * Members that are not active at the week (past leaves, future
+     * joins) are preserved. This is the operation the user reaches
+     * for when a roster needs to be rebuilt from scratch for a week,
+     * typically after a data-entry mistake.
      */
-    function handleWeeklyTeamsEmpty() {
+    function handleWeeklyTeamsClearRosters() {
         if (!_selectedWeeklyTeamsClassId) {
             notify('Select a class first.', 'error');
             return;
         }
 
         var AWT = getAcademyWeeklyTeams();
-        if (!AWT || typeof AWT.clearClassWindows !== 'function') {
+        if (!AWT || typeof AWT.clearAllMembershipsForClass !== 'function') {
             notify('Weekly Teams module not available.', 'error');
             return;
         }
 
-        var records = [];
-        try {
-            records = AWT.getAllTeamRecords(_selectedWeeklyTeamsClassId) || [];
-        } catch (e) {
-            records = [];
+        var week = AcademyUI.getDisplayWeek();
+
+        // Count the current scheduled teams and their active members
+        // so the confirmation is informative. Both numbers come from
+        // TeamQueries, which is the same source the panel uses.
+        var TeamQ = getTeamQueries();
+        var TeamConstants = getTeamConstants();
+        var teamsActiveCount = 0;
+        var membersActiveCount = 0;
+
+        if (TeamQ && TeamConstants &&
+            typeof TeamQ.getTeamsByClass === 'function' &&
+            typeof TeamQ.isTeamActiveAtPeriod === 'function' &&
+            typeof TeamQ.getActiveTeamMembers === 'function') {
+            var allTeams = TeamQ.getTeamsByClass(
+                _selectedWeeklyTeamsClassId, 'operational'
+            ) || [];
+            for (var i = 0; i < allTeams.length; i++) {
+                var t = allTeams[i];
+                if (!t) { continue; }
+                if (TeamConstants.normalizeTeamType(t.type) !== 'academic') {
+                    continue;
+                }
+                if (!TeamQ.isTeamActiveAtPeriod(t, week)) {
+                    continue;
+                }
+                teamsActiveCount++;
+                var members = TeamQ.getActiveTeamMembers(t, week) || [];
+                membersActiveCount += members.length;
+            }
         }
 
-        if (records.length === 0) {
-            notify('No teams are scheduled for this class.', 'info');
+        if (membersActiveCount === 0) {
+            notify('No team members to clear for this week.', 'info');
             return;
         }
 
         var message =
-            'Remove all ' + records.length +
-            ' scheduled team' + (records.length === 1 ? '' : 's') +
-            ' from the Weekly Teams view for this class?\n\n' +
-            'The teams themselves are NOT deleted. They will still ' +
-            'appear in the Teams tab and in Exams. Only their ' +
-            'scheduling for the weekly view is cleared.';
+            'Remove all ' + membersActiveCount +
+            ' active team member' + (membersActiveCount === 1 ? '' : 's') +
+            ' across ' + teamsActiveCount +
+            ' team' + (teamsActiveCount === 1 ? '' : 's') +
+            ' for this week?\n\n' +
+            'The teams themselves are NOT deleted. They stay scheduled ' +
+            'and empty. Memberships that do not cover this week ' +
+            '(past leaves, future joins) are kept.\n\n' +
+            'This cannot be undone.';
 
         if (!confirm(message)) {
             return;
         }
 
-        AWT.clearClassWindows(_selectedWeeklyTeamsClassId)
+        AWT.clearAllMembershipsForClass(_selectedWeeklyTeamsClassId, week)
             .then(function(result) {
                 if (result && result.success) {
-                    _selectedWeeklyTeamId = null;
                     refreshView();
                 }
             })
             .catch(function(err) {
-                console.warn('[AcademyView] clearClassWindows failed:', err);
-                notify('Failed to empty teams.', 'error');
+                console.warn(
+                    '[AcademyView] clearAllMembershipsForClass failed:', err
+                );
+                notify('Failed to clear rosters.', 'error');
             });
     }
 
@@ -3010,23 +3036,6 @@
             });
     }
 
-    /**
-     * Enroll the current character in a discipline.
-     *
-     * WEEK SEMANTICS:
-     *   AcademyEnrolments.enrol requires a startWeek. The current
-     *   display week is passed as the start. Enrolment is INCLUSIVE
-     *   from that week onward.
-     *
-     * ERROR SURFACING:
-     *   AcademyEnrolments.enrol performs pre-flight validation
-     *   BEFORE entering the pipeline. Pre-flight rejections resolve
-     *   with { success: false, message } and do not throw, so the
-     *   .catch handler below will not fire for them. The success
-     *   branch must therefore check result.success === false
-     *   explicitly and surface the message; otherwise the user sees
-     *   nothing when the pre-flight check fails.
-     */
     function handleEnrollDiscipline(charId) {
         if (!charId) { return; }
 
@@ -3106,18 +3115,6 @@
         });
     }
 
-    /**
-     * Leave a discipline effective from the current display week.
-     *
-     * WEEK SEMANTICS:
-     *   AcademyEnrolments.leave takes an effectiveWeek, the FIRST
-     *   week the student is no longer enrolled. The interval's
-     *   endWeek is set to effectiveWeek - 1.
-     *
-     * ERROR SURFACING:
-     *   Same as enrol: pre-flight rejections resolve, they do not
-     *   throw. The success branch must check result.success === false.
-     */
     function handleLeaveDiscipline(charId, disciplineId) {
         if (!charId || !disciplineId) { return; }
 
