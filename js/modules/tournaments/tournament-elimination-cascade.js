@@ -43,7 +43,8 @@
  * PUBLIC OPERATIONS:
  *   applyFailEliminations(appData, tournament, match, round, week)
  *     Write eliminations for failing participants of a completed
- *     match.
+ *     match. REQUIRES that every failing character exists in the
+ *     snapshot. Missing characters fail the transaction.
  *
  *   reverseMatchEliminations(appData, tournament, matchId)
  *     Remove eliminations whose provenance is a specific match.
@@ -130,6 +131,10 @@
  *     character was ever eliminated. This is the bug that this
  *     version fixes.
  *
+ *   v24 fix: unknown match types now THROW rather than falling
+ *   through to group_exam semantics. A malformed record should fail
+ *   the enclosing transaction, not generate pseudo-eliminations.
+ *
  * TEAM MATCH SEMANTICS:
  *   For 'team_vs_team' matches, ONLY individualResults[charId] ===
  *   'fail' triggers a character elimination. teamResults[] never
@@ -143,10 +148,11 @@
  *
  * CONTRACT ON INVALID INPUT:
  *   Invalid invocation (missing appData, missing tournament, missing
- *   match, missing round, invalid week) THROWS. That is deliberate:
- *   these are internal transaction helpers, and a broken caller
- *   should fail the enclosing transaction, not silently return an
- *   empty result that the caller will ignore.
+ *   match, missing round, invalid week, missing target character)
+ *   THROWS. That is deliberate: these are internal transaction
+ *   helpers, and a broken caller should fail the enclosing
+ *   transaction, not silently return an empty result that the
+ *   caller will ignore.
  *
  *   Normal domain outcomes (no failures to apply, no eliminations to
  *   reverse) return a result with zero counts. Those are not errors.
@@ -169,8 +175,7 @@
  * DEPENDENCIES (MANDATORY):
  *   - window.IdUtils            (elimination record IDs on the
  *                                character side)
- *   - window.CalendarValidation (rebuilding eliminatedWeeks[] and
- *                                validating the elimination week)
+ *   - window.CalendarValidation (validating the elimination week)
  *
  * DEPENDENCIES (OPTIONAL):
  *   - window.ObjectUtils        (not used internally; reserved for
@@ -341,7 +346,7 @@
      * Given a completed match, return the array of CHARACTER IDs
      * whose result is 'fail'.
      *
-     * SEMANTICS (v21):
+     * SEMANTICS (v21 + v24):
      *
      *   group_exam:
      *     match.participants is a list of CHARACTER IDs.
@@ -370,6 +375,12 @@
      *     eliminate the team's members. Only individualResults
      *     drives character elimination.
      *
+     * [FIX-C3] Unknown match types THROW. Previously they fell
+     * through to group_exam semantics, which could generate nonsense
+     * eliminations from malformed data. This is an internal
+     * transaction helper; a contract violation should fail the
+     * enclosing transaction.
+     *
      * The result is de-duplicated. Only IDs that normalise to a
      * non-empty string are returned.
      *
@@ -380,7 +391,7 @@
             return [];
         }
 
-        var type = match.type || 'group_exam';
+        var type = match.type;
         var failures = [];
         var seen = Object.create(null);
 
@@ -400,35 +411,38 @@
             return failures;
         }
 
-        // group_exam — and any unknown type falls through to this
-        // branch. The schema rejects unknown types, but the cascade
-        // does not throw on malformed input from outside its own
-        // contract; it treats unknown types as group exams.
-        var participants = Array.isArray(match.participants)
-            ? match.participants
-            : [];
+        if (type === 'group_exam') {
+            var participants = Array.isArray(match.participants)
+                ? match.participants
+                : [];
 
-        var participantSet = Object.create(null);
-        for (var i = 0; i < participants.length; i++) {
-            var pid = normaliseId(participants[i]);
-            if (pid !== null) {
-                participantSet[pid] = true;
+            var participantSet = Object.create(null);
+            for (var i = 0; i < participants.length; i++) {
+                var pid = normaliseId(participants[i]);
+                if (pid !== null) {
+                    participantSet[pid] = true;
+                }
             }
+
+            var results = isObject(match.results) ? match.results : {};
+            var rKeys = Object.keys(results);
+            for (var r = 0; r < rKeys.length; r++) {
+                if (results[rKeys[r]] !== 'fail') { continue; }
+                var grId = normaliseId(rKeys[r]);
+                if (grId === null) { continue; }
+                if (!participantSet[grId]) { continue; }
+                if (seen[grId]) { continue; }
+                seen[grId] = true;
+                failures.push(grId);
+            }
+            return failures;
         }
 
-        var results = isObject(match.results) ? match.results : {};
-        var rKeys = Object.keys(results);
-        for (var r = 0; r < rKeys.length; r++) {
-            if (results[rKeys[r]] !== 'fail') { continue; }
-            var grId = normaliseId(rKeys[r]);
-            if (grId === null) { continue; }
-            if (!participantSet[grId]) { continue; }
-            if (seen[grId]) { continue; }
-            seen[grId] = true;
-            failures.push(grId);
-        }
-
-        return failures;
+        // [FIX-C3] Unknown type. Do NOT guess.
+        throw new Error(
+            '[TournamentEliminationCascade] Unsupported match type: "' +
+            type + '". Expected "group_exam" or "team_vs_team".'
+        );
     }
 
     // ============================================================
@@ -474,6 +488,14 @@
      * Remove character-side eliminations matching a predicate.
      * Returns { count, characterIds }.
      *
+     * [FIX-C1] The predicate receives BOTH the elimination record
+     * AND the containing character. This makes it possible to scope
+     * a removal to a specific character, which the manual-restore
+     * path needs. Previously the predicate only saw the elimination,
+     * so a restore by (tournamentId, characterId) had no way to
+     * check the character ID and removed the tournament's
+     * eliminations from every character.
+     *
      * Counts elimination RECORDS removed, not characters touched.
      */
     function removeCharacterEliminationsBy(appData, predicate) {
@@ -494,7 +516,7 @@
 
             for (var j = 0; j < char.eliminations.length; j++) {
                 var e = char.eliminations[j];
-                if (e && predicate(e)) {
+                if (e && predicate(e, char)) {
                     removed++;
                     continue;
                 }
@@ -532,6 +554,15 @@
      *     fromMatchId.
      *   - character.eliminatedWeeks[] is rebuilt after any write.
      *   - Standalone eliminations are NOT touched.
+     *
+     * [FIX-C2] Every failing character MUST exist in the snapshot.
+     * If a character ID does not resolve, this function THROWS. The
+     * previous behaviour (silently skip the character-side write and
+     * still report written: 1) could produce a "successful"
+     * elimination that only half-existed — tournament-side record
+     * present, character-side record absent. That asymmetry is
+     * exactly the shape that lets an eliminated character still
+     * appear in Academy eligibility views.
      *
      * THROWS on missing/invalid inputs. A caller that violates the
      * contract fails the enclosing transaction.
@@ -605,6 +636,19 @@
         for (var f = 0; f < failingIds.length; f++) {
             var charId = failingIds[f];
 
+            // [FIX-C2] Character MUST exist. Enforce both-sides-or-throw.
+            var char = findCharacterInSnapshot(appData, charId);
+            if (!char) {
+                throw new Error(
+                    '[TournamentEliminationCascade] Cannot apply ' +
+                    'elimination: character "' + charId + '" was not ' +
+                    'found in the transaction snapshot. The elimination ' +
+                    'cannot be written on both sides, and a one-sided ' +
+                    'write would leave the tournament and character ' +
+                    'records inconsistent.'
+                );
+            }
+
             // ---- Remove any existing elimination for this pair ----
             // Tournament side: remove by participantId, regardless of
             // provenance. One per (characterId, tournamentId).
@@ -624,9 +668,8 @@
 
             // Character side: remove by tournamentId, regardless of
             // provenance.
-            var char = findCharacterInSnapshot(appData, charId);
             var charRemoved = 0;
-            if (char && Array.isArray(char.eliminations)) {
+            if (Array.isArray(char.eliminations)) {
                 var charKept = [];
                 for (var ce = 0; ce < char.eliminations.length; ce++) {
                     var charE = char.eliminations[ce];
@@ -656,22 +699,21 @@
             });
 
             // ---- Write character-side record ----
-            if (char) {
-                if (!Array.isArray(char.eliminations)) {
-                    char.eliminations = [];
-                }
-                char.eliminations.push({
-                    id: IdUtils.generateId('elim'),
-                    tournamentId: tournamentId,
-                    fromRoundId: roundId,
-                    fromMatchId: matchId,
-                    week: weekNum,
-                    reason: reason,
-                    standalone: false,
-                    fromMatch: true
-                });
-                rebuildEliminatedWeeks(char);
+            // The character is guaranteed to exist by [FIX-C2].
+            if (!Array.isArray(char.eliminations)) {
+                char.eliminations = [];
             }
+            char.eliminations.push({
+                id: IdUtils.generateId('elim'),
+                tournamentId: tournamentId,
+                fromRoundId: roundId,
+                fromMatchId: matchId,
+                week: weekNum,
+                reason: reason,
+                standalone: false,
+                fromMatch: true
+            });
+            rebuildEliminatedWeeks(char);
 
             result.written++;
             result.characterIds.push(charId);
@@ -857,6 +899,12 @@
      *
      * Standalone eliminations are NOT touched.
      *
+     * [FIX-C1] Character-side removal is scoped to BOTH the
+     * tournament AND the target character. The previous version
+     * checked only the tournament ID, so restoring one character
+     * from a tournament also removed every other character's
+     * eliminations for that tournament.
+     *
      * Called from AcademyTournamentEvents.restoreEliminatedParticipant
      * inside a MutationPipeline transaction.
      *
@@ -906,11 +954,14 @@
         }
 
         // Character side: remove by (tournamentId, characterId).
+        // [FIX-C1] The predicate now receives the containing
+        // character, so the removal is scoped to BOTH IDs.
         var characterResult = removeCharacterEliminationsBy(
             appData,
-            function(e) {
+            function(e, character) {
                 if (e.standalone === true) { return false; }
-                return normaliseId(e.tournamentId) === tId;
+                if (normaliseId(e.tournamentId) !== tId) { return false; }
+                return normaliseId(character.id) === cId;
             }
         );
 
