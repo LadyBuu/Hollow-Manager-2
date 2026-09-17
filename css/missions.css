@@ -1,0 +1,1123 @@
+/**
+ * css/missions.css - Hollow Blades Manager
+ *
+ * The Missions tab.
+ *
+ * Covers:
+ *   - Container shell (.page-header, .filter-section, .mission-count)
+ *   - Mission list rows (.missions-list, .list-item.mission-item)
+ *   - Detail modal (.mission-detail, .mission-detail-fields,
+ *     .mission-detail-actions)
+ *   - Objectives (.objectives-section, .objectives-list,
+ *     .objective-item)
+ *   - Support personnel (.support-section, .support-list,
+ *     .support-item)
+ *   - Reports (.reports-section, .report-row, .report-meta,
+ *     .report-body)
+ *   - Activity log (.log-section, .log-list, .log-entry)
+ *   - Form (.mission-form, .date-input-group, .objective-input-group,
+ *     .support-input-group, .objective-row)
+ *   - Status / priority / type badges
+ *   - Progress bars
+ *
+ * Load order: shared.css → missions.css
+ */
+
+/* ============================================================
+   CONTAINER
+   ============================================================ */
+
+.missions-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 4px;
+}
+
+.mission-count {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin-left: auto;
+}
+
+.mission-count span {
+    font-weight: 600;
+    color: var(--text);
+}
+
+/* The filter-section is defined in shared? No. It's in style.css.
+   Since we're retiring style.css, we redeclare it here scoped to
+   this tab. If the missions tab is the only user of .filter-section,
+   this is fine. If other tabs use it, move to shared.css instead. */
+.filter-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+}
+
+.filter-section label {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-weight: 500;
+}
+
+.filter-section select {
+    padding: 4px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.7rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.filter-section select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* ============================================================
+   LIST ROW
+   ============================================================ */
+
+.list-item.mission-item {
+    display: grid;
+    grid-template-columns:
+        90px
+        90px
+        1.6fr
+        1.1fr
+        0.7fr
+        0.7fr
+        0.7fr
+        0.9fr
+        0.9fr
+        1fr;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    align-items: center;
+    cursor: pointer;
+    transition: background 0.15s;
+    font-size: 0.72rem;
+}
+
+.list-item.mission-item:hover {
+    background: var(--panel-alt);
+}
+
+.list-item.mission-item.mission-archived {
+    opacity: 0.55;
+}
+
+.list-item.mission-item.mission-completed {
+    border-left: 3px solid var(--info);
+}
+
+.list-item.mission-item.mission-cancelled {
+    border-left: 3px solid var(--danger);
+    opacity: 0.75;
+}
+
+/* ---------- Cell styling ---------- */
+
+.mission-id {
+    font-family: monospace;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.mission-date {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+
+.mission-title {
+    font-size: 0.75rem;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.mission-title strong {
+    font-weight: 600;
+}
+
+.mission-completed-badge {
+    color: var(--info);
+    font-size: 0.7rem;
+    margin-left: 3px;
+}
+
+.mission-archived-badge {
+    font-size: 0.55rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    padding: 1px 5px;
+    border-radius: 4px;
+    margin-left: 4px;
+}
+
+.mission-support-badge {
+    font-size: 0.55rem;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 1px 5px;
+    border-radius: 4px;
+    margin-left: 4px;
+}
+
+.mission-type {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mission-escalation {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    text-align: center;
+    white-space: nowrap;
+}
+
+.mission-difficulty {
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-align: center;
+}
+
+.mission-team {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mission-progress {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+/* ============================================================
+   PROGRESS BAR
+   ============================================================ */
+
+.progress-bar {
+    flex: 1;
+    min-width: 40px;
+    height: 6px;
+    background: var(--bg);
+    border-radius: 3px;
+    overflow: hidden;
+    border: 1px solid var(--border-soft);
+}
+
+.progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 3px;
+    transition: width 0.3s;
+}
+
+.progress-label {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    min-width: 32px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+   STATUS BADGES
+   ============================================================ */
+
+.mission-status {
+    display: inline-block;
+    font-size: 0.55rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    white-space: nowrap;
+    text-align: center;
+}
+
+.mission-status-active {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.mission-status-completed {
+    color: var(--info);
+    background: var(--info-soft);
+    border-color: var(--info);
+}
+
+.mission-status-cancelled {
+    color: var(--danger);
+    background: var(--danger-soft);
+    border-color: var(--danger);
+}
+
+.mission-status-unknown {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+/* ============================================================
+   PRIORITY BADGES
+   ============================================================ */
+
+.mission-priority {
+    display: inline-block;
+    font-size: 0.55rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    white-space: nowrap;
+    text-align: center;
+}
+
+.mission-priority-critical {
+    color: var(--danger);
+    background: var(--danger-soft);
+    border-color: var(--danger);
+}
+
+.mission-priority-high {
+    color: var(--warning);
+    background: var(--warning-soft);
+    border-color: var(--warning);
+}
+
+.mission-priority-medium {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.mission-priority-low {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+.mission-priority-unknown {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+/* ============================================================
+   DETAIL MODAL
+   ============================================================ */
+
+.mission-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+/* ---------- Header ---------- */
+
+.mission-detail-header {
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.mission-detail-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+
+.mission-detail-title {
+    font-size: 1.05rem;
+    color: var(--accent);
+    margin: 0;
+    flex: 1;
+    min-width: 0;
+}
+
+.mission-detail-id {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+}
+
+.mission-id-display {
+    font-family: monospace;
+    font-weight: 600;
+    color: var(--accent);
+}
+
+.mission-detail-description {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    white-space: pre-wrap;
+    padding: 8px 10px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    margin: 0;
+}
+
+/* ---------- Fields ---------- */
+
+.mission-detail-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.mission-detail-fields .detail-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border-soft);
+    gap: 10px;
+    font-size: 0.72rem;
+}
+
+.mission-detail-fields .detail-row .label {
+    color: var(--text-dim);
+    font-weight: 500;
+    flex-shrink: 0;
+    min-width: 110px;
+}
+
+.mission-detail-fields .detail-row.description-row,
+.mission-detail-fields .detail-row.tags-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+}
+
+.mission-detail-fields .description-text {
+    white-space: pre-wrap;
+    padding: 4px 0;
+    color: var(--text);
+}
+
+.mission-detail-fields .tags-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.mission-detail-fields .tag {
+    background: var(--panel-alt);
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+}
+
+/* ============================================================
+   SECTION HEADER (shared by objectives, support, reports, log)
+   ============================================================ */
+
+.section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-bottom: 6px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border-soft);
+    flex-wrap: wrap;
+}
+
+.section-header strong {
+    font-size: 0.8rem;
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.section-header .count {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    padding: 1px 6px;
+    border-radius: 4px;
+}
+
+.section-header .progress-label {
+    margin-left: auto;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    font-weight: 600;
+}
+
+.section-header button.small {
+    font-size: 0.65rem;
+    padding: 2px 10px;
+}
+
+/* ============================================================
+   OBJECTIVES
+   ============================================================ */
+
+.objectives-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.objectives-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.objective-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    background: var(--panel-alt);
+    border-radius: 4px;
+    font-size: 0.75rem;
+    transition: background 0.15s;
+}
+
+.objective-item:hover {
+    background: var(--accent-soft);
+}
+
+.objective-item.objective-done {
+    opacity: 0.7;
+}
+
+.objective-item.objective-done .objective-text {
+    text-decoration: line-through;
+    color: var(--text-dim);
+}
+
+.objective-item input[type="checkbox"] {
+    width: auto;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+
+.objective-check-static {
+    width: 14px;
+    text-align: center;
+    color: var(--text-dim);
+    font-weight: 700;
+    flex: 0 0 auto;
+}
+
+.objective-text {
+    flex: 1;
+    min-width: 0;
+    color: var(--text);
+}
+
+.objective-item button.small {
+    font-size: 0.6rem;
+    padding: 1px 6px;
+    flex: 0 0 auto;
+}
+
+/* ============================================================
+   SUPPORT PERSONNEL
+   ============================================================ */
+
+.support-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.support-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.support-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 12px;
+    font-size: 0.72rem;
+    color: var(--text);
+}
+
+.support-item .support-name {
+    color: var(--text);
+}
+
+.support-item button.small {
+    font-size: 0.6rem;
+    padding: 0 4px;
+    border: none;
+    background: none;
+    color: var(--danger);
+}
+
+.support-item button.small:hover {
+    color: var(--text);
+}
+
+/* ---------- Form-side support list (stacked, not chips) ---------- */
+
+#mission-support-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-top: 6px;
+}
+
+.support-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    font-size: 0.72rem;
+}
+
+.support-row .support-name {
+    flex: 1;
+    min-width: 0;
+    color: var(--text);
+}
+
+.support-row button.small {
+    font-size: 0.6rem;
+    padding: 1px 8px;
+    flex: 0 0 auto;
+}
+
+/* ============================================================
+   REPORTS
+   ============================================================ */
+
+.reports-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.report-row {
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.report-row.report-author-redacted {
+    border-left-color: var(--text-dim);
+}
+
+.report-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 0.68rem;
+}
+
+.report-author {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.report-timestamp {
+    color: var(--text-dim);
+}
+
+.report-edited {
+    font-style: italic;
+    font-size: 0.62rem;
+    color: var(--text-dim);
+}
+
+.report-body {
+    font-size: 0.75rem;
+    color: var(--text);
+    white-space: pre-wrap;
+    padding-left: 2px;
+}
+
+.report-actions {
+    display: flex;
+    gap: 4px;
+    margin-top: 2px;
+}
+
+.report-actions button.small {
+    font-size: 0.6rem;
+    padding: 1px 8px;
+}
+
+/* ============================================================
+   ACTIVITY LOG
+   ============================================================ */
+
+.log-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.log-list {
+    max-height: 180px;
+    overflow-y: auto;
+    background: var(--bg);
+    border-radius: 6px;
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.log-entry {
+    display: flex;
+    gap: 8px;
+    padding: 3px 0;
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 0.7rem;
+}
+
+.log-entry:last-child {
+    border-bottom: none;
+}
+
+.log-timestamp {
+    color: var(--text-dim);
+    font-size: 0.62rem;
+    white-space: nowrap;
+    flex: 0 0 auto;
+    font-variant-numeric: tabular-nums;
+}
+
+.log-message {
+    color: var(--text);
+    flex: 1;
+    min-width: 0;
+    word-break: break-word;
+}
+
+/* ============================================================
+   DETAIL ACTIONS
+   ============================================================ */
+
+.mission-detail-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-soft);
+    margin-top: 4px;
+}
+
+.mission-detail-actions button {
+    font-size: 0.72rem;
+    padding: 5px 14px;
+}
+
+.mission-detail-actions button.danger {
+    margin-left: auto;
+}
+
+/* ============================================================
+   FORM
+   ============================================================ */
+
+.mission-form {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.mission-form .form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+.mission-form .form-group.full-width {
+    grid-column: 1 / -1;
+}
+
+@media (max-width: 600px) {
+    .mission-form .form-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.mission-form .form-group label {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    font-weight: 500;
+    margin-bottom: 3px;
+}
+
+.mission-form .form-group input,
+.mission-form .form-group select,
+.mission-form .form-group textarea {
+    width: 100%;
+    padding: 6px 8px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.mission-form .form-group input:focus,
+.mission-form .form-group select:focus,
+.mission-form .form-group textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.mission-form .form-group textarea {
+    resize: vertical;
+    min-height: 48px;
+}
+
+.mission-form .field-hint {
+    display: block;
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    margin-top: 2px;
+}
+
+/* ---------- Mission ID preview (read-only) ---------- */
+
+.mission-form .mission-id-preview {
+    background: var(--bg);
+    color: var(--accent);
+    font-family: monospace;
+    font-weight: 600;
+    cursor: default;
+}
+
+/* ============================================================
+   DATE INPUT GROUP
+   ============================================================ */
+
+.date-input-group {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.date-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 60px;
+}
+
+.date-label {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    font-weight: 500;
+}
+
+.date-year {
+    width: 100%;
+    min-width: 70px;
+}
+
+.date-month {
+    width: 100%;
+    min-width: 55px;
+}
+
+.date-day {
+    width: 100%;
+    min-width: 55px;
+}
+
+/* ============================================================
+   SUPPORT INPUT GROUP (form)
+   ============================================================ */
+
+.support-input-group {
+    display: flex;
+    gap: 6px;
+    align-items: stretch;
+    margin-bottom: 6px;
+}
+
+.support-input-group .support-select {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.72rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.support-input-group .support-select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.support-input-group button {
+    font-size: 0.65rem;
+    padding: 4px 12px;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+/* ============================================================
+   OBJECTIVE INPUT GROUP (form)
+   ============================================================ */
+
+.objective-input-group {
+    display: flex;
+    gap: 6px;
+    align-items: stretch;
+    margin-bottom: 6px;
+}
+
+.objective-input-group .objective-input {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.72rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.objective-input-group .objective-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.objective-input-group button {
+    font-size: 0.65rem;
+    padding: 4px 12px;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+/* ============================================================
+   FORM-SIDE OBJECTIVE ROWS
+   ============================================================ */
+
+#mission-objectives-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.objective-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 6px;
+    background: var(--panel-alt);
+    border-radius: 4px;
+}
+
+.objective-row input[type="checkbox"] {
+    width: auto;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+
+.objective-row .objective-text-input {
+    flex: 1;
+    min-width: 0;
+    padding: 4px 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.objective-row .objective-text-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.objective-row button.small {
+    font-size: 0.6rem;
+    padding: 1px 8px;
+    flex: 0 0 auto;
+}
+
+/* ============================================================
+   FORM ACTIONS
+   ============================================================ */
+
+.mission-form .form-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-soft);
+    flex-wrap: wrap;
+}
+
+.mission-form .form-actions button {
+    font-size: 0.75rem;
+    padding: 6px 16px;
+}
+
+/* ============================================================
+   MOBILE
+   ============================================================ */
+
+@media (max-width: 900px) {
+    /* The mission list is a 10-column grid on desktop. On tablet
+       and below, collapse to a 2-row layout: identifying info on
+       the first row, badges on the second. */
+    .list-item.mission-item {
+        grid-template-columns: 1fr 1fr;
+        grid-template-rows: auto auto auto;
+        gap: 4px 8px;
+        padding: 8px 10px;
+    }
+
+    .mission-id,
+    .mission-date {
+        font-size: 0.6rem;
+    }
+
+    .mission-title {
+        grid-column: 1 / -1;
+        white-space: normal;
+        overflow: visible;
+        font-size: 0.78rem;
+    }
+
+    .mission-type {
+        grid-column: 1 / -1;
+        font-size: 0.65rem;
+    }
+
+    .mission-escalation,
+    .mission-difficulty {
+        font-size: 0.6rem;
+        text-align: left;
+    }
+
+    .mission-team {
+        grid-column: 1 / -1;
+        font-size: 0.65rem;
+    }
+
+    .mission-progress {
+        grid-column: 1 / -1;
+    }
+}
+
+@media (max-width: 600px) {
+    .mission-detail-title {
+        font-size: 0.95rem;
+    }
+
+    .mission-detail-fields .detail-row {
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .mission-detail-fields .detail-row .label {
+        min-width: 0;
+    }
+
+    .mission-detail-actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .mission-detail-actions button.danger {
+        margin-left: 0;
+    }
+
+    .date-input-group {
+        flex-direction: column;
+    }
+
+    .date-field {
+        min-width: 0;
+    }
+
+    .support-input-group,
+    .objective-input-group {
+        flex-direction: column;
+    }
+
+    .support-input-group button,
+    .objective-input-group button {
+        width: 100%;
+    }
+
+    .mission-form .form-actions {
+        flex-direction: column-reverse;
+    }
+
+    .mission-form .form-actions button {
+        width: 100%;
+    }
+
+    .log-timestamp {
+        font-size: 0.58rem;
+    }
+}
