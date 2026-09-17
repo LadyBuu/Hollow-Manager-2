@@ -9,24 +9,18 @@
  *   - Coordinate six views: People, Exams, Weekly Teams, Rankings,
  *     Disciplines, Locations
  *   - Delegate rendering to the per-view renderer modules
- *   - Delegate domain reads to AcademyAggregator /
- *     AcademyTournamentAggregator / AcademyCharacterDetailAggregator
+ *   - Delegate domain reads to the aggregators
  *   - Delegate mutations to the appropriate domain module
  *   - Own Academy-local UI state that is not part of AcademyUI's
- *     typed store (per-view selected IDs, discipline draft, active
- *     character tab)
+ *     typed store
  *   - Bind container-level event delegation for all views
- *   - Mount / unmount the inline grades editor after each render
- *   - Mount / unmount the CalendarRenderer schedule grid after each
- *     render when the Schedule tab is active
- *   - Handle exam pair-picker DOM mutations (exam-pair-add /
- *     exam-pair-remove)
+ *   - Mount / unmount the inline grades editor and schedule grid
+ *   - Handle exam pair-picker DOM mutations
  *   - Handle Weekly Teams create/edit/delete/manage-members
- *   - Handle Auto-Distribute for Weekly Teams
- *   - Handle Clear Rosters (hard-remove every active member across
- *     every academic team of the class for the current week)
+ *   - Handle orphan-team assignment
+ *   - Handle Auto-Distribute
+ *   - Handle Clear Rosters / Clear Schedule
  *   - Handle character class membership mutations
- *     (character-remove-from-class)
  *
  * NOT RESPONSIBILITIES:
  *   - Domain reads. Those happen in the aggregators.
@@ -41,93 +35,29 @@
  *   week argument. Both perform cheap pre-flight validation BEFORE
  *   entering the mutation pipeline and return a rejected
  *   { success: false, message } Promise when the week is missing or
- *   malformed. Because the rejection resolves rather than throws,
- *   the caller MUST surface result.success === false. Every
- *   enrollment call below passes AcademyUI.getDisplayWeek() and
- *   surfaces the rejection message on failure.
+ *   malformed. Every enrollment call below passes
+ *   AcademyUI.getDisplayWeek() and surfaces the rejection message on
+ *   failure.
  *
- * WEEKLY TEAMS MEMBER MANAGEMENT:
- *   Manage Members for a weekly team routes to
- *   AcademyWeeklyTeamsMembers, which is Academy-scoped. It reads the
- *   candidate pool from the class roster, writes membership to
- *   academy.weeklyTeams via the ranged API
- *   (AcademyWeeklyTeams.addMember / endMembership / removeMemberRecord),
- *   and never touches the persistent Team entity or its roster
- *   directly. Since v22, weekly-team membership lives exclusively on
- *   the persistent Team entity's members[] array, and the ranged
- *   API writes through to that array via transaction-local helpers.
- *
- * CLEAR ROSTERS:
- *   The Weekly Teams view exposes "Clear Rosters". It calls
- *   AcademyWeeklyTeams.clearAllMembershipsForClass(classId, week),
- *   which HARD-DELETES every member whose active window covers the
- *   given week, across every academic team of the class whose own
- *   startPeriod / endPeriod covers the week.
- *
- *   The teams themselves stay scheduled. The weekly-team window
- *   records are untouched. Members that are not active at the week
- *   (past leaves, future joins) are preserved.
- *
- *   This is used when rosters need to be rebuilt from scratch for a
- *   week — typically after a data-entry mistake.
- *
- * TEAM CORE CONFIGURATION:
- *   TeamCore requires a characterProvider via configure(). The Teams
- *   tab normally injects it on mount. When Academy creates teams and
- *   the Teams tab was never opened, this module injects the provider
- *   itself via ensureTeamCoreConfigured(). Idempotent. This is still
- *   needed for weekly-teams-create-team and the Auto-Distribute
- *   workflow, which both call TeamCore.
- *
- * WEEK SEMANTICS:
- *   Week values are owned by AcademyUI.setDisplayWeek, which enforces
- *   a strict integer parse. This module does not parse weeks itself.
+ * WEEKLY TEAMS ACTIONS:
+ *   weekly-teams-clear-windows       — remove weekly-team window
+ *                                      records for the class (the
+ *                                      persistent Team entities are
+ *                                      kept).
+ *   weekly-teams-empty-teams (legacy alias) — not dispatched.
+ *   weekly-teams-assign-orphan-team  — assign an orphan academic
+ *                                      team (classId: null) to the
+ *                                      class selected in the row.
+ *   weekly-teams-toggle-orphans      — expand / collapse the orphan
+ *                                      section (pure UI).
  *
  * AUTO-DISTRIBUTE SEMANTICS:
- *   Auto-Distribute places unassigned students into existing academic
- *   teams (or creates new ones when no existing team has capacity).
+ *   Per student. Existing teams fill toward groupSize; new teams
+ *   are created only when every existing team has reached groupSize.
+ *   Existing team structure is never modified.
  *
- *   INVARIANTS:
- *     - Existing teams are NEVER modified in structure. Their type,
- *       name, class, startPeriod, endPeriod, and status are untouched.
- *     - Existing teams' rosters only GROW, never shrink.
- *     - Only characters who are NOT already assigned to an academic
- *       team for this class at this week are considered.
- *     - Distribution is PER STUDENT. For each unassigned student,
- *       the existing team with the lowest current active-member count
- *       that still has capacity is chosen.
- *     - New teams are named `<namePrefix><N>`, continuing from the
- *       highest numeric suffix already in use.
- *     - Newly-created teams are immediately opened for the current
- *       week via AcademyWeeklyTeams.ensureWindow.
- *     - Both TeamCore.addMember (persistent team entity) and
- *       AcademyWeeklyTeams.ensureWindow (week window) are written so
- *       the two stores stay in sync.
- *
- *   CLEAR EXISTING:
- *     The Auto-Distribute modal exposes a "Clear the schedule first"
- *     checkbox. When checked, every weekly-team window record for
- *     the class is deleted before distribution runs. Persistent Team
- *     entities are NOT deleted. This is the same operation as the
- *     "Clear Schedule" flow, used only by Auto-Distribute.
- *
- * ACTION ROUTING:
- *   Actions carry a prefix (people-, character-, discipline-,
- *   location-, ranking-, weekly-teams-, exam-) so dispatch is
- *   deterministic and does not rely on handler chaining.
- *
- *   Weekly Teams verbs:
- *     weekly-teams-create-team       open the create form
- *     weekly-teams-edit-team         open the edit form
- *     weekly-teams-delete-team       delete the persistent Team
- *     weekly-teams-auto-distribute   open the distribute modal
- *     weekly-teams-manage-members    open the member manager
- *     weekly-teams-empty-teams       clear rosters for this class week
- *
- *   Exam reopen verbs (v21):
- *     exam-reopen-exam     flips the exam status back to 'active'
- *     exam-reopen-round    reopens every match in a round
- *     exam-reopen-match    reopens a single match
+ * WEEK SEMANTICS:
+ *   Week values are owned by AcademyUI.setDisplayWeek.
  *
  * DEPENDENCIES (MANDATORY):
  *   - AcademyUI
@@ -1197,7 +1127,7 @@
     // ============================================================
 
     function handlePeopleAction(action, el) {
-        // Placeholder for People-scoped actions that later land here.
+        // Placeholder for People-scoped actions.
     }
 
     function handleCharacterAction(action, el) {
@@ -1365,17 +1295,8 @@
         var list = form.querySelector('.at-pair-list');
         if (!list) { return; }
 
-        var View = getTournamentViewModule();
-        var resolver = (View &&
-            typeof View.getParticipantDisplayNameForPool === 'function')
-            ? View.getParticipantDisplayNameForPool
-            : null;
         var CQ = getCharacterQueries();
-
         var names = group.map(function(id) {
-            if (resolver) {
-                return resolver(id, 'individuals');
-            }
             if (CQ && CQ.getCharacterById && CQ.getDisplayName) {
                 var c = CQ.getCharacterById(id);
                 if (c) { return CQ.getDisplayName(c); }
@@ -1487,11 +1408,130 @@
                 openWeeklyTeamMembersModal(el.dataset.teamId);
                 return;
             case 'weekly-teams-empty-teams':
-                handleWeeklyTeamsClearRosters();
+            case 'weekly-teams-clear-windows':
+                handleWeeklyTeamsClearWindows();
+                return;
+            case 'weekly-teams-toggle-orphans':
+                handleWeeklyTeamsToggleOrphans(el);
+                return;
+            case 'weekly-teams-assign-orphan-team':
+                handleWeeklyTeamsAssignOrphanTeam(el);
                 return;
             default:
                 return;
         }
+    }
+
+    /**
+     * Clear Schedule: remove every weekly-team window record for the
+     * current class. Persistent Team entities are untouched.
+     */
+    function handleWeeklyTeamsClearWindows() {
+        if (!_selectedWeeklyTeamsClassId) {
+            notify('Select a class first.', 'error');
+            return;
+        }
+
+        var AWT = getAcademyWeeklyTeams();
+        if (!AWT || typeof AWT.clearClassWindows !== 'function') {
+            notify('Weekly Teams module not available.', 'error');
+            return;
+        }
+
+        var week = AcademyUI.getDisplayWeek();
+        var records = AWT.getAllTeamRecords(_selectedWeeklyTeamsClassId) || [];
+        var count = records.length;
+
+        if (count === 0) {
+            notify('No teams are scheduled for this class.', 'info');
+            return;
+        }
+
+        var message =
+            'Clear the weekly schedule for this class?\n\n' +
+            'This removes ' + count + ' scheduled team' +
+            (count === 1 ? '' : 's') + ' from the Weekly Teams view.\n' +
+            'The teams themselves are NOT deleted. Their rosters are ' +
+            'preserved.\n\n' +
+            'This cannot be undone.';
+
+        if (!confirm(message)) {
+            return;
+        }
+
+        AWT.clearClassWindows(_selectedWeeklyTeamsClassId)
+            .then(function(result) {
+                if (result && result.success) {
+                    refreshView();
+                }
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[AcademyView] clearClassWindows failed:', err
+                );
+            });
+    }
+
+    /**
+     * Toggle the expanded state of the orphan-teams section. Pure UI.
+     */
+    function handleWeeklyTeamsToggleOrphans(el) {
+        var section = el.closest('.academy-weekly-teams-orphan-section');
+        if (!section) return;
+        var list = section.querySelector('.academy-orphan-list');
+        if (!list) return;
+        var icon = section.querySelector('.academy-orphan-toggle-icon');
+        var expanded = section.getAttribute('data-expanded') === 'true';
+        if (expanded) {
+            list.style.display = 'none';
+            section.setAttribute('data-expanded', 'false');
+            if (icon) icon.textContent = '\u25b8';
+        } else {
+            list.style.display = '';
+            section.setAttribute('data-expanded', 'true');
+            if (icon) icon.textContent = '\u25be';
+        }
+    }
+
+    /**
+     * Assign an orphan academic team to the class selected in its
+     * row's dropdown.
+     */
+    function handleWeeklyTeamsAssignOrphanTeam(el) {
+        var teamId = el.dataset.teamId;
+        if (!teamId) {
+            notify('Team ID missing.', 'error');
+            return;
+        }
+
+        var row = el.closest('.academy-orphan-row');
+        if (!row) return;
+
+        var select = row.querySelector('.academy-orphan-class-select');
+        var classId = select ? select.value : '';
+
+        if (!classId) {
+            notify('Select a class to assign this team to.', 'error');
+            return;
+        }
+
+        var AWT = getAcademyWeeklyTeams();
+        if (!AWT || typeof AWT.assignTeamToClass !== 'function') {
+            notify('Weekly Teams module not available.', 'error');
+            return;
+        }
+
+        AWT.assignTeamToClass(classId, teamId)
+            .then(function(result) {
+                if (result && result.success) {
+                    refreshView();
+                }
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[AcademyView] assignTeamToClass failed:', err
+                );
+            });
     }
 
     /**
@@ -1500,11 +1540,7 @@
      * the current class whose own startPeriod / endPeriod covers the
      * week.
      *
-     * Teams remain scheduled. The weekly-team windows are untouched.
-     * Members that are not active at the week (past leaves, future
-     * joins) are preserved. This is the operation the user reaches
-     * for when a roster needs to be rebuilt from scratch for a week,
-     * typically after a data-entry mistake.
+     * Teams remain scheduled. Weekly-team windows are untouched.
      */
     function handleWeeklyTeamsClearRosters() {
         if (!_selectedWeeklyTeamsClassId) {
@@ -1520,34 +1556,18 @@
 
         var week = AcademyUI.getDisplayWeek();
 
-        // Count the current scheduled teams and their active members
-        // so the confirmation is informative. Both numbers come from
-        // TeamQueries, which is the same source the panel uses.
-        var TeamQ = getTeamQueries();
-        var TeamConstants = getTeamConstants();
+        var rosters = AWT.getWeeklyTeams(
+            _selectedWeeklyTeamsClassId,
+            week
+        ) || {};
+
         var teamsActiveCount = 0;
         var membersActiveCount = 0;
-
-        if (TeamQ && TeamConstants &&
-            typeof TeamQ.getTeamsByClass === 'function' &&
-            typeof TeamQ.isTeamActiveAtPeriod === 'function' &&
-            typeof TeamQ.getActiveTeamMembers === 'function') {
-            var allTeams = TeamQ.getTeamsByClass(
-                _selectedWeeklyTeamsClassId, 'operational'
-            ) || [];
-            for (var i = 0; i < allTeams.length; i++) {
-                var t = allTeams[i];
-                if (!t) { continue; }
-                if (TeamConstants.normalizeTeamType(t.type) !== 'academic') {
-                    continue;
-                }
-                if (!TeamQ.isTeamActiveAtPeriod(t, week)) {
-                    continue;
-                }
-                teamsActiveCount++;
-                var members = TeamQ.getActiveTeamMembers(t, week) || [];
-                membersActiveCount += members.length;
-            }
+        var teamIds = Object.keys(rosters);
+        for (var i = 0; i < teamIds.length; i++) {
+            teamsActiveCount++;
+            var memberIds = rosters[teamIds[i]] || [];
+            membersActiveCount += memberIds.length;
         }
 
         if (membersActiveCount === 0) {
@@ -1580,7 +1600,6 @@
                 console.warn(
                     '[AcademyView] clearAllMembershipsForClass failed:', err
                 );
-                notify('Failed to clear rosters.', 'error');
             });
     }
 
@@ -1682,7 +1701,7 @@
             if (ev.target === modal) { close(); }
         });
 
-        var form = modal.querySelector('#weekly-teams-create-team-form');
+        var form = modal.querySelector('#weekly-teams-team-form');
         if (!form) { return; }
 
         form.addEventListener('submit', function(ev) {
@@ -1690,9 +1709,7 @@
 
             var payload = (typeof View.collectTeamForm === 'function')
                 ? View.collectTeamForm(form)
-                : (typeof View.collectCreateTeamForm === 'function'
-                    ? View.collectCreateTeamForm(form)
-                    : null);
+                : null;
 
             if (!payload || !payload.name) {
                 notify('Team name is required.', 'error');
@@ -1926,7 +1943,8 @@
             classId: _selectedWeeklyTeamsClassId,
             className: className,
             week: week,
-            eligibleCount: eligibleCount
+            eligibleCount: eligibleCount,
+            canDistribute: eligibleCount >= 2
         });
 
         var modal = Modal.createModal('academy-weekly-team-auto-distribute-modal');
@@ -1979,11 +1997,17 @@
                 return;
             }
 
+            var groupSize = parseInt(payload.groupSize, 10);
+            if (isNaN(groupSize) || groupSize < 2) {
+                notify('Group size must be at least 2.', 'error');
+                return;
+            }
+
             runAutoDistribute({
                 classId: _selectedWeeklyTeamsClassId,
                 className: className,
                 week: week,
-                groupSize: payload.groupSize,
+                groupSize: groupSize,
                 namePrefix: payload.namePrefix,
                 clearExisting: payload.clearExisting === true
             }).then(function(result) {
@@ -2166,12 +2190,12 @@
             plan.charIds.forEach(function(charId) {
                 chain = chain.then(function() {
                     if (failed) { return; }
-                    return TeamCore.addMember(plan.teamId, {
-                        characterId: charId,
-                        role: 'Member',
-                        joinPeriod: String(ctx.week),
-                        leavePeriod: ''
-                    }).then(function(res) {
+                    return AWT.addMember(
+                        ctx.classId,
+                        plan.teamId,
+                        charId,
+                        ctx.week
+                    ).then(function(res) {
                         if (!res || !res.success) {
                             failed = true;
                             failureMessage =
@@ -2234,12 +2258,12 @@
                         plan.charIds.forEach(function(charId) {
                             memberChain = memberChain.then(function() {
                                 if (failed) { return; }
-                                return TeamCore.addMember(newTeamId, {
-                                    characterId: charId,
-                                    role: 'Member',
-                                    joinPeriod: String(ctx.week),
-                                    leavePeriod: ''
-                                }).then(function(inner) {
+                                return AWT.addMember(
+                                    ctx.classId,
+                                    newTeamId,
+                                    charId,
+                                    ctx.week
+                                ).then(function(inner) {
                                     if (!inner || !inner.success) {
                                         failed = true;
                                         failureMessage =
@@ -2652,27 +2676,21 @@
             case 'name':
                 _disciplineDraft.name = inputEl.value;
                 return;
-
             case 'type':
                 _disciplineDraft.type = inputEl.value;
                 return;
-
             case 'startWeek':
                 _disciplineDraft.startWeek = inputEl.value;
                 return;
-
             case 'endWeek':
                 _disciplineDraft.endWeek = inputEl.value;
                 return;
-
             case 'weeklyHours':
                 _disciplineDraft.weeklyHours = inputEl.value;
                 return;
-
             case 'weight':
                 _disciplineDraft.weight = inputEl.value;
                 return;
-
             case 'instructors': {
                 var selected = [];
                 for (var i = 0; i < inputEl.options.length; i++) {
@@ -2684,14 +2702,11 @@
                 _disciplineDraft.instructorIds = selected;
                 return;
             }
-
             case 'schemeLabel':
                 _disciplineDraft.gradeScheme.label = inputEl.value;
                 return;
-
             case 'schemePresetId':
                 return;
-
             default:
                 return;
         }
@@ -2743,7 +2758,7 @@
             previewEl.textContent =
                 GradeSchemes.getRangeLabel(_disciplineDraft.gradeScheme) || '';
         } catch (e) {
-            // Ignore preview failures while the draft is mid-edit
+            // Ignore preview failures mid-edit.
         }
     }
 
