@@ -61,6 +61,24 @@
  *   a persisted field. Persisting it would create two sources of
  *   truth, and one of them would go stale.
  *
+ * MEMBERSHIP SEMANTICS (v24):
+ *   [FIX-Q1] getActiveTeamMembers now checks the team's OWN window
+ *   (startPeriod / endPeriod) in addition to the member's window
+ *   (joinPeriod / leavePeriod). A team whose own window does not
+ *   contain the queried period has NO active members at that
+ *   period, regardless of what the member entries say.
+ *
+ *   This is the "team ends, members are freed" rule. Without this
+ *   check, a member of a team that ran weeks 1-10 was still
+ *   reported active at week 11, and the Academy aggregator's
+ *   sibling scan would incorrectly exclude them from the candidate
+ *   pool of any other team.
+ *
+ *   The change is a pure subtraction: it can only remove members
+ *   from the returned list, never add them. Every caller that
+ *   previously got "member is active at week N" for a closed team
+ *   is now corrected.
+ *
  * DEPENDENCIES:
  *   - window.data          (canonical state) - reads directly
  *   - window.TeamConstants (from team-constants.js) - MANDATORY
@@ -178,6 +196,47 @@
      */
     function isOperationalStatus(status) {
         return status === 'active' || status === 'inactive';
+    }
+
+    /**
+     * Does the team's own window contain the given period?
+     *
+     * The team window is startPeriod (inclusive) to endPeriod
+     * (inclusive). Absent bounds are unbounded on that side.
+     *
+     * Returns true when either bound is missing/invalid in a way
+     * that would make containment undecidable — the caller of this
+     * helper has already established the period itself is valid.
+     *
+     * @param {object} team
+     * @param {number} periodNum - already-parsed integer
+     * @returns {boolean}
+     */
+    function teamWindowContains(team, periodNum) {
+        if (!team || typeof team !== 'object') {
+            return false;
+        }
+
+        var hasStart = team.startPeriod !== undefined &&
+                       team.startPeriod !== null &&
+                       team.startPeriod !== '';
+        var hasEnd = team.endPeriod !== undefined &&
+                     team.endPeriod !== null &&
+                     team.endPeriod !== '';
+
+        if (hasStart) {
+            var start = parsePeriod(team.startPeriod);
+            if (start === null) { return false; }
+            if (start > periodNum) { return false; }
+        }
+
+        if (hasEnd) {
+            var end = parsePeriod(team.endPeriod);
+            if (end === null) { return false; }
+            if (end < periodNum) { return false; }
+        }
+
+        return true;
     }
 
     // ============================================================
@@ -348,27 +407,7 @@
             return false;
         }
 
-        var start = parsePeriod(team.startPeriod);
-        var end = parsePeriod(team.endPeriod);
-
-        var hasStart = team.startPeriod !== undefined &&
-                       team.startPeriod !== null &&
-                       team.startPeriod !== '';
-        var hasEnd = team.endPeriod !== undefined &&
-                     team.endPeriod !== null &&
-                     team.endPeriod !== '';
-
-        if (hasStart && start === null) {
-            return false;
-        }
-        if (hasEnd && end === null) {
-            return false;
-        }
-
-        var started = !hasStart || start <= periodNum;
-        var notEnded = !hasEnd || end >= periodNum;
-
-        return started && notEnded;
+        return teamWindowContains(team, periodNum);
     }
 
     // ============================================================
@@ -516,11 +555,24 @@
     /**
      * Get members of a team who are active at a given period.
      *
-     * Returns clones. A member is active at period P when:
-     *   - joinPeriod is absent or <= P, AND
-     *   - leavePeriod is absent or >= P, AND
+     * Returns clones.
+     *
+     * A member is active at period P when ALL of the following hold:
+     *
+     *   [FIX-Q1] The team itself is active at P. A team whose own
+     *   startPeriod / endPeriod does not contain P has no active
+     *   members at P, regardless of member-level windows. This is
+     *   the "team ends, members are freed" rule.
+     *
+     *   - joinPeriod is absent or <= P.
+     *   - leavePeriod is absent or >= P.
      *   - joinPeriod / leavePeriod (if present) are valid for the
      *     team type's period range.
+     *
+     * The team-window check can only REMOVE members from the
+     * returned list. It can never add them. Every caller that
+     * previously received "member is active at week N" for a team
+     * whose own window has closed at N is now corrected.
      *
      * @param {object} team
      * @param {number|string} period
@@ -542,6 +594,13 @@
         }
 
         if (periodNum < range.min || periodNum > range.max) {
+            return [];
+        }
+
+        // [FIX-Q1] Team window check. If the team's own lifespan
+        // does not contain the queried period, the team has no
+        // active members at that period.
+        if (!teamWindowContains(team, periodNum)) {
             return [];
         }
 
