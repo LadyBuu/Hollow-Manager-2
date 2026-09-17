@@ -98,6 +98,11 @@
  *   location-, ranking-, weekly-teams-, exam-) so dispatch is
  *   deterministic and does not rely on handler chaining.
  *
+ *   Exam reopen verbs (v21):
+ *     exam-reopen-exam     flips the exam status back to 'active'
+ *     exam-reopen-round    reopens every match in a round
+ *     exam-reopen-match    reopens a single match
+ *
  * DEPENDENCIES (MANDATORY):
  *   - AcademyUI
  *   - AcademyAggregator
@@ -1230,6 +1235,9 @@
             case 'exam-delete':
                 if (examId) { Events.deleteExam(examId); }
                 return;
+            case 'exam-reopen-exam':
+                if (examId) { Events.reopenExam(examId); }
+                return;
             case 'exam-toggle-pool-member':
                 if (examId) {
                     Events.togglePoolMember(examId, el.dataset.poolId);
@@ -1241,6 +1249,11 @@
             case 'exam-remove-round':
                 if (examId) {
                     Events.removeRound(examId, el.dataset.roundId);
+                }
+                return;
+            case 'exam-reopen-round':
+                if (examId) {
+                    Events.reopenRound(examId, el.dataset.roundId);
                 }
                 return;
             case 'exam-auto-generate-round':
@@ -1265,6 +1278,15 @@
             case 'exam-complete-match':
                 if (examId) {
                     Events.completeMatch(
+                        examId,
+                        el.dataset.roundId,
+                        el.dataset.matchId
+                    );
+                }
+                return;
+            case 'exam-reopen-match':
+                if (examId) {
+                    Events.reopenMatch(
                         examId,
                         el.dataset.roundId,
                         el.dataset.matchId
@@ -1419,30 +1441,6 @@
     // ============================================================
     // WEEKLY TEAMS ACTION HANDLERS
     // ============================================================
-    //
-    // The Weekly Teams view emits:
-    //   weekly-teams-create-team
-    //   weekly-teams-edit-team       [data-team-id]
-    //   weekly-teams-auto-distribute
-    //   weekly-teams-delete-team     [data-team-id]
-    //   weekly-teams-manage-members  [data-team-id]
-    //
-    // create-team and edit-team share one modal (buildTeamModalHTML
-    // accepts an optional `team` argument). create-team calls
-    // TeamCore.createTeam; edit-team calls TeamCore.updateTeam.
-    //
-    // manage-members is delegated to AcademyWeeklyTeamsMembers,
-    // which is Academy-scoped and writes to academy.weeklyTeams
-    // via the ranged API. It never touches the persistent Team
-    // entity. This preserves the Option 1 split: week-scoped
-    // assignments live in weeklyTeams; persistent membership lives
-    // on team.members.
-    //
-    // auto-distribute is Academy-side: it partitions unassigned
-    // students into existing teams (or new teams) and writes both
-    // the persistent team membership and the ranged week-scoped
-    // assignment. See the AUTO-DISTRIBUTE SEMANTICS block at the top
-    // of this file.
 
     function handleWeeklyTeamsAction(action, el) {
         switch (action) {
@@ -1466,11 +1464,6 @@
         }
     }
 
-    /**
-     * Open the Create / Edit Team modal.
-     *
-     * @param {string|null} teamId - null for create, string for edit
-     */
     function openWeeklyTeamForm(teamId) {
         var View = getWeeklyTeamsViewModule();
         var TeamCore = getTeamCore();
@@ -1589,9 +1582,6 @@
             var promise;
 
             if (isEdit && team) {
-                // Edit: only name, teamNumber, startPeriod, endPeriod
-                // are editable. Class, type, and status are fixed
-                // after creation.
                 promise = TeamCore.updateTeam(team.id, {
                     name: payload.name,
                     teamNumber: payload.teamNumber || '',
@@ -1656,16 +1646,6 @@
             notify('Failed to delete team.', 'error');
         });
     }
-
-    // ------------------------------------------------------------
-    // Manage Members (delegated to AcademyWeeklyTeamsMembers)
-    // ------------------------------------------------------------
-    //
-    // Academy owns the modal shell. AcademyWeeklyTeamsMembers owns
-    // the member UI, the picker, the add/drop/delete operations, and
-    // the in-place re-render. It writes ONLY to academy.weeklyTeams
-    // through the ranged API. The persistent Team entity is untouched
-    // by this path.
 
     function openWeeklyTeamMembersModal(teamId) {
         if (!isNonEmptyString(teamId)) { return; }
@@ -1737,24 +1717,6 @@
             }
         );
     }
-
-    // ------------------------------------------------------------
-    // Auto-Distribute
-    // ------------------------------------------------------------
-    //
-    // Places unassigned students into existing academic teams (or
-    // new ones when no existing team has capacity).
-    //
-    // INVARIANTS (see AUTO-DISTRIBUTE SEMANTICS at top of file):
-    //   - Existing teams are never modified in structure.
-    //   - Only unassigned students are considered.
-    //   - Partial trailing group of size 1 is absorbed.
-    //   - Best-fit fill order (smallest current count first).
-    //   - New teams continue the numeric naming sequence.
-    //   - Both TeamCore.addMember (persistent team entity) and
-    //     AcademyWeeklyTeams.addMember (ranged week-scoped assignment)
-    //     are written.
-    //   - Idempotent.
 
     function openWeeklyTeamAutoDistributeModal() {
         var View = getWeeklyTeamsViewModule();
@@ -1883,17 +1845,6 @@
         });
     }
 
-    /**
-     * Run the Auto-Distribute workflow.
-     *
-     * @param {object} ctx
-     * @param {string} ctx.classId
-     * @param {string} ctx.className
-     * @param {number} ctx.week
-     * @param {number} ctx.groupSize
-     * @param {string} ctx.namePrefix
-     * @returns {Promise<{ success: boolean, message?: string, data?: object }>}
-     */
     function runAutoDistribute(ctx) {
         var TeamCore = getTeamCore();
         var TeamQ = getTeamQueries();
@@ -1916,7 +1867,6 @@
             });
         }
 
-        // ---- 1. Read the class roster ----
         var roster = AcademyAggregator.getClassStudentsViewModel(ctx.classId) || [];
         if (roster.length === 0) {
             notify('The class has no students.', 'info');
@@ -1926,7 +1876,6 @@
             });
         }
 
-        // ---- 2. Read existing academic teams for this class ----
         var allTeams = TeamQ.getTeamsByClass(ctx.classId, 'operational') || [];
         var activeThisWeek = [];
         for (var i = 0; i < allTeams.length; i++) {
@@ -1941,7 +1890,6 @@
             activeThisWeek.push(t);
         }
 
-        // ---- 3. Build the assigned-this-week set ----
         var assignedIds = Object.create(null);
         var teamCurrentCounts = {};
         for (var a = 0; a < activeThisWeek.length; a++) {
@@ -1956,7 +1904,6 @@
             }
         }
 
-        // ---- 4. Compute unassigned roster ----
         var unassigned = [];
         for (var r = 0; r < roster.length; r++) {
             var student = roster[r];
@@ -1973,7 +1920,6 @@
             });
         }
 
-        // ---- 5. Partition into groups of `groupSize` ----
         var shuffled = shuffleArray(unassigned);
         var groups = [];
         for (var g = 0; g < shuffled.length; g += groupSize) {
@@ -1985,7 +1931,6 @@
             groups[groups.length - 1] = groups[groups.length - 1].concat(lastGroup);
         }
 
-        // ---- 6. Build the capacity queue ----
         var capacityQueue = [];
         for (var c = 0; c < activeThisWeek.length; c++) {
             var t2 = activeThisWeek[c];
@@ -2004,12 +1949,10 @@
             return (a2.teamName || '').localeCompare(b2.teamName || '');
         });
 
-        // ---- 7. Compute new team name offset ----
         var namePrefix = ctx.namePrefix || 'Team ';
         var highestExistingNumber = findHighestTeamNumber(activeThisWeek, namePrefix);
         var nextNumber = highestExistingNumber + 1;
 
-        // ---- 8. Plan the operations ----
         var plan = [];
         var capacityIdx = 0;
         var newTeamsCreated = 0;
@@ -2047,7 +1990,6 @@
             }
         }
 
-        // ---- 9. Execute sequentially ----
         var existingTeamIdsInPlan = Object.create(null);
         var addedToExisting = 0;
 
@@ -2069,7 +2011,6 @@
                         memberChain = memberChain.then(function() {
                             if (failed) { return; }
 
-                            // Persistent team membership.
                             return TeamCore.addMember(teamId, {
                                 characterId: charId,
                                 role: 'Member',
@@ -2088,7 +2029,6 @@
                                     return;
                                 }
 
-                                // Week-scoped ranged assignment.
                                 return AWT.addMember(
                                     ctx.classId, teamId, charId, ctx.week
                                 ).then(function(rangedRes) {
@@ -2205,7 +2145,6 @@
                 return { success: false, message: failureMessage };
             }
 
-            // ---- Summary notification ----
             var existingCount = plan.filter(function(en) {
                 return en.type === 'existing';
             }).length;
@@ -2240,10 +2179,6 @@
         });
     }
 
-    /**
-     * Find the highest numeric suffix used by any academic team
-     * whose name starts with `prefix`. Returns 0 when none exists.
-     */
     function findHighestTeamNumber(teams, prefix) {
         var highest = 0;
         if (!Array.isArray(teams) || !isNonEmptyString(prefix)) {
@@ -2266,9 +2201,6 @@
         return highest;
     }
 
-    /**
-     * Fisher-Yates shuffle. Returns a new array.
-     */
     function shuffleArray(arr) {
         var result = arr.slice();
         for (var i = result.length - 1; i > 0; i--) {
