@@ -11,7 +11,7 @@
  *   - renderTeamSummary(vm)       - single-line summary
  *   - renderContainer(vm)         - full page shell
  *   - renderFilterBar(filterVM)   - filter bar
- *   - renderMemberList(membersVM) - member rows
+ *   - renderMemberList(membersVM) - member rows (per interval)
  *   - renderRankingList(rankVM)   - ranking rows
  *   - renderTeamForm(formVM)      - team form markup
  *   - renderMemberForm(formVM)    - member form markup
@@ -26,20 +26,35 @@
  *   - Every display string (type label, period display, rank display,
  *     member status label) is supplied by the VM. The renderer does
  *     not derive display strings from domain data.
- *   - Every period on the incoming VM is already validated. The
- *     renderer does not validate or default periods.
+ *
+ * MEMBER INTERVALS (v24):
+ *   A member VM carries:
+ *     {
+ *       characterId, memberId, displayName, status, age, deceased,
+ *       role,
+ *       intervals: [
+ *         { joinPeriod, leavePeriod, activeAtPeriod },
+ *         ...
+ *       ],
+ *       joinPeriod, leavePeriod,   // convenience: first interval's
+ *       activeAtPeriod
+ *     }
+ *
+ *   renderExpandedMembers iterates the intervals array to produce one
+ *   sub-line per stint.
+ *
+ *   renderMemberList produces ONE ROW PER INTERVAL. Each row carries
+ *   data-character-id and data-join-period so the caller can address
+ *   the specific stint.
+ *
+ *   renderMemberForm edits ONE interval, identified by
+ *   data-character-id and data-join-period. joinPeriod is read-only
+ *   (immutable); role and leavePeriod are editable. Role applies to
+ *   the whole member entry, not the single stint.
  *
  * FILTER BAR:
  *   The filter bar is rendered here from a filter VM supplied by
- *   TeamAggregator.getFilterBarViewModel(tab). The renderer does not
- *   read TeamUI and does not call TeamEvents. This is the direction
- *   the dependency graph expects:
- *
- *     TeamUI -> TeamAggregator -> TeamRender
- *
- *   not:
- *
- *     TeamRender -> TeamEvents -> TeamUI
+ *   TeamAggregator.getFilterBarViewModel(tab).
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
@@ -115,13 +130,6 @@
     // SHARED FRAGMENTS
     // ============================================================
 
-    /**
-     * Render the action buttons shared by the list row and the card.
-     *
-     * @param {string} teamId
-     * @param {boolean} isExpanded
-     * @returns {string}
-     */
     function renderTeamActions(teamId, isExpanded) {
         var idAttr = escapeAttribute(teamId);
         var caret = isExpanded ? '\u25be' : '\u25b8';
@@ -146,16 +154,6 @@
     // TEAM LIST
     // ============================================================
 
-    /**
-     * Render a list of team list VMs.
-     *
-     * @param {object} listVM - { teams: [], total, filtered }
-     * @param {string} type
-     * @param {string} expandedTeamId
-     * @param {object} expandedMembersVM - Members VM for the expanded
-     *                                     team, or null.
-     * @returns {string}
-     */
     function renderList(listVM, type, expandedTeamId, expandedMembersVM) {
         if (!listVM || !Array.isArray(listVM.teams)) {
             return '<p class="empty-state" style="padding:20px;">No teams found.</p>';
@@ -200,7 +198,6 @@
             html += '<div class="' + rowClass + '" ' +
                         'data-id="' + escapeAttribute(team.id) + '">';
 
-            // Team name + class + type + inactive marker
             html += '<span>';
             html += '<strong>' + escapeHtml(team.name || 'Unnamed Team') + '</strong>';
             if (isNonEmptyString(team.classDisplay)) {
@@ -245,17 +242,12 @@
     // ============================================================
     // EXPANDED MEMBERS
     // ============================================================
+    //
+    // One block per member, one sub-line per interval.
+    //
+    // The member VM carries `intervals[]`; each interval has its own
+    // periodDisplay. The renderer prints one sub-line per interval.
 
-    /**
-     * Render the expanded members section.
-     *
-     * The VM comes from TeamAggregator.getTeamMembersViewModel. It
-     * already carries displayName, status, age, role, and
-     * activeAtPeriod on every member. The renderer just prints.
-     *
-     * @param {object} membersVM
-     * @returns {string}
-     */
     function renderExpandedMembers(membersVM) {
         if (!membersVM) {
             return '';
@@ -263,8 +255,12 @@
 
         var periodLabel = membersVM.periodLabel || 'Period';
         var period = membersVM.period;
-        var activeMembers = (membersVM.members || []).filter(function(m) {
-            return m.activeAtPeriod;
+        var allMembers = Array.isArray(membersVM.members) ? membersVM.members : [];
+
+        // Filter to members active at the display period. The VM
+        // already flags `activeAtPeriod` on each entry.
+        var activeMembers = allMembers.filter(function(m) {
+            return m && m.activeAtPeriod;
         });
 
         var html = '<div class="team-members-expanded" ' +
@@ -285,31 +281,66 @@
 
         for (var i = 0; i < activeMembers.length; i++) {
             var member = activeMembers[i];
-            var statusInfo = member.statusInfo || {};
 
-            var memberClass = 'member-entry';
-            if (isNonEmptyString(statusInfo.className)) {
-                memberClass += ' ' + statusInfo.className;
-            }
+            html += '<div class="member-entry" ' +
+                        'data-character-id="' +
+                            escapeAttribute(member.characterId || '') + '">';
 
-            html += '<div class="' + escapeAttribute(memberClass) + '">';
-            html += '<span>' +
+            // ---- Header line: name, role, age, status ----
+            html += '<div class="member-entry-header">';
+            html += '<span class="member-entry-name">' +
                         escapeHtml(member.displayName || 'Unknown') +
-                        ' <span class="role">(' +
-                            escapeHtml(member.role || 'Member') +
-                        ')</span>' +
-                    '</span>';
+                    '</span> ';
+            html += '<span class="member-entry-role">(' +
+                        escapeHtml(member.role || 'Member') +
+                    ')</span> ';
 
-            html += '<span class="member-details">';
-            html += 'Age: ' + escapeHtml(member.age || '-');
-            html += ' | Joined: ' + escapeHtml(member.joinPeriod || '?');
-            if (member.leavePeriod) {
-                html += ' \u2192 ' + escapeHtml(member.leavePeriod);
+            if (isNonEmptyString(member.age) && member.age !== '-') {
+                html += '<span class="member-entry-age">Age: ' +
+                            escapeHtml(member.age) +
+                        '</span> ';
             }
-            html += ' | <span class="member-status">' +
-                        escapeHtml(statusInfo.label || 'Unknown') +
-                    '</span>';
-            html += '</span>';
+
+            if (isNonEmptyString(member.status)) {
+                html += '<span class="member-entry-status">' +
+                            escapeHtml(member.status) +
+                        '</span>';
+            }
+            html += '</div>';
+
+            // ---- Stint sub-lines ----
+            var intervals = Array.isArray(member.intervals) ? member.intervals : [];
+
+            if (intervals.length === 0) {
+                html += '<div class="member-entry-intervals">';
+                html += '<div class="member-entry-interval empty">' +
+                            'No stints recorded.' +
+                        '</div>';
+                html += '</div>';
+            } else {
+                html += '<div class="member-entry-intervals">';
+                for (var j = 0; j < intervals.length; j++) {
+                    var iv = intervals[j];
+                    if (!iv || typeof iv !== 'object') { continue; }
+
+                    var rowClass = 'member-entry-interval';
+                    if (iv.activeAtPeriod) {
+                        rowClass += ' active';
+                    }
+
+                    html += '<div class="' + rowClass + '" ' +
+                                'data-join-period="' +
+                                    escapeAttribute(iv.joinPeriod || '') + '">';
+                    html += '<span class="member-entry-interval-period">' +
+                                escapeHtml(
+                                    iv.periodDisplay ||
+                                    formatFallbackInterval(iv)
+                                ) +
+                            '</span>';
+                    html += '</div>';
+                }
+                html += '</div>';
+            }
 
             html += '</div>';
         }
@@ -318,16 +349,23 @@
         return html;
     }
 
+    /**
+     * Fallback period display for an interval whose VM doesn't carry
+     * a pre-computed display string.
+     */
+    function formatFallbackInterval(iv) {
+        var join = iv && isNonEmptyString(iv.joinPeriod) ? iv.joinPeriod : '';
+        var leave = iv && isNonEmptyString(iv.leavePeriod) ? iv.leavePeriod : '';
+        if (join && leave) { return join + ' \u2013 ' + leave; }
+        if (join) { return join + ' \u2013'; }
+        if (leave) { return 'Until ' + leave; }
+        return '\u2014';
+    }
+
     // ============================================================
     // TEAM CARD
     // ============================================================
 
-    /**
-     * Render a team card from a list VM entry.
-     *
-     * @param {object} team
-     * @returns {string}
-     */
     function renderTeamCard(team) {
         if (!team || !team.id) {
             return '';
@@ -380,12 +418,6 @@
     // TEAM SUMMARY
     // ============================================================
 
-    /**
-     * Render a single-line team summary from a list VM entry.
-     *
-     * @param {object} team
-     * @returns {string}
-     */
     function renderTeamSummary(team) {
         if (!team || !team.id) {
             return '';
@@ -408,13 +440,6 @@
     // FILTER BAR
     // ============================================================
 
-    /**
-     * Render the filter bar from a filter VM.
-     *
-     * @param {object} filterVM - { tab, typeLabel, periodLabel,
-     *                             filterYear, filterStatus }
-     * @returns {string}
-     */
     function renderFilterBar(filterVM) {
         if (!filterVM || !filterVM.tab) {
             return '';
@@ -440,7 +465,6 @@
             ].join('');
         }
 
-        // Professional and temporary: year + show-inactive checkbox.
         return [
             '<div class="filter-row">',
                 '<div class="filter-group">',
@@ -464,15 +488,19 @@
     }
 
     // ============================================================
-    // MEMBER LIST
+    // MEMBER LIST (Teams tab modal)
     // ============================================================
+    //
+    // ONE ROW PER INTERVAL.
+    //
+    // The first interval row of a member shows the member's name.
+    // Subsequent rows are visually indented under it. Each row
+    // carries data-character-id and data-join-period so the caller
+    // can address the specific stint.
+    //
+    // Members with intervals: [] show a single "no stints" row with
+    // a Remove-member action, since there's no stint to act on.
 
-    /**
-     * Render the member list inside the member modal.
-     *
-     * @param {object} membersVM - { teamId, teamName, period, members }
-     * @returns {string}
-     */
     function renderMemberList(membersVM) {
         if (!membersVM || !Array.isArray(membersVM.members)) {
             return '<p class="empty-state">No members in this team</p>';
@@ -484,44 +512,141 @@
         }
 
         var html = '';
+
         for (var i = 0; i < members.length; i++) {
             var member = members[i];
             if (!member || !member.characterId) { continue; }
 
-            var rowClass = 'member-entry';
-            if (!member.activeAtPeriod) {
-                rowClass += ' member-entry-inactive';
+            var intervals = Array.isArray(member.intervals)
+                ? member.intervals
+                : [];
+
+            if (intervals.length === 0) {
+                // Placeholder row: member exists but has no stints.
+                html += renderMemberPlaceholderRow(member);
+                continue;
             }
 
-            html += '<div class="' + rowClass + '" ' +
-                        'data-character-id="' + escapeAttribute(member.characterId) + '" ' +
-                        'style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border-bottom:1px solid var(--border-soft);">';
-
-            html += '<span>';
-            html += '<strong>' + escapeHtml(member.displayName || 'Unknown') + '</strong>';
-            html += ' <span style="color:var(--text-dim);font-size:0.65rem;">(' +
-                        escapeHtml(member.role || 'Member') +
-                    ')</span>';
-            html += ' <span style="color:var(--text-dim);font-size:0.6rem;">' +
-                        escapeHtml(member.joinPeriod || '?') +
-                        (member.leavePeriod
-                            ? ' \u2192 ' + escapeHtml(member.leavePeriod)
-                            : '') +
-                    '</span>';
-            html += '</span>';
-
-            html += '<span>';
-            html += '<button type="button" class="small edit-member" ' +
-                        'data-character-id="' + escapeAttribute(member.characterId) + '" ' +
-                        'style="font-size:0.6rem;padding:2px 6px;">Edit</button>';
-            html += '<button type="button" class="small danger remove-member" ' +
-                        'data-character-id="' + escapeAttribute(member.characterId) + '" ' +
-                        'style="font-size:0.6rem;padding:2px 6px;">\u2715</button>';
-            html += '</span>';
-
-            html += '</div>';
+            for (var j = 0; j < intervals.length; j++) {
+                var iv = intervals[j];
+                if (!iv || typeof iv !== 'object') { continue; }
+                html += renderMemberIntervalRow(member, iv, j === 0);
+            }
         }
 
+        return html;
+    }
+
+    /**
+     * Render one interval row for a member.
+     *
+     * `isFirstRowForMember` controls whether the member name is shown.
+     * The member name appears on the first row only; subsequent rows
+     * show an indented continuation.
+     */
+    function renderMemberIntervalRow(member, interval, isFirstRowForMember) {
+        var joinAttr = escapeAttribute(interval.joinPeriod || '');
+        var charAttr = escapeAttribute(member.characterId);
+        var memberIdAttr = escapeAttribute(member.memberId || '');
+
+        var joinDisplay = isNonEmptyString(interval.joinPeriod)
+            ? interval.joinPeriod
+            : '\u2014';
+        var leaveDisplay = isNonEmptyString(interval.leavePeriod)
+            ? interval.leavePeriod
+            : '\u2014';
+
+        var rowClass = 'member-entry member-interval-row';
+        if (!interval.activeAtPeriod) {
+            rowClass += ' member-entry-inactive';
+        }
+        if (!isFirstRowForMember) {
+            rowClass += ' member-interval-continuation';
+        }
+
+        var html = '';
+        html += '<div class="' + rowClass + '" ' +
+                    'data-character-id="' + charAttr + '" ' +
+                    'data-member-id="' + memberIdAttr + '" ' +
+                    'data-join-period="' + joinAttr + '">';
+
+        // ---- Left: name (first row only) + interval bounds ----
+        html += '<div class="member-interval-left">';
+        if (isFirstRowForMember) {
+            html += '<span class="member-name">' +
+                        '<strong>' + escapeHtml(member.displayName || 'Unknown') + '</strong>' +
+                    '</span> ';
+            html += '<span class="member-role">(' +
+                        escapeHtml(member.role || 'Member') +
+                    ')</span>';
+        } else {
+            html += '<span class="member-name-continuation">\u21b3</span>';
+        }
+        html += '</div>';
+
+        // ---- Middle: bounds ----
+        html += '<div class="member-interval-bounds">';
+        html += '<span class="member-join">Join: ' +
+                    escapeHtml(joinDisplay) +
+                '</span>';
+        html += '<span class="member-leave">Leave: ' +
+                    escapeHtml(leaveDisplay) +
+                '</span>';
+        html += '</div>';
+
+        // ---- Right: per-interval actions ----
+        html += '<div class="member-interval-actions">';
+        html += '<button type="button" class="small edit-member" ' +
+                    'data-character-id="' + charAttr + '" ' +
+                    'data-member-id="' + memberIdAttr + '" ' +
+                    'data-join-period="' + joinAttr + '" ' +
+                    'style="font-size:0.6rem;padding:2px 6px;">Edit</button>';
+        html += '<button type="button" class="small danger remove-member" ' +
+                    'data-character-id="' + charAttr + '" ' +
+                    'data-member-id="' + memberIdAttr + '" ' +
+                    'data-join-period="' + joinAttr + '" ' +
+                    'style="font-size:0.6rem;padding:2px 6px;">\u2715</button>';
+        html += '</div>';
+
+        html += '</div>';
+        return html;
+    }
+
+    /**
+     * Render a placeholder row for a member entry that has no
+     * intervals. The only available action is Remove-member
+     * (delete the whole entry).
+     */
+    function renderMemberPlaceholderRow(member) {
+        var charAttr = escapeAttribute(member.characterId);
+        var memberIdAttr = escapeAttribute(member.memberId || '');
+
+        var html = '';
+        html += '<div class="member-entry member-entry-placeholder" ' +
+                    'data-character-id="' + charAttr + '" ' +
+                    'data-member-id="' + memberIdAttr + '">';
+
+        html += '<div class="member-interval-left">';
+        html += '<span class="member-name">' +
+                    '<strong>' + escapeHtml(member.displayName || 'Unknown') + '</strong>' +
+                '</span> ';
+        html += '<span class="member-role">(' +
+                    escapeHtml(member.role || 'Member') +
+                ')</span>';
+        html += '</div>';
+
+        html += '<div class="member-interval-bounds">';
+        html += '<span class="member-placeholder">No stints recorded.</span>';
+        html += '</div>';
+
+        html += '<div class="member-interval-actions">';
+        html += '<button type="button" class="small danger remove-member-entry" ' +
+                    'data-character-id="' + charAttr + '" ' +
+                    'data-member-id="' + memberIdAttr + '" ' +
+                    'style="font-size:0.6rem;padding:2px 6px;">Remove member</button>';
+        html += '</div>';
+
+        html += '</div>';
         return html;
     }
 
@@ -529,12 +654,6 @@
     // RANKING LIST
     // ============================================================
 
-    /**
-     * Render the ranking history list inside the ranking modal.
-     *
-     * @param {object} rankVM - { teamId, teamName, currentRank, history }
-     * @returns {string}
-     */
     function renderRankingList(rankVM) {
         if (!rankVM || !Array.isArray(rankVM.history) || rankVM.history.length === 0) {
             return '<p class="empty-state">No ranking history</p>';
@@ -566,13 +685,6 @@
     // TEAM FORM
     // ============================================================
 
-    /**
-     * Render the team form. Used by TeamEvents when the team form
-     * modal is opened.
-     *
-     * @param {object} formVM - from TeamAggregator.getTeamFormViewModel
-     * @returns {string}
-     */
     function renderTeamForm(formVM) {
         if (!formVM) {
             return '';
@@ -618,14 +730,12 @@
 
         html += '<div class="form-grid">';
 
-        // Name
         html += '<div class="form-group full-width">';
         html += '<label for="team-name">Team Name *</label>';
         html += '<input type="text" id="team-name" value="' +
                     escapeAttribute(formVM.name) + '" required>';
         html += '</div>';
 
-        // Type
         html += '<div class="form-group">';
         html += '<label for="team-type">Team Type *</label>';
         html += '<select id="team-type" required>';
@@ -640,21 +750,18 @@
         html += '</select>';
         html += '</div>';
 
-        // Start period
         html += '<div class="form-group">';
         html += '<label for="team-start">Start Period</label>';
         html += '<input type="text" id="team-start" value="' +
                     escapeAttribute(formVM.startPeriod) + '" placeholder="Year">';
         html += '</div>';
 
-        // End period
         html += '<div class="form-group">';
         html += '<label for="team-end">End Period (optional)</label>';
         html += '<input type="text" id="team-end" value="' +
                     escapeAttribute(formVM.endPeriod) + '" placeholder="Year">';
         html += '</div>';
 
-        // Class
         html += '<div class="form-group">';
         html += '<label for="team-class">Class</label>';
         html += '<select id="team-class">';
@@ -663,14 +770,12 @@
         html += '</select>';
         html += '</div>';
 
-        // Team number
         html += '<div class="form-group">';
         html += '<label for="team-number">Team Number</label>';
         html += '<input type="text" id="team-number" value="' +
                     escapeAttribute(formVM.teamNumber) + '">';
         html += '</div>';
 
-        // Current ranking (read-only)
         html += '<div class="form-group">';
         html += '<label>Current Ranking</label>';
         html += '<input type="text" value="' +
@@ -681,13 +786,11 @@
                 '</span>';
         html += '</div>';
 
-        // Status
         html += '<div class="form-group">';
         html += '<label for="team-status">Status</label>';
         html += '<select id="team-status">' + statusHtml + '</select>';
         html += '</div>';
 
-        // Mission
         html += '<div class="form-group full-width" id="temporary-mission-field">';
         html += '<label for="team-mission">Associated Mission</label>';
         html += '<select id="team-mission">';
@@ -696,7 +799,6 @@
         html += '</select>';
         html += '</div>';
 
-        // Name history
         html += '<div class="form-group full-width">';
         html += '<label>Name History</label>';
         html += '<div id="name-history-container">';
@@ -712,9 +814,8 @@
                     'style="margin-top:8px;">+ Add Name Period</button>';
         html += '</div>';
 
-        html += '</div>'; // form-grid
+        html += '</div>';
 
-        // Actions
         html += '<div class="form-actions">';
         html += '<button type="button" id="cancel-team-form" class="secondary">Cancel</button>';
         html += '<button type="submit" id="save-team-btn" class="primary">' +
@@ -727,13 +828,6 @@
         return html;
     }
 
-    /**
-     * Render one name-history row. Called from renderTeamForm and
-     * from TeamEvents when the "+ Add Name Period" button is clicked.
-     *
-     * @param {object|null} entry - { name, startPeriod, endPeriod }
-     * @returns {string}
-     */
     function renderNameHistoryRow(entry) {
         var e = entry || {};
         var html = '';
@@ -755,25 +849,37 @@
     }
 
     // ============================================================
-    // MEMBER FORM (edit)
+    // MEMBER FORM (edit one interval)
     // ============================================================
+    //
+    // The form edits ONE interval, identified by data-character-id
+    // and data-join-period.
+    //
+    // Editable:
+    //   - role (applies to the whole member entry)
+    //   - leavePeriod (this interval's leave week)
+    //
+    // Read-only:
+    //   - character (display)
+    //   - joinPeriod (immutable per the interval model)
 
-    /**
-     * Render the edit-member form. Used by TeamEvents when the edit
-     * member modal is opened.
-     *
-     * @param {object} formVM - { characterId, characterName, role,
-     *                            joinPeriod, leavePeriod }
-     * @returns {string}
-     */
     function renderMemberForm(formVM) {
         if (!formVM || !formVM.characterId) {
             return '';
         }
 
+        var joinDisplay = isNonEmptyString(formVM.joinPeriod)
+            ? formVM.joinPeriod
+            : '\u2014';
+
+        var leaveValue = isNonEmptyString(formVM.leavePeriod)
+            ? formVM.leavePeriod
+            : '';
+
         var html = '';
         html += '<form id="edit-member-form" ' +
-                    'data-character-id="' + escapeAttribute(formVM.characterId) + '">';
+                    'data-character-id="' + escapeAttribute(formVM.characterId) + '" ' +
+                    'data-join-period="' + escapeAttribute(formVM.joinPeriod || '') + '">';
 
         html += '<div class="form-group">';
         html += '<label>Character</label>';
@@ -786,18 +892,26 @@
         html += '<label for="edit-member-role">Role</label>';
         html += '<input type="text" id="edit-member-role" value="' +
                     escapeAttribute(formVM.role || '') + '">';
+        html += '<p class="field-hint">Applies to the whole member, not just this stint.</p>';
         html += '</div>';
 
         html += '<div class="form-group">';
-        html += '<label for="edit-member-join">Join Period</label>';
-        html += '<input type="text" id="edit-member-join" value="' +
-                    escapeAttribute(formVM.joinPeriod || '') + '">';
+        html += '<label>Join Period</label>';
+        html += '<input type="text" value="' +
+                    escapeAttribute(joinDisplay) +
+                '" readonly disabled>';
+        html += '<p class="field-hint">' +
+                    'Join is immutable. To move a start week, remove this stint and add a new one.' +
+                '</p>';
         html += '</div>';
 
         html += '<div class="form-group">';
         html += '<label for="edit-member-leave">Leave Period</label>';
         html += '<input type="text" id="edit-member-leave" value="' +
-                    escapeAttribute(formVM.leavePeriod || '') + '">';
+                    escapeAttribute(leaveValue) + '">';
+        html += '<p class="field-hint">' +
+                    'Blank means the stint is ongoing.' +
+                '</p>';
         html += '</div>';
 
         html += '<div class="form-actions">';
@@ -814,12 +928,6 @@
     // RANKING FORM
     // ============================================================
 
-    /**
-     * Render the add-ranking form. Used by TeamEvents when the
-     * ranking modal is opened.
-     *
-     * @returns {string}
-     */
     function renderRankingForm() {
         var html = '';
         html += '<form id="ranking-form-inner">';
@@ -839,17 +947,6 @@
     // CONTAINER
     // ============================================================
 
-    /**
-     * Render the full page shell.
-     *
-     * The caller supplies a page VM from
-     * TeamAggregator.getTeamPageViewModel, plus the filter bar VM
-     * from TeamAggregator.getFilterBarViewModel. The renderer does
-     * not query anything.
-     *
-     * @param {object} pageVM
-     * @returns {string}
-     */
     function renderContainer(pageVM) {
         if (!pageVM) {
             throw new Error('[TeamRender] renderContainer requires a page view model.');
@@ -868,13 +965,11 @@
 
         var html = '';
 
-        // Header
         html += '<div class="page-header">';
         html += '<h2>Team Manager</h2>';
         html += '<button id="add-team-btn" class="primary" type="button">+ Add Team</button>';
         html += '</div>';
 
-        // Stats
         html += '<div class="stats-grid">';
         html += '<div class="stat-card"><h3>Professional</h3><p class="stat-number">' +
                     safeString(counts.professional) +
@@ -887,7 +982,6 @@
                 '</p></div>';
         html += '</div>';
 
-        // Tabs
         html += '<div class="tab-nav" id="team-tab-nav">';
         html += '<button class="tab-btn' + (activeTab === 'professional' ? ' active' : '') + '" ' +
                     'type="button" data-tab="professional">Professional (' +
@@ -903,16 +997,12 @@
                 ')</button>';
         html += '</div>';
 
-        // Filter bar container (populated by TeamEvents after render)
         html += '<div id="filter-container" class="filter-container"></div>';
 
-        // Team list
         html += '<div id="team-list-container" class="team-list-container">';
 
         var expandedMembersVM = null;
         if (expandedTeam && Array.isArray(expandedTeam.members)) {
-            // The expandedTeam VM already contains members. We pass
-            // them through renderList via a lightweight wrapper.
             expandedMembersVM = {
                 teamId: expandedTeam.id,
                 periodLabel: expandedTeam.periodLabel || 'Period',
@@ -930,7 +1020,6 @@
 
         html += '</div>';
 
-        // Modals
         html += getModalsHTML();
 
         return html;
