@@ -144,13 +144,16 @@
  *     exam-toggle-pool-member
  *     exam-add-round
  *     exam-remove-round
+ *     exam-reopen-round
  *     exam-auto-generate-round
  *     exam-add-match
  *     exam-edit-match
  *     exam-complete-match
+ *     exam-reopen-match
  *     exam-remove-match
  *     exam-restore-eliminated
  *     exam-complete
+ *     exam-reopen-exam
  *     exam-pair-add
  *     exam-pair-remove
  *
@@ -174,6 +177,32 @@
  *   JSON-stringified array of participant IDs. Each row carries a
  *   .at-pair-remove button emitting data-action="exam-pair-remove".
  *   The collector reads the rows.
+ *
+ * REOPEN SEMANTICS (v21):
+ *   The view exposes three Reopen buttons:
+ *
+ *     exam-reopen-exam    (header, when exam.status === 'completed')
+ *       Flips the exam's status back to 'active'. Ungates the round
+ *       and match edit buttons. No eliminations are reversed: the
+ *       exam's eliminations reflect the state of its matches, and
+ *       the matches are not being reopened by this action.
+ *
+ *     exam-reopen-round   (round header, when the round has any
+ *                          completed match, and exam is not
+ *                          completed)
+ *       Reverses every elimination produced by every match in the
+ *       round, flips every match in the round to 'pending', and
+ *       sets the round's status to 'pending'. Results on each
+ *       match are preserved.
+ *
+ *     exam-reopen-match   (match footer, when the match is complete,
+ *                          and exam is not completed)
+ *       Reverses the eliminations produced by this match, flips the
+ *       match's status to 'pending'. Results preserved.
+ *
+ *   The exam-level reopen does not touch eliminations. It is a
+ *   status-label change. The round and match reopens own the
+ *   elimination reversal.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -235,9 +264,6 @@
     // ============================================================
     // CSS CLASS HELPERS
     // ============================================================
-    //
-    // Presentation only. The VM carries display labels; the view
-    // maps them to CSS classes.
 
     function getExamStatusClass(status) {
         switch (status) {
@@ -262,16 +288,6 @@
         if (vm.isRetrying) { return 'at-team at-team-retry'; }
         if (vm.isFailing) { return 'at-team at-team-fail'; }
         return 'at-team at-team-pending';
-    }
-
-    function getRankBadgeClass(rank) {
-        if (!isFiniteNumber(rank) || rank < 1) {
-            return 'academy-rank-badge academy-rank-unknown';
-        }
-        if (rank === 1) return 'academy-rank-badge academy-rank-gold';
-        if (rank === 2) return 'academy-rank-badge academy-rank-silver';
-        if (rank === 3) return 'academy-rank-badge academy-rank-bronze';
-        return 'academy-rank-badge academy-rank-default';
     }
 
     // ============================================================
@@ -538,6 +554,7 @@
         var statusClass = getExamStatusClass(exam.status);
         var statusLabel = exam.statusLabel || '';
         var modeLabel = exam.modeLabel || '';
+        var isComplete = exam.status === 'completed';
 
         var html = '';
         html += '<div class="academy-exams-detail-header">';
@@ -583,7 +600,7 @@
 
         html += '<div class="academy-exams-detail-actions">';
 
-        if (exam.status !== 'completed') {
+        if (!isComplete) {
             html += '<button type="button" class="small primary" ' +
                         'data-action="exam-add-round" ' +
                         'data-exam-id="' + escapeAttribute(exam.id) + '">' +
@@ -598,6 +615,17 @@
                             'Mark Completed' +
                         '</button>';
             }
+        } else {
+            // Reopening the exam flips its status back to 'active'.
+            // It does NOT touch rounds, matches, or eliminations.
+            // The round-level and match-level reopen buttons become
+            // available once the exam is active again.
+            html += '<button type="button" class="small secondary" ' +
+                        'data-action="exam-reopen-exam" ' +
+                        'data-exam-id="' +
+                            escapeAttribute(exam.id) + '">' +
+                        'Reopen Exam' +
+                    '</button>';
         }
 
         html += '<button type="button" class="small danger" ' +
@@ -638,10 +666,22 @@
         return html;
     }
 
+    function roundHasCompletedMatch(round) {
+        if (!round || !isArray(round.matches)) { return false; }
+        for (var i = 0; i < round.matches.length; i++) {
+            var m = round.matches[i];
+            if (m && m.isComplete === true) { return true; }
+        }
+        return false;
+    }
+
     function renderRound(round, exam) {
         if (!round) { return ''; }
 
         var isExamComplete = exam.status === 'completed';
+        var canEditRound = !isExamComplete;
+        var canReopenRound = !isExamComplete &&
+            roundHasCompletedMatch(round);
 
         var html = '';
         html += '<div class="at-round" ' +
@@ -678,8 +718,21 @@
                 '</span>';
         html += '</div>';
 
-        if (!isExamComplete) {
+        if (canEditRound) {
             html += '<div class="at-round-actions">';
+
+            if (canReopenRound) {
+                html += '<button type="button" class="small secondary" ' +
+                            'data-action="exam-reopen-round" ' +
+                            'data-exam-id="' + escapeAttribute(exam.id) + '" ' +
+                            'data-round-id="' +
+                                escapeAttribute(round.id || '') + '" ' +
+                            'title="Reopen every completed match in ' +
+                                'this round for editing">' +
+                            'Reopen Round' +
+                        '</button>';
+            }
+
             html += '<button type="button" class="small secondary" ' +
                         'data-action="exam-auto-generate-round" ' +
                         'data-exam-id="' + escapeAttribute(exam.id) + '" ' +
@@ -728,7 +781,8 @@
     function renderMatch(match, round, exam, isExamComplete) {
         if (!match) { return ''; }
 
-        var isEditable = !isExamComplete && !match.isComplete;
+        var canEditMatch = !isExamComplete && !match.isComplete;
+        var canReopenMatch = !isExamComplete && match.isComplete === true;
 
         var html = '';
         html += '<div class="at-match" ' +
@@ -752,7 +806,7 @@
                     escapeHtml(match.statusLabel || '') +
                 '</span>';
 
-        if (isEditable) {
+        if (canEditMatch) {
             html += '<div class="at-match-actions">';
 
             html += '<button type="button" class="small secondary" ' +
@@ -783,6 +837,22 @@
                         'data-match-id="' +
                             escapeAttribute(match.id || '') + '">' +
                         'Remove' +
+                    '</button>';
+
+            html += '</div>';
+        } else if (canReopenMatch) {
+            html += '<div class="at-match-actions">';
+
+            html += '<button type="button" class="small secondary" ' +
+                        'data-action="exam-reopen-match" ' +
+                        'data-exam-id="' + escapeAttribute(exam.id) + '" ' +
+                        'data-round-id="' +
+                            escapeAttribute(round.id || '') + '" ' +
+                        'data-match-id="' +
+                            escapeAttribute(match.id || '') + '" ' +
+                        'title="Reopen this match for editing. ' +
+                            'Eliminations produced by it are reversed.">' +
+                        'Reopen' +
                     '</button>';
 
             html += '</div>';
@@ -916,19 +986,6 @@
     // ============================================================
     // ELIMINATED SECTION
     // ============================================================
-    //
-    // Renders between the rounds list and Final Passers. Each row
-    // carries a Restore button emitting
-    // data-action="exam-restore-eliminated" with data-exam-id and
-    // data-character-id.
-    //
-    // The VM's `eliminations` array is already filtered to character
-    // entries and sorted by week descending, then name ascending.
-    //
-    // When there are no eliminations, the section still renders with
-    // a "None" line so the user can confirm nobody is eliminated.
-    // This is distinct from the Final Passers section, which renders
-    // nothing until at least one round exists.
 
     function renderEliminations(exam) {
         var eliminations = isArray(exam.eliminations)
@@ -1343,6 +1400,82 @@
         html += '<button type="button" ' +
                     'class="cancel-modal-btn secondary">Cancel</button>';
         html += '<button type="submit" class="danger">Remove Round</button>';
+        html += '</div>';
+        html += '</div>';
+        html += '</form>';
+        return html;
+    }
+
+    // ============================================================
+    // MODAL BUILDER - Reopen Round
+    // ============================================================
+
+    function buildReopenRoundModalHTML() {
+        var html = '';
+        html += '<form id="at-reopen-round-form">';
+        html += renderModalHeader('Reopen Round');
+        html += '<div class="modal-body">';
+        html += '<p>Reopen every match in this round for editing?</p>';
+        html += '<p class="text-dim" style="font-size:0.75rem;">' +
+                    'Any eliminations produced by completed matches in ' +
+                    'this round will be reversed. Match results are ' +
+                    'preserved; you can edit them and complete the ' +
+                    'matches again.' +
+                '</p>';
+        html += '<div class="form-actions">';
+        html += '<button type="button" ' +
+                    'class="cancel-modal-btn secondary">Cancel</button>';
+        html += '<button type="submit" class="primary">Reopen Round</button>';
+        html += '</div>';
+        html += '</div>';
+        html += '</form>';
+        return html;
+    }
+
+    // ============================================================
+    // MODAL BUILDER - Reopen Match
+    // ============================================================
+
+    function buildReopenMatchModalHTML() {
+        var html = '';
+        html += '<form id="at-reopen-match-form">';
+        html += renderModalHeader('Reopen Match');
+        html += '<div class="modal-body">';
+        html += '<p>Reopen this match for editing?</p>';
+        html += '<p class="text-dim" style="font-size:0.75rem;">' +
+                    'Any eliminations produced by this match will be ' +
+                    'reversed. The match results are preserved; you can ' +
+                    'edit them and complete the match again.' +
+                '</p>';
+        html += '<div class="form-actions">';
+        html += '<button type="button" ' +
+                    'class="cancel-modal-btn secondary">Cancel</button>';
+        html += '<button type="submit" class="primary">Reopen Match</button>';
+        html += '</div>';
+        html += '</div>';
+        html += '</form>';
+        return html;
+    }
+
+    // ============================================================
+    // MODAL BUILDER - Reopen Exam
+    // ============================================================
+
+    function buildReopenExamModalHTML() {
+        var html = '';
+        html += '<form id="at-reopen-exam-form">';
+        html += renderModalHeader('Reopen Exam');
+        html += '<div class="modal-body">';
+        html += '<p>Reopen this exam for editing?</p>';
+        html += '<p class="text-dim" style="font-size:0.75rem;">' +
+                    'The exam\'s status flips back to "Active". Round ' +
+                    'and match edit buttons become available again. ' +
+                    'This does not touch eliminations or match results.' +
+                '</p>';
+        html += '<div class="form-actions">';
+        html += '<button type="button" ' +
+                    'class="cancel-modal-btn secondary">Cancel</button>';
+        html += '<button type="submit" class="primary">Reopen Exam</button>';
         html += '</div>';
         html += '</div>';
         html += '</form>';
@@ -1983,10 +2116,13 @@
         buildDeleteExamModalHTML: buildDeleteExamModalHTML,
         buildAddRoundModalHTML: buildAddRoundModalHTML,
         buildRemoveRoundModalHTML: buildRemoveRoundModalHTML,
+        buildReopenRoundModalHTML: buildReopenRoundModalHTML,
         buildAutoGenerateRoundModalHTML: buildAutoGenerateRoundModalHTML,
         buildAddMatchModalHTML: buildAddMatchModalHTML,
         buildEditMatchModalHTML: buildEditMatchModalHTML,
         buildCompleteMatchModalHTML: buildCompleteMatchModalHTML,
+        buildReopenMatchModalHTML: buildReopenMatchModalHTML,
+        buildReopenExamModalHTML: buildReopenExamModalHTML,
         buildRemoveMatchModalHTML: buildRemoveMatchModalHTML,
 
         collectCreateExamForm: collectCreateExamForm,
@@ -2011,10 +2147,13 @@
             'buildDeleteExamModalHTML',
             'buildAddRoundModalHTML',
             'buildRemoveRoundModalHTML',
+            'buildReopenRoundModalHTML',
             'buildAutoGenerateRoundModalHTML',
             'buildAddMatchModalHTML',
             'buildEditMatchModalHTML',
             'buildCompleteMatchModalHTML',
+            'buildReopenMatchModalHTML',
+            'buildReopenExamModalHTML',
             'buildRemoveMatchModalHTML',
             'collectCreateExamForm',
             'collectAddRoundForm',
