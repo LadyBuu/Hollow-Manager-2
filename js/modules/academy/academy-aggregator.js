@@ -40,6 +40,23 @@
  *     absent, the projection returns null or an empty collection.
  *   - The class VM is deliberately small (header fields only).
  *
+ * MEMBER INTERVALS MODEL (v24):
+ *   Each team member entry on a persistent Team entity is:
+ *
+ *     {
+ *       memberId,        // stable per-entry identifier
+ *       characterId,
+ *       role,
+ *       intervals: [
+ *         { joinPeriod, leavePeriod },
+ *         ...
+ *       ]
+ *     }
+ *
+ *   The member VM carries the entry's `intervals` array verbatim
+ *   (each interval gets its own periodDisplay string), plus a flat
+ *   `periodDisplay` summary for list views that don't expand them.
+ *
  * WEEKLY TEAMS WEEK FILTER:
  *   The team list for a given (class, week) is filtered by the
  *   PERSISTENT Team entity's own startPeriod / endPeriod AND by the
@@ -52,42 +69,40 @@
  *   ONLY the week window.
  *
  *   Each member VM carries:
- *     memberId       — stable per-entry identifier (v25)
+ *     memberId       — stable per-entry identifier
  *     characterId    — the character
  *     name, role, age, statusLabel, deceased
- *     joinPeriod     — member's own start week (or '')
- *     leavePeriod    — member's own end week (or '')
- *     periodDisplay  — formatted "Wk 3 - Wk 8" string
+ *     intervals[]    — one entry per stint, each with:
+ *                        joinPeriod, leavePeriod, periodDisplay
+ *     periodDisplay  — semicolon-joined summary across all intervals
  *
- *   [FIX-P4] memberId is what lets the member-manager UI address
- *   a specific stint. A character may appear multiple times in the
- *   same team's members[] array (left, came back). Without
- *   memberId, "edit this stint's leave week" is ambiguous.
+ *   memberId is what lets the member-manager UI address a specific
+ *   entry. A character may appear once on a team with multiple
+ *   intervals (left, came back). The intervals array holds every
+ *   stint in one place.
  *
- *   The team-window check lives in TeamQueries.getActiveTeamMembers
- *   (v24). A team whose own window has ended returns no active
- *   members, so its former members are free to appear in other
- *   teams' candidate pools.
+ *   The team-window check lives in TeamQueries.getActiveTeamMembers.
+ *   A team whose own window has ended returns no active members, so
+ *   its former members are free to appear in other teams' candidate
+ *   pools.
  *
- * FORMER MEMBERS (v25):
- *   [FIX-P5] [FIX-P6]
- *   getWeeklyTeamMemberManagerViewModel now returns BOTH:
+ * FORMER MEMBERS:
+ *   getWeeklyTeamMemberManagerViewModel returns BOTH:
  *     members       — active at the display week
- *     formerMembers — windows that closed strictly before the
- *                     display week
+ *     formerMembers — entries with no interval containing the
+ *                     display week, but at least one interval whose
+ *                     leavePeriod is present and strictly less than
+ *                     the display week
  *
- *   Both lists use the same member VM shape. Former members carry
- *   memberId, joinPeriod, leavePeriod, periodDisplay, and the
- *   identity fields the restore UI needs.
- *
- *   An entry is "former" at week W when:
- *     - leavePeriod is present, and
- *     - leavePeriod < W, and
- *     - the entry is not in the active set.
+ *   Both lists use the same member VM shape.
  *
  *   Entries with joinPeriod > W (scheduled but not yet started) are
- *   excluded from both lists. They will appear in `members` once
- *   the display week reaches their joinPeriod.
+ *   excluded from both lists. They appear in `members` once the
+ *   display week reaches their joinPeriod.
+ *
+ *   Entries with intervals: [] (the migration's "placeholder"
+ *   case) are excluded from both lists. The UI surfaces this
+ *   condition separately.
  *
  * ORPHAN TEAMS:
  *   Academic Teams with classId === null are surfaced by
@@ -107,11 +122,11 @@
  *     createdAt
  *   }
  *
- * SCHEDULE SOURCE (v21):
+ * SCHEDULE SOURCE:
  *   Location schedule projections read from
  *   AcademyCalendarAggregator, which is projector-backed.
  *
- * ELIMINATION SEMANTICS (v24):
+ * ELIMINATION SEMANTICS:
  *   The People sidebar and the weekly-team candidate pool both use
  *   the SAME definition of "eliminated": eliminated as of the
  *   displayed week, computed by
@@ -277,10 +292,6 @@
 
     /**
      * Resolve a week to a bounded integer, or null.
-     *
-     * Accepts integers in [MIN_WEEK, MAX_WEEK] and integer-strings.
-     * Rejects out-of-range, non-integer, and non-numeric values.
-     * Does NOT fall back.
      */
     function resolveWeek(week) {
         if (week === undefined || week === null || week === '') {
@@ -1280,9 +1291,10 @@
     // TEAM MEMBERS VIEW MODEL
     // ============================================================
     //
-    // [FIX-P4] Each member VM carries memberId. This is the stable
-    // per-entry identifier the member-manager UI uses to address a
-    // specific stint when a character has left and returned.
+    // Each member VM carries memberId and an intervals array. The
+    // intervals array contains one entry per stint with its own
+    // periodDisplay. A flat periodDisplay on the member summarises
+    // all intervals for list views that don't expand them.
 
     function buildTeamMembersVM(activeMemberRecords, teamType) {
         if (!Array.isArray(activeMemberRecords)) {
@@ -1302,18 +1314,40 @@
                 ? String(record.memberId)
                 : '';
 
-            var joinPeriod = record.joinPeriod !== undefined &&
-                             record.joinPeriod !== null
-                ? String(record.joinPeriod)
-                : '';
-            var leavePeriod = record.leavePeriod !== undefined &&
-                              record.leavePeriod !== null
-                ? String(record.leavePeriod)
-                : '';
+            // Build the intervals array.
+            var intervalsVM = [];
+            var summaryParts = [];
+            if (Array.isArray(record.intervals)) {
+                for (var j = 0; j < record.intervals.length; j++) {
+                    var iv = record.intervals[j];
+                    if (!iv || typeof iv !== 'object') { continue; }
 
-            var periodDisplay = formatMemberPeriodDisplay(
-                joinPeriod, leavePeriod, teamType
-            );
+                    var ivJoin = (iv.joinPeriod !== undefined &&
+                                  iv.joinPeriod !== null)
+                        ? String(iv.joinPeriod)
+                        : '';
+                    var ivLeave = (iv.leavePeriod !== undefined &&
+                                   iv.leavePeriod !== null)
+                        ? String(iv.leavePeriod)
+                        : '';
+
+                    var ivDisplay = formatMemberPeriodDisplay(
+                        ivJoin, ivLeave, teamType
+                    );
+
+                    intervalsVM.push({
+                        joinPeriod: ivJoin,
+                        leavePeriod: ivLeave,
+                        periodDisplay: ivDisplay
+                    });
+
+                    if (ivDisplay) {
+                        summaryParts.push(ivDisplay);
+                    }
+                }
+            }
+
+            var periodDisplay = summaryParts.join('; ');
 
             var char = CharacterQueries.getCharacterById(charId);
             if (!char) {
@@ -1326,8 +1360,7 @@
                     age: '',
                     statusLabel: '',
                     deceased: false,
-                    joinPeriod: joinPeriod,
-                    leavePeriod: leavePeriod,
+                    intervals: intervalsVM,
                     periodDisplay: periodDisplay
                 });
                 continue;
@@ -1342,8 +1375,7 @@
                 age: CharacterQueries.getCharacterAge(char),
                 statusLabel: CharacterQueries.getCurrentStatus(char),
                 deceased: char.deceased === true,
-                joinPeriod: joinPeriod,
-                leavePeriod: leavePeriod,
+                intervals: intervalsVM,
                 periodDisplay: periodDisplay
             });
         }
@@ -1359,27 +1391,25 @@
     // MEMBER PARTITION (active / former)
     // ============================================================
     //
-    // [FIX-P5]
-    //
     // Splits a team's members[] array into two groups:
     //
     //   activeRecords — entries returned by
     //                   TeamQueries.getActiveTeamMembers(team, week).
-    //                   These are the ones whose window contains the
-    //                   display week, subject to the team's own
-    //                   window.
+    //                   At least one interval contains the display
+    //                   week, and the team's own window also covers
+    //                   the week.
     //
-    //   formerRecords — entries whose leavePeriod is present and
-    //                   strictly less than the display week, and
-    //                   which are not in the active set.
+    //   formerRecords — entries not in the active set, but with at
+    //                   least one interval whose leavePeriod is
+    //                   present and strictly less than the display
+    //                   week.
     //
-    // Entries with joinPeriod > week (scheduled but not yet started)
-    // are excluded from both. They are "future" and will appear as
-    // active once the display week reaches their joinPeriod.
+    // Entries with no intervals at all, or whose only intervals are
+    // in the future (joinPeriod > weekNum), are excluded from both.
     //
-    // The identity key for deduplication between the two lists is
-    // memberId when present, and characterId + '::' + joinPeriod as
-    // a fallback for entries persisted before memberId existed.
+    // The identity key for deduplication is memberId when present,
+    // and (characterId, firstInterval.joinPeriod) as a defensive
+    // fallback.
 
     function partitionTeamMembers(team, weekNum) {
         var activeRecords = TeamQueries.getActiveTeamMembers(team, weekNum) || [];
@@ -1395,10 +1425,15 @@
             var cid = rec.characterId !== undefined && rec.characterId !== null
                 ? String(rec.characterId)
                 : '';
-            var jp = rec.joinPeriod !== undefined && rec.joinPeriod !== null
-                ? String(rec.joinPeriod)
-                : '';
-            activeKeys['composite:' + cid + '::' + jp] = true;
+            var firstJoin = '';
+            if (Array.isArray(rec.intervals) && rec.intervals.length > 0) {
+                var first = rec.intervals[0];
+                if (first && first.joinPeriod !== undefined &&
+                    first.joinPeriod !== null) {
+                    firstJoin = String(first.joinPeriod);
+                }
+            }
+            activeKeys['composite:' + cid + '::' + firstJoin] = true;
         }
 
         var allRecords = TeamQueries.getAllTeamMemberRecords(team) || [];
@@ -1416,26 +1451,44 @@
             var mCid = m.characterId !== undefined && m.characterId !== null
                 ? String(m.characterId)
                 : '';
-            var mJp = m.joinPeriod !== undefined && m.joinPeriod !== null
-                ? String(m.joinPeriod)
-                : '';
-            if (activeKeys['composite:' + mCid + '::' + mJp]) {
+            var mFirstJoin = '';
+            if (Array.isArray(m.intervals) && m.intervals.length > 0) {
+                var mFirst = m.intervals[0];
+                if (mFirst && mFirst.joinPeriod !== undefined &&
+                    mFirst.joinPeriod !== null) {
+                    mFirstJoin = String(mFirst.joinPeriod);
+                }
+            }
+            if (activeKeys['composite:' + mCid + '::' + mFirstJoin]) {
                 continue;
             }
 
-            // Must have a leavePeriod to be considered former.
-            var hasLeave = m.leavePeriod !== undefined &&
-                           m.leavePeriod !== null &&
-                           m.leavePeriod !== '';
-            if (!hasLeave) { continue; }
+            // Must have at least one interval with a leavePeriod
+            // strictly less than the display week to be former.
+            if (!Array.isArray(m.intervals)) { continue; }
 
-            var leaveNum = parseInt(m.leavePeriod, 10);
-            if (isNaN(leaveNum)) { continue; }
+            var isFormer = false;
+            for (var k = 0; k < m.intervals.length; k++) {
+                var iv = m.intervals[k];
+                if (!iv || typeof iv !== 'object') { continue; }
 
-            // Former = leave strictly before the display week.
-            if (leaveNum >= weekNum) { continue; }
+                var hasLeave = iv.leavePeriod !== undefined &&
+                               iv.leavePeriod !== null &&
+                               iv.leavePeriod !== '';
+                if (!hasLeave) { continue; }
 
-            formerRecords.push(m);
+                var leaveNum = TeamConstants.parsePeriod(iv.leavePeriod);
+                if (leaveNum === null) { continue; }
+
+                if (leaveNum < weekNum) {
+                    isFormer = true;
+                    break;
+                }
+            }
+
+            if (isFormer) {
+                formerRecords.push(m);
+            }
         }
 
         return {
@@ -1484,8 +1537,6 @@
     // WEEKLY TEAM MEMBER MANAGER VIEW MODEL
     // ============================================================
     //
-    // [FIX-P6]
-    //
     // Consumed by academy-weekly-teams-members.js. Returns:
     //
     //   members       — active at the display week (editable rows)
@@ -1494,8 +1545,8 @@
     //   candidates    — eligible pool for adding new members
     //
     // Both member lists use the same VM shape (see
-    // buildTeamMembersVM). Every entry carries memberId, joinPeriod,
-    // leavePeriod, and periodDisplay.
+    // buildTeamMembersVM). Every entry carries memberId and its
+    // intervals array, so the UI can address a specific stint.
     //
     // ELIMINATION IS FAIL-CLOSED.
     //   EliminationQueries is required. If it is absent or does not
@@ -1565,10 +1616,6 @@
 
         // Assigned elsewhere = active in another academic team of
         // the same class this week.
-        //
-        // TeamQueries.getActiveTeamMembers applies the team-window
-        // check (v24), so a sibling whose own window has ended does
-        // NOT mark its former members as assigned elsewhere.
         var assignedElsewhere = Object.create(null);
         var classTeams = TeamQueries.getTeamsByClass(classId, 'operational') || [];
         for (var t = 0; t < classTeams.length; t++) {
