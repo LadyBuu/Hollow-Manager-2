@@ -1,0 +1,460 @@
+/**
+ * css/social.css - Hollow Blades Manager
+ *
+ * The standalone Social tab.
+ *
+ * Covers:
+ *   - Page header action buttons
+ *   - Filter bar (character + type + clear + count)
+ *   - Relationship list (grouped, collapsible)
+ *   - Relationship rows
+ *   - Graph view (zoom controls, container, legend)
+ *   - Character detail modal content
+ *   - Relationship form modal content
+ *
+ * Load order: shared.css → social.css
+ */
+
+/* ============================================================
+   PAGE HEADER
+   ============================================================ */
+
+.page-header {
+    /* Already defined in shared.css. This tab widens the action
+       cluster a bit when it holds three buttons side by side. */
+}
+
+.page-header > div {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+/* ============================================================
+   FILTER BAR
+   ============================================================ */
+
+.filter-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+
+.filter-section label {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.filter-section select {
+    padding: 4px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.72rem;
+    font-family: 'Inter', sans-serif;
+    min-width: 140px;
+}
+
+.filter-section select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.filter-section button.small {
+    font-size: 0.65rem;
+    padding: 3px 10px;
+    white-space: nowrap;
+}
+
+.filter-section span {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+
+.filter-section span span {
+    font-weight: 600;
+    color: var(--text);
+}
+
+/* ============================================================
+   RELATIONSHIP LIST (grouped)
+   ============================================================ */
+
+.relationship-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.relationship-group {
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.relationship-group-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    background: var(--panel);
+    border-left: 3px solid var(--accent); /* colour overridden inline per type */
+    cursor: pointer;
+    transition: background 0.15s;
+    user-select: none;
+}
+
+.relationship-group-header:hover {
+    background: var(--accent-soft);
+}
+
+.relationship-group-caret {
+    display: inline-block;
+    width: 12px;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    flex: 0 0 auto;
+}
+
+.relationship-group-body {
+    padding: 6px 10px;
+}
+
+/* Subsection label inside a group body */
+.relationship-subheader {
+    padding: 4px 0;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 0.6rem;
+    font-weight: 600;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/* ---------- Relationship row ---------- */
+
+.relationship-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 0 4px 18px;
+    font-size: 0.72rem;
+    border-bottom: 1px solid transparent;
+    transition: background 0.15s;
+}
+
+.relationship-row:hover {
+    background: var(--panel);
+}
+
+.relationship-row .edit-relationship,
+.relationship-row .delete-relationship {
+    font-size: 0.55rem;
+    padding: 1px 6px;
+    flex: 0 0 auto;
+}
+
+/* ============================================================
+   GRAPH VIEW
+   ============================================================ */
+
+#social-graph-view {
+    display: none; /* overridden by SocialGraph.setGraphVisible */
+}
+
+/* ---------- Zoom control bar (rendered above the graph) ---------- */
+
+#social-graph-view > div:first-child {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-bottom: 12px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+#social-graph-view > div:first-child span {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+}
+
+#zoom-display {
+    font-weight: 600;
+    color: var(--text);
+    min-width: 42px;
+    display: inline-block;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+#zoom-in-btn,
+#zoom-out-btn,
+#reset-zoom-btn {
+    min-width: 28px;
+    padding: 2px 8px;
+    font-size: 0.75rem;
+    line-height: 1.2;
+}
+
+/* ---------- Graph container ---------- */
+
+#graph-container {
+    width: 100%;
+    height: 600px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    position: relative;
+    cursor: grab;
+}
+
+#social-svg {
+    display: block;
+    background: var(--bg);
+    user-select: none;
+}
+
+/* ---------- SVG graph nodes and labels ---------- */
+
+.graph-node {
+    cursor: pointer;
+    transition: opacity 0.15s;
+}
+
+.graph-node:hover {
+    opacity: 0.85;
+}
+
+.graph-label {
+    pointer-events: none;
+    user-select: none;
+    font-family: 'Inter', sans-serif;
+}
+
+/* ---------- Legend ---------- */
+
+#graph-legend {
+    margin-top: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 0.7rem;
+}
+
+#graph-legend > span:first-child {
+    color: var(--text-dim);
+    font-weight: 600;
+    font-size: 0.7rem;
+}
+
+#legend-items {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+/* ============================================================
+   RELATIONSHIP FORM MODAL
+   ============================================================ */
+
+#relationship-form-modal .modal-content {
+    max-width: 600px;
+}
+
+#relationship-form-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+#relationship-form-inner .form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+#relationship-form-inner .form-group.full-width {
+    grid-column: 1 / -1;
+}
+
+#relationship-form-inner .form-group label {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    font-weight: 500;
+    margin-bottom: 3px;
+    display: block;
+}
+
+#relationship-form-inner .form-group select,
+#relationship-form-inner .form-group input,
+#relationship-form-inner .form-group textarea {
+    width: 100%;
+    padding: 6px 8px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-family: 'Inter', sans-serif;
+}
+
+#relationship-form-inner .form-group select:focus,
+#relationship-form-inner .form-group input:focus,
+#relationship-form-inner .form-group textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+#relationship-form-inner .form-group textarea {
+    resize: vertical;
+    min-height: 60px;
+}
+
+#relationship-form-inner .form-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-soft);
+    flex-wrap: wrap;
+}
+
+#relationship-form-inner .form-actions button {
+    font-size: 0.75rem;
+    padding: 6px 16px;
+}
+
+/* ============================================================
+   CHARACTER DETAIL MODAL (opened from a graph node)
+   ============================================================ */
+
+#character-detail-modal .modal-content {
+    max-width: 500px;
+}
+
+#char-detail-content {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+#char-detail-content .detail-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border-soft);
+    gap: 10px;
+    font-size: 0.8rem;
+    flex-wrap: wrap;
+}
+
+#char-detail-content .detail-row .label {
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    flex-shrink: 0;
+}
+
+#char-detail-content h4 {
+    color: var(--accent);
+    font-size: 0.85rem;
+    margin: 8px 0;
+}
+
+/* The "View All Relationships" button lives in a wrapper div. */
+#char-detail-content > div:last-child {
+    margin-top: 12px;
+}
+
+#view-char-relationships {
+    font-size: 0.72rem;
+    padding: 5px 14px;
+}
+
+/* ============================================================
+   MOBILE
+   ============================================================ */
+
+@media (max-width: 768px) {
+    #graph-container {
+        height: 420px;
+    }
+}
+
+@media (max-width: 600px) {
+    .filter-section {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .filter-section select {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .filter-section label {
+        margin-top: 4px;
+    }
+
+    .filter-section button.small {
+        width: 100%;
+    }
+
+    .filter-section span {
+        text-align: center;
+    }
+
+    #graph-container {
+        height: 360px;
+    }
+
+    #social-graph-view > div:first-child {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    #social-graph-view > div:first-child span {
+        text-align: center;
+    }
+
+    #relationship-form-inner .form-grid {
+        grid-template-columns: 1fr;
+    }
+
+    #relationship-form-inner .form-actions {
+        flex-direction: column-reverse;
+    }
+
+    #relationship-form-inner .form-actions button {
+        width: 100%;
+    }
+
+    .relationship-row {
+        flex-wrap: wrap;
+    }
+
+    .relationship-row > span:last-child {
+        margin-left: auto;
+    }
+}
