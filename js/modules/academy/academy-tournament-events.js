@@ -20,10 +20,7 @@
  *   - Domain reads via window.data. TournamentQueries owns reads.
  *   - Identity computation. Queries and Schema own it.
  *   - Eligibility computation for the pool panel. The aggregator
- *     owns the pool VM. The events module only computes eligibility
- *     for the Add-Match / Edit-Match modals, which need the "still
- *     eligible for a new match in this round" set — a distinct
- *     question from "eligible to be added to the exam".
+ *     owns the pool VM.
  *
  * ACTION NAMING:
  *   Every action element carries data-action with an 'exam-' prefix.
@@ -62,17 +59,36 @@
  *   side.
  *
  *   This is DISTINCT from the cascade reversal that runs inside
- *   removeMatch / removeRound / purgeTournament:
+ *   removeMatch / removeRound / reopenMatch / reopenRound:
  *
  *     - Cascade reversal removes eliminations by provenance
  *       (fromMatchId / fromRoundId). Runs when the match, round, or
- *       tournament is removed.
+ *       tournament is removed, or when a match or round is reopened.
  *     - Manual restore removes eliminations by
  *       (tournamentId, characterId). Runs when the user clicks
  *       Restore. Provenance-agnostic.
  *
- *   Both compose safely. If the user restores first, the later
- *   cascade reversal is a no-op for that participant.
+ *   All three compose safely.
+ *
+ * REOPEN (v21):
+ *   Three reopen actions, at three levels of granularity:
+ *
+ *     exam-reopen-exam    Reopen the exam itself. Sets status back
+ *                         to 'active'. Does NOT touch eliminations
+ *                         or match results. Ungates the round and
+ *                         match edit buttons.
+ *
+ *     exam-reopen-round   Reopen every match in a round. Reverses
+ *                         every elimination produced by any match in
+ *                         the round. Sets every match to 'pending'.
+ *                         Match results are preserved.
+ *
+ *     exam-reopen-match   Reopen one match. Reverses eliminations
+ *                         produced by that match. Sets the match to
+ *                         'pending'. Results preserved.
+ *
+ *   Each shows a confirmation modal before dispatching. The
+ *   confirmation text explains what will be reversed.
  *
  * ARCHIVE vs DELETE:
  *   The "Delete Exam" button routes to TournamentCore.archiveTournament.
@@ -167,6 +183,9 @@
     if (!View || typeof View.buildRemoveRoundModalHTML !== 'function') {
         _missing.push('AcademyTournamentView.buildRemoveRoundModalHTML');
     }
+    if (!View || typeof View.buildReopenRoundModalHTML !== 'function') {
+        _missing.push('AcademyTournamentView.buildReopenRoundModalHTML');
+    }
     if (!View || typeof View.buildAutoGenerateRoundModalHTML !== 'function') {
         _missing.push('AcademyTournamentView.buildAutoGenerateRoundModalHTML');
     }
@@ -178,6 +197,12 @@
     }
     if (!View || typeof View.buildCompleteMatchModalHTML !== 'function') {
         _missing.push('AcademyTournamentView.buildCompleteMatchModalHTML');
+    }
+    if (!View || typeof View.buildReopenMatchModalHTML !== 'function') {
+        _missing.push('AcademyTournamentView.buildReopenMatchModalHTML');
+    }
+    if (!View || typeof View.buildReopenExamModalHTML !== 'function') {
+        _missing.push('AcademyTournamentView.buildReopenExamModalHTML');
     }
     if (!View || typeof View.buildRemoveMatchModalHTML !== 'function') {
         _missing.push('AcademyTournamentView.buildRemoveMatchModalHTML');
@@ -222,6 +247,9 @@
     if (!TournamentCore || typeof TournamentCore.removeRound !== 'function') {
         _missing.push('TournamentCore.removeRound');
     }
+    if (!TournamentCore || typeof TournamentCore.reopenRound !== 'function') {
+        _missing.push('TournamentCore.reopenRound');
+    }
     if (!TournamentCore || typeof TournamentCore.addParticipant !== 'function') {
         _missing.push('TournamentCore.addParticipant');
     }
@@ -239,6 +267,9 @@
     }
     if (!TournamentMatches || typeof TournamentMatches.completeMatch !== 'function') {
         _missing.push('TournamentMatches.completeMatch');
+    }
+    if (!TournamentMatches || typeof TournamentMatches.reopenMatch !== 'function') {
+        _missing.push('TournamentMatches.reopenMatch');
     }
     if (!TournamentMatches || typeof TournamentMatches.generateMatches !== 'function') {
         _missing.push('TournamentMatches.generateMatches');
@@ -383,12 +414,6 @@
     // ============================================================
     // MUTATION RESULT HANDLER
     // ============================================================
-    //
-    // Uniform success/failure handling for every mutation.
-    //
-    //   onSuccess(result) runs on result.success
-    //   rejectMutation(label, result) runs on !result.success
-    //   failMutation(label, err, errorMessage) runs on throw
 
     function handleMutation(promise, options) {
         options = options || {};
@@ -503,22 +528,10 @@
     // ============================================================
     // MODAL VM BUILDERS
     // ============================================================
-    //
-    // These build the small VMs the modal builders consume. They live
-    // here because the events module is the coordinator: it knows
-    // which exam, which round, which match, and what the user is
-    // trying to do.
 
     /**
      * Build the eligible-participant list for the Add-Match /
      * Edit-Match modal.
-     *
-     * This is the set of tournament participants who are:
-     *   - still in the tournament
-     *   - not eliminated
-     *   - not already assigned to a match in this round
-     *
-     * @returns {array} [ { id, name } ]
      */
     function buildEligibleForNewMatch(examId, roundId) {
         var rawIds = TournamentMatches.getEligibleParticipants(examId)
@@ -560,8 +573,7 @@
 
     /**
      * Build the team VM list the Complete-Match modal needs for a
-     * team_vs_team match. Each team carries its current teamResult
-     * and each member's current individualResult.
+     * team_vs_team match.
      */
     function buildTeamCompletionVMs(match) {
         var teamIds = isArray(match.participants)
@@ -701,6 +713,178 @@
     }
 
     // ============================================================
+    // REOPEN — EXAM
+    // ============================================================
+
+    /**
+     * Reopen the exam itself. Flips status back to 'active'.
+     *
+     * Does NOT touch rounds, matches, or eliminations. It un-gates
+     * the round and match edit buttons by removing the
+     * exam.status === 'completed' condition they check.
+     */
+    function reopenExam(examId) {
+        if (!isNonEmptyString(examId)) { return; }
+
+        var exam = TournamentQueries.getTournament(examId);
+        if (!exam) {
+            notify('Exam not found.', 'error');
+            return;
+        }
+
+        if (exam.status !== 'completed') {
+            notify('Exam is not completed.', 'info');
+            return;
+        }
+
+        var html = View.buildReopenExamModalHTML();
+
+        openModal('at-reopen-exam-modal', html, function(modal, close) {
+            bindCommonModalControls(modal, close);
+
+            var form = modal.querySelector('#at-reopen-exam-form');
+            if (!form) { return; }
+
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+
+                handleMutation(
+                    TournamentCore.updateTournament(examId, {
+                        status: 'active'
+                    }),
+                    {
+                        label: 'reopenExam',
+                        errorMessage: 'Failed to reopen exam.',
+                        onSuccess: function() {
+                            close();
+                            notifyChange();
+                        }
+                    }
+                );
+            });
+        });
+    }
+
+    // ============================================================
+    // REOPEN — ROUND
+    // ============================================================
+
+    /**
+     * Reopen every match in a round.
+     *
+     * Reverses every elimination produced by any match in the round,
+     * flips every match back to 'pending', and resets the round's
+     * status to 'pending'. Match results are preserved.
+     */
+    function reopenRound(examId, roundId) {
+        if (!isNonEmptyString(examId) ||
+            !isNonEmptyString(roundId)) {
+            return;
+        }
+
+        var exam = TournamentQueries.getTournament(examId);
+        if (!exam) {
+            notify('Exam not found.', 'error');
+            return;
+        }
+
+        var round = TournamentQueries.getRound(examId, roundId);
+        if (!round) {
+            notify('Round not found.', 'error');
+            return;
+        }
+
+        var html = View.buildReopenRoundModalHTML();
+
+        openModal('at-reopen-round-modal', html, function(modal, close) {
+            bindCommonModalControls(modal, close);
+
+            var form = modal.querySelector('#at-reopen-round-form');
+            if (!form) { return; }
+
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+
+                handleMutation(
+                    TournamentCore.reopenRound(examId, roundId),
+                    {
+                        label: 'reopenRound',
+                        errorMessage: 'Failed to reopen round.',
+                        onSuccess: function() {
+                            close();
+                            notifyChange();
+                        }
+                    }
+                );
+            });
+        });
+    }
+
+    // ============================================================
+    // REOPEN — MATCH
+    // ============================================================
+
+    /**
+     * Reopen a single match.
+     *
+     * Reverses eliminations produced by this match and flips the
+     * match back to 'pending'. Results preserved.
+     */
+    function reopenMatch(examId, roundId, matchId) {
+        if (!isNonEmptyString(examId) ||
+            !isNonEmptyString(roundId) ||
+            !isNonEmptyString(matchId)) {
+            return;
+        }
+
+        var exam = TournamentQueries.getTournament(examId);
+        if (!exam) {
+            notify('Exam not found.', 'error');
+            return;
+        }
+
+        var match = TournamentQueries.getMatch(
+            examId, roundId, matchId
+        );
+        if (!match) {
+            notify('Match not found.', 'error');
+            return;
+        }
+
+        if (match.status !== 'completed') {
+            notify('Match is not completed.', 'info');
+            return;
+        }
+
+        var html = View.buildReopenMatchModalHTML();
+
+        openModal('at-reopen-match-modal', html, function(modal, close) {
+            bindCommonModalControls(modal, close);
+
+            var form = modal.querySelector('#at-reopen-match-form');
+            if (!form) { return; }
+
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+
+                handleMutation(
+                    TournamentMatches.reopenMatch(
+                        examId, roundId, matchId
+                    ),
+                    {
+                        label: 'reopenMatch',
+                        errorMessage: 'Failed to reopen match.',
+                        onSuccess: function() {
+                            close();
+                            notifyChange();
+                        }
+                    }
+                );
+            });
+        });
+    }
+
+    // ============================================================
     // POOL MEMBERSHIP
     // ============================================================
 
@@ -759,22 +943,6 @@
     // ============================================================
     // RESTORE ELIMINATED PARTICIPANT
     // ============================================================
-    //
-    // Manual override. Removes the elimination record for
-    // (examId, characterId) on both the tournament side and the
-    // character side, inside a MutationPipeline transaction.
-    //
-    // This is DISTINCT from the cascade reversal that runs inside
-    // removeMatch / removeRound / purgeTournament:
-    //
-    //   - Cascade reversal: keyed by provenance (fromMatchId or
-    //     fromRoundId). Runs when the match, round, or tournament
-    //     is removed.
-    //   - Manual restore: keyed by (tournamentId, characterId).
-    //     Runs when the user clicks Restore. Provenance-agnostic.
-    //
-    // Both compose safely. If the user restores first, the later
-    // cascade reversal is a no-op for that participant.
 
     function restoreEliminatedParticipant(examId, characterId) {
         if (!isNonEmptyString(examId)) {
@@ -1272,10 +1440,6 @@
     // ============================================================
     // EXAM COMPLETION
     // ============================================================
-    //
-    // Status is a soft label. "Complete" is an updateTournament
-    // call that sets status to 'completed'. There is no dedicated
-    // transition API.
 
     function completeExam(examId) {
         if (!isNonEmptyString(examId)) { return; }
@@ -1303,14 +1467,17 @@
 
         createExam: createExam,
         deleteExam: deleteExam,
+        reopenExam: reopenExam,
         togglePoolMember: togglePoolMember,
 
         addRound: addRound,
         removeRound: removeRound,
+        reopenRound: reopenRound,
         autoGenerateRound: autoGenerateRound,
         addMatchManual: addMatchManual,
         editMatch: editMatch,
         completeMatch: completeMatch,
+        reopenMatch: reopenMatch,
         removeMatch: removeMatch,
 
         restoreEliminatedParticipant: restoreEliminatedParticipant,
@@ -1330,13 +1497,16 @@
             'setOnChangeCallback',
             'createExam',
             'deleteExam',
+            'reopenExam',
             'togglePoolMember',
             'addRound',
             'removeRound',
+            'reopenRound',
             'autoGenerateRound',
             'addMatchManual',
             'editMatch',
             'completeMatch',
+            'reopenMatch',
             'removeMatch',
             'restoreEliminatedParticipant',
             'completeExam'
