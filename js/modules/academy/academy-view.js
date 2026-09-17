@@ -19,7 +19,7 @@
  *   - Handle Weekly Teams create/edit/delete/manage-members
  *   - Handle orphan-team assignment
  *   - Handle Auto-Distribute
- *   - Handle Clear Rosters / Clear Schedule
+ *   - Handle Clear Rosters
  *   - Handle character class membership mutations
  *
  * NOT RESPONSIBILITIES:
@@ -48,21 +48,35 @@
  *
  *   setWindow REPLACES the window. ensureWindow only widens it.
  *
- * WEEKLY TEAMS CLEAR SEMANTICS:
- *   - "Clear Schedule" (weekly-teams-clear-windows):
- *       Removes weekly-team window records for the class. Persistent
- *       Team entities and their rosters are untouched. Teams
- *       disappear from the Weekly Teams list.
- *   - "Clear Rosters" (weekly-teams-empty-teams): HARD-deletes every
- *       member whose active window covers the current week. Teams
- *       stay scheduled; weekly-team windows are untouched.
+ * WEEKLY TEAMS CLEAR ROSTERS (v24):
+ *   The Weekly Teams sidebar exposes exactly one roster-clearing
+ *   action: "Clear Rosters". It removes every member whose active
+ *   window covers the currently displayed week, across every
+ *   academic team of the class. Past and future stints survive.
+ *   Teams stay scheduled. Team entities are untouched.
+ *
+ *   The former "Clear Schedule" action (which deleted the
+ *   academy.weeklyTeams window records for the class, making teams
+ *   disappear) is not exposed to any UI in v24. The underlying
+ *   clearClassWindows helper is retained; the Auto-Distribute modal
+ *   still uses clearExisting for its "wipe before redistributing"
+ *   option, which calls clearClassWindows directly.
  *
  * AUTO-DISTRIBUTE SEMANTICS:
  *   Per student. Existing teams fill toward groupSize; new teams are
  *   created only when every existing team has reached groupSize.
  *
- * WEEK SEMANTICS (v24):
- *   [FIX-A] Every aggregator projection that consumes a week passes
+ *   ELIGIBILITY FILTER (BUG-R2):
+ *     The distribution pool excludes:
+ *       - students deceased at any point (char.deceased === true)
+ *       - students eliminated as of the display week
+ *         (EliminationQueries.isCharacterEliminatedByWeek)
+ *
+ *     Elimination at exactly the display week does NOT exclude the
+ *     student; the boundary rule is E < W.
+ *
+ * WEEK SEMANTICS:
+ *   Every aggregator projection that consumes a week passes
  *   AcademyUI.getDisplayWeek(). This includes:
  *     - getClassViewModel(classId, week)
  *     - getClassStudentsViewModel(classId, week)
@@ -447,10 +461,6 @@
     // ============================================================
     // PEOPLE VIEW
     // ============================================================
-    //
-    // [FIX-A] The display week is threaded into every aggregator call
-    // so elimination state, class rosters, and the People filter are
-    // all evaluated against the same week.
 
     function renderPeopleView() {
         var classId = AcademyUI.getSelectedClassId();
@@ -469,9 +479,6 @@
             return html;
         }
 
-        // [FIX-A] Pass the display week so studentCount and the
-        // roster are week-scoped. The VM's `eliminated` field per
-        // person is populated from EliminationQueries at this week.
         var classVM = AcademyAggregator.getClassViewModel(classId, week);
         if (!classVM) {
             html += '<div class="academy-body academy-body-empty">' +
@@ -608,16 +615,6 @@
         return html;
     }
 
-    // ============================================================
-    // PERSON ROW
-    // ============================================================
-    //
-    // [FIX-B] The elimination warning reads `person.eliminated` (the
-    // new VM field), not `person.status === 'eliminated'`. The
-    // `status` field is the free-form character status string
-    // ("trainee", "rookie", etc.) and never carries the value
-    // "eliminated".
-
     function renderPersonRow(person) {
         if (!person || !person.id) {
             return '';
@@ -644,8 +641,6 @@
         }
         html += '</div>';
 
-        // Elimination warning line. Rendered only for eliminated
-        // characters. Uses the elimination week from the VM.
         if (person.eliminated) {
             var weekText = (typeof person.eliminationWeek === 'number')
                 ? ' (Wk ' + person.eliminationWeek + ')'
@@ -1458,9 +1453,8 @@
             case 'weekly-teams-manage-members':
                 openWeeklyTeamMembersModal(el.dataset.teamId);
                 return;
-            case 'weekly-teams-empty-teams':
-            case 'weekly-teams-clear-windows':
-                handleWeeklyTeamsClearWindows();
+            case 'weekly-teams-clear-rosters':
+                handleWeeklyTeamsClearRosters();
                 return;
             case 'weekly-teams-toggle-orphans':
                 handleWeeklyTeamsToggleOrphans(el);
@@ -1474,8 +1468,90 @@
     }
 
     /**
+     * Clear Rosters: remove every active member for the display week
+     * across every academic team of the current class.
+     *
+     * WHAT IT DOES NOT DO:
+     *   - Does not delete teams.
+     *   - Does not touch team startPeriod / endPeriod.
+     *   - Does not touch academy.weeklyTeams windows.
+     *   - Does not touch past stints (leaveWeek < displayWeek).
+     *   - Does not touch future stints (joinWeek > displayWeek).
+     *
+     * Teams stay scheduled and empty. History survives.
+     */
+    function handleWeeklyTeamsClearRosters() {
+        if (!_selectedWeeklyTeamsClassId) {
+            notify('Select a class first.', 'error');
+            return;
+        }
+
+        var AWT = getAcademyWeeklyTeams();
+        if (!AWT || typeof AWT.clearAllMembershipsForClass !== 'function') {
+            notify('Weekly Teams module not available.', 'error');
+            return;
+        }
+
+        var week = AcademyUI.getDisplayWeek();
+
+        var rosters = {};
+        if (typeof AWT.getWeeklyTeams === 'function') {
+            rosters = AWT.getWeeklyTeams(
+                _selectedWeeklyTeamsClassId,
+                week
+            ) || {};
+        }
+
+        var teamsActiveCount = 0;
+        var membersActiveCount = 0;
+        var teamIds = Object.keys(rosters);
+        for (var i = 0; i < teamIds.length; i++) {
+            teamsActiveCount++;
+            var memberIds = rosters[teamIds[i]] || [];
+            membersActiveCount += memberIds.length;
+        }
+
+        if (membersActiveCount === 0) {
+            notify('No team members to clear for this week.', 'info');
+            return;
+        }
+
+        var message =
+            'Remove all ' + membersActiveCount +
+            ' active team member' + (membersActiveCount === 1 ? '' : 's') +
+            ' across ' + teamsActiveCount +
+            ' team' + (teamsActiveCount === 1 ? '' : 's') +
+            ' for week ' + week + '?\n\n' +
+            'The teams themselves are NOT deleted. They stay scheduled ' +
+            'and empty. Memberships that do not cover this week ' +
+            '(past leaves, future joins) are kept.\n\n' +
+            'This cannot be undone.';
+
+        if (!confirm(message)) {
+            return;
+        }
+
+        AWT.clearAllMembershipsForClass(_selectedWeeklyTeamsClassId, week)
+            .then(function(result) {
+                if (result && result.success) {
+                    refreshView();
+                }
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[AcademyView] clearAllMembershipsForClass failed:', err
+                );
+            });
+    }
+
+    /**
      * Clear Schedule: remove every weekly-team window record for the
      * current class. Persistent Team entities are untouched.
+     *
+     * NOT CURRENTLY WIRED TO ANY UI in v24. Retained because
+     * Auto-Distribute's `clearExisting` path calls
+     * AWT.clearClassWindows directly, and this function documents the
+     * semantics of that operation.
      */
     function handleWeeklyTeamsClearWindows() {
         if (!_selectedWeeklyTeamsClassId) {
@@ -1543,10 +1619,6 @@
         }
     }
 
-    /**
-     * Assign an orphan academic team to the class selected in its
-     * row's dropdown.
-     */
     function handleWeeklyTeamsAssignOrphanTeam(el) {
         var teamId = el.dataset.teamId;
         if (!teamId) {
@@ -1584,84 +1656,6 @@
             });
     }
 
-    /**
-     * Clear Rosters: HARD-DELETE every member whose active window
-     * covers the current display week, across every academic team of
-     * the current class whose own startPeriod / endPeriod covers the
-     * week.
-     *
-     * Teams remain scheduled. Weekly-team windows are untouched.
-     */
-    function handleWeeklyTeamsClearRosters() {
-        if (!_selectedWeeklyTeamsClassId) {
-            notify('Select a class first.', 'error');
-            return;
-        }
-
-        var AWT = getAcademyWeeklyTeams();
-        if (!AWT || typeof AWT.clearAllMembershipsForClass !== 'function') {
-            notify('Weekly Teams module not available.', 'error');
-            return;
-        }
-
-        var week = AcademyUI.getDisplayWeek();
-
-        var rosters = AWT.getWeeklyTeams(
-            _selectedWeeklyTeamsClassId,
-            week
-        ) || {};
-
-        var teamsActiveCount = 0;
-        var membersActiveCount = 0;
-        var teamIds = Object.keys(rosters);
-        for (var i = 0; i < teamIds.length; i++) {
-            teamsActiveCount++;
-            var memberIds = rosters[teamIds[i]] || [];
-            membersActiveCount += memberIds.length;
-        }
-
-        if (membersActiveCount === 0) {
-            notify('No team members to clear for this week.', 'info');
-            return;
-        }
-
-        var message =
-            'Remove all ' + membersActiveCount +
-            ' active team member' + (membersActiveCount === 1 ? '' : 's') +
-            ' across ' + teamsActiveCount +
-            ' team' + (teamsActiveCount === 1 ? '' : 's') +
-            ' for this week?\n\n' +
-            'The teams themselves are NOT deleted. They stay scheduled ' +
-            'and empty. Memberships that do not cover this week ' +
-            '(past leaves, future joins) are kept.\n\n' +
-            'This cannot be undone.';
-
-        if (!confirm(message)) {
-            return;
-        }
-
-        AWT.clearAllMembershipsForClass(_selectedWeeklyTeamsClassId, week)
-            .then(function(result) {
-                if (result && result.success) {
-                    refreshView();
-                }
-            })
-            .catch(function(err) {
-                console.warn(
-                    '[AcademyView] clearAllMembershipsForClass failed:', err
-                );
-            });
-    }
-
-    /**
-     * Open the Create / Edit Team modal.
-     *
-     * On successful save, the weekly-team window is synchronised:
-     *   - create: setWindow(classId, createdId, start, end)
-     *   - edit:   setWindow(classId, teamId, start, end)
-     * setWindow REPLACES the window. This is what makes an end-week
-     * change stick.
-     */
     function openWeeklyTeamForm(teamId) {
         var View = getWeeklyTeamsViewModule();
         var TeamCore = getTeamCore();
@@ -1803,7 +1797,6 @@
 
                 var AWT = getAcademyWeeklyTeams();
 
-                // ---- CREATE ----
                 if (!isEdit) {
                     var createdId = result.data && result.data.id
                         ? String(result.data.id)
@@ -1835,7 +1828,6 @@
                             return;
                         }
 
-                        // Fallback for older AWT.
                         if (typeof AWT.ensureWindow === 'function') {
                             AWT.ensureWindow(
                                 _selectedWeeklyTeamsClassId,
@@ -1861,8 +1853,6 @@
                     return;
                 }
 
-                // ---- EDIT ----
-                // Re-sync the window to match the team's new range.
                 if (isEdit && team && AWT &&
                     typeof AWT.setWindow === 'function') {
                     var editClassId = team.classId || _selectedWeeklyTeamsClassId;
@@ -2051,11 +2041,20 @@
             }
         }
 
-        var roster = AcademyAggregator.getClassStudentsViewModel(
+        // Eligible count excludes eliminated and deceased, matching
+        // the filter applied inside runAutoDistributeCore.
+        var rawRoster = AcademyAggregator.getClassStudentsViewModel(
             _selectedWeeklyTeamsClassId,
             week
         ) || [];
-        var eligibleCount = roster.length;
+        var eligibleCount = 0;
+        for (var r = 0; r < rawRoster.length; r++) {
+            var s = rawRoster[r];
+            if (!s) continue;
+            if (s.deceased === true) continue;
+            if (s.eliminated === true) continue;
+            eligibleCount++;
+        }
 
         var html = View.buildAutoDistributeModalHTML({
             classId: _selectedWeeklyTeamsClassId,
@@ -2184,15 +2183,32 @@
     }
 
     function runAutoDistributeCore(ctx, groupSize, TeamCore, TeamQ, TeamConstants, AWT) {
-        var roster = AcademyAggregator.getClassStudentsViewModel(
+        // ---- Roster (filtered) ----
+        //
+        // BUG-R2: Exclude eliminated and deceased students from the
+        // distribution pool. Elimination is week-scoped: a student
+        // eliminated at exactly the display week is still eligible
+        // (E < W rule).
+        var rawRoster = AcademyAggregator.getClassStudentsViewModel(
             ctx.classId,
             ctx.week
         ) || [];
+
+        var roster = rawRoster.filter(function(s) {
+            if (!s) return false;
+            if (s.deceased === true) return false;
+            if (s.eliminated === true) return false;
+            return true;
+        });
+
         if (roster.length === 0) {
-            notify('The class has no students.', 'info');
+            notify(
+                'The class has no eligible students for this week.',
+                'info'
+            );
             return Promise.resolve({
                 success: false,
-                message: 'No students.'
+                message: 'No eligible students.'
             });
         }
 
@@ -2237,7 +2253,8 @@
 
         if (unassigned.length === 0) {
             notify(
-                'All students are already assigned to a team this week.',
+                'All eligible students are already assigned to a team ' +
+                'this week.',
                 'info'
             );
             return Promise.resolve({
@@ -2572,9 +2589,6 @@
             return;
         }
 
-        // [FIX-C] The People sidebar Status filter. The id here
-        // must match the id rendered in renderPeopleSidebar above.
-        // Both use 'academy-people-status'.
         if (target.id === 'academy-people-role') {
             AcademyUI.setPeopleRole(target.value);
             refreshView();
