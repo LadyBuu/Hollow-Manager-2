@@ -41,7 +41,9 @@
  *   Both inclusive. Blank means "unbounded on that side."
  *
  *   A character may have multiple stints on the same team. The
- *   intervals within one entry are expected to be non-overlapping.
+ *   intervals within one entry MUST be non-overlapping. This is
+ *   enforced at the mutation layer (see applyMemberChange and the
+ *   addMember/syncAddMemberInterval helpers).
  *
  *   `joinPeriod` is IMMUTABLE once set. To move a stint's start,
  *   purge the interval and add a new one. This keeps the interval
@@ -198,7 +200,7 @@
 
     window.__academyWeeklyTeamsLoaded = true;
 
-    diag('Module loaded (v24, interval-aware).');
+    diag('Module loaded (v24, interval-aware, sibling-overlap enforcing).');
 
     // ============================================================
     // CONSTANTS
@@ -263,12 +265,6 @@
         return true;
     }
 
-    /**
-     * Canonicalise a member bound value.
-     *   undefined/null/'' → '' (unbounded).
-     *   Number or numeric string → canonical string in bounds.
-     *   Invalid → null.
-     */
     function canonicaliseMemberBound(value) {
         if (value === undefined || value === null || value === '') {
             return '';
@@ -284,11 +280,6 @@
     // MEMBER INTERVAL HELPERS
     // ============================================================
 
-    /**
-     * Does the given week fall inside this interval?
-     * Blank bounds are unbounded on that side.
-     * Invalid bounds cause the interval to fail (return false).
-     */
     function intervalActiveInWeek(interval, week) {
         if (!interval || typeof interval !== 'object') {
             return false;
@@ -316,11 +307,6 @@
         return true;
     }
 
-    /**
-     * Transaction-local membership window predicate.
-     * A member is active at `week` when at least one of its
-     * intervals contains `week`.
-     */
     function memberActiveInWeek(member, week) {
         if (!member || typeof member !== 'object') {
             return false;
@@ -336,10 +322,6 @@
         return false;
     }
 
-    /**
-     * Find a member entry in a team's members[] array by
-     * characterId. Returns the LIVE entry, or null.
-     */
     function findMemberEntryByCharacterId(team, charId) {
         if (!team || !Array.isArray(team.members)) {
             return null;
@@ -354,10 +336,6 @@
         return null;
     }
 
-    /**
-     * Find a specific interval inside a member entry by joinPeriod.
-     * Returns the LIVE interval, or null.
-     */
     function findIntervalInEntry(entry, joinPeriod) {
         if (!entry || !Array.isArray(entry.intervals)) {
             return null;
@@ -378,26 +356,11 @@
         return null;
     }
 
-    /**
-     * Resolve a member entry from an identifier.
-     *
-     * identifier is either:
-     *   - a memberId string, or
-     *   - { characterId, joinPeriod } (composite).
-     *
-     * Returns { entry, interval } where `entry` is the live member
-     * entry and `interval` is the matching live interval (may be
-     * null for a memberId-only identifier, where the caller intends
-     * to address the whole entry).
-     *
-     * Returns null when nothing matches.
-     */
     function resolveMemberByIdentifier(team, identifier) {
         if (!team || !Array.isArray(team.members) || !identifier) {
             return null;
         }
 
-        // Composite form.
         if (typeof identifier === 'object') {
             var charId = identifier.characterId !== undefined &&
                          identifier.characterId !== null
@@ -415,7 +378,6 @@
             return { entry: entry, interval: interval };
         }
 
-        // memberId form.
         var targetId = String(identifier);
         for (var i = 0; i < team.members.length; i++) {
             var m = team.members[i];
@@ -524,11 +486,6 @@
         return null;
     }
 
-    /**
-     * Validate inside a transaction that the team exists and belongs
-     * to the given class. Returns null on success, or an error
-     * message string on failure.
-     */
     function validateTeamClassInSnapshot(appData, teamId, classId) {
         var team = findTeamInSnapshot(appData, teamId);
         if (!team) {
@@ -549,35 +506,81 @@
     }
 
     /**
+     * Effective start of an interval for overlap comparison.
+     * Blank joinPeriod is treated as 0 (always been on team).
+     */
+    function effectiveIntervalStart(interval) {
+        if (!interval) return 0;
+        var v = interval.joinPeriod;
+        if (v === undefined || v === null || v === '') return 0;
+        var n = TeamConstants.parsePeriod(v);
+        return n === null ? 0 : n;
+    }
+
+    /**
+     * Effective end of an interval for overlap comparison.
+     * Blank leavePeriod is treated as +Infinity.
+     */
+    function effectiveIntervalEnd(interval) {
+        if (!interval) return Infinity;
+        var v = interval.leavePeriod;
+        if (v === undefined || v === null || v === '') return Infinity;
+        var n = TeamConstants.parsePeriod(v);
+        return n === null ? Infinity : n;
+    }
+
+    /**
      * Do two intervals overlap? Inclusive on both ends.
-     * Blank bounds mean unbounded on that side.
      */
     function intervalsOverlap(a, b) {
         if (!a || !b) { return false; }
-
-        var aStart = a.joinPeriod !== undefined && a.joinPeriod !== null &&
-                     a.joinPeriod !== ''
-            ? TeamConstants.parsePeriod(a.joinPeriod)
-            : 0;
-        var bStart = b.joinPeriod !== undefined && b.joinPeriod !== null &&
-                     b.joinPeriod !== ''
-            ? TeamConstants.parsePeriod(b.joinPeriod)
-            : 0;
-        var aEnd = a.leavePeriod !== undefined && a.leavePeriod !== null &&
-                   a.leavePeriod !== ''
-            ? TeamConstants.parsePeriod(a.leavePeriod)
-            : Infinity;
-        var bEnd = b.leavePeriod !== undefined && b.leavePeriod !== null &&
-                   b.leavePeriod !== ''
-            ? TeamConstants.parsePeriod(b.leavePeriod)
-            : Infinity;
-
-        if (aStart === null) { aStart = 0; }
-        if (bStart === null) { bStart = 0; }
-        if (aEnd === null) { aEnd = Infinity; }
-        if (bEnd === null) { bEnd = Infinity; }
-
+        var aStart = effectiveIntervalStart(a);
+        var aEnd = effectiveIntervalEnd(a);
+        var bStart = effectiveIntervalStart(b);
+        var bEnd = effectiveIntervalEnd(b);
         return aStart <= bEnd && bStart <= aEnd;
+    }
+
+    /**
+     * Does the proposed interval overlap any interval in the
+     * member entry OTHER than the one identified by `excludeJoin`?
+     *
+     * `proposed` is { joinPeriod, leavePeriod } with canonical
+     * string values (or blanks).
+     *
+     * `excludeJoin` is the joinPeriod of the interval being edited,
+     * so it doesn't collide with itself. Pass null to skip exclusion
+     * (used when adding a brand-new interval).
+     *
+     * Returns the conflicting interval, or null.
+     */
+    function findSiblingOverlap(entry, proposed, excludeJoin) {
+        if (!entry || !Array.isArray(entry.intervals)) {
+            return null;
+        }
+
+        var exclude = (excludeJoin === undefined || excludeJoin === null)
+            ? null
+            : String(excludeJoin);
+
+        for (var i = 0; i < entry.intervals.length; i++) {
+            var iv = entry.intervals[i];
+            if (!iv || typeof iv !== 'object') { continue; }
+
+            if (exclude !== null) {
+                var ivJoin = (iv.joinPeriod === undefined || iv.joinPeriod === null)
+                    ? ''
+                    : String(iv.joinPeriod);
+                if (ivJoin === exclude) {
+                    continue;
+                }
+            }
+
+            if (intervalsOverlap(proposed, iv)) {
+                return iv;
+            }
+        }
+        return null;
     }
 
     /**
@@ -586,15 +589,15 @@
      * - If no entry exists for the character: create one with a
      *   fresh memberId and a single interval.
      * - If an entry exists: append a new interval (after overlap
-     *   check).
+     *   check against the entry's other intervals).
      *
-     * Returns { added, entry } where `entry` is the LIVE entry.
+     * Returns { added, entry, reason? }.
      */
     function syncAddMemberIntervalToPersistentRoster(
         team, charId, joinPeriod, leavePeriod, role
     ) {
         if (!team) {
-            return { added: false, entry: null };
+            return { added: false, entry: null, reason: 'no-team' };
         }
         if (!Array.isArray(team.members)) {
             team.members = [];
@@ -633,14 +636,14 @@
             leavePeriod: leaveStr
         };
 
-        for (var i = 0; i < entry.intervals.length; i++) {
-            if (intervalsOverlap(newInterval, entry.intervals[i])) {
-                return {
-                    added: false,
-                    entry: entry,
-                    reason: 'overlap'
-                };
-            }
+        var conflict = findSiblingOverlap(entry, newInterval, null);
+        if (conflict) {
+            return {
+                added: false,
+                entry: entry,
+                reason: 'overlap',
+                conflict: conflict
+            };
         }
 
         entry.intervals.push(newInterval);
@@ -652,11 +655,6 @@
      *
      * `effectiveWeek` is the FIRST week the member is NOT on the
      * team. The interval's leavePeriod becomes effectiveWeek - 1.
-     *
-     * If the member has multiple intervals, the one that contains
-     * `effectiveWeek - 1` (i.e., the last active week) is the one
-     * that gets closed. If no interval is active at that week, the
-     * call is a no-op.
      */
     function syncEndMembershipOnPersistentRoster(team, charId, effectiveWeek) {
         if (!team || !Array.isArray(team.members)) {
@@ -670,7 +668,6 @@
 
         var lastActiveWeek = effectiveWeek - 1;
 
-        // Find the interval whose window contains lastActiveWeek.
         var matched = null;
         for (var i = 0; i < entry.intervals.length; i++) {
             if (intervalActiveInWeek(entry.intervals[i], lastActiveWeek)) {
@@ -683,8 +680,6 @@
             return { ended: false, reason: 'not-active' };
         }
 
-        // If the interval already has a leave that is >= lastActiveWeek,
-        // it's already closed at or after this week.
         if (matched.leavePeriod !== undefined &&
             matched.leavePeriod !== null &&
             matched.leavePeriod !== '') {
@@ -1087,11 +1082,19 @@
     //
     // One function implements what an "interval window change" is:
     // validation, canonicalisation, comparison against the current
-    // interval, and the write. The bulk mutation's validate phase and
-    // mutate phase both call this. Because it is deterministic given
-    // the same team state, the two phases cannot diverge.
+    // interval, sibling-overlap check, and the write. The bulk
+    // mutation's validate phase and mutate phase both call this.
+    // Because it is deterministic given the same team state, the two
+    // phases cannot diverge.
     //
     // joinPeriod is IMMUTABLE. Attempts to change it are rejected.
+    //
+    // SIBLING OVERLAP:
+    //   When the proposed leavePeriod change would cause the interval
+    //   to overlap a different interval of the same member, the
+    //   change is rejected. This is the mutation-layer enforcement of
+    //   the "no two intervals of one member overlap" invariant. The
+    //   UI also pre-checks; both layers enforce.
 
     function applyMemberChange(team, change) {
         if (!change || typeof change !== 'object') {
@@ -1125,10 +1128,6 @@
         }
 
         // memberId-form identifier doesn't carry interval context.
-        // If the caller passed a memberId but no interval selector,
-        // we can only update leavePeriod if the entry has exactly
-        // one interval or if the caller also provided a joinPeriod
-        // selector inside the identifier.
         if (!interval) {
             return {
                 ok: false,
@@ -1145,16 +1144,13 @@
             };
         }
 
-        // Proposed state after applying the change.
-        var proposedLeave = canonicalLeave;
-
-        // Must have at least one bound: if the interval has no join
-        // either, it becomes meaningless.
         var proposedJoin = (interval.joinPeriod === undefined ||
                             interval.joinPeriod === null)
             ? ''
             : String(interval.joinPeriod);
+        var proposedLeave = canonicalLeave;
 
+        // An interval with no bounds at all is meaningless.
         if (proposedJoin === '' && proposedLeave === '') {
             return {
                 ok: false,
@@ -1162,6 +1158,7 @@
             };
         }
 
+        // Join <= leave when both present.
         if (proposedJoin !== '' && proposedLeave !== '') {
             var jn = parseInt(proposedJoin, 10);
             var lv = parseInt(proposedLeave, 10);
@@ -1171,6 +1168,24 @@
                     message: 'Leave week cannot be before join week.'
                 };
             }
+        }
+
+        // ---- SIBLING OVERLAP CHECK ----
+        // Reopening an interval (or extending its leave) must not
+        // collide with another interval of the same member.
+        var proposed = {
+            joinPeriod: proposedJoin,
+            leavePeriod: proposedLeave
+        };
+        var conflict = findSiblingOverlap(entry, proposed, proposedJoin);
+        if (conflict) {
+            return {
+                ok: false,
+                message: 'Leave week ' + (proposedLeave || '(ongoing)') +
+                    ' would overlap another stint of the same member ' +
+                    '(join ' + (conflict.joinPeriod || '\u2014') +
+                    ', leave ' + (conflict.leavePeriod || '\u2014') + ').'
+            };
         }
 
         var changed = false;
@@ -1430,18 +1445,6 @@
     // MUTATIONS - MEMBER
     // ============================================================
 
-    /**
-     * Add a member to a team, starting at `week`.
-     *
-     * Semantics:
-     *   - If the character has no entry: create one with a fresh
-     *     memberId and a single open interval starting at `week`.
-     *   - If the character has an entry: append a new interval
-     *     (after overlap check).
-     *
-     * The old "purge-then-append" behaviour is gone. History
-     * survives.
-     */
     function addMember(classId, teamId, charId, week) {
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
@@ -1532,11 +1535,6 @@
         });
     }
 
-    /**
-     * Add a specific interval to a member's entry on a team.
-     *
-     * Same semantics as addMember, but takes explicit bounds.
-     */
     function addMemberInterval(classId, teamId, charId, joinPeriod, leavePeriod) {
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
@@ -1594,8 +1592,6 @@
 
                 var record = store[targetClass][targetTeam];
                 if (!isPlainObject(record)) {
-                    // If the interval has a join, use it as the
-                    // window start.
                     var initialWeek = joinCanon !== ''
                         ? parseInt(joinCanon, 10)
                         : MIN_WEEK;
@@ -1637,12 +1633,6 @@
         });
     }
 
-    /**
-     * Close a member's currently-active interval.
-     *
-     * `effectiveWeek` is the FIRST week the member is NOT on the
-     * team. The interval's leavePeriod becomes effectiveWeek - 1.
-     */
     function endMembership(classId, teamId, charId, effectiveWeek) {
         if (!isNonEmptyString(classId) ||
             !isNonEmptyString(teamId) ||
@@ -1703,20 +1693,6 @@
         });
     }
 
-    /**
-     * Set the currently-active interval's leavePeriod to `week`
-     * directly. This is the "Leave at display week" primitive:
-     * their last active week is `week`.
-     *
-     * Contrast with endMembership, which uses the "effective week"
-     * convention (leavePeriod = effectiveWeek - 1).
-     *
-     * @param {string} classId
-     * @param {string} teamId
-     * @param {string|object} identifier
-     *   Either a memberId string or { characterId, joinPeriod }.
-     * @param {number|string} week
-     */
     function setLeaveAtWeek(classId, teamId, identifier, week) {
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
@@ -1780,6 +1756,22 @@
                     }
                 }
 
+                // Sibling overlap check.
+                var proposed = {
+                    joinPeriod: interval.joinPeriod || '',
+                    leavePeriod: String(weekNum)
+                };
+                var conflict = findSiblingOverlap(
+                    resolved.entry, proposed, interval.joinPeriod
+                );
+                if (conflict) {
+                    return {
+                        valid: false,
+                        message: 'Leave week ' + weekNum +
+                            ' would overlap another stint of the same member.'
+                    };
+                }
+
                 return { valid: true };
             },
             mutate: function(appData) {
@@ -1815,21 +1807,6 @@
     // BULK MEMBER WINDOW UPDATES
     // ============================================================
 
-    /**
-     * Apply a list of interval-window changes in one transaction.
-     *
-     * All-or-nothing: if any change is rejected, no member is
-     * modified.
-     *
-     * Each change is:
-     *   {
-     *     identifier: string | { characterId, joinPeriod },
-     *     leavePeriod?: undefined | null | '' | number | string
-     *   }
-     *
-     * joinPeriod is IMMUTABLE. Any attempt to pass it in a change
-     * object is rejected. leavePeriod is the only editable field.
-     */
     function updateMemberWindows(classId, teamId, changes) {
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
@@ -1867,7 +1844,6 @@
                     return { valid: false, message: 'Team no longer exists.' };
                 }
 
-                // Dry-run each change against the snapshot team.
                 for (var i = 0; i < changes.length; i++) {
                     var probe = applyMemberChange(team, changes[i]);
                     if (!probe.ok) {
@@ -1922,9 +1898,6 @@
         });
     }
 
-    /**
-     * Single-interval convenience wrapper around the bulk path.
-     */
     function updateMemberWindow(classId, teamId, identifier, updates) {
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
@@ -1947,19 +1920,6 @@
         return updateMemberWindows(classId, teamId, [change]);
     }
 
-    /**
-     * Hard-delete ONE interval from a member's entry.
-     *
-     * If the member is left with zero intervals, the whole entry is
-     * pruned. To remove the whole entry regardless of interval
-     * count, use removeMemberEntry.
-     *
-     * `identifier` is either a memberId string or
-     * { characterId, joinPeriod }.
-     *
-     * A memberId-only identifier on a multi-interval entry is
-     * rejected: the caller must specify which interval.
-     */
     function purgeMemberRecords(classId, teamId, identifier) {
         if (!isNonEmptyString(classId) ||
             !isNonEmptyString(teamId)) {
@@ -1992,8 +1952,6 @@
                     return { valid: false, message: 'Member not found on this team.' };
                 }
                 if (!resolved.interval && typeof identifier === 'string') {
-                    // memberId form, but the entry has more than one
-                    // interval.
                     if (Array.isArray(resolved.entry.intervals) &&
                         resolved.entry.intervals.length > 1) {
                         return {
@@ -2022,8 +1980,6 @@
                 var interval = resolved.interval;
 
                 if (!interval) {
-                    // memberId form, single interval: purge the whole
-                    // entry.
                     if (Array.isArray(entry.intervals) &&
                         entry.intervals.length === 1) {
                         interval = entry.intervals[0];
@@ -2065,12 +2021,6 @@
         });
     }
 
-    /**
-     * Hard-delete the WHOLE member entry (all intervals) for a
-     * character on a team.
-     *
-     * This is the "Remove member" primitive.
-     */
     function removeMemberEntry(classId, teamId, charId) {
         if (!isNonEmptyString(classId) ||
             !isNonEmptyString(teamId) ||
@@ -2321,17 +2271,6 @@
     // CASCADE HELPERS
     // ============================================================
 
-    /**
-     * End every open membership for a character across all teams,
-     * from `effectiveWeek` onward.
-     *
-     * effectiveWeek is the FIRST week the character is NOT active.
-     * Each affected interval's leavePeriod becomes effectiveWeek - 1.
-     *
-     * Iterates the character's entries' intervals. Open intervals
-     * (blank leavePeriod) whose join is before effectiveWeek are
-     * closed.
-     */
     function endCharacterMemberships(appData, charId, effectiveWeek) {
         var result = { membershipsEnded: 0 };
 
