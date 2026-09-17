@@ -6,6 +6,8 @@
  * This module provides:
  *   - Strict validation and parsing of calendar values
  *   - Week, day, hour, duration validation
+ *   - Year validation (unbounded positive integers)
+ *   - Calendar date validation (year + month + day)
  *   - Single source of truth - all modules MUST use this
  *
  * IMPORTANT:
@@ -23,6 +25,21 @@
  *   - Weeks and days remain bounded (they have real semantic
  *     meaning: 52 weeks per year, 7 days per week).
  *
+ * CALENDAR DATE SEMANTICS:
+ *   - isValidCalendarDate(y, m, d) validates a (year, month, day)
+ *     triple against the real Gregorian calendar.
+ *   - Year is unbounded (any integer >= 1).
+ *   - Month is 1-12.
+ *   - Day is 1-31, but the day must fit the month. Feb 30 is
+ *     rejected. Feb 29 is accepted only in leap years.
+ *   - Returns a boolean, not a parsed value. The inputs are used
+ *     as-is; callers that need the parsed integer form should call
+ *     parseYear / a Number() cast themselves.
+ *
+ *   This function exists for the missions domain, which stores
+ *   (year, month, day) as three separate integers and needs to
+ *   reject impossible dates like 2026-02-30 or 2026-13-01.
+ *
  * DEPENDENCIES:
  *   - window.CalendarConstants (for bounds only)
  *
@@ -31,6 +48,8 @@
  *   var week = CV.parseWeek(weekInput);
  *   if (week === null) { /* invalid *\/ }
  *   var isValid = CV.isWeekValid(weekInput);
+ *   var dateOk = CV.isValidCalendarDate(2026, 2, 29);  // false
+ *   var dateOk = CV.isValidCalendarDate(2024, 2, 29);  // true
  */
 
 (function() {
@@ -307,6 +326,45 @@
     }
 
     // ============================================================
+    // CALENDAR DATE VALIDATION
+    // ============================================================
+    //
+    // Validates a (year, month, day) triple against the real
+    // Gregorian calendar.
+    //
+    // CONTRACT:
+    //   - Year: any integer >= 1. Unbounded.
+    //   - Month: integer in [1, 12].
+    //   - Day: integer in [1, 31], AND must fit the month. Feb 30
+    //     is rejected. Feb 29 is accepted only in leap years.
+    //
+    // Returns a boolean. It does NOT return a parsed date or a
+    // structured result. Callers that want the parsed integer form
+    // should call parseYear / Number() themselves.
+    //
+    // IMPLEMENTATION:
+    //   `new Date(y, m, 0)` constructs a date with month m
+    //   (0-indexed in the Date constructor, so m is our 1-indexed
+    //   month here) and day 0. The Date object interprets day 0 as
+    //   the last day of the *previous* month, which is exactly our
+    //   target month. `.getDate()` then returns the number of days
+    //   in that month. This handles leap years correctly for any
+    //   year the JS engine supports.
+
+    function isValidCalendarDate(year, month, day) {
+        var y = Number(year);
+        var m = Number(month);
+        var d = Number(day);
+
+        if (!Number.isInteger(y) || y < 1) { return false; }
+        if (!Number.isInteger(m) || m < 1 || m > 12) { return false; }
+        if (!Number.isInteger(d) || d < 1 || d > 31) { return false; }
+
+        var daysInMonth = new Date(y, m, 0).getDate();
+        return d <= daysInMonth;
+    }
+
+    // ============================================================
     // SLOT VALIDATION
     // ============================================================
 
@@ -454,6 +512,9 @@
         // Year
         parseYear: parseYear,
         isYearValid: isYearValid,
+
+        // Calendar date (year + month + day)
+        isValidCalendarDate: isValidCalendarDate,
 
         // Slot
         parseSlot: parseSlot,
