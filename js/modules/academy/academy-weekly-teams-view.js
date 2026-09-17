@@ -56,12 +56,24 @@
  *   value is genuinely absent. The renderer does not defend against
  *   missing fields.
  *
- * EMPTY TEAMS:
- *   The list-panel "Clear Schedule" button emits
- *   data-action="weekly-teams-clear-windows". AcademyView handles it
- *   by calling AcademyWeeklyTeams.clearClassWindows, which removes
- *   every weekly-team window record for the current class. The
- *   persistent Team entities are NOT deleted.
+ * CLEAR ROSTERS:
+ *   The list-panel "Clear Rosters" button emits
+ *   data-action="weekly-teams-clear-rosters". AcademyView handles it
+ *   by calling AcademyWeeklyTeams.clearAllMembershipsForClass(
+ *   classId, displayWeek), which removes every member whose active
+ *   window covers the display week across every academic team of the
+ *   class.
+ *
+ *   WHAT IT DOES NOT DO:
+ *     - It does not delete teams.
+ *     - It does not touch team startPeriod / endPeriod.
+ *     - It does not touch academy.weeklyTeams windows.
+ *     - It does not touch past stints (leaveWeek < displayWeek).
+ *     - It does not touch future stints (joinWeek > displayWeek).
+ *
+ *   It removes the CURRENT-WEEK membership only. Teams remain
+ *   scheduled and empty. Past history survives. Future joins
+ *   survive.
  *
  * ORPHAN ASSIGNMENT:
  *   Each orphan row emits data-action="weekly-teams-assign-orphan-team"
@@ -77,10 +89,11 @@
  *   - [data-action="weekly-teams-create-team"]      (click)
  *   - [data-action="weekly-teams-edit-team"]        (click)
  *   - [data-action="weekly-teams-auto-distribute"]  (click)
- *   - [data-action="weekly-teams-clear-windows"]    (click)
+ *   - [data-action="weekly-teams-clear-rosters"]    (click)
  *   - [data-action="weekly-teams-delete-team"]      (click)
  *   - [data-action="weekly-teams-manage-members"]   (click)
  *   - [data-action="weekly-teams-assign-orphan-team"] (click)
+ *   - [data-action="weekly-teams-toggle-orphans"]   (click)
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
@@ -337,6 +350,7 @@
     function renderListPanel(vm) {
         var teams = vm.teams;
         var selectedTeamId = vm.selectedTeamId;
+        var week = vm.week;
 
         var html = '';
         html += '<div class="academy-weekly-teams-sidebar">';
@@ -344,6 +358,12 @@
         html += renderOrphanSection(vm);
 
         // ---- Actions ----
+        //
+        // "Clear Rosters" removes active members for the display
+        // week. Teams stay scheduled. Past and future stints
+        // survive. This is distinct from "Clear Schedule" (which
+        // deleted window records) and is the only roster-clearing
+        // action the view exposes.
         html += '<div class="academy-weekly-teams-list-actions">';
         html += '<button type="button" ' +
                     'class="primary small academy-add-team-btn" ' +
@@ -356,11 +376,12 @@
                     'Auto-Distribute' +
                 '</button>';
         html += '<button type="button" ' +
-                    'class="secondary small academy-empty-teams-btn" ' +
-                    'data-action="weekly-teams-clear-windows" ' +
-                    'title="Remove every scheduled team from the weekly ' +
-                        'view for this class. Teams themselves are kept.">' +
-                    'Clear Schedule' +
+                    'class="secondary small academy-clear-rosters-btn" ' +
+                    'data-action="weekly-teams-clear-rosters" ' +
+                    'title="Remove every active team member for week ' +
+                        escapeAttribute(String(isFiniteNumber(week) ? week : '')) +
+                        '. Teams stay scheduled; past and future stints are kept.">' +
+                    'Clear Rosters' +
                 '</button>';
         html += '</div>';
 
