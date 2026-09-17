@@ -6,7 +6,8 @@
  *
  * This module provides:
  *   - Team CRUD (create, update, delete)
- *   - Member mutation (add, remove, update)
+ *   - Member mutations: add interval, end interval, reopen interval,
+ *     purge interval, remove whole member
  *   - Ranking mutation (add, remove)
  *   - Configuration (characterProvider injection)
  *   - Cross-domain cascade helper (stripCharacterRefs)
@@ -46,7 +47,34 @@
  * PERIOD SEMANTICS:
  *   - Periods are positive integers (or integer strings).
  *   - Periods are CANONICALISED on write: "02025" -> "2025".
- *   - Invalid periods are rejected, not coerced.
+ *   - Blank values ('', null, undefined) mean "unbounded on this
+ *     side" and are written as ''. They are distinct from periods.
+ *
+ * MEMBER INTERVALS MODEL:
+ *   Each team member entry is:
+ *
+ *     {
+ *       memberId,        // stable per-entry identifier
+ *       characterId,
+ *       role,
+ *       intervals: [
+ *         { joinPeriod, leavePeriod },
+ *         ...
+ *       ]
+ *     }
+ *
+ *   - `memberId` is generated once, at entry creation. It survives
+ *     interval edits. It is not regenerated unless the entry itself
+ *     is deleted and a new one created.
+ *   - Each interval describes one stint. `joinPeriod` is the first
+ *     period the character was on the team; `leavePeriod` is the
+ *     last. Both are inclusive. Blank means "unbounded."
+ *   - Intervals within one member entry must NOT overlap. This is
+ *     enforced on write. Overlap is a bug in the caller; the
+ *     mutation rejects it rather than silently merging.
+ *   - `joinPeriod` is IMMUTABLE once set. To move a stint's start,
+ *     purge the interval and add a new one. This keeps the
+ *     identifier stable across edits.
  *
  * MEMBER EXISTENCE:
  *   - The characterProvider.exists(appData, characterId) is
@@ -211,6 +239,11 @@
         return IdUtils.generateId('team');
     }
 
+    function generateMemberId() {
+        return 'mem_' + Date.now() + '_' +
+            Math.random().toString(36).slice(2, 8);
+    }
+
     function failure(message) {
         return { success: false, message: message };
     }
@@ -223,7 +256,7 @@
     // PERIOD CANONICALISATION
     // ============================================================
     //
-    // Public: canonicalisePeriod(value) -> string
+    // canonicalisePeriod(value) -> string
     //   "" if value is undefined/null/empty-string
     //   String(parsePeriod(value)) if valid
     //   null if invalid
@@ -306,8 +339,6 @@
 
     /**
      * Assume validated input. Produces the canonical shape.
-     * Callers that might receive malformed input must run
-     * validateNameHistory first.
      */
     function normaliseNameHistory(history) {
         if (!Array.isArray(history)) {
@@ -326,103 +357,269 @@
     }
 
     // ============================================================
-    // MEMBER HELPERS
+    // INTERVAL HELPERS
     // ============================================================
 
     /**
-     * Build a canonical member record from raw input.
+     * Does the interval have any bounds at all?
+     * An interval with both bounds blank describes "always on the
+     * team from the beginning of time to forever" — which is
+     * meaningless as a stint. Reject it.
      *
-     * Returns null on invalid input. A "malformed role" (present but
-     * not a string) is invalid; omission is fine.
+     * Note: a brand-new member entry with exactly one interval and
+     * both bounds blank is technically "always active." We allow
+     * that for the initial creation path but reject it for subsequent
+     * appends. The `isInitial` flag captures the difference.
      */
-    function buildValidatedMember(memberData) {
-        if (!isObject(memberData)) {
-            return null;
+    function intervalHasAnyBound(interval) {
+        var hasJoin = interval.joinPeriod !== undefined &&
+                      interval.joinPeriod !== null &&
+                      interval.joinPeriod !== '';
+        var hasLeave = interval.leavePeriod !== undefined &&
+                       interval.leavePeriod !== null &&
+                       interval.leavePeriod !== '';
+        return hasJoin || hasLeave;
+    }
+
+    /**
+     * Effective end of an interval for overlap comparison.
+     * Blank leavePeriod is treated as +Infinity.
+     */
+    function effectiveIntervalEnd(interval) {
+        var leave = canonicalisePeriod(interval.leavePeriod);
+        if (leave === '' || leave === null) {
+            return Infinity;
         }
-        if (!isNonEmptyString(memberData.characterId)) {
-            return null;
+        return parseInt(leave, 10);
+    }
+
+    /**
+     * Effective start of an interval for overlap comparison.
+     * Blank joinPeriod is treated as 0 (i.e., always been on team).
+     */
+    function effectiveIntervalStart(interval) {
+        var join = canonicalisePeriod(interval.joinPeriod);
+        if (join === '' || join === null) {
+            return 0;
+        }
+        return parseInt(join, 10);
+    }
+
+    /**
+     * Do two intervals overlap?
+     * Inclusive on both ends.
+     */
+    function intervalsOverlap(a, b) {
+        var aStart = effectiveIntervalStart(a);
+        var aEnd = effectiveIntervalEnd(a);
+        var bStart = effectiveIntervalStart(b);
+        var bEnd = effectiveIntervalEnd(b);
+        return aStart <= bEnd && bStart <= aEnd;
+    }
+
+    /**
+     * Validate one interval's shape. Does NOT check overlap against
+     * siblings; that is done separately.
+     *
+     * Returns { valid: true, interval: { joinPeriod, leavePeriod } }
+     * or { valid: false, message }.
+     */
+    function validateIntervalShape(raw) {
+        if (!isObject(raw)) {
+            return { valid: false, message: 'Interval must be an object.' };
         }
 
-        var role;
-        if (memberData.role === undefined || memberData.role === null) {
-            role = TeamConstants.DEFAULT_ROLE;
-        } else if (typeof memberData.role === 'string') {
-            role = memberData.role.trim() === ''
-                ? TeamConstants.DEFAULT_ROLE
-                : memberData.role.trim();
-        } else {
-            // Malformed role value. Reject.
-            return null;
+        var joinCanon = canonicalisePeriod(raw.joinPeriod);
+        if (joinCanon === null) {
+            return { valid: false, message: 'Invalid join period format.' };
         }
 
-        var joinPeriod = canonicalisePeriod(memberData.joinPeriod);
-        if (joinPeriod === null) {
-            return null;
+        var leaveCanon = canonicalisePeriod(raw.leavePeriod);
+        if (leaveCanon === null) {
+            return { valid: false, message: 'Invalid leave period format.' };
         }
 
-        var leavePeriod = canonicalisePeriod(memberData.leavePeriod);
-        if (leavePeriod === null) {
-            return null;
+        if (joinCanon !== '' && leaveCanon !== '') {
+            var j = parseInt(joinCanon, 10);
+            var l = parseInt(leaveCanon, 10);
+            if (l < j) {
+                return {
+                    valid: false,
+                    message: 'Leave period cannot be before join period.'
+                };
+            }
         }
 
         return {
-            characterId: String(memberData.characterId).trim(),
-            role: role,
-            joinPeriod: joinPeriod,
-            leavePeriod: leavePeriod
+            valid: true,
+            interval: { joinPeriod: joinCanon, leavePeriod: leaveCanon }
         };
     }
 
-    function validateMemberPeriods(member, teamType) {
-        var hasJoin = member.joinPeriod !== undefined &&
-                      member.joinPeriod !== null &&
-                      member.joinPeriod !== '';
-        var hasLeave = member.leavePeriod !== undefined &&
-                       member.leavePeriod !== null &&
-                       member.leavePeriod !== '';
+    /**
+     * Validate a whole intervals array for a member entry. Checks
+     * each interval's shape, then checks pairwise non-overlap.
+     *
+     * Returns { valid: true, intervals: [...] } or
+     * { valid: false, message }.
+     */
+    function validateMemberIntervals(rawIntervals, teamType, allowEmpty) {
+        if (!Array.isArray(rawIntervals)) {
+            return { valid: false, message: 'Intervals must be an array.' };
+        }
 
-        var join = null;
-        var leave = null;
-
-        if (hasJoin) {
-            join = parsePeriod(member.joinPeriod);
-            if (join === null) {
-                return { valid: false, message: 'Invalid join period format.' };
+        if (rawIntervals.length === 0) {
+            if (allowEmpty) {
+                return { valid: true, intervals: [] };
             }
-            if (!TeamConstants.isValidPeriod(join, teamType)) {
-                return { valid: false, message: 'Join period is out of bounds for team type.' };
+            return {
+                valid: false,
+                message: 'A member entry must contain at least one interval.'
+            };
+        }
+
+        var cleaned = [];
+        for (var i = 0; i < rawIntervals.length; i++) {
+            var check = validateIntervalShape(rawIntervals[i]);
+            if (!check.valid) {
+                return {
+                    valid: false,
+                    message: 'Interval ' + (i + 1) + ': ' + check.message
+                };
+            }
+
+            // Team-type bounds check. Blank is valid ("unbounded").
+            if (check.interval.joinPeriod !== '' &&
+                !TeamConstants.isValidPeriod(check.interval.joinPeriod, teamType)) {
+                return {
+                    valid: false,
+                    message: 'Interval ' + (i + 1) +
+                             ': join period is out of bounds for team type.'
+                };
+            }
+            if (check.interval.leavePeriod !== '' &&
+                !TeamConstants.isValidPeriod(check.interval.leavePeriod, teamType)) {
+                return {
+                    valid: false,
+                    message: 'Interval ' + (i + 1) +
+                             ': leave period is out of bounds for team type.'
+                };
+            }
+
+            cleaned.push(check.interval);
+        }
+
+        // Pairwise non-overlap check.
+        for (var a = 0; a < cleaned.length; a++) {
+            for (var b = a + 1; b < cleaned.length; b++) {
+                if (intervalsOverlap(cleaned[a], cleaned[b])) {
+                    return {
+                        valid: false,
+                        message: 'Intervals ' + (a + 1) + ' and ' + (b + 1) +
+                                 ' overlap.'
+                    };
+                }
             }
         }
 
-        if (hasLeave) {
-            leave = parsePeriod(member.leavePeriod);
-            if (leave === null) {
-                return { valid: false, message: 'Invalid leave period format.' };
-            }
-            if (!TeamConstants.isValidPeriod(leave, teamType)) {
-                return { valid: false, message: 'Leave period is out of bounds for team type.' };
-            }
-        }
-
-        if (join !== null && leave !== null && join > leave) {
-            return { valid: false, message: 'Join period cannot be after leave period.' };
-        }
-
-        return { valid: true };
+        return { valid: true, intervals: cleaned };
     }
 
-    function validateMemberRole(member) {
-        if (!member || member.role === undefined) {
-            return { valid: true };
-        }
-        if (typeof member.role !== 'string') {
-            return { valid: false, message: 'Member role must be a string.' };
-        }
-        return { valid: true };
+    /**
+     * Build a canonical interval from raw input. Assumes the input
+     * has already been validated (shape + type bounds). Does NOT
+     * check overlap.
+     */
+    function buildCanonicalInterval(raw) {
+        return {
+            joinPeriod: canonicalisePeriod(raw.joinPeriod),
+            leavePeriod: canonicalisePeriod(raw.leavePeriod)
+        };
+    }
+
+    /**
+     * Build a canonical member entry from validated input.
+     */
+    function buildCanonicalMember(characterId, role, intervals) {
+        return {
+            memberId: generateMemberId(),
+            characterId: String(characterId).trim(),
+            role: role,
+            intervals: intervals
+        };
     }
 
     // ============================================================
-    // RANKING HELPERS
+    // MEMBER HELPERS - INPUT SHAPE
+    // ============================================================
+
+    /**
+     * Extract intervals from member input. Accepts either:
+     *   - { intervals: [...] }               (canonical form)
+     *   - { joinPeriod, leavePeriod }        (legacy flat form)
+     *
+     * Returns { intervals: [...] } or null on malformed input.
+     */
+    function extractIntervalsFromMemberInput(memberData) {
+        if (!isObject(memberData)) {
+            return null;
+        }
+
+        if (Array.isArray(memberData.intervals)) {
+            return memberData.intervals;
+        }
+
+        // Legacy flat form.
+        var hasJoin = memberData.joinPeriod !== undefined &&
+                      memberData.joinPeriod !== null;
+        var hasLeave = memberData.leavePeriod !== undefined &&
+                       memberData.leavePeriod !== null;
+
+        if (hasJoin || hasLeave) {
+            return [{
+                joinPeriod: memberData.joinPeriod,
+                leavePeriod: memberData.leavePeriod
+            }];
+        }
+
+        // No intervals, no flat fields. Treat as a single empty
+        // interval, which is valid for initial creation.
+        return [{
+            joinPeriod: '',
+            leavePeriod: ''
+        }];
+    }
+
+    /**
+     * Resolve the role from member input.
+     * Returns { valid: true, role } or { valid: false, message }.
+     */
+    function resolveRole(memberData) {
+        if (!isObject(memberData)) {
+            return { valid: false, message: 'Member data must be an object.' };
+        }
+
+        if (memberData.role === undefined || memberData.role === null) {
+            return { valid: true, role: TeamConstants.DEFAULT_ROLE };
+        }
+
+        if (typeof memberData.role !== 'string') {
+            return {
+                valid: false,
+                message: 'Member role must be a string.'
+            };
+        }
+
+        var trimmed = memberData.role.trim();
+        if (trimmed === '') {
+            return { valid: true, role: TeamConstants.DEFAULT_ROLE };
+        }
+
+        return { valid: true, role: trimmed };
+    }
+
+    // ============================================================
+    // TEAM VALIDATION
     // ============================================================
 
     function validateRankingEntry(entry, teamType) {
@@ -447,14 +644,11 @@
         return { valid: true, period: period, rank: rank };
     }
 
-    // ============================================================
-    // COMPLETE TEAM VALIDATION
-    // ============================================================
-    //
-    // Structural invariants enforced here. Behavioural rules (like
-    // "one academic team per class per week") live in TeamRules, not
-    // here.
-
+    /**
+     * Structural invariants for a whole team. Behavioural rules
+     * (like "one academic team per class per week") live in
+     * TeamRules, not here.
+     */
     function validateCompleteTeam(team) {
         if (!isObject(team)) {
             return { valid: false, message: 'Team must be an object.' };
@@ -504,7 +698,11 @@
         }
 
         // ---- Members ----
-        var seenChars = Object.create(null);
+        // Note: NO duplicate-characterId check. A character may have
+        // multiple stints on the same team via one member entry with
+        // multiple intervals. The interval-level non-overlap check
+        // is the correct invariant now.
+        var seenMemberIds = Object.create(null);
         for (var i = 0; i < team.members.length; i++) {
             var member = team.members[i];
             if (!isObject(member)) {
@@ -513,20 +711,30 @@
             if (!isNonEmptyString(member.characterId)) {
                 return { valid: false, message: 'Member at index ' + i + ' missing characterId.' };
             }
-            var charKey = String(member.characterId);
-            if (seenChars[charKey]) {
-                return { valid: false, message: 'Duplicate member: ' + charKey };
-            }
-            seenChars[charKey] = true;
 
-            var periodCheck = validateMemberPeriods(member, team.type);
-            if (!periodCheck.valid) {
-                return periodCheck;
+            // memberId must be present and unique within the team.
+            if (!isNonEmptyString(member.memberId)) {
+                return { valid: false, message: 'Member at index ' + i + ' missing memberId.' };
             }
+            var memberIdKey = String(member.memberId);
+            if (seenMemberIds[memberIdKey]) {
+                return { valid: false, message: 'Duplicate memberId: ' + memberIdKey };
+            }
+            seenMemberIds[memberIdKey] = true;
 
             var roleCheck = validateMemberRole(member);
             if (!roleCheck.valid) {
                 return roleCheck;
+            }
+
+            // Intervals. Empty arrays are permitted at rest (a
+            // member entry with no intervals represents a
+            // placeholder; the UI surfaces it).
+            var intervalCheck = validateMemberIntervals(
+                member.intervals, team.type, /* allowEmpty */ true
+            );
+            if (!intervalCheck.valid) {
+                return intervalCheck;
             }
         }
 
@@ -545,6 +753,16 @@
             seenPeriods[periodKey] = true;
         }
 
+        return { valid: true };
+    }
+
+    function validateMemberRole(member) {
+        if (!member || member.role === undefined) {
+            return { valid: true };
+        }
+        if (typeof member.role !== 'string') {
+            return { valid: false, message: 'Member role must be a string.' };
+        }
         return { valid: true };
     }
 
@@ -589,7 +807,8 @@
      * Build the candidate team that results from applying `updates`
      * to `existing`. Pure. Does not touch window.data.
      *
-     * Returns { valid: true, candidate } or { valid: false, message }.
+     * Note: this function does NOT touch members. Member mutations
+     * have their own paths.
      */
     function buildUpdatedTeam(existing, updates) {
         var candidate = deepClone(existing);
@@ -671,15 +890,19 @@
             candidate.teamNumber = numStr;
         }
 
-        // ---- Revalidate members/rankings against the CANDIDATE type ----
+        // ---- Revalidate intervals/rankings against the CANDIDATE type ----
         if (Array.isArray(candidate.members)) {
             for (var m = 0; m < candidate.members.length; m++) {
-                var periodCheck = validateMemberPeriods(candidate.members[m], candidate.type);
-                if (!periodCheck.valid) {
+                var member = candidate.members[m];
+                if (!member || !Array.isArray(member.intervals)) continue;
+                var intervalCheck = validateMemberIntervals(
+                    member.intervals, candidate.type, /* allowEmpty */ true
+                );
+                if (!intervalCheck.valid) {
                     return {
                         valid: false,
-                        message: 'Type change would invalidate existing member periods: ' +
-                                 periodCheck.message
+                        message: 'Type change would invalidate existing member intervals: ' +
+                                 intervalCheck.message
                     };
                 }
             }
@@ -845,7 +1068,6 @@
                     return { valid: false, message: 'Team no longer exists.' };
                 }
 
-                // Authoritative rebuild against the snapshot.
                 var snapshotBuild = buildUpdatedTeam(currentInSnapshot, updatesCopy);
                 if (!snapshotBuild.valid) {
                     return { valid: false, message: snapshotBuild.message };
@@ -863,9 +1085,6 @@
                     throw new Error('Team not found in data store.');
                 }
 
-                // Re-derive from the snapshot. This is what actually
-                // gets applied, so validate() and mutate() cannot
-                // diverge.
                 var snapshotBuild = buildUpdatedTeam(target, updatesCopy);
                 if (!snapshotBuild.valid) {
                     throw new Error(snapshotBuild.message);
@@ -949,6 +1168,27 @@
     // MEMBER MUTATIONS
     // ============================================================
 
+    /**
+     * Add a member to a team.
+     *
+     * SEMANTICS:
+     *   - When the character has NO existing entry on the team:
+     *     create a new entry with a fresh memberId and the provided
+     *     interval(s).
+     *   - When the character ALREADY has an entry on the team:
+     *     append the provided interval(s) to the existing entry.
+     *     Reject if any provided interval overlaps an existing one.
+     *
+     * Accepts either the canonical `{ intervals: [...] }` shape or
+     * the legacy flat `{ joinPeriod, leavePeriod }` shape. Both are
+     * normalised to intervals.
+     *
+     * @param {string} teamId
+     * @param {object} memberData
+     *   { characterId, role?, intervals? } or
+     *   { characterId, role?, joinPeriod?, leavePeriod? }
+     * @returns {Promise<{ success, data?, message? }>}
+     */
     function addMember(teamId, memberData) {
         if (failIfMissing(checkMemberDependencies(), 'addMember')) {
             return Promise.resolve(failure('Dependencies not loaded. Please refresh the page.'));
@@ -958,32 +1198,73 @@
             return Promise.resolve(failure('Team ID is required.'));
         }
 
-        var member = buildValidatedMember(memberData);
-        if (!member) {
-            return Promise.resolve(failure('Invalid member data.'));
+        if (!isObject(memberData)) {
+            return Promise.resolve(failure('Member data must be an object.'));
+        }
+
+        if (!isNonEmptyString(memberData.characterId)) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
+
+        var roleRes = resolveRole(memberData);
+        if (!roleRes.valid) {
+            return Promise.resolve(failure(roleRes.message));
+        }
+
+        var rawIntervals = extractIntervalsFromMemberInput(memberData);
+        if (rawIntervals === null) {
+            return Promise.resolve(failure('Could not read intervals from member data.'));
         }
 
         var targetId = String(teamId).trim();
+        var targetChar = String(memberData.characterId).trim();
 
         var current = findTeamInData(getDataStore(), targetId);
         if (!current) {
             return Promise.resolve(failure('Team not found.'));
         }
 
+        // Validate the proposed intervals against the team's type.
+        var incomingCheck = validateMemberIntervals(
+            rawIntervals, current.type, /* allowEmpty */ false
+        );
+        if (!incomingCheck.valid) {
+            return Promise.resolve(failure(incomingCheck.message));
+        }
+
+        // Pre-flight: are the incoming intervals compatible with any
+        // existing intervals for this character?
+        var existingEntry = null;
         if (Array.isArray(current.members)) {
             for (var i = 0; i < current.members.length; i++) {
-                if (String(current.members[i].characterId) === String(member.characterId)) {
-                    return Promise.resolve(failure('Character is already a member of this team.'));
+                var m = current.members[i];
+                if (m && String(m.characterId) === targetChar) {
+                    existingEntry = m;
+                    break;
                 }
             }
         }
 
-        var periodCheck = validateMemberPeriods(member, current.type);
-        if (!periodCheck.valid) {
-            return Promise.resolve(failure(periodCheck.message));
+        if (existingEntry && Array.isArray(existingEntry.intervals)) {
+            for (var a = 0; a < incomingCheck.intervals.length; a++) {
+                for (var b = 0; b < existingEntry.intervals.length; b++) {
+                    if (intervalsOverlap(
+                        incomingCheck.intervals[a],
+                        existingEntry.intervals[b]
+                    )) {
+                        return Promise.resolve(failure(
+                            'The new interval overlaps an existing one ' +
+                            'for this character on this team.'
+                        ));
+                    }
+                }
+            }
         }
 
-        var memberCopy = deepClone(member);
+        var roleCopy = roleRes.role;
+        var intervalsCopy = incomingCheck.intervals.map(function(iv) {
+            return { joinPeriod: iv.joinPeriod, leavePeriod: iv.leavePeriod };
+        });
 
         return runMutation({
             validate: function(snapshot) {
@@ -996,19 +1277,28 @@
                 }
 
                 // Snapshot-aware character existence.
-                if (!_characterProvider.exists(snapshot, memberCopy.characterId)) {
+                if (!_characterProvider.exists(snapshot, targetChar)) {
                     return { valid: false, message: 'Character not found.' };
                 }
 
+                // Re-check overlap against the snapshot's state.
                 for (var i = 0; i < target.members.length; i++) {
-                    if (String(target.members[i].characterId) === String(memberCopy.characterId)) {
-                        return { valid: false, message: 'Character is already a member of this team.' };
-                    }
-                }
+                    var m = target.members[i];
+                    if (!m || String(m.characterId) !== targetChar) continue;
+                    if (!Array.isArray(m.intervals)) continue;
 
-                var periodCheck = validateMemberPeriods(memberCopy, target.type);
-                if (!periodCheck.valid) {
-                    return { valid: false, message: periodCheck.message };
+                    for (var a = 0; a < intervalsCopy.length; a++) {
+                        for (var b = 0; b < m.intervals.length; b++) {
+                            if (intervalsOverlap(intervalsCopy[a], m.intervals[b])) {
+                                return {
+                                    valid: false,
+                                    message: 'The new interval overlaps an ' +
+                                             'existing one for this character ' +
+                                             'on this team.'
+                                };
+                            }
+                        }
+                    }
                 }
 
                 return { valid: true };
@@ -1021,16 +1311,195 @@
                 if (!Array.isArray(target.members)) {
                     target.members = [];
                 }
-                target.members.push(deepClone(memberCopy));
+
+                // Find existing entry for this character.
+                var entry = null;
+                for (var i = 0; i < target.members.length; i++) {
+                    var m = target.members[i];
+                    if (m && String(m.characterId) === targetChar) {
+                        entry = m;
+                        break;
+                    }
+                }
+
+                if (entry) {
+                    // Append intervals to existing entry. Role is
+                    // preserved on the existing entry; a new role on
+                    // the incoming call is ignored. Role is updated
+                    // through updateMember, not addMember.
+                    if (!Array.isArray(entry.intervals)) {
+                        entry.intervals = [];
+                    }
+                    for (var a = 0; a < intervalsCopy.length; a++) {
+                        entry.intervals.push({
+                            joinPeriod: intervalsCopy[a].joinPeriod,
+                            leavePeriod: intervalsCopy[a].leavePeriod
+                        });
+                    }
+                } else {
+                    // Create a new entry.
+                    var newEntry = buildCanonicalMember(
+                        targetChar, roleCopy, intervalsCopy
+                    );
+                    target.members.push(newEntry);
+                    entry = newEntry;
+                }
+
                 target.updatedAt = new Date().toISOString();
-                return { member: memberCopy, teamId: targetId };
+                return { memberId: entry.memberId, characterId: targetChar, teamId: targetId };
             },
-            logMessage: 'Added member to team: ' + (current.name || targetId),
+            logMessage: 'Added member interval to team: ' + (current.name || targetId),
             successMessage: 'Member added successfully!',
             failureMessage: 'Failed to add member.'
         });
     }
 
+    /**
+     * Append a single interval to a character's entry on a team.
+     *
+     * Convenience wrapper around addMember that takes flat bounds.
+     * If the character has no entry, creates one. If the entry
+     * exists, appends the interval (rejecting on overlap).
+     *
+     * @param {string} teamId
+     * @param {string} characterId
+     * @param {number|string} joinPeriod
+     * @param {number|string} leavePeriod
+     * @returns {Promise<{ success, data?, message? }>}
+     */
+    function addMemberInterval(teamId, characterId, joinPeriod, leavePeriod) {
+        return addMember(teamId, {
+            characterId: characterId,
+            intervals: [{
+                joinPeriod: joinPeriod,
+                leavePeriod: leavePeriod
+            }]
+        });
+    }
+
+    /**
+     * Update a member's ROLE only.
+     *
+     * Interval edits are separate concerns. To change when a stint
+     * starts, purge the interval and add a new one. To close a
+     * stint, use endMemberInterval. To reopen a stint, use
+     * reopenMemberInterval.
+     *
+     * @param {string} teamId
+     * @param {string} charId
+     * @param {object} updates - { role?: string }
+     * @returns {Promise<{ success, data?, message? }>}
+     */
+    function updateMember(teamId, charId, updates) {
+        if (failIfMissing(checkBaseDependencies(), 'updateMember')) {
+            return Promise.resolve(failure('Dependencies not loaded. Please refresh the page.'));
+        }
+
+        if (!isNonEmptyString(teamId)) {
+            return Promise.resolve(failure('Team ID is required.'));
+        }
+        if (!isNonEmptyString(charId)) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
+        if (!isObject(updates)) {
+            return Promise.resolve(failure('Updates must be an object.'));
+        }
+
+        // Reject interval edits on this path. They have their own
+        // functions.
+        if (updates.joinPeriod !== undefined ||
+            updates.leavePeriod !== undefined ||
+            updates.intervals !== undefined) {
+            return Promise.resolve(failure(
+                'updateMember does not accept interval edits. Use ' +
+                'endMemberInterval, reopenMemberInterval, or ' +
+                'addMemberInterval instead.'
+            ));
+        }
+
+        var targetId = String(teamId).trim();
+        var targetChar = String(charId).trim();
+
+        var current = findTeamInData(getDataStore(), targetId);
+        if (!current || !Array.isArray(current.members)) {
+            return Promise.resolve(failure('Team not found.'));
+        }
+
+        // Build proposed role.
+        var proposedRole;
+        if (updates.role !== undefined) {
+            if (updates.role !== null && typeof updates.role !== 'string') {
+                return Promise.resolve(failure('Member role must be a string.'));
+            }
+            if (updates.role === null || updates.role.trim() === '') {
+                proposedRole = TeamConstants.DEFAULT_ROLE;
+            } else {
+                proposedRole = updates.role.trim();
+            }
+        } else {
+            // Nothing to change.
+            return Promise.resolve(failure('No fields to update.'));
+        }
+
+        return runMutation({
+            validate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target || !Array.isArray(target.members)) {
+                    return { valid: false, message: 'Team no longer exists.' };
+                }
+                var liveMember = null;
+                for (var i = 0; i < target.members.length; i++) {
+                    if (String(target.members[i].characterId) === targetChar) {
+                        liveMember = target.members[i];
+                        break;
+                    }
+                }
+                if (!liveMember) {
+                    return {
+                        valid: false,
+                        message: 'Character is not a member of this team.'
+                    };
+                }
+                return { valid: true };
+            },
+            mutate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target || !Array.isArray(target.members)) {
+                    throw new Error('Team not found in data store.');
+                }
+
+                var liveMember = null;
+                for (var i = 0; i < target.members.length; i++) {
+                    if (String(target.members[i].characterId) === targetChar) {
+                        liveMember = target.members[i];
+                        break;
+                    }
+                }
+                if (!liveMember) {
+                    throw new Error('Member not found in data store.');
+                }
+
+                liveMember.role = proposedRole;
+                target.updatedAt = new Date().toISOString();
+
+                return { member: liveMember, teamId: targetId };
+            },
+            logMessage: 'Updated member role on team: ' + (current.name || targetId),
+            successMessage: 'Member updated successfully!',
+            failureMessage: 'Failed to update member.'
+        });
+    }
+
+    /**
+     * Hard-delete a whole member entry (all intervals).
+     *
+     * This is the "Remove" action. To close one stint but keep the
+     * entry, use endMemberInterval.
+     *
+     * @param {string} teamId
+     * @param {string} charId
+     * @returns {Promise<{ success, data?, message? }>}
+     */
     function removeMember(teamId, charId) {
         if (failIfMissing(checkBaseDependencies(), 'removeMember')) {
             return Promise.resolve(failure('Dependencies not loaded. Please refresh the page.'));
@@ -1093,89 +1562,223 @@
         });
     }
 
-    function updateMember(teamId, charId, updates) {
-        if (failIfMissing(checkBaseDependencies(), 'updateMember')) {
+    /**
+     * Close one interval by setting its leavePeriod to `leaveWeek`.
+     *
+     * The "Leave" primitive. When the user clicks "Leave" while
+     * viewing week N, the caller passes leaveWeek = N. The member
+     * was active through week N and is inactive from week N+1.
+     *
+     * Rejects if:
+     *   - The interval doesn't exist.
+     *   - leaveWeek is before the interval's join.
+     *   - The interval's existing leave is already at or before
+     *     leaveWeek (nothing to do).
+     *
+     * @param {string} teamId
+     * @param {string} characterId
+     * @param {number|string} joinPeriod - identifies the interval
+     * @param {number|string} leaveWeek
+     * @returns {Promise<{ success, data?, message? }>}
+     */
+    function endMemberInterval(teamId, characterId, joinPeriod, leaveWeek) {
+        if (failIfMissing(checkBaseDependencies(), 'endMemberInterval')) {
             return Promise.resolve(failure('Dependencies not loaded. Please refresh the page.'));
         }
 
         if (!isNonEmptyString(teamId)) {
             return Promise.resolve(failure('Team ID is required.'));
         }
-        if (!isNonEmptyString(charId)) {
+        if (!isNonEmptyString(characterId)) {
             return Promise.resolve(failure('Character ID is required.'));
         }
-        if (!isObject(updates)) {
-            return Promise.resolve(failure('Updates must be an object.'));
+
+        var targetJoin = (joinPeriod === undefined || joinPeriod === null)
+            ? ''
+            : String(joinPeriod);
+
+        var leaveCanon = canonicalisePeriod(leaveWeek);
+        if (leaveCanon === null || leaveCanon === '') {
+            return Promise.resolve(failure('Valid leave week is required.'));
         }
 
         var targetId = String(teamId).trim();
-        var targetChar = String(charId).trim();
+        var targetChar = String(characterId).trim();
 
         var current = findTeamInData(getDataStore(), targetId);
         if (!current || !Array.isArray(current.members)) {
             return Promise.resolve(failure('Team not found.'));
         }
 
-        var member = null;
+        // Pre-flight: interval exists, is open, and leave is after
+        // join.
+        var entry = null;
         for (var i = 0; i < current.members.length; i++) {
             if (String(current.members[i].characterId) === targetChar) {
-                member = current.members[i];
+                entry = current.members[i];
                 break;
             }
         }
-        if (!member) {
+        if (!entry || !Array.isArray(entry.intervals)) {
             return Promise.resolve(failure('Character is not a member of this team.'));
         }
 
-        // Build proposed member (characterId immutable).
-        var proposedRole;
-        if (updates.role !== undefined) {
-            if (updates.role !== null && typeof updates.role !== 'string') {
-                return Promise.resolve(failure('Member role must be a string.'));
+        var targetInterval = null;
+        for (var j = 0; j < entry.intervals.length; j++) {
+            var iv = entry.intervals[j];
+            if (!iv) continue;
+            var ivJoin = (iv.joinPeriod === undefined || iv.joinPeriod === null)
+                ? ''
+                : String(iv.joinPeriod);
+            if (ivJoin === targetJoin) {
+                targetInterval = iv;
+                break;
             }
-            if (updates.role === null || updates.role.trim() === '') {
-                proposedRole = TeamConstants.DEFAULT_ROLE;
-            } else {
-                proposedRole = updates.role.trim();
-            }
-        } else if (typeof member.role === 'string') {
-            proposedRole = member.role;
-        } else {
-            proposedRole = TeamConstants.DEFAULT_ROLE;
+        }
+        if (!targetInterval) {
+            return Promise.resolve(failure('Interval not found.'));
         }
 
-        var proposedJoin;
-        if (updates.joinPeriod !== undefined) {
-            var jc = canonicalisePeriod(updates.joinPeriod);
-            if (jc === null) {
-                return Promise.resolve(failure('Invalid join period.'));
+        var currentLeaveCanon = canonicalisePeriod(targetInterval.leavePeriod);
+        if (currentLeaveCanon !== '' && currentLeaveCanon !== null) {
+            var currentLeaveNum = parseInt(currentLeaveCanon, 10);
+            var newLeaveNum = parseInt(leaveCanon, 10);
+            if (currentLeaveNum <= newLeaveNum) {
+                return Promise.resolve(failure(
+                    'Interval is already closed at or before week ' + leaveCanon + '.'
+                ));
             }
-            proposedJoin = jc;
-        } else {
-            proposedJoin = typeof member.joinPeriod === 'string' ? member.joinPeriod : '';
         }
 
-        var proposedLeave;
-        if (updates.leavePeriod !== undefined) {
-            var lc = canonicalisePeriod(updates.leavePeriod);
-            if (lc === null) {
-                return Promise.resolve(failure('Invalid leave period.'));
+        // If the interval has a join, leave must be >= join.
+        var joinCanon = canonicalisePeriod(targetInterval.joinPeriod);
+        if (joinCanon !== '' && joinCanon !== null) {
+            var joinNum = parseInt(joinCanon, 10);
+            var leaveNumCheck = parseInt(leaveCanon, 10);
+            if (leaveNumCheck < joinNum) {
+                return Promise.resolve(failure(
+                    'Leave week cannot be before the interval\'s join week.'
+                ));
             }
-            proposedLeave = lc;
-        } else {
-            proposedLeave = typeof member.leavePeriod === 'string' ? member.leavePeriod : '';
         }
 
-        var proposed = {
-            characterId: member.characterId,
-            role: proposedRole,
-            joinPeriod: proposedJoin,
-            leavePeriod: proposedLeave
-        };
+        var leaveCanonCopy = leaveCanon;
 
-        var periodCheck = validateMemberPeriods(proposed, current.type);
-        if (!periodCheck.valid) {
-            return Promise.resolve(failure(periodCheck.message));
+        return runMutation({
+            validate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target || !Array.isArray(target.members)) {
+                    return { valid: false, message: 'Team no longer exists.' };
+                }
+                var liveEntry = null;
+                for (var i = 0; i < target.members.length; i++) {
+                    if (String(target.members[i].characterId) === targetChar) {
+                        liveEntry = target.members[i];
+                        break;
+                    }
+                }
+                if (!liveEntry || !Array.isArray(liveEntry.intervals)) {
+                    return { valid: false, message: 'Character is no longer a member of this team.' };
+                }
+                var liveIv = null;
+                for (var j = 0; j < liveEntry.intervals.length; j++) {
+                    var iv = liveEntry.intervals[j];
+                    if (!iv) continue;
+                    var ivJoin = (iv.joinPeriod === undefined || iv.joinPeriod === null)
+                        ? ''
+                        : String(iv.joinPeriod);
+                    if (ivJoin === targetJoin) {
+                        liveIv = iv;
+                        break;
+                    }
+                }
+                if (!liveIv) {
+                    return { valid: false, message: 'Interval no longer exists.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target || !Array.isArray(target.members)) {
+                    throw new Error('Team not found in data store.');
+                }
+
+                var liveEntry = null;
+                for (var i = 0; i < target.members.length; i++) {
+                    if (String(target.members[i].characterId) === targetChar) {
+                        liveEntry = target.members[i];
+                        break;
+                    }
+                }
+                if (!liveEntry || !Array.isArray(liveEntry.intervals)) {
+                    throw new Error('Member not found.');
+                }
+
+                var liveIv = null;
+                for (var j = 0; j < liveEntry.intervals.length; j++) {
+                    var iv = liveEntry.intervals[j];
+                    if (!iv) continue;
+                    var ivJoin = (iv.joinPeriod === undefined || iv.joinPeriod === null)
+                        ? ''
+                        : String(iv.joinPeriod);
+                    if (ivJoin === targetJoin) {
+                        liveIv = iv;
+                        break;
+                    }
+                }
+                if (!liveIv) {
+                    throw new Error('Interval not found.');
+                }
+
+                liveIv.leavePeriod = leaveCanonCopy;
+                target.updatedAt = new Date().toISOString();
+
+                return {
+                    teamId: targetId,
+                    characterId: targetChar,
+                    joinPeriod: targetJoin,
+                    leavePeriod: leaveCanonCopy
+                };
+            },
+            logMessage: 'Ended member interval on team: ' + (current.name || targetId),
+            successMessage: 'Member left successfully.',
+            failureMessage: 'Failed to end member interval.'
+        });
+    }
+
+    /**
+     * Reopen a closed interval by setting its leavePeriod to ''.
+     *
+     * Use case: "I closed this stint too early." Does not touch
+     * joinPeriod. Rejects if the interval is already open.
+     *
+     * @param {string} teamId
+     * @param {string} characterId
+     * @param {number|string} joinPeriod - identifies the interval
+     * @returns {Promise<{ success, data?, message? }>}
+     */
+    function reopenMemberInterval(teamId, characterId, joinPeriod) {
+        if (failIfMissing(checkBaseDependencies(), 'reopenMemberInterval')) {
+            return Promise.resolve(failure('Dependencies not loaded. Please refresh the page.'));
+        }
+
+        if (!isNonEmptyString(teamId)) {
+            return Promise.resolve(failure('Team ID is required.'));
+        }
+        if (!isNonEmptyString(characterId)) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
+
+        var targetJoin = (joinPeriod === undefined || joinPeriod === null)
+            ? ''
+            : String(joinPeriod);
+
+        var targetId = String(teamId).trim();
+        var targetChar = String(characterId).trim();
+
+        var current = findTeamInData(getDataStore(), targetId);
+        if (!current || !Array.isArray(current.members)) {
+            return Promise.resolve(failure('Team not found.'));
         }
 
         return runMutation({
@@ -1184,21 +1787,59 @@
                 if (!target || !Array.isArray(target.members)) {
                     return { valid: false, message: 'Team no longer exists.' };
                 }
-
-                var liveMember = null;
+                var liveEntry = null;
                 for (var i = 0; i < target.members.length; i++) {
                     if (String(target.members[i].characterId) === targetChar) {
-                        liveMember = target.members[i];
+                        liveEntry = target.members[i];
                         break;
                     }
                 }
-                if (!liveMember) {
+                if (!liveEntry || !Array.isArray(liveEntry.intervals)) {
                     return { valid: false, message: 'Character is no longer a member of this team.' };
                 }
+                var liveIv = null;
+                for (var j = 0; j < liveEntry.intervals.length; j++) {
+                    var iv = liveEntry.intervals[j];
+                    if (!iv) continue;
+                    var ivJoin = (iv.joinPeriod === undefined || iv.joinPeriod === null)
+                        ? ''
+                        : String(iv.joinPeriod);
+                    if (ivJoin === targetJoin) {
+                        liveIv = iv;
+                        break;
+                    }
+                }
+                if (!liveIv) {
+                    return { valid: false, message: 'Interval no longer exists.' };
+                }
 
-                var periodCheck = validateMemberPeriods(proposed, target.type);
-                if (!periodCheck.valid) {
-                    return { valid: false, message: periodCheck.message };
+                var lv = canonicalisePeriod(liveIv.leavePeriod);
+                if (lv === '') {
+                    return { valid: false, message: 'Interval is already open.' };
+                }
+
+                // Overlap check: if we clear this interval's leave,
+                // does it collide with a later interval in the same
+                // entry?
+                for (var k = 0; k < liveEntry.intervals.length; k++) {
+                    if (liveEntry.intervals[k] === liveIv) continue;
+                    var other = liveEntry.intervals[k];
+                    if (!other) continue;
+                    var otherStart = effectiveIntervalStart(other);
+                    var thisStart = effectiveIntervalStart(liveIv);
+                    // With this interval's leave cleared (Infinity),
+                    // it overlaps any interval whose start is after
+                    // thisStart.
+                    if (thisStart <= effectiveIntervalEnd(other) &&
+                        otherStart <= Infinity) {
+                        // But only if they actually touch.
+                        if (otherStart >= thisStart) {
+                            return {
+                                valid: false,
+                                message: 'Reopening this interval would overlap a later interval.'
+                            };
+                        }
+                    }
                 }
 
                 return { valid: true };
@@ -1209,28 +1850,162 @@
                     throw new Error('Team not found in data store.');
                 }
 
-                var liveMember = null;
+                var liveEntry = null;
                 for (var i = 0; i < target.members.length; i++) {
                     if (String(target.members[i].characterId) === targetChar) {
-                        liveMember = target.members[i];
+                        liveEntry = target.members[i];
                         break;
                     }
                 }
-                if (!liveMember) {
-                    throw new Error('Member not found in data store.');
+                if (!liveEntry || !Array.isArray(liveEntry.intervals)) {
+                    throw new Error('Member not found.');
                 }
 
-                liveMember.role = proposed.role;
-                liveMember.joinPeriod = proposed.joinPeriod;
-                liveMember.leavePeriod = proposed.leavePeriod;
+                for (var j = 0; j < liveEntry.intervals.length; j++) {
+                    var iv = liveEntry.intervals[j];
+                    if (!iv) continue;
+                    var ivJoin = (iv.joinPeriod === undefined || iv.joinPeriod === null)
+                        ? ''
+                        : String(iv.joinPeriod);
+                    if (ivJoin === targetJoin) {
+                        iv.leavePeriod = '';
+                        target.updatedAt = new Date().toISOString();
+                        return {
+                            teamId: targetId,
+                            characterId: targetChar,
+                            joinPeriod: targetJoin
+                        };
+                    }
+                }
+
+                throw new Error('Interval not found.');
+            },
+            logMessage: 'Reopened member interval on team: ' + (current.name || targetId),
+            successMessage: 'Interval reopened.',
+            failureMessage: 'Failed to reopen interval.'
+        });
+    }
+
+    /**
+     * Hard-delete ONE interval from a member's entry.
+     *
+     * If the member is left with zero intervals, the member entry is
+     * deleted entirely. This is the "remove this specific stint"
+     * primitive. For "remove the whole member," use removeMember.
+     *
+     * @param {string} teamId
+     * @param {string} characterId
+     * @param {number|string} joinPeriod - identifies the interval
+     * @returns {Promise<{ success, data?, message? }>}
+     */
+    function purgeMemberInterval(teamId, characterId, joinPeriod) {
+        if (failIfMissing(checkBaseDependencies(), 'purgeMemberInterval')) {
+            return Promise.resolve(failure('Dependencies not loaded. Please refresh the page.'));
+        }
+
+        if (!isNonEmptyString(teamId)) {
+            return Promise.resolve(failure('Team ID is required.'));
+        }
+        if (!isNonEmptyString(characterId)) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
+
+        var targetJoin = (joinPeriod === undefined || joinPeriod === null)
+            ? ''
+            : String(joinPeriod);
+
+        var targetId = String(teamId).trim();
+        var targetChar = String(characterId).trim();
+
+        var current = findTeamInData(getDataStore(), targetId);
+        if (!current || !Array.isArray(current.members)) {
+            return Promise.resolve(failure('Team not found.'));
+        }
+
+        return runMutation({
+            validate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target || !Array.isArray(target.members)) {
+                    return { valid: false, message: 'Team no longer exists.' };
+                }
+                var liveEntry = null;
+                for (var i = 0; i < target.members.length; i++) {
+                    if (String(target.members[i].characterId) === targetChar) {
+                        liveEntry = target.members[i];
+                        break;
+                    }
+                }
+                if (!liveEntry || !Array.isArray(liveEntry.intervals)) {
+                    return { valid: false, message: 'Character is no longer a member of this team.' };
+                }
+                var found = false;
+                for (var j = 0; j < liveEntry.intervals.length; j++) {
+                    var iv = liveEntry.intervals[j];
+                    if (!iv) continue;
+                    var ivJoin = (iv.joinPeriod === undefined || iv.joinPeriod === null)
+                        ? ''
+                        : String(iv.joinPeriod);
+                    if (ivJoin === targetJoin) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    return { valid: false, message: 'Interval not found.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target || !Array.isArray(target.members)) {
+                    throw new Error('Team not found in data store.');
+                }
+
+                var idx = -1;
+                for (var i = 0; i < target.members.length; i++) {
+                    if (String(target.members[i].characterId) === targetChar) {
+                        idx = i;
+                        break;
+                    }
+                }
+                if (idx === -1) {
+                    throw new Error('Member not found.');
+                }
+
+                var liveEntry = target.members[idx];
+                if (!Array.isArray(liveEntry.intervals)) {
+                    throw new Error('Member has no intervals array.');
+                }
+
+                var before = liveEntry.intervals.length;
+                liveEntry.intervals = liveEntry.intervals.filter(function(iv) {
+                    if (!iv || typeof iv !== 'object') return false;
+                    var ivJoin = (iv.joinPeriod === undefined || iv.joinPeriod === null)
+                        ? ''
+                        : String(iv.joinPeriod);
+                    return ivJoin !== targetJoin;
+                });
+                var removed = before - liveEntry.intervals.length;
+                if (removed === 0) {
+                    throw new Error('Interval not found.');
+                }
+
+                // If the entry has no intervals left, prune it.
+                if (liveEntry.intervals.length === 0) {
+                    target.members.splice(idx, 1);
+                }
 
                 target.updatedAt = new Date().toISOString();
-
-                return { member: liveMember, teamId: targetId };
+                return {
+                    teamId: targetId,
+                    characterId: targetChar,
+                    joinPeriod: targetJoin,
+                    memberRemoved: liveEntry.intervals.length === 0
+                };
             },
-            logMessage: 'Updated member on team: ' + (current.name || targetId),
-            successMessage: 'Member updated successfully!',
-            failureMessage: 'Failed to update member.'
+            logMessage: 'Purged member interval on team: ' + (current.name || targetId),
+            successMessage: 'Interval removed.',
+            failureMessage: 'Failed to remove interval.'
         });
     }
 
@@ -1279,7 +2054,6 @@
                 if (!target) {
                     return { valid: false, message: 'Team no longer exists.' };
                 }
-                // Re-validate against the snapshot's type.
                 var check = validateRankingEntry(
                     { period: periodNum, rank: rankNum },
                     target.type
@@ -1449,10 +2223,14 @@
         updateTeam: updateTeam,
         deleteTeam: deleteTeam,
 
-        // Member mutation
+        // Member mutations
         addMember: addMember,
-        removeMember: removeMember,
+        addMemberInterval: addMemberInterval,
         updateMember: updateMember,
+        removeMember: removeMember,
+        endMemberInterval: endMemberInterval,
+        reopenMemberInterval: reopenMemberInterval,
+        purgeMemberInterval: purgeMemberInterval,
 
         // Ranking mutation
         addRanking: addRanking,
