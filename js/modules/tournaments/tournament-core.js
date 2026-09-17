@@ -7,7 +7,7 @@
  * RESPONSIBILITIES:
  *   - Tournament CRUD (create, update, archive, purge)
  *   - Participant management (add, remove)
- *   - Round management (add, remove) — by stable round ID
+ *   - Round management (add, remove, reopen) — by stable round ID
  *
  * NOT RESPONSIBILITIES:
  *   - Match-level mutations (TournamentMatches)
@@ -27,9 +27,9 @@
  *
  *   No operation is blocked by status. Any field can be updated at
  *   any time. Any participant can be added or removed at any time.
- *   Any round can be added or removed at any time (subject to the
- *   domain rule that a round with completed matches cannot be
- *   removed through the ordinary remove-round path).
+ *   Any round can be added at any time. Round removal is subject to
+ *   the domain rule that a round with completed matches cannot be
+ *   removed through the ordinary remove-round path.
  *
  *   There is no transitionStatus. Status is updated through
  *   updateTournament({ status: ... }) like any other field.
@@ -69,6 +69,34 @@
  *
  *   Both run inside the same transaction as the structural mutation.
  *   If persistence fails, both roll back together.
+ *
+ * REOPEN SEMANTICS (v21):
+ *   The model treats a completed match as committed: its eliminations
+ *   reflect its results, and the results cannot be edited in place.
+ *   When a user discovers a data-entry error or clicks Complete by
+ *   mistake, they reopen:
+ *
+ *     TournamentMatches.reopenMatch(tournamentId, roundId, matchId)
+ *       Per-match reopen. See tournament-matches.js.
+ *
+ *     reopenRound(tournamentId, roundId)
+ *       Round-level reopen. Reverses every elimination produced by
+ *       every match in the round, flips every match to 'pending',
+ *       and sets the round's status to 'pending'. Results on each
+ *       match are preserved. The round is now editable through the
+ *       ordinary match-level path.
+ *
+ *   Reopen restores the invariant that eliminations match results,
+ *   by removing the eliminations and letting the user fix the match
+ *   results before completing again.
+ *
+ *   Round reopen does NOT recursively reopen matched rounds. It is
+ *   one round at a time. If the user wants the whole tournament
+ *   editable, they reopen each round.
+ *
+ *   Standalone eliminations are not touched by any reopen. Only
+ *   eliminations whose provenance is this round (fromRoundId) are
+ *   reversed.
  *
  * TRANSACTION VALIDATION:
  *   Pre-flight validation is for UX. Pipeline validation is for
@@ -363,12 +391,6 @@
     // CREATE
     // ============================================================
 
-    /**
-     * Create a tournament.
-     *
-     * All fields have well-defined creation defaults except `name`
-     * and `mode`, which are required.
-     */
     function createTournament(data) {
         if (!isObject(data)) {
             return Promise.resolve(
@@ -515,19 +537,6 @@
     // UPDATE
     // ============================================================
 
-    /**
-     * Update a tournament's fields.
-     *
-     * UPDATABLE FIELDS:
-     *   name, mode, startWeek, endWeek, totalRounds, status,
-     *   graduatingClassId, classFilterEnabled
-     *
-     * INVARIANTS RE-CHECKED IN THE TRANSACTION:
-     *   - tournament still exists
-     *   - totalRounds >= existing round count
-     *   - mode unchanged while participants exist
-     *   - proposed state passes Schema validation
-     */
     function updateTournament(id, updates) {
         if (!isObject(updates)) {
             return Promise.resolve(failure('Updates must be an object.'));
@@ -610,14 +619,12 @@
                     };
                 }
 
-                // Build the proposed state from the SNAPSHOT.
                 var proposed = deepClone(current);
                 var keys = Object.keys(updatesCopy);
                 for (var i = 0; i < keys.length; i++) {
                     proposed[keys[i]] = updatesCopy[keys[i]];
                 }
 
-                // totalRounds cannot drop below existing round count.
                 if (updatesCopy.totalRounds !== undefined) {
                     var newTotal = parseStrictPositiveInteger(
                         proposed.totalRounds
@@ -634,7 +641,6 @@
                     }
                 }
 
-                // mode cannot change while participants exist.
                 if (updatesCopy.mode !== undefined &&
                     updatesCopy.mode !== current.mode) {
                     if (Array.isArray(current.participants) &&
@@ -689,16 +695,6 @@
     // ARCHIVE / PURGE
     // ============================================================
 
-    /**
-     * Archive a tournament.
-     *
-     * Sets `archivedAt` and status 'completed'. All history remains:
-     * participants, rounds, matches, eliminations. Archived
-     * tournaments are hidden from active selectors but stay
-     * queryable.
-     *
-     * This is the ordinary Academy "delete exam" action.
-     */
     function archiveTournament(id) {
         var normalisedId_ = normaliseId(id);
         if (normalisedId_ === null) {
@@ -765,17 +761,6 @@
         });
     }
 
-    /**
-     * Purge a tournament permanently.
-     *
-     * DESTRUCTIVE. Removes the tournament record and reverses every
-     * non-standalone character-side elimination keyed to it. Standalone
-     * eliminations are not touched.
-     *
-     * This is NOT the ordinary Academy delete action. It is explicit
-     * administrative destruction, and it is not wired to any UI button
-     * by default.
-     */
     function purgeTournament(id) {
         var normalisedId_ = normaliseId(id);
         if (normalisedId_ === null) {
@@ -861,17 +846,6 @@
     // PARTICIPANT OPERATIONS
     // ============================================================
 
-    /**
-     * Add a participant to a tournament.
-     *
-     * VALIDATION (preflight + snapshot):
-     *   - participant ID is normalisable
-     *   - participant type matches the tournament's mode
-     *   - participant is not already in the tournament
-     *   - (existence of the character/team in the wider application
-     *      is verified by the caller; Rules does not reach outside
-     *      the tournament)
-     */
     function addParticipant(tournamentId, participant) {
         if (!isObject(participant)) {
             return Promise.resolve(
@@ -980,14 +954,6 @@
         });
     }
 
-    /**
-     * Remove a participant from a tournament.
-     *
-     * Removes the participant record ONLY. Historical matches that
-     * reference the participant are NOT modified. This is deliberate:
-     * match history is a historical record, and the participant's
-     * role in past matches remains true.
-     */
     function removeParticipant(tournamentId, participantId) {
         var id = normaliseId(participantId);
         if (id === null) {
@@ -1068,14 +1034,6 @@
     // ROUND OPERATIONS
     // ============================================================
 
-    /**
-     * Add a round.
-     *
-     * No status gate. No lifecycle check. No cap on round count.
-     * totalRounds is a planning hint, not an invariant.
-     *
-     * Pair exam configuration is validated by Rules.
-     */
     function addRound(tournamentId, roundData) {
         var tournament = getTournamentInternal(tournamentId);
         if (!tournament || !Array.isArray(tournament.rounds)) {
@@ -1182,15 +1140,6 @@
         });
     }
 
-    /**
-     * Remove a round.
-     *
-     * Reverses every elimination produced by completed matches in the
-     * round (keyed by fromRoundId) BEFORE the round is spliced out.
-     * Recomputes roundNumber for the remaining rounds positionally.
-     *
-     * Does not auto-reset tournament status. The user decides.
-     */
     function removeRound(tournamentId, roundId) {
         var normalisedRoundId = normaliseId(roundId);
         if (normalisedRoundId === null) {
@@ -1319,6 +1268,164 @@
     }
 
     // ============================================================
+    // ROUND REOPEN (v21)
+    // ============================================================
+
+    /**
+     * Reopen a round so every match in it can be edited.
+     *
+     * SEMANTICS:
+     *   - Reverses every elimination produced by every match in the
+     *     round, via the cascade's reverseRoundEliminations (keyed
+     *     by fromRoundId).
+     *   - Flips every match in the round to 'pending'. Results on
+     *     each match are preserved. The form pre-populates when the
+     *     user reopens a match for editing.
+     *   - Sets the round's status to 'pending'.
+     *   - Standalone eliminations are not touched. Eliminations
+     *     produced by other rounds are not touched.
+     *
+     * The round is now editable through the ordinary match-level
+     * path. When the user is done editing, each match is completed
+     * individually, or the round is completed when all its matches
+     * are complete.
+     *
+     * @param {string} tournamentId
+     * @param {string} roundId
+     * @returns {Promise<{success, data?, message?}>}
+     */
+    function reopenRound(tournamentId, roundId) {
+        var normalisedRoundId = normaliseId(roundId);
+        if (normalisedRoundId === null) {
+            return Promise.resolve(failure('Round ID is required.'));
+        }
+
+        var tournament = getTournamentInternal(tournamentId);
+        if (!tournament || !Array.isArray(tournament.rounds)) {
+            return Promise.resolve(failure('Tournament not found.'));
+        }
+
+        var round = Schema.findRoundByIdInternal(
+            tournament,
+            normalisedRoundId
+        );
+        if (!round) {
+            return Promise.resolve(failure('Round not found.'));
+        }
+
+        var targetTournamentId = normaliseId(tournamentId);
+        var roundDisplayNumber = round.roundNumber;
+        var matchCount = Array.isArray(round.matches)
+            ? round.matches.length
+            : 0;
+
+        return MutationPipeline.performMutation({
+            validate: function(appDataSnapshot) {
+                var current = findTournamentInSnapshot(
+                    appDataSnapshot,
+                    targetTournamentId
+                );
+                if (!current || !Array.isArray(current.rounds)) {
+                    return {
+                        valid: false,
+                        message: 'Tournament no longer exists.'
+                    };
+                }
+                if (!Schema.findRoundByIdInternal(
+                    current,
+                    normalisedRoundId
+                )) {
+                    return {
+                        valid: false,
+                        message: 'Round no longer exists.'
+                    };
+                }
+                return { valid: true };
+            },
+            mutate: function(appDataSnapshot) {
+                var current = findTournamentInSnapshot(
+                    appDataSnapshot,
+                    targetTournamentId
+                );
+                if (!current || !Array.isArray(current.rounds)) {
+                    throw new Error(
+                        'Tournament not found in data store.'
+                    );
+                }
+
+                var liveRound = Schema.findRoundByIdInternal(
+                    current,
+                    normalisedRoundId
+                );
+                if (!liveRound) {
+                    throw new Error(
+                        'Round not found in data store.'
+                    );
+                }
+
+                // ---- Reverse eliminations keyed to this round ----
+                // Runs BEFORE flipping match statuses, so the
+                // reversal sees the same elimination records that
+                // completeMatch wrote.
+                var reversal = EliminationCascade
+                    .reverseRoundEliminations(
+                        appDataSnapshot,
+                        current,
+                        normalisedRoundId
+                    );
+
+                // ---- Flip every match in the round to pending ----
+                // Results are preserved. The user is editing, not
+                // restarting. Individual match results can be
+                // cleared field-by-field in the form.
+                var reopenedCount = 0;
+                if (Array.isArray(liveRound.matches)) {
+                    for (var i = 0; i < liveRound.matches.length; i++) {
+                        var m = liveRound.matches[i];
+                        if (!m) { continue; }
+                        if (m.status !== 'pending') {
+                            m.status = 'pending';
+                            reopenedCount++;
+                        }
+                    }
+                }
+
+                // ---- Reset the round's own status ----
+                // No reconciliation needed here: reopen is an
+                // explicit reset. Reconciliation will run again on
+                // the next match mutation.
+                liveRound.status = 'pending';
+
+                return {
+                    roundId: normalisedRoundId,
+                    roundDisplayNumber: roundDisplayNumber,
+                    matchesReopened: reopenedCount,
+                    eliminationsReversed: reversal.reversed,
+                    reversedCharacterIds: reversal.characterIds
+                };
+            },
+            logMessage: function(result) {
+                var parts = [];
+                if (result.matchesReopened > 0) {
+                    parts.push(result.matchesReopened + ' match(es)');
+                }
+                if (result.eliminationsReversed > 0) {
+                    parts.push(result.eliminationsReversed +
+                        ' elimination(s)');
+                }
+                var suffix = parts.length > 0
+                    ? ' (' + parts.join(', ') + ')'
+                    : '';
+                return 'Reopened round ' + roundDisplayNumber +
+                    ' of tournament: ' +
+                    (tournament.name || targetTournamentId) + suffix;
+            },
+            successMessage: 'Round reopened. Matches are editable.',
+            failureMessage: 'Failed to reopen round.'
+        });
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -1335,7 +1442,8 @@
 
         // Rounds
         addRound: addRound,
-        removeRound: removeRound
+        removeRound: removeRound,
+        reopenRound: reopenRound
     };
 
     // ============================================================
@@ -1354,7 +1462,8 @@
             'addParticipant',
             'removeParticipant',
             'addRound',
-            'removeRound'
+            'removeRound',
+            'reopenRound'
         ];
 
         for (var i = 0; i < required.length; i++) {
