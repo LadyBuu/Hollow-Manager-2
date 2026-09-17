@@ -30,6 +30,8 @@
  *
  *   Weekly Teams:
  *     getWeeklyTeamsViewModel(classId, week, selectedTeamId)
+ *     getWeeklyTeamMemberManagerViewModel({ classId, teamId, week })
+ *     getUnassignedTeamsViewModel({ classId })
  *
  * IMPORTANT:
  *   - Projection builder. Never mutates. No UI dependencies.
@@ -40,24 +42,21 @@
  *
  * WEEKLY TEAMS WEEK FILTER:
  *   The team list for a given (class, week) is filtered by the
- *   PERSISTENT Team entity's own startPeriod / endPeriod. A team
- *   whose endPeriod is week 2 does not appear in week 3's list,
- *   even if a weekly-team record still exists in the store.
- *
- *   The filter uses TeamQueries.isTeamActiveAtPeriod(team, week).
- *   This is the SINGLE SOURCE OF TRUTH for team period visibility.
+ *   PERSISTENT Team entity's own startPeriod / endPeriod AND by the
+ *   weekly-team window record. Both must contain the week.
  *
  * WEEKLY TEAMS ROSTER (v22):
  *   The roster for a team comes from the PERSISTENT Team entity's
  *   members[] array, filtered by week through
- *   TeamQueries.getActiveTeamMembers. The weekly-team record in
- *   academy.weeklyTeams carries ONLY the week window; it does not
- *   carry its own member list. This module therefore does not read
- *   AWT.getWeeklyTeams for roster data — it uses that call only to
- *   enumerate which teams have a weekly-team window in the class
- *   for the given week (a cheap "is scheduled this week" gate).
- *   Both the Weekly Teams view and the Tournaments view read the
- *   same persistent roster, so the two views always agree.
+ *   TeamQueries.getActiveTeamMembers. The weekly-team record carries
+ *   ONLY the week window.
+ *
+ * ORPHAN TEAMS:
+ *   Academic Teams with classId === null are surfaced by
+ *   getUnassignedTeamsViewModel and by the orphanTeams field on the
+ *   Weekly Teams VM. The Weekly Teams view shows them in a
+ *   compact section until every orphan is assigned. Once assigned,
+ *   the section disappears.
  *
  * CLASS VM SHAPE:
  *   {
@@ -75,8 +74,6 @@
  * SCHEDULE SOURCE (v21):
  *   Location schedule projections read from
  *   AcademyCalendarAggregator, which is projector-backed.
- *   The retired stored-schedule map (curriculum.schedules,
- *   curriculum.locationSchedules) is no longer consulted.
  *
  * DEPENDENCIES:
  *   - AcademyClasses       (class entities)
@@ -84,9 +81,10 @@
  *   - CharacterQueries     (character identity)
  *   - TeamQueries          (persistent Team entities)
  *   - TeamConstants        (team type/period labels)
+ *   - CalendarConstants    (week bounds for week resolution)
  *
  *   - TeamAggregator       (period-display strings; lazy)
- *   - AcademyWeeklyTeams   (week-window gate; lazy)
+ *   - AcademyWeeklyTeams   (week-window + orphan reads; lazy)
  *   - AcademyRanking       (ranking projection; lazy)
  *   - AcademyCalendarAggregator (schedule projections; lazy)
  *   - AcademyEnrolments    (enrolment read for discipline editor VM; lazy)
@@ -109,6 +107,7 @@
     var CharacterQueries = window.CharacterQueries;
     var TeamQueries = window.TeamQueries;
     var TeamConstants = window.TeamConstants;
+    var CalendarConstants = window.CalendarConstants;
 
     // ============================================================
     // MANDATORY DEPENDENCY CHECK
@@ -152,8 +151,16 @@
     if (!TeamQueries || typeof TeamQueries.getActiveTeamMembers !== 'function') {
         _missing.push('TeamQueries.getActiveTeamMembers');
     }
+    if (!TeamQueries || typeof TeamQueries.isTeamActiveAtPeriod !== 'function') {
+        _missing.push('TeamQueries.isTeamActiveAtPeriod');
+    }
     if (!TeamConstants) {
         _missing.push('TeamConstants');
+    }
+    if (!CalendarConstants ||
+        typeof CalendarConstants.MIN_WEEK !== 'number' ||
+        typeof CalendarConstants.MAX_WEEK !== 'number') {
+        _missing.push('CalendarConstants.MIN_WEEK/MAX_WEEK');
     }
 
     if (_missing.length > 0) {
@@ -179,7 +186,6 @@
         return window.AcademyRanking || null;
     }
 
-    // v21: schedule reads go through the projector-backed aggregator.
     function getAcademyCalendarAggregator() {
         return window.AcademyCalendarAggregator || null;
     }
@@ -194,6 +200,10 @@
 
     function getGradeSchemes() {
         return window.AcademyGradeSchemes || null;
+    }
+
+    function getEliminationQueries() {
+        return window.EliminationQueries || null;
     }
 
     // ============================================================
@@ -226,9 +236,6 @@
     // ============================================================
     // ROSTER DERIVATION
     // ============================================================
-    //
-    // The roster is DERIVED from character.classIds. The class
-    // INSTRUCTOR is excluded from the student roster.
 
     function deriveClassRoster(classId) {
         if (!isNonEmptyString(classId)) {
@@ -826,13 +833,6 @@
         return type.charAt(0).toUpperCase() + type.slice(1);
     }
 
-    // v21: reads through the projector-backed AcademyCalendarAggregator.
-    //
-    // The aggregator returns a schedule VM shaped as
-    //   { schedule: { day: { hour: slotDescriptor } }, ... }
-    //
-    // The location view renderer expects a flat, sorted array of
-    // schedule rows. This helper pivots the map into that shape.
     function getLocationScheduleForWeek(locationId, week) {
         if (!locationId || week === undefined || week === null) {
             return [];
@@ -861,12 +861,6 @@
         return flattenScheduleMap(vm.schedule);
     }
 
-    /**
-     * Pivot the calendar aggregator's schedule map
-     * ({ day: { hour: slotDescriptor } }) into the flat, sorted
-     * array of { day, hour, disciplineId, disciplineName, duration,
-     * label } rows the location view renderer expects.
-     */
     function flattenScheduleMap(scheduleMap) {
         var result = [];
         if (!scheduleMap || typeof scheduleMap !== 'object') {
@@ -914,18 +908,16 @@
     // WEEKLY TEAMS VIEW MODEL
     // ============================================================
     //
-    // The team list is filtered by the PERSISTENT Team entity's
-    // own startPeriod / endPeriod, via TeamQueries.isTeamActiveAtPeriod.
-    // A team whose endPeriod is week 2 does not appear in week 3's
-    // list. The weekly-team record (window in academy.weeklyTeams)
-    // is consulted ONLY to gate "is this team scheduled this week?".
+    // The team list is filtered by both the PERSISTENT Team entity's
+    // own startPeriod / endPeriod AND the weekly-team window record.
     //
     // ROSTER SOURCE (v22):
-    //   The roster for each team comes from the PERSISTENT Team
-    //   entity's members[] array, filtered by week through
-    //   TeamQueries.getActiveTeamMembers. Both the Weekly Teams
-    //   view and the Tournaments view read the same array, so the
-    //   two views always agree.
+    //   Member count and selected-team roster come from the
+    //   persistent Team entity's members[] array, filtered by week.
+    //
+    // ORPHAN TEAMS:
+    //   Academic teams with classId null appear in `orphanTeams` so
+    //   the view can surface them for assignment.
 
     function getWeeklyTeamsViewModel(classId, week, selectedTeamId) {
         var classList = getClassListViewModel();
@@ -940,6 +932,14 @@
             }
         }
 
+        // Orphans are class-agnostic. Compute once.
+        var orphanTeams = getUnassignedTeamsViewModel().orphanTeams;
+
+        // Class filter for the orphan picker: every class.
+        var orphanClasses = classList.map(function(c) {
+            return { id: c.id, name: c.name };
+        });
+
         if (!selectedClass) {
             return {
                 classes: classList,
@@ -948,18 +948,14 @@
                 week: week,
                 teams: [],
                 selectedTeamId: null,
-                selectedTeam: null
+                selectedTeam: null,
+                orphanTeams: orphanTeams,
+                orphanClasses: orphanClasses
             };
         }
 
-        // The weekly-team window records gate which teams appear.
-        // We read the map once; the values are the member id lists
-        // we used to read, but since v22 they are derived from the
-        // persistent roster (see AcademyWeeklyTeams.getWeeklyTeams).
-        // We still need the set of scheduled teams, so we use the
-        // returned keys directly.
-        var scheduledTeamIds = Object.create(null);
         var AWT = getAcademyWeeklyTeams();
+        var scheduledTeamIds = Object.create(null);
         if (AWT && typeof AWT.getWeeklyTeams === 'function') {
             var assignments;
             try {
@@ -1012,7 +1008,9 @@
             week: week,
             teams: teamsVM,
             selectedTeamId: resolvedSelectedTeamId,
-            selectedTeam: selectedTeamVM
+            selectedTeam: selectedTeamVM,
+            orphanTeams: orphanTeams,
+            orphanClasses: orphanClasses
         };
     }
 
@@ -1033,24 +1031,21 @@
             if (!team || !team.id) { continue; }
             if (team.type !== 'academic') { continue; }
 
-            // WEEK FILTER: skip teams whose persistent window does
-            // not cover the requested week.
+            // WEEK FILTER: persistent Team window.
             if (typeof TeamQueries.isTeamActiveAtPeriod === 'function') {
                 if (!TeamQueries.isTeamActiveAtPeriod(team, week)) {
                     continue;
                 }
             }
 
-            // SCHEDULING GATE: only teams with a weekly-team window
-            // covering the requested week appear in the Weekly Teams
-            // list. Teams without a window are visible in the Teams
-            // tab but not in a given Academy week.
+            // SCHEDULING GATE: must have a weekly-team window
+            // covering the requested week.
             if (scheduledTeamIds &&
                 scheduledTeamIds[String(team.id)] !== true) {
                 continue;
             }
 
-            // ROSTER SOURCE (v22): the persistent Team entity.
+            // ROSTER SOURCE (v22): persistent Team entity.
             var activeMembers = TeamQueries.getActiveTeamMembers(
                 team,
                 week
@@ -1085,8 +1080,6 @@
     function buildWeeklyTeamDetail(team, week) {
         if (!team) { return null; }
 
-        // ROSTER SOURCE (v22): the persistent Team entity's members[]
-        // array, filtered by week through getActiveTeamMembers.
         var activeMembers = TeamQueries.getActiveTeamMembers(
             team,
             week
@@ -1131,7 +1124,8 @@
                     role: record.role || 'Member',
                     roleLabel: '',
                     age: '',
-                    statusLabel: ''
+                    statusLabel: '',
+                    deceased: false
                 });
                 continue;
             }
@@ -1142,7 +1136,8 @@
                 role: record.role || 'Member',
                 roleLabel: '',
                 age: CharacterQueries.getCharacterAge(char),
-                statusLabel: char.deceased === true ? 'Deceased' : 'Active'
+                statusLabel: CharacterQueries.getCurrentStatus(char),
+                deceased: char.deceased === true
             });
         }
 
@@ -1151,6 +1146,202 @@
         });
 
         return result;
+    }
+
+    // ============================================================
+    // UNASSIGNED (ORPHAN) ACADEMIC TEAMS
+    // ============================================================
+    //
+    // Academic teams with classId null. The Weekly Teams view
+    // surfaces them so the user can assign a class. When the array
+    // is empty, the section does not render.
+
+    function getUnassignedTeamsViewModel(options) {
+        options = options || {};
+
+        var AWT = getAcademyWeeklyTeams();
+        if (!AWT || typeof AWT.getOrphanAcademicTeams !== 'function') {
+            return { orphanTeams: [] };
+        }
+
+        var orphans = [];
+        try {
+            orphans = AWT.getOrphanAcademicTeams() || [];
+        } catch (e) {
+            console.warn(
+                '[AcademyAggregator] getOrphanAcademicTeams failed:', e
+            );
+            return { orphanTeams: [] };
+        }
+
+        var result = orphans.map(function(o) {
+            return {
+                id: o.id,
+                name: o.name || 'Unnamed Team',
+                memberCount: isFiniteNumber(o.memberCount) ? o.memberCount : 0,
+                suggestedClassId: isNonEmptyString(o.suggestedClassId)
+                    ? o.suggestedClassId
+                    : null
+            };
+        });
+
+        return { orphanTeams: result };
+    }
+
+    // ============================================================
+    // WEEKLY TEAM MEMBER MANAGER VIEW MODEL
+    // ============================================================
+    //
+    // Consumed by academy-weekly-teams-members.js. Builds:
+    //   - members: currently active members (persistent roster,
+    //     filtered by week)
+    //   - candidates: class roster minus instructor minus current
+    //     members minus characters assigned elsewhere this week
+    //     minus eliminated characters
+    //
+    // Team must belong to the class; if not, returns null.
+
+    function getWeeklyTeamMemberManagerViewModel(options) {
+        if (!options || typeof options !== 'object') {
+            return null;
+        }
+
+        var classId = isNonEmptyString(options.classId)
+            ? String(options.classId)
+            : null;
+        var teamId = isNonEmptyString(options.teamId)
+            ? String(options.teamId)
+            : null;
+        var week = isFiniteNumber(options.week)
+            ? options.week
+            : (typeof options.week === 'string'
+                ? parseInt(options.week, 10)
+                : null);
+
+        if (!classId || !teamId || !isFiniteNumber(week)) {
+            return null;
+        }
+
+        var team = TeamQueries.getTeamById(teamId);
+        if (!team) {
+            return null;
+        }
+        if (team.classId === null ||
+            team.classId === undefined ||
+            team.classId === '') {
+            return null;
+        }
+        if (String(team.classId) !== classId) {
+            return null;
+        }
+
+        // ---- Members ----
+        var activeMembers = TeamQueries.getActiveTeamMembers(
+            team, week
+        ) || [];
+
+        var members = buildTeamMembersVM(activeMembers);
+
+        // ---- Candidate pool ----
+        var activeIds = Object.create(null);
+        for (var i = 0; i < activeMembers.length; i++) {
+            if (activeMembers[i] && activeMembers[i].characterId) {
+                activeIds[String(activeMembers[i].characterId)] = true;
+            }
+        }
+
+        // Current member IDs (all history, not just active) so a
+        // rejoining character is not offered as a candidate.
+        var allCurrentIds = Object.create(null);
+        if (Array.isArray(team.members)) {
+            for (var c = 0; c < team.members.length; c++) {
+                var m = team.members[c];
+                if (m && m.characterId) {
+                    allCurrentIds[String(m.characterId)] = true;
+                }
+            }
+        }
+
+        // Assigned elsewhere = active in another academic team of
+        // the same class this week.
+        var assignedElsewhere = Object.create(null);
+        var classTeams = TeamQueries.getTeamsByClass(classId, 'operational') || [];
+        for (var t = 0; t < classTeams.length; t++) {
+            var sibling = classTeams[t];
+            if (!sibling || String(sibling.id) === teamId) continue;
+            if (TeamConstants.normalizeTeamType(sibling.type) !== 'academic') continue;
+            var siblingMembers = TeamQueries.getActiveTeamMembers(sibling, week) || [];
+            for (var s = 0; s < siblingMembers.length; s++) {
+                var sm = siblingMembers[s];
+                if (sm && sm.characterId) {
+                    assignedElsewhere[String(sm.characterId)] = true;
+                }
+            }
+        }
+
+        var cls = AcademyClasses.getClass(classId);
+        var instructorId = cls && cls.instructorId
+            ? String(cls.instructorId)
+            : null;
+
+        var roster = deriveClassRoster(classId);
+
+        var EQ = getEliminationQueries();
+        var canCheckElimination = EQ &&
+            typeof EQ.isCharacterEliminatedByWeek === 'function';
+
+        var candidates = [];
+
+        for (var r = 0; r < roster.length; r++) {
+            var student = roster[r];
+            if (!student || !student.id) continue;
+
+            var studentId = String(student.id);
+
+            if (instructorId !== null && studentId === instructorId) {
+                continue;
+            }
+            if (allCurrentIds[studentId]) {
+                continue;
+            }
+            if (assignedElsewhere[studentId]) {
+                continue;
+            }
+
+            if (canCheckElimination) {
+                var eliminated = false;
+                try {
+                    eliminated = EQ.isCharacterEliminatedByWeek(studentId, week) === true;
+                } catch (e) {
+                    console.warn(
+                        '[AcademyAggregator] isCharacterEliminatedByWeek threw for ' +
+                        studentId + ':', e
+                    );
+                    eliminated = false;
+                }
+                if (eliminated) {
+                    continue;
+                }
+            }
+
+            candidates.push({
+                id: studentId,
+                name: student.name,
+                status: student.status || ''
+            });
+        }
+
+        candidates.sort(function(a, b) {
+            return (a.name || '').localeCompare(b.name || '');
+        });
+
+        return {
+            teamId: teamId,
+            teamName: team.name || 'Unnamed Team',
+            week: week,
+            members: members,
+            candidates: candidates
+        };
     }
 
     // ============================================================
@@ -1182,7 +1373,9 @@
         getLocationViewModel: getLocationViewModel,
 
         // Weekly teams
-        getWeeklyTeamsViewModel: getWeeklyTeamsViewModel
+        getWeeklyTeamsViewModel: getWeeklyTeamsViewModel,
+        getWeeklyTeamMemberManagerViewModel: getWeeklyTeamMemberManagerViewModel,
+        getUnassignedTeamsViewModel: getUnassignedTeamsViewModel
     };
 
 })();
