@@ -19,7 +19,6 @@
                 <a href="#dashboard" data-tab="dashboard">Dashboard</a>
                 <a href="#characters" data-tab="characters">Characters</a>
                 <a href="#teams" data-tab="teams">Teams</a>
-                <a href="#calendar" data-tab="calendar">Calendar</a>
                 <a href="#social" data-tab="social">Social</a>
                 <a href="#academy" data-tab="academy">Academy</a>
                 <a href="#missions" data-tab="missions">Missions</a>
@@ -46,7 +45,6 @@
             <div id="tab-dashboard" class="tab-content active"></div>
             <div id="tab-characters" class="tab-content"></div>
             <div id="tab-teams" class="tab-content"></div>
-            <div id="tab-calendar" class="tab-content"></div>
             <div id="tab-social" class="tab-content"></div>
             <div id="tab-academy" class="tab-content"></div>
             <div id="tab-missions" class="tab-content"></div>
@@ -133,16 +131,25 @@
     <script src="js/core/mutation-pipeline.js"></script>
 
     <!-- ============================================================
-         CALENDAR DOMAIN
+         CALENDAR RENDERER
+         ============================================================
+         The stored-schedule calendar domain has been retired. What
+         remains is a single pure renderer that produces an HTML grid
+         from a schedule VM. Nothing else in the calendar folder.
+
+         The retired files were:
+           - schedule-core.js           (wrote stored schedule maps)
+           - calendar-aggregator.js     (read stored schedule maps)
+           - calendar-ui-base.js        (only the retired UIs used it)
+           - student-calendar-ui.js     (read stored schedule maps)
+           - instructor-calendar-ui.js  (read stored schedule maps)
+           - location-calendar-ui.js    (read stored schedule maps)
+           - calendar/index.js          (shell for the retired UIs)
+
+         They were replaced by the projector-backed Academy calendar
+         aggregator, in the ACADEMY block below.
          ============================================================ -->
-    <script src="js/modules/calendar/schedule-core.js"></script>
     <script src="js/modules/calendar/calendar-renderer.js"></script>
-    <script src="js/modules/calendar/calendar-aggregator.js"></script>
-    <script src="js/modules/calendar/calendar-ui-base.js"></script>
-    <script src="js/modules/calendar/student-calendar-ui.js"></script>
-    <script src="js/modules/calendar/instructor-calendar-ui.js"></script>
-    <script src="js/modules/calendar/location-calendar-ui.js"></script>
-    <script src="js/modules/calendar/index.js"></script>
 
     <!-- ============================================================
          ACADEMY DOMAIN - BASE ENTITIES AND CROSS-CUTTING SERVICES
@@ -160,6 +167,12 @@
              load before AcademyAggregator, which reads it for the
              Weekly Teams view model. AcademyModule's mount-time
              dependency check requires it.
+
+           - The six teaching-model modules and academy-schedule.js
+             form a single pipeline: class-disciplines → groups →
+             sessions → projector → collisions → validation →
+             schedule coordinator → calendar aggregator. They load
+             in that dependency order.
          ============================================================ -->
     <script src="js/modules/academy/academy-grade-schemes.js"></script>
     <script src="js/modules/academy/academy-classes.js"></script>
@@ -182,8 +195,43 @@
 
     <script src="js/modules/shared/queries/academy-queries.js"></script>
 
+    <!-- ============================================================
+         ACADEMY TEACHING MODEL
+         ============================================================
+         The teaching-model pipeline. Load order is strict:
+         each module depends on every module above it.
+
+           class-disciplines   — a class's offering of a discipline
+           teaching-groups     — students + instructor for an offering
+           teaching-sessions   — recurring meetings of a group
+           teaching-projector  — projects weekly occurrences
+           teaching-collisions — detects time overlaps
+           teaching-validation — weekly-hours and structural warnings
+         ============================================================ -->
+    <script src="js/modules/academy/academy-class-disciplines.js"></script>
+    <script src="js/modules/academy/academy-teaching-groups.js"></script>
+    <script src="js/modules/academy/academy-teaching-sessions.js"></script>
+    <script src="js/modules/academy/academy-teaching-projector.js"></script>
+    <script src="js/modules/academy/academy-teaching-collisions.js"></script>
+    <script src="js/modules/academy/academy-teaching-validation.js"></script>
+
+    <!-- ============================================================
+         ACADEMY SCHEDULE COORDINATOR
+         ============================================================
+         Compound-mutation coordinator. Runs single-transaction
+         operations across the teaching-model stores. Must load
+         after every teaching-model module.
+         ============================================================ -->
     <script src="js/modules/academy/academy-schedule.js"></script>
-    <script src="js/modules/academy/academy-distribute.js"></script>
+
+    <!-- ============================================================
+         ACADEMY CALENDAR AGGREGATOR
+         ============================================================
+         Projector-backed schedule projections. Replaces the retired
+         calendar-aggregator.js. Reads AcademyTeachingProjector;
+         produces VMs for CalendarRenderer.renderGrid.
+         ============================================================ -->
+    <script src="js/modules/academy/academy-calendar-aggregator.js"></script>
 
     <!-- Week-scoped assignment data. Required by AcademyModule's
          mount-time dependency check and by AcademyAggregator for
