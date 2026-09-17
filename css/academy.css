@@ -1,0 +1,557 @@
+/**
+ * css/academy.css - Academy tab shell
+ *
+ * The outer chrome shared by every Academy sub-view:
+ *   - View switcher (People / Exams / Weekly Teams / Rankings /
+ *     Disciplines / Locations)
+ *   - Top bar (class selector, week input)
+ *   - Two-panel layout (sidebar + detail)
+ *   - Sidebar (list container + filters)
+ *   - Detail panel frame
+ *   - Shared badges used across sub-views
+ *
+ * Load order:
+ *   shared.css
+ *   academy.css           <- this file
+ *   academy/<subview>.css
+ *
+ * Sub-view files must NOT redefine the classes in this file. If a
+ * sub-view needs a more specific version, it narrows the selector
+ * (.academy-ranking-panel .academy-something) rather than
+ * redeclaring the shared rule.
+ */
+
+/* ============================================================
+   VIEW SWITCHER
+   ============================================================ */
+
+.academy-view-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+}
+
+.academy-view-btn {
+    background: transparent;
+    border: 1px solid transparent;
+    border-bottom: 2px solid transparent;
+    border-radius: 6px 6px 0 0;
+    color: var(--text-dim);
+    font-size: 0.72rem;
+    padding: 5px 12px;
+    cursor: pointer;
+    transition: 0.2s;
+    white-space: nowrap;
+}
+
+.academy-view-btn:hover {
+    color: var(--text);
+    background: var(--panel-alt);
+}
+
+.academy-view-btn.active {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    font-weight: 600;
+}
+
+@media (max-width: 480px) {
+    .academy-view-btn {
+        font-size: 0.6rem;
+        padding: 4px 8px;
+    }
+}
+
+/* ============================================================
+   TOP BAR
+   ============================================================
+   Every sub-view uses the same top bar shape: a class selector
+   on the left, a week input on the right. Sub-views that need
+   extra controls add them inside .academy-top-left / -right.
+ */
+
+.academy-top-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 10px;
+}
+
+.academy-top-left,
+.academy-top-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.academy-top-label {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-weight: 500;
+}
+
+.academy-class-select,
+.academy-week-input {
+    padding: 4px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.72rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.academy-class-select {
+    min-width: 180px;
+}
+
+.academy-week-input {
+    width: 70px;
+}
+
+.academy-class-select:focus,
+.academy-week-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+@media (max-width: 480px) {
+    .academy-top-bar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .academy-top-left,
+    .academy-top-right {
+        justify-content: space-between;
+    }
+    .academy-class-select {
+        min-width: 0;
+        flex: 1;
+    }
+}
+
+/* ============================================================
+   BODY WRAPPERS
+   ============================================================ */
+
+.academy-body {
+    min-width: 0;
+}
+
+.academy-body-empty,
+.academy-body-placeholder {
+    padding: 20px;
+    text-align: center;
+}
+
+/* ============================================================
+   TWO-PANEL LAYOUT
+   ============================================================
+   People, Disciplines, and Locations share the same grid:
+   320px sidebar + flexible detail. Sub-views with their own
+   layout (Exams, Weekly Teams, Rankings) define their own grid
+   in their sub-file.
+ */
+
+.academy-people-layout,
+.academy-discipline-layout,
+.academy-location-layout {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 12px;
+    align-items: start;
+}
+
+@media (max-width: 768px) {
+    .academy-people-layout,
+    .academy-discipline-layout,
+    .academy-location-layout {
+        grid-template-columns: 1fr;
+        gap: 10px;
+    }
+}
+
+/* ============================================================
+   SIDEBAR
+   ============================================================ */
+
+.academy-people-sidebar,
+.academy-discipline-sidebar,
+.academy-location-sidebar {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px;
+    max-height: 640px;
+    overflow-y: auto;
+}
+
+@media (max-width: 768px) {
+    .academy-people-sidebar,
+    .academy-discipline-sidebar,
+    .academy-location-sidebar {
+        max-height: 320px;
+    }
+}
+
+/* ============================================================
+   FILTERS (sidebar controls)
+   ============================================================ */
+
+.academy-character-filters,
+.academy-discipline-filters,
+.academy-location-filters {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+.academy-people-search,
+.academy-discipline-search,
+.academy-location-search {
+    width: 100%;
+    padding: 5px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.7rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.academy-people-search:focus,
+.academy-discipline-search:focus,
+.academy-location-search:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.academy-filter-label {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    margin-top: 2px;
+}
+
+.academy-people-role,
+.academy-people-status,
+.academy-discipline-type-filter,
+.academy-location-type-filter {
+    width: 100%;
+    padding: 4px 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.7rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.academy-people-role:focus,
+.academy-people-status:focus,
+.academy-discipline-type-filter:focus,
+.academy-location-type-filter:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* ============================================================
+   LIST (sidebar)
+   ============================================================ */
+
+.academy-character-list,
+.academy-discipline-list,
+.academy-location-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.academy-character-row,
+.academy-discipline-row,
+.academy-location-row {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border-soft);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: 0.15s;
+}
+
+.academy-character-row:hover,
+.academy-discipline-row:hover,
+.academy-location-row:hover {
+    background: var(--panel-alt);
+}
+
+.academy-character-row.selected,
+.academy-discipline-row.selected,
+.academy-location-row.selected {
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    padding-left: 6px;
+}
+
+.academy-character-row.deceased {
+    opacity: 0.5;
+}
+
+.academy-character-row.eliminated {
+    border-left: 3px solid var(--danger);
+    padding-left: 6px;
+}
+
+.academy-character-row-main,
+.academy-discipline-row-main,
+.academy-location-row-main {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.academy-character-name,
+.academy-discipline-name,
+.academy-location-name {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text);
+}
+
+.academy-character-row-status,
+.academy-discipline-row-meta,
+.academy-location-row-meta {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    margin-top: 2px;
+}
+
+.academy-character-row-warning {
+    font-size: 0.6rem;
+    color: var(--danger);
+    margin-top: 2px;
+    font-weight: 600;
+}
+
+.academy-character-role-badge {
+    font-size: 0.5rem;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+/* ============================================================
+   DETAIL PANEL
+   ============================================================ */
+
+.academy-people-detail,
+.academy-discipline-detail,
+.academy-location-detail {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px;
+    min-height: 200px;
+    max-height: 640px;
+    overflow-y: auto;
+}
+
+@media (max-width: 768px) {
+    .academy-people-detail,
+    .academy-discipline-detail,
+    .academy-location-detail {
+        max-height: none;
+    }
+}
+
+.academy-detail-empty {
+    padding: 30px 12px;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.75rem;
+}
+
+.academy-detail-placeholder {
+    padding: 20px;
+}
+
+/* ============================================================
+   SHARED DETAIL HEADER
+   ============================================================
+   Class, Character, Discipline, and Location detail panels all
+   start with a header that has a title row and a meta row. The
+   shape is shared; the specific class names live in the sub-
+   files. This block defines the shared container so sub-files
+   can narrow it.
+ */
+
+.academy-detail-header {
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-soft);
+    margin-bottom: 10px;
+}
+
+.academy-detail-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+
+.academy-detail-title {
+    font-size: 1.1rem;
+    color: var(--accent);
+    margin: 0;
+}
+
+.academy-detail-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-size: 0.7rem;
+}
+
+.academy-detail-meta-item .meta-label {
+    color: var(--text-dim);
+    font-size: 0.65rem;
+}
+
+.academy-meta-muted {
+    opacity: 0.7;
+}
+
+.academy-meta-danger {
+    color: var(--danger);
+    font-weight: 600;
+}
+
+.academy-detail-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+/* ============================================================
+   SHARED SECTION (inside detail panels)
+   ============================================================ */
+
+.academy-detail-section {
+    margin-bottom: 14px;
+}
+
+.academy-detail-section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding-bottom: 4px;
+    margin-bottom: 6px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-detail-section-title {
+    font-size: 0.8rem;
+    color: var(--accent);
+    margin: 0;
+}
+
+.academy-detail-section-subtitle,
+.academy-detail-section-count {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+}
+
+/* ============================================================
+   SHARED BADGES
+   ============================================================ */
+
+.class-status-badge {
+    display: inline-block;
+    font-size: 0.55rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 8px;
+    border: 1px solid;
+    white-space: nowrap;
+}
+
+.class-status-active {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.class-status-archived {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+.class-status-graduated {
+    color: var(--info);
+    background: var(--info-soft);
+    border-color: var(--info);
+}
+
+.class-status-unknown {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+/* Role badges */
+.academy-role-badge {
+    display: inline-block;
+    font-size: 0.5rem;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.academy-role-instructor {
+    color: var(--info);
+    background: var(--info-soft);
+    border: 1px solid var(--info);
+}
+
+.academy-role-student,
+.academy-role-trainee {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+}
+
+/* ============================================================
+   MOBILE
+   ============================================================ */
+
+@media (max-width: 480px) {
+    .academy-people-detail,
+    .academy-discipline-detail,
+    .academy-location-detail {
+        padding: 8px;
+    }
+
+    .academy-detail-title {
+        font-size: 0.95rem;
+    }
+}
