@@ -15,18 +15,13 @@
  *       createdAt, updatedAt
  *     }
  *
- * WHAT THIS MODULE DOES NOT OWN (v22):
+ * WHAT THIS MODULE DOES NOT OWN:
  *   Team membership. The roster lives EXCLUSIVELY on the persistent
  *   Team entity's members[] array (with joinPeriod / leavePeriod as
- *   the week range). Prior to v22, this module also carried a
- *   redundant `members` array on every weekly-team record. That
- *   array drifted from the persistent roster, producing a UI where
- *   the same team showed one roster in the Weekly Teams view and a
- *   different roster in the Tournaments view. The v22 migration
- *   collapsed the redundant array into the persistent roster and
- *   the writers here now route membership mutations through a
- *   transaction-local helper that operates on the persistent Team
- *   entity.
+ *   the week range). v22 collapsed the redundant local array that
+ *   used to live on weekly-team records. The writers here now route
+ *   membership mutations through transaction-local helpers that
+ *   operate on the persistent Team entity.
  *
  * READS:
  *   - getWeeklyTeams(classId, week)
@@ -35,38 +30,49 @@
  *       TeamQueries.getActiveTeamMembers. The weekly-team record
  *       gates which teams are visible at all.
  *   - getActiveMembers(classId, teamId, week)
- *       Delegates to TeamQueries.getActiveTeamMembers.
- *   - isPersistentTeamVisibleInWeek(teamId, week)
- *       The persistent Team entity's own startPeriod / endPeriod.
+ *       Delegates to TeamQueries.getActiveTeamMembers. Validates
+ *       that the team belongs to the class.
+ *   - getOrphanAcademicTeams()
+ *       Returns every academic Team whose classId is null. Used by
+ *       the Weekly Teams view to build the "unassigned teams"
+ *       section. Only renders while orphans exist.
+ *   - suggestClassForTeam(teamId)
+ *       Best-effort read: returns the class that contains the most
+ *       of the team's members. Never mutates. Never assigns.
  *
  * WRITES (v22):
  *   - ensureWindow(classId, teamId, week)
  *       Creates the weekly-team window record for (classId, teamId)
  *       if it does not exist; otherwise widens it to include the
- *       week. Does NOT touch membership.
+ *       week. Does NOT touch membership. Validates the team belongs
+ *       to the class.
  *   - addMember(classId, teamId, charId, week)
  *       Ensures a weekly-team record exists for (classId, teamId),
  *       then delegates membership to a transaction-local helper
  *       that writes to the persistent Team entity's members[].
+ *       Validates the team belongs to the class.
  *   - endMembership(classId, teamId, charId, effectiveWeek)
  *       Truncates the member's leavePeriod on the persistent roster
  *       at effectiveWeek - 1. History survives.
- *   - removeMemberRecord(classId, teamId, charId)
- *       Hard-deletes the member's entry from the persistent roster.
+ *   - purgeMemberRecords(classId, teamId, charId)
+ *       Hard-deletes the member's entries from the persistent
+ *       roster. Administrative repair only.
  *   - removeTeamRecord(classId, teamId)
- *       Deletes the weekly-team record. Does NOT touch the
+ *       Deletes the weekly-team window record. Does NOT touch the
  *       persistent Team entity.
  *   - clearClassWindows(classId)
  *       Deletes every weekly-team record for a class. Does NOT
- *       touch any persistent Team entity. This is the operation the
- *       Auto-Distribute "clear existing teams" checkbox uses.
+ *       touch any persistent Team entity.
  *   - clearAllMembershipsForClass(classId, week)
  *       Hard-deletes every member whose active window covers the
  *       given week, across every academic team of the class whose
  *       own startPeriod / endPeriod covers the week. Teams remain
- *       scheduled; the weekly-team windows are untouched. This is
- *       the operation the Weekly Teams view exposes as "Clear
- *       Rosters".
+ *       scheduled; the weekly-team windows are untouched.
+ *   - assignTeamToClass(classId, teamId)
+ *       Assigns an orphan academic team (classId: null) to a class.
+ *       Sets team.classId and creates a weekly-window record for
+ *       the team's own startPeriod / endPeriod. Used by the
+ *       "unassigned teams" section in the Weekly Teams view.
  *
  * WHY TRANSACTION-LOCAL HELPERS:
  *   TeamCore's public mutations (addMember, updateMember,
@@ -76,13 +82,10 @@
  *   snapshot the pipeline hands in, matching the pattern already
  *   used by TournamentEliminationCascade and AcademyCascade.
  *
- * DROP-OUT vs DELETE:
- *   - endMembership: the member's window becomes
- *     [joinPeriod, effectiveWeek - 1]. History survives.
- *   - removeMemberRecord: hard delete, no history.
- *   - clearAllMembershipsForClass: hard delete, no history, across
- *     every active academic team of the class at the given week.
- *     Used when the roster needs to be rebuilt from scratch.
+ * CLASS CONSISTENCY:
+ *   Every mutation that takes (classId, teamId) verifies inside the
+ *   transaction that team.classId === classId. A weekly-team window
+ *   cannot be created for a mismatched pair.
  *
  * WEEK SEMANTICS:
  *   - Weeks are bounded [MIN_WEEK, MAX_WEEK].
@@ -179,7 +182,7 @@
 
     window.__academyWeeklyTeamsLoaded = true;
 
-    diag('Module loaded (v22, no local member array).');
+    diag('Module loaded (v22, no local member array, class-validated).');
 
     // ============================================================
     // CONSTANTS
@@ -231,23 +234,6 @@
         return parsed;
     }
 
-    function getTeamWindow(teamId) {
-        if (!isNonEmptyString(teamId)) {
-            return null;
-        }
-        var team = TeamQueries.getTeamById(teamId);
-        if (!team) {
-            return null;
-        }
-        var start = TeamConstants.parsePeriod(team.startPeriod);
-        var end = TeamConstants.parsePeriod(team.endPeriod);
-        return {
-            team: team,
-            start: start,
-            end: end
-        };
-    }
-
     function weekInRange(week, start, end) {
         if (start === null || start === undefined) {
             return false;
@@ -261,27 +247,13 @@
         return true;
     }
 
-    function isPersistentTeamVisibleInWeek(teamId, week) {
-        var windowInfo = getTeamWindow(teamId);
-        if (!windowInfo) {
-            return false;
-        }
-
-        var start = windowInfo.start;
-        var end = windowInfo.end;
-
-        if (start === null && end === null) {
-            return true;
-        }
-        if (start !== null && week < start) {
-            return false;
-        }
-        if (end !== null && week > end) {
-            return false;
-        }
-        return true;
-    }
-
+    /**
+     * Transaction-local membership window predicate. Used only inside
+     * mutation callbacks operating on a snapshot, because
+     * TeamQueries.getActiveTeamMembers reads the live store.
+     *
+     * Public reads go through TeamQueries.getActiveTeamMembers.
+     */
     function memberActiveInWeek(member, week) {
         if (!member || typeof member !== 'object') {
             return false;
@@ -400,6 +372,25 @@
         return null;
     }
 
+    /**
+     * Validate inside a transaction that the team exists and belongs
+     * to the given class. Returns null on success, or an error
+     * message string on failure.
+     */
+    function validateTeamClassInSnapshot(appData, teamId, classId) {
+        var team = findTeamInSnapshot(appData, teamId);
+        if (!team) {
+            return 'Team no longer exists.';
+        }
+        if (team.classId === null || team.classId === undefined || team.classId === '') {
+            return 'Team is not assigned to a class. Assign a class first.';
+        }
+        if (String(team.classId) !== String(classId)) {
+            return 'Team does not belong to this class.';
+        }
+        return null;
+    }
+
     function syncAddMemberToPersistentRoster(team, charId, startWeek, role) {
         if (!team) {
             return { added: false, updated: false };
@@ -417,11 +408,14 @@
         if (existing) {
             var joinNum = TeamConstants.parsePeriod(existing.joinPeriod);
             var leaveNum = TeamConstants.parsePeriod(existing.leavePeriod);
+
+            // Already active at this week: no-op.
             if ((joinNum === null || startWeek >= joinNum) &&
                 (leaveNum === null || startWeek <= leaveNum)) {
                 return { added: false, updated: false };
             }
 
+            // Truncate any ongoing membership that overlaps.
             if (leaveNum === null || leaveNum >= startWeek) {
                 existing.leavePeriod = String(startWeek - 1);
             }
@@ -478,7 +472,7 @@
         return { ended: true };
     }
 
-    function syncRemoveMemberFromPersistentRoster(team, charId) {
+    function syncPurgeMemberFromPersistentRoster(team, charId) {
         if (!team || !Array.isArray(team.members)) {
             return { removed: false };
         }
@@ -522,15 +516,30 @@
         return result;
     }
 
+    /**
+     * Active members of (classId, teamId) at week. Validates the
+     * team belongs to the class. Returns [] when either the team is
+     * missing, the class does not match, or the week is invalid.
+     */
     function getActiveMembers(classId, teamId, week) {
         var weekNum = parseWeekStrict(week);
         if (weekNum === null) {
+            return [];
+        }
+        if (!isNonEmptyString(classId) || !isNonEmptyString(teamId)) {
             return [];
         }
         var team = TeamQueries.getTeamById(teamId);
         if (!team) {
             return [];
         }
+        if (team.classId === null || team.classId === undefined || team.classId === '') {
+            return [];
+        }
+        if (String(team.classId) !== String(classId)) {
+            return [];
+        }
+
         var members = TeamQueries.getActiveTeamMembers(team, weekNum) || [];
         var result = [];
         for (var i = 0; i < members.length; i++) {
@@ -542,9 +551,25 @@
         return result;
     }
 
+    /**
+     * Every member (regardless of week activity) of a team, after
+     * validating it belongs to the class.
+     */
     function getAllMembers(classId, teamId) {
+        if (!isNonEmptyString(classId) || !isNonEmptyString(teamId)) {
+            return [];
+        }
         var team = TeamQueries.getTeamById(teamId);
-        if (!team || !Array.isArray(team.members)) {
+        if (!team) {
+            return [];
+        }
+        if (team.classId === null || team.classId === undefined || team.classId === '') {
+            return [];
+        }
+        if (String(team.classId) !== String(classId)) {
+            return [];
+        }
+        if (!Array.isArray(team.members)) {
             return [];
         }
         return deepClone(team.members);
@@ -620,7 +645,12 @@
         return null;
     }
 
-    function hasAssignments(classId, week) {
+    /**
+     * True when at least one team is scheduled (has a weekly-window
+     * record) for this class this week. Does NOT mean "at least one
+     * student is assigned."
+     */
+    function hasScheduledTeams(classId, week) {
         var rosters = getWeeklyTeams(classId, week);
         return Object.keys(rosters).length > 0;
     }
@@ -660,14 +690,15 @@
             if (!isPlainObject(record)) {
                 continue;
             }
-            var start = record.startWeek;
-            if (start === null || start === undefined) {
+            var start = parseWeekStrict(record.startWeek);
+            if (start === null) {
                 continue;
             }
-            var end = record.endWeek;
-            var effectiveEnd = (end === null || end === undefined)
-                ? MAX_WEEK
-                : end;
+            var end = record.endWeek === null || record.endWeek === undefined
+                ? null
+                : parseWeekStrict(record.endWeek);
+            var effectiveEnd = (end === null) ? MAX_WEEK : end;
+
             for (var w = start; w <= effectiveEnd; w++) {
                 weeks[w] = true;
             }
@@ -709,6 +740,137 @@
         return result;
     }
 
+    /**
+     * Is the persistent Team visible in this week, per its own
+     * startPeriod / endPeriod? Delegates to the canonical Team query.
+     */
+    function isPersistentTeamVisibleInWeek(teamId, week) {
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return false;
+        }
+        var team = TeamQueries.getTeamById(teamId);
+        if (!team) {
+            return false;
+        }
+        return TeamQueries.isTeamActiveAtPeriod(team, weekNum) === true;
+    }
+
+    // ============================================================
+    // ORPHAN ACADEMIC TEAMS
+    // ============================================================
+    //
+    // Orphan = academic Team with classId null. Surfaced by the
+    // Weekly Teams view so the user can assign a class. Once every
+    // orphan is assigned, the section disappears.
+
+    function getOrphanAcademicTeams() {
+        if (!Array.isArray(window.data && window.data.teams)) {
+            return [];
+        }
+        var result = [];
+        var teams = window.data.teams;
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (!team || typeof team !== 'object') continue;
+            if (TeamConstants.normalizeTeamType(team.type) !== 'academic') continue;
+            if (team.classId !== null &&
+                team.classId !== undefined &&
+                team.classId !== '') {
+                continue;
+            }
+            var memberCount = Array.isArray(team.members) ? team.members.length : 0;
+            result.push({
+                id: String(team.id),
+                name: isNonEmptyString(team.name) ? team.name : 'Unnamed Team',
+                memberCount: memberCount,
+                startPeriod: team.startPeriod || '',
+                endPeriod: team.endPeriod || '',
+                suggestedClassId: suggestClassForTeam(team.id)
+            });
+        }
+        result.sort(function(a, b) {
+            return (a.name || '').localeCompare(b.name || '');
+        });
+        return result;
+    }
+
+    /**
+     * Read-only suggestion. Returns the classId whose roster
+     * contains the most members of this team. Returns null when no
+     * clear winner exists (zero overlap, or ties).
+     *
+     * Never assigns. Never mutates. Pure read.
+     */
+    function suggestClassForTeam(teamId) {
+        if (!isNonEmptyString(teamId)) {
+            return null;
+        }
+        if (!window.data || !Array.isArray(window.data.teams) ||
+            !Array.isArray(window.data.characters)) {
+            return null;
+        }
+        if (!window.data.academy || typeof window.data.academy !== 'object') {
+            return null;
+        }
+        var classes = window.data.academy.graduatingClasses;
+        if (!classes || typeof classes !== 'object') {
+            return null;
+        }
+
+        var team = null;
+        for (var t = 0; t < window.data.teams.length; t++) {
+            if (String(window.data.teams[t].id) === String(teamId)) {
+                team = window.data.teams[t];
+                break;
+            }
+        }
+        if (!team || !Array.isArray(team.members) || team.members.length === 0) {
+            return null;
+        }
+
+        // Build classId -> count of matching members.
+        var counts = Object.create(null);
+        for (var m = 0; m < team.members.length; m++) {
+            var member = team.members[m];
+            if (!member || !member.characterId) continue;
+            var charId = String(member.characterId);
+            var char = null;
+            for (var c = 0; c < window.data.characters.length; c++) {
+                if (String(window.data.characters[c].id) === charId) {
+                    char = window.data.characters[c];
+                    break;
+                }
+            }
+            if (!char || !Array.isArray(char.classIds)) continue;
+            for (var ci = 0; ci < char.classIds.length; ci++) {
+                var classId = String(char.classIds[ci]);
+                if (!classes[classId]) continue;
+                counts[classId] = (counts[classId] || 0) + 1;
+            }
+        }
+
+        var keys = Object.keys(counts);
+        if (keys.length === 0) return null;
+
+        var bestClassId = null;
+        var bestCount = 0;
+        var tie = false;
+        for (var k = 0; k < keys.length; k++) {
+            var count = counts[keys[k]];
+            if (count > bestCount) {
+                bestCount = count;
+                bestClassId = keys[k];
+                tie = false;
+            } else if (count === bestCount && bestCount > 0) {
+                tie = true;
+            }
+        }
+
+        if (tie) return null;
+        return bestClassId;
+    }
+
     // ============================================================
     // WRITE HELPERS
     // ============================================================
@@ -745,11 +907,6 @@
             );
         }
 
-        var windowInfo = getTeamWindow(teamId);
-        if (!windowInfo) {
-            return Promise.resolve(failure('Team not found.'));
-        }
-
         var targetClass = String(classId);
         var targetTeam = String(teamId);
 
@@ -758,9 +915,11 @@
                 if (!appData || typeof appData !== 'object') {
                     return { valid: false, message: 'Application data is not available.' };
                 }
-                var team = findTeamInSnapshot(appData, targetTeam);
-                if (!team) {
-                    return { valid: false, message: 'Team no longer exists.' };
+                var classError = validateTeamClassInSnapshot(
+                    appData, targetTeam, targetClass
+                );
+                if (classError) {
+                    return { valid: false, message: classError };
                 }
                 return { valid: true };
             },
@@ -801,6 +960,87 @@
         });
     }
 
+    /**
+     * Assign an orphan academic team to a class. Sets team.classId
+     * and creates a weekly-window record covering the team's own
+     * startPeriod / endPeriod.
+     */
+    function assignTeamToClass(classId, teamId) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        if (!isNonEmptyString(teamId)) {
+            return Promise.resolve(failure('Team ID is required.'));
+        }
+
+        var targetClass = String(classId);
+        var targetTeam = String(teamId);
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return { valid: false, message: 'Application data is not available.' };
+                }
+                var team = findTeamInSnapshot(appData, targetTeam);
+                if (!team) {
+                    return { valid: false, message: 'Team no longer exists.' };
+                }
+                if (TeamConstants.normalizeTeamType(team.type) !== 'academic') {
+                    return { valid: false, message: 'Only academic teams can be assigned to a class.' };
+                }
+                if (team.classId !== null &&
+                    team.classId !== undefined &&
+                    team.classId !== '') {
+                    if (String(team.classId) === targetClass) {
+                        return { valid: true };
+                    }
+                    return {
+                        valid: false,
+                        message: 'Team is already assigned to a different class.'
+                    };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var team = findTeamInSnapshot(appData, targetTeam);
+                if (!team) {
+                    throw new Error('Team not found in data store.');
+                }
+
+                team.classId = targetClass;
+                team.updatedAt = new Date().toISOString();
+
+                var store = ensureStore(appData);
+                if (!isPlainObject(store[targetClass])) {
+                    store[targetClass] = {};
+                }
+
+                var startWeek = TeamConstants.parsePeriod(team.startPeriod);
+                var endWeek = TeamConstants.parsePeriod(team.endPeriod);
+
+                if (startWeek !== null && !store[targetClass][targetTeam]) {
+                    var now = new Date().toISOString();
+                    store[targetClass][targetTeam] = {
+                        id: targetTeam,
+                        classId: targetClass,
+                        teamId: targetTeam,
+                        startWeek: startWeek,
+                        endWeek: endWeek,
+                        createdAt: (typeof team.createdAt === 'string' && team.createdAt)
+                            ? team.createdAt
+                            : now,
+                        updatedAt: now
+                    };
+                }
+
+                return { teamId: targetTeam, classId: targetClass };
+            },
+            logMessage: 'Assigned team ' + targetTeam + ' to class ' + targetClass,
+            successMessage: 'Team assigned to class.',
+            failureMessage: 'Failed to assign team to class.'
+        });
+    }
+
     function addMember(classId, teamId, charId, week) {
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
@@ -819,11 +1059,6 @@
             );
         }
 
-        var windowInfo = getTeamWindow(teamId);
-        if (!windowInfo) {
-            return Promise.resolve(failure('Team not found.'));
-        }
-
         var targetClass = String(classId);
         var targetTeam = String(teamId);
         var targetChar = String(charId);
@@ -833,9 +1068,11 @@
                 if (!appData || typeof appData !== 'object') {
                     return { valid: false, message: 'Application data is not available.' };
                 }
-                var team = findTeamInSnapshot(appData, targetTeam);
-                if (!team) {
-                    return { valid: false, message: 'Team no longer exists.' };
+                var classError = validateTeamClassInSnapshot(
+                    appData, targetTeam, targetClass
+                );
+                if (classError) {
+                    return { valid: false, message: classError };
                 }
                 return { valid: true };
             },
@@ -908,9 +1145,11 @@
                 if (!appData || typeof appData !== 'object') {
                     return { valid: false, message: 'Application data is not available.' };
                 }
-                var team = findTeamInSnapshot(appData, targetTeam);
-                if (!team) {
-                    return { valid: false, message: 'Team no longer exists.' };
+                var classError = validateTeamClassInSnapshot(
+                    appData, targetTeam, targetClass
+                );
+                if (classError) {
+                    return { valid: false, message: classError };
                 }
                 return { valid: true };
             },
@@ -949,7 +1188,11 @@
         });
     }
 
-    function removeMemberRecord(classId, teamId, charId) {
+    /**
+     * Destructive. Removes every membership record for a character
+     * in a team, regardless of week range.
+     */
+    function purgeMemberRecords(classId, teamId, charId) {
         if (!isNonEmptyString(classId) ||
             !isNonEmptyString(teamId) ||
             !isNonEmptyString(charId)) {
@@ -965,9 +1208,11 @@
                 if (!appData || typeof appData !== 'object') {
                     return { valid: false, message: 'Application data is not available.' };
                 }
-                var team = findTeamInSnapshot(appData, targetTeam);
-                if (!team) {
-                    return { valid: false, message: 'Team no longer exists.' };
+                var classError = validateTeamClassInSnapshot(
+                    appData, targetTeam, targetClass
+                );
+                if (classError) {
+                    return { valid: false, message: classError };
                 }
                 return { valid: true };
             },
@@ -977,7 +1222,7 @@
                     return { removed: false };
                 }
 
-                var syncResult = syncRemoveMemberFromPersistentRoster(
+                var syncResult = syncPurgeMemberFromPersistentRoster(
                     team, targetChar
                 );
 
@@ -994,10 +1239,10 @@
 
                 return { removed: syncResult.removed };
             },
-            logMessage: 'Removed membership record for ' + targetChar +
+            logMessage: 'Purged membership records for ' + targetChar +
                 ' in team ' + targetTeam,
-            successMessage: 'Membership record removed.',
-            failureMessage: 'Failed to remove membership record.'
+            successMessage: 'Membership records removed.',
+            failureMessage: 'Failed to remove membership records.'
         });
     }
 
@@ -1039,11 +1284,6 @@
         });
     }
 
-    /**
-     * Delete every weekly-team window record for a class. Does NOT
-     * touch any persistent Team entity. Used by Auto-Distribute's
-     * "clear existing teams" checkbox.
-     */
     function clearClassWindows(classId) {
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
@@ -1092,24 +1332,10 @@
      * week, across every academic team of the class whose own
      * startPeriod / endPeriod covers the week.
      *
-     * WHAT THIS DOES:
-     *   - Walks every academic team of the class.
-     *   - Filters to teams whose persistent period covers the week.
-     *   - For each such team, removes every member whose active
-     *     window (joinPeriod <= week <= leavePeriod) covers the
-     *     week, from the team's members[] array.
+     * The target team set is resolved INSIDE the transaction from the
+     * snapshot. No pre-flight list is trusted.
      *
-     * WHAT THIS DOES NOT DO:
-     *   - It does not touch weekly-team window records. Teams remain
-     *     scheduled in the Weekly Teams view.
-     *   - It does not touch team entities whose own period excludes
-     *     the week.
-     *   - It does not touch member records whose active window does
-     *     not cover the week (past leaves, future joins).
-     *
-     * This is the operation the Weekly Teams view exposes as
-     * "Clear Rosters". Used when rosters need to be rebuilt from
-     * scratch for a week, typically after a mistake.
+     * Teams remain scheduled; weekly-team windows are untouched.
      */
     function clearAllMembershipsForClass(classId, week) {
         if (!isNonEmptyString(classId)) {
@@ -1125,54 +1351,46 @@
 
         var targetClass = String(classId);
 
-        // Pre-flight: resolve which teams will be processed. This
-        // uses the live store (via TeamQueries) to enumerate the
-        // teams. The actual removals run against the transaction
-        // snapshot, which re-checks each team and each member.
-        var allTeams = TeamQueries.getTeamsByClass(targetClass, 'operational') || [];
-        var teamIds = [];
-        for (var i = 0; i < allTeams.length; i++) {
-            var t = allTeams[i];
-            if (!t || !t.id) { continue; }
-            if (TeamConstants.normalizeTeamType(t.type) !== 'academic') {
-                continue;
-            }
-            if (!TeamQueries.isTeamActiveAtPeriod(t, weekNum)) {
-                continue;
-            }
-            teamIds.push(String(t.id));
-        }
-
-        if (teamIds.length === 0) {
-            return Promise.resolve(success({
-                teamsProcessed: 0,
-                membershipsRemoved: 0
-            }));
-        }
-
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
                     return { valid: false, message: 'Application data is not available.' };
+                }
+                if (!Array.isArray(appData.teams)) {
+                    return { valid: false, message: 'Team store is not available.' };
                 }
                 return { valid: true };
             },
             mutate: function(appData) {
                 var teamsProcessed = 0;
                 var membershipsRemoved = 0;
+                var teams = appData.teams;
 
-                for (var k = 0; k < teamIds.length; k++) {
-                    var teamId = teamIds[k];
-                    var team = findTeamInSnapshot(appData, teamId);
-                    if (!team) { continue; }
-                    if (!Array.isArray(team.members)) { continue; }
+                for (var i = 0; i < teams.length; i++) {
+                    var team = teams[i];
+                    if (!team || typeof team !== 'object') continue;
+
+                    if (TeamConstants.normalizeTeamType(team.type) !== 'academic') continue;
+
+                    if (team.classId === null ||
+                        team.classId === undefined ||
+                        team.classId === '') continue;
+                    if (String(team.classId) !== targetClass) continue;
+
+                    // Team must be active at the week per its own
+                    // persistent window.
+                    var teamStart = TeamConstants.parsePeriod(team.startPeriod);
+                    var teamEnd = TeamConstants.parsePeriod(team.endPeriod);
+                    if (teamStart !== null && weekNum < teamStart) continue;
+                    if (teamEnd !== null && weekNum > teamEnd) continue;
+
+                    if (!Array.isArray(team.members)) continue;
 
                     var before = team.members.length;
                     team.members = team.members.filter(function(m) {
-                        if (!m) { return true; }
+                        if (!m) return true;
                         // Keep a member only if they are NOT active at
-                        // the given week. Active members are the ones
-                        // we're removing.
+                        // the given week.
                         return !memberActiveInWeek(m, weekNum);
                     });
                     var removed = before - team.members.length;
@@ -1216,8 +1434,21 @@
     // ============================================================
     // CASCADE HELPERS
     // ============================================================
+    //
+    // Called from other modules' pipeline mutate callbacks. They
+    // operate on the supplied appData snapshot and never touch
+    // window.data.
 
-    function stripCharacterRefs(appData, charId, effectiveWeek) {
+    /**
+     * End every open membership window for a character across every
+     * academic team, effective from the given week (leavePeriod
+     * becomes effectiveWeek - 1).
+     *
+     * Renamed from stripCharacterRefs. Previously invented MAX_WEEK
+     * when no effectiveWeek was supplied. That fabrication is gone:
+     * callers MUST supply an effectiveWeek.
+     */
+    function endCharacterMemberships(appData, charId, effectiveWeek) {
         var result = { membershipsEnded: 0 };
 
         if (!appData || !isNonEmptyString(charId)) {
@@ -1227,9 +1458,11 @@
             return result;
         }
 
-        var weekNum = null;
-        if (effectiveWeek !== undefined && effectiveWeek !== null) {
-            weekNum = parseWeekStrict(effectiveWeek);
+        var weekNum = parseWeekStrict(effectiveWeek);
+        if (weekNum === null) {
+            // Without a valid week there is no defensible truncation
+            // point. Do nothing rather than fabricate one.
+            return result;
         }
 
         var target = String(charId);
@@ -1249,14 +1482,10 @@
                     continue;
                 }
                 var joinNum = TeamConstants.parsePeriod(member.joinPeriod);
-                if (weekNum !== null) {
-                    if (joinNum !== null && joinNum >= weekNum) {
-                        continue;
-                    }
-                    member.leavePeriod = String(weekNum - 1);
-                } else {
-                    member.leavePeriod = String(MAX_WEEK);
+                if (joinNum !== null && joinNum >= weekNum) {
+                    continue;
                 }
+                member.leavePeriod = String(weekNum - 1);
                 result.membershipsEnded++;
             }
         }
@@ -1335,23 +1564,28 @@
         getWeeklyTeams: getWeeklyTeams,
         isCharacterAssigned: isCharacterAssigned,
         getAssignedTeamId: getAssignedTeamId,
-        hasAssignments: hasAssignments,
+        hasScheduledTeams: hasScheduledTeams,
         getAllAssignedTeamIds: getAllAssignedTeamIds,
         getAssignedWeeksForClass: getAssignedWeeksForClass,
         getAssignedClassesForWeek: getAssignedClassesForWeek,
         isPersistentTeamVisibleInWeek: isPersistentTeamVisibleInWeek,
 
+        // Orphan / assignment
+        getOrphanAcademicTeams: getOrphanAcademicTeams,
+        suggestClassForTeam: suggestClassForTeam,
+
         // Mutations
         ensureWindow: ensureWindow,
+        assignTeamToClass: assignTeamToClass,
         addMember: addMember,
         endMembership: endMembership,
-        removeMemberRecord: removeMemberRecord,
+        purgeMemberRecords: purgeMemberRecords,
         removeTeamRecord: removeTeamRecord,
         clearClassWindows: clearClassWindows,
         clearAllMembershipsForClass: clearAllMembershipsForClass,
 
         // Cascade helpers
-        stripCharacterRefs: stripCharacterRefs,
+        endCharacterMemberships: endCharacterMemberships,
         stripClassRefs: stripClassRefs,
         stripTeamRefs: stripTeamRefs,
 
@@ -1365,13 +1599,14 @@
         var required = [
             'getTeamRecord', 'getAllTeamRecords', 'getActiveMembers',
             'getAllMembers', 'getWeeklyTeams', 'isCharacterAssigned',
-            'getAssignedTeamId', 'hasAssignments', 'getAllAssignedTeamIds',
+            'getAssignedTeamId', 'hasScheduledTeams', 'getAllAssignedTeamIds',
             'getAssignedWeeksForClass', 'getAssignedClassesForWeek',
             'isPersistentTeamVisibleInWeek',
-            'ensureWindow', 'addMember', 'endMembership',
-            'removeMemberRecord', 'removeTeamRecord', 'clearClassWindows',
+            'getOrphanAcademicTeams', 'suggestClassForTeam',
+            'ensureWindow', 'assignTeamToClass', 'addMember', 'endMembership',
+            'purgeMemberRecords', 'removeTeamRecord', 'clearClassWindows',
             'clearAllMembershipsForClass',
-            'stripCharacterRefs', 'stripClassRefs', 'stripTeamRefs'
+            'endCharacterMemberships', 'stripClassRefs', 'stripTeamRefs'
         ];
         var missing = [];
         for (var i = 0; i < required.length; i++) {
