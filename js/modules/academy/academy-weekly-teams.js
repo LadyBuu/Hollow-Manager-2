@@ -40,6 +40,10 @@
  *       The persistent Team entity's own startPeriod / endPeriod.
  *
  * WRITES (v22):
+ *   - ensureWindow(classId, teamId, week)
+ *       Creates the weekly-team window record for (classId, teamId)
+ *       if it does not exist; otherwise widens it to include the
+ *       week. Does NOT touch membership.
  *   - addMember(classId, teamId, charId, week)
  *       Ensures a weekly-team record exists for (classId, teamId),
  *       then delegates membership to a transaction-local helper
@@ -52,6 +56,11 @@
  *   - removeTeamRecord(classId, teamId)
  *       Deletes the weekly-team record. Does NOT touch the
  *       persistent Team entity.
+ *   - clearClassWindows(classId)
+ *       Deletes every weekly-team record for a class. Does NOT
+ *       touch any persistent Team entity. This is the operation the
+ *       Weekly Teams view exposes as "Empty Teams" and as the
+ *       Auto-Distribute "Clear existing teams" checkbox.
  *
  * WHY TRANSACTION-LOCAL HELPERS:
  *   TeamCore's public mutations (addMember, updateMember,
@@ -784,6 +793,85 @@
      *
      * Does NOT touch membership. Membership is a separate operation.
      */
+    function ensureWindow(classId, teamId, week) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        if (!isNonEmptyString(teamId)) {
+            return Promise.resolve(failure('Team ID is required.'));
+        }
+
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return Promise.resolve(
+                failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').')
+            );
+        }
+
+        var windowInfo = getTeamWindow(teamId);
+        if (!windowInfo) {
+            return Promise.resolve(failure('Team not found.'));
+        }
+
+        var targetClass = String(classId);
+        var targetTeam = String(teamId);
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return { valid: false, message: 'Application data is not available.' };
+                }
+                var team = findTeamInSnapshot(appData, targetTeam);
+                if (!team) {
+                    return { valid: false, message: 'Team no longer exists.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var store = ensureStore(appData);
+                if (!isPlainObject(store[targetClass])) {
+                    store[targetClass] = {};
+                }
+
+                var record = store[targetClass][targetTeam];
+                if (!isPlainObject(record)) {
+                    record = buildNewTeamRecord(targetClass, targetTeam, weekNum);
+                    store[targetClass][targetTeam] = record;
+                    return { created: true, record: deepClone(record) };
+                }
+
+                var changed = false;
+                if (typeof record.startWeek !== 'number' || weekNum < record.startWeek) {
+                    record.startWeek = weekNum;
+                    changed = true;
+                }
+                if (record.endWeek !== null &&
+                    record.endWeek !== undefined &&
+                    weekNum > record.endWeek) {
+                    record.endWeek = null;
+                    changed = true;
+                }
+                if (changed) {
+                    record.updatedAt = new Date().toISOString();
+                }
+
+                return { created: false, changed: changed, record: deepClone(record) };
+            },
+            logMessage: 'Opened weekly-team window for team ' + targetTeam +
+                ' in class ' + targetClass + ' at week ' + weekNum,
+            successMessage: 'Team opened for this week.',
+            failureMessage: 'Failed to open team for this week.'
+        });
+    }
+
+    /**
+     * Ensure a weekly-team window exists AND add a member.
+     *
+     * Kept as one operation because callers that want to bring a team
+     * into a week and immediately place a student in it are the
+     * common case. Separate calls would work too, but the combined
+     * form is a single transaction.
+     */
     function addMember(classId, teamId, charId, week) {
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
@@ -911,8 +999,6 @@
 
                 if (syncResult.ended) {
                     team.updatedAt = new Date().toISOString();
-                    // Bump the weekly-team record's updatedAt so views
-                    // that fingerprint on it invalidate.
                     var store = getStoreFromSnapshot(appData);
                     var record = getTeamRecordInternalFromStore(
                         store, targetClass, targetTeam
@@ -1023,6 +1109,59 @@
                 ' from class ' + targetClass,
             successMessage: 'Weekly team record removed.',
             failureMessage: 'Failed to remove weekly team record.'
+        });
+    }
+
+    /**
+     * Delete every weekly-team window record for a class. Does NOT
+     * touch any persistent Team entity. After this returns, every
+     * academic team of the class remains in the Teams/Tournaments
+     * views but no longer appears in the Weekly Teams view for any
+     * week until a window is opened again.
+     *
+     * This is the operation behind the Weekly Teams view's "Empty
+     * Teams" button and the Auto-Distribute "Clear existing teams"
+     * checkbox.
+     */
+    function clearClassWindows(classId) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+
+        var targetClass = String(classId);
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return { valid: false, message: 'Application data is not available.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var store = getStoreFromSnapshot(appData);
+                if (!store) {
+                    return { cleared: 0 };
+                }
+                var byClass = store[targetClass];
+                if (!isPlainObject(byClass)) {
+                    return { cleared: 0 };
+                }
+                var count = Object.keys(byClass).length;
+                delete store[targetClass];
+                return { cleared: count };
+            },
+            logMessage: function(result) {
+                return 'Cleared ' + (result && result.cleared ? result.cleared : 0) +
+                    ' weekly-team window(s) for class ' + targetClass;
+            },
+            successMessage: function(result) {
+                var n = result && result.cleared ? result.cleared : 0;
+                if (n === 0) {
+                    return 'No teams were scheduled.';
+                }
+                return 'Emptied ' + n + ' team' + (n === 1 ? '' : 's') + ' from the schedule.';
+            },
+            failureMessage: 'Failed to empty teams.'
         });
     }
 
@@ -1155,10 +1294,12 @@
         isPersistentTeamVisibleInWeek: isPersistentTeamVisibleInWeek,
 
         // Mutations
+        ensureWindow: ensureWindow,
         addMember: addMember,
         endMembership: endMembership,
         removeMemberRecord: removeMemberRecord,
         removeTeamRecord: removeTeamRecord,
+        clearClassWindows: clearClassWindows,
 
         // Cascade helpers
         stripCharacterRefs: stripCharacterRefs,
@@ -1178,8 +1319,8 @@
             'getAssignedTeamId', 'hasAssignments', 'getAllAssignedTeamIds',
             'getAssignedWeeksForClass', 'getAssignedClassesForWeek',
             'isPersistentTeamVisibleInWeek',
-            'addMember', 'endMembership', 'removeMemberRecord',
-            'removeTeamRecord',
+            'ensureWindow', 'addMember', 'endMembership',
+            'removeMemberRecord', 'removeTeamRecord', 'clearClassWindows',
             'stripCharacterRefs', 'stripClassRefs', 'stripTeamRefs'
         ];
         var missing = [];
