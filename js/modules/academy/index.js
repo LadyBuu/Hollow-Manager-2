@@ -7,7 +7,6 @@
  * RESPONSIBILITIES:
  *   - Register with TabManager
  *   - Validate the academy data structure before mount
- *   - Assemble and inject the calendar provider into AcademySchedule
  *   - Hand the container to AcademyView for rendering
  *   - Handle DataLoader and tabChanged integration
  *   - Expose a small public API on window.Academy
@@ -21,6 +20,13 @@
  *   Do not add per-feature bootstrapping here. If a feature needs
  *   initialization, its own module handles it.
  *
+ * SCHEDULE PROVIDER (retired):
+ *   The old calendar-provider bridge — AcademySchedule.configure,
+ *   CalendarQueries reads, ScheduleCore writes — was retired when
+ *   the schedule model moved to the teaching projector. There is no
+ *   provider to assemble. Schedule data now comes from
+ *   AcademyCalendarAggregator, which reads the projector directly.
+ *
  * MOUNT IDEMPOTENCY:
  *   mountAcademy() may be invoked from two paths:
  *     - DataLoader.whenReady  → handleDataReady → mountAcademy
@@ -30,12 +36,10 @@
  *   live mount.
  *
  * PUBLIC API SHAPE:
- *   window.Academy exposes ten methods. It does NOT re-export the
- *   domain modules. If a consumer needs a domain module, that module
- *   is available at its own global (window.AcademyClasses,
- *   window.AcademyGrades, window.AcademyDisciplines, etc.). Nesting
- *   them under window.Academy would invite callers to bypass the
- *   aggregator and read raw storage.
+ *   window.Academy exposes the lifecycle and a small state facade.
+ *   It does NOT re-export the domain modules. If a consumer needs a
+ *   domain module, that module is available at its own global
+ *   (window.AcademyClasses, window.AcademyGrades, etc.).
  *
  * DATA STRUCTURE VALIDATION:
  *   validateAcademyStructure() checks that window.data.academy has
@@ -48,14 +52,9 @@
  *   - window.TabManager
  *   - window.AcademyUI
  *   - window.AcademyView
- *   - window.AcademySchedule
- *   - window.CalendarQueries
- *   - window.ScheduleCore
  *
  * DEPENDENCIES (OPTIONAL, feature-scoped):
  *   - window.DataLoader — readiness hook is skipped when absent
- *   - window.CharacterQueries — used only by the calendar provider's
- *     character existence check, which is not currently consumed
  *   - window.NotificationSystem — used by error paths when present
  *
  * USAGE:
@@ -79,9 +78,6 @@
     var TabManager = window.TabManager;
     var AcademyUI = window.AcademyUI;
     var AcademyView = window.AcademyView;
-    var AcademySchedule = window.AcademySchedule;
-    var CalendarQueries = window.CalendarQueries;
-    var ScheduleCore = window.ScheduleCore;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -113,72 +109,6 @@
 
     if (!AcademyView || typeof AcademyView.render !== 'function') {
         _missing.push('AcademyView.render');
-    }
-
-    if (!AcademySchedule || typeof AcademySchedule.configure !== 'function') {
-        _missing.push('AcademySchedule.configure');
-    }
-
-    if (!CalendarQueries || typeof CalendarQueries.getStudentSchedule !== 'function') {
-        _missing.push('CalendarQueries.getStudentSchedule');
-    }
-    if (!CalendarQueries || typeof CalendarQueries.getInstructorSchedule !== 'function') {
-        _missing.push('CalendarQueries.getInstructorSchedule');
-    }
-    if (!CalendarQueries || typeof CalendarQueries.getLocationSchedule !== 'function') {
-        _missing.push('CalendarQueries.getLocationSchedule');
-    }
-    if (!CalendarQueries || typeof CalendarQueries.getStudentRestDays !== 'function') {
-        _missing.push('CalendarQueries.getStudentRestDays');
-    }
-    if (!CalendarQueries || typeof CalendarQueries.getSlotMetadata !== 'function') {
-        _missing.push('CalendarQueries.getSlotMetadata');
-    }
-    if (!CalendarQueries || typeof CalendarQueries.findClassStart !== 'function') {
-        _missing.push('CalendarQueries.findClassStart');
-    }
-
-    if (!ScheduleCore || typeof ScheduleCore.setStudentSlot !== 'function') {
-        _missing.push('ScheduleCore.setStudentSlot');
-    }
-    if (!ScheduleCore || typeof ScheduleCore.removeStudentSlot !== 'function') {
-        _missing.push('ScheduleCore.removeStudentSlot');
-    }
-    if (!ScheduleCore || typeof ScheduleCore.clearStudentSchedule !== 'function') {
-        _missing.push('ScheduleCore.clearStudentSchedule');
-    }
-    if (!ScheduleCore || typeof ScheduleCore.duplicateStudentSchedule !== 'function') {
-        _missing.push('ScheduleCore.duplicateStudentSchedule');
-    }
-    if (!ScheduleCore || typeof ScheduleCore.setRestDays !== 'function') {
-        _missing.push('ScheduleCore.setRestDays');
-    }
-    if (!ScheduleCore || typeof ScheduleCore.removeRestDays !== 'function') {
-        _missing.push('ScheduleCore.removeRestDays');
-    }
-    if (!ScheduleCore || typeof ScheduleCore.setSlotMetadata !== 'function') {
-        _missing.push('ScheduleCore.setSlotMetadata');
-    }
-    if (!ScheduleCore || typeof ScheduleCore.setInstructorTemplate !== 'function') {
-        _missing.push('ScheduleCore.setInstructorTemplate');
-    }
-    if (!ScheduleCore || typeof ScheduleCore.removeInstructorTemplate !== 'function') {
-        _missing.push('ScheduleCore.removeInstructorTemplate');
-    }
-    if (!ScheduleCore || typeof ScheduleCore.setInstructorBlock !== 'function') {
-        _missing.push('ScheduleCore.setInstructorBlock');
-    }
-    if (!ScheduleCore || typeof ScheduleCore.removeInstructorBlock !== 'function') {
-        _missing.push('ScheduleCore.removeInstructorBlock');
-    }
-    if (!ScheduleCore || typeof ScheduleCore.setLocationClass !== 'function') {
-        _missing.push('ScheduleCore.setLocationClass');
-    }
-    if (!ScheduleCore || typeof ScheduleCore.removeLocationClass !== 'function') {
-        _missing.push('ScheduleCore.removeLocationClass');
-    }
-    if (!ScheduleCore || typeof ScheduleCore.hasConflict !== 'function') {
-        _missing.push('ScheduleCore.hasConflict');
     }
 
     if (_missing.length > 0) {
@@ -216,12 +146,6 @@
      * Does NOT repair. The database migration is responsible for
      * producing the correct shape. If it is wrong, the mount path
      * renders an error state.
-     *
-     * The `classStudents` check is informational: the store was
-     * removed in v15 and class membership derives from
-     * character.classIds. If the field is present it means a
-     * migration did not run, and we log a warning. We do not block
-     * the mount on it, because the store being present is harmless.
      */
     function validateAcademyStructure() {
         if (!window.data || typeof window.data !== 'object') {
@@ -267,6 +191,22 @@
             console.error('[AcademyModule] academy.settings is missing.');
             return false;
         }
+        if (!academy.classDisciplines || typeof academy.classDisciplines !== 'object') {
+            console.error('[AcademyModule] academy.classDisciplines is missing.');
+            return false;
+        }
+        if (!academy.teachingGroups || typeof academy.teachingGroups !== 'object') {
+            console.error('[AcademyModule] academy.teachingGroups is missing.');
+            return false;
+        }
+        if (!academy.teachingGroupSequences || typeof academy.teachingGroupSequences !== 'object') {
+            console.error('[AcademyModule] academy.teachingGroupSequences is missing.');
+            return false;
+        }
+        if (!academy.teachingSessions || typeof academy.teachingSessions !== 'object') {
+            console.error('[AcademyModule] academy.teachingSessions is missing.');
+            return false;
+        }
 
         if (Object.prototype.hasOwnProperty.call(academy, 'classStudents')) {
             console.warn(
@@ -277,127 +217,6 @@
             );
         }
 
-        return true;
-    }
-
-    // ============================================================
-    // CALENDAR PROVIDER ASSEMBLY
-    // ============================================================
-    //
-    // READS  → CalendarQueries (synchronous)
-    // WRITES → ScheduleCore    (Promise-based, MutationPipeline)
-    //
-    // The provider is injected into AcademySchedule once. Subsequent
-    // calls are no-ops.
-
-    var _providersInitialized = false;
-
-    function initProviders() {
-        if (_providersInitialized) {
-            return true;
-        }
-
-        var calendarProvider = {
-            // ---- READS — CalendarQueries (synchronous) ----
-            getStudentSchedule: function(studentId, week) {
-                return CalendarQueries.getStudentSchedule(studentId, week);
-            },
-            getStudentRestDays: function(studentId, week) {
-                return CalendarQueries.getStudentRestDays(studentId, week);
-            },
-            getSlotMetadata: function(studentId, week, day, hour) {
-                return CalendarQueries.getSlotMetadata(studentId, week, day, hour);
-            },
-            findClassStart: function(schedule, metadata, studentId, week, day, hour) {
-                return CalendarQueries.findClassStart(
-                    schedule, metadata, studentId, week, day, hour
-                );
-            },
-            getInstructorSchedule: function(instructorId, week) {
-                return CalendarQueries.getInstructorSchedule(instructorId, week);
-            },
-            getInstructorTemplates: function(instructorId, week) {
-                return CalendarQueries.getInstructorTemplates(instructorId, week);
-            },
-            getInstructorBlocks: function(instructorId, week) {
-                return CalendarQueries.getInstructorBlocks(instructorId, week);
-            },
-            getLocationSchedule: function(locationId, week) {
-                return CalendarQueries.getLocationSchedule(locationId, week);
-            },
-
-            // ---- WRITES — ScheduleCore (Promise-based) ----
-            setStudentSlot: function(studentId, week, day, hour, disciplineId, duration, metadata) {
-                return ScheduleCore.setStudentSlot(
-                    studentId, week, day, hour, disciplineId, duration, metadata
-                );
-            },
-            removeStudentSlot: function(studentId, week, day, hour) {
-                return ScheduleCore.removeStudentSlot(studentId, week, day, hour);
-            },
-            clearStudentSchedule: function(studentId, week) {
-                return ScheduleCore.clearStudentSchedule(studentId, week);
-            },
-            duplicateStudentSchedule: function(studentId, fromWeek, toWeek) {
-                return ScheduleCore.duplicateStudentSchedule(studentId, fromWeek, toWeek);
-            },
-            setRestDays: function(studentId, week, days) {
-                return ScheduleCore.setRestDays(studentId, week, days);
-            },
-            removeRestDays: function(studentId, week) {
-                return ScheduleCore.removeRestDays(studentId, week);
-            },
-            setSlotMetadata: function(studentId, week, day, hour, metadata) {
-                return ScheduleCore.setSlotMetadata(studentId, week, day, hour, metadata);
-            },
-            setInstructorTemplate: function(instructorId, week, day, hour, templateData) {
-                return ScheduleCore.setInstructorTemplate(
-                    instructorId, week, day, hour, templateData
-                );
-            },
-            removeInstructorTemplate: function(instructorId, week, day, hour) {
-                return ScheduleCore.removeInstructorTemplate(
-                    instructorId, week, day, hour
-                );
-            },
-            setInstructorBlock: function(instructorId, week, day, hour, blockData) {
-                return ScheduleCore.setInstructorBlock(
-                    instructorId, week, day, hour, blockData
-                );
-            },
-            removeInstructorBlock: function(instructorId, week, day, hour) {
-                return ScheduleCore.removeInstructorBlock(
-                    instructorId, week, day, hour
-                );
-            },
-            setLocationClass: function(locationId, week, day, hour, disciplineId, metadata) {
-                return ScheduleCore.setLocationClass(
-                    locationId, week, day, hour, disciplineId, 1, metadata
-                );
-            },
-            removeLocationClass: function(locationId, week, day, hour) {
-                return ScheduleCore.removeLocationClass(locationId, week, day, hour);
-            },
-
-            // ---- PURE PREDICATE — synchronous ----
-            hasConflict: function(schedule, day, hour, duration) {
-                return ScheduleCore.hasConflict(schedule, day, hour, duration);
-            }
-        };
-
-        var ok = AcademySchedule.configure({
-            calendarProvider: calendarProvider
-        });
-
-        if (!ok) {
-            console.error(
-                '[AcademyModule] AcademySchedule.configure returned false. ' +
-                'The calendarProvider did not satisfy the required method contract.'
-            );
-            return false;
-        }
-
-        _providersInitialized = true;
         return true;
     }
 
@@ -435,21 +254,10 @@
             return;
         }
 
-        if (!initProviders()) {
-            container.innerHTML =
-                '<p class="empty-state">' +
-                    'Failed to initialize academy providers. Please refresh the page.' +
-                '</p>';
-            return;
-        }
-
         if (_mounted) {
             unmountAcademy();
         }
 
-        // Hand the container to AcademyView. AcademyView owns the
-        // render and the event delegation. If it throws, we do not
-        // mark the module as mounted.
         try {
             AcademyView.render(container);
         } catch (e) {
@@ -485,9 +293,6 @@
     // ============================================================
     // REFRESH
     // ============================================================
-    //
-    // AcademyView is the authoritative renderer. Refreshing the
-    // Academy tab means re-rendering the whole tab.
 
     function refreshAcademy() {
         if (!_mounted || !_container) {
