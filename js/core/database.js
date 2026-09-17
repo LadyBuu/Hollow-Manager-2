@@ -3,13 +3,21 @@
  * Path: js/core/database.js
  *
  * Data Version History (updated):
- *   ...
  *   - Version 23: Repairs legacy tournaments (assigns round/match IDs,
  *                strips retired fields, backfills elimination tournamentId)
  *                and backfills academy.weeklyTeams windows for classed
  *                academic teams. Orphan teams (classId: null) are left
  *                alone; the Weekly Teams view surfaces them for manual
  *                assignment.
+ *   - Version 24: Member intervals refactor. Every team member entry
+ *                is reshaped from flat joinPeriod / leavePeriod fields
+ *                to a single-element `intervals` array. Every entry
+ *                also receives a stable `memberId` if it lacks one.
+ *                The flat fields are removed. Entries that already
+ *                carry `intervals` are left alone. Entries that carry
+ *                neither flat fields nor intervals get an empty
+ *                intervals array (the member exists but has no stints;
+ *                the UI surfaces this).
  *
  * ACADEMY STORES (v20+):
  *   ...
@@ -30,7 +38,7 @@
 
     var DB_NAME = 'HollowBladesDB';
     var DB_VERSION = 1;
-    var DATA_VERSION = 23;
+    var DATA_VERSION = 24;
     var STORE_NAME = 'appData';
 
     var _indexedDB = null;
@@ -463,6 +471,7 @@
                 case 20: migrateToVersion21(data); break;
                 case 21: migrateToVersion22(data); break;
                 case 22: migrateToVersion23(data); break;
+                case 23: migrateToVersion24(data); break;
                 default: data._dataVersion = DATA_VERSION; break;
             }
         }
@@ -1352,6 +1361,181 @@
         data._dataVersion = 23;
     }
 
+    /**
+     * Version 24 migration — Member intervals refactor.
+     *
+     * WHY:
+     *   Before v24, a team member entry carried flat `joinPeriod` and
+     *   `leavePeriod` fields. A single entry could only describe one
+     *   stint. A character who left a team and later rejoined had to
+     *   be handled by purging the existing entry and appending a new
+     *   one — which lost the previous stint's history and made "edit
+     *   this stint's leave week" ambiguous when the same character
+     *   appeared twice.
+     *
+     *   v24 changes the member entry shape to:
+     *
+     *     {
+     *       memberId,        // stable per-entry identifier
+     *       characterId,
+     *       role,
+     *       intervals: [
+     *         { joinPeriod, leavePeriod },
+     *         ...
+     *       ]
+     *     }
+     *
+     *   Multiple stints for the same character now live in one entry's
+     *   intervals array. A rejoin appends a new interval instead of
+     *   replacing the entry. Each interval is identified by its
+     *   joinPeriod (which is unique per character within a team).
+     *
+     * WHAT THIS MIGRATION DOES:
+     *   1. For every team, for every member entry:
+     *      a. If the entry has flat `joinPeriod` or `leavePeriod` and
+     *         no `intervals` array, wrap them into a single-element
+     *         intervals array and delete the flat fields.
+     *      b. If the entry already has an `intervals` array, leave it
+     *         alone (defensive — this shape shouldn't exist before
+     *         v24 runs, but data from a partially-migrated build
+     *         might).
+     *      c. If the entry has neither flat fields nor an intervals
+     *         array, create `intervals: []`. The member exists but
+     *         has no stints; the UI surfaces this rather than
+     *         silently dropping the member.
+     *      d. Ensure the entry has a `memberId`. Entries that already
+     *         carry one keep it. Entries that don't receive a fresh
+     *         one in the same `mem_<timestamp>_<random>` format that
+     *         the mutation layer uses at write time.
+     *
+     *   2. Log counts: entries migrated, entries with pre-existing
+     *      intervals (skipped), entries that became empty-interval,
+     *      memberIds generated, malformed entries skipped.
+     *
+     * WHAT THIS MIGRATION DOES NOT DO:
+     *   - It does NOT touch `academy.weeklyTeams`. That store is a
+     *     window-only wrapper and never carried member data (v22
+     *     already stripped the redundant members array).
+     *   - It does NOT re-derive or repair interval bounds beyond
+     *     preserving what the flat fields already contained. If a
+     *     legacy entry had invalid bounds, they remain invalid in the
+     *     interval. The domain layer (TeamCore) is where interval
+     *     validation happens on write.
+     *   - It does NOT reorder or merge intervals. If a legacy entry
+     *     somehow produced two intervals that overlap, they stay
+     *     overlapping. Cleaning that up is a data-quality task, not
+     *     a schema migration.
+     *   - It does NOT delete any team or member.
+     *
+     * @param {object} data
+     */
+    function migrateToVersion24(data) {
+        if (!Array.isArray(data.teams)) {
+            data._dataVersion = 24;
+            return;
+        }
+
+        var teamsProcessed = 0;
+        var membersSeen = 0;
+        var membersMigrated = 0;
+        var membersAlreadyIntervals = 0;
+        var membersBecameEmpty = 0;
+        var memberIdsGenerated = 0;
+        var malformedMembersSkipped = 0;
+
+        function generateMemberId() {
+            return 'mem_' + Date.now() + '_' +
+                Math.random().toString(36).slice(2, 8);
+        }
+
+        function hasFlatPeriodField(member) {
+            var hasJoin = member.joinPeriod !== undefined &&
+                          member.joinPeriod !== null &&
+                          member.joinPeriod !== '';
+            var hasLeave = member.leavePeriod !== undefined &&
+                           member.leavePeriod !== null &&
+                           member.leavePeriod !== '';
+            return hasJoin || hasLeave;
+        }
+
+        function flatPeriodToString(value) {
+            if (value === undefined || value === null) {
+                return '';
+            }
+            return String(value);
+        }
+
+        for (var i = 0; i < data.teams.length; i++) {
+            var team = data.teams[i];
+            if (!team || typeof team !== 'object' || Array.isArray(team)) {
+                continue;
+            }
+            if (!Array.isArray(team.members)) {
+                continue;
+            }
+
+            teamsProcessed++;
+
+            for (var j = 0; j < team.members.length; j++) {
+                var member = team.members[j];
+                if (!member || typeof member !== 'object' || Array.isArray(member)) {
+                    malformedMembersSkipped++;
+                    continue;
+                }
+
+                membersSeen++;
+
+                // ---- Step 1: reshape flat fields into intervals ----
+                if (Array.isArray(member.intervals)) {
+                    // Defensive: shape already present. Leave alone.
+                    membersAlreadyIntervals++;
+                } else if (hasFlatPeriodField(member)) {
+                    // Wrap the flat fields into a single interval.
+                    var joinStr = flatPeriodToString(member.joinPeriod);
+                    var leaveStr = flatPeriodToString(member.leavePeriod);
+                    member.intervals = [
+                        { joinPeriod: joinStr, leavePeriod: leaveStr }
+                    ];
+                    delete member.joinPeriod;
+                    delete member.leavePeriod;
+                    membersMigrated++;
+                } else {
+                    // No flat fields, no intervals. Give it an empty
+                    // intervals array so downstream code has a
+                    // consistent shape. The UI surfaces this.
+                    member.intervals = [];
+                    delete member.joinPeriod;
+                    delete member.leavePeriod;
+                    membersBecameEmpty++;
+                }
+
+                // ---- Step 2: ensure a memberId ----
+                var hasMemberId =
+                    member.memberId !== undefined &&
+                    member.memberId !== null &&
+                    String(member.memberId).trim() !== '';
+
+                if (!hasMemberId) {
+                    member.memberId = generateMemberId();
+                    memberIdsGenerated++;
+                }
+            }
+        }
+
+        console.log(
+            '[Database] v24: member intervals refactor complete. ' +
+            'Teams processed: ' + teamsProcessed + '. ' +
+            'Members seen: ' + membersSeen + '. ' +
+            'Reshaped from flat fields: ' + membersMigrated + '. ' +
+            'Already had intervals (skipped): ' + membersAlreadyIntervals + '. ' +
+            'Became empty-interval entries: ' + membersBecameEmpty + '. ' +
+            'MemberIds generated: ' + memberIdsGenerated + '. ' +
+            'Malformed members skipped: ' + malformedMembersSkipped + '.'
+        );
+
+        data._dataVersion = 24;
+    }
+
     // ============================================================
     // NORMALISE DATA STRUCTURE
     // ============================================================
@@ -1528,6 +1712,47 @@
                 });
             });
         }
+
+        // v24 shape guard: every team member entry must have an
+        // intervals array and a memberId. This catches data that
+        // somehow bypassed the migration (e.g. was created by a
+        // pre-v24 build and then loaded with the new code without a
+        // version bump, or was directly injected by an import).
+        data.teams.forEach(function(team) {
+            if (!team || typeof team !== 'object') return;
+            if (!Array.isArray(team.members)) return;
+
+            for (var i = 0; i < team.members.length; i++) {
+                var member = team.members[i];
+                if (!member || typeof member !== 'object' || Array.isArray(member)) {
+                    continue;
+                }
+
+                if (!Array.isArray(member.intervals)) {
+                    // Reshape flat fields if present, else empty array.
+                    var joinStr = (member.joinPeriod !== undefined && member.joinPeriod !== null)
+                        ? String(member.joinPeriod) : '';
+                    var leaveStr = (member.leavePeriod !== undefined && member.leavePeriod !== null)
+                        ? String(member.leavePeriod) : '';
+                    if (joinStr !== '' || leaveStr !== '') {
+                        member.intervals = [{ joinPeriod: joinStr, leavePeriod: leaveStr }];
+                    } else {
+                        member.intervals = [];
+                    }
+                    delete member.joinPeriod;
+                    delete member.leavePeriod;
+                    repaired = true;
+                }
+
+                if (member.memberId === undefined ||
+                    member.memberId === null ||
+                    String(member.memberId).trim() === '') {
+                    member.memberId = 'mem_' + Date.now() + '_' +
+                        Math.random().toString(36).slice(2, 8);
+                    repaired = true;
+                }
+            }
+        });
 
         var validClassIds = Object.create(null);
         Object.keys(data.academy.graduatingClasses).forEach(function(id) {
