@@ -39,23 +39,21 @@
  *   - The list is deep-frozen at load. Callers cannot mutate the
  *     shared array. getValidLocationTypes() returns a copy.
  *
- * DELETE CASCADE (Phase 8):
+ * DELETE CASCADE (v21):
  *   Deleting a location is a CASCADE. In a single transaction it:
  *     1. Deletes the location from window.data.locations.
- *     2. Removes curriculum.locationSchedules[locationId] entirely.
- *     3. Removes location references from curriculum.classLocations.
- *     4. Prunes metadata entries whose entityId matches the location ID.
- *     5. Cross-domain cleanup via AcademyCascade.locationDeleted.
+ *     2. Cross-domain cleanup via AcademyCascade.locationDeleted,
+ *        which nulls the locationId on every teaching session that
+ *        referenced it.
  *
- *   Steps 2–4 stay inline: they operate on curriculum-internal
- *   structures that AcademyLocations owns. Step 5 is delegated so
- *   that future location-keyed stores can be handled by the
- *   coordinator without touching this file.
+ *   The retired stored-schedule maps (curriculum.locationSchedules,
+ *   curriculum.classLocations, curriculum.metadata) are no longer
+ *   touched. They were removed in database v21.
  *
- *   The coordinator's locationDeleted is currently a placeholder
- *   because no cross-domain store keys off locationId yet. The call
- *   is still made — it costs nothing and it future-proofs the
- *   integration.
+ *   Sessions are NOT deleted when their location is deleted. The
+ *   room was a property of the session, not its identity. A
+ *   decommissioned room does not end the class; the session survives
+ *   with locationId set to null.
  *
  * MUTATION CONTRACT:
  *   - create / update / delete / saveLocations all return
@@ -65,8 +63,6 @@
  *
  * STORAGE:
  *   - Locations live at window.data.locations (top-level array).
- *   - Location schedules live at curriculum.locationSchedules.
- *   - Class→location mappings live at curriculum.classLocations.
  *
  * DEPENDENCIES:
  *   - window.ObjectUtils (from object-utils.js) - MANDATORY
@@ -356,95 +352,6 @@
     }
 
     // ============================================================
-    // CASCADE HELPERS - Curriculum-internal cleanup
-    // ============================================================
-
-    /**
-     * Remove curriculum.locationSchedules[locationId] entirely.
-     * Returns 1 if a schedule existed and was removed, 0 otherwise.
-     */
-    function stripLocationSchedules(curriculum, locationId) {
-        var schedules = curriculum.locationSchedules;
-        if (!schedules || typeof schedules !== 'object') {
-            return 0;
-        }
-
-        var target = String(locationId);
-        if (schedules[target]) {
-            delete schedules[target];
-            return 1;
-        }
-        return 0;
-    }
-
-    /**
-     * Remove references to a location from curriculum.classLocations.
-     * Shape: { classId: locationId }. A class whose assigned location
-     * is deleted becomes unassigned.
-     *
-     * Returns the number of class→location mappings removed.
-     */
-    function stripLocationFromClassLocations(curriculum, locationId) {
-        var classLocations = curriculum.classLocations;
-        if (!classLocations || typeof classLocations !== 'object') {
-            return 0;
-        }
-
-        var target = String(locationId);
-        var keysToRemove = [];
-
-        Object.keys(classLocations).forEach(function(classId) {
-            if (String(classLocations[classId]) === target) {
-                keysToRemove.push(classId);
-            }
-        });
-
-        for (var i = 0; i < keysToRemove.length; i++) {
-            delete classLocations[keysToRemove[i]];
-        }
-
-        return keysToRemove.length;
-    }
-
-    /**
-     * Prune metadata entries whose first segment matches the deleted
-     * location ID.
-     *
-     * Metadata keys are composite strings formatted as
-     * `${entityId}_${week}_${day}_${hour}`. For locations, the entity
-     * is the location ID itself.
-     *
-     * Returns the number of metadata entries pruned.
-     */
-    function stripLocationFromMetadata(curriculum, locationId) {
-        var metadata = curriculum.metadata;
-        if (!metadata || typeof metadata !== 'object') {
-            return 0;
-        }
-
-        var target = String(locationId);
-        var keysToRemove = [];
-
-        Object.keys(metadata).forEach(function(key) {
-            var parts = String(key).split('_');
-            if (parts.length < 4) {
-                return;
-            }
-
-            var entityId = parts.slice(0, parts.length - 3).join('_');
-            if (entityId === target) {
-                keysToRemove.push(key);
-            }
-        });
-
-        for (var i = 0; i < keysToRemove.length; i++) {
-            delete metadata[keysToRemove[i]];
-        }
-
-        return keysToRemove.length;
-    }
-
-    // ============================================================
     // PUBLIC API - LOCATION CRUD
     // ============================================================
 
@@ -612,14 +519,15 @@
     /**
      * Delete a location permanently.
      *
-     * CASCADE. In a single transaction it:
+     * CASCADE (v21). In a single transaction it:
      *   1. Deletes the location from window.data.locations.
-     *   2. Removes curriculum.locationSchedules[locationId].
-     *   3. Removes location refs from curriculum.classLocations.
-     *   4. Prunes metadata entries for this location.
-     *   5. Cross-domain: delegated to AcademyCascade.locationDeleted.
+     *   2. Delegates to AcademyCascade.locationDeleted, which nulls
+     *      the locationId on every teaching session that referenced
+     *      it. Sessions are NOT deleted; the class still runs.
      *
-     * Steps 2–4 stay inline. Step 5 is delegated.
+     * The retired stored-schedule maps (curriculum.locationSchedules,
+     * curriculum.classLocations, curriculum.metadata) are no longer
+     * touched. They were removed in database v21.
      */
     function deleteLocation(id) {
         if (!isNonEmptyString(id)) {
@@ -669,18 +577,9 @@
                 }
                 locations.splice(idx, 1);
 
-                // ---- 2. Ensure curriculum structure exists ----
-                if (!appData.curriculum || typeof appData.curriculum !== 'object') {
-                    appData.curriculum = {};
-                }
-                var curriculum = appData.curriculum;
-
-                // ---- 3. Curriculum-internal cleanup ----
-                var scheduleRemoved = stripLocationSchedules(curriculum, target);
-                var classLocationsRemoved = stripLocationFromClassLocations(curriculum, target);
-                var metadataPruned = stripLocationFromMetadata(curriculum, target);
-
-                // ---- 4. Cross-domain cascade ----
+                // ---- 2. Cross-domain cascade ----
+                // AcademyCascade.locationDeleted nulls the locationId
+                // on every teaching session that referenced it.
                 var cascade = null;
                 var Cascade = getAcademyCascade();
                 if (Cascade && typeof Cascade.locationDeleted === 'function') {
@@ -690,21 +589,11 @@
                 return {
                     deleted: true,
                     location: locationInfo,
-                    curriculum: {
-                        scheduleRemoved: scheduleRemoved,
-                        classLocationsRemoved: classLocationsRemoved,
-                        metadataEntriesPruned: metadataPruned
-                    },
                     academyCascade: cascade
                 };
             },
             logMessage: function(result) {
                 var parts = [];
-                var c = result.curriculum || {};
-
-                if (c.scheduleRemoved > 0) parts.push('schedule');
-                if (c.classLocationsRemoved > 0) parts.push(c.classLocationsRemoved + ' class mapping(s)');
-                if (c.metadataEntriesPruned > 0) parts.push(c.metadataEntriesPruned + ' metadata entry/ies');
 
                 if (result.academyCascade) {
                     var Cascade = getAcademyCascade();
