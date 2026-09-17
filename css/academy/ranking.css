@@ -1,0 +1,341 @@
+/**
+ * css/academy/ranking.css - Academy Rankings sub-view
+ *
+ * The Rankings view of the Academy tab. Rendered by
+ * academy-ranking-view.js.
+ *
+ * Covers:
+ *   - Top bar (class selector, week input)
+ *   - Ranking panel (header, table, rows)
+ *   - Rank badges (gold / silver / bronze / default)
+ *   - Average bands (excellent / good / passing / failing)
+ *
+ * Load order: shared.css → academy.css → academy/ranking.css
+ */
+
+/* ============================================================
+   LAYOUT
+   ============================================================ */
+
+.academy-ranking-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+/* ============================================================
+   TOP BAR
+   ============================================================ */
+
+.academy-ranking-top-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.academy-ranking-top-left,
+.academy-ranking-top-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.academy-top-label {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-weight: 500;
+}
+
+/* ============================================================
+   EMPTY STATE
+   ============================================================ */
+
+.academy-ranking-empty {
+    padding: 30px 12px;
+    text-align: center;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+/* ============================================================
+   PANEL
+   ============================================================ */
+
+.academy-ranking-panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px;
+    min-height: 200px;
+}
+
+.academy-ranking-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding-bottom: 8px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-ranking-title {
+    font-size: 1rem;
+    color: var(--accent);
+    margin: 0;
+    flex: 1;
+    min-width: 0;
+}
+
+.academy-ranking-subtitle {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+
+.academy-ranking-count {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    padding: 1px 8px;
+    border-radius: 10px;
+    white-space: nowrap;
+}
+
+/* ============================================================
+   TABLE
+   ============================================================ */
+
+.academy-ranking-table-wrapper {
+    max-height: 480px;
+    overflow-y: auto;
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+}
+
+.academy-ranking-full-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.72rem;
+}
+
+.academy-ranking-full-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    text-align: left;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    color: var(--text-dim);
+    font-size: 0.62rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+}
+
+.academy-ranking-full-table tbody td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border-soft);
+    vertical-align: middle;
+}
+
+.academy-ranking-full-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+/* ---------- Row states ---------- */
+
+.academy-ranking-row {
+    transition: background 0.15s;
+    cursor: pointer;
+}
+
+.academy-ranking-row:hover {
+    background: var(--panel-alt);
+}
+
+.academy-ranking-row-instructor {
+    background: var(--info-soft);
+}
+
+.academy-ranking-row-instructor:hover {
+    background: var(--info-hover);
+}
+
+/* ---------- Columns ---------- */
+
+.academy-ranking-full-table .rank-col {
+    width: 70px;
+    text-align: center;
+}
+
+.academy-ranking-full-table .name-col {
+    /* Flexible */
+}
+
+.academy-ranking-full-table .avg-col {
+    width: 90px;
+    text-align: right;
+}
+
+.academy-ranking-full-table .count-col {
+    width: 80px;
+    text-align: right;
+    color: var(--text-dim);
+}
+
+/* ============================================================
+   RANK BADGE
+   ============================================================ */
+
+.academy-rank-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 36px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    border: 1px solid transparent;
+    white-space: nowrap;
+}
+
+.academy-rank-gold {
+    color: #d4af37;
+    background: rgba(212, 175, 55, 0.15);
+    border-color: #d4af37;
+}
+
+.academy-rank-silver {
+    color: #b8b8b8;
+    background: rgba(184, 184, 184, 0.15);
+    border-color: #b8b8b8;
+}
+
+.academy-rank-bronze {
+    color: #c0863c;
+    background: rgba(192, 134, 60, 0.15);
+    border-color: #c0863c;
+}
+
+.academy-rank-default {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+.academy-rank-unknown {
+    color: var(--text-dim);
+    background: transparent;
+    border-color: var(--border-soft);
+}
+
+/* ============================================================
+   AVERAGE BANDS
+   ============================================================ */
+
+.academy-ranking-average {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.academy-ranking-average-excellent {
+    color: var(--accent);
+}
+
+.academy-ranking-average-good {
+    color: var(--info);
+}
+
+.academy-ranking-average-passing {
+    color: var(--warning);
+}
+
+.academy-ranking-average-failing {
+    color: var(--danger);
+}
+
+.academy-ranking-average-unknown {
+    color: var(--text-dim);
+}
+
+/* ============================================================
+   NAME CELL
+   ============================================================ */
+
+.academy-ranking-name {
+    font-weight: 500;
+    color: var(--text);
+}
+
+.academy-ranking-instructor-badge {
+    display: inline-block;
+    font-size: 0.55rem;
+    font-weight: 600;
+    color: var(--info);
+    background: var(--info-soft);
+    border: 1px solid var(--info);
+    padding: 1px 6px;
+    border-radius: 8px;
+    margin-left: 4px;
+    white-space: nowrap;
+}
+
+/* ============================================================
+   MOBILE
+   ============================================================ */
+
+@media (max-width: 600px) {
+    .academy-ranking-top-bar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .academy-ranking-top-left,
+    .academy-ranking-top-right {
+        justify-content: space-between;
+    }
+
+    .academy-ranking-panel {
+        padding: 8px;
+    }
+
+    .academy-ranking-full-table {
+        font-size: 0.68rem;
+    }
+
+    .academy-ranking-full-table thead th,
+    .academy-ranking-full-table tbody td {
+        padding: 4px 6px;
+    }
+
+    .academy-ranking-full-table .rank-col {
+        width: 50px;
+    }
+
+    .academy-ranking-full-table .avg-col {
+        width: 65px;
+    }
+
+    .academy-ranking-full-table .count-col {
+        width: 55px;
+    }
+
+    .academy-rank-badge {
+        min-width: 30px;
+        padding: 1px 6px;
+        font-size: 0.6rem;
+    }
+}
