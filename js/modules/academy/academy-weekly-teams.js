@@ -1,765 +1,1389 @@
 /**
- * modules/academy/academy-weekly-teams-view.js - Academy Weekly Teams View
- * Standalone view for browsing academic teams within a class and week.
+ * modules/academy/academy-weekly-teams.js - Academy Weekly Teams
+ * WEEK-SCOPED TEAM VISIBILITY for the Academy Weekly Teams view.
  *
- * Path: js/modules/academy/academy-weekly-teams-view.js
+ * Path: js/modules/academy/academy-weekly-teams.js
  *
- * RESPONSIBILITIES:
- *   - Rendering the class + week selectors
- *   - Rendering the team list (left panel) with actions
- *   - Rendering the team detail (right panel) with members
- *   - Rendering an empty state when no class or team is selected
- *   - Building the Create / Edit Team and Auto-Distribute modals
- *   - Collecting form values from those modals
+ * WHAT THIS MODULE OWNS:
+ *   The week window during which a persistent Team entity appears in
+ *   the Weekly Teams view for a class. A weekly-team record is a
+ *   thin wrapper:
  *
- * NOT RESPONSIBILITIES:
- *   - Event binding. AcademyView binds; this module emits data-*.
- *   - Domain reads. The VM carries everything the renderer needs.
- *   - Validation. Collectors return raw field values; the domain
- *     validates.
+ *     academy.weeklyTeams[classId][teamId] = {
+ *       id, classId, teamId,
+ *       startWeek, endWeek,       // null = ongoing; endWeek inclusive
+ *       createdAt, updatedAt
+ *     }
  *
- * ROSTER SOURCE (v22):
- *   The VM's `teams[].memberCount` and `selectedTeam.members[]`
- *   come from the persistent Team entity's members[] array,
- *   filtered by week. The renderer does not care where the roster
- *   came from; it renders what the VM provides. The Tournaments
- *   view reads the same underlying roster, so the two views always
- *   agree.
+ * WHAT THIS MODULE DOES NOT OWN (v22):
+ *   Team membership. The roster lives EXCLUSIVELY on the persistent
+ *   Team entity's members[] array (with joinPeriod / leavePeriod as
+ *   the week range). Prior to v22, this module also carried a
+ *   redundant `members` array on every weekly-team record. That
+ *   array drifted from the persistent roster, producing a UI where
+ *   the same team showed one roster in the Weekly Teams view and a
+ *   different roster in the Tournaments view. The v22 migration
+ *   collapsed the redundant array into the persistent roster and
+ *   the writers here now route membership mutations through a
+ *   transaction-local helper that operates on the persistent Team
+ *   entity.
  *
- * CLEAR ROSTERS:
- *   The list-panel "Clear Rosters" button emits
- *   data-action="weekly-teams-empty-teams". AcademyView handles it
- *   by calling AcademyWeeklyTeams.clearAllMembershipsForClass,
- *   which HARD-DELETES every member whose active window covers the
- *   current week, across every academic team of the class whose own
- *   startPeriod / endPeriod covers the week.
+ * READS:
+ *   - getWeeklyTeams(classId, week)
+ *       Returns { [teamId]: [charId, ...] } for every team active
+ *       in the week. Membership comes from
+ *       TeamQueries.getActiveTeamMembers. The weekly-team record
+ *       gates which teams are visible at all.
+ *   - getActiveMembers(classId, teamId, week)
+ *       Delegates to TeamQueries.getActiveTeamMembers.
+ *   - isPersistentTeamVisibleInWeek(teamId, week)
+ *       The persistent Team entity's own startPeriod / endPeriod.
  *
- *   Teams remain scheduled. Weekly-team window records are
- *   untouched. Members that are not active at the week (past
- *   leaves, future joins) are preserved. This is used when rosters
- *   need to be rebuilt from scratch for a week.
+ * WRITES (v22):
+ *   - ensureWindow(classId, teamId, week)
+ *       Creates the weekly-team window record for (classId, teamId)
+ *       if it does not exist; otherwise widens it to include the
+ *       week. Does NOT touch membership.
+ *   - addMember(classId, teamId, charId, week)
+ *       Ensures a weekly-team record exists for (classId, teamId),
+ *       then delegates membership to a transaction-local helper
+ *       that writes to the persistent Team entity's members[].
+ *   - endMembership(classId, teamId, charId, effectiveWeek)
+ *       Truncates the member's leavePeriod on the persistent roster
+ *       at effectiveWeek - 1. History survives.
+ *   - removeMemberRecord(classId, teamId, charId)
+ *       Hard-deletes the member's entry from the persistent roster.
+ *   - removeTeamRecord(classId, teamId)
+ *       Deletes the weekly-team record. Does NOT touch the
+ *       persistent Team entity.
+ *   - clearClassWindows(classId)
+ *       Deletes every weekly-team record for a class. Does NOT
+ *       touch any persistent Team entity. This is the operation the
+ *       Auto-Distribute "clear existing teams" checkbox uses.
+ *   - clearAllMembershipsForClass(classId, week)
+ *       Hard-deletes every member whose active window covers the
+ *       given week, across every academic team of the class whose
+ *       own startPeriod / endPeriod covers the week. Teams remain
+ *       scheduled; the weekly-team windows are untouched. This is
+ *       the operation the Weekly Teams view exposes as "Clear
+ *       Rosters".
  *
- * EVENTS EMITTED:
- *   - #academy-weekly-teams-class-select  (change)
- *   - #academy-weekly-teams-week-input    (change / Enter)
- *   - .academy-weekly-team-row            [data-team-id]
- *   - .academy-weekly-team-member-row     [data-character-id]
- *   - [data-action="weekly-teams-create-team"]     (click)
- *   - [data-action="weekly-teams-edit-team"]  [data-team-id]  (click)
- *   - [data-action="weekly-teams-auto-distribute"] (click)
- *   - [data-action="weekly-teams-empty-teams"]     (click)
- *   - [data-action="weekly-teams-delete-team"] [data-team-id]  (click)
- *   - [data-action="weekly-teams-manage-members"] [data-team-id] (click)
+ * WHY TRANSACTION-LOCAL HELPERS:
+ *   TeamCore's public mutations (addMember, updateMember,
+ *   removeMember) each open their own MutationPipeline transaction.
+ *   This module also runs through MutationPipeline. Nesting
+ *   pipelines deadlocks. The helpers below operate on the appData
+ *   snapshot the pipeline hands in, matching the pattern already
+ *   used by TournamentEliminationCascade and AcademyCascade.
  *
- * CREATE / EDIT MODE:
- *   buildTeamModalHTML accepts an optional `team` object.
- *     - team absent  → "Create Academic Team" / "Create Team"
- *     - team present → "Edit Academic Team" / "Save Team"
+ * DROP-OUT vs DELETE:
+ *   - endMembership: the member's window becomes
+ *     [joinPeriod, effectiveWeek - 1]. History survives.
+ *   - removeMemberRecord: hard delete, no history.
+ *   - clearAllMembershipsForClass: hard delete, no history, across
+ *     every active academic team of the class at the given week.
+ *     Used when the roster needs to be rebuilt from scratch.
  *
- *   The form fields are identical in both modes:
- *     - Name (required)
- *     - Team Number (optional)
- *     - Start Week (required, defaults to the current display week
- *       on create; preserved from the team on edit)
- *     - End Week (optional, blank = ongoing)
+ * WEEK SEMANTICS:
+ *   - Weeks are bounded [MIN_WEEK, MAX_WEEK].
+ *   - startWeek and endWeek are integers in that range.
+ *   - endWeek === null means "ongoing".
+ *   - endWeek is INCLUSIVE.
  *
- *   The class and type are FIXED after creation:
- *     - Weekly Teams only shows academic teams of one class.
- *     - Changing type or class would orphan the team from this view.
- *     The edit form does not expose a picker for either.
- *
- * DEPENDENCIES:
- *   - window.DomUtils (MANDATORY)
+ * DEPENDENCIES (MANDATORY):
+ *   - window.ObjectUtils          (deepClone)
+ *   - window.ValidationUtils      (isNonEmptyString)
+ *   - window.CalendarValidation   (parseWeek)
+ *   - window.CalendarConstants    (MIN_WEEK, MAX_WEEK)
+ *   - window.MutationPipeline     (performMutation)
+ *   - window.TeamQueries          (getTeamById, getActiveTeamMembers,
+ *                                  getTeamsByClass, isTeamActiveAtPeriod)
+ *   - window.TeamConstants        (parsePeriod, normalizeTeamType)
  */
 
 (function() {
     'use strict';
 
-    if (window.__academyWeeklyTeamsViewLoaded) {
+    if (window.__academyWeeklyTeamsLoaded) {
         return;
     }
 
-    var DomUtils = window.DomUtils;
+    var _DIAGNOSTIC = false;
 
-    if (!DomUtils ||
-        typeof DomUtils.escapeHtml !== 'function' ||
-        typeof DomUtils.escapeAttribute !== 'function') {
+    function diag() {
+        if (!_DIAGNOSTIC) return;
+        var args = Array.prototype.slice.call(arguments);
+        args.unshift('[AWT]');
+        console.log.apply(console, args);
+    }
+
+    function diagWarn() {
+        var args = Array.prototype.slice.call(arguments);
+        args.unshift('[AWT]');
+        console.warn.apply(console, args);
+    }
+
+    // ============================================================
+    // MANDATORY DEPENDENCIES
+    // ============================================================
+
+    var ObjectUtils = window.ObjectUtils;
+    var ValidationUtils = window.ValidationUtils;
+    var CalendarValidation = window.CalendarValidation;
+    var CalendarConstants = window.CalendarConstants;
+    var MutationPipeline = window.MutationPipeline;
+    var TeamQueries = window.TeamQueries;
+    var TeamConstants = window.TeamConstants;
+
+    var _missing = [];
+
+    if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
+        _missing.push('ObjectUtils.deepClone');
+    }
+    if (!ValidationUtils || typeof ValidationUtils.isNonEmptyString !== 'function') {
+        _missing.push('ValidationUtils.isNonEmptyString');
+    }
+    if (!CalendarValidation || typeof CalendarValidation.parseWeek !== 'function') {
+        _missing.push('CalendarValidation.parseWeek');
+    }
+    if (!CalendarConstants ||
+        typeof CalendarConstants.MIN_WEEK !== 'number' ||
+        typeof CalendarConstants.MAX_WEEK !== 'number') {
+        _missing.push('CalendarConstants.MIN_WEEK/MAX_WEEK');
+    }
+    if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
+        _missing.push('MutationPipeline.performMutation');
+    }
+    if (!TeamQueries || typeof TeamQueries.getTeamById !== 'function') {
+        _missing.push('TeamQueries.getTeamById');
+    }
+    if (!TeamQueries || typeof TeamQueries.getActiveTeamMembers !== 'function') {
+        _missing.push('TeamQueries.getActiveTeamMembers');
+    }
+    if (!TeamQueries || typeof TeamQueries.getTeamsByClass !== 'function') {
+        _missing.push('TeamQueries.getTeamsByClass');
+    }
+    if (!TeamQueries || typeof TeamQueries.isTeamActiveAtPeriod !== 'function') {
+        _missing.push('TeamQueries.isTeamActiveAtPeriod');
+    }
+    if (!TeamConstants || typeof TeamConstants.parsePeriod !== 'function') {
+        _missing.push('TeamConstants.parsePeriod');
+    }
+
+    if (_missing.length > 0) {
         throw new Error(
-            '[AcademyWeeklyTeamsView] Missing mandatory dependency: ' +
-            'DomUtils.escapeHtml / DomUtils.escapeAttribute'
+            '[AcademyWeeklyTeams] Missing mandatory dependencies: ' +
+            _missing.join(', ')
         );
     }
 
-    window.__academyWeeklyTeamsViewLoaded = true;
+    window.__academyWeeklyTeamsLoaded = true;
+
+    diag('Module loaded (v22, no local member array).');
 
     // ============================================================
-    // ESCAPING
+    // CONSTANTS
     // ============================================================
 
-    function escapeHtml(value) {
-        return DomUtils.escapeHtml(value);
-    }
-
-    function escapeAttribute(value) {
-        return DomUtils.escapeAttribute(value);
-    }
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
 
     // ============================================================
-    // SMALL HELPERS
+    // HELPERS
     // ============================================================
 
     function isNonEmptyString(value) {
-        return typeof value === 'string' && value.trim() !== '';
+        return ValidationUtils.isNonEmptyString(value);
     }
 
-    function isFiniteNumber(value) {
-        return typeof value === 'number' && isFinite(value);
+    function isPlainObject(value) {
+        return value !== null &&
+               typeof value === 'object' &&
+               !Array.isArray(value);
     }
 
-    function safeString(value) {
-        if (value === undefined || value === null) { return ''; }
-        return String(value);
-    }
-
-    function getTeamTypeBadgeClass(type) {
-        switch (type) {
-            case 'academic':     return 'academy-team-type-badge academy-team-type-academic';
-            case 'professional': return 'academy-team-type-badge academy-team-type-professional';
-            case 'temporary':    return 'academy-team-type-badge academy-team-type-temporary';
-            case 'civilian':     return 'academy-team-type-badge academy-team-type-civilian';
-            default:             return 'academy-team-type-badge academy-team-type-unknown';
+    function deepClone(value) {
+        var result = ObjectUtils.deepClone(value);
+        if (result === value && value !== null && typeof value === 'object') {
+            throw new Error(
+                '[AcademyWeeklyTeams] deepClone returned the original reference.'
+            );
         }
+        return result;
     }
 
-    function getTeamStatusBadgeClass(status) {
-        switch (status) {
-            case 'active':     return 'academy-team-status-badge academy-team-status-active';
-            case 'inactive':   return 'academy-team-status-badge academy-team-status-inactive';
-            case 'deprecated': return 'academy-team-status-badge academy-team-status-deprecated';
-            default:           return 'academy-team-status-badge academy-team-status-unknown';
+    function failure(message) {
+        return { success: false, message: message };
+    }
+
+    function success(data) {
+        return { success: true, data: data };
+    }
+
+    function parseWeekStrict(week) {
+        var parsed = CalendarValidation.parseWeek(week);
+        if (parsed === null) {
+            return null;
         }
-    }
-
-    function getMemberStatusBadgeClass(member) {
-        if (member && member.statusLabel === 'Deceased') {
-            return 'academy-weekly-member-badge academy-weekly-member-deceased';
+        if (parsed < MIN_WEEK || parsed > MAX_WEEK) {
+            return null;
         }
-        return 'academy-weekly-member-badge academy-weekly-member-active';
+        return parsed;
     }
 
-    // ============================================================
-    // RENDER - Top-level entry point
-    // ============================================================
-
-    function renderHTML(viewModel) {
-        var vm = viewModel || {};
-        var classId = vm.classId || null;
-
-        var html = '';
-        html += '<div class="academy-body academy-weekly-teams-layout">';
-        html += renderTopBar(vm);
-
-        if (!classId) {
-            html += '<div class="academy-weekly-teams-empty">' +
-                        '<p class="empty-state small">' +
-                            'Select a class to view its weekly teams.' +
-                        '</p>' +
-                    '</div>';
-        } else {
-            html += '<div class="academy-weekly-teams-panels">';
-            html += renderListPanel(vm);
-            html += renderDetailPanel(vm);
-            html += '</div>';
+    function getTeamWindow(teamId) {
+        if (!isNonEmptyString(teamId)) {
+            return null;
         }
-
-        html += '</div>';
-        return html;
+        var team = TeamQueries.getTeamById(teamId);
+        if (!team) {
+            return null;
+        }
+        var start = TeamConstants.parsePeriod(team.startPeriod);
+        var end = TeamConstants.parsePeriod(team.endPeriod);
+        return {
+            team: team,
+            start: start,
+            end: end
+        };
     }
 
-    // ============================================================
-    // TOP BAR
-    // ============================================================
+    function weekInRange(week, start, end) {
+        if (start === null || start === undefined) {
+            return false;
+        }
+        if (week < start) {
+            return false;
+        }
+        if (end !== null && end !== undefined && week > end) {
+            return false;
+        }
+        return true;
+    }
 
-    function renderTopBar(vm) {
-        var classes = Array.isArray(vm.classes) ? vm.classes : [];
-        var classId = vm.classId || null;
-        var week = vm.week;
-
-        var html = '';
-        html += '<div class="academy-weekly-teams-top-bar">';
-
-        html += '<div class="academy-weekly-teams-top-left">';
-        html += '<label class="academy-top-label" ' +
-                    'for="academy-weekly-teams-class-select">Class:</label>';
-        html += '<select id="academy-weekly-teams-class-select" ' +
-                    'class="academy-class-select">';
-        html += '<option value="">Select a class...</option>';
-
-        for (var i = 0; i < classes.length; i++) {
-            var cls = classes[i];
-            if (!cls || !cls.id) { continue; }
-            var selected = classId && String(classId) === String(cls.id)
-                ? ' selected'
-                : '';
-            html += '<option value="' + escapeAttribute(cls.id) + '"' +
-                        selected + '>' +
-                        escapeHtml(cls.name || 'Unnamed Class') +
-                    '</option>';
+    function isPersistentTeamVisibleInWeek(teamId, week) {
+        var windowInfo = getTeamWindow(teamId);
+        if (!windowInfo) {
+            return false;
         }
 
-        html += '</select>';
-        html += '</div>';
+        var start = windowInfo.start;
+        var end = windowInfo.end;
 
-        html += '<div class="academy-weekly-teams-top-right">';
-        html += '<label class="academy-top-label" ' +
-                    'for="academy-weekly-teams-week-input">Week:</label>';
-        html += '<input type="number" id="academy-weekly-teams-week-input" ' +
-                    'class="academy-week-input" ' +
-                    'value="' + escapeAttribute(
-                        isFiniteNumber(week) ? String(week) : ''
-                    ) + '" ' +
-                    'min="1" max="52">';
-        html += '</div>';
+        if (start === null && end === null) {
+            return true;
+        }
+        if (start !== null && week < start) {
+            return false;
+        }
+        if (end !== null && week > end) {
+            return false;
+        }
+        return true;
+    }
 
-        html += '</div>';
-        return html;
+    function memberActiveInWeek(member, week) {
+        if (!member || typeof member !== 'object') {
+            return false;
+        }
+        var join = TeamConstants.parsePeriod(member.joinPeriod);
+        var leave = TeamConstants.parsePeriod(member.leavePeriod);
+
+        if (join !== null && week < join) {
+            return false;
+        }
+        if (leave !== null && week > leave) {
+            return false;
+        }
+        return true;
+    }
+
+    function recordActiveInWeek(record, week) {
+        if (!record) {
+            return false;
+        }
+        return weekInRange(week, record.startWeek, record.endWeek);
     }
 
     // ============================================================
-    // LIST PANEL - Left side
+    // STORE ACCESS - weekly-team window records only
     // ============================================================
 
-    function renderListPanel(vm) {
-        var teams = Array.isArray(vm.teams) ? vm.teams : [];
-        var selectedTeamId = vm.selectedTeamId || null;
-
-        var html = '';
-        html += '<div class="academy-weekly-teams-sidebar">';
-
-        // ---- Actions ----
-        html += '<div class="academy-weekly-teams-list-actions">';
-        html += '<button type="button" ' +
-                    'class="primary small academy-add-team-btn" ' +
-                    'data-action="weekly-teams-create-team">' +
-                    '+ Create Team' +
-                '</button>';
-        html += '<button type="button" ' +
-                    'class="secondary small academy-auto-distribute-btn" ' +
-                    'data-action="weekly-teams-auto-distribute">' +
-                    'Auto-Distribute' +
-                '</button>';
-        html += '<button type="button" ' +
-                    'class="secondary small academy-empty-teams-btn" ' +
-                    'data-action="weekly-teams-empty-teams" ' +
-                    'title="Remove every active member from every ' +
-                        'scheduled team this week. The teams stay ' +
-                        'scheduled and empty.">' +
-                    'Clear Rosters' +
-                '</button>';
-        html += '</div>';
-
-        // ---- List header ----
-        html += '<div class="academy-weekly-teams-list-header">';
-        html += '<h4 class="academy-weekly-teams-list-title">Teams</h4>';
-        html += '<span class="academy-weekly-teams-list-count">' +
-                    teams.length +
-                '</span>';
-        html += '</div>';
-
-        if (teams.length === 0) {
-            html += '<p class="empty-state small">' +
-                        'No teams scheduled for this week. ' +
-                        'Use <strong>+ Create Team</strong> or ' +
-                        '<strong>Auto-Distribute</strong> to get started.' +
-                    '</p>';
-            html += '</div>';
-            return html;
+    function getStore() {
+        if (!window.data || typeof window.data !== 'object') {
+            return null;
         }
-
-        html += '<div class="academy-weekly-teams-list">';
-        for (var i = 0; i < teams.length; i++) {
-            html += renderListRow(teams[i], selectedTeamId);
+        if (!window.data.academy || typeof window.data.academy !== 'object') {
+            return null;
         }
-        html += '</div>';
-
-        html += '</div>';
-        return html;
+        var store = window.data.academy.weeklyTeams;
+        if (!store || typeof store !== 'object' || Array.isArray(store)) {
+            return null;
+        }
+        return store;
     }
 
-    function renderListRow(team, selectedTeamId) {
-        if (!team || !team.id) { return ''; }
-
-        var isSelected = selectedTeamId &&
-            String(selectedTeamId) === String(team.id);
-
-        var typeBadgeClass = getTeamTypeBadgeClass(team.type);
-        var statusBadgeClass = getTeamStatusBadgeClass(team.status);
-
-        var rowClass = 'academy-weekly-team-row';
-        if (isSelected) { rowClass += ' selected'; }
-
-        var html = '';
-        html += '<div class="' + rowClass + '" ' +
-                    'data-team-id="' + escapeAttribute(team.id) + '">';
-
-        html += '<div class="academy-weekly-team-row-main">';
-        html += '<span class="academy-weekly-team-name">' +
-                    escapeHtml(team.name || 'Unnamed Team') +
-                '</span>';
-        html += '<span class="' + typeBadgeClass + '">' +
-                    escapeHtml(team.typeLabel) +
-                '</span>';
-        html += '</div>';
-
-        html += '<div class="academy-weekly-team-row-meta">';
-        html += '<span class="academy-weekly-team-members">' +
-                    team.memberCount + ' members' +
-                '</span>';
-        if (isNonEmptyString(team.periodDisplay)) {
-            html += '<span class="academy-weekly-team-period">' +
-                        escapeHtml(team.periodDisplay) +
-                    '</span>';
+    function getStoreFromSnapshot(appData) {
+        if (!appData || typeof appData !== 'object') {
+            return null;
         }
-        html += '<span class="' + statusBadgeClass + '">' +
-                    escapeHtml(team.statusLabel) +
-                '</span>';
-        html += '</div>';
+        if (!appData.academy || typeof appData.academy !== 'object') {
+            return null;
+        }
+        var store = appData.academy.weeklyTeams;
+        if (!store || typeof store !== 'object' || Array.isArray(store)) {
+            return null;
+        }
+        return store;
+    }
 
-        html += '</div>';
-        return html;
+    function ensureStore(appData) {
+        if (!appData.academy || typeof appData.academy !== 'object') {
+            appData.academy = {};
+        }
+        if (!appData.academy.weeklyTeams ||
+            typeof appData.academy.weeklyTeams !== 'object' ||
+            Array.isArray(appData.academy.weeklyTeams)) {
+            appData.academy.weeklyTeams = {};
+        }
+        return appData.academy.weeklyTeams;
+    }
+
+    function getTeamRecordInternalFromStore(store, classId, teamId) {
+        if (!store || !isNonEmptyString(classId) || !isNonEmptyString(teamId)) {
+            return null;
+        }
+        var byClass = store[String(classId)];
+        if (!isPlainObject(byClass)) {
+            return null;
+        }
+        var record = byClass[String(teamId)];
+        if (!isPlainObject(record)) {
+            return null;
+        }
+        return record;
+    }
+
+    function getTeamRecordInternal(classId, teamId) {
+        return getTeamRecordInternalFromStore(getStore(), classId, teamId);
     }
 
     // ============================================================
-    // DETAIL PANEL - Right side
+    // TRANSACTION-LOCAL PERSISTENT-ROSTER HELPERS
     // ============================================================
 
-    function renderDetailPanel(vm) {
-        var selected = vm.selectedTeam || null;
-
-        var html = '';
-        html += '<div class="academy-weekly-teams-detail" ' +
-                    'id="academy-weekly-teams-detail">';
-
-        if (!selected) {
-            html += '<div class="academy-detail-empty">' +
-                        '<p class="empty-state small">' +
-                            'Select a team to view its members.' +
-                        '</p>' +
-                    '</div>';
-            html += '</div>';
-            return html;
+    function findTeamInSnapshot(appData, teamId) {
+        if (!appData || !Array.isArray(appData.teams)) {
+            return null;
         }
-
-        html += renderDetailHeader(selected, vm.week);
-        html += renderDetailMembers(selected);
-
-        html += '</div>';
-        return html;
+        var target = String(teamId);
+        for (var i = 0; i < appData.teams.length; i++) {
+            var t = appData.teams[i];
+            if (t && String(t.id) === target) {
+                return t;
+            }
+        }
+        return null;
     }
 
-    function renderDetailHeader(team, week) {
-        var typeBadgeClass = getTeamTypeBadgeClass(team.type);
-        var statusBadgeClass = getTeamStatusBadgeClass(team.status);
-
-        var html = '';
-        html += '<div class="academy-weekly-team-detail-header">';
-
-        html += '<div class="academy-weekly-team-detail-title-row">';
-        html += '<h3 class="academy-weekly-team-detail-title">' +
-                    escapeHtml(team.name || 'Unnamed Team') +
-                '</h3>';
-        html += '<span class="' + typeBadgeClass + '">' +
-                    escapeHtml(team.typeLabel) +
-                '</span>';
-        html += '<span class="' + statusBadgeClass + '">' +
-                    escapeHtml(team.statusLabel) +
-                '</span>';
-        html += '</div>';
-
-        html += '<div class="academy-weekly-team-detail-meta">';
-
-        if (isFiniteNumber(week)) {
-            html += '<span class="academy-weekly-team-detail-meta-item">' +
-                        '<span class="meta-label">Week:</span> ' +
-                        escapeHtml(String(week)) +
-                    '</span>';
+    function findMemberInTeam(team, charId) {
+        if (!team || !Array.isArray(team.members)) {
+            return null;
         }
-
-        if (isNonEmptyString(team.periodLabel)) {
-            html += '<span class="academy-weekly-team-detail-meta-item">' +
-                        '<span class="meta-label">Period:</span> ' +
-                        escapeHtml(team.periodLabel) +
-                    '</span>';
+        var target = String(charId);
+        for (var i = 0; i < team.members.length; i++) {
+            var m = team.members[i];
+            if (m && String(m.characterId) === target) {
+                return m;
+            }
         }
-
-        if (isNonEmptyString(team.periodDisplay)) {
-            html += '<span class="academy-weekly-team-detail-meta-item">' +
-                        '<span class="meta-label">Range:</span> ' +
-                        escapeHtml(team.periodDisplay) +
-                    '</span>';
-        }
-
-        html += '<span class="academy-weekly-team-detail-meta-item">' +
-                    '<span class="meta-label">Members:</span> ' +
-                    team.memberCount +
-                '</span>';
-
-        html += '</div>';
-
-        // Detail actions
-        html += '<div class="academy-weekly-team-detail-actions">';
-        html += '<button type="button" class="small secondary" ' +
-                    'data-action="weekly-teams-edit-team" ' +
-                    'data-team-id="' + escapeAttribute(team.id) + '">' +
-                    'Edit Team' +
-                '</button>';
-        html += '<button type="button" class="small secondary" ' +
-                    'data-action="weekly-teams-manage-members" ' +
-                    'data-team-id="' + escapeAttribute(team.id) + '">' +
-                    'Manage Members' +
-                '</button>';
-        html += '<button type="button" class="small danger" ' +
-                    'data-action="weekly-teams-delete-team" ' +
-                    'data-team-id="' + escapeAttribute(team.id) + '">' +
-                    'Delete Team' +
-                '</button>';
-        html += '</div>';
-
-        html += '</div>';
-        return html;
+        return null;
     }
 
-    function renderDetailMembers(team) {
-        var members = Array.isArray(team.members) ? team.members : [];
-
-        var html = '';
-        html += '<div class="academy-weekly-team-members-section">';
-        html += '<div class="academy-weekly-team-members-header">';
-        html += '<h4 class="academy-weekly-team-members-title">Members</h4>';
-        html += '<span class="academy-weekly-team-members-count">' +
-                    members.length +
-                '</span>';
-        html += '</div>';
-
-        if (members.length === 0) {
-            html += '<p class="empty-state small">' +
-                        'No members assigned to this team this week. ' +
-                        'Use <strong>Manage Members</strong> to add some.' +
-                    '</p>';
-            html += '</div>';
-            return html;
+    function syncAddMemberToPersistentRoster(team, charId, startWeek, role) {
+        if (!team) {
+            return { added: false, updated: false };
+        }
+        if (!Array.isArray(team.members)) {
+            team.members = [];
         }
 
-        html += '<div class="academy-weekly-team-members-list">';
+        var target = String(charId);
+        var startStr = String(startWeek);
+        var roleStr = isNonEmptyString(role) ? String(role) : 'Member';
+
+        var existing = findMemberInTeam(team, target);
+
+        if (existing) {
+            var joinNum = TeamConstants.parsePeriod(existing.joinPeriod);
+            var leaveNum = TeamConstants.parsePeriod(existing.leavePeriod);
+            if ((joinNum === null || startWeek >= joinNum) &&
+                (leaveNum === null || startWeek <= leaveNum)) {
+                return { added: false, updated: false };
+            }
+
+            if (leaveNum === null || leaveNum >= startWeek) {
+                existing.leavePeriod = String(startWeek - 1);
+            }
+
+            team.members.push({
+                characterId: target,
+                role: roleStr,
+                joinPeriod: startStr,
+                leavePeriod: ''
+            });
+            return { added: true, updated: false };
+        }
+
+        team.members.push({
+            characterId: target,
+            role: roleStr,
+            joinPeriod: startStr,
+            leavePeriod: ''
+        });
+        return { added: true, updated: false };
+    }
+
+    function syncEndMembershipOnPersistentRoster(team, charId, effectiveWeek) {
+        if (!team || !Array.isArray(team.members)) {
+            return { ended: false, reason: 'no-team' };
+        }
+        var target = String(charId);
+        var matched = null;
+        for (var i = 0; i < team.members.length; i++) {
+            var m = team.members[i];
+            if (!m) { continue; }
+            if (String(m.characterId) !== target) { continue; }
+            var join = TeamConstants.parsePeriod(m.joinPeriod);
+            var leave = TeamConstants.parsePeriod(m.leavePeriod);
+            var activeAtWeek = true;
+            if (join !== null && effectiveWeek < join) { activeAtWeek = false; }
+            if (leave !== null && effectiveWeek > leave) { activeAtWeek = false; }
+            if (activeAtWeek) {
+                matched = m;
+                break;
+            }
+        }
+
+        if (!matched) {
+            return { ended: false, reason: 'not-active' };
+        }
+
+        var matchedJoin = TeamConstants.parsePeriod(matched.joinPeriod);
+        if (matchedJoin !== null && matchedJoin >= effectiveWeek) {
+            return { ended: false, reason: 'starts-after' };
+        }
+
+        matched.leavePeriod = String(effectiveWeek - 1);
+        return { ended: true };
+    }
+
+    function syncRemoveMemberFromPersistentRoster(team, charId) {
+        if (!team || !Array.isArray(team.members)) {
+            return { removed: false };
+        }
+        var target = String(charId);
+        var before = team.members.length;
+        team.members = team.members.filter(function(m) {
+            return !m || String(m.characterId) !== target;
+        });
+        return { removed: before !== team.members.length };
+    }
+
+    // ============================================================
+    // PUBLIC READS
+    // ============================================================
+
+    function getTeamRecord(classId, teamId) {
+        var record = getTeamRecordInternal(classId, teamId);
+        return record ? deepClone(record) : null;
+    }
+
+    function getAllTeamRecords(classId) {
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
+        var store = getStore();
+        if (!store) {
+            return [];
+        }
+        var byClass = store[String(classId)];
+        if (!isPlainObject(byClass)) {
+            return [];
+        }
+        var result = [];
+        var keys = Object.keys(byClass);
+        for (var i = 0; i < keys.length; i++) {
+            var record = byClass[keys[i]];
+            if (isPlainObject(record)) {
+                result.push(deepClone(record));
+            }
+        }
+        return result;
+    }
+
+    function getActiveMembers(classId, teamId, week) {
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return [];
+        }
+        var team = TeamQueries.getTeamById(teamId);
+        if (!team) {
+            return [];
+        }
+        var members = TeamQueries.getActiveTeamMembers(team, weekNum) || [];
+        var result = [];
         for (var i = 0; i < members.length; i++) {
-            html += renderMemberRow(members[i]);
+            var m = members[i];
+            if (m && m.characterId) {
+                result.push(String(m.characterId));
+            }
         }
-        html += '</div>';
-
-        html += '</div>';
-        return html;
+        return result;
     }
 
-    function renderMemberRow(member) {
-        if (!member || !member.characterId) { return ''; }
+    function getAllMembers(classId, teamId) {
+        var team = TeamQueries.getTeamById(teamId);
+        if (!team || !Array.isArray(team.members)) {
+            return [];
+        }
+        return deepClone(team.members);
+    }
 
-        var statusClass = getMemberStatusBadgeClass(member);
-
-        var rowClass = 'academy-weekly-team-member-row';
-        if (member.statusLabel === 'Deceased') {
-            rowClass += ' deceased';
+    function getWeeklyTeams(classId, week) {
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return {};
+        }
+        var store = getStore();
+        if (!store) {
+            return {};
+        }
+        var byClass = store[String(classId)];
+        if (!isPlainObject(byClass)) {
+            return {};
         }
 
-        var secondaryParts = [];
-        if (isNonEmptyString(member.roleLabel)) {
-            secondaryParts.push(escapeHtml(member.roleLabel));
+        var result = {};
+        var teamIds = Object.keys(byClass);
+        for (var i = 0; i < teamIds.length; i++) {
+            var teamId = teamIds[i];
+            var record = byClass[teamId];
+            if (!isPlainObject(record)) {
+                continue;
+            }
+            if (!recordActiveInWeek(record, weekNum)) {
+                continue;
+            }
+            if (!isPersistentTeamVisibleInWeek(teamId, weekNum)) {
+                continue;
+            }
+            result[teamId] = getActiveMembers(classId, teamId, weekNum);
         }
-        if (isNonEmptyString(member.role) && member.role !== 'Member') {
-            secondaryParts.push(escapeHtml(member.role));
+        return result;
+    }
+
+    function isCharacterAssigned(classId, week, charId) {
+        if (!isNonEmptyString(charId)) {
+            return false;
         }
-        if (isNonEmptyString(member.age) && member.age !== '-') {
-            secondaryParts.push(escapeHtml(member.age));
+        var rosters = getWeeklyTeams(classId, week);
+        var target = String(charId);
+        var teamIds = Object.keys(rosters);
+        for (var i = 0; i < teamIds.length; i++) {
+            var members = rosters[teamIds[i]];
+            for (var j = 0; j < members.length; j++) {
+                if (members[j] === target) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    function getAssignedTeamId(classId, week, charId) {
+        if (!isNonEmptyString(charId)) {
+            return null;
+        }
+        var rosters = getWeeklyTeams(classId, week);
+        var target = String(charId);
+        var teamIds = Object.keys(rosters);
+        for (var i = 0; i < teamIds.length; i++) {
+            var teamId = teamIds[i];
+            var members = rosters[teamId];
+            for (var j = 0; j < members.length; j++) {
+                if (members[j] === target) {
+                    return teamId;
+                }
+            }
+        }
+        return null;
+    }
+
+    function hasAssignments(classId, week) {
+        var rosters = getWeeklyTeams(classId, week);
+        return Object.keys(rosters).length > 0;
+    }
+
+    function getAllAssignedTeamIds(classId) {
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
+        var store = getStore();
+        if (!store) {
+            return [];
+        }
+        var byClass = store[String(classId)];
+        if (!isPlainObject(byClass)) {
+            return [];
+        }
+        return Object.keys(byClass);
+    }
+
+    function getAssignedWeeksForClass(classId) {
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
+        var store = getStore();
+        if (!store) {
+            return [];
+        }
+        var byClass = store[String(classId)];
+        if (!isPlainObject(byClass)) {
+            return [];
         }
 
-        var html = '';
-        html += '<div class="' + rowClass + '" ' +
-                    'data-character-id="' +
-                        escapeAttribute(member.characterId) + '">';
-
-        html += '<div class="academy-weekly-team-member-main">';
-        html += '<span class="academy-weekly-team-member-name">' +
-                    escapeHtml(member.name || 'Unknown') +
-                '</span>';
-        html += '<span class="' + statusClass + '">' +
-                    escapeHtml(member.statusLabel) +
-                '</span>';
-        html += '</div>';
-
-        if (secondaryParts.length > 0) {
-            html += '<div class="academy-weekly-team-member-secondary">' +
-                        secondaryParts.join(' &middot; ') +
-                    '</div>';
+        var weeks = Object.create(null);
+        var teamIds = Object.keys(byClass);
+        for (var i = 0; i < teamIds.length; i++) {
+            var record = byClass[teamIds[i]];
+            if (!isPlainObject(record)) {
+                continue;
+            }
+            var start = record.startWeek;
+            if (start === null || start === undefined) {
+                continue;
+            }
+            var end = record.endWeek;
+            var effectiveEnd = (end === null || end === undefined)
+                ? MAX_WEEK
+                : end;
+            for (var w = start; w <= effectiveEnd; w++) {
+                weeks[w] = true;
+            }
         }
+        var result = Object.keys(weeks).map(function(k) { return parseInt(k, 10); });
+        result.sort(function(a, b) { return a - b; });
+        return result;
+    }
 
-        html += '</div>';
-        return html;
+    function getAssignedClassesForWeek(week) {
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return [];
+        }
+        var store = getStore();
+        if (!store) {
+            return [];
+        }
+        var result = [];
+        var classIds = Object.keys(store);
+        for (var i = 0; i < classIds.length; i++) {
+            var byClass = store[classIds[i]];
+            if (!isPlainObject(byClass)) {
+                continue;
+            }
+            var hasAny = false;
+            var teamIds = Object.keys(byClass);
+            for (var j = 0; j < teamIds.length; j++) {
+                var record = byClass[teamIds[j]];
+                if (isPlainObject(record) && recordActiveInWeek(record, weekNum)) {
+                    hasAny = true;
+                    break;
+                }
+            }
+            if (hasAny) {
+                result.push(classIds[i]);
+            }
+        }
+        return result;
     }
 
     // ============================================================
-    // MODAL BUILDER - Create / Edit Team
+    // WRITE HELPERS
     // ============================================================
 
-    function buildTeamModalHTML(options) {
-        options = options || {};
-
-        var team = options.team || null;
-        var isEdit = !!team;
-        var t = team || {};
-
-        var classId = options.classId || (team && team.classId) || '';
-        var className = options.className || 'Class';
-        var week = options.week;
-
-        var defaultStartWeek = (week !== undefined && week !== null)
-            ? String(week)
-            : '1';
-
-        var nameValue = isEdit ? (t.name || '') : '';
-        var numberValue = isEdit ? (t.teamNumber || '') : '';
-        var startValue = isEdit
-            ? (t.startPeriod !== undefined && t.startPeriod !== null
-                ? String(t.startPeriod)
-                : '')
-            : defaultStartWeek;
-        var endValue = isEdit
-            ? (t.endPeriod !== undefined && t.endPeriod !== null
-                ? String(t.endPeriod)
-                : '')
-            : '';
-
-        var title = isEdit ? 'Edit Academic Team' : 'Create Academic Team';
-        var submitLabel = isEdit ? 'Save Team' : 'Create Team';
-
-        var html = '';
-        html += '<form id="weekly-teams-create-team-form" ' +
-                    'data-class-id="' + escapeAttribute(classId) + '" ' +
-                    'data-week="' + escapeAttribute(String(week || '')) + '" ' +
-                    'data-edit-id="' +
-                        (isEdit ? escapeAttribute(t.id) : '') + '">';
-
-        html += '<div class="modal-header">';
-        html += '<h3>' + escapeHtml(title) + '</h3>';
-        html += '<button type="button" class="close-modal">&times;</button>';
-        html += '</div>';
-
-        html += '<div class="modal-body">';
-
-        if (isEdit) {
-            html += '<p class="field-hint">' +
-                        'Editing <strong>' +
-                        escapeHtml(t.name || 'Unnamed Team') +
-                        '</strong> in ' +
-                        escapeHtml(className) +
-                        '. Class and type are fixed after creation.' +
-                    '</p>';
-        } else {
-            html += '<p class="field-hint">' +
-                        'Creates a persistent Team entity of type "academic" ' +
-                        'for <strong>' + escapeHtml(className) + '</strong>.' +
-                    '</p>';
-        }
-
-        html += '<div class="form-group">';
-        html += '<label for="weekly-team-name">Team Name *</label>';
-        html += '<input type="text" id="weekly-team-name" ' +
-                    'class="weekly-team-name" ' +
-                    'placeholder="e.g., Team Alpha" ' +
-                    'value="' + escapeAttribute(nameValue) + '" required>';
-        html += '</div>';
-
-        html += '<div class="form-group">';
-        html += '<label for="weekly-team-number">Team Number</label>';
-        html += '<input type="text" id="weekly-team-number" ' +
-                    'class="weekly-team-number" ' +
-                    'placeholder="Optional, e.g., A, 1, Alpha" ' +
-                    'value="' + escapeAttribute(numberValue) + '">';
-        html += '</div>';
-
-        html += '<div class="form-group">';
-        html += '<label for="weekly-team-start-period">Start Week</label>';
-        html += '<input type="number" id="weekly-team-start-period" ' +
-                    'class="weekly-team-start-period" ' +
-                    'value="' + escapeAttribute(startValue) + '" ' +
-                    'min="1" max="52">';
-        html += '</div>';
-
-        html += '<div class="form-group">';
-        html += '<label for="weekly-team-end-period">End Week (optional)</label>';
-        html += '<input type="number" id="weekly-team-end-period" ' +
-                    'class="weekly-team-end-period" ' +
-                    'value="' + escapeAttribute(endValue) + '" ' +
-                    'min="1" max="52" placeholder="Leave blank for ongoing">';
-        html += '</div>';
-
-        html += '<div class="form-actions">';
-        html += '<button type="button" ' +
-                    'class="cancel-modal-btn secondary">Cancel</button>';
-        html += '<button type="submit" class="primary">' +
-                    escapeHtml(submitLabel) +
-                '</button>';
-        html += '</div>';
-
-        html += '</div>';
-        html += '</form>';
-
-        return html;
-    }
-
-    function buildCreateTeamModalHTML(options) {
-        return buildTeamModalHTML(options);
-    }
-
-    function collectCreateTeamForm(form) {
-        if (!form) { return null; }
-
-        var nameEl = form.querySelector('.weekly-team-name');
-        var numberEl = form.querySelector('.weekly-team-number');
-        var startEl = form.querySelector('.weekly-team-start-period');
-        var endEl = form.querySelector('.weekly-team-end-period');
-
-        var name = nameEl ? nameEl.value.trim() : '';
-        var number = numberEl ? numberEl.value.trim() : '';
-        var startPeriod = startEl ? startEl.value.trim() : '';
-        var endPeriod = endEl ? endEl.value.trim() : '';
-
+    function buildNewTeamRecord(classId, teamId, week) {
+        var now = new Date().toISOString();
         return {
-            name: name,
-            teamNumber: number,
-            startPeriod: startPeriod,
-            endPeriod: endPeriod
+            id: String(teamId),
+            classId: String(classId),
+            teamId: String(teamId),
+            startWeek: week,
+            endWeek: null,
+            createdAt: now,
+            updatedAt: now
         };
     }
 
-    function collectTeamForm(form) {
-        return collectCreateTeamForm(form);
+    // ============================================================
+    // MUTATIONS
+    // ============================================================
+
+    function ensureWindow(classId, teamId, week) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        if (!isNonEmptyString(teamId)) {
+            return Promise.resolve(failure('Team ID is required.'));
+        }
+
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return Promise.resolve(
+                failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').')
+            );
+        }
+
+        var windowInfo = getTeamWindow(teamId);
+        if (!windowInfo) {
+            return Promise.resolve(failure('Team not found.'));
+        }
+
+        var targetClass = String(classId);
+        var targetTeam = String(teamId);
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return { valid: false, message: 'Application data is not available.' };
+                }
+                var team = findTeamInSnapshot(appData, targetTeam);
+                if (!team) {
+                    return { valid: false, message: 'Team no longer exists.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var store = ensureStore(appData);
+                if (!isPlainObject(store[targetClass])) {
+                    store[targetClass] = {};
+                }
+
+                var record = store[targetClass][targetTeam];
+                if (!isPlainObject(record)) {
+                    record = buildNewTeamRecord(targetClass, targetTeam, weekNum);
+                    store[targetClass][targetTeam] = record;
+                    return { created: true, record: deepClone(record) };
+                }
+
+                var changed = false;
+                if (typeof record.startWeek !== 'number' || weekNum < record.startWeek) {
+                    record.startWeek = weekNum;
+                    changed = true;
+                }
+                if (record.endWeek !== null &&
+                    record.endWeek !== undefined &&
+                    weekNum > record.endWeek) {
+                    record.endWeek = null;
+                    changed = true;
+                }
+                if (changed) {
+                    record.updatedAt = new Date().toISOString();
+                }
+
+                return { created: false, changed: changed, record: deepClone(record) };
+            },
+            logMessage: 'Opened weekly-team window for team ' + targetTeam +
+                ' in class ' + targetClass + ' at week ' + weekNum,
+            successMessage: 'Team opened for this week.',
+            failureMessage: 'Failed to open team for this week.'
+        });
+    }
+
+    function addMember(classId, teamId, charId, week) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        if (!isNonEmptyString(teamId)) {
+            return Promise.resolve(failure('Team ID is required.'));
+        }
+        if (!isNonEmptyString(charId)) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
+
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return Promise.resolve(
+                failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').')
+            );
+        }
+
+        var windowInfo = getTeamWindow(teamId);
+        if (!windowInfo) {
+            return Promise.resolve(failure('Team not found.'));
+        }
+
+        var targetClass = String(classId);
+        var targetTeam = String(teamId);
+        var targetChar = String(charId);
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return { valid: false, message: 'Application data is not available.' };
+                }
+                var team = findTeamInSnapshot(appData, targetTeam);
+                if (!team) {
+                    return { valid: false, message: 'Team no longer exists.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var store = ensureStore(appData);
+                if (!isPlainObject(store[targetClass])) {
+                    store[targetClass] = {};
+                }
+
+                var record = store[targetClass][targetTeam];
+                if (!isPlainObject(record)) {
+                    record = buildNewTeamRecord(targetClass, targetTeam, weekNum);
+                    store[targetClass][targetTeam] = record;
+                }
+
+                var windowStart = record.startWeek;
+                var windowEnd = record.endWeek;
+
+                if (typeof windowStart !== 'number' || weekNum < windowStart) {
+                    record.startWeek = weekNum;
+                }
+                if (windowEnd !== null && windowEnd !== undefined &&
+                    weekNum > windowEnd) {
+                    record.endWeek = null;
+                }
+                record.updatedAt = new Date().toISOString();
+
+                var team = findTeamInSnapshot(appData, targetTeam);
+                var syncResult = syncAddMemberToPersistentRoster(
+                    team, targetChar, weekNum, 'Member'
+                );
+
+                if (team) {
+                    team.updatedAt = new Date().toISOString();
+                }
+
+                return {
+                    added: syncResult.added,
+                    updated: syncResult.updated,
+                    teamId: targetTeam
+                };
+            },
+            logMessage: 'Added ' + targetChar + ' to team ' + targetTeam +
+                ' in ' + targetClass + ' from week ' + weekNum,
+            successMessage: 'Member added to team.',
+            failureMessage: 'Failed to add member to team.'
+        });
+    }
+
+    function endMembership(classId, teamId, charId, effectiveWeek) {
+        if (!isNonEmptyString(classId) ||
+            !isNonEmptyString(teamId) ||
+            !isNonEmptyString(charId)) {
+            return Promise.resolve(failure('Class, team, and character IDs are required.'));
+        }
+
+        var weekNum = parseWeekStrict(effectiveWeek);
+        if (weekNum === null) {
+            return Promise.resolve(
+                failure('Valid effective week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').')
+            );
+        }
+
+        var targetClass = String(classId);
+        var targetTeam = String(teamId);
+        var targetChar = String(charId);
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return { valid: false, message: 'Application data is not available.' };
+                }
+                var team = findTeamInSnapshot(appData, targetTeam);
+                if (!team) {
+                    return { valid: false, message: 'Team no longer exists.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var team = findTeamInSnapshot(appData, targetTeam);
+                if (!team) {
+                    return { ended: false, reason: 'no-team' };
+                }
+
+                var syncResult = syncEndMembershipOnPersistentRoster(
+                    team, targetChar, weekNum
+                );
+
+                if (syncResult.ended) {
+                    team.updatedAt = new Date().toISOString();
+                    var store = getStoreFromSnapshot(appData);
+                    var record = getTeamRecordInternalFromStore(
+                        store, targetClass, targetTeam
+                    );
+                    if (record) {
+                        record.updatedAt = new Date().toISOString();
+                    }
+                }
+
+                return {
+                    ended: syncResult.ended,
+                    reason: syncResult.reason,
+                    teamId: targetTeam,
+                    endWeek: syncResult.ended ? (weekNum - 1) : null
+                };
+            },
+            logMessage: 'Ended membership of ' + targetChar + ' in team ' +
+                targetTeam + ' from week ' + weekNum,
+            successMessage: 'Member removed from team.',
+            failureMessage: 'Failed to remove member from team.'
+        });
+    }
+
+    function removeMemberRecord(classId, teamId, charId) {
+        if (!isNonEmptyString(classId) ||
+            !isNonEmptyString(teamId) ||
+            !isNonEmptyString(charId)) {
+            return Promise.resolve(failure('Class, team, and character IDs are required.'));
+        }
+
+        var targetClass = String(classId);
+        var targetTeam = String(teamId);
+        var targetChar = String(charId);
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return { valid: false, message: 'Application data is not available.' };
+                }
+                var team = findTeamInSnapshot(appData, targetTeam);
+                if (!team) {
+                    return { valid: false, message: 'Team no longer exists.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var team = findTeamInSnapshot(appData, targetTeam);
+                if (!team) {
+                    return { removed: false };
+                }
+
+                var syncResult = syncRemoveMemberFromPersistentRoster(
+                    team, targetChar
+                );
+
+                if (syncResult.removed) {
+                    team.updatedAt = new Date().toISOString();
+                    var store = getStoreFromSnapshot(appData);
+                    var record = getTeamRecordInternalFromStore(
+                        store, targetClass, targetTeam
+                    );
+                    if (record) {
+                        record.updatedAt = new Date().toISOString();
+                    }
+                }
+
+                return { removed: syncResult.removed };
+            },
+            logMessage: 'Removed membership record for ' + targetChar +
+                ' in team ' + targetTeam,
+            successMessage: 'Membership record removed.',
+            failureMessage: 'Failed to remove membership record.'
+        });
+    }
+
+    function removeTeamRecord(classId, teamId) {
+        if (!isNonEmptyString(classId) || !isNonEmptyString(teamId)) {
+            return Promise.resolve(failure('Class and team IDs are required.'));
+        }
+
+        var targetClass = String(classId);
+        var targetTeam = String(teamId);
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return { valid: false, message: 'Application data is not available.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var store = getStoreFromSnapshot(appData);
+                if (!store) {
+                    return { removed: false };
+                }
+                var byClass = store[targetClass];
+                if (!isPlainObject(byClass) ||
+                    !Object.prototype.hasOwnProperty.call(byClass, targetTeam)) {
+                    return { removed: false };
+                }
+                delete byClass[targetTeam];
+                if (Object.keys(byClass).length === 0) {
+                    delete store[targetClass];
+                }
+                return { removed: true };
+            },
+            logMessage: 'Removed weekly-team record ' + targetTeam +
+                ' from class ' + targetClass,
+            successMessage: 'Weekly team record removed.',
+            failureMessage: 'Failed to remove weekly team record.'
+        });
+    }
+
+    /**
+     * Delete every weekly-team window record for a class. Does NOT
+     * touch any persistent Team entity. Used by Auto-Distribute's
+     * "clear existing teams" checkbox.
+     */
+    function clearClassWindows(classId) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+
+        var targetClass = String(classId);
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return { valid: false, message: 'Application data is not available.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var store = getStoreFromSnapshot(appData);
+                if (!store) {
+                    return { cleared: 0 };
+                }
+                var byClass = store[targetClass];
+                if (!isPlainObject(byClass)) {
+                    return { cleared: 0 };
+                }
+                var count = Object.keys(byClass).length;
+                delete store[targetClass];
+                return { cleared: count };
+            },
+            logMessage: function(result) {
+                return 'Cleared ' + (result && result.cleared ? result.cleared : 0) +
+                    ' weekly-team window(s) for class ' + targetClass;
+            },
+            successMessage: function(result) {
+                var n = result && result.cleared ? result.cleared : 0;
+                if (n === 0) {
+                    return 'No teams were scheduled.';
+                }
+                return 'Cleared ' + n + ' team' + (n === 1 ? '' : 's') +
+                    ' from the schedule.';
+            },
+            failureMessage: 'Failed to clear schedule.'
+        });
+    }
+
+    /**
+     * Hard-delete every member whose active window covers the given
+     * week, across every academic team of the class whose own
+     * startPeriod / endPeriod covers the week.
+     *
+     * WHAT THIS DOES:
+     *   - Walks every academic team of the class.
+     *   - Filters to teams whose persistent period covers the week.
+     *   - For each such team, removes every member whose active
+     *     window (joinPeriod <= week <= leavePeriod) covers the
+     *     week, from the team's members[] array.
+     *
+     * WHAT THIS DOES NOT DO:
+     *   - It does not touch weekly-team window records. Teams remain
+     *     scheduled in the Weekly Teams view.
+     *   - It does not touch team entities whose own period excludes
+     *     the week.
+     *   - It does not touch member records whose active window does
+     *     not cover the week (past leaves, future joins).
+     *
+     * This is the operation the Weekly Teams view exposes as
+     * "Clear Rosters". Used when rosters need to be rebuilt from
+     * scratch for a week, typically after a mistake.
+     */
+    function clearAllMembershipsForClass(classId, week) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return Promise.resolve(
+                failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').')
+            );
+        }
+
+        var targetClass = String(classId);
+
+        // Pre-flight: resolve which teams will be processed. This
+        // uses the live store (via TeamQueries) to enumerate the
+        // teams. The actual removals run against the transaction
+        // snapshot, which re-checks each team and each member.
+        var allTeams = TeamQueries.getTeamsByClass(targetClass, 'operational') || [];
+        var teamIds = [];
+        for (var i = 0; i < allTeams.length; i++) {
+            var t = allTeams[i];
+            if (!t || !t.id) { continue; }
+            if (TeamConstants.normalizeTeamType(t.type) !== 'academic') {
+                continue;
+            }
+            if (!TeamQueries.isTeamActiveAtPeriod(t, weekNum)) {
+                continue;
+            }
+            teamIds.push(String(t.id));
+        }
+
+        if (teamIds.length === 0) {
+            return Promise.resolve(success({
+                teamsProcessed: 0,
+                membershipsRemoved: 0
+            }));
+        }
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return { valid: false, message: 'Application data is not available.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var teamsProcessed = 0;
+                var membershipsRemoved = 0;
+
+                for (var k = 0; k < teamIds.length; k++) {
+                    var teamId = teamIds[k];
+                    var team = findTeamInSnapshot(appData, teamId);
+                    if (!team) { continue; }
+                    if (!Array.isArray(team.members)) { continue; }
+
+                    var before = team.members.length;
+                    team.members = team.members.filter(function(m) {
+                        if (!m) { return true; }
+                        // Keep a member only if they are NOT active at
+                        // the given week. Active members are the ones
+                        // we're removing.
+                        return !memberActiveInWeek(m, weekNum);
+                    });
+                    var removed = before - team.members.length;
+
+                    if (removed > 0) {
+                        membershipsRemoved += removed;
+                        team.updatedAt = new Date().toISOString();
+                        teamsProcessed++;
+                    }
+                }
+
+                return {
+                    teamsProcessed: teamsProcessed,
+                    membershipsRemoved: membershipsRemoved
+                };
+            },
+            logMessage: function(result) {
+                return 'Cleared ' + (result && result.membershipsRemoved
+                        ? result.membershipsRemoved : 0) +
+                    ' membership(s) across ' +
+                    (result && result.teamsProcessed
+                        ? result.teamsProcessed : 0) +
+                    ' team(s) for class ' + targetClass +
+                    ' at week ' + weekNum;
+            },
+            successMessage: function(result) {
+                var n = result && result.membershipsRemoved
+                    ? result.membershipsRemoved : 0;
+                var t = result && result.teamsProcessed
+                    ? result.teamsProcessed : 0;
+                if (n === 0) {
+                    return 'No memberships to clear for this week.';
+                }
+                return 'Cleared ' + n + ' membership' + (n === 1 ? '' : 's') +
+                    ' across ' + t + ' team' + (t === 1 ? '' : 's') + '.';
+            },
+            failureMessage: 'Failed to clear memberships.'
+        });
     }
 
     // ============================================================
-    // MODAL BUILDERS - Auto-Distribute
+    // CASCADE HELPERS
     // ============================================================
 
-    function buildAutoDistributeModalHTML(options) {
-        options = options || {};
-        var classId = options.classId || '';
-        var className = options.className || 'Class';
-        var week = options.week;
-        var eligibleCount = isFiniteNumber(options.eligibleCount)
-            ? options.eligibleCount
-            : 0;
+    function stripCharacterRefs(appData, charId, effectiveWeek) {
+        var result = { membershipsEnded: 0 };
 
-        var html = '';
-        html += '<form id="weekly-teams-auto-distribute-form" ' +
-                    'data-class-id="' + escapeAttribute(classId) + '" ' +
-                    'data-week="' + escapeAttribute(String(week || '')) + '">';
+        if (!appData || !isNonEmptyString(charId)) {
+            return result;
+        }
+        if (!Array.isArray(appData.teams)) {
+            return result;
+        }
 
-        html += '<div class="modal-header">';
-        html += '<h3>Auto-Distribute to Teams</h3>';
-        html += '<button type="button" class="close-modal">&times;</button>';
-        html += '</div>';
+        var weekNum = null;
+        if (effectiveWeek !== undefined && effectiveWeek !== null) {
+            weekNum = parseWeekStrict(effectiveWeek);
+        }
 
-        html += '<div class="modal-body">';
+        var target = String(charId);
 
-        html += '<p class="at-auto-info">' +
-                    'Eligible students in <strong>' +
-                    escapeHtml(className) + '</strong>: ' +
-                    '<strong>' + eligibleCount + '</strong>' +
-                '</p>';
+        for (var i = 0; i < appData.teams.length; i++) {
+            var team = appData.teams[i];
+            if (!team || !Array.isArray(team.members)) {
+                continue;
+            }
+            for (var j = 0; j < team.members.length; j++) {
+                var member = team.members[j];
+                if (!member) { continue; }
+                if (String(member.characterId) !== target) { continue; }
+                if (member.leavePeriod !== null &&
+                    member.leavePeriod !== undefined &&
+                    member.leavePeriod !== '') {
+                    continue;
+                }
+                var joinNum = TeamConstants.parsePeriod(member.joinPeriod);
+                if (weekNum !== null) {
+                    if (joinNum !== null && joinNum >= weekNum) {
+                        continue;
+                    }
+                    member.leavePeriod = String(weekNum - 1);
+                } else {
+                    member.leavePeriod = String(MAX_WEEK);
+                }
+                result.membershipsEnded++;
+            }
+        }
 
-        html += '<div class="form-group">';
-        html += '<label for="weekly-teams-group-size">Students per Team</label>';
-        html += '<input type="number" id="weekly-teams-group-size" ' +
-                    'class="weekly-teams-group-size" ' +
-                    'value="4" min="2" max="20">';
-        html += '<p class="field-hint">' +
-                    'Existing teams are filled toward this size first. ' +
-                    'New teams are only created when no existing team ' +
-                    'has room.' +
-                '</p>';
-        html += '</div>';
-
-        html += '<div class="form-group">';
-        html += '<label for="weekly-teams-name-prefix">Team Name Prefix</label>';
-        html += '<input type="text" id="weekly-teams-name-prefix" ' +
-                    'class="weekly-teams-name-prefix" ' +
-                    'value="Team ">';
-        html += '<p class="field-hint">' +
-                    'Each new team is named Prefix + number (Team 1, Team 2, ...).' +
-                '</p>';
-        html += '</div>';
-
-        html += '<div class="form-group">';
-        html += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;">' +
-                    '<input type="checkbox" ' +
-                        'class="weekly-teams-clear-existing">' +
-                    '<span>Clear the schedule first</span>' +
-                '</label>';
-        html += '<p class="field-hint">' +
-                    'When checked, every scheduled team is removed from ' +
-                    'the Weekly Teams schedule for this class before ' +
-                    'distribution runs. The team entities themselves are ' +
-                    'NOT deleted; they remain in the Teams tab and the ' +
-                    'Tournaments view.' +
-                '</p>';
-        html += '</div>';
-
-        html += '<div class="form-actions">';
-        html += '<button type="button" ' +
-                    'class="cancel-modal-btn secondary">Cancel</button>';
-        html += '<button type="submit" class="primary"' +
-                    (eligibleCount < 2 ? ' disabled' : '') +
-                    '>Distribute</button>';
-        html += '</div>';
-
-        html += '</div>';
-        html += '</form>';
-
-        return html;
+        return result;
     }
 
-    function collectAutoDistributeForm(form) {
-        if (!form) { return null; }
+    function stripClassRefs(appData, classId) {
+        var result = { recordsRemoved: 0 };
 
-        var sizeEl = form.querySelector('.weekly-teams-group-size');
-        var prefixEl = form.querySelector('.weekly-teams-name-prefix');
-        var clearEl = form.querySelector('.weekly-teams-clear-existing');
+        if (!appData || !isNonEmptyString(classId)) {
+            return result;
+        }
 
-        var size = sizeEl ? parseInt(sizeEl.value, 10) : 4;
-        if (isNaN(size) || size < 2) { size = 2; }
+        var store = getStoreFromSnapshot(appData);
+        if (!store) {
+            return result;
+        }
 
-        var prefix = prefixEl ? prefixEl.value : 'Team ';
-        var clearExisting = clearEl ? clearEl.checked === true : false;
+        var target = String(classId);
+        if (!Object.prototype.hasOwnProperty.call(store, target)) {
+            return result;
+        }
 
-        return {
-            groupSize: size,
-            namePrefix: prefix,
-            clearExisting: clearExisting
-        };
+        var byClass = store[target];
+        if (isPlainObject(byClass)) {
+            result.recordsRemoved = Object.keys(byClass).length;
+        }
+
+        delete store[target];
+        return result;
+    }
+
+    function stripTeamRefs(appData, teamId) {
+        var result = { recordsRemoved: 0 };
+
+        if (!appData || !isNonEmptyString(teamId)) {
+            return result;
+        }
+
+        var store = getStoreFromSnapshot(appData);
+        if (!store) {
+            return result;
+        }
+
+        var target = String(teamId);
+        var classIds = Object.keys(store);
+
+        for (var i = 0; i < classIds.length; i++) {
+            var byClass = store[classIds[i]];
+            if (!isPlainObject(byClass)) {
+                continue;
+            }
+            if (Object.prototype.hasOwnProperty.call(byClass, target)) {
+                delete byClass[target];
+                result.recordsRemoved++;
+            }
+            if (Object.keys(byClass).length === 0) {
+                delete store[classIds[i]];
+            }
+        }
+
+        return result;
     }
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
-    window.AcademyWeeklyTeamsView = {
-        renderHTML: renderHTML,
+    window.AcademyWeeklyTeams = {
+        // Reads
+        getTeamRecord: getTeamRecord,
+        getAllTeamRecords: getAllTeamRecords,
+        getActiveMembers: getActiveMembers,
+        getAllMembers: getAllMembers,
+        getWeeklyTeams: getWeeklyTeams,
+        isCharacterAssigned: isCharacterAssigned,
+        getAssignedTeamId: getAssignedTeamId,
+        hasAssignments: hasAssignments,
+        getAllAssignedTeamIds: getAllAssignedTeamIds,
+        getAssignedWeeksForClass: getAssignedWeeksForClass,
+        getAssignedClassesForWeek: getAssignedClassesForWeek,
+        isPersistentTeamVisibleInWeek: isPersistentTeamVisibleInWeek,
 
-        buildTeamModalHTML: buildTeamModalHTML,
-        buildCreateTeamModalHTML: buildCreateTeamModalHTML,
-        buildAutoDistributeModalHTML: buildAutoDistributeModalHTML,
+        // Mutations
+        ensureWindow: ensureWindow,
+        addMember: addMember,
+        endMembership: endMembership,
+        removeMemberRecord: removeMemberRecord,
+        removeTeamRecord: removeTeamRecord,
+        clearClassWindows: clearClassWindows,
+        clearAllMembershipsForClass: clearAllMembershipsForClass,
 
-        collectCreateTeamForm: collectCreateTeamForm,
-        collectTeamForm: collectTeamForm,
-        collectAutoDistributeForm: collectAutoDistributeForm
+        // Cascade helpers
+        stripCharacterRefs: stripCharacterRefs,
+        stripClassRefs: stripClassRefs,
+        stripTeamRefs: stripTeamRefs,
+
+        // Constants
+        MIN_WEEK: MIN_WEEK,
+        MAX_WEEK: MAX_WEEK
     };
+
+    (function verify() {
+        var exports = window.AcademyWeeklyTeams;
+        var required = [
+            'getTeamRecord', 'getAllTeamRecords', 'getActiveMembers',
+            'getAllMembers', 'getWeeklyTeams', 'isCharacterAssigned',
+            'getAssignedTeamId', 'hasAssignments', 'getAllAssignedTeamIds',
+            'getAssignedWeeksForClass', 'getAssignedClassesForWeek',
+            'isPersistentTeamVisibleInWeek',
+            'ensureWindow', 'addMember', 'endMembership',
+            'removeMemberRecord', 'removeTeamRecord', 'clearClassWindows',
+            'clearAllMembershipsForClass',
+            'stripCharacterRefs', 'stripClassRefs', 'stripTeamRefs'
+        ];
+        var missing = [];
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+        if (missing.length > 0) {
+            diagWarn('Verification missing:', missing.join(', '));
+        } else {
+            diag('Verification OK.');
+        }
+    })();
 
 })();
