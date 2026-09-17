@@ -47,6 +47,18 @@
  *   The filter uses TeamQueries.isTeamActiveAtPeriod(team, week).
  *   This is the SINGLE SOURCE OF TRUTH for team period visibility.
  *
+ * WEEKLY TEAMS ROSTER (v22):
+ *   The roster for a team comes from the PERSISTENT Team entity's
+ *   members[] array, filtered by week through
+ *   TeamQueries.getActiveTeamMembers. The weekly-team record in
+ *   academy.weeklyTeams carries ONLY the week window; it does not
+ *   carry its own member list. This module therefore does not read
+ *   AWT.getWeeklyTeams for roster data — it uses that call only to
+ *   enumerate which teams have a weekly-team window in the class
+ *   for the given week (a cheap "is scheduled this week" gate).
+ *   Both the Weekly Teams view and the Tournaments view read the
+ *   same persistent roster, so the two views always agree.
+ *
  * CLASS VM SHAPE:
  *   {
  *     id,
@@ -74,7 +86,7 @@
  *   - TeamConstants        (team type/period labels)
  *
  *   - TeamAggregator       (period-display strings; lazy)
- *   - AcademyWeeklyTeams   (week-scoped assignments; lazy)
+ *   - AcademyWeeklyTeams   (week-window gate; lazy)
  *   - AcademyRanking       (ranking projection; lazy)
  *   - AcademyCalendarAggregator (schedule projections; lazy)
  *   - AcademyEnrolments    (enrolment read for discipline editor VM; lazy)
@@ -905,8 +917,15 @@
     // The team list is filtered by the PERSISTENT Team entity's
     // own startPeriod / endPeriod, via TeamQueries.isTeamActiveAtPeriod.
     // A team whose endPeriod is week 2 does not appear in week 3's
-    // list. The weekly-team record (membership map) is a separate
-    // concern, handled by AcademyWeeklyTeams.getWeeklyTeams.
+    // list. The weekly-team record (window in academy.weeklyTeams)
+    // is consulted ONLY to gate "is this team scheduled this week?".
+    //
+    // ROSTER SOURCE (v22):
+    //   The roster for each team comes from the PERSISTENT Team
+    //   entity's members[] array, filtered by week through
+    //   TeamQueries.getActiveTeamMembers. Both the Weekly Teams
+    //   view and the Tournaments view read the same array, so the
+    //   two views always agree.
 
     function getWeeklyTeamsViewModel(classId, week, selectedTeamId) {
         var classList = getClassListViewModel();
@@ -933,24 +952,39 @@
             };
         }
 
-        var assignments = {};
+        // The weekly-team window records gate which teams appear.
+        // We read the map once; the values are the member id lists
+        // we used to read, but since v22 they are derived from the
+        // persistent roster (see AcademyWeeklyTeams.getWeeklyTeams).
+        // We still need the set of scheduled teams, so we use the
+        // returned keys directly.
+        var scheduledTeamIds = Object.create(null);
         var AWT = getAcademyWeeklyTeams();
         if (AWT && typeof AWT.getWeeklyTeams === 'function') {
+            var assignments;
             try {
                 assignments = AWT.getWeeklyTeams(selectedClass.id, week) || {};
             } catch (e) {
                 assignments = {};
             }
+            var scheduledKeys = Object.keys(assignments);
+            for (var k = 0; k < scheduledKeys.length; k++) {
+                scheduledTeamIds[String(scheduledKeys[k])] = true;
+            }
         }
 
-        var teams = buildWeeklyTeamsList(selectedClass.id, week, assignments);
+        var teams = buildWeeklyTeamsList(
+            selectedClass.id,
+            week,
+            scheduledTeamIds
+        );
 
         var selectedTeamVM = null;
         var resolvedSelectedTeamId = null;
         if (selectedTeamId) {
             for (var j = 0; j < teams.length; j++) {
                 if (String(teams[j].id) === String(selectedTeamId)) {
-                    selectedTeamVM = buildWeeklyTeamDetail(teams[j]._team, assignments);
+                    selectedTeamVM = buildWeeklyTeamDetail(teams[j]._team, week);
                     resolvedSelectedTeamId = teams[j].id;
                     break;
                 }
@@ -982,7 +1016,7 @@
         };
     }
 
-    function buildWeeklyTeamsList(classId, week, assignments) {
+    function buildWeeklyTeamsList(classId, week, scheduledTeamIds) {
         if (!TeamQueries || typeof TeamQueries.getTeamsByClass !== 'function') {
             return [];
         }
@@ -1007,9 +1041,20 @@
                 }
             }
 
-            var memberIds = Array.isArray(assignments[String(team.id)])
-                ? assignments[String(team.id)]
-                : [];
+            // SCHEDULING GATE: only teams with a weekly-team window
+            // covering the requested week appear in the Weekly Teams
+            // list. Teams without a window are visible in the Teams
+            // tab but not in a given Academy week.
+            if (scheduledTeamIds &&
+                scheduledTeamIds[String(team.id)] !== true) {
+                continue;
+            }
+
+            // ROSTER SOURCE (v22): the persistent Team entity.
+            var activeMembers = TeamQueries.getActiveTeamMembers(
+                team,
+                week
+            ) || [];
 
             items.push({
                 id: team.id,
@@ -1020,9 +1065,8 @@
                 statusLabel: getTeamStatusLabel(team.status),
                 periodLabel: TeamConstants.getPeriodLabel(team.type),
                 periodDisplay: getTeamPeriodDisplay(team),
-                memberCount: memberIds.length,
-                _team: team,
-                _memberIds: memberIds
+                memberCount: activeMembers.length,
+                _team: team
             });
         }
 
@@ -1038,14 +1082,17 @@
         return status.charAt(0).toUpperCase() + status.slice(1);
     }
 
-    function buildWeeklyTeamDetail(team, assignments) {
+    function buildWeeklyTeamDetail(team, week) {
         if (!team) { return null; }
 
-        var memberIds = Array.isArray(assignments[String(team.id)])
-            ? assignments[String(team.id)]
-            : [];
+        // ROSTER SOURCE (v22): the persistent Team entity's members[]
+        // array, filtered by week through getActiveTeamMembers.
+        var activeMembers = TeamQueries.getActiveTeamMembers(
+            team,
+            week
+        ) || [];
 
-        var members = buildTeamMembersVM(memberIds);
+        var members = buildTeamMembersVM(activeMembers);
 
         return {
             id: team.id,
@@ -1062,15 +1109,18 @@
         };
     }
 
-    function buildTeamMembersVM(memberIds) {
-        if (!Array.isArray(memberIds)) {
+    function buildTeamMembersVM(activeMemberRecords) {
+        if (!Array.isArray(activeMemberRecords)) {
             return [];
         }
 
         var result = [];
 
-        for (var i = 0; i < memberIds.length; i++) {
-            var charId = memberIds[i];
+        for (var i = 0; i < activeMemberRecords.length; i++) {
+            var record = activeMemberRecords[i];
+            if (!record) { continue; }
+
+            var charId = record.characterId;
             if (!charId) { continue; }
 
             var char = CharacterQueries.getCharacterById(charId);
@@ -1078,7 +1128,7 @@
                 result.push({
                     characterId: charId,
                     name: 'Unknown',
-                    role: 'Member',
+                    role: record.role || 'Member',
                     roleLabel: '',
                     age: '',
                     statusLabel: ''
@@ -1089,7 +1139,7 @@
             result.push({
                 characterId: charId,
                 name: CharacterQueries.getDisplayName(char),
-                role: 'Member',
+                role: record.role || 'Member',
                 roleLabel: '',
                 age: CharacterQueries.getCharacterAge(char),
                 statusLabel: char.deceased === true ? 'Deceased' : 'Active'
