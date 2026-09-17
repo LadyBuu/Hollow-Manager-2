@@ -34,11 +34,25 @@
  *     - returns null on failure, never a coerced value
  *     - returns an integer >= 1
  *
- *   isValidPeriod(value, typeId) composes parsePeriod with per-type
- *   bounds from getPeriodRange(). It returns false for invalid types.
+ *   A "period" in this module means a VALUE THAT RESOLVES TO A NUMBER.
+ *   Blank/absent values are NOT periods; they are the "unbounded"
+ *   sentinel and are handled by isValidPeriod / isUnboundedPeriod.
  *
- *   Callers MUST use parsePeriod for all period input. Do not use
- *   parseInt in this module or in any consumer.
+ *   isValidPeriod(value, typeId):
+ *     - returns TRUE when value is '' / null / undefined (unbounded)
+ *     - returns TRUE when value parses to a real integer inside the
+ *       type's range
+ *     - returns FALSE for anything else (floats, out-of-range,
+ *       garbage strings, invalid team type)
+ *
+ *   The "blank is valid" rule is deliberate. TeamCore writes '' to
+ *   endPeriod to mean "ongoing"; without this rule, validating an
+ *   open-ended team would fail. This was the source of the
+ *   Auto-Distribute rejection ("Invalid end period for team type")
+ *   when creating a team with endPeriod: ''.
+ *
+ *   Callers MUST use parsePeriod for all NON-BLANK period input. Do
+ *   not use parseInt in this module or in any consumer.
  *
  * CALENDAR BOUNDS:
  *   CalendarConstants is a LAZY dependency. This module can load
@@ -66,6 +80,7 @@
  *   var isValid = TC.isValidTeamType('professional');
  *   var period = TC.parsePeriod('12');
  *   var inBounds = TC.isValidPeriod(period, 'professional');
+ *   var unbounded = TC.isUnboundedPeriod('');
  */
 
 (function() {
@@ -386,16 +401,23 @@
      * ACCEPTS:
      *   - positive integers (1, 2, 42)
      *   - integer strings ('1', '42', '  7  ')
-     *   - objects whose toString is an integer string ('1'.toString)
      *
      * REJECTS:
      *   - floats (1.5, '1.5')
      *   - zero and negative numbers
-     *   - strings with trailing characters ('12abc', '12 ')
-     *   - empty strings, null, undefined, NaN, Infinity
+     *   - strings with trailing characters ('12abc', '12x')
+     *   - empty strings, whitespace-only strings, null, undefined,
+     *     NaN, Infinity
      *   - non-safe integers
+     *   - objects (do NOT stringify objects implicitly; callers must
+     *     pass a number or a string)
      *
      * Returns a positive integer or null. Never coerces silently.
+     *
+     * NOTE ON BLANK VALUES:
+     *   parsePeriod('') returns null. Blank is "unbounded," not a
+     *   period. Callers who want to test for the unbounded sentinel
+     *   use isUnboundedPeriod, not parsePeriod.
      *
      * @param {*} value
      * @returns {number|null}
@@ -429,6 +451,37 @@
         // Other types: reject. Do not stringify objects implicitly;
         // callers must pass a number or a string.
         return null;
+    }
+
+    // ============================================================
+    // PERIOD BOUNDS - THE "UNBOUNDED" SENTINEL
+    // ============================================================
+
+    /**
+     * Is this value the "unbounded on this side" sentinel?
+     *
+     * The sentinel is '' , null, or undefined. These values mean
+     * "no bound on this side of the range." They are NOT periods;
+     * they are the absence of a period.
+     *
+     * Usage:
+     *   - TeamCore writes '' to endPeriod to mean "ongoing."
+     *   - TeamQueries.teamWindowContains treats absent bounds as
+     *     unbounded.
+     *   - Member entries in the intervals model carry joinPeriod: ''
+     *     to mean "no upper/lower bound on this stint."
+     *
+     * IMPORTANT: A blank string of whitespace ('   ') is NOT the
+     * sentinel. It is a malformed value that neither parses as a
+     * period nor qualifies as "unbounded." isValidPeriod rejects it.
+     *
+     * @param {*} value
+     * @returns {boolean}
+     */
+    function isUnboundedPeriod(value) {
+        return value === undefined ||
+               value === null ||
+               value === '';
     }
 
     // ============================================================
@@ -498,14 +551,48 @@
     /**
      * Is a period valid for a team type?
      *
-     * Uses parsePeriod for the numeric check and getPeriodRange for
-     * the per-type bounds check. Returns false for invalid types.
+     * ACCEPTS:
+     *   - '' / null / undefined — the unbounded sentinel. Returns
+     *     TRUE. The value means "no bound on this side of the range"
+     *     and is a legitimate state for an open-ended team window or
+     *     an ongoing stint.
+     *   - A real integer (or integer string) inside the type's range.
+     *     Returns TRUE.
+     *
+     * REJECTS:
+     *   - Floats, negatives, zero, garbage strings, out-of-range
+     *     integers, non-safe integers.
+     *   - Whitespace-only strings ('   ') — these are malformed, not
+     *     blank.
+     *   - Invalid team type ID.
+     *
+     * WHY BLANK IS VALID:
+     *   TeamCore writes '' to endPeriod to mean "ongoing." Without
+     *   this rule, validating a freshly-created open-ended team would
+     *   fail with "Invalid end period for team type," which is
+     *   exactly what happened during Auto-Distribute. The rule is a
+     *   pure widening of the previous behaviour: every call that
+     *   passed a real in-range integer still returns true; every
+     *   call that passed a blank value now returns true instead of
+     *   false.
+     *
+     *   The ordering check ("start cannot be after end") is
+     *   performed elsewhere and correctly skips when either bound is
+     *   blank, because parsePeriod returns null for blank values.
      *
      * @param {*} period
      * @param {string} typeId
      * @returns {boolean}
      */
     function isValidPeriod(period, typeId) {
+        // Unbounded sentinel: valid on any side of any type's range.
+        if (isUnboundedPeriod(period)) {
+            // Still need to know the type is real so callers can't
+            // ask "is blank valid for type 'not-a-type'?" and get a
+            // yes.
+            return normalizeTeamType(typeId) !== null;
+        }
+
         var num = parsePeriod(period);
         if (num === null) {
             return false;
@@ -565,10 +652,6 @@
             if (type.isAcademic === false && type.periodLabel !== 'Year') {
                 errors.push('Non-academic type "' + type.id + '" must have periodLabel "Year".');
             }
-
-            // Exactly one academic type.
-            // (Not enforced here; if more than one academic type is
-            // added, the invariant changes deliberately.)
         });
 
         // ---- Statuses ----
@@ -716,6 +799,9 @@
         // ---- Period parsing (canonical) ----
         parsePeriod: parsePeriod,
 
+        // ---- Unbounded sentinel ----
+        isUnboundedPeriod: isUnboundedPeriod,
+
         // ---- Period range and validation ----
         getPeriodRange: getPeriodRange,
         getPeriodBounds: getPeriodBounds,
@@ -742,12 +828,47 @@
             'isValidTeamStatus', 'getValidStatusIds', 'getDefaultStatus',
             'getDefaultRole',
             'parsePeriod',
+            'isUnboundedPeriod',
             'getPeriodRange', 'getPeriodBounds', 'isValidPeriod'
         ];
 
         for (var i = 0; i < required.length; i++) {
             if (typeof exports[required[i]] !== 'function') {
                 missing.push(required[i]);
+            }
+        }
+
+        // Smoke test the unbounded-period rule. This is the behaviour
+        // that fixes BUG-R1; if it regresses, the log line says so.
+        try {
+            if (exports.isValidPeriod('', 'academic') !== true) {
+                missing.push('isValidPeriod("", "academic") !== true');
+            }
+            if (exports.isValidPeriod(null, 'professional') !== true) {
+                missing.push('isValidPeriod(null, "professional") !== true');
+            }
+            if (exports.isValidPeriod('   ', 'academic') !== false) {
+                missing.push('isValidPeriod("   ") should reject whitespace');
+            }
+            if (exports.isValidPeriod('', 'not-a-real-type') !== false) {
+                missing.push('isValidPeriod blank with invalid type should reject');
+            }
+            if (exports.isValidPeriod(5, 'academic') !== true) {
+                missing.push('isValidPeriod(5, "academic") !== true');
+            }
+            if (exports.isValidPeriod(53, 'academic') !== false) {
+                missing.push('isValidPeriod(53, "academic") should be out of range');
+            }
+            if (exports.isValidPeriod(2026, 'professional') !== true) {
+                missing.push('isValidPeriod(2026, "professional") !== true');
+            }
+        } catch (e) {
+            // getPeriodRange('academic') requires CalendarConstants.
+            // If it isn't loaded yet, the smoke test can't run for
+            // that type. That's fine; it will run once the dependency
+            // is present, in the browser console on demand.
+            if (String(e && e.message).indexOf('CalendarConstants') === -1) {
+                missing.push('smoke test threw: ' + (e && e.message));
             }
         }
 
