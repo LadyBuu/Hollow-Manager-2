@@ -7,8 +7,8 @@
  * PROJECTIONS:
  *   Classes:
  *     getClassListViewModel()
- *     getClassViewModel(classId)
- *     getClassStudentsViewModel(classId)
+ *     getClassViewModel(classId, week)
+ *     getClassStudentsViewModel(classId, week)
  *
  *   People:
  *     getPeopleViewModel(classId, options)
@@ -75,6 +75,34 @@
  *   Location schedule projections read from
  *   AcademyCalendarAggregator, which is projector-backed.
  *
+ * ELIMINATION SEMANTICS (v24):
+ *   The People sidebar and the weekly-team candidate pool both use
+ *   the SAME definition of "eliminated":
+ *
+ *     eliminated as of the displayed week
+ *
+ *   which is exactly what EliminationQueries.isCharacterEliminatedByWeek
+ *   answers. The boundary rule is: elimination at week E counts as
+ *   eliminated for week W when E < W. A character eliminated in
+ *   week 5 is still eligible during week 5 and ineligible from
+ *   week 6 onward.
+ *
+ *   The People filter values are:
+ *     'active'     — not deceased AND not eliminated (as of week)
+ *     'eliminated' — eliminated (as of week)
+ *     'deceased'   — deceased
+ *     'all'        — no filter
+ *
+ *   The 'active' filter excludes eliminated characters, matching the
+ *   semantics of the "Hide Eliminated" checkbox in the character
+ *   list sidebar.
+ *
+ * FAIL-CLOSED ELIGIBILITY:
+ *   getWeeklyTeamMemberManagerViewModel treats EliminationQueries as
+ *   a required dependency. When the query is missing or throws, the
+ *   projection throws. It does NOT silently treat the candidate as
+ *   eligible. An eligibility gate that fails open is not a gate.
+ *
  * DEPENDENCIES:
  *   - AcademyClasses       (class entities)
  *   - AcademyDisciplines   (discipline entities)
@@ -89,6 +117,9 @@
  *   - AcademyCalendarAggregator (schedule projections; lazy)
  *   - AcademyEnrolments    (enrolment read for discipline editor VM; lazy)
  *   - AcademyGrades        (grade read for discipline editor VM; lazy)
+ *   - EliminationQueries   (elimination reads; lazy, but REQUIRED
+ *                           by getWeeklyTeamMemberManagerViewModel
+ *                           and by the People 'eliminated' filter)
  */
 
 (function() {
@@ -218,6 +249,29 @@
         return typeof value === 'number' && isFinite(value);
     }
 
+    /**
+     * Resolve a week to a bounded integer, or null.
+     *
+     * Accepts integers in [MIN_WEEK, MAX_WEEK] and integer-strings.
+     * Rejects out-of-range, non-integer, and non-numeric values.
+     * Does NOT fall back. A null return means the caller must decide
+     * what "no week" means for their projection.
+     */
+    function resolveWeek(week) {
+        if (week === undefined || week === null || week === '') {
+            return null;
+        }
+        var n = Number(week);
+        if (!Number.isInteger(n)) {
+            return null;
+        }
+        if (n < CalendarConstants.MIN_WEEK ||
+            n > CalendarConstants.MAX_WEEK) {
+            return null;
+        }
+        return n;
+    }
+
     function getCharacterDisplayName(charId) {
         if (!charId) { return 'Unknown'; }
         var char = CharacterQueries.getCharacterById(charId);
@@ -234,10 +288,67 @@
     }
 
     // ============================================================
+    // ELIMINATION PROJECTION
+    // ============================================================
+    //
+    // [FIX-1a] Shared elimination reader.
+    //
+    // Returns { eliminated, eliminationWeek, eliminationReason }.
+    // When EliminationQueries is unavailable or the week is null,
+    // returns the "unknown" shape (eliminated: false, week: null).
+    //
+    // Callers that require a DEFINITIVE answer (the weekly-team
+    // candidate pool) MUST NOT use this helper. They must resolve
+    // EliminationQueries themselves and throw when it is absent.
+    // This helper is for display projections where "unknown" is a
+    // legitimate state (e.g. a roster overview with no selected week).
+
+    function readEliminationState(charId, week) {
+        var result = {
+            eliminated: false,
+            eliminationWeek: null,
+            eliminationReason: ''
+        };
+
+        if (week === null) {
+            return result;
+        }
+
+        var EQ = getEliminationQueries();
+        if (!EQ || typeof EQ.isCharacterEliminatedByWeek !== 'function') {
+            return result;
+        }
+
+        result.eliminated = EQ.isCharacterEliminatedByWeek(charId, week) === true;
+
+        if (result.eliminated) {
+            if (typeof EQ.getEliminationWeek === 'function') {
+                result.eliminationWeek = EQ.getEliminationWeek(charId);
+            }
+            if (typeof EQ.getEliminationReason === 'function') {
+                var reason = EQ.getEliminationReason(charId);
+                if (typeof reason === 'string' && reason !== 'Unknown') {
+                    result.eliminationReason = reason;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    // ============================================================
     // ROSTER DERIVATION
     // ============================================================
+    //
+    // [FIX-1a] Accepts a week and attaches elimination state.
+    //
+    // The roster is a historical/current class relationship. It is
+    // NOT filtered by elimination — an eliminated character remains
+    // on their class roster. Callers that want a filtered roster
+    // (the People view) apply the filter themselves using the
+    // `eliminated` field.
 
-    function deriveClassRoster(classId) {
+    function deriveClassRoster(classId, week) {
         if (!isNonEmptyString(classId)) {
             return [];
         }
@@ -246,6 +357,8 @@
         if (!cls) {
             return [];
         }
+
+        var weekNum = resolveWeek(week);
 
         var all = CharacterQueries.getCharacters() || [];
         var target = String(classId);
@@ -272,12 +385,17 @@
             }
             if (!found) { continue; }
 
+            var elim = readEliminationState(c.id, weekNum);
+
             result.push({
                 id: c.id,
                 name: CharacterQueries.getDisplayName(c),
                 status: CharacterQueries.getCurrentStatus(c),
                 age: CharacterQueries.getCharacterAge(c),
                 deceased: c.deceased === true,
+                eliminated: elim.eliminated,
+                eliminationWeek: elim.eliminationWeek,
+                eliminationReason: elim.eliminationReason,
                 role: 'student'
             });
         }
@@ -312,22 +430,30 @@
     // ============================================================
     // CLASS STUDENTS
     // ============================================================
+    //
+    // [FIX-1a] Accepts and forwards the week so callers get
+    // elimination-aware roster entries.
 
-    function getClassStudentsViewModel(classId) {
-        return deriveClassRoster(classId);
+    function getClassStudentsViewModel(classId, week) {
+        return deriveClassRoster(classId, week);
     }
 
     // ============================================================
     // CLASS VIEW MODEL
     // ============================================================
+    //
+    // [FIX-1a] Accepts and forwards the week so studentCount is
+    // computed from the week-scoped roster. The count itself is not
+    // elimination-filtered (it is the roster size, not the eligible
+    // size); the roster entries carry elimination state.
 
-    function getClassViewModel(classId) {
+    function getClassViewModel(classId, week) {
         if (!classId) { return null; }
 
         var cls = AcademyClasses.getClass(classId);
         if (!cls) { return null; }
 
-        var roster = deriveClassRoster(classId);
+        var roster = deriveClassRoster(classId, week);
         var studentCount = roster.length;
 
         return {
@@ -348,6 +474,21 @@
     // ============================================================
     // PEOPLE VIEW MODEL
     // ============================================================
+    //
+    // [FIX-1b] The status filter now implements the 'eliminated'
+    // branch and treats 'active' as "not deceased AND not
+    // eliminated". The week is threaded through from options.week
+    // so elimination is evaluated against the displayed week.
+    //
+    // Filter semantics:
+    //   status === 'all'        → no filter
+    //   status === 'active'     → exclude deceased AND eliminated
+    //   status === 'deceased'   → exclude non-deceased
+    //   status === 'eliminated' → exclude non-eliminated
+    //
+    // Any unknown status value is treated as 'all'. This is a
+    // deliberate leniency for the UI vocabulary only; it does not
+    // fabricate data.
 
     function getPeopleViewModel(classId, options) {
         options = options || {};
@@ -359,6 +500,8 @@
         var selectedCharacterId = isNonEmptyString(options.selectedCharacterId)
             ? String(options.selectedCharacterId)
             : null;
+
+        var weekNum = resolveWeek(options.week);
 
         var classList = getClassListViewModel();
 
@@ -377,6 +520,7 @@
                 classList: classList,
                 classId: null,
                 className: null,
+                week: weekNum,
                 filters: filters,
                 people: [],
                 totalCount: 0,
@@ -384,7 +528,10 @@
             };
         }
 
-        var students = getClassStudentsViewModel(selectedClass.id);
+        var students = getClassStudentsViewModel(
+            selectedClass.id,
+            weekNum
+        );
 
         var cls = AcademyClasses.getClass(selectedClass.id);
         if (cls && cls.instructorId) {
@@ -396,14 +543,21 @@
                 }
             }
             if (!alreadyPresent) {
-                var instructorChar = CharacterQueries.getCharacterById(cls.instructorId);
+                var instructorChar =
+                    CharacterQueries.getCharacterById(cls.instructorId);
                 if (instructorChar) {
+                    var instructorElim = readEliminationState(
+                        instructorChar.id, weekNum
+                    );
                     students = students.concat([{
                         id: instructorChar.id,
                         name: CharacterQueries.getDisplayName(instructorChar),
                         status: CharacterQueries.getCurrentStatus(instructorChar),
                         age: CharacterQueries.getCharacterAge(instructorChar),
                         deceased: instructorChar.deceased === true,
+                        eliminated: instructorElim.eliminated,
+                        eliminationWeek: instructorElim.eliminationWeek,
+                        eliminationReason: instructorElim.eliminationReason,
                         role: 'instructor'
                     }]);
                 }
@@ -423,8 +577,19 @@
             }
             if (statusFilter !== 'all') {
                 var isDeceased = person.deceased === true;
-                if (statusFilter === 'deceased' && !isDeceased) { return false; }
-                if (statusFilter === 'active' && isDeceased) { return false; }
+                var isEliminated = person.eliminated === true;
+
+                if (statusFilter === 'deceased' && !isDeceased) {
+                    return false;
+                }
+                if (statusFilter === 'eliminated' && !isEliminated) {
+                    return false;
+                }
+                // 'active' means not deceased AND not eliminated.
+                if (statusFilter === 'active' &&
+                    (isDeceased || isEliminated)) {
+                    return false;
+                }
             }
             return true;
         });
@@ -443,6 +608,9 @@
                 status: person.status,
                 role: person.role,
                 deceased: person.deceased === true,
+                eliminated: person.eliminated === true,
+                eliminationWeek: person.eliminationWeek,
+                eliminationReason: person.eliminationReason,
                 isSelected: selectedCharacterId !== null &&
                     String(person.id) === selectedCharacterId
             };
@@ -452,6 +620,7 @@
             classList: classList,
             classId: selectedClass.id,
             className: selectedClass.name,
+            week: weekNum,
             filters: filters,
             people: people,
             totalCount: students.length,
@@ -522,7 +691,9 @@
 
     function getInstructorNamesForDiscipline(discipline) {
         if (!discipline) { return []; }
-        var ids = Array.isArray(discipline.instructorIds) ? discipline.instructorIds : [];
+        var ids = Array.isArray(discipline.instructorIds)
+            ? discipline.instructorIds
+            : [];
         return ids.map(function(id) {
             return getCharacterDisplayName(id);
         });
@@ -554,7 +725,9 @@
                 endWeek: d.endWeek,
                 weeklyHours: d.weeklyHours,
                 weight: d.weight,
-                instructorIds: Array.isArray(d.instructorIds) ? d.instructorIds.slice() : [],
+                instructorIds: Array.isArray(d.instructorIds)
+                    ? d.instructorIds.slice()
+                    : [],
                 instructorNames: getInstructorNamesForDiscipline(d)
             };
         });
@@ -635,12 +808,15 @@
             defaultAssessmentWeights = AcademyDisciplines.getDefaultAssessmentWeights() || {};
         }
 
-        var assessmentWeights = draft.assessmentWeights && typeof draft.assessmentWeights === 'object'
+        var assessmentWeights = draft.assessmentWeights &&
+            typeof draft.assessmentWeights === 'object'
             ? draft.assessmentWeights
             : defaultAssessmentWeights;
 
         var instructorNames = getInstructorNamesForDiscipline({
-            instructorIds: Array.isArray(draft.instructorIds) ? draft.instructorIds : []
+            instructorIds: Array.isArray(draft.instructorIds)
+                ? draft.instructorIds
+                : []
         });
 
         return {
@@ -651,7 +827,9 @@
             endWeek: typeof draft.endWeek === 'number' ? draft.endWeek : 52,
             weeklyHours: typeof draft.weeklyHours === 'number' ? draft.weeklyHours : 1,
             weight: typeof draft.weight === 'number' ? draft.weight : 1,
-            instructorIds: Array.isArray(draft.instructorIds) ? draft.instructorIds.slice() : [],
+            instructorIds: Array.isArray(draft.instructorIds)
+                ? draft.instructorIds.slice()
+                : [],
             instructorNames: instructorNames,
             availableInstructors: availableInstructors,
             gradeScheme: draft.gradeScheme || null,
@@ -765,9 +943,10 @@
         filters = filters || {};
 
         var AcademyLocations = window.AcademyLocations;
-        var allLocations = AcademyLocations && typeof AcademyLocations.getLocations === 'function'
-            ? (AcademyLocations.getLocations() || [])
-            : [];
+        var allLocations =
+            AcademyLocations && typeof AcademyLocations.getLocations === 'function'
+                ? (AcademyLocations.getLocations() || [])
+                : [];
 
         var type = filters.type || 'all';
         var search = (filters.search || '').toLowerCase().trim();
@@ -1197,7 +1376,18 @@
     //     filtered by week)
     //   - candidates: class roster minus instructor minus current
     //     members minus characters assigned elsewhere this week
-    //     minus eliminated characters
+    //     minus ELIMINATED characters.
+    //
+    // [FIX-1c] ELIMINATION IS FAIL-CLOSED.
+    //
+    //   EliminationQueries is REQUIRED for this projection. If it is
+    //   absent or does not expose isCharacterEliminatedByWeek, this
+    //   function throws. If the query throws, the exception
+    //   propagates.
+    //
+    //   An eligibility gate that fails open is not a gate. Silent
+    //   "not eliminated" defaults are exactly how an eliminated
+    //   character ends up on a team roster.
     //
     // Team must belong to the class; if not, returns null.
 
@@ -1212,14 +1402,20 @@
         var teamId = isNonEmptyString(options.teamId)
             ? String(options.teamId)
             : null;
-        var week = isFiniteNumber(options.week)
-            ? options.week
-            : (typeof options.week === 'string'
-                ? parseInt(options.week, 10)
-                : null);
+        var weekNum = resolveWeek(options.week);
 
-        if (!classId || !teamId || !isFiniteNumber(week)) {
+        if (!classId || !teamId || weekNum === null) {
             return null;
+        }
+
+        // ---- EliminationQueries: required, not optional ----
+        var EQ = getEliminationQueries();
+        if (!EQ || typeof EQ.isCharacterEliminatedByWeek !== 'function') {
+            throw new Error(
+                '[AcademyAggregator] getWeeklyTeamMemberManagerViewModel ' +
+                'requires EliminationQueries.isCharacterEliminatedByWeek. ' +
+                'The candidate pool cannot be built without it.'
+            );
         }
 
         var team = TeamQueries.getTeamById(teamId);
@@ -1237,7 +1433,7 @@
 
         // ---- Members ----
         var activeMembers = TeamQueries.getActiveTeamMembers(
-            team, week
+            team, weekNum
         ) || [];
 
         var members = buildTeamMembersVM(activeMembers);
@@ -1270,7 +1466,7 @@
             var sibling = classTeams[t];
             if (!sibling || String(sibling.id) === teamId) continue;
             if (TeamConstants.normalizeTeamType(sibling.type) !== 'academic') continue;
-            var siblingMembers = TeamQueries.getActiveTeamMembers(sibling, week) || [];
+            var siblingMembers = TeamQueries.getActiveTeamMembers(sibling, weekNum) || [];
             for (var s = 0; s < siblingMembers.length; s++) {
                 var sm = siblingMembers[s];
                 if (sm && sm.characterId) {
@@ -1284,11 +1480,11 @@
             ? String(cls.instructorId)
             : null;
 
-        var roster = deriveClassRoster(classId);
-
-        var EQ = getEliminationQueries();
-        var canCheckElimination = EQ &&
-            typeof EQ.isCharacterEliminatedByWeek === 'function';
+        // [FIX-1a] Pass week through deriveClassRoster so the roster
+        // entries carry elimination state. We do NOT rely on that
+        // state here — we re-check below via EQ directly — but
+        // passing the week keeps the roster projection coherent.
+        var roster = deriveClassRoster(classId, weekNum);
 
         var candidates = [];
 
@@ -1308,20 +1504,11 @@
                 continue;
             }
 
-            if (canCheckElimination) {
-                var eliminated = false;
-                try {
-                    eliminated = EQ.isCharacterEliminatedByWeek(studentId, week) === true;
-                } catch (e) {
-                    console.warn(
-                        '[AcademyAggregator] isCharacterEliminatedByWeek threw for ' +
-                        studentId + ':', e
-                    );
-                    eliminated = false;
-                }
-                if (eliminated) {
-                    continue;
-                }
+            // [FIX-1c] Fail-closed elimination check. No try/catch.
+            // If the query throws, the projection throws. If the
+            // query returns true, the character is not a candidate.
+            if (EQ.isCharacterEliminatedByWeek(studentId, weekNum) === true) {
+                continue;
             }
 
             candidates.push({
@@ -1338,7 +1525,7 @@
         return {
             teamId: teamId,
             teamName: team.name || 'Unnamed Team',
-            week: week,
+            week: weekNum,
             members: members,
             candidates: candidates
         };
