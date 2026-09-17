@@ -1,40 +1,70 @@
 /**
  * modules/academy/academy-weekly-teams.js - Academy Weekly Teams
- * SINGLE SOURCE OF TRUTH for week-scoped team membership.
+ * WEEK-SCOPED TEAM VISIBILITY for the Academy Weekly Teams view.
  *
  * Path: js/modules/academy/academy-weekly-teams.js
  *
- * MODEL:
- *   academy.weeklyTeams[classId][teamId] = {
- *     id, classId, teamId,
- *     startWeek, endWeek,       // null = ongoing; endWeek inclusive
- *     members: [
- *       { characterId, startWeek, endWeek }
- *     ],
- *     createdAt, updatedAt
- *   }
+ * WHAT THIS MODULE OWNS:
+ *   The week window during which a persistent Team entity appears in
+ *   the Weekly Teams view for a class. A weekly-team record is a
+ *   thin wrapper:
  *
- *   The team's existence and its OWN startPeriod / endPeriod remain
- *   owned by TeamQueries / TeamCore. This module owns only the
- *   class-scoped weekly assignment and its membership windows.
+ *     academy.weeklyTeams[classId][teamId] = {
+ *       id, classId, teamId,
+ *       startWeek, endWeek,       // null = ongoing; endWeek inclusive
+ *       createdAt, updatedAt
+ *     }
  *
- * READING A ROSTER FOR WEEK W:
- *   For each team in the class:
- *     1. Look up the persistent Team via TeamQueries.
- *     2. If the team's window does not cover W, skip.
- *     3. From this module's record, take members whose
- *        startWeek <= W <= (endWeek ?? ∞).
+ * WHAT THIS MODULE DOES NOT OWN (v22):
+ *   Team membership. The roster lives EXCLUSIVELY on the persistent
+ *   Team entity's members[] array (with joinPeriod / leavePeriod as
+ *   the week range). Prior to v22, this module also carried a
+ *   redundant `members` array on every weekly-team record. That
+ *   array drifted from the persistent roster, producing a UI where
+ *   the same team showed one roster in the Weekly Teams view and a
+ *   different roster in the Tournaments view. The v22 migration
+ *   collapsed the redundant array into the persistent roster and
+ *   the writers here now route membership mutations through a
+ *   transaction-local helper that operates on the persistent Team
+ *   entity.
+ *
+ * READS:
+ *   - getWeeklyTeams(classId, week)
+ *       Returns { [teamId]: [charId, ...] } for every team active
+ *       in the week. Membership comes from
+ *       TeamQueries.getActiveTeamMembers. The weekly-team record
+ *       gates which teams are visible at all.
+ *   - getActiveMembers(classId, teamId, week)
+ *       Delegates to TeamQueries.getActiveTeamMembers.
+ *   - isPersistentTeamVisibleInWeek(teamId, week)
+ *       The persistent Team entity's own startPeriod / endPeriod.
+ *
+ * WRITES (v22):
+ *   - addMember(classId, teamId, charId, week)
+ *       Ensures a weekly-team record exists for (classId, teamId),
+ *       then delegates membership to a transaction-local helper
+ *       that writes to the persistent Team entity's members[].
+ *   - endMembership(classId, teamId, charId, effectiveWeek)
+ *       Truncates the member's leavePeriod on the persistent roster
+ *       at effectiveWeek - 1. History survives.
+ *   - removeMemberRecord(classId, teamId, charId)
+ *       Hard-deletes the member's entry from the persistent roster.
+ *   - removeTeamRecord(classId, teamId)
+ *       Deletes the weekly-team record. Does NOT touch the
+ *       persistent Team entity.
+ *
+ * WHY TRANSACTION-LOCAL HELPERS:
+ *   TeamCore's public mutations (addMember, updateMember,
+ *   removeMember) each open their own MutationPipeline transaction.
+ *   This module also runs through MutationPipeline. Nesting
+ *   pipelines deadlocks. The helpers below operate on the appData
+ *   snapshot the pipeline hands in, matching the pattern already
+ *   used by TournamentEliminationCascade and AcademyCascade.
  *
  * DROP-OUT vs DELETE:
- *   - endMembership(classId, teamId, charId, effectiveWeek)
- *     Truncates the member's tail at effectiveWeek - 1. History
- *     survives. This is the ordinary "leave the team" action.
- *
- *   - removeMemberRecord(classId, teamId, charId)
- *     Hard-deletes the membership entry as if it never existed.
- *
- *   - removeTeamRecord(classId, teamId)
- *     Hard-deletes the entire weekly-team record.
+ *   - endMembership: the member's window becomes
+ *     [joinPeriod, effectiveWeek - 1]. History survives.
+ *   - removeMemberRecord: hard delete, no history.
  *
  * WEEK SEMANTICS:
  *   - Weeks are bounded [MIN_WEEK, MAX_WEEK].
@@ -48,7 +78,7 @@
  *   - window.CalendarValidation   (parseWeek)
  *   - window.CalendarConstants    (MIN_WEEK, MAX_WEEK)
  *   - window.MutationPipeline     (performMutation)
- *   - window.TeamQueries          (getTeamById)
+ *   - window.TeamQueries          (getTeamById, getActiveTeamMembers)
  *   - window.TeamConstants        (parsePeriod, getPeriodRange)
  */
 
@@ -59,7 +89,7 @@
         return;
     }
 
-    var _DIAGNOSTIC = true;
+    var _DIAGNOSTIC = false;
 
     function diag() {
         if (!_DIAGNOSTIC) return;
@@ -108,6 +138,9 @@
     if (!TeamQueries || typeof TeamQueries.getTeamById !== 'function') {
         _missing.push('TeamQueries.getTeamById');
     }
+    if (!TeamQueries || typeof TeamQueries.getActiveTeamMembers !== 'function') {
+        _missing.push('TeamQueries.getActiveTeamMembers');
+    }
     if (!TeamConstants || typeof TeamConstants.parsePeriod !== 'function') {
         _missing.push('TeamConstants.parsePeriod');
     }
@@ -121,7 +154,7 @@
 
     window.__academyWeeklyTeamsLoaded = true;
 
-    diag('Module loaded.');
+    diag('Module loaded (v22, no local member array).');
 
     // ============================================================
     // CONSTANTS
@@ -203,31 +236,6 @@
         return true;
     }
 
-    function memberActiveInWeek(member, week) {
-        if (!member || typeof member !== 'object') {
-            return false;
-        }
-        var start = member.startWeek;
-        if (start === null || start === undefined) {
-            return false;
-        }
-        if (week < start) {
-            return false;
-        }
-        if (member.endWeek !== null && member.endWeek !== undefined &&
-            week > member.endWeek) {
-            return false;
-        }
-        return true;
-    }
-
-    function recordActiveInWeek(record, week) {
-        if (!record) {
-            return false;
-        }
-        return weekInRange(week, record.startWeek, record.endWeek);
-    }
-
     /**
      * Is the persistent Team entity itself visible in the given week?
      * This is the TEAM's own window, not the weekly-team record's
@@ -257,8 +265,37 @@
         return true;
     }
 
+    /**
+     * Is a member of the persistent roster active in the given week?
+     * The member record uses joinPeriod / leavePeriod as the range.
+     * Empty joinPeriod means "from the beginning"; empty leavePeriod
+     * means "ongoing".
+     */
+    function memberActiveInWeek(member, week) {
+        if (!member || typeof member !== 'object') {
+            return false;
+        }
+        var join = TeamConstants.parsePeriod(member.joinPeriod);
+        var leave = TeamConstants.parsePeriod(member.leavePeriod);
+
+        if (join !== null && week < join) {
+            return false;
+        }
+        if (leave !== null && week > leave) {
+            return false;
+        }
+        return true;
+    }
+
+    function recordActiveInWeek(record, week) {
+        if (!record) {
+            return false;
+        }
+        return weekInRange(week, record.startWeek, record.endWeek);
+    }
+
     // ============================================================
-    // STORE ACCESS
+    // STORE ACCESS - weekly-team window records only
     // ============================================================
 
     function getStore() {
@@ -321,6 +358,159 @@
     }
 
     // ============================================================
+    // TRANSACTION-LOCAL PERSISTENT-ROSTER HELPERS
+    // ============================================================
+    //
+    // These operate on the appData snapshot the pipeline hands in.
+    // They mirror the write semantics of TeamCore.addMember /
+    // TeamCore.updateMember / TeamCore.removeMember, but they do NOT
+    // open their own transaction. They exist here because
+    // AcademyWeeklyTeams.addMember / endMembership /
+    // removeMemberRecord already run inside a MutationPipeline
+    // transaction and cannot nest a second one.
+
+    function findTeamInSnapshot(appData, teamId) {
+        if (!appData || !Array.isArray(appData.teams)) {
+            return null;
+        }
+        var target = String(teamId);
+        for (var i = 0; i < appData.teams.length; i++) {
+            var t = appData.teams[i];
+            if (t && String(t.id) === target) {
+                return t;
+            }
+        }
+        return null;
+    }
+
+    function findMemberInTeam(team, charId) {
+        if (!team || !Array.isArray(team.members)) {
+            return null;
+        }
+        var target = String(charId);
+        for (var i = 0; i < team.members.length; i++) {
+            var m = team.members[i];
+            if (m && String(m.characterId) === target) {
+                return m;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Add a member to the persistent team's roster, or update the
+     * existing entry's range if one is already present.
+     *
+     * Returns { added: boolean, updated: boolean }.
+     */
+    function syncAddMemberToPersistentRoster(team, charId, startWeek, role) {
+        if (!team) {
+            return { added: false, updated: false };
+        }
+        if (!Array.isArray(team.members)) {
+            team.members = [];
+        }
+
+        var target = String(charId);
+        var startStr = String(startWeek);
+        var roleStr = isNonEmptyString(role) ? String(role) : 'Member';
+
+        var existing = findMemberInTeam(team, target);
+
+        if (existing) {
+            // If the existing entry is already active at this week, no-op.
+            var joinNum = TeamConstants.parsePeriod(existing.joinPeriod);
+            var leaveNum = TeamConstants.parsePeriod(existing.leavePeriod);
+            if ((joinNum === null || startWeek >= joinNum) &&
+                (leaveNum === null || startWeek <= leaveNum)) {
+                return { added: false, updated: false };
+            }
+
+            // Otherwise treat this as a rejoin: the existing entry is
+            // truncated at startWeek - 1 and a fresh entry is appended,
+            // matching the "one interval per join" semantics of the
+            // persistent roster.
+            if (leaveNum === null || leaveNum >= startWeek) {
+                existing.leavePeriod = String(startWeek - 1);
+            }
+
+            team.members.push({
+                characterId: target,
+                role: roleStr,
+                joinPeriod: startStr,
+                leavePeriod: ''
+            });
+            return { added: true, updated: false };
+        }
+
+        team.members.push({
+            characterId: target,
+            role: roleStr,
+            joinPeriod: startStr,
+            leavePeriod: ''
+        });
+        return { added: true, updated: false };
+    }
+
+    /**
+     * Truncate the active membership of charId on the persistent
+     * roster at effectiveWeek - 1.
+     *
+     * Returns { ended: boolean, reason?: string }.
+     */
+    function syncEndMembershipOnPersistentRoster(team, charId, effectiveWeek) {
+        if (!team || !Array.isArray(team.members)) {
+            return { ended: false, reason: 'no-team' };
+        }
+        var target = String(charId);
+        var matched = null;
+        for (var i = 0; i < team.members.length; i++) {
+            var m = team.members[i];
+            if (!m) { continue; }
+            if (String(m.characterId) !== target) { continue; }
+            var join = TeamConstants.parsePeriod(m.joinPeriod);
+            var leave = TeamConstants.parsePeriod(m.leavePeriod);
+            // Active at the effective week?
+            var activeAtWeek = true;
+            if (join !== null && effectiveWeek < join) { activeAtWeek = false; }
+            if (leave !== null && effectiveWeek > leave) { activeAtWeek = false; }
+            if (activeAtWeek) {
+                matched = m;
+                break;
+            }
+        }
+
+        if (!matched) {
+            return { ended: false, reason: 'not-active' };
+        }
+
+        var matchedJoin = TeamConstants.parsePeriod(matched.joinPeriod);
+        if (matchedJoin !== null && matchedJoin >= effectiveWeek) {
+            return { ended: false, reason: 'starts-after' };
+        }
+
+        matched.leavePeriod = String(effectiveWeek - 1);
+        return { ended: true };
+    }
+
+    /**
+     * Hard-delete the member entry from the persistent roster.
+     *
+     * Returns { removed: boolean }.
+     */
+    function syncRemoveMemberFromPersistentRoster(team, charId) {
+        if (!team || !Array.isArray(team.members)) {
+            return { removed: false };
+        }
+        var target = String(charId);
+        var before = team.members.length;
+        team.members = team.members.filter(function(m) {
+            return !m || String(m.characterId) !== target;
+        });
+        return { removed: before !== team.members.length };
+    }
+
+    // ============================================================
     // PUBLIC READS
     // ============================================================
 
@@ -352,34 +542,42 @@
         return result;
     }
 
+    /**
+     * Roster for a (classId, teamId) pair, active at the given week.
+     * Delegates to the persistent Team entity. The weekly-team
+     * record is NOT consulted here; callers who need the "is this
+     * team scheduled this week?" gate use getWeeklyTeams.
+     */
     function getActiveMembers(classId, teamId, week) {
         var weekNum = parseWeekStrict(week);
         if (weekNum === null) {
             return [];
         }
-
-        var record = getTeamRecordInternal(classId, teamId);
-        if (!record) {
+        var team = TeamQueries.getTeamById(teamId);
+        if (!team) {
             return [];
         }
-
+        var members = TeamQueries.getActiveTeamMembers(team, weekNum) || [];
         var result = [];
-        var members = Array.isArray(record.members) ? record.members : [];
         for (var i = 0; i < members.length; i++) {
-            var member = members[i];
-            if (memberActiveInWeek(member, weekNum)) {
-                result.push(String(member.characterId));
+            var m = members[i];
+            if (m && m.characterId) {
+                result.push(String(m.characterId));
             }
         }
         return result;
     }
 
+    /**
+     * Full roster entries (characterId + role + join/leave) for a
+     * (classId, teamId) pair. Delegates to the persistent Team entity.
+     */
     function getAllMembers(classId, teamId) {
-        var record = getTeamRecordInternal(classId, teamId);
-        if (!record || !Array.isArray(record.members)) {
+        var team = TeamQueries.getTeamById(teamId);
+        if (!team || !Array.isArray(team.members)) {
             return [];
         }
-        return deepClone(record.members);
+        return deepClone(team.members);
     }
 
     /**
@@ -389,8 +587,10 @@
      * whose WEEKLY-TEAM RECORD is active that week AND whose
      * PERSISTENT TEAM ENTITY is also active that week.
      *
-     * A team that has ended (persistent endPeriod < week) does not
-     * appear in the map, even if a stale weekly-team record exists.
+     * Membership comes from the persistent roster, not from any
+     * per-week copy. This is the fix for the "same team, different
+     * roster" bug: the Weekly Teams view and the Tournaments view
+     * read the same array.
      */
     function getWeeklyTeams(classId, week) {
         var weekNum = parseWeekStrict(week);
@@ -425,14 +625,7 @@
                 continue;
             }
 
-            var members = Array.isArray(record.members) ? record.members : [];
-            var active = [];
-            for (var j = 0; j < members.length; j++) {
-                if (memberActiveInWeek(members[j], weekNum)) {
-                    active.push(String(members[j].characterId));
-                }
-            }
-            result[teamId] = active;
+            result[teamId] = getActiveMembers(classId, teamId, weekNum);
         }
         return result;
     }
@@ -479,11 +672,6 @@
         return Object.keys(rosters).length > 0;
     }
 
-    /**
-     * Every team ID that has a weekly-team record for this class,
-     * regardless of week. Used by list views that want to know which
-     * teams have ever been assigned at all.
-     */
     function getAllAssignedTeamIds(classId) {
         if (!isNonEmptyString(classId)) {
             return [];
@@ -580,7 +768,6 @@
             teamId: String(teamId),
             startWeek: week,
             endWeek: null,
-            members: [],
             createdAt: now,
             updatedAt: now
         };
@@ -590,9 +777,14 @@
     // MUTATIONS
     // ============================================================
 
+    /**
+     * Ensure a team is scheduled for a class in a week. Creates the
+     * weekly-team window record if it does not exist; otherwise
+     * widens the existing window to include the week.
+     *
+     * Does NOT touch membership. Membership is a separate operation.
+     */
     function addMember(classId, teamId, charId, week) {
-        diag('addMember CALLED', { classId, teamId, charId, week });
-
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
         }
@@ -624,6 +816,10 @@
                 if (!appData || typeof appData !== 'object') {
                     return { valid: false, message: 'Application data is not available.' };
                 }
+                var team = findTeamInSnapshot(appData, targetTeam);
+                if (!team) {
+                    return { valid: false, message: 'Team no longer exists.' };
+                }
                 return { valid: true };
             },
             mutate: function(appData) {
@@ -633,53 +829,39 @@
                 }
 
                 var record = store[targetClass][targetTeam];
-
                 if (!isPlainObject(record)) {
-                    record = buildNewTeamRecord(
-                        targetClass, targetTeam, weekNum
-                    );
+                    record = buildNewTeamRecord(targetClass, targetTeam, weekNum);
                     store[targetClass][targetTeam] = record;
                 }
 
-                if (!Array.isArray(record.members)) {
-                    record.members = [];
+                // Extend the window to include the requested week if needed.
+                var windowStart = record.startWeek;
+                var windowEnd = record.endWeek;
+
+                if (typeof windowStart !== 'number' || weekNum < windowStart) {
+                    record.startWeek = weekNum;
                 }
-
-                var existingIndex = -1;
-                for (var i = 0; i < record.members.length; i++) {
-                    if (String(record.members[i].characterId) === targetChar) {
-                        existingIndex = i;
-                        break;
-                    }
+                if (windowEnd !== null && windowEnd !== undefined &&
+                    weekNum > windowEnd) {
+                    record.endWeek = null;
                 }
-
-                if (existingIndex !== -1) {
-                    var existing = record.members[existingIndex];
-
-                    if (memberActiveInWeek(existing, weekNum)) {
-                        return { added: false, reason: 'already-active' };
-                    }
-
-                    if (existing.endWeek !== null && existing.endWeek !== undefined &&
-                        existing.endWeek >= weekNum) {
-                        return { added: false, reason: 'already-active' };
-                    }
-
-                    record.members.push({
-                        characterId: targetChar,
-                        startWeek: weekNum,
-                        endWeek: null
-                    });
-                } else {
-                    record.members.push({
-                        characterId: targetChar,
-                        startWeek: weekNum,
-                        endWeek: null
-                    });
-                }
-
                 record.updatedAt = new Date().toISOString();
-                return { added: true, teamId: targetTeam };
+
+                // Route the membership write to the persistent roster.
+                var team = findTeamInSnapshot(appData, targetTeam);
+                var syncResult = syncAddMemberToPersistentRoster(
+                    team, targetChar, weekNum, 'Member'
+                );
+
+                if (team) {
+                    team.updatedAt = new Date().toISOString();
+                }
+
+                return {
+                    added: syncResult.added,
+                    updated: syncResult.updated,
+                    teamId: targetTeam
+                };
             },
             logMessage: 'Added ' + targetChar + ' to team ' + targetTeam +
                 ' in ' + targetClass + ' from week ' + weekNum,
@@ -689,9 +871,6 @@
     }
 
     function endMembership(classId, teamId, charId, effectiveWeek) {
-        diag('endMembership CALLED',
-            { classId, teamId, charId, effectiveWeek });
-
         if (!isNonEmptyString(classId) ||
             !isNonEmptyString(teamId) ||
             !isNonEmptyString(charId)) {
@@ -714,49 +893,40 @@
                 if (!appData || typeof appData !== 'object') {
                     return { valid: false, message: 'Application data is not available.' };
                 }
+                var team = findTeamInSnapshot(appData, targetTeam);
+                if (!team) {
+                    return { valid: false, message: 'Team no longer exists.' };
+                }
                 return { valid: true };
             },
             mutate: function(appData) {
-                var store = getStoreFromSnapshot(appData);
-                if (!store) {
-                    return { ended: false, reason: 'no-store' };
-                }
-                var record = getTeamRecordInternalFromStore(
-                    store, targetClass, targetTeam
-                );
-                if (!record || !Array.isArray(record.members)) {
+                var team = findTeamInSnapshot(appData, targetTeam);
+                if (!team) {
                     return { ended: false, reason: 'no-team' };
                 }
 
-                var matchedIndex = -1;
-                for (var i = 0; i < record.members.length; i++) {
-                    var m = record.members[i];
-                    if (String(m.characterId) !== targetChar) {
-                        continue;
+                var syncResult = syncEndMembershipOnPersistentRoster(
+                    team, targetChar, weekNum
+                );
+
+                if (syncResult.ended) {
+                    team.updatedAt = new Date().toISOString();
+                    // Bump the weekly-team record's updatedAt so views
+                    // that fingerprint on it invalidate.
+                    var store = getStoreFromSnapshot(appData);
+                    var record = getTeamRecordInternalFromStore(
+                        store, targetClass, targetTeam
+                    );
+                    if (record) {
+                        record.updatedAt = new Date().toISOString();
                     }
-                    if (memberActiveInWeek(m, weekNum)) {
-                        matchedIndex = i;
-                        break;
-                    }
                 }
-
-                if (matchedIndex === -1) {
-                    return { ended: false, reason: 'not-active-at-week' };
-                }
-
-                var member = record.members[matchedIndex];
-
-                if (member.startWeek >= weekNum) {
-                    return { ended: false, reason: 'starts-after' };
-                }
-
-                member.endWeek = weekNum - 1;
-                record.updatedAt = new Date().toISOString();
 
                 return {
-                    ended: true,
+                    ended: syncResult.ended,
+                    reason: syncResult.reason,
                     teamId: targetTeam,
-                    endWeek: member.endWeek
+                    endWeek: syncResult.ended ? (weekNum - 1) : null
                 };
             },
             logMessage: 'Ended membership of ' + targetChar + ' in team ' +
@@ -782,28 +952,34 @@
                 if (!appData || typeof appData !== 'object') {
                     return { valid: false, message: 'Application data is not available.' };
                 }
+                var team = findTeamInSnapshot(appData, targetTeam);
+                if (!team) {
+                    return { valid: false, message: 'Team no longer exists.' };
+                }
                 return { valid: true };
             },
             mutate: function(appData) {
-                var store = getStoreFromSnapshot(appData);
-                if (!store) {
+                var team = findTeamInSnapshot(appData, targetTeam);
+                if (!team) {
                     return { removed: false };
                 }
-                var record = getTeamRecordInternalFromStore(
-                    store, targetClass, targetTeam
+
+                var syncResult = syncRemoveMemberFromPersistentRoster(
+                    team, targetChar
                 );
-                if (!record || !Array.isArray(record.members)) {
-                    return { removed: false };
+
+                if (syncResult.removed) {
+                    team.updatedAt = new Date().toISOString();
+                    var store = getStoreFromSnapshot(appData);
+                    var record = getTeamRecordInternalFromStore(
+                        store, targetClass, targetTeam
+                    );
+                    if (record) {
+                        record.updatedAt = new Date().toISOString();
+                    }
                 }
-                var before = record.members.length;
-                record.members = record.members.filter(function(m) {
-                    return String(m.characterId) !== targetChar;
-                });
-                var removed = before - record.members.length;
-                if (removed > 0) {
-                    record.updatedAt = new Date().toISOString();
-                }
-                return { removed: removed > 0 };
+
+                return { removed: syncResult.removed };
             },
             logMessage: 'Removed membership record for ' + targetChar +
                 ' in team ' + targetTeam,
@@ -860,9 +1036,7 @@
         if (!appData || !isNonEmptyString(charId)) {
             return result;
         }
-
-        var store = getStoreFromSnapshot(appData);
-        if (!store) {
+        if (!Array.isArray(appData.teams)) {
             return result;
         }
 
@@ -872,37 +1046,31 @@
         }
 
         var target = String(charId);
-        var classIds = Object.keys(store);
 
-        for (var i = 0; i < classIds.length; i++) {
-            var byClass = store[classIds[i]];
-            if (!isPlainObject(byClass)) {
+        for (var i = 0; i < appData.teams.length; i++) {
+            var team = appData.teams[i];
+            if (!team || !Array.isArray(team.members)) {
                 continue;
             }
-            var teamIds = Object.keys(byClass);
-            for (var j = 0; j < teamIds.length; j++) {
-                var record = byClass[teamIds[j]];
-                if (!isPlainObject(record) || !Array.isArray(record.members)) {
+            for (var j = 0; j < team.members.length; j++) {
+                var member = team.members[j];
+                if (!member) { continue; }
+                if (String(member.characterId) !== target) { continue; }
+                if (member.leavePeriod !== null &&
+                    member.leavePeriod !== undefined &&
+                    member.leavePeriod !== '') {
                     continue;
                 }
-                for (var k = 0; k < record.members.length; k++) {
-                    var member = record.members[k];
-                    if (String(member.characterId) !== target) {
+                var joinNum = TeamConstants.parsePeriod(member.joinPeriod);
+                if (weekNum !== null) {
+                    if (joinNum !== null && joinNum >= weekNum) {
                         continue;
                     }
-                    if (member.endWeek !== null && member.endWeek !== undefined) {
-                        continue;
-                    }
-                    if (weekNum !== null) {
-                        if (member.startWeek >= weekNum) {
-                            continue;
-                        }
-                        member.endWeek = weekNum - 1;
-                    } else {
-                        member.endWeek = MAX_WEEK;
-                    }
-                    result.membershipsEnded++;
+                    member.leavePeriod = String(weekNum - 1);
+                } else {
+                    member.leavePeriod = String(MAX_WEEK);
                 }
+                result.membershipsEnded++;
             }
         }
 
@@ -1021,7 +1189,7 @@
             }
         }
         if (missing.length > 0) {
-            console.warn('[AcademyWeeklyTeams] Verification missing:', missing.join(', '));
+            diagWarn('Verification missing:', missing.join(', '));
         } else {
             diag('Verification OK.');
         }
