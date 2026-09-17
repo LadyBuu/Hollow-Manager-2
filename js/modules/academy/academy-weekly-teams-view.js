@@ -26,6 +26,15 @@
  *   view reads the same underlying roster, so the two views always
  *   agree.
  *
+ * EMPTY TEAMS:
+ *   The list-panel "Empty Teams" button emits
+ *   data-action="weekly-teams-empty-teams". AcademyView handles it
+ *   by calling AcademyWeeklyTeams.clearClassWindows, which removes
+ *   every weekly-team window record for the current class. The
+ *   persistent Team entities are NOT deleted; they remain visible
+ *   in the Teams tab and the Tournaments view. Only the Weekly
+ *   Teams schedule is cleared.
+ *
  * EVENTS EMITTED:
  *   - #academy-weekly-teams-class-select  (change)
  *   - #academy-weekly-teams-week-input    (change / Enter)
@@ -34,6 +43,7 @@
  *   - [data-action="weekly-teams-create-team"]     (click)
  *   - [data-action="weekly-teams-edit-team"]  [data-team-id]  (click)
  *   - [data-action="weekly-teams-auto-distribute"] (click)
+ *   - [data-action="weekly-teams-empty-teams"]     (click)
  *   - [data-action="weekly-teams-delete-team"] [data-team-id]  (click)
  *   - [data-action="weekly-teams-manage-members"] [data-team-id] (click)
  *
@@ -233,6 +243,13 @@
                     'class="secondary small academy-auto-distribute-btn" ' +
                     'data-action="weekly-teams-auto-distribute">' +
                     'Auto-Distribute' +
+                '</button>';
+        html += '<button type="button" ' +
+                    'class="secondary small academy-empty-teams-btn" ' +
+                    'data-action="weekly-teams-empty-teams" ' +
+                    'title="Remove every scheduled team from the weekly ' +
+                        'view for this class. Teams themselves are kept.">' +
+                    'Empty Teams' +
                 '</button>';
         html += '</div>';
 
@@ -671,11 +688,9 @@
                     'class="weekly-teams-group-size" ' +
                     'value="4" min="2" max="20">';
         html += '<p class="field-hint">' +
-                    'Students are partitioned into groups of this size. ' +
-                    'Each group becomes one academic team for ' +
-                    '<strong>' + escapeHtml(className) + '</strong>, ' +
-                    'assigned to week ' + escapeAttribute(String(week || '')) +
-                    '.' +
+                    'Existing teams are filled toward this size first. ' +
+                    'New teams are only created when no existing team ' +
+                    'has room.' +
                 '</p>';
         html += '</div>';
 
@@ -685,20 +700,22 @@
                     'class="weekly-teams-name-prefix" ' +
                     'value="Team ">';
         html += '<p class="field-hint">' +
-                    'Each team is named Prefix + letter (Team A, Team B, ...).' +
+                    'Each new team is named Prefix + number (Team 1, Team 2, ...).' +
                 '</p>';
         html += '</div>';
 
         html += '<div class="form-group">';
         html += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;">' +
                     '<input type="checkbox" ' +
-                        'class="weekly-teams-clear-existing" checked>' +
-                    '<span>Clear existing teams for this class</span>' +
+                        'class="weekly-teams-clear-existing">' +
+                    '<span>Empty the weekly schedule first</span>' +
                 '</label>';
         html += '<p class="field-hint">' +
-                    'When checked, existing academic teams for this class ' +
-                    'are deleted before distribution. Persistent Team ' +
-                    'entities of other types are not affected.' +
+                    'When checked, every scheduled team is removed from ' +
+                    'the Weekly Teams view for this class before ' +
+                    'distribution runs. The team entities themselves are ' +
+                    'NOT deleted; they remain in the Teams tab and the ' +
+                    'Tournaments view.' +
                 '</p>';
         html += '</div>';
 
