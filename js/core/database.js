@@ -1,139 +1,28 @@
 /**
  * js/core/database.js - IndexedDB Operations
  * Path: js/core/database.js
- * 
- * This module handles all IndexedDB persistence operations with:
- * - Safe migration system
- * - Coalescing save queue (pending saves are batched)
- * - Proper error handling with events
- * - Data cloning to prevent reference issues
- * - Status tracking for UI feedback
- * - DEFENSIVE version-mismatch recovery (auto-delete stale databases)
- * 
- * PERSISTENCE CONTRACT:
- * - saveData() returns a Promise that resolves to true on success
- * - Save failures dispatch 'dataSaveFailed' events
- * - All mutations are applied to window.data in memory
- * - Persistence is explicitly triggered by callers
- * 
- * SAVE QUEUE SEMANTICS:
- * - Multiple saves requested while one is in progress are coalesced
- * - Waiters are frozen at the start of each save operation
- * - All waiters in the batch share the result of that save
- * - New waiters arriving during a save belong to the next save
- * - This prevents "saved successfully" responses for unsaved data
- * 
- * SNAPSHOT SEMANTICS:
- * - saveData() persists a snapshot of the current in-memory state
- * - The snapshot is taken when the save operation actually begins
- * - Mutations made after saveData() is called but before the snapshot
- *   may be included in the saved state. This is intentional and matches
- *   typical client-side persistence patterns.
- * - Callers should ensure their mutation is complete before calling saveData()
- *   if they require precise transaction boundaries.
- * 
- * VERSION MISMATCH RECOVERY:
- * - IndexedDB enforces that a database cannot be opened with a lower
- *   version than it was created with.
- * - If the stored database is newer than our DB_VERSION (e.g., because
- *   an earlier iteration of the code used a higher DB_VERSION), we cannot
- *   downgrade.
- * - In that case, we DESTROY the local database and recreate it fresh.
- * - This loses all locally stored data. In practice this only happens in
- *   development or during a schema rollback, and is preferable to a
- *   permanently broken application.
- * - If recovery fails (e.g., another tab holds the database open), we
- *   surface a clear error so the user can close other tabs and retry.
- * 
- * DATA VERSION HISTORY:
- * - Version 1: Initial character data
- * - Version 2: Added careerStatus, eliminatedWeeks, eliminations, name fields
- * - Version 3: Added stats and magic proficiencies
- * - Version 4: Added team fields (nameHistory, rankingHistory, members, status, etc.)
- * - Version 5: Added team member role, joinPeriod, leavePeriod
- * - Version 6: Added tournament fields
- * - Version 7: Added mission fields
- * - Version 8: Added curriculum data
- * - Version 9: Added social data
- * - Version 10: Added classes, locations, locationSchedules, classLocations
- * - Version 11: Added statsConfig
- * - Version 12: Added personality and specialMoves to characters
- * - Version 13: Added attraction and sexuality to characters
- * - Version 14: Added hp, mp, weapons, combatNotes to characters
- * - Version 15: Added canonical academy structure; consolidated class
- *               membership onto character.classIds; removed the legacy
- *               academy.classStudents roster as an independent authority.
- * - Version 16: Added academy.enrolments, academy.socialScores,
- *               academy.settings.
- * - Version 17: Assigns stable IDs to tournament rounds and matches.
- * - Version 18: Assigns stable IDs to characters whose id is null,
- *               undefined, or empty string.
- * - Version 19: Resets academy.weeklyTeams. The old shape
- *               (per-week snapshots) is incompatible with the ranged
- *               model that replaced it. The persistent Team entities
- *               (window.data.teams) are NOT affected; only the
- *               per-week assignment map is reset.
- * - Version 20: Adds the teaching-model stores to academy:
- *               classDisciplines, teachingGroups, teachingGroupSequences,
- *               teachingSessions. These back the schedule redesign.
- * - Version 21: Removes the retired stored-schedule maps:
- *               curriculum.schedules, curriculum.locationSchedules,
- *               curriculum.metadata, and the unused top-level
- *               data.locationSchedules store.
- *               The teaching projector is now the sole source of
- *               schedule data.
- * - Version 22: Collapses the redundant `members` array out of
- *               academy.weeklyTeams records. Weekly-team records now
- *               carry ONLY the week window ({ classId, teamId,
- *               startWeek, endWeek }). Team membership lives
- *               exclusively on the persistent Team entity's
- *               members[] array (with joinPeriod / leavePeriod as
- *               the week range). The migration walks every
- *               weekly-team member and ensures the corresponding
- *               entry exists on teams[teamId].members[], copying
- *               startWeek → joinPeriod and endWeek → leavePeriod
- *               when the target entry has no range yet. The
- *               redundant `members` array is then deleted.
- * 
- * ACADEMY MEMBERSHIP MODEL (v15+):
- * - character.classIds[] is the SINGLE SOURCE OF TRUTH for class membership.
- * - The academy roster is DERIVED: characters.filter(c => c.classIds.includes(classId)).
- * - academy.classStudents no longer exists after migration.
- * - Class deletion cascades: removes the class, all character references,
- *   weekly teams for the class, and grades/rankings keyed to the class.
- * - normaliseDataStructure() enforces these invariants on every load and
- *   prunes orphaned classId references (with a dev-mode warning).
- * 
- * ACADEMY STORES (v20):
- *   academy.graduatingClasses      { [classId]: classRecord }
- *   academy.grades                 { [gradeId]: gradeRecord }
- *   academy.rankings               { [rankingId]: rankingRecord }
- *   academy.weeklyTeams            { [classId]: { [teamId]: teamRecord } }
- *   academy.enrolments             { [classId]: { [charId]: [interval] } }
- *   academy.socialScores           { [classId]: { [charId]: { [week]: number } } }
- *   academy.settings               { ranking: { academic, social } }
- *   academy.classDisciplines       { [classId]: { [disciplineId]: cdRecord } }
- *   academy.teachingGroups         { [groupId]: groupRecord }
- *   academy.teachingGroupSequences { ["classId|disc|inst"]: number }
- *   academy.teachingSessions       { [sessionId]: sessionRecord }
- * 
- * WEEKLY-TEAM RECORD SHAPE (v22+):
- *   academy.weeklyTeams[classId][teamId] = {
- *     id, classId, teamId,
- *     startWeek, endWeek,       // null = ongoing; endWeek inclusive
- *     createdAt, updatedAt
- *   }
- *   NO members array. The roster is the persistent Team entity's
- *   members[] array, filtered by the week.
- * 
- * RETIRED STORES (removed in v21):
- *   curriculum.schedules
- *   curriculum.locationSchedules
- *   curriculum.metadata
- *   data.locationSchedules (top-level, unused duplicate)
- * 
- * RETIRED STORES (removed in v22):
- *   academy.weeklyTeams[classId][teamId].members
+ *
+ * Data Version History (updated):
+ *   ...
+ *   - Version 23: Repairs legacy tournaments (assigns round/match IDs,
+ *                strips retired fields, backfills elimination tournamentId)
+ *                and backfills academy.weeklyTeams windows for classed
+ *                academic teams. Orphan teams (classId: null) are left
+ *                alone; the Weekly Teams view surfaces them for manual
+ *                assignment.
+ *
+ * ACADEMY STORES (v20+):
+ *   ...
+ *
+ * RETIRED STORES (removed in v23):
+ *   tournament.winner
+ *   tournament.currentRound
+ *   tournament.teams
+ *   tournament.matches
+ *   tournament.winners
+ *   match.winner
+ *   match.loser
+ *   match.advancing
  */
 
 (function() {
@@ -141,7 +30,7 @@
 
     var DB_NAME = 'HollowBladesDB';
     var DB_VERSION = 1;
-    var DATA_VERSION = 22;
+    var DATA_VERSION = 23;
     var STORE_NAME = 'appData';
 
     var _indexedDB = null;
@@ -492,26 +381,12 @@
     // DATABASE STATUS
     // ============================================================
 
-    function getDatabaseStatus() {
-        return _dbStatus;
-    }
-
-    function isDatabaseReady() {
-        return _dbStatus === 'ready' && _indexedDB !== null;
-    }
-
-    function getLoadError() {
-        return _loadError;
-    }
-
-    // ============================================================
-    // ENSURE DATABASE READY
-    // ============================================================
+    function getDatabaseStatus() { return _dbStatus; }
+    function isDatabaseReady() { return _dbStatus === 'ready' && _indexedDB !== null; }
+    function getLoadError() { return _loadError; }
 
     function ensureDatabaseReady() {
-        if (_dbInitPromise) {
-            return _dbInitPromise;
-        }
+        if (_dbInitPromise) { return _dbInitPromise; }
 
         _dbStatus = 'initializing';
         _dbInitPromise = openDatabase()
@@ -587,6 +462,7 @@
                 case 19: migrateToVersion20(data); break;
                 case 20: migrateToVersion21(data); break;
                 case 21: migrateToVersion22(data); break;
+                case 22: migrateToVersion23(data); break;
                 default: data._dataVersion = DATA_VERSION; break;
             }
         }
@@ -777,36 +653,19 @@
 
     function migrateToVersion13(data) {
         data.characters.forEach(function(char) {
-            if (char.attraction === undefined) {
-                char.attraction = '';
-            }
-            if (char.sexuality === undefined) {
-                char.sexuality = '';
-            }
+            if (char.attraction === undefined) char.attraction = '';
+            if (char.sexuality === undefined) char.sexuality = '';
         });
         data._dataVersion = 13;
     }
 
     function migrateToVersion14(data) {
         data.characters.forEach(function(char) {
-            if (typeof char.hp !== 'number' || isNaN(char.hp) || char.hp < 0) {
-                char.hp = 0;
-            }
-            if (char.hp > 999) {
-                char.hp = 999;
-            }
-
-            if (typeof char.mp !== 'number' || isNaN(char.mp) || char.mp < 0) {
-                char.mp = 0;
-            }
-            if (char.mp > 999) {
-                char.mp = 999;
-            }
-
-            if (typeof char.combatNotes !== 'string') {
-                char.combatNotes = '';
-            }
-
+            if (typeof char.hp !== 'number' || isNaN(char.hp) || char.hp < 0) char.hp = 0;
+            if (char.hp > 999) char.hp = 999;
+            if (typeof char.mp !== 'number' || isNaN(char.mp) || char.mp < 0) char.mp = 0;
+            if (char.mp > 999) char.mp = 999;
+            if (typeof char.combatNotes !== 'string') char.combatNotes = '';
             if (!Array.isArray(char.weapons)) {
                 char.weapons = [];
             } else {
@@ -850,30 +709,18 @@
         if (legacy && typeof legacy === 'object' && !Array.isArray(legacy)) {
             Object.keys(legacy).forEach(function(classId) {
                 var students = legacy[classId];
-                if (!Array.isArray(students)) {
-                    return;
-                }
-
+                if (!Array.isArray(students)) return;
                 students.forEach(function(studentId) {
-                    if (!studentId) {
-                        return;
-                    }
+                    if (!studentId) return;
                     var targetId = String(studentId);
                     var char = data.characters.find(function(c) {
                         return c && String(c.id) === targetId;
                     });
-                    if (!char) {
-                        return;
-                    }
-
-                    if (!Array.isArray(char.classIds)) {
-                        char.classIds = [];
-                    }
-
+                    if (!char) return;
+                    if (!Array.isArray(char.classIds)) char.classIds = [];
                     var alreadyPresent = char.classIds.some(function(existingId) {
                         return String(existingId) === String(classId);
                     });
-
                     if (!alreadyPresent) {
                         char.classIds.push(classId);
                         legacyMergedCount++;
@@ -885,9 +732,7 @@
         delete academy.classStudents;
 
         data.characters.forEach(function(char) {
-            if (!Array.isArray(char.classIds)) {
-                char.classIds = [];
-            }
+            if (!Array.isArray(char.classIds)) char.classIds = [];
         });
 
         var validClassIds = Object.create(null);
@@ -991,9 +836,7 @@
 
         var IdUtils = window.IdUtils;
         if (!IdUtils || typeof IdUtils.generateId !== 'function') {
-            console.warn(
-                '[Database] v18 skipped: IdUtils.generateId is not available.'
-            );
+            console.warn('[Database] v18 skipped: IdUtils.generateId is not available.');
             data._dataVersion = 18;
             return;
         }
@@ -1011,24 +854,18 @@
 
         for (var j = 0; j < data.characters.length; j++) {
             var c = data.characters[j];
-            if (!c || typeof c !== 'object') {
-                continue;
-            }
+            if (!c || typeof c !== 'object') continue;
 
             var id = c.id;
-            if (id !== null && id !== undefined && id !== '') {
-                continue;
-            }
+            if (id !== null && id !== undefined && id !== '') continue;
 
             var newId = IdUtils.generateId('char');
-
             while (seenIds[newId]) {
                 collisionCount++;
                 newId = IdUtils.generateId('char');
                 if (collisionCount > 1000) {
                     throw new Error(
-                        '[Database] v18: cannot generate a unique ID after ' +
-                        '1000 attempts. IdUtils may be broken.'
+                        '[Database] v18: cannot generate a unique ID after 1000 attempts.'
                     );
                 }
             }
@@ -1039,16 +876,10 @@
         }
 
         if (repairedCount > 0) {
-            console.log(
-                '[Database] v18: assigned IDs to ' + repairedCount +
-                ' character(s) that had id: null.'
-            );
+            console.log('[Database] v18: assigned IDs to ' + repairedCount + ' character(s).');
         }
         if (collisionCount > 0) {
-            console.warn(
-                '[Database] v18: resolved ' + collisionCount +
-                ' ID collision(s) while generating new character IDs.'
-            );
+            console.warn('[Database] v18: resolved ' + collisionCount + ' ID collision(s).');
         }
 
         data._dataVersion = 18;
@@ -1077,9 +908,7 @@
         if (classCount > 0 || keyCount > 0) {
             console.warn(
                 '[Database] v19: resetting academy.weeklyTeams. ' +
-                'Old shape (per-week snapshots) is incompatible with the ' +
-                'ranged model. ' + classCount + ' class bucket(s) and ' +
-                keyCount + ' key(s) removed. Team entities are unaffected.'
+                classCount + ' class bucket(s), ' + keyCount + ' key(s) removed.'
             );
         }
 
@@ -1093,54 +922,22 @@
         }
         var academy = data.academy;
 
-        if (!academy.classDisciplines ||
-            typeof academy.classDisciplines !== 'object' ||
-            Array.isArray(academy.classDisciplines)) {
+        if (!academy.classDisciplines || typeof academy.classDisciplines !== 'object' || Array.isArray(academy.classDisciplines)) {
             academy.classDisciplines = {};
         }
-        if (!academy.teachingGroups ||
-            typeof academy.teachingGroups !== 'object' ||
-            Array.isArray(academy.teachingGroups)) {
+        if (!academy.teachingGroups || typeof academy.teachingGroups !== 'object' || Array.isArray(academy.teachingGroups)) {
             academy.teachingGroups = {};
         }
-        if (!academy.teachingGroupSequences ||
-            typeof academy.teachingGroupSequences !== 'object' ||
-            Array.isArray(academy.teachingGroupSequences)) {
+        if (!academy.teachingGroupSequences || typeof academy.teachingGroupSequences !== 'object' || Array.isArray(academy.teachingGroupSequences)) {
             academy.teachingGroupSequences = {};
         }
-        if (!academy.teachingSessions ||
-            typeof academy.teachingSessions !== 'object' ||
-            Array.isArray(academy.teachingSessions)) {
+        if (!academy.teachingSessions || typeof academy.teachingSessions !== 'object' || Array.isArray(academy.teachingSessions)) {
             academy.teachingSessions = {};
         }
 
         data._dataVersion = 20;
     }
 
-    /**
-     * Version 21 migration — Retire the stored-schedule maps.
-     *
-     * WHY:
-     *   The teaching model projects schedules on demand from
-     *   class-disciplines, enrolments, groups, and sessions. There
-     *   is no stored answer; the schedule is a computation.
-     *
-     *   Four stores existed only to hold the old stored answer:
-     *
-     *     curriculum.schedules
-     *     curriculum.locationSchedules
-     *     curriculum.metadata
-     *     data.locationSchedules (top-level, unused duplicate)
-     *
-     *   Nothing reads or writes them after this version ships.
-     *
-     * WHAT THIS DOES NOT DO:
-     *   - It does NOT touch curriculum.autoGroups.
-     *   - It does NOT touch curriculum.restDays or examDays.
-     *   - It does NOT touch any academy.* store.
-     *
-     * @param {object} data
-     */
     function migrateToVersion21(data) {
         if (data.curriculum && typeof data.curriculum === 'object') {
             delete data.curriculum.schedules;
@@ -1151,50 +948,6 @@
         data._dataVersion = 21;
     }
 
-    /**
-     * Version 22 migration — Collapse the weekly-team member array.
-     *
-     * WHY:
-     *   Prior to v22, academy.weeklyTeams records carried their own
-     *   `members` array, parallel to the persistent Team entity's
-     *   members[] array. The two stores drifted independently:
-     *   the Weekly Teams view read the weekly-team members array,
-     *   while the Tournaments view read the persistent roster. The
-     *   same team would show different members in the two views.
-     *
-     *   The persistent Team entity's members[] array already
-     *   carries joinPeriod / leavePeriod, which is the same ranged
-     *   semantics the weekly-team member array was invented to
-     *   provide. There was never a reason for two ranged rosters.
-     *
-     * WHAT THIS DOES:
-     *   For every weekly-team record:
-     *     1. For each member of the redundant weekly-team members
-     *        array, find the corresponding entry on
-     *        data.teams[teamId].members[] by characterId.
-     *     2. If the entry exists and its joinPeriod / leavePeriod
-     *        are empty, fill them from the weekly-team member's
-     *        startWeek / endWeek.
-     *     3. If the entry does not exist, add it with
-     *        joinPeriod = String(startWeek) and
-     *        leavePeriod = (endWeek === null ? '' : String(endWeek)).
-     *     4. Delete the weekly-team record's members array.
-     *
-     *   The weekly-team record itself survives; it retains its
-     *   classId, teamId, startWeek, endWeek, createdAt, updatedAt.
-     *
-     * WHAT THIS DOES NOT DO:
-     *   - It does NOT touch data.teams members that have no
-     *     corresponding weekly-team entry. Team entities are
-     *     authoritative; missing weekly-team entries simply mean
-     *     "no week-scoped assignment exists."
-     *   - It does NOT delete weekly-team records that have no
-     *     members. A record with an empty members array is a
-     *     legitimate state (team scheduled, roster not yet filled).
-     *   - It does NOT touch any other store.
-     *
-     * @param {object} data
-     */
     function migrateToVersion22(data) {
         if (!data.academy || typeof data.academy !== 'object' || Array.isArray(data.academy)) {
             data._dataVersion = 22;
@@ -1207,11 +960,8 @@
             return;
         }
 
-        if (!Array.isArray(data.teams)) {
-            data.teams = [];
-        }
+        if (!Array.isArray(data.teams)) data.teams = [];
 
-        // Build a fast lookup: teamId -> team record (live ref).
         var teamById = Object.create(null);
         for (var t = 0; t < data.teams.length; t++) {
             var team = data.teams[t];
@@ -1229,24 +979,17 @@
         for (var c = 0; c < classIds.length; c++) {
             var classId = classIds[c];
             var byClass = weeklyTeams[classId];
-            if (!byClass || typeof byClass !== 'object' || Array.isArray(byClass)) {
-                continue;
-            }
+            if (!byClass || typeof byClass !== 'object' || Array.isArray(byClass)) continue;
 
             var teamIds = Object.keys(byClass);
             for (var i = 0; i < teamIds.length; i++) {
                 var teamId = teamIds[i];
                 var record = byClass[teamId];
-                if (!record || typeof record !== 'object' || Array.isArray(record)) {
-                    continue;
-                }
+                if (!record || typeof record !== 'object' || Array.isArray(record)) continue;
 
                 recordsProcessed++;
 
-                var redundantMembers = Array.isArray(record.members)
-                    ? record.members
-                    : [];
-
+                var redundantMembers = Array.isArray(record.members) ? record.members : [];
                 if (redundantMembers.length === 0) {
                     delete record.members;
                     continue;
@@ -1259,64 +1002,41 @@
                     continue;
                 }
 
-                if (!Array.isArray(persistentTeam.members)) {
-                    persistentTeam.members = [];
-                }
+                if (!Array.isArray(persistentTeam.members)) persistentTeam.members = [];
 
                 for (var m = 0; m < redundantMembers.length; m++) {
                     var redundant = redundantMembers[m];
-                    if (!redundant || typeof redundant !== 'object') {
-                        continue;
-                    }
+                    if (!redundant || typeof redundant !== 'object') continue;
                     var charId = redundant.characterId;
-                    if (charId === null || charId === undefined || charId === '') {
-                        continue;
-                    }
+                    if (charId === null || charId === undefined || charId === '') continue;
                     var charIdStr = String(charId);
 
-                    // Find the existing persistent-roster entry.
                     var existing = null;
                     for (var p = 0; p < persistentTeam.members.length; p++) {
                         var candidate = persistentTeam.members[p];
-                        if (candidate &&
-                            String(candidate.characterId) === charIdStr) {
+                        if (candidate && String(candidate.characterId) === charIdStr) {
                             existing = candidate;
                             break;
                         }
                     }
 
-                    var joinStr = (redundant.startWeek !== undefined &&
-                                   redundant.startWeek !== null)
-                        ? String(redundant.startWeek)
-                        : '';
-                    var leaveStr = (redundant.endWeek !== undefined &&
-                                    redundant.endWeek !== null)
-                        ? String(redundant.endWeek)
-                        : '';
+                    var joinStr = (redundant.startWeek !== undefined && redundant.startWeek !== null)
+                        ? String(redundant.startWeek) : '';
+                    var leaveStr = (redundant.endWeek !== undefined && redundant.endWeek !== null)
+                        ? String(redundant.endWeek) : '';
 
                     if (existing) {
-                        // Fill empty range fields on the persistent entry
-                        // from the redundant one. Never overwrite a
-                        // non-empty value: the persistent roster is the
-                        // canonical source, and a filled value is a
-                        // stronger claim than an empty one.
-                        if ((existing.joinPeriod === undefined ||
-                             existing.joinPeriod === null ||
-                             existing.joinPeriod === '') && joinStr !== '') {
+                        if ((existing.joinPeriod === undefined || existing.joinPeriod === null || existing.joinPeriod === '') && joinStr !== '') {
                             existing.joinPeriod = joinStr;
                         }
-                        if ((existing.leavePeriod === undefined ||
-                             existing.leavePeriod === null ||
-                             existing.leavePeriod === '') && leaveStr !== '') {
+                        if ((existing.leavePeriod === undefined || existing.leavePeriod === null || existing.leavePeriod === '') && leaveStr !== '') {
                             existing.leavePeriod = leaveStr;
                         }
                         membersAlreadyPresent++;
                     } else {
                         persistentTeam.members.push({
                             characterId: charIdStr,
-                            role: (typeof redundant.role === 'string' && redundant.role)
-                                ? redundant.role
-                                : 'Member',
+                            role: (typeof redundant.role === 'string' && redundant.role) ? redundant.role : 'Member',
                             joinPeriod: joinStr,
                             leavePeriod: leaveStr
                         });
@@ -1324,7 +1044,6 @@
                     }
                 }
 
-                // The redundant array is now collapsed. Remove it.
                 delete record.members;
             }
         }
@@ -1340,14 +1059,306 @@
         data._dataVersion = 22;
     }
 
+    /**
+     * Version 23 migration — Repair legacy tournaments and backfill
+     * weekly-team windows for classed academic teams.
+     *
+     * WHY:
+     *   1. Legacy tournaments (pre-v17) carried empty round/match
+     *      IDs, retired fields (`winner`, `loser`, `advancing`,
+     *      `currentRound`, `teams`, `matches`, `winners`), and
+     *      eliminations with empty `tournamentId`. The current
+     *      TournamentSchema rejects these shapes, so they were
+     *      frozen by the v17 migration. v23 canonicalises them.
+     *
+     *   2. Old academic Teams created before the class-association
+     *      feature carry `classId: null` and have no corresponding
+     *      `academy.weeklyTeams` window record. Without a window, the
+     *      Weekly Teams view cannot show them even when they do have
+     *      a class. v23 backfills a window for every academic team
+     *      that HAS a class.
+     *
+     *      Teams with `classId: null` are left alone. The Weekly
+     *      Teams view surfaces them for manual assignment.
+     *
+     * WHAT THIS DOES NOT DO:
+     *   - It does NOT infer classes from member overlap. No guessing.
+     *   - It does NOT touch teams with `classId: null`.
+     *   - It does NOT delete any tournament.
+     *   - It does NOT touch non-tournament, non-weekly-team data.
+     *
+     * @param {object} data
+     */
+    function migrateToVersion23(data) {
+        var Schema = window.TournamentSchema;
+        var IdUtils = window.IdUtils;
+
+        // ---- Part 1: Tournament repair ----
+        if (Array.isArray(data.tournaments) &&
+            Schema &&
+            typeof Schema.generateRoundId === 'function' &&
+            typeof Schema.generateMatchId === 'function' &&
+            typeof Schema.normaliseTournament === 'function' &&
+            IdUtils &&
+            typeof IdUtils.generateId === 'function') {
+
+            var tRepaired = 0;
+            var tPreserved = 0;
+
+            for (var i = 0; i < data.tournaments.length; i++) {
+                var t = data.tournaments[i];
+                if (!t || typeof t !== 'object' || Array.isArray(t)) {
+                    tPreserved++;
+                    continue;
+                }
+
+                var tournamentId = (typeof t.id === 'string' && t.id)
+                    ? t.id
+                    : null;
+                if (!tournamentId) {
+                    tPreserved++;
+                    continue;
+                }
+
+                // Strip retired tournament-level fields.
+                delete t.winner;
+                delete t.currentRound;
+                delete t.teams;
+                delete t.matches;
+                delete t.winners;
+
+                var rounds = Array.isArray(t.rounds) ? t.rounds : [];
+                var seenRoundIds = Object.create(null);
+                var seenMatchIds = Object.create(null);
+
+                for (var r = 0; r < rounds.length; r++) {
+                    var round = rounds[r];
+                    if (!round || typeof round !== 'object') continue;
+
+                    // Assign a round ID if missing.
+                    if (typeof round.id !== 'string' || round.id === '') {
+                        var newRoundId;
+                        do {
+                            newRoundId = Schema.generateRoundId();
+                        } while (seenRoundIds[newRoundId]);
+                        round.id = newRoundId;
+                    }
+                    seenRoundIds[round.id] = true;
+
+                    // Recompute positional roundNumber.
+                    round.roundNumber = r + 1;
+
+                    if (!round.matchType) round.matchType = 'group_exam';
+                    if (typeof round.matchSize !== 'number' || round.matchSize < 2) {
+                        round.matchSize = 2;
+                    }
+                    if (!Array.isArray(round.matches)) round.matches = [];
+
+                    for (var m = 0; m < round.matches.length; m++) {
+                        var match = round.matches[m];
+                        if (!match || typeof match !== 'object') continue;
+
+                        // Assign a match ID if missing.
+                        if (typeof match.id !== 'string' || match.id === '') {
+                            var newMatchId;
+                            do {
+                                newMatchId = Schema.generateMatchId();
+                            } while (seenMatchIds[newMatchId]);
+                            match.id = newMatchId;
+                        }
+                        seenMatchIds[match.id] = true;
+
+                        // Strip retired match-level fields.
+                        delete match.winner;
+                        delete match.loser;
+                        delete match.advancing;
+
+                        // Ensure match.type matches round.matchType.
+                        if (!match.type) match.type = round.matchType;
+
+                        // Ensure type-appropriate result maps exist.
+                        if (match.type === 'group_exam') {
+                            if (!match.results || typeof match.results !== 'object' || Array.isArray(match.results)) {
+                                match.results = {};
+                            }
+                            delete match.teamResults;
+                            delete match.individualResults;
+                        } else if (match.type === 'team_vs_team') {
+                            if (!match.teamResults || typeof match.teamResults !== 'object' || Array.isArray(match.teamResults)) {
+                                match.teamResults = {};
+                            }
+                            if (!match.individualResults || typeof match.individualResults !== 'object' || Array.isArray(match.individualResults)) {
+                                match.individualResults = {};
+                            }
+                            delete match.results;
+                        }
+                    }
+                }
+
+                // Backfill empty tournamentId on eliminations.
+                if (Array.isArray(t.eliminations)) {
+                    for (var e = 0; e < t.eliminations.length; e++) {
+                        var elim = t.eliminations[e];
+                        if (!elim || typeof elim !== 'object') continue;
+                        if (elim.tournamentId === undefined ||
+                            elim.tournamentId === null ||
+                            elim.tournamentId === '') {
+                            elim.tournamentId = tournamentId;
+                        }
+                        if (elim.standalone === undefined) elim.standalone = false;
+                    }
+                }
+
+                // Final schema pass. If normalisation succeeds, adopt
+                // the canonical record. If it fails, preserve the
+                // partially-repaired record and log.
+                try {
+                    var normalised = Schema.normaliseTournament(t);
+                    if (normalised !== null) {
+                        data.tournaments[i] = normalised;
+                        tRepaired++;
+                    } else {
+                        tPreserved++;
+                        console.warn(
+                            '[Database] v23: tournament "' + tournamentId +
+                            '" could not be normalised after repair. Preserved as-is.'
+                        );
+                    }
+                } catch (err) {
+                    tPreserved++;
+                    console.warn(
+                        '[Database] v23: normaliseTournament threw for "' +
+                        tournamentId + '": ' +
+                        (err && err.message ? err.message : 'unknown error')
+                    );
+                }
+            }
+
+            console.log(
+                '[Database] v23: tournament repair complete. ' +
+                'Repaired: ' + tRepaired + '. Preserved: ' + tPreserved + '.'
+            );
+        } else {
+            console.warn(
+                '[Database] v23: tournament repair skipped. ' +
+                'TournamentSchema or IdUtils not available at migration time.'
+            );
+        }
+
+        // ---- Part 2: Weekly-team window backfill ----
+        if (!data.academy || typeof data.academy !== 'object' || Array.isArray(data.academy)) {
+            data._dataVersion = 23;
+            return;
+        }
+
+        if (!Array.isArray(data.teams)) data.teams = [];
+        if (!data.academy.weeklyTeams || typeof data.academy.weeklyTeams !== 'object' || Array.isArray(data.academy.weeklyTeams)) {
+            data.academy.weeklyTeams = {};
+        }
+
+        var TeamConstants = window.TeamConstants;
+        var parsePeriod = (TeamConstants && typeof TeamConstants.parsePeriod === 'function')
+            ? TeamConstants.parsePeriod
+            : null;
+
+        var weeklyTeams = data.academy.weeklyTeams;
+        var windowsCreated = 0;
+        var orphansSkipped = 0;
+        var alreadyPresent = 0;
+        var malformedSkipped = 0;
+
+        function ensureClassBucket(classId) {
+            if (!weeklyTeams[classId] || typeof weeklyTeams[classId] !== 'object' || Array.isArray(weeklyTeams[classId])) {
+                weeklyTeams[classId] = {};
+            }
+            return weeklyTeams[classId];
+        }
+
+        for (var ti = 0; ti < data.teams.length; ti++) {
+            var team = data.teams[ti];
+            if (!team || typeof team !== 'object') continue;
+
+            // Only academic teams participate in weekly windows.
+            var normalizedType = TeamConstants && typeof TeamConstants.normalizeTeamType === 'function'
+                ? TeamConstants.normalizeTeamType(team.type)
+                : (team.type === 'academic' ? 'academic' : null);
+            if (normalizedType !== 'academic') continue;
+
+            var teamId = team.id;
+            if (typeof teamId !== 'string' || teamId === '') {
+                malformedSkipped++;
+                continue;
+            }
+
+            var classId = team.classId;
+            if (classId === null || classId === undefined || classId === '') {
+                // Orphan: leave alone. The Weekly Teams view will
+                // surface it for manual class assignment.
+                orphansSkipped++;
+                continue;
+            }
+
+            classId = String(classId);
+
+            // Check for an existing window across every class bucket.
+            var existingWindow = false;
+            var bucketKeys = Object.keys(weeklyTeams);
+            for (var bk = 0; bk < bucketKeys.length; bk++) {
+                var bucket = weeklyTeams[bucketKeys[bk]];
+                if (bucket && typeof bucket === 'object' && bucket[teamId]) {
+                    existingWindow = true;
+                    break;
+                }
+            }
+            if (existingWindow) {
+                alreadyPresent++;
+                continue;
+            }
+
+            // Parse team's own period as the window.
+            var startWeek = parsePeriod ? parsePeriod(team.startPeriod) : null;
+            var endWeek = parsePeriod ? parsePeriod(team.endPeriod) : null;
+
+            if (startWeek === null) {
+                // No valid start: cannot backfill a meaningful window.
+                malformedSkipped++;
+                continue;
+            }
+
+            var bucket = ensureClassBucket(classId);
+            var now = new Date().toISOString();
+            bucket[teamId] = {
+                id: teamId,
+                classId: classId,
+                teamId: teamId,
+                startWeek: startWeek,
+                endWeek: endWeek,
+                createdAt: (typeof team.createdAt === 'string' && team.createdAt)
+                    ? team.createdAt
+                    : now,
+                updatedAt: now
+            };
+            windowsCreated++;
+        }
+
+        console.log(
+            '[Database] v23: weekly-team window backfill complete. ' +
+            'Windows created: ' + windowsCreated + '. ' +
+            'Already present: ' + alreadyPresent + '. ' +
+            'Orphan teams skipped (no classId): ' + orphansSkipped + '. ' +
+            'Malformed skipped: ' + malformedSkipped + '.'
+        );
+
+        data._dataVersion = 23;
+    }
+
     // ============================================================
-    // NORMALISE DATA STRUCTURE - Current schema defaults
+    // NORMALISE DATA STRUCTURE
     // ============================================================
 
     function normaliseDataStructure(data) {
         var repaired = false;
 
-        // ---- Top-level arrays ----
         if (!Array.isArray(data.tournaments)) { data.tournaments = []; repaired = true; }
         if (!Array.isArray(data.characters)) { data.characters = []; repaired = true; }
         if (!Array.isArray(data.teams)) { data.teams = []; repaired = true; }
@@ -1356,7 +1367,6 @@
         if (!Array.isArray(data.classes)) { data.classes = []; repaired = true; }
         if (!Array.isArray(data.locations)) { data.locations = []; repaired = true; }
 
-        // v21: locationSchedules at the top level is retired.
         if (data.locationSchedules !== undefined) {
             delete data.locationSchedules;
             repaired = true;
@@ -1371,12 +1381,8 @@
             repaired = true;
         }
 
-        // ---- Character invariants ----
         data.characters.forEach(function(char) {
-            if (!Array.isArray(char.classIds)) {
-                char.classIds = [];
-                repaired = true;
-            }
+            if (!Array.isArray(char.classIds)) { char.classIds = []; repaired = true; }
             if (!char.personality || typeof char.personality !== 'object' || Array.isArray(char.personality)) {
                 char.personality = {};
                 repaired = true;
@@ -1394,14 +1400,8 @@
                     repaired = true;
                 }
             }
-            if (char.attraction === undefined) {
-                char.attraction = '';
-                repaired = true;
-            }
-            if (char.sexuality === undefined) {
-                char.sexuality = '';
-                repaired = true;
-            }
+            if (char.attraction === undefined) { char.attraction = ''; repaired = true; }
+            if (char.sexuality === undefined) { char.sexuality = ''; repaired = true; }
 
             if (typeof char.hp !== 'number' || isNaN(char.hp) || char.hp < 0) {
                 char.hp = 0;
@@ -1443,7 +1443,6 @@
             }
         });
 
-        // ---- Team invariants ----
         data.teams.forEach(function(team) {
             if (team.type === 'academic' && team.classId === undefined) {
                 team.classId = null;
@@ -1455,30 +1454,17 @@
             }
         });
 
-        // ---- Curriculum ----
         if (!data.curriculum || typeof data.curriculum !== 'object' || Array.isArray(data.curriculum)) {
             data.curriculum = getDefaultCurriculumData();
             repaired = true;
         } else {
-            // v21: strip retired stores if they survived.
-            if (data.curriculum.schedules !== undefined) {
-                delete data.curriculum.schedules;
-                repaired = true;
-            }
-            if (data.curriculum.locationSchedules !== undefined) {
-                delete data.curriculum.locationSchedules;
-                repaired = true;
-            }
-            if (data.curriculum.metadata !== undefined) {
-                delete data.curriculum.metadata;
-                repaired = true;
-            }
-
+            if (data.curriculum.schedules !== undefined) { delete data.curriculum.schedules; repaired = true; }
+            if (data.curriculum.locationSchedules !== undefined) { delete data.curriculum.locationSchedules; repaired = true; }
+            if (data.curriculum.metadata !== undefined) { delete data.curriculum.metadata; repaired = true; }
             data.curriculum = deepMergeDefaults(data.curriculum, getDefaultCurriculumData());
             repaired = true;
         }
 
-        // ---- Social ----
         if (!data.social || typeof data.social !== 'object' || Array.isArray(data.social)) {
             data.social = getDefaultSocialData();
             repaired = true;
@@ -1487,7 +1473,6 @@
             repaired = true;
         }
 
-        // ---- StatsConfig ----
         if (!data.statsConfig || typeof data.statsConfig !== 'object' || Array.isArray(data.statsConfig)) {
             data.statsConfig = getDefaultStatsConfig();
             repaired = true;
@@ -1496,7 +1481,6 @@
             repaired = true;
         }
 
-        // ---- Academy ----
         if (!data.academy || typeof data.academy !== 'object' || Array.isArray(data.academy)) {
             data.academy = getDefaultAcademyData();
             repaired = true;
@@ -1510,50 +1494,33 @@
             }
         }
 
-        // ---- v20 shape guards ----
-        if (!data.academy.classDisciplines ||
-            typeof data.academy.classDisciplines !== 'object' ||
-            Array.isArray(data.academy.classDisciplines)) {
+        if (!data.academy.classDisciplines || typeof data.academy.classDisciplines !== 'object' || Array.isArray(data.academy.classDisciplines)) {
             data.academy.classDisciplines = {};
             repaired = true;
         }
-        if (!data.academy.teachingGroups ||
-            typeof data.academy.teachingGroups !== 'object' ||
-            Array.isArray(data.academy.teachingGroups)) {
+        if (!data.academy.teachingGroups || typeof data.academy.teachingGroups !== 'object' || Array.isArray(data.academy.teachingGroups)) {
             data.academy.teachingGroups = {};
             repaired = true;
         }
-        if (!data.academy.teachingGroupSequences ||
-            typeof data.academy.teachingGroupSequences !== 'object' ||
-            Array.isArray(data.academy.teachingGroupSequences)) {
+        if (!data.academy.teachingGroupSequences || typeof data.academy.teachingGroupSequences !== 'object' || Array.isArray(data.academy.teachingGroupSequences)) {
             data.academy.teachingGroupSequences = {};
             repaired = true;
         }
-        if (!data.academy.teachingSessions ||
-            typeof data.academy.teachingSessions !== 'object' ||
-            Array.isArray(data.academy.teachingSessions)) {
+        if (!data.academy.teachingSessions || typeof data.academy.teachingSessions !== 'object' || Array.isArray(data.academy.teachingSessions)) {
             data.academy.teachingSessions = {};
             repaired = true;
         }
 
-        // ---- v22 shape guard: weekly-team records MUST NOT carry a
-        //      members array. The roster lives exclusively on the
-        //      persistent Team entity. Any residual members array is
-        //      stripped here as a safety net; the v22 migration is
-        //      the authoritative collapse.
+        // v22 shape guard: weekly-team records must not carry members.
         if (data.academy.weeklyTeams &&
             typeof data.academy.weeklyTeams === 'object' &&
             !Array.isArray(data.academy.weeklyTeams)) {
             Object.keys(data.academy.weeklyTeams).forEach(function(classId) {
                 var byClass = data.academy.weeklyTeams[classId];
-                if (!byClass || typeof byClass !== 'object' || Array.isArray(byClass)) {
-                    return;
-                }
+                if (!byClass || typeof byClass !== 'object' || Array.isArray(byClass)) return;
                 Object.keys(byClass).forEach(function(teamId) {
                     var record = byClass[teamId];
-                    if (!record || typeof record !== 'object' || Array.isArray(record)) {
-                        return;
-                    }
+                    if (!record || typeof record !== 'object' || Array.isArray(record)) return;
                     if (record.members !== undefined) {
                         delete record.members;
                         repaired = true;
@@ -1562,7 +1529,6 @@
             });
         }
 
-        // ---- Class-membership invariants ----
         var validClassIds = Object.create(null);
         Object.keys(data.academy.graduatingClasses).forEach(function(id) {
             validClassIds[id] = true;
@@ -1570,9 +1536,7 @@
 
         var prunedClassRefs = 0;
         data.characters.forEach(function(char) {
-            if (!Array.isArray(char.classIds)) {
-                return;
-            }
+            if (!Array.isArray(char.classIds)) return;
             var before = char.classIds.length;
             char.classIds = char.classIds.filter(function(id) {
                 return validClassIds[id] === true;
@@ -1586,11 +1550,10 @@
         if (prunedClassRefs > 0) {
             console.warn(
                 '[Database] normaliseDataStructure pruned ' + prunedClassRefs +
-                ' orphaned classId reference(s). A mutation path is not cascading correctly.'
+                ' orphaned classId reference(s).'
             );
         }
 
-        // ---- Prune orphaned weeklyTeams ----
         if (data.academy.weeklyTeams && typeof data.academy.weeklyTeams === 'object') {
             Object.keys(data.academy.weeklyTeams).forEach(function(classId) {
                 if (!validClassIds[classId]) {
@@ -1600,17 +1563,12 @@
             });
         }
 
-        // ---- Prune orphaned grades / rankings ----
         function pruneByClassId(storeName) {
             var store = data.academy[storeName];
-            if (!store || typeof store !== 'object') {
-                return;
-            }
+            if (!store || typeof store !== 'object') return;
             Object.keys(store).forEach(function(recordId) {
                 var record = store[recordId];
-                if (!record || typeof record !== 'object') {
-                    return;
-                }
+                if (!record || typeof record !== 'object') return;
                 if (record.classId && !validClassIds[record.classId]) {
                     delete store[recordId];
                     repaired = true;
@@ -1620,12 +1578,9 @@
         pruneByClassId('grades');
         pruneByClassId('rankings');
 
-        // ---- Prune orphaned enrolments / socialScores / classDisciplines ----
         function pruneClassBucket(storeName) {
             var store = data.academy[storeName];
-            if (!store || typeof store !== 'object') {
-                return;
-            }
+            if (!store || typeof store !== 'object') return;
             Object.keys(store).forEach(function(classId) {
                 if (!validClassIds[classId]) {
                     delete store[classId];
@@ -1648,11 +1603,9 @@
         if (data === null || typeof data !== 'object') {
             throw new Error('Cannot clone non-object data');
         }
-
         if (typeof structuredClone !== 'function') {
             throw new Error('This browser does not support structuredClone().');
         }
-
         return structuredClone(data);
     }
 
@@ -1661,9 +1614,7 @@
     // ============================================================
 
     function loadData() {
-        if (_loadPromise) {
-            return _loadPromise;
-        }
+        if (_loadPromise) return _loadPromise;
 
         _loadError = null;
         _loadPromise = new Promise(function(resolve, reject) {
@@ -1674,7 +1625,6 @@
                 reject(error);
                 return;
             }
-
             doLoadData(resolve, reject);
         });
 
@@ -1714,7 +1664,6 @@
                     }
 
                     var migrationPromise = Promise.resolve();
-
                     if (needsPersistence) {
                         migrationPromise = saveData();
                     }
@@ -1759,59 +1708,37 @@
     }
 
     // ============================================================
-    // SAVE DATA - Coalescing queue with frozen batches
+    // SAVE DATA
     // ============================================================
 
     function saveData() {
         return new Promise(function(resolve, reject) {
-            _saveWaiters.push({
-                resolve: resolve,
-                reject: reject
-            });
+            _saveWaiters.push({ resolve: resolve, reject: reject });
             processSaveQueue();
         });
     }
 
     function processSaveQueue() {
-        if (_isSaving || _saveWaiters.length === 0) {
-            return;
-        }
+        if (_isSaving || _saveWaiters.length === 0) return;
 
         _isSaving = true;
-
         var currentWaiters = _saveWaiters;
         _saveWaiters = [];
 
         performSave()
             .then(function() {
                 _isSaving = false;
-
                 currentWaiters.forEach(function(waiter) {
-                    try {
-                        waiter.resolve(true);
-                    } catch (err) {
-                        // Ignore resolver errors
-                    }
+                    try { waiter.resolve(true); } catch (err) {}
                 });
-
-                if (_saveWaiters.length > 0) {
-                    processSaveQueue();
-                }
+                if (_saveWaiters.length > 0) processSaveQueue();
             })
             .catch(function(err) {
                 _isSaving = false;
-
                 currentWaiters.forEach(function(waiter) {
-                    try {
-                        waiter.reject(err);
-                    } catch (rejectErr) {
-                        // Ignore rejector errors
-                    }
+                    try { waiter.reject(err); } catch (rejectErr) {}
                 });
-
-                if (_saveWaiters.length > 0) {
-                    processSaveQueue();
-                }
+                if (_saveWaiters.length > 0) processSaveQueue();
             });
     }
 
@@ -1823,13 +1750,7 @@
             }
 
             var settled = false;
-
-            function succeed() {
-                if (settled) return;
-                settled = true;
-                resolve();
-            }
-
+            function succeed() { if (settled) return; settled = true; resolve(); }
             function fail(error) {
                 if (settled) return;
                 settled = true;
@@ -1839,7 +1760,6 @@
 
             try {
                 var sourceData = _data;
-
                 if (!sourceData) {
                     sourceData = getEmptyData();
                 }
@@ -1859,24 +1779,12 @@
                 };
                 var request = store.put(record);
 
-                transaction.oncomplete = function() {
-                    succeed();
-                };
-
-                transaction.onerror = function(event) {
-                    var error = event.target.error;
-                    fail(error);
-                };
-
+                transaction.oncomplete = function() { succeed(); };
+                transaction.onerror = function(event) { fail(event.target.error); };
                 transaction.onabort = function(event) {
-                    var error = event.target.error || new Error('IndexedDB transaction aborted');
-                    fail(error);
+                    fail(event.target.error || new Error('IndexedDB transaction aborted'));
                 };
-
-                request.onerror = function(event) {
-                    var error = event.target.error;
-                    fail(error);
-                };
+                request.onerror = function(event) { fail(event.target.error); };
             } catch (err) {
                 fail(err);
             }
@@ -1896,9 +1804,7 @@
                     cancelable: false
                 });
                 window.dispatchEvent(event);
-            } catch (e) {
-                // Ignore event dispatch errors
-            }
+            } catch (e) {}
         }
     }
 
@@ -1914,9 +1820,7 @@
 
         return loadData()
             .then(function(result) {
-                if (result) {
-                    _dispatchDataReady(result);
-                }
+                if (result) _dispatchDataReady(result);
                 return result;
             })
             .catch(function(err) {
@@ -1959,7 +1863,7 @@
     }
 
     // ============================================================
-    // EXPOSE GLOBALS
+    // EXPOSE
     // ============================================================
 
     window.db = {
@@ -1987,9 +1891,7 @@
     // ============================================================
 
     ensureDatabaseReady()
-        .then(function() {
-            return autoLoadData();
-        })
+        .then(function() { return autoLoadData(); })
         .catch(function(err) {
             _loadError = err;
             _dispatchDataFailure(err);
