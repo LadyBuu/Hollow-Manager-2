@@ -18,6 +18,14 @@
  *   - Validation. Collectors return raw field values; the domain
  *     validates.
  *
+ * ROSTER SOURCE (v22):
+ *   The VM's `teams[].memberCount` and `selectedTeam.members[]`
+ *   come from the persistent Team entity's members[] array,
+ *   filtered by week. The renderer does not care where the roster
+ *   came from; it renders what the VM provides. The Tournaments
+ *   view reads the same underlying roster, so the two views always
+ *   agree.
+ *
  * EVENTS EMITTED:
  *   - #academy-weekly-teams-class-select  (change)
  *   - #academy-weekly-teams-week-input    (change / Enter)
@@ -238,7 +246,7 @@
 
         if (teams.length === 0) {
             html += '<p class="empty-state small">' +
-                        'No teams found for this class. ' +
+                        'No teams scheduled for this week. ' +
                         'Use <strong>+ Create Team</strong> or ' +
                         '<strong>Auto-Distribute</strong> to get started.' +
                     '</p>';
@@ -413,7 +421,8 @@
 
         if (members.length === 0) {
             html += '<p class="empty-state small">' +
-                        'No members assigned to this team this week.' +
+                        'No members assigned to this team this week. ' +
+                        'Use <strong>Manage Members</strong> to add some.' +
                     '</p>';
             html += '</div>';
             return html;
@@ -442,6 +451,9 @@
         var secondaryParts = [];
         if (isNonEmptyString(member.roleLabel)) {
             secondaryParts.push(escapeHtml(member.roleLabel));
+        }
+        if (isNonEmptyString(member.role) && member.role !== 'Member') {
+            secondaryParts.push(escapeHtml(member.role));
         }
         if (isNonEmptyString(member.age) && member.age !== '-') {
             secondaryParts.push(escapeHtml(member.age));
