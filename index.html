@@ -5,7 +5,58 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Hollow Manager 2</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="style.css" />
+
+    <!-- ============================================================
+         CSS
+         ============================================================
+         Load order:
+
+           shared.css      — tokens, reset, buttons, header, tabs,
+                             form primitives, modal shell, badges,
+                             empty state, shared detail furniture,
+                             class-status and role badges.
+
+           dashboard.css   — the Dashboard tab.
+
+           characters.css  — the Characters tab.
+
+           teams.css       — the standalone Teams tab.
+
+           social.css      — the standalone Social tab.
+
+           missions.css    — the standalone Missions tab.
+
+           academy.css     — the Academy shell: view switcher,
+                             top bar, two-panel layouts, sidebar,
+                             list rows, detail-panel frame, shared
+                             Academy badges.
+
+           academy/*.css   — the Academy sub-view splits. Each file
+                             loads AFTER academy.css and narrows
+                             from it. They do not redeclare the
+                             shell's rules.
+
+         Retired: style.css. Every block has been migrated into the
+         files above. The standalone Tournaments tab and standalone
+         Calendar tab have been retired, so css/tournaments.css and
+         css/calendar.css are not loaded (and do not exist).
+         ============================================================ -->
+    <link rel="stylesheet" href="css/shared.css" />
+    <link rel="stylesheet" href="css/dashboard.css" />
+    <link rel="stylesheet" href="css/characters.css" />
+    <link rel="stylesheet" href="css/teams.css" />
+    <link rel="stylesheet" href="css/social.css" />
+    <link rel="stylesheet" href="css/missions.css" />
+
+    <link rel="stylesheet" href="css/academy.css" />
+
+    <link rel="stylesheet" href="css/academy/ranking.css" />
+    <link rel="stylesheet" href="css/academy/exams.css" />
+    <link rel="stylesheet" href="css/academy/discipline.css" />
+    <link rel="stylesheet" href="css/academy/location.css" />
+    <link rel="stylesheet" href="css/academy/weekly-teams.css" />
+    <link rel="stylesheet" href="css/academy/character-detail.css" />
+    <link rel="stylesheet" href="css/academy/class-detail.css" />
 </head>
 <body>
     <div id="app">
@@ -66,26 +117,6 @@
 
     <!-- ============================================================
          SHARED CONSTANTS
-         ============================================================
-         Load order within this section matters:
-
-           - tournament-schema.js is loaded here (not in the
-             tournament block) because tournament-constants.js reads
-             the schema's enum arrays at load time. If the schema
-             loads later, tournament-constants falls back to local
-             lists and warns on every page load.
-
-           - mission-constants.js and mission-id.js are loaded here
-             (not in the missions block) because the following files
-             read them at load time:
-               * mission-queries.js (SHARED QUERIES block below)
-                 reads MissionId.generate
-               * mission-schema.js and mission-rules.js (MISSIONS
-                 block below) read MissionId.isValidYear
-               * mission-aggregator.js (MISSIONS block below) reads
-                 MissionId.derive
-             Loading them here guarantees they exist before any of
-             the mission modules run.
          ============================================================ -->
     <script src="js/modules/shared/constants.js"></script>
     <script src="js/modules/shared/calendar-constants.js"></script>
@@ -105,10 +136,6 @@
 
     <!-- ============================================================
          SHARED QUERIES
-         ============================================================
-         mission-queries.js is loaded here (not in the missions
-         block) because the dashboard reads it and the dashboard
-         block loads last.
          ============================================================ -->
     <script src="js/modules/shared/queries/character-queries.js"></script>
     <script src="js/modules/shared/queries/team-queries.js"></script>
@@ -132,46 +159,11 @@
 
     <!-- ============================================================
          CALENDAR RENDERER
-         ============================================================
-         The stored-schedule calendar domain has been retired. What
-         remains is a single pure renderer that produces an HTML grid
-         from a schedule VM. Nothing else in the calendar folder.
-
-         The retired files were:
-           - schedule-core.js           (wrote stored schedule maps)
-           - calendar-aggregator.js     (read stored schedule maps)
-           - calendar-ui-base.js        (only the retired UIs used it)
-           - student-calendar-ui.js     (read stored schedule maps)
-           - instructor-calendar-ui.js  (read stored schedule maps)
-           - location-calendar-ui.js    (read stored schedule maps)
-           - calendar/index.js          (shell for the retired UIs)
-
-         They were replaced by the projector-backed Academy calendar
-         aggregator, in the ACADEMY block below.
          ============================================================ -->
     <script src="js/modules/calendar/calendar-renderer.js"></script>
 
     <!-- ============================================================
          ACADEMY DOMAIN - BASE ENTITIES AND CROSS-CUTTING SERVICES
-         ============================================================
-         Load order within this section matters:
-
-           - Grades/disciplines must load after AcademyGradeSchemes
-             and AcademyGrades respectively.
-           - AcademyPerformance must load before AcademyRanking.
-           - AcademyCascade, AcademySettings, AcademyEnrolments,
-             AcademySocialScore are cross-cutting.
-           - AcademyAutoGroupsRead must load before AcademyGroups
-             (the read aliases delegate to it at call time).
-           - AcademyWeeklyTeams (week-window gate) must load before
-             AcademyAggregator, which reads it for the Weekly Teams
-             view model. AcademyModule's mount-time dependency check
-             requires it.
-           - The six teaching-model modules and academy-schedule.js
-             form a single pipeline: class-disciplines → groups →
-             sessions → projector → collisions → validation →
-             schedule coordinator → calendar aggregator. They load
-             in that dependency order.
          ============================================================ -->
     <script src="js/modules/academy/academy-grade-schemes.js"></script>
     <script src="js/modules/academy/academy-classes.js"></script>
@@ -185,8 +177,6 @@
     <script src="js/modules/academy/academy-social-score.js"></script>
     <script src="js/modules/academy/academy-performance.js"></script>
 
-    <!-- AcademyAutoGroupsRead lives in the academy folder (not in
-         shared/queries). It must load before academy-groups.js. -->
     <script src="js/modules/academy/academy-auto-groups-read.js"></script>
     <script src="js/modules/academy/academy-groups.js"></script>
 
@@ -196,16 +186,6 @@
 
     <!-- ============================================================
          ACADEMY TEACHING MODEL
-         ============================================================
-         The teaching-model pipeline. Load order is strict:
-         each module depends on every module above it.
-
-           class-disciplines   — a class's offering of a discipline
-           teaching-groups     — students + instructor for an offering
-           teaching-sessions   — recurring meetings of a group
-           teaching-projector  — projects weekly occurrences
-           teaching-collisions — detects time overlaps
-           teaching-validation — weekly-hours and structural warnings
          ============================================================ -->
     <script src="js/modules/academy/academy-class-disciplines.js"></script>
     <script src="js/modules/academy/academy-teaching-groups.js"></script>
@@ -216,26 +196,14 @@
 
     <!-- ============================================================
          ACADEMY SCHEDULE COORDINATOR
-         ============================================================
-         Compound-mutation coordinator. Runs single-transaction
-         operations across the teaching-model stores. Must load
-         after every teaching-model module.
          ============================================================ -->
     <script src="js/modules/academy/academy-schedule.js"></script>
 
     <!-- ============================================================
          ACADEMY CALENDAR AGGREGATOR
-         ============================================================
-         Projector-backed schedule projections. Replaces the retired
-         calendar-aggregator.js. Reads AcademyTeachingProjector;
-         produces VMs for CalendarRenderer.renderGrid.
          ============================================================ -->
     <script src="js/modules/academy/academy-calendar-aggregator.js"></script>
 
-    <!-- Week-window gate. Required by AcademyModule's mount-time
-         dependency check and by AcademyAggregator for the Weekly
-         Teams view model. v22: carries only the week window; the
-         roster is read from the persistent Team entity. -->
     <script src="js/modules/academy/academy-weekly-teams.js"></script>
 
     <script src="js/modules/academy/academy-aggregator.js"></script>
@@ -243,10 +211,6 @@
 
     <!-- ============================================================
          SOCIAL DOMAIN
-         ============================================================
-         Must load before the character domain: character-events.js
-         captures SocialCore, SocialGraph, SocialQueries eagerly at
-         IIFE time.
          ============================================================ -->
     <script src="js/modules/social/social-core.js"></script>
     <script src="js/modules/social/social-aggregator.js"></script>
@@ -257,9 +221,6 @@
 
     <!-- ============================================================
          CHARACTER DOMAIN
-         ============================================================
-         Must load before the Academy view shell: academy-crud-modals
-         captures CharacterClasses eagerly at IIFE time.
          ============================================================ -->
     <script src="js/modules/characters/character-generator.js"></script>
     <script src="js/modules/characters/character-stats.js"></script>
@@ -279,35 +240,6 @@
 
     <!-- ============================================================
          TOURNAMENT DOMAIN
-         ============================================================
-         tournament-schema.js has already loaded in the SHARED
-         CONSTANTS block.
-
-         Load order within this block matters:
-
-           - tournament-elimination-cascade.js depends on IdUtils
-             and CalendarValidation (both already loaded above).
-             It must load BEFORE tournament-matches.js, which reads
-             window.TournamentEliminationCascade at IIFE time and
-             throws if missing.
-
-           - tournament-rules.js depends on TournamentConstants,
-             TournamentSchema, CalendarValidation.
-
-           - tournament-matches.js depends on Constants, Schema,
-             Rules, Queries, EliminationCascade, CalendarValidation,
-             MutationPipeline, ObjectUtils.
-
-           - tournament-core.js depends on Schema, Constants, Rules,
-             Matches, Queries, EliminationCascade, CalendarValidation,
-             IdUtils, ObjectUtils, MutationPipeline.
-
-         Removed from this block (moved to js/modules/trash/):
-
-           - tournament-lifecycle.js
-           - tournament-aggregator.js
-           - tournament-elimination-workflow.js
-           - tournament-repair.js
          ============================================================ -->
     <script src="js/modules/tournaments/tournament-elimination-cascade.js"></script>
     <script src="js/modules/tournaments/tournament-rules.js"></script>
@@ -316,28 +248,6 @@
 
     <!-- ============================================================
          ACADEMY VIEW SHELL
-         ============================================================
-         Loads last among the Academy-adjacent blocks because view
-         modules capture AcademyAggregator, AcademyTournamentAggregator,
-         and CharacterClasses eagerly at IIFE time.
-
-         Load order within this block matters:
-
-           - academy-character-detail-aggregator.js must load before
-             academy-view.js, which requires it at load time.
-
-           - academy-weekly-teams-members.js must load before
-             academy-view.js.
-
-           - academy-tournament-view.js must load before
-             academy-tournament-events.js, which requires it at
-             IIFE time.
-
-           - academy-tournament-aggregator.js must load before
-             academy-view.js.
-
-           - academy-tournament-events.js must load before
-             academy-view.js, which routes exam actions to it.
          ============================================================ -->
     <script src="js/modules/academy/academy-character-detail-aggregator.js"></script>
     <script src="js/modules/academy/academy-class-detail.js"></script>
@@ -359,22 +269,6 @@
 
     <!-- ============================================================
          TEAM DOMAIN
-         ============================================================
-         Team constants and team queries live in the shared modules.
-         They were already loaded above:
-           js/modules/shared/team-constants.js
-           js/modules/shared/queries/team-queries.js
-
-         Load order within this section matters:
-
-           - TeamAggregator depends on TeamQueries, TeamConstants,
-             CharacterQueries, AcademyQueries.
-           - TeamRender depends on DomUtils only.
-           - TeamEvents depends on TeamCore, TeamAggregator, TeamUI,
-             TeamRender.
-           - TeamCore depends on TeamConstants, IdUtils,
-             MutationPipeline, ObjectUtils.
-           - teams/index.js depends on all of the above.
          ============================================================ -->
     <script src="js/modules/teams/team-aggregator.js"></script>
     <script src="js/modules/teams/team-ui.js"></script>
@@ -385,38 +279,6 @@
 
     <!-- ============================================================
          MISSIONS DOMAIN
-         ============================================================
-         mission-constants.js, mission-id.js, and mission-queries.js
-         have already loaded in earlier blocks.
-
-         Load order within this block is STRICT: each module depends
-         on every module above it.
-
-           mission-schema.js   — structural definitions and
-                                 normalisation; reads
-                                 MissionId.isValidYear.
-           mission-rules.js    — domain conditions; reads
-                                 MissionId.isValidYear.
-           mission-cascade.js  — transaction-local cleanup helpers;
-                                 reads MissionSchema.
-           mission-core.js     — canonical mutation API; reads
-                                 MissionSchema, MissionRules,
-                                 MissionCascade.
-           mission-views.js    — pure HTML renderers for the mission
-                                 panel and modals.
-           mission-render.js   — top-level render helpers; reads
-                                 MissionViews.
-           mission-aggregator.js — projection builder; reads
-                                 MissionQueries, MissionRender.
-           mission-ui.js       — event wiring and modal lifecycle;
-                                 reads MissionCore, MissionAggregator,
-                                 MissionRender.
-           index.js            — module entry point and TabManager
-                                 registration; reads MissionUI.
-
-         The order in the block below reflects exactly that chain.
-         Do not reorder without re-checking each module's IIFE-time
-         dependencies.
          ============================================================ -->
     <script src="js/modules/missions/mission-schema.js"></script>
     <script src="js/modules/missions/mission-rules.js"></script>
@@ -453,10 +315,6 @@
 
     <!-- ============================================================
          DASHBOARD
-         ============================================================
-         The dashboard reads MissionQueries, TeamQueries,
-         CharacterQueries, AcademyQueries, and other domain queries.
-         Loads after all domain modules.
          ============================================================ -->
     <script src="js/modules/dashboard/dashboard-aggregator.js"></script>
     <script src="js/modules/dashboard/dashboard-render.js"></script>
