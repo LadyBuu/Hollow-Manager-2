@@ -8,6 +8,7 @@
  *     .list-item.team-item)
  *   - Team members expanded section (.team-members-expanded)
  *   - Member rows and status classes (.member-entry)
+ *   - Per-interval member rows (.member-interval-row) — v24
  *   - Team cards (.team-card)
  *   - Team form modal contents (.name-history-entry)
  *   - Team tab nav (.tab-nav, .tab-btn)
@@ -131,6 +132,7 @@
     border-bottom: 1px solid var(--border-soft);
     border-left: 3px solid var(--accent);
     font-size: 0.75rem;
+    flex-wrap: wrap;
 }
 
 .member-entry:last-child {
@@ -190,6 +192,144 @@
 .member-entry.status-unknown {
     border-left-color: var(--border);
     opacity: 0.5;
+}
+
+/* ============================================================
+   MEMBER INTERVALS (v24)
+   ============================================================
+   Rendered by team-render.js when a member has one or more
+   intervals. Each member block has a header line (name, role,
+   age, status) followed by one sub-line per stint.
+ */
+
+.member-entry-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    padding-bottom: 2px;
+}
+
+.member-entry-name {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.member-entry-role {
+    color: var(--text-dim);
+    font-size: 0.65rem;
+}
+
+.member-entry-age {
+    color: var(--text-dim);
+    font-size: 0.65rem;
+}
+
+.member-entry-status {
+    color: var(--text-dim);
+    font-size: 0.65rem;
+    font-style: italic;
+}
+
+.member-entry-intervals {
+    padding-left: 12px;
+    margin-top: 2px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+}
+
+.member-entry-interval {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 1px 0;
+}
+
+.member-entry-interval.active {
+    color: var(--accent);
+}
+
+.member-entry-interval.active .member-entry-interval-period {
+    font-weight: 600;
+}
+
+.member-entry-interval.empty,
+.member-placeholder {
+    font-style: italic;
+    color: var(--text-dim);
+    opacity: 0.8;
+}
+
+.member-entry-interval-period {
+    font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Per-interval rows in the member modal ---------- */
+
+.member-interval-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border-soft);
+    background: var(--panel-alt);
+}
+
+.member-interval-row.member-interval-continuation {
+    padding-left: 24px;
+}
+
+.member-interval-row.member-entry-inactive {
+    opacity: 0.65;
+}
+
+.member-interval-row:last-child {
+    border-bottom: none;
+}
+
+.member-interval-left {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.member-name-continuation {
+    color: var(--text-dim);
+    font-size: 0.75rem;
+}
+
+.member-interval-bounds {
+    display: flex;
+    gap: 12px;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.member-join,
+.member-leave {
+    display: inline-block;
+}
+
+.member-interval-actions {
+    display: flex;
+    gap: 4px;
+    flex: 0 0 auto;
+}
+
+.member-entry-placeholder {
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.member-entry-placeholder .member-placeholder {
+    font-style: italic;
+    color: var(--text-dim);
 }
 
 /* ============================================================
@@ -410,5 +550,20 @@
     .filter-row button {
         margin-left: 0;
         width: 100%;
+    }
+
+    /* ---------- Member interval rows ---------- */
+
+    .member-interval-row {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .member-interval-bounds {
+        justify-content: space-between;
+    }
+
+    .member-interval-actions {
+        justify-content: flex-end;
     }
 }
