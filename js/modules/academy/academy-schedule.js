@@ -74,6 +74,11 @@
  *   The coordinator uses that function so the roster in the auto-
  *   enrolment path and the roster in the UI always agree.
  *
+ *   AcademyAggregator is accessed LAZILY. The load order in
+ *   index.html does not need to place the aggregator before this
+ *   module; the roster lookup resolves the aggregator at call time.
+ *   See getAcademyAggregator() below.
+ *
  * ELIMINATION SEMANTICS:
  *   A student eliminated in week N is available during week N and
  *   unavailable from week N+1 onward. This is the same boundary rule
@@ -145,9 +150,13 @@
  *   - window.AcademyEnrolments
  *   - window.AcademyTeachingGroups
  *   - window.AcademyTeachingSessions
- *   - window.AcademyAggregator
  *   - window.CharacterQueries
  *   - window.EliminationQueries
+ *
+ * DEPENDENCIES (LAZY):
+ *   - window.AcademyAggregator  — resolved at call time by
+ *                                 getClassRoster(). Not required at
+ *                                 load time.
  *
  * USAGE:
  *   AcademySchedule.addClassDiscipline('class_1', 'disc_en', {
@@ -186,9 +195,24 @@
     var AcademyEnrolments = window.AcademyEnrolments;
     var AcademyTeachingGroups = window.AcademyTeachingGroups;
     var AcademyTeachingSessions = window.AcademyTeachingSessions;
-    var AcademyAggregator = window.AcademyAggregator;
     var CharacterQueries = window.CharacterQueries;
     var EliminationQueries = window.EliminationQueries;
+
+    // ============================================================
+    // LAZY DEPENDENCIES
+    // ============================================================
+    //
+    // AcademyAggregator is not captured at load time. The load
+    // order in index.html does not need to place it before this
+    // module. getAcademyAggregator() resolves it on first use.
+
+    function getAcademyAggregator() {
+        return window.AcademyAggregator || null;
+    }
+
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
 
     var _missing = [];
 
@@ -233,10 +257,6 @@
     if (!AcademyTeachingSessions ||
         typeof AcademyTeachingSessions.getAllSessions !== 'function') {
         _missing.push('AcademyTeachingSessions.getAllSessions');
-    }
-    if (!AcademyAggregator ||
-        typeof AcademyAggregator.getClassStudentsViewModel !== 'function') {
-        _missing.push('AcademyAggregator.getClassStudentsViewModel');
     }
     if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
         _missing.push('CharacterQueries.getCharacterById');
@@ -399,6 +419,12 @@
      * excluded). Uses AcademyAggregator so the roster is always
      * consistent with the UI.
      *
+     * LAZY: AcademyAggregator is resolved at call time. If it's
+     * not yet loaded, this returns an empty roster and warns. The
+     * caller (addClassDiscipline) will then enrol nobody. That is
+     * a safe degradation: a class-discipline is created without
+     * auto-enrolment rather than the mutation failing outright.
+     *
      * Note: this reads live data via the aggregator, not the
      * pipeline snapshot. It's called during validate, where the
      * pipeline has not yet taken a snapshot. Since mutations are
@@ -408,8 +434,17 @@
         if (!isNonEmptyString(classId)) {
             return [];
         }
+        var Aggregator = getAcademyAggregator();
+        if (!Aggregator ||
+            typeof Aggregator.getClassStudentsViewModel !== 'function') {
+            console.warn(
+                '[AcademySchedule] AcademyAggregator.getClassStudentsViewModel ' +
+                'is not available. Auto-enrolment will be skipped.'
+            );
+            return [];
+        }
         try {
-            return AcademyAggregator.getClassStudentsViewModel(classId) || [];
+            return Aggregator.getClassStudentsViewModel(classId) || [];
         } catch (e) {
             console.warn(
                 '[AcademySchedule] getClassStudentsViewModel failed:', e
@@ -789,9 +824,6 @@
 
         // Compute the enrolment list during validate. Everything
         // that can fail is checked here, before any writes.
-        var enrolledCharIds = [];
-        var skippedCharIds = [];
-
         var plan = null;
 
         return MutationPipeline.performMutation({
