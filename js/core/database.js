@@ -82,6 +82,18 @@
  *               data.locationSchedules store.
  *               The teaching projector is now the sole source of
  *               schedule data.
+ * - Version 22: Collapses the redundant `members` array out of
+ *               academy.weeklyTeams records. Weekly-team records now
+ *               carry ONLY the week window ({ classId, teamId,
+ *               startWeek, endWeek }). Team membership lives
+ *               exclusively on the persistent Team entity's
+ *               members[] array (with joinPeriod / leavePeriod as
+ *               the week range). The migration walks every
+ *               weekly-team member and ensures the corresponding
+ *               entry exists on teams[teamId].members[], copying
+ *               startWeek → joinPeriod and endWeek → leavePeriod
+ *               when the target entry has no range yet. The
+ *               redundant `members` array is then deleted.
  * 
  * ACADEMY MEMBERSHIP MODEL (v15+):
  * - character.classIds[] is the SINGLE SOURCE OF TRUTH for class membership.
@@ -105,11 +117,23 @@
  *   academy.teachingGroupSequences { ["classId|disc|inst"]: number }
  *   academy.teachingSessions       { [sessionId]: sessionRecord }
  * 
+ * WEEKLY-TEAM RECORD SHAPE (v22+):
+ *   academy.weeklyTeams[classId][teamId] = {
+ *     id, classId, teamId,
+ *     startWeek, endWeek,       // null = ongoing; endWeek inclusive
+ *     createdAt, updatedAt
+ *   }
+ *   NO members array. The roster is the persistent Team entity's
+ *   members[] array, filtered by the week.
+ * 
  * RETIRED STORES (removed in v21):
  *   curriculum.schedules
  *   curriculum.locationSchedules
  *   curriculum.metadata
  *   data.locationSchedules (top-level, unused duplicate)
+ * 
+ * RETIRED STORES (removed in v22):
+ *   academy.weeklyTeams[classId][teamId].members
  */
 
 (function() {
@@ -117,7 +141,7 @@
 
     var DB_NAME = 'HollowBladesDB';
     var DB_VERSION = 1;
-    var DATA_VERSION = 21;
+    var DATA_VERSION = 22;
     var STORE_NAME = 'appData';
 
     var _indexedDB = null;
@@ -562,6 +586,7 @@
                 case 18: migrateToVersion19(data); break;
                 case 19: migrateToVersion20(data); break;
                 case 20: migrateToVersion21(data); break;
+                case 21: migrateToVersion22(data); break;
                 default: data._dataVersion = DATA_VERSION; break;
             }
         }
@@ -1126,6 +1151,195 @@
         data._dataVersion = 21;
     }
 
+    /**
+     * Version 22 migration — Collapse the weekly-team member array.
+     *
+     * WHY:
+     *   Prior to v22, academy.weeklyTeams records carried their own
+     *   `members` array, parallel to the persistent Team entity's
+     *   members[] array. The two stores drifted independently:
+     *   the Weekly Teams view read the weekly-team members array,
+     *   while the Tournaments view read the persistent roster. The
+     *   same team would show different members in the two views.
+     *
+     *   The persistent Team entity's members[] array already
+     *   carries joinPeriod / leavePeriod, which is the same ranged
+     *   semantics the weekly-team member array was invented to
+     *   provide. There was never a reason for two ranged rosters.
+     *
+     * WHAT THIS DOES:
+     *   For every weekly-team record:
+     *     1. For each member of the redundant weekly-team members
+     *        array, find the corresponding entry on
+     *        data.teams[teamId].members[] by characterId.
+     *     2. If the entry exists and its joinPeriod / leavePeriod
+     *        are empty, fill them from the weekly-team member's
+     *        startWeek / endWeek.
+     *     3. If the entry does not exist, add it with
+     *        joinPeriod = String(startWeek) and
+     *        leavePeriod = (endWeek === null ? '' : String(endWeek)).
+     *     4. Delete the weekly-team record's members array.
+     *
+     *   The weekly-team record itself survives; it retains its
+     *   classId, teamId, startWeek, endWeek, createdAt, updatedAt.
+     *
+     * WHAT THIS DOES NOT DO:
+     *   - It does NOT touch data.teams members that have no
+     *     corresponding weekly-team entry. Team entities are
+     *     authoritative; missing weekly-team entries simply mean
+     *     "no week-scoped assignment exists."
+     *   - It does NOT delete weekly-team records that have no
+     *     members. A record with an empty members array is a
+     *     legitimate state (team scheduled, roster not yet filled).
+     *   - It does NOT touch any other store.
+     *
+     * @param {object} data
+     */
+    function migrateToVersion22(data) {
+        if (!data.academy || typeof data.academy !== 'object' || Array.isArray(data.academy)) {
+            data._dataVersion = 22;
+            return;
+        }
+
+        var weeklyTeams = data.academy.weeklyTeams;
+        if (!weeklyTeams || typeof weeklyTeams !== 'object' || Array.isArray(weeklyTeams)) {
+            data._dataVersion = 22;
+            return;
+        }
+
+        if (!Array.isArray(data.teams)) {
+            data.teams = [];
+        }
+
+        // Build a fast lookup: teamId -> team record (live ref).
+        var teamById = Object.create(null);
+        for (var t = 0; t < data.teams.length; t++) {
+            var team = data.teams[t];
+            if (team && typeof team.id === 'string' && team.id) {
+                teamById[team.id] = team;
+            }
+        }
+
+        var membersMigrated = 0;
+        var membersAlreadyPresent = 0;
+        var teamsMissing = 0;
+        var recordsProcessed = 0;
+
+        var classIds = Object.keys(weeklyTeams);
+        for (var c = 0; c < classIds.length; c++) {
+            var classId = classIds[c];
+            var byClass = weeklyTeams[classId];
+            if (!byClass || typeof byClass !== 'object' || Array.isArray(byClass)) {
+                continue;
+            }
+
+            var teamIds = Object.keys(byClass);
+            for (var i = 0; i < teamIds.length; i++) {
+                var teamId = teamIds[i];
+                var record = byClass[teamId];
+                if (!record || typeof record !== 'object' || Array.isArray(record)) {
+                    continue;
+                }
+
+                recordsProcessed++;
+
+                var redundantMembers = Array.isArray(record.members)
+                    ? record.members
+                    : [];
+
+                if (redundantMembers.length === 0) {
+                    delete record.members;
+                    continue;
+                }
+
+                var persistentTeam = teamById[teamId];
+                if (!persistentTeam) {
+                    teamsMissing++;
+                    delete record.members;
+                    continue;
+                }
+
+                if (!Array.isArray(persistentTeam.members)) {
+                    persistentTeam.members = [];
+                }
+
+                for (var m = 0; m < redundantMembers.length; m++) {
+                    var redundant = redundantMembers[m];
+                    if (!redundant || typeof redundant !== 'object') {
+                        continue;
+                    }
+                    var charId = redundant.characterId;
+                    if (charId === null || charId === undefined || charId === '') {
+                        continue;
+                    }
+                    var charIdStr = String(charId);
+
+                    // Find the existing persistent-roster entry.
+                    var existing = null;
+                    for (var p = 0; p < persistentTeam.members.length; p++) {
+                        var candidate = persistentTeam.members[p];
+                        if (candidate &&
+                            String(candidate.characterId) === charIdStr) {
+                            existing = candidate;
+                            break;
+                        }
+                    }
+
+                    var joinStr = (redundant.startWeek !== undefined &&
+                                   redundant.startWeek !== null)
+                        ? String(redundant.startWeek)
+                        : '';
+                    var leaveStr = (redundant.endWeek !== undefined &&
+                                    redundant.endWeek !== null)
+                        ? String(redundant.endWeek)
+                        : '';
+
+                    if (existing) {
+                        // Fill empty range fields on the persistent entry
+                        // from the redundant one. Never overwrite a
+                        // non-empty value: the persistent roster is the
+                        // canonical source, and a filled value is a
+                        // stronger claim than an empty one.
+                        if ((existing.joinPeriod === undefined ||
+                             existing.joinPeriod === null ||
+                             existing.joinPeriod === '') && joinStr !== '') {
+                            existing.joinPeriod = joinStr;
+                        }
+                        if ((existing.leavePeriod === undefined ||
+                             existing.leavePeriod === null ||
+                             existing.leavePeriod === '') && leaveStr !== '') {
+                            existing.leavePeriod = leaveStr;
+                        }
+                        membersAlreadyPresent++;
+                    } else {
+                        persistentTeam.members.push({
+                            characterId: charIdStr,
+                            role: (typeof redundant.role === 'string' && redundant.role)
+                                ? redundant.role
+                                : 'Member',
+                            joinPeriod: joinStr,
+                            leavePeriod: leaveStr
+                        });
+                        membersMigrated++;
+                    }
+                }
+
+                // The redundant array is now collapsed. Remove it.
+                delete record.members;
+            }
+        }
+
+        console.log(
+            '[Database] v22: collapsed weekly-team member arrays. ' +
+            'Records processed: ' + recordsProcessed + '. ' +
+            'Members merged into persistent roster: ' + membersMigrated + '. ' +
+            'Members already present: ' + membersAlreadyPresent + '. ' +
+            'Records dropped due to missing persistent team: ' + teamsMissing + '.'
+        );
+
+        data._dataVersion = 22;
+    }
+
     // ============================================================
     // NORMALISE DATA STRUCTURE - Current schema defaults
     // ============================================================
@@ -1320,6 +1534,32 @@
             Array.isArray(data.academy.teachingSessions)) {
             data.academy.teachingSessions = {};
             repaired = true;
+        }
+
+        // ---- v22 shape guard: weekly-team records MUST NOT carry a
+        //      members array. The roster lives exclusively on the
+        //      persistent Team entity. Any residual members array is
+        //      stripped here as a safety net; the v22 migration is
+        //      the authoritative collapse.
+        if (data.academy.weeklyTeams &&
+            typeof data.academy.weeklyTeams === 'object' &&
+            !Array.isArray(data.academy.weeklyTeams)) {
+            Object.keys(data.academy.weeklyTeams).forEach(function(classId) {
+                var byClass = data.academy.weeklyTeams[classId];
+                if (!byClass || typeof byClass !== 'object' || Array.isArray(byClass)) {
+                    return;
+                }
+                Object.keys(byClass).forEach(function(teamId) {
+                    var record = byClass[teamId];
+                    if (!record || typeof record !== 'object' || Array.isArray(record)) {
+                        return;
+                    }
+                    if (record.members !== undefined) {
+                        delete record.members;
+                        repaired = true;
+                    }
+                });
+            });
         }
 
         // ---- Class-membership invariants ----
