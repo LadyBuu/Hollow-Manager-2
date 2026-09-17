@@ -56,6 +56,21 @@
  *   Enrollment section; Remove from class is on each chip. They are
  *   visually separate and semantically orthogonal.
  *
+ * INSTRUCTOR GROUP ACTIONS:
+ *   The Auto-Groups tab (instructor mode) emits actions for adding
+ *   and removing students from instructor-managed auto-groups:
+ *
+ *     data-action="character-add-group-student"
+ *     data-action="character-remove-group-student"
+ *
+ *   Both carry data-group-key and (for remove) data-character-id.
+ *
+ *   The 'character-' prefix is deliberate. It routes the action to
+ *   AcademyView's handleCharacterAction dispatcher, which owns the
+ *   group-membership mutations (handleAddGroupStudent,
+ *   handleRemoveGroupStudent). It does NOT collide with the
+ *   discipline editor's 'add-' / 'remove-' handlers.
+ *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
  */
@@ -919,7 +934,7 @@
                     (students.length === 1 ? '' : 's') +
                 '</span>';
         html += '<button type="button" class="small primary" ' +
-                    'data-action="add-group-student" ' +
+                    'data-action="character-add-group-student" ' +
                     'data-instructor-id="' +
                         escapeAttribute(character.id) + '" ' +
                     'data-group-key="' +
@@ -950,7 +965,7 @@
                             '</span>';
                 }
                 html += '<button type="button" class="small danger" ' +
-                            'data-action="remove-group-student" ' +
+                            'data-action="character-remove-group-student" ' +
                             'data-group-key="' +
                                 escapeAttribute(group.key || '') + '" ' +
                             'data-character-id="' +
