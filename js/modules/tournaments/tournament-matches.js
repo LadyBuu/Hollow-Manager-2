@@ -7,6 +7,7 @@
  * RESPONSIBILITIES:
  *   - Match CRUD (create, update, delete)
  *   - Match completion (per-participant pass/fail/retry)
+ *   - Match reopen (undo a completion)
  *   - Team match completion (team-level + member-level results)
  *   - Auto-generation of matches from an eligible pool
  *   - Internal pure builders for Core.addRound
@@ -15,8 +16,7 @@
  *   - Elimination cascade on completion: failing participants are
  *     eliminated on both the tournament and character sides, inside
  *     the same pipeline transaction
- *   - Elimination reversal on removeMatch: if the removed match was
- *     completed, its eliminations are reversed
+ *   - Elimination reversal on removeMatch and reopenMatch
  *
  * NOT RESPONSIBILITIES:
  *   - Tournament-level status transitions (TournamentCore)
@@ -35,8 +35,9 @@
  *     - all matches completed → 'completed'
  *     - otherwise           → 'in_progress'
  *   reconcileRoundStatus(round) applies this rule. It is called after
- *   every match mutation (completion, removal, creation, update) so
- *   the derived state is always consistent with the match list.
+ *   every match mutation (completion, reopening, removal, creation,
+ *   update) so the derived state is always consistent with the match
+ *   list.
  *
  * MATCH TYPES:
  *   - 'group_exam'  : open assessment. participants.length === round.matchSize.
@@ -82,10 +83,50 @@
  *   through a public elimination mutation API.
  *
  * ELIMINATION REVERSAL:
- *   When removeMatch succeeds and the removed match was completed,
- *   reverseMatchEliminations runs BEFORE the match is spliced out.
- *   It removes eliminations whose provenance is this match, on both
- *   sides. Standalone eliminations are not touched.
+ *   Two operations reverse eliminations:
+ *
+ *     removeMatch
+ *       If the removed match was completed, reverseMatchEliminations
+ *       runs BEFORE the match is spliced out. The match is gone;
+ *       nothing to edit.
+ *
+ *     reopenMatch
+ *       reverseMatchEliminations runs, then the match's status is set
+ *       to 'pending'. The match survives and is editable through the
+ *       ordinary updateMatch path.
+ *
+ *   Both operations remove eliminations whose provenance is the
+ *   match, on both sides. Standalone eliminations are not touched.
+ *
+ * REOPEN SEMANTICS (v21):
+ *   Tournaments are records, not state machines. The status field is
+ *   a soft label the user controls. When a match is completed by
+ *   mistake, or when its results need correcting, the user reopens
+ *   it:
+ *
+ *     reopenMatch(tournamentId, roundId, matchId)
+ *       - The match must currently be 'completed'.
+ *       - Eliminations produced by this match are reversed on both
+ *         sides (tournament + character).
+ *       - The match's status is set to 'pending'.
+ *       - The match's results are PRESERVED. The user edited the
+ *         match's contents before reopening; the reopen does not
+ *         destroy them. The form pre-populates.
+ *       - The round's status is reconciled. A round that was
+ *         'completed' because all matches were may flip back to
+ *         'in_progress'.
+ *       - The match is now editable through the ordinary updateMatch
+ *         path.
+ *
+ *   The reopen is a controlled release valve. It preserves the
+ *   invariant that a completed match's eliminations reflect its
+ *   results: if a match is reopened, its eliminations are gone until
+ *   it is completed again.
+ *
+ *   The reopen does NOT auto-reset the round's status to 'pending'.
+ *   It reconciles. If other matches in the round are still completed,
+ *   the round stays 'in_progress'. If the reopened match was the last
+ *   one completed, the round becomes 'pending'.
  *
  * TRANSACTION VALIDATION:
  *   Pre-flight validation is for UX. Pipeline validation is for
@@ -1155,11 +1196,7 @@
     //   and legacy eliminations without provenance are not touched.
     //
     // ROUND STATUS RECONCILIATION:
-    //   After removal, the round's status is reconciled. A round that
-    //   was completed because all matches were completed may now be
-    //   pending or in_progress. This is the fix for the previously
-    //   inconsistent state where removing a match from a completed
-    //   round left the round permanently completed.
+    //   After removal, the round's status is reconciled.
 
     function removeMatch(tournamentId, roundId, matchId) {
         if (!isNonEmptyString(roundId) || !isNonEmptyString(matchId)) {
@@ -1239,9 +1276,6 @@
                 }
 
                 // ---- Reverse eliminations BEFORE splicing the match ----
-                // We check the LIVE match status in the snapshot, not
-                // the pre-flight status, because another mutation may
-                // have completed the match between preflight and now.
                 var liveMatch = snapshotRound.matches[idx];
                 var reversal = { reversed: 0, characterIds: [] };
                 if (liveMatch && liveMatch.status === 'completed') {
@@ -1408,9 +1442,7 @@
                 // Replace the entire match object.
                 snapshotRound.matches[idx] = deepClone(updatedMatch);
 
-                // Reconcile round status (the replaced match may have
-                // a different status than the one it replaced, though
-                // updateMatch forbids 'completed' transitions).
+                // Reconcile round status.
                 reconcileRoundStatus(snapshotRound);
 
                 return { match: snapshotRound.matches[idx] };
@@ -1436,11 +1468,10 @@
     //
     //   The elimination week is the tournament's endWeek. A missing or
     //   malformed endWeek causes the completion to fail BEFORE the
-    //   mutation runs. An elimination with a fabricated week would be
-    //   a lie in the historical record.
+    //   mutation runs.
     //
     //   Last-wins: if a participant already has an elimination for
-    //   this tournament (from an earlier failure, a second chance),
+    //   this tournament (from an earlier failure, or after a reopen),
     //   the existing elimination is removed and the new one is
     //   written. One elimination per (characterId, tournamentId).
 
@@ -1476,10 +1507,6 @@
         }
 
         // ---- Elimination week ----
-        // The cascade needs a valid week to write. If the tournament
-        // has no valid endWeek, we refuse to complete the match
-        // rather than fabricate one. The caller fixes the tournament
-        // and retries.
         var eliminationWeek = CalendarValidation.parseWeek(
             tournament.endWeek
         );
@@ -1649,8 +1676,6 @@
                 snapshotRound.matches[idx] = deepClone(completedMatch);
 
                 // ---- Elimination cascade ----
-                // Runs inside this transaction. Failing participants
-                // are eliminated on both sides.
                 var cascade = EliminationCascade.applyFailEliminations(
                     appData,
                     snapshotTournament,
@@ -1684,6 +1709,185 @@
     }
 
     // ============================================================
+    // PUBLIC COMMAND - Reopen Match
+    // ============================================================
+    //
+    // Reopen a completed match so it can be edited.
+    //
+    // SEMANTICS:
+    //   - The match must currently be 'completed'.
+    //   - Eliminations produced by this match are reversed on both
+    //     sides (tournament + character).
+    //   - The match's status is set to 'pending'.
+    //   - The match's results are PRESERVED. The reopen does not
+    //     destroy the data-entry the user did before completing.
+    //     The form pre-populates with the previous values.
+    //   - The round's status is reconciled. If other matches in the
+    //     round are still completed, the round stays 'in_progress'.
+    //     If this was the last completed match, the round becomes
+    //     'pending'.
+    //   - The match becomes editable through the ordinary updateMatch
+    //     path.
+    //
+    // WHY THIS EXISTS:
+    //   The model treats a completed match as committed: its
+    //   eliminations reflect its results, and the results cannot be
+    //   edited in place. When a user clicks Complete by mistake, or
+    //   discovers a data-entry error afterwards, the reopen is the
+    //   controlled way to un-commit. It restores the invariant that
+    //   eliminations match results, by removing the eliminations and
+    //   letting the user fix the match before completing it again.
+    //
+    // IDEMPOTENCE:
+    //   A reopen is not idempotent in the strict sense: reopening an
+    //   already-pending match returns failure ("not completed"). But
+    //   running reopen, then complete, then reopen again produces the
+    //   same end state as a single reopen (pending match, no
+    //   eliminations for it).
+    //
+    // PROVENANCE:
+    //   Only eliminations whose provenance is this match (fromMatchId)
+    //   are reversed. Eliminations produced by other matches, or
+    //   standalone eliminations, are not touched.
+
+    function reopenMatch(tournamentId, roundId, matchId) {
+        if (!isNonEmptyString(roundId) || !isNonEmptyString(matchId)) {
+            return Promise.resolve(
+                failure('Round ID and match ID are required.')
+            );
+        }
+
+        var tournament = Queries.getTournament(tournamentId);
+        if (!tournament) {
+            return Promise.resolve(failure('Tournament not found.'));
+        }
+
+        var round = Schema.findRoundById(tournament, roundId);
+        if (!round) {
+            return Promise.resolve(failure('Round not found.'));
+        }
+
+        var match = Schema.findMatchById(round, matchId);
+        if (!match) {
+            return Promise.resolve(failure('Match not found.'));
+        }
+
+        if (match.status !== 'completed') {
+            return Promise.resolve(failure(
+                'Match is not completed; nothing to reopen.'
+            ));
+        }
+
+        var targetTournamentId = normaliseId(tournamentId);
+        var targetRoundId = normaliseId(roundId);
+        var targetMatchId = normaliseId(matchId);
+
+        return executeMutation({
+            validate: function(appData) {
+                var snapshotRound = findRoundInSnapshot(
+                    appData, targetTournamentId, targetRoundId
+                );
+                if (!snapshotRound) {
+                    return {
+                        valid: false,
+                        message: 'Round no longer exists.'
+                    };
+                }
+                var snapshotMatch = Schema.findMatchByIdInternal(
+                    snapshotRound,
+                    targetMatchId
+                );
+                if (!snapshotMatch) {
+                    return {
+                        valid: false,
+                        message: 'Match no longer exists.'
+                    };
+                }
+                if (snapshotMatch.status !== 'completed') {
+                    return {
+                        valid: false,
+                        message:
+                            'Match is not completed; nothing to reopen.'
+                    };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var snapshotTournament = findTournamentInSnapshot(
+                    appData, targetTournamentId
+                );
+                if (!snapshotTournament) {
+                    throw new Error(
+                        'Tournament not found in data store.'
+                    );
+                }
+                var snapshotRound = Schema.findRoundByIdInternal(
+                    snapshotTournament, targetRoundId
+                );
+                if (!snapshotRound ||
+                    !Array.isArray(snapshotRound.matches)) {
+                    throw new Error(
+                        'Round not found in data store.'
+                    );
+                }
+
+                var idx = Schema.findMatchIndexById(
+                    snapshotRound,
+                    targetMatchId
+                );
+                if (idx === -1) {
+                    throw new Error(
+                        'Match not found in data store.'
+                    );
+                }
+
+                var liveMatch = snapshotRound.matches[idx];
+                if (!liveMatch || liveMatch.status !== 'completed') {
+                    throw new Error(
+                        'Match is not completed; nothing to reopen.'
+                    );
+                }
+
+                // ---- Reverse eliminations keyed to this match ----
+                // Runs BEFORE the status flip, so the reversal sees
+                // the same state that completeMatch wrote.
+                var reversal = EliminationCascade
+                    .reverseMatchEliminations(
+                        appData,
+                        snapshotTournament,
+                        targetMatchId
+                    );
+
+                // ---- Flip the match back to pending ----
+                // Results are preserved. The user is editing, not
+                // restarting. If they want a blank slate, they clear
+                // individual fields in the form and save.
+                liveMatch.status = 'pending';
+
+                // ---- Reconcile round status ----
+                var reconciled = reconcileRoundStatus(snapshotRound);
+
+                return {
+                    match: liveMatch,
+                    roundReconciled: reconciled,
+                    eliminationsReversed: reversal.reversed,
+                    reversedCharacterIds: reversal.characterIds
+                };
+            },
+            logMessage: function(result) {
+                if (result && result.eliminationsReversed > 0) {
+                    return 'Reopened match (reversed ' +
+                        result.eliminationsReversed +
+                        ' elimination(s))';
+                }
+                return 'Reopened match';
+            },
+            successMessage: 'Match reopened. You can now edit it.',
+            failureMessage: 'Failed to reopen match.'
+        });
+    }
+
+    // ============================================================
     // PUBLIC COMMAND - Generate Matches
     // ============================================================
     //
@@ -1692,10 +1896,6 @@
     //   mutate callback, from the snapshot, not from the live store.
     //   Two rapid calls cannot generate overlapping matches from the
     //   same pool because each transaction sees the other's writes.
-    //
-    //   The pre-flight phase validates only the round's declared
-    //   configuration (matchSize, isPairExam, matchType). It does not
-    //   compute the pool; that would be wasted work.
 
     function generateMatches(tournamentId, roundId, options) {
         options = options || {};
@@ -1980,6 +2180,7 @@
         removeMatch: removeMatch,
         updateMatch: updateMatch,
         completeMatch: completeMatch,
+        reopenMatch: reopenMatch,
         generateMatches: generateMatches,
 
         isEligibleForNewMatch: isEligibleForNewMatch,
@@ -2020,6 +2221,7 @@
             'removeMatch',
             'updateMatch',
             'completeMatch',
+            'reopenMatch',
             'generateMatches',
             'isEligibleForNewMatch',
             'getEligibleParticipants',
