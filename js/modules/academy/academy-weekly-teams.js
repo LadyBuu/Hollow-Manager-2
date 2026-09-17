@@ -33,7 +33,7 @@
  *   - getOrphanAcademicTeams()
  *   - suggestClassForTeam(teamId)
  *
- * WRITES (v22):
+ * WRITES (v24):
  *   - ensureWindow(classId, teamId, week)
  *       Creates the weekly-team window record if it does not exist;
  *       otherwise widens it to include the week. Does NOT shrink.
@@ -44,6 +44,11 @@
  *       window for this team from every class bucket first.
  *   - addMember(classId, teamId, charId, week)
  *   - endMembership(classId, teamId, charId, effectiveWeek)
+ *   - [FIX-W1] updateMemberWindow(classId, teamId, charId, updates)
+ *       Edit the member's own joinPeriod / leavePeriod fields
+ *       directly. Accepts either field as undefined (leave alone),
+ *       empty (unbounded), or a week value. Used by the weekly-team
+ *       member manager's editable period inputs.
  *   - purgeMemberRecords(classId, teamId, charId)
  *   - removeTeamRecord(classId, teamId)
  *   - clearClassWindows(classId)
@@ -145,7 +150,7 @@
 
     window.__academyWeeklyTeamsLoaded = true;
 
-    diag('Module loaded (v22, no local member array, class-validated).');
+    diag('Module loaded (v24, no local member array, class-validated, editable windows).');
 
     // ============================================================
     // CONSTANTS
@@ -1217,6 +1222,211 @@
         });
     }
 
+    // ============================================================
+    // [FIX-W1] updateMemberWindow
+    // ============================================================
+    //
+    // Direct edit of a member entry's joinPeriod / leavePeriod.
+    //
+    // CONTRACT:
+    //   updates.joinPeriod / updates.leavePeriod are each:
+    //     undefined — leave that field alone.
+    //     null or '' — clear it (unbounded on that side).
+    //     number or numeric string in [MIN_WEEK, MAX_WEEK] — set it,
+    //       canonicalised to a string.
+    //
+    //   If both are undefined, this is a no-op (success: true with
+    //   { changed: false }). No write is performed.
+    //
+    //   If, after applying the updates, BOTH fields are empty, the
+    //   mutation is rejected: a member entry with no bounds at all
+    //   is meaningless. The caller must supply at least one bound.
+    //
+    //   If leavePeriod < joinPeriod with both present, the mutation
+    //   is rejected.
+    //
+    // The mutation is class-scoped: the team must belong to the
+    // given class.
+
+    function updateMemberWindow(classId, teamId, charId, updates) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        if (!isNonEmptyString(teamId)) {
+            return Promise.resolve(failure('Team ID is required.'));
+        }
+        if (!isNonEmptyString(charId)) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
+        if (!isPlainObject(updates)) {
+            return Promise.resolve(failure('Updates must be an object.'));
+        }
+
+        var joinProvided = updates.joinPeriod !== undefined;
+        var leaveProvided = updates.leavePeriod !== undefined;
+
+        if (!joinProvided && !leaveProvided) {
+            // No-op. Report success without a write.
+            return Promise.resolve(success({
+                changed: false,
+                teamId: String(teamId),
+                characterId: String(charId)
+            }));
+        }
+
+        // Canonicalise each provided field.
+        // '' or null → '' (unbounded).
+        // Anything else → must parse as a valid week.
+        var canonicalJoin;
+        var canonicalLeave;
+
+        if (joinProvided) {
+            canonicalJoin = canonicaliseMemberBound(updates.joinPeriod);
+            if (canonicalJoin === null) {
+                return Promise.resolve(
+                    failure('Join week must be blank or between ' +
+                        MIN_WEEK + ' and ' + MAX_WEEK + '.')
+                );
+            }
+        }
+
+        if (leaveProvided) {
+            canonicalLeave = canonicaliseMemberBound(updates.leavePeriod);
+            if (canonicalLeave === null) {
+                return Promise.resolve(
+                    failure('Leave week must be blank or between ' +
+                        MIN_WEEK + ' and ' + MAX_WEEK + '.')
+                );
+            }
+        }
+
+        var targetClass = String(classId);
+        var targetTeam = String(teamId);
+        var targetChar = String(charId);
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return { valid: false, message: 'Application data is not available.' };
+                }
+                var classError = validateTeamClassInSnapshot(
+                    appData, targetTeam, targetClass
+                );
+                if (classError) {
+                    return { valid: false, message: classError };
+                }
+
+                var team = findTeamInSnapshot(appData, targetTeam);
+                if (!team) {
+                    return { valid: false, message: 'Team no longer exists.' };
+                }
+
+                var member = findMemberInTeam(team, targetChar);
+                if (!member) {
+                    return { valid: false, message: 'Member not found on this team.' };
+                }
+
+                // Proposed state after applying the updates.
+                var proposedJoin = joinProvided
+                    ? canonicalJoin
+                    : (member.joinPeriod === undefined ||
+                       member.joinPeriod === null
+                        ? ''
+                        : String(member.joinPeriod));
+
+                var proposedLeave = leaveProvided
+                    ? canonicalLeave
+                    : (member.leavePeriod === undefined ||
+                       member.leavePeriod === null
+                        ? ''
+                        : String(member.leavePeriod));
+
+                if (proposedJoin === '' && proposedLeave === '') {
+                    return {
+                        valid: false,
+                        message: 'Set at least one of Join or Leave.'
+                    };
+                }
+
+                if (proposedJoin !== '' && proposedLeave !== '') {
+                    var jn = parseInt(proposedJoin, 10);
+                    var lv = parseInt(proposedLeave, 10);
+                    if (!isNaN(jn) && !isNaN(lv) && lv < jn) {
+                        return {
+                            valid: false,
+                            message: 'Leave week cannot be before join week.'
+                        };
+                    }
+                }
+
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var team = findTeamInSnapshot(appData, targetTeam);
+                if (!team) {
+                    throw new Error('Team not found in data store.');
+                }
+
+                var member = findMemberInTeam(team, targetChar);
+                if (!member) {
+                    throw new Error('Member not found on team.');
+                }
+
+                var changed = false;
+
+                if (joinProvided && member.joinPeriod !== canonicalJoin) {
+                    member.joinPeriod = canonicalJoin;
+                    changed = true;
+                }
+                if (leaveProvided && member.leavePeriod !== canonicalLeave) {
+                    member.leavePeriod = canonicalLeave;
+                    changed = true;
+                }
+
+                if (changed) {
+                    team.updatedAt = new Date().toISOString();
+
+                    var store = getStoreFromSnapshot(appData);
+                    var record = getTeamRecordInternalFromStore(
+                        store, targetClass, targetTeam
+                    );
+                    if (record) {
+                        record.updatedAt = new Date().toISOString();
+                    }
+                }
+
+                return {
+                    changed: changed,
+                    teamId: targetTeam,
+                    characterId: targetChar,
+                    joinPeriod: member.joinPeriod,
+                    leavePeriod: member.leavePeriod
+                };
+            },
+            logMessage: 'Updated member window on team ' + targetTeam +
+                ' for ' + targetChar,
+            successMessage: 'Member period updated.',
+            failureMessage: 'Failed to update member period.'
+        });
+    }
+
+    /**
+     * Canonicalise a member bound value.
+     * undefined/null/'' → '' (unbounded).
+     * Number or numeric string → canonical string in bounds.
+     * Invalid → null.
+     */
+    function canonicaliseMemberBound(value) {
+        if (value === undefined || value === null || value === '') {
+            return '';
+        }
+        var n = parseWeekStrict(value);
+        if (n === null) {
+            return null;
+        }
+        return String(n);
+    }
+
     function purgeMemberRecords(classId, teamId, charId) {
         if (!isNonEmptyString(classId) ||
             !isNonEmptyString(teamId) ||
@@ -1576,6 +1786,7 @@
         assignTeamToClass: assignTeamToClass,
         addMember: addMember,
         endMembership: endMembership,
+        updateMemberWindow: updateMemberWindow,
         purgeMemberRecords: purgeMemberRecords,
         removeTeamRecord: removeTeamRecord,
         clearClassWindows: clearClassWindows,
@@ -1601,7 +1812,7 @@
             'isPersistentTeamVisibleInWeek',
             'getOrphanAcademicTeams', 'suggestClassForTeam',
             'ensureWindow', 'setWindow', 'assignTeamToClass',
-            'addMember', 'endMembership',
+            'addMember', 'endMembership', 'updateMemberWindow',
             'purgeMemberRecords', 'removeTeamRecord', 'clearClassWindows',
             'clearAllMembershipsForClass',
             'endCharacterMemberships', 'stripClassRefs', 'stripTeamRefs'
