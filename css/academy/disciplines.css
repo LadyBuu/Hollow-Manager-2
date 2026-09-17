@@ -1,0 +1,478 @@
+/**
+ * css/academy/discipline.css - Academy Disciplines sub-view
+ *
+ * The Disciplines view of the Academy tab. Rendered by
+ * academy-discipline-view.js.
+ *
+ * The shell (academy.css) provides the shared layout, sidebar,
+ * list rows, filters, and search input. This file adds the pieces
+ * specific to the discipline editor.
+ *
+ * Covers:
+ *   - Add Discipline button
+ *   - Sidebar row type badges and meta
+ *   - Editor header and meta
+ *   - Editor field grid and inputs
+ *   - Instructor multi-select
+ *   - Grade scheme section (preset picker, band table, preview)
+ *   - Assessment weights section (per-type grid)
+ *   - Editor actions (save / cancel / delete)
+ *   - Field error state
+ *
+ * Load order: shared.css → academy.css → academy/discipline.css
+ */
+
+/* ============================================================
+   ADD DISCIPLINE BUTTON
+   ============================================================ */
+
+.academy-add-discipline-btn {
+    display: block;
+    width: 100%;
+    margin-bottom: 8px;
+    padding: 6px 12px;
+    font-size: 0.75rem;
+}
+
+/* ============================================================
+   SIDEBAR ROW DECORATION
+   ============================================================
+   The shell styles the row container (.academy-discipline-row)
+   and the name (.academy-discipline-name). This file adds the
+   type badge and the meta line beneath the name.
+ */
+
+.academy-discipline-type-badge {
+    display: inline-block;
+    font-size: 0.55rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 8px;
+    border: 1px solid;
+    white-space: nowrap;
+}
+
+.academy-discipline-type-mandatory {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.academy-discipline-type-optional {
+    color: var(--info);
+    background: var(--info-soft);
+    border-color: var(--info);
+}
+
+.academy-discipline-type-unknown {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+/* ============================================================
+   EDITOR HEADER
+   ============================================================ */
+
+.academy-discipline-editor-header {
+    padding-bottom: 10px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-discipline-editor-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+
+.academy-discipline-editor-title {
+    font-size: 1.05rem;
+    color: var(--accent);
+    margin: 0;
+    flex: 1;
+    min-width: 0;
+}
+
+.academy-discipline-editor-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+}
+
+.academy-discipline-editor-meta-item .meta-label {
+    color: var(--text-dim);
+    font-size: 0.65rem;
+}
+
+/* ============================================================
+   EDITOR FIELD GRID
+   ============================================================ */
+
+.academy-discipline-editor-section {
+    margin-bottom: 14px;
+}
+
+.academy-discipline-editor-section:last-child {
+    margin-bottom: 0;
+}
+
+.academy-discipline-editor-section-title {
+    font-size: 0.85rem;
+    color: var(--accent);
+    margin: 0 0 8px 0;
+}
+
+.academy-discipline-editor-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+.academy-discipline-editor-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.academy-discipline-editor-field-wide {
+    grid-column: 1 / -1;
+}
+
+.academy-discipline-editor-field label {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    font-weight: 500;
+}
+
+/* ---------- Editor inputs ---------- */
+
+.academy-discipline-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.academy-discipline-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.academy-discipline-input:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* ---------- Instructor multi-select ---------- */
+
+select.academy-discipline-instructors {
+    min-height: 120px;
+    resize: vertical;
+}
+
+/* ============================================================
+   FIELD ERRORS
+   ============================================================ */
+
+.academy-field-has-error {
+    border-color: var(--danger) !important;
+}
+
+.academy-field-error {
+    color: var(--danger);
+    font-size: 0.65rem;
+    margin: 2px 0 0 0;
+    line-height: 1.3;
+}
+
+/* ============================================================
+   GRADE SCHEME SECTION
+   ============================================================ */
+
+.academy-discipline-scheme-section {
+    padding: 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+}
+
+.academy-discipline-scheme-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding-bottom: 6px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-discipline-scheme-header .academy-discipline-editor-section-title {
+    margin: 0;
+}
+
+/* ---------- Preset picker row ---------- */
+
+.academy-discipline-preset-row {
+    display: flex;
+    gap: 6px;
+    align-items: stretch;
+}
+
+.academy-discipline-preset-row select {
+    flex: 1;
+    min-width: 0;
+}
+
+.academy-discipline-preset-row button {
+    flex: 0 0 auto;
+    font-size: 0.65rem;
+    padding: 4px 10px;
+    white-space: nowrap;
+}
+
+/* ---------- Band editor ---------- */
+
+.academy-discipline-scheme-bands {
+    margin-top: 10px;
+}
+
+.academy-discipline-scheme-bands-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.academy-discipline-scheme-bands-title {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.academy-discipline-scheme-bands-header button {
+    font-size: 0.65rem;
+    padding: 3px 10px;
+}
+
+.academy-discipline-scheme-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.7rem;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.academy-discipline-scheme-table thead th {
+    text-align: left;
+    padding: 5px 8px;
+    background: var(--panel);
+    color: var(--text-dim);
+    font-size: 0.6rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+}
+
+.academy-discipline-scheme-table tbody td {
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--border-soft);
+    vertical-align: top;
+}
+
+.academy-discipline-scheme-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.academy-discipline-scheme-table .scheme-label-col {
+    width: 45%;
+}
+
+.academy-discipline-scheme-table .scheme-min-col {
+    width: 30%;
+}
+
+.academy-discipline-scheme-table .scheme-actions-col {
+    width: 25%;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.academy-discipline-band-label,
+.academy-discipline-band-min {
+    width: 100%;
+}
+
+.academy-discipline-scheme-table .scheme-actions-col button {
+    font-size: 0.65rem;
+    padding: 3px 8px;
+}
+
+/* ---------- Live preview ---------- */
+
+.academy-discipline-scheme-preview {
+    margin-top: 10px;
+    padding: 6px 10px;
+    background: var(--bg);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    font-size: 0.7rem;
+    line-height: 1.4;
+}
+
+.academy-discipline-scheme-preview-label {
+    color: var(--text-dim);
+    font-weight: 600;
+    margin-right: 4px;
+}
+
+.academy-discipline-scheme-preview-text {
+    color: var(--text);
+}
+
+/* ============================================================
+   ASSESSMENT WEIGHTS SECTION
+   ============================================================ */
+
+.academy-discipline-weights-section {
+    padding: 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+}
+
+.academy-discipline-weights-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding-bottom: 6px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border-soft);
+    flex-wrap: wrap;
+}
+
+.academy-discipline-weights-header .academy-discipline-editor-section-title {
+    margin: 0;
+}
+
+.academy-discipline-weights-header button {
+    font-size: 0.65rem;
+    padding: 3px 10px;
+    white-space: nowrap;
+}
+
+.academy-discipline-weights-hint {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    margin: 0 0 8px 0;
+    line-height: 1.4;
+}
+
+.academy-discipline-weights-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 8px;
+}
+
+.academy-discipline-weights-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.academy-discipline-weights-field label {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.academy-discipline-weight-input {
+    width: 100%;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+   EDITOR ACTIONS
+   ============================================================ */
+
+.academy-discipline-editor-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-soft);
+}
+
+.academy-discipline-editor-actions button {
+    font-size: 0.75rem;
+    padding: 6px 14px;
+}
+
+.academy-discipline-delete-btn {
+    margin-left: auto;
+}
+
+/* ============================================================
+   MOBILE
+   ============================================================ */
+
+@media (max-width: 600px) {
+    .academy-discipline-editor-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .academy-discipline-preset-row {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .academy-discipline-preset-row button {
+        width: 100%;
+    }
+
+    .academy-discipline-editor-actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .academy-discipline-editor-actions button {
+        width: 100%;
+    }
+
+    .academy-discipline-delete-btn {
+        margin-left: 0;
+    }
+
+    .academy-discipline-scheme-table .scheme-label-col {
+        width: 50%;
+    }
+
+    .academy-discipline-scheme-table .scheme-actions-col {
+        width: 20%;
+    }
+
+    .academy-discipline-weights-grid {
+        grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+    }
+}
