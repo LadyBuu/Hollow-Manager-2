@@ -1,0 +1,327 @@
+/**
+ * css/academy/location.css - Academy Locations sub-view
+ *
+ * The Locations view of the Academy tab. Rendered by
+ * academy-location-view.js.
+ *
+ * The shell (academy.css) provides the shared layout, sidebar,
+ * list rows, filters, search input, and the detail-panel frame.
+ * This file adds the location-specific pieces.
+ *
+ * Covers:
+ *   - Add Location button
+ *   - Sidebar row type badges
+ *   - Detail header (title, badge, meta)
+ *   - Schedule section and table
+ *   - Mobile collapse for the schedule table
+ *
+ * Load order: shared.css → academy.css → academy/location.css
+ */
+
+/* ============================================================
+   ADD LOCATION BUTTON
+   ============================================================ */
+
+.academy-add-location-btn {
+    display: block;
+    width: 100%;
+    margin-bottom: 8px;
+    padding: 6px 12px;
+    font-size: 0.75rem;
+}
+
+/* ============================================================
+   TYPE BADGES
+   ============================================================
+   Colour mapping per location type. The base shape lives here
+   because it is location-specific; nothing else in the Academy
+   uses the exact set of type values.
+ */
+
+.academy-location-type-badge {
+    display: inline-block;
+    font-size: 0.55rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 8px;
+    border: 1px solid;
+    white-space: nowrap;
+}
+
+.academy-location-type-classroom {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.academy-location-type-lab {
+    color: var(--info);
+    background: var(--info-soft);
+    border-color: var(--info);
+}
+
+.academy-location-type-gym {
+    color: var(--warning);
+    background: var(--warning-soft);
+    border-color: var(--warning);
+}
+
+.academy-location-type-field {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.academy-location-type-hall {
+    color: var(--info);
+    background: var(--info-soft);
+    border-color: var(--info);
+}
+
+.academy-location-type-auditorium {
+    color: var(--warning);
+    background: var(--warning-soft);
+    border-color: var(--warning);
+}
+
+.academy-location-type-library {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.academy-location-type-office {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+.academy-location-type-other {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+/* ============================================================
+   DETAIL HEADER
+   ============================================================ */
+
+.academy-location-detail-header {
+    padding-bottom: 10px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-location-detail-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+
+.academy-location-detail-title {
+    font-size: 1.05rem;
+    color: var(--accent);
+    margin: 0;
+    flex: 1;
+    min-width: 0;
+}
+
+.academy-location-detail-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-size: 0.7rem;
+    margin-bottom: 8px;
+}
+
+.academy-location-detail-meta-item .meta-label {
+    color: var(--text-dim);
+    font-size: 0.65rem;
+}
+
+.academy-location-detail-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+/* ============================================================
+   SCHEDULE SECTION
+   ============================================================ */
+
+.academy-location-detail-section {
+    margin-bottom: 14px;
+}
+
+.academy-location-detail-section:last-child {
+    margin-bottom: 0;
+}
+
+.academy-location-detail-section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding-bottom: 4px;
+    margin-bottom: 6px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-location-detail-section-title {
+    font-size: 0.85rem;
+    color: var(--accent);
+    margin: 0;
+    flex: 1;
+    min-width: 0;
+}
+
+.academy-location-detail-section-subtitle {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+
+.academy-location-detail-section-count {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    padding: 1px 8px;
+    border-radius: 10px;
+    white-space: nowrap;
+}
+
+/* ============================================================
+   SCHEDULE TABLE
+   ============================================================ */
+
+.academy-location-schedule {
+    /* reuses .academy-location-detail-section */
+}
+
+.academy-location-schedule-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.72rem;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.academy-location-schedule-table thead th {
+    text-align: left;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    color: var(--text-dim);
+    font-size: 0.62rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+}
+
+.academy-location-schedule-table tbody td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border-soft);
+    vertical-align: middle;
+}
+
+.academy-location-schedule-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.academy-location-schedule-row:hover {
+    background: var(--panel-alt);
+}
+
+/* ---------- Columns ---------- */
+
+.academy-location-schedule-table .day-col {
+    width: 110px;
+    color: var(--text);
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.academy-location-schedule-table .time-col {
+    width: 90px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.academy-location-schedule-table .discipline-col {
+    /* Flexible */
+    color: var(--text);
+}
+
+.academy-location-schedule-table .duration-col {
+    width: 80px;
+    text-align: right;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+/* ---------- Label suffix ---------- */
+
+.academy-location-schedule-label {
+    display: inline-block;
+    margin-left: 4px;
+    padding: 1px 6px;
+    background: var(--panel-alt);
+    border-radius: 4px;
+    font-size: 0.62rem;
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+/* ============================================================
+   MOBILE
+   ============================================================ */
+
+@media (max-width: 600px) {
+    .academy-location-detail-title {
+        font-size: 0.95rem;
+    }
+
+    .academy-location-detail-actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .academy-location-detail-actions button.small {
+        width: 100%;
+    }
+
+    .academy-location-schedule-table {
+        font-size: 0.68rem;
+    }
+
+    .academy-location-schedule-table thead th,
+    .academy-location-schedule-table tbody td {
+        padding: 4px 6px;
+    }
+
+    .academy-location-schedule-table .day-col {
+        width: 80px;
+    }
+
+    .academy-location-schedule-table .time-col {
+        width: 60px;
+    }
+
+    .academy-location-schedule-table .duration-col {
+        width: 55px;
+    }
+
+    .academy-location-schedule-label {
+        display: block;
+        margin-left: 0;
+        margin-top: 2px;
+    }
+}
