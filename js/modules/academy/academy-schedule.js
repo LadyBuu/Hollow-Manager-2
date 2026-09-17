@@ -1,101 +1,166 @@
 /**
- * modules/academy/academy-schedule.js - Academy Schedule
- * Academy's integration boundary with Calendar for scheduling operations
+ * js/modules/academy/academy-schedule.js - Academy Schedule Coordinator
  *
  * Path: js/modules/academy/academy-schedule.js
  *
- * This module provides Academy-specific scheduling operations that
- * delegate to the Calendar domain for actual schedule mechanics.
+ * The compound-mutation coordinator for the Academy teaching model.
  *
- * IMPORTANT:
- *   - This is an INTEGRATION/ORCHESTRATION layer, not a scheduling domain
- *   - Uses CalendarProvider for all schedule operations
- *   - Calendar owns schedule mechanics (ScheduleCore)
- *   - No direct window.data access
- *   - No direct CalendarCore/ScheduleCore imports (uses provider)
- *   - All operations are candidate-based: validate → delegate
- *   - Invalid inputs are REJECTED (operation returns null/false)
- *   - This module does NOT call saveData()
+ * WHAT THIS MODULE OWNS:
+ *   Operations that touch two or more of the teaching-model stores
+ *   in a single transaction:
  *
- * WRITE vs READ CONTRACT:
- *   - WRITE operations return Promise<{ success, data?, message? }>.
- *     They delegate to the provider's Promise-based methods, which
- *     route through MutationPipeline. Persistence, rollback, and
- *     activity logging are owned by the pipeline.
- *   - READ operations remain SYNCHRONOUS. They delegate to the
- *     provider's read methods, which read window.data.curriculum
- *     directly.
- *   - Callers MUST treat writes as Promises. Do not test
- *     `if (result.success)` on a write — test it on the resolved
- *     value: `result.then(r => { if (r.success) ... })`.
+ *     addClassDiscipline        create a class-discipline and enrol
+ *                               every active student
+ *     removeClassDiscipline     end a class-discipline and every
+ *                               downstream window (groups, sessions,
+ *                               enrolments)
+ *     scheduleGroupMeeting      create a teaching session with a
+ *                               blocking collision check
+ *     addStudentToTeachingGroup add a member to a group, validating
+ *                               enrolment and elimination
+ *     dropStudentFromClass      end every enrolment and membership
+ *                               for a character in a class, and
+ *                               remove the classId from the character
  *
- * NO CURRENT-WEEK FALLBACK:
- *   Reads and writes REQUIRE a valid week. When the week is invalid,
- *   reads return empty results (not week 1 data), and writes are
- *   rejected. Callers that want the "current week" behavior fetch
- *   window.data.currentWeek themselves and pass it in. This module
- *   does not silently substitute a default.
+ * WHAT THIS MODULE DOES NOT OWN:
+ *   - Single-store reads             (AcademyClassDisciplines,
+ *                                     AcademyEnrolments, etc.)
+ *   - Single-store writes            (the same modules)
+ *   - Projection                     (AcademyTeachingProjector)
+ *   - Collision reporting            (AcademyTeachingCollisions)
+ *   - Validation warnings            (AcademyTeachingValidation)
+ *   - Rendering                      (views)
+ *   - Calendar provider bridging     (retired)
  *
- * NO ENRICHMENT:
- *   This module does not resolve discipline names or instructor
- *   names. Schedule entries are returned with raw IDs. Callers that
- *   need display enrichment compose the returned data with
- *   AcademyDisciplines and CharacterQueries themselves, or via
- *   AcademyAggregator.
+ * TRANSACTION MODEL:
+ *   Every public function here is a single MutationPipeline.performMutation
+ *   call. It either fully succeeds or fully rolls back. Partial success
+ *   is not a possible outcome.
  *
- *   Rationale: this module is the scheduling boundary. Pulling
- *   AcademyDisciplines or CharacterQueries into it couples the
- *   schedule layer to the entity layer for display reasons. The
- *   aggregator is where that composition belongs.
+ *   Reads performed during validation use the pipeline's appData snapshot,
+ *   not window.data. Because MutationPipeline serialises mutations, the
+ *   snapshot is stable for the duration of the transaction.
  *
- * PROVIDER INTERFACE:
- *   The provider MUST expose the following methods.
- *   Writes return Promise. Reads return synchronously.
+ * WEEK SEMANTICS (INCLUSIVE BOUNDS):
+ *   All week ranges are inclusive on both ends.
  *
- *   Writes (Promise-based):
- *     setStudentSlot(studentId, week, day, hour, disciplineId, duration, metadata)
- *     removeStudentSlot(studentId, week, day, hour, duration)
- *     clearStudentSchedule(studentId, week)
- *     duplicateStudentSchedule(studentId, fromWeek, toWeek)
- *     setRestDays(studentId, week, days)
- *     removeRestDays(studentId, week)
- *     setSlotMetadata(studentId, week, day, hour, metadata)
- *     setLocationClass(locationId, week, day, hour, disciplineId, duration, metadata)
- *     removeLocationClass(locationId, week, day, hour)
+ *   A class-discipline with startWeek: 1 and endWeek: 10 runs weeks 1-10.
+ *   An enrolment with startWeek: 1 and endWeek: 10 covers weeks 1-10.
+ *   A membership with startWeek: 1 and endWeek: 10 is active weeks 1-10.
  *
- *   Reads (synchronous):
- *     getStudentSchedule(studentId, week)
- *     getStudentRestDays(studentId, week)
- *     getSlotMetadata(studentId, week, day, hour)
- *     hasConflict(schedule, day, hour, duration)
- *     findClassStart(schedule, metadata, studentId, week, day, hour)
+ *   `endWeek === null` means "ongoing" (no bound).
  *
- * METADATA MAP CONTRACT:
- *   - The `metadata` argument to `findClassStart` is the FULL metadata map,
- *     keyed `${entityId}_${week}_${day}_${hour}`. findClassStart walks
- *     forward from the given hour looking up candidate metadata to
- *     determine how far a multi-hour class extends.
- *   - The provider only exposes single-slot metadata lookup
- *     (`getSlotMetadata(id, week, day, hour)`), so this module
- *     reconstructs the full map on demand by enumerating the
- *     schedule's occupied slots and calling getSlotMetadata for each.
- *     The reconstruction is bounded by the student's own schedule.
+ *   The "end this effective week N" convention is:
  *
- * getStudentClasses SEMANTICS:
- *   - Returns ONE entry per occupied slot. A class that spans hours
- *     9, 10, 11 appears as three entries (one per hour).
- *   - Each entry carries day, hour, disciplineId, duration, label,
- *     groupLabel, and instructorId from metadata. It does NOT carry
- *     disciplineName or instructorName — enrichment is the caller's
- *     concern.
- *   - This matches what the CalendarAggregator produces for grid
- *     rendering, minus the display-name enrichment.
+ *       endWeek = N - 1
  *
- * DEPENDENCIES:
- *   - window.AcademyConstants (from academy-constants.js) - MANDATORY
- *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
- *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
- *   - window.CalendarProvider (via configure()) - MANDATORY
+ *   Because endWeek is inclusive. If you say "stop at week 10",
+ *   the record runs through week 9. If you say "the offering
+ *   finished at the end of week 10", you pass effectiveWeek = 11.
+ *
+ *   This is the same convention used by every end* helper in the
+ *   teaching-model modules (AcademyClassDisciplines.endClassDiscipline,
+ *   AcademyTeachingGroups.endGroup, AcademyTeachingSessions.endSession,
+ *   AcademyEnrolments.leave).
+ *
+ * ROSTER SEMANTICS:
+ *   "Active students in a class" is defined as:
+ *
+ *     CharacterQueries.getCharacters()
+ *       filtered by character.classIds.includes(classId)
+ *       minus the class's instructorId
+ *
+ *   This is what AcademyAggregator.getClassStudentsViewModel returns.
+ *   The coordinator uses that function so the roster in the auto-
+ *   enrolment path and the roster in the UI always agree.
+ *
+ * ELIMINATION SEMANTICS:
+ *   A student eliminated in week N is available during week N and
+ *   unavailable from week N+1 onward. This is the same boundary rule
+ *   used everywhere else in the codebase (EliminationQueries owns it).
+ *
+ *   An auto-enrolment skips a student when:
+ *
+ *     isCharacterEliminatedByWeek(charId, classDisciplineStartWeek)
+ *
+ *   is true. Elimination at exactly the start week does not skip the
+ *   student; they are still available during that week.
+ *
+ * COLLISION POLICY:
+ *   When scheduling a group meeting, the coordinator checks for:
+ *
+ *     - Instructor collision    (same instructor, overlapping time)
+ *     - Student collision       (same student, overlapping time)
+ *
+ *   Both are BLOCKING by default. When one is detected, the mutation
+ *   is rejected without writing. The caller receives a structured
+ *   result with `reason: 'instructor_collision'` or `'student_collision'`,
+ *   plus the details needed to show a confirmation modal. If the user
+ *   confirms, the caller re-invokes with `allowCollisions: true`.
+ *
+ *   Location collisions are NOT checked. Rooms may be double-booked
+ *   without warning, error, or constraint.
+ *
+ *   Two collision modes are supported:
+ *
+ *     collisionMode: 'block'   (default) — check and reject on collision
+ *     collisionMode: 'ignore'            — skip the check entirely
+ *
+ *   'ignore' exists for tests and for scripted setup paths.
+ *   Production UI code uses the default 'block'.
+ *
+ * STORE SHAPES (for reference):
+ *   academy.classDisciplines[classId][disciplineId] = {
+ *     classId, disciplineId, startWeek, endWeek,
+ *     weeklyHours, weight, gradeSchemeId, assessmentWeights,
+ *     mandatory, createdAt, updatedAt
+ *   }
+ *
+ *   academy.enrolments[classId][charId] = [
+ *     { disciplineId, startWeek, endWeek }
+ *   ]
+ *
+ *   academy.teachingGroups[groupId] = {
+ *     id, classId, disciplineId, instructorId,
+ *     groupNumber, customName,
+ *     members: [{ characterId, startWeek, endWeek }],
+ *     startWeek, endWeek, createdAt, updatedAt
+ *   }
+ *
+ *   academy.teachingSessions[sessionId] = {
+ *     id, groupId, day, startTime, duration, locationId,
+ *     startWeek, endWeek, createdAt, updatedAt
+ *   }
+ *
+ * DEPENDENCIES (MANDATORY):
+ *   - window.ObjectUtils
+ *   - window.ValidationUtils
+ *   - window.CalendarValidation
+ *   - window.CalendarConstants
+ *   - window.MutationPipeline
+ *   - window.IdUtils
+ *   - window.AcademyClasses
+ *   - window.AcademyDisciplines
+ *   - window.AcademyClassDisciplines
+ *   - window.AcademyEnrolments
+ *   - window.AcademyTeachingGroups
+ *   - window.AcademyTeachingSessions
+ *   - window.AcademyAggregator
+ *   - window.CharacterQueries
+ *   - window.EliminationQueries
+ *
+ * USAGE:
+ *   AcademySchedule.addClassDiscipline('class_1', 'disc_en', {
+ *       startWeek: 1, endWeek: 24, weeklyHours: 3, mandatory: true
+ *   }).then(function(result) { ... });
+ *
+ *   AcademySchedule.scheduleGroupMeeting('tgroup_1', {
+ *       day: 1, startTime: 9, duration: 2, startWeek: 1, endWeek: 12
+ *   }).then(function(result) {
+ *       if (!result.success && result.reason === 'instructor_collision') {
+ *           // Show the confirmation modal using result.data.collision
+ *       }
+ *   });
  */
 
 (function() {
@@ -104,156 +169,121 @@
     if (window.__academyScheduleLoaded) {
         return;
     }
+
+    // ============================================================
+    // MANDATORY DEPENDENCIES
+    // ============================================================
+
+    var ObjectUtils = window.ObjectUtils;
+    var ValidationUtils = window.ValidationUtils;
+    var CalendarValidation = window.CalendarValidation;
+    var CalendarConstants = window.CalendarConstants;
+    var MutationPipeline = window.MutationPipeline;
+    var IdUtils = window.IdUtils;
+    var AcademyClasses = window.AcademyClasses;
+    var AcademyDisciplines = window.AcademyDisciplines;
+    var AcademyClassDisciplines = window.AcademyClassDisciplines;
+    var AcademyEnrolments = window.AcademyEnrolments;
+    var AcademyTeachingGroups = window.AcademyTeachingGroups;
+    var AcademyTeachingSessions = window.AcademyTeachingSessions;
+    var AcademyAggregator = window.AcademyAggregator;
+    var CharacterQueries = window.CharacterQueries;
+    var EliminationQueries = window.EliminationQueries;
+
+    var _missing = [];
+
+    if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
+        _missing.push('ObjectUtils.deepClone');
+    }
+    if (!ValidationUtils || typeof ValidationUtils.isNonEmptyString !== 'function') {
+        _missing.push('ValidationUtils.isNonEmptyString');
+    }
+    if (!CalendarValidation || typeof CalendarValidation.parseWeek !== 'function') {
+        _missing.push('CalendarValidation.parseWeek');
+    }
+    if (!CalendarConstants ||
+        typeof CalendarConstants.MIN_WEEK !== 'number' ||
+        typeof CalendarConstants.MAX_WEEK !== 'number') {
+        _missing.push('CalendarConstants.MIN_WEEK/MAX_WEEK');
+    }
+    if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
+        _missing.push('MutationPipeline.performMutation');
+    }
+    if (!IdUtils || typeof IdUtils.generateId !== 'function') {
+        _missing.push('IdUtils.generateId');
+    }
+    if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function') {
+        _missing.push('AcademyClasses.getClass');
+    }
+    if (!AcademyDisciplines || typeof AcademyDisciplines.getDiscipline !== 'function') {
+        _missing.push('AcademyDisciplines.getDiscipline');
+    }
+    if (!AcademyClassDisciplines ||
+        typeof AcademyClassDisciplines.getClassDiscipline !== 'function') {
+        _missing.push('AcademyClassDisciplines.getClassDiscipline');
+    }
+    if (!AcademyEnrolments ||
+        typeof AcademyEnrolments.getStudentDisciplines !== 'function') {
+        _missing.push('AcademyEnrolments.getStudentDisciplines');
+    }
+    if (!AcademyTeachingGroups ||
+        typeof AcademyTeachingGroups.getGroup !== 'function') {
+        _missing.push('AcademyTeachingGroups.getGroup');
+    }
+    if (!AcademyTeachingSessions ||
+        typeof AcademyTeachingSessions.getAllSessions !== 'function') {
+        _missing.push('AcademyTeachingSessions.getAllSessions');
+    }
+    if (!AcademyAggregator ||
+        typeof AcademyAggregator.getClassStudentsViewModel !== 'function') {
+        _missing.push('AcademyAggregator.getClassStudentsViewModel');
+    }
+    if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+        _missing.push('CharacterQueries.getCharacterById');
+    }
+    if (!EliminationQueries ||
+        typeof EliminationQueries.isCharacterEliminatedByWeek !== 'function') {
+        _missing.push('EliminationQueries.isCharacterEliminatedByWeek');
+    }
+
+    if (_missing.length > 0) {
+        throw new Error(
+            '[AcademySchedule] Missing mandatory dependencies: ' +
+            _missing.join(', ')
+        );
+    }
+
     window.__academyScheduleLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
-    // ============================================================
-
-    var AcademyConstants = window.AcademyConstants;
-    var CalendarConstants = window.CalendarConstants;
-    var CalendarValidation = window.CalendarValidation;
-
-    // ============================================================
-    // CONSTANTS
+    // SECTION 2 — HELPERS
     // ============================================================
 
     var MIN_WEEK = CalendarConstants.MIN_WEEK;
     var MAX_WEEK = CalendarConstants.MAX_WEEK;
-    var MIN_DAY = CalendarConstants.MIN_DAY;
-    var MAX_DAY = CalendarConstants.MAX_DAY;
-    var MIN_HOUR = CalendarConstants.MIN_HOUR;
-    var MAX_HOUR = CalendarConstants.MAX_HOUR;
-    var CALENDAR_START_HOUR = CalendarConstants.CALENDAR_START_HOUR;
-    var CALENDAR_END_HOUR = CalendarConstants.CALENDAR_END_HOUR;
-    var MAX_DURATION = CalendarConstants.MAX_CLASS_DURATION;
-    var MIN_CLASS_DURATION = CalendarConstants.MIN_CLASS_DURATION;
-
-    // ============================================================
-    // INJECTED DEPENDENCIES
-    // ============================================================
-
-    var _calendarProvider = null;
-
-    /**
-     * Configure AcademySchedule with external dependencies.
-     *
-     * Validates the provider interface:
-     *   - Read methods must be present as functions.
-     *   - Write methods must be present as functions.
-     *   - This module does not verify that writes actually return
-     *     Promises — it trusts the contract. If a write returns a
-     *     raw value, this module wraps it in Promise.resolve so
-     *     callers always get a Promise back.
-     *
-     * @param {object} deps - { calendarProvider }
-     * @returns {boolean} True if configured successfully
-     */
-    function configure(deps) {
-        deps = deps || {};
-
-        if (!deps.calendarProvider) {
-            return false;
-        }
-
-        var required = [
-            // Reads (sync)
-            'getStudentSchedule',
-            'getStudentRestDays',
-            'getSlotMetadata',
-            'hasConflict',
-            'findClassStart',
-            // Writes (Promise)
-            'setStudentSlot',
-            'removeStudentSlot',
-            'clearStudentSchedule',
-            'duplicateStudentSchedule',
-            'setRestDays',
-            'removeRestDays',
-            'setSlotMetadata',
-            'setLocationClass',
-            'removeLocationClass'
-        ];
-
-        var missing = [];
-        for (var i = 0; i < required.length; i++) {
-            var method = required[i];
-            if (typeof deps.calendarProvider[method] !== 'function') {
-                missing.push(method);
-            }
-        }
-
-        if (missing.length > 0) {
-            console.warn('[AcademySchedule] calendarProvider missing methods:', missing.join(', '));
-            return false;
-        }
-
-        _calendarProvider = deps.calendarProvider;
-        return true;
-    }
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-
-    function checkDependencies() {
-        var missing = [];
-
-        if (!AcademyConstants) {
-            missing.push('AcademyConstants');
-        }
-
-        if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
-            missing.push('CalendarConstants.MIN_WEEK');
-        }
-
-        if (!CalendarValidation || typeof CalendarValidation.parseWeek !== 'function') {
-            missing.push('CalendarValidation.parseWeek');
-        }
-        if (!CalendarValidation || typeof CalendarValidation.parseDay !== 'function') {
-            missing.push('CalendarValidation.parseDay');
-        }
-        if (!CalendarValidation || typeof CalendarValidation.parseHour !== 'function') {
-            missing.push('CalendarValidation.parseHour');
-        }
-        if (!CalendarValidation || typeof CalendarValidation.parseDuration !== 'function') {
-            missing.push('CalendarValidation.parseDuration');
-        }
-
-        if (!_calendarProvider) {
-            missing.push('calendarProvider (call AcademySchedule.configure() first)');
-        }
-
-        if (missing.length > 0) {
-            console.warn('[AcademySchedule] Missing dependencies:', missing.join(', '));
-            return false;
-        }
-
-        return true;
-    }
-
-    // ============================================================
-    // HELPERS
-    // ============================================================
 
     function isNonEmptyString(value) {
-        return typeof value === 'string' && value.trim() !== '';
+        return ValidationUtils.isNonEmptyString(value);
     }
 
-    function parseWeek(week) {
-        return CalendarValidation.parseWeek(week);
+    function isPlainObject(value) {
+        return value !== null &&
+               typeof value === 'object' &&
+               !Array.isArray(value);
     }
 
-    function parseDay(day) {
-        return CalendarValidation.parseDay(day);
+    function isFiniteNumber(value) {
+        return typeof value === 'number' && isFinite(value);
     }
 
-    function parseHour(hour) {
-        return CalendarValidation.parseHour(hour);
-    }
-
-    function parseDuration(duration) {
-        return CalendarValidation.parseDuration(duration);
+    function deepClone(value) {
+        var result = ObjectUtils.deepClone(value);
+        if (result === value && value !== null && typeof value === 'object') {
+            throw new Error(
+                '[AcademySchedule] deepClone returned the original reference.'
+            );
+        }
+        return result;
     }
 
     function failure(message) {
@@ -265,904 +295,1464 @@
     }
 
     /**
-     * Coerce a provider write result to a Promise.
+     * Parse a week strictly. Integer or integer-string, in
+     * [MIN_WEEK, MAX_WEEK]. No coercion, no fallback.
      */
-    function asPromise(fn) {
+    function parseWeekStrict(week) {
+        var parsed = CalendarValidation.parseWeek(week);
+        if (parsed === null) {
+            return null;
+        }
+        if (parsed < MIN_WEEK || parsed > MAX_WEEK) {
+            return null;
+        }
+        return parsed;
+    }
+
+    /**
+     * Parse a week range. Returns { startWeek, endWeek } where
+     * endWeek may be null. Rejects if start is invalid, end is
+     * invalid, or end < start.
+     */
+    function parseWeekRange(startWeek, endWeek) {
+        var start = parseWeekStrict(startWeek);
+        if (start === null) {
+            return null;
+        }
+
+        if (endWeek === undefined || endWeek === null) {
+            return { startWeek: start, endWeek: null };
+        }
+
+        var end = parseWeekStrict(endWeek);
+        if (end === null) {
+            return null;
+        }
+        if (end < start) {
+            return null;
+        }
+        return { startWeek: start, endWeek: end };
+    }
+
+    /**
+     * Does the given week fall inside [startWeek, endWeek]?
+     * endWeek === null means "ongoing".
+     */
+    function weekInRange(week, startWeek, endWeek) {
+        if (startWeek === null || startWeek === undefined) {
+            return false;
+        }
+        if (week < startWeek) {
+            return false;
+        }
+        if (endWeek !== null && endWeek !== undefined && week > endWeek) {
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Do two week ranges overlap? null endWeek means "ongoing",
+     * treated as MAX_WEEK.
+     */
+    function weekRangesOverlap(startA, endA, startB, endB) {
+        if (startA === null || startA === undefined) { return false; }
+        if (startB === null || startB === undefined) { return false; }
+
+        var effEndA = (endA === null || endA === undefined) ? MAX_WEEK : endA;
+        var effEndB = (endB === null || endB === undefined) ? MAX_WEEK : endB;
+
+        return startA <= effEndB && startB <= effEndA;
+    }
+
+    /**
+     * Get the appData academy snapshot, or null.
+     */
+    function getAcademySnapshot(appData) {
+        if (!appData || typeof appData !== 'object') {
+            return null;
+        }
+        if (!appData.academy || typeof appData.academy !== 'object') {
+            return null;
+        }
+        return appData.academy;
+    }
+
+    /**
+     * Ensure a class-scoped bucket exists in an academy snapshot.
+     * Caller passes the store name ('enrolments', 'classDisciplines').
+     */
+    function ensureClassBucket(academy, storeName, classId) {
+        var store = academy[storeName];
+        if (!isPlainObject(store)) {
+            store = {};
+            academy[storeName] = store;
+        }
+        if (!isPlainObject(store[classId])) {
+            store[classId] = {};
+        }
+        return store[classId];
+    }
+
+    /**
+     * Get the class's active roster (students only, instructor
+     * excluded). Uses AcademyAggregator so the roster is always
+     * consistent with the UI.
+     *
+     * Note: this reads live data via the aggregator, not the
+     * pipeline snapshot. It's called during validate, where the
+     * pipeline has not yet taken a snapshot. Since mutations are
+     * serialised, no other mutation can be interleaving.
+     */
+    function getClassRoster(classId) {
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
         try {
-            return Promise.resolve(fn());
-        } catch (err) {
-            return Promise.resolve({
-                success: false,
-                message: err && err.message ? err.message : 'Provider threw during write.'
-            });
+            return AcademyAggregator.getClassStudentsViewModel(classId) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademySchedule] getClassStudentsViewModel failed:', e
+            );
+            return [];
         }
     }
 
     // ============================================================
-    // METADATA MAP RECONSTRUCTION
+    // SECTION 3 — COLLISION DETECTION
     // ============================================================
-    //
-    // The provider only exposes single-slot metadata lookup. The
-    // findClassStart provider contract expects the full metadata map
-    // keyed `${entityId}_${week}_${day}_${hour}`. We reconstruct it
-    // by walking the schedule's occupied slots and calling
-    // getSlotMetadata for each.
-    //
-    // The reconstruction is bounded by the entity's own schedule, so
-    // the extra provider calls are cheap.
-    //
-    // @param {string} entityId - Student ID or location ID
-    // @param {number} weekNum - Week number
-    // @param {object} schedule - Schedule object { day: { hour: disciplineId } }
-    // @returns {object} Metadata map keyed `${entityId}_${week}_${day}_${hour}`
-    function buildMetadataMap(entityId, weekNum, schedule) {
-        var map = {};
-
-        if (!schedule || typeof schedule !== 'object') {
-            return map;
-        }
-
-        for (var dayKey in schedule) {
-            if (!Object.prototype.hasOwnProperty.call(schedule, dayKey)) {
-                continue;
-            }
-            var dayNum = parseInt(dayKey, 10);
-            if (isNaN(dayNum)) {
-                continue;
-            }
-
-            var daySchedule = schedule[dayKey];
-            if (!daySchedule || typeof daySchedule !== 'object') {
-                continue;
-            }
-
-            for (var hourKey in daySchedule) {
-                if (!Object.prototype.hasOwnProperty.call(daySchedule, hourKey)) {
-                    continue;
-                }
-                var hourNum = parseInt(hourKey, 10);
-                if (isNaN(hourNum)) {
-                    continue;
-                }
-                if (!daySchedule[hourKey]) {
-                    continue;
-                }
-
-                var meta = _calendarProvider.getSlotMetadata(entityId, weekNum, dayNum, hourNum);
-                if (meta && typeof meta === 'object') {
-                    var key = String(entityId) + '_' + String(weekNum) + '_' +
-                              String(dayNum) + '_' + String(hourNum);
-                    map[key] = meta;
-                }
-            }
-        }
-
-        return map;
-    }
-
-    // ============================================================
-    // STUDENT SCHEDULE - READ OPERATIONS (synchronous)
-    // ============================================================
-    //
-    // READS DO NOT FALL BACK TO CURRENT WEEK.
-    //   - If the week is invalid, they return empty.
-    //   - Callers fetch window.data.currentWeek themselves.
-    //
-    // READS DO NOT ENRICH WITH DISPLAY NAMES.
-    //   - Schedule entries carry disciplineId and instructorId.
-    //   - Callers compose with AcademyDisciplines / CharacterQueries.
 
     /**
-     * Get a student's raw schedule for a specific week.
+     * Do two session time-slots overlap?
      *
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number (required)
-     * @returns {object} Schedule object { day: { hour: disciplineId } }
+     * Sessions are on the same day, and their [start, end) intervals
+     * overlap. Both use inclusive start, exclusive end. A session
+     * at 9am for 2 hours runs [9, 11). A session at 11am for 1 hour
+     * runs [11, 12). They do not overlap.
+     *
+     * Week ranges must also overlap. A Monday 9am session in weeks
+     * 1-4 and a Monday 9am session in weeks 5-8 do not collide.
      */
-    function getStudentSchedule(studentId, week) {
-        if (!checkDependencies()) {
-            return {};
-        }
+    function sessionsOverlap(a, b) {
+        if (!a || !b) { return false; }
+        if (a.day !== b.day) { return false; }
 
-        if (!isNonEmptyString(studentId)) {
-            return {};
-        }
+        var aStart = a.startTime;
+        var aEnd = a.startTime + a.duration;
+        var bStart = b.startTime;
+        var bEnd = b.startTime + b.duration;
 
-        var weekNum = parseWeek(week);
-        if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            return {};
-        }
+        var timeOverlap = aStart < bEnd && bStart < aEnd;
+        if (!timeOverlap) { return false; }
 
-        return _calendarProvider.getStudentSchedule(studentId, weekNum);
+        return weekRangesOverlap(
+            a.startWeek, a.endWeek,
+            b.startWeek, b.endWeek
+        );
     }
 
     /**
-     * Get a student's classes for a specific week.
-     *
-     * SEMANTICS:
-     *   Returns ONE entry per occupied slot. A multi-hour class appears
-     *   as N entries, one per hour. Each entry carries:
-     *     day, hour, disciplineId, duration, label, groupLabel, instructorId
-     *   but NOT disciplineName or instructorName. Enrichment is the
-     *   caller's concern.
-     *
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number (required)
-     * @returns {array} Array of class detail objects with raw IDs
+     * Build a collision candidate from raw config.
      */
-    function getStudentClasses(studentId, week) {
-        if (!checkDependencies()) {
-            return [];
-        }
-
-        if (!isNonEmptyString(studentId)) {
-            return [];
-        }
-
-        var weekNum = parseWeek(week);
-        if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            return [];
-        }
-
-        var schedule = _calendarProvider.getStudentSchedule(studentId, weekNum);
-        var restDays = _calendarProvider.getStudentRestDays(studentId, weekNum);
-        var classes = [];
-
-        for (var day in schedule) {
-            if (!Object.prototype.hasOwnProperty.call(schedule, day)) {
-                continue;
-            }
-            var dayNum = parseInt(day, 10);
-            if (isNaN(dayNum)) {
-                continue;
-            }
-
-            // Skip rest days
-            var isRestDay = false;
-            for (var r = 0; r < restDays.length; r++) {
-                if (restDays[r] === dayNum) {
-                    isRestDay = true;
-                    break;
-                }
-            }
-            if (isRestDay) {
-                continue;
-            }
-
-            var daySchedule = schedule[day];
-            if (!daySchedule || typeof daySchedule !== 'object') {
-                continue;
-            }
-
-            for (var hour in daySchedule) {
-                if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
-                    continue;
-                }
-                var hourNum = parseInt(hour, 10);
-                if (isNaN(hourNum)) {
-                    continue;
-                }
-
-                var disciplineId = daySchedule[hour];
-                if (!disciplineId) {
-                    continue;
-                }
-
-                var metadata = _calendarProvider.getSlotMetadata(studentId, weekNum, dayNum, hourNum);
-                var instructorId = metadata ? metadata.instructorId : null;
-
-                classes.push({
-                    day: dayNum,
-                    hour: hourNum,
-                    disciplineId: disciplineId,
-                    duration: metadata && typeof metadata.duration === 'number' ? metadata.duration : 1,
-                    label: metadata && typeof metadata.label === 'string' ? metadata.label : '',
-                    groupLabel: metadata && typeof metadata.groupLabel === 'string' ? metadata.groupLabel : '',
-                    instructorId: instructorId,
-                    isContinuation: false
-                });
-            }
-        }
-
-        classes.sort(function(a, b) {
-            if (a.day !== b.day) {
-                return a.day - b.day;
-            }
-            return a.hour - b.hour;
-        });
-
-        return classes;
-    }
-
-    /**
-     * Get class details for a specific slot.
-     *
-     * Returns the same shape as a single entry from getStudentClasses.
-     * Does NOT enrich with display names.
-     *
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number (required)
-     * @param {number|string} day - Day number (1-7)
-     * @param {number|string} hour - Hour number
-     * @returns {object|null} Class details or null
-     */
-    function getClassDetails(studentId, week, day, hour) {
-        if (!checkDependencies()) {
-            return null;
-        }
-
-        if (!isNonEmptyString(studentId)) {
-            return null;
-        }
-
-        var weekNum = parseWeek(week);
-        var dayNum = parseDay(day);
-        var hourNum = parseHour(hour);
-
-        if (weekNum === null || dayNum === null || hourNum === null) {
-            return null;
-        }
-
-        var schedule = _calendarProvider.getStudentSchedule(studentId, weekNum);
-        if (!schedule[dayNum] || !schedule[dayNum][hourNum]) {
-            return null;
-        }
-
-        var disciplineId = schedule[dayNum][hourNum];
-        var metadata = _calendarProvider.getSlotMetadata(studentId, weekNum, dayNum, hourNum);
-        var instructorId = metadata ? metadata.instructorId : null;
-
+    function buildCandidateSession(config) {
         return {
-            studentId: studentId,
-            week: weekNum,
-            day: dayNum,
-            hour: hourNum,
-            disciplineId: disciplineId,
-            duration: metadata && typeof metadata.duration === 'number' ? metadata.duration : 1,
-            label: metadata && typeof metadata.label === 'string' ? metadata.label : '',
-            groupLabel: metadata && typeof metadata.groupLabel === 'string' ? metadata.groupLabel : '',
-            instructorId: instructorId,
-            isContinuation: false
+            day: config.day,
+            startTime: config.startTime,
+            duration: config.duration,
+            startWeek: config.startWeek,
+            endWeek: config.endWeek
         };
     }
 
     /**
-     * Get weekly usage statistics for a student.
-     *
-     * Reads the raw schedule directly to avoid double-counting. A
-     * class that spans three hours is one entry per hour in the raw
-     * schedule, and each entry contributes exactly its slot to the
-     * total. The previous version reconstructed this from
-     * getStudentClasses, which returned per-hour entries too, but
-     * summed duration again — a multi-hour class was counted twice.
-     *
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number (required)
-     * @returns {object} { total, byDiscipline }
+     * Get the group's active member IDs at a given week. Used to
+     * check whether a conflicting session shares a student with the
+     * candidate session.
      */
-    function getStudentWeeklyUsage(studentId, week) {
-        if (!checkDependencies()) {
-            return { total: 0, byDiscipline: {} };
+    function getGroupActiveMembersAtWeek(groupId, week) {
+        if (!isNonEmptyString(groupId)) {
+            return [];
+        }
+        try {
+            return AcademyTeachingGroups.getActiveMembers(groupId, week) || [];
+        } catch (e) {
+            return [];
+        }
+    }
+
+    /**
+     * Find the first conflicting session for an instructor.
+     *
+     * Walks every session in the store. For each session whose
+     * group has the given instructorId, checks whether it overlaps
+     * the candidate. Returns the conflicting session plus its group
+     * context, or null if none.
+     */
+    function findInstructorCollision(instructorId, candidate, excludeGroupId) {
+        if (!isNonEmptyString(instructorId)) {
+            return null;
         }
 
-        if (!isNonEmptyString(studentId)) {
-            return { total: 0, byDiscipline: {} };
-        }
+        var allSessions = AcademyTeachingSessions.getAllSessions() || [];
 
-        var weekNum = parseWeek(week);
-        if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            return { total: 0, byDiscipline: {} };
-        }
+        for (var i = 0; i < allSessions.length; i++) {
+            var session = allSessions[i];
+            if (!isPlainObject(session)) { continue; }
 
-        var schedule = _calendarProvider.getStudentSchedule(studentId, weekNum);
-        var total = 0;
-        var byDiscipline = {};
-
-        for (var day in schedule) {
-            if (!Object.prototype.hasOwnProperty.call(schedule, day)) {
+            // Skip sessions that belong to the group we're adding to.
+            // A group cannot collide with itself.
+            if (excludeGroupId &&
+                String(session.groupId) === String(excludeGroupId)) {
                 continue;
             }
-            var daySchedule = schedule[day];
-            if (!daySchedule || typeof daySchedule !== 'object') {
+
+            // Resolve the session's group to check the instructor.
+            var group = null;
+            try {
+                group = AcademyTeachingGroups.getGroup(session.groupId);
+            } catch (e) {
+                group = null;
+            }
+            if (!group) { continue; }
+            if (String(group.instructorId) !== String(instructorId)) {
                 continue;
             }
-            for (var hour in daySchedule) {
-                if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
-                    continue;
-                }
-                var disciplineId = daySchedule[hour];
-                if (!disciplineId) {
-                    continue;
-                }
-                total += 1;
-                if (!byDiscipline[disciplineId]) {
-                    byDiscipline[disciplineId] = {
-                        disciplineId: disciplineId,
-                        hours: 0
+
+            if (sessionsOverlap(session, candidate)) {
+                return {
+                    session: session,
+                    group: group
+                };
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Find the first conflicting session that shares a student with
+     * the candidate group.
+     *
+     * Strategy:
+     *   1. Get the candidate group's active members at each week in
+     *      the candidate session's range. That's the set of students
+     *      who'd be in the meeting.
+     *   2. Walk every session. For each session whose week range
+     *      overlaps the candidate's, check time overlap, then check
+     *      whether that session's group shares any active member
+     *      with the candidate group.
+     */
+    function findStudentCollision(candidateGroupId, candidate) {
+        if (!isNonEmptyString(candidateGroupId)) {
+            return null;
+        }
+
+        // Which weeks do we need to check? The candidate's range,
+        // clamped to the calendar's bounds.
+        var startWeek = candidate.startWeek;
+        var endWeek = (candidate.endWeek === null || candidate.endWeek === undefined)
+            ? MAX_WEEK
+            : candidate.endWeek;
+
+        // Build the candidate group's active-student set at every
+        // week in the range. This is O(weeks * members) which is
+        // fine for realistic sizes.
+        var candidateStudentsByWeek = {};
+        for (var w = startWeek; w <= endWeek; w++) {
+            candidateStudentsByWeek[w] = getGroupActiveMembersAtWeek(
+                candidateGroupId, w
+            );
+        }
+
+        var allSessions = AcademyTeachingSessions.getAllSessions() || [];
+
+        for (var i = 0; i < allSessions.length; i++) {
+            var session = allSessions[i];
+            if (!isPlainObject(session)) { continue; }
+
+            if (String(session.groupId) === String(candidateGroupId)) {
+                continue;
+            }
+
+            if (!sessionsOverlap(session, candidate)) {
+                continue;
+            }
+
+            // Determine the overlap window of weeks.
+            var sStart = session.startWeek;
+            var sEnd = (session.endWeek === null || session.endWeek === undefined)
+                ? MAX_WEEK
+                : session.endWeek;
+
+            var overlapStart = Math.max(startWeek, sStart);
+            var overlapEnd = Math.min(endWeek, sEnd);
+
+            for (var wk = overlapStart; wk <= overlapEnd; wk++) {
+                var candidateStudents = candidateStudentsByWeek[wk] || [];
+                if (candidateStudents.length === 0) { continue; }
+
+                var otherStudents = getGroupActiveMembersAtWeek(
+                    session.groupId, wk
+                );
+                if (otherStudents.length === 0) { continue; }
+
+                var shared = findSharedStudent(
+                    candidateStudents, otherStudents
+                );
+                if (shared !== null) {
+                    // Resolve the conflicting group for context.
+                    var conflictingGroup = null;
+                    try {
+                        conflictingGroup = AcademyTeachingGroups.getGroup(
+                            session.groupId
+                        );
+                    } catch (e) {
+                        conflictingGroup = null;
+                    }
+
+                    return {
+                        session: session,
+                        group: conflictingGroup,
+                        studentId: shared,
+                        week: wk
                     };
                 }
-                byDiscipline[disciplineId].hours += 1;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Return the first shared string in two arrays, or null.
+     */
+    function findSharedStudent(a, b) {
+        for (var i = 0; i < a.length; i++) {
+            var target = String(a[i]);
+            for (var j = 0; j < b.length; j++) {
+                if (String(b[j]) === target) {
+                    return target;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Run the collision check and return a structured rejection
+     * object if a collision exists, or null if clean.
+     *
+     * The rejection shape is:
+     *   {
+     *     success: false,
+     *     reason: 'instructor_collision' | 'student_collision',
+     *     message: <human-readable>,
+     *     data: { collision: { ... } }
+     *   }
+     */
+    function buildCollisionRejection(candidateGroupId, group, candidate) {
+        var instructorId = group.instructorId;
+
+        var instructorCollision = findInstructorCollision(
+            instructorId, candidate, candidateGroupId
+        );
+        if (instructorCollision) {
+            var instructorName = 'The instructor';
+            try {
+                var instrChar = CharacterQueries.getCharacterById(instructorId);
+                if (instrChar) {
+                    instructorName = CharacterQueries.getDisplayName(instrChar);
+                }
+            } catch (e) {
+                // Keep the fallback name.
+            }
+
+            return {
+                success: false,
+                reason: 'instructor_collision',
+                message: instructorName +
+                    ' is already teaching during this time slot.',
+                data: {
+                    collision: {
+                        type: 'instructor',
+                        instructorId: instructorId,
+                        instructorName: instructorName,
+                        conflictingSession: instructorCollision.session,
+                        conflictingGroup: instructorCollision.group
+                    }
+                }
+            };
+        }
+
+        var studentCollision = findStudentCollision(
+            candidateGroupId, candidate
+        );
+        if (studentCollision) {
+            var studentName = 'A student';
+            try {
+                var studChar = CharacterQueries.getCharacterById(
+                    studentCollision.studentId
+                );
+                if (studChar) {
+                    studentName = CharacterQueries.getDisplayName(studChar);
+                }
+            } catch (e) {
+                // Keep the fallback name.
+            }
+
+            return {
+                success: false,
+                reason: 'student_collision',
+                message: studentName +
+                    ' already has a session during this time slot.',
+                data: {
+                    collision: {
+                        type: 'student',
+                        studentId: studentCollision.studentId,
+                        studentName: studentName,
+                        week: studentCollision.week,
+                        conflictingSession: studentCollision.session,
+                        conflictingGroup: studentCollision.group
+                    }
+                }
+            };
+        }
+
+        return null;
+    }
+
+    // ============================================================
+    // SECTION 4 — addClassDiscipline
+    // ============================================================
+
+    /**
+     * Create a class-discipline. If the config marks it mandatory,
+     * auto-enrol every active student in the class.
+     *
+     * "Active student" means:
+     *   - In the class roster (character.classIds includes classId)
+     *   - Not the class instructor
+     *   - Not eliminated as of the class-discipline's startWeek
+     *
+     * One transaction. All-or-nothing.
+     *
+     * @param {string} classId
+     * @param {string} disciplineId
+     * @param {object} config
+     *   { startWeek, endWeek, weeklyHours, weight, gradeScheme,
+     *     assessmentWeights, mandatory }
+     * @returns {Promise<{success, data?, message?}>}
+     */
+    function addClassDiscipline(classId, disciplineId, config) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        if (!isNonEmptyString(disciplineId)) {
+            return Promise.resolve(failure('Discipline ID is required.'));
+        }
+        if (!isPlainObject(config)) {
+            return Promise.resolve(failure('Config must be an object.'));
+        }
+
+        var cls = AcademyClasses.getClass(classId);
+        if (!cls) {
+            return Promise.resolve(failure('Class not found.'));
+        }
+
+        var discipline = AcademyDisciplines.getDiscipline(disciplineId);
+        if (!discipline) {
+            return Promise.resolve(failure('Discipline not found.'));
+        }
+
+        var range = parseWeekRange(config.startWeek, config.endWeek);
+        if (!range) {
+            return Promise.resolve(failure(
+                'Valid week range is required (' +
+                MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
+        }
+
+        var existing = AcademyClassDisciplines.getClassDiscipline(
+            classId, disciplineId
+        );
+        if (existing) {
+            return Promise.resolve(failure(
+                'This class already offers this discipline.'
+            ));
+        }
+
+        var isMandatory = config.mandatory === true;
+        var targetClass = String(classId);
+        var targetDiscipline = String(disciplineId);
+        var startWeek = range.startWeek;
+        var endWeek = range.endWeek;
+
+        // Compute the enrolment list during validate. Everything
+        // that can fail is checked here, before any writes.
+        var enrolledCharIds = [];
+        var skippedCharIds = [];
+
+        var plan = null;
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+
+                // Re-check that the class-discipline doesn't exist
+                // in the snapshot. Between the pre-check and now,
+                // nothing should have changed, but the validate step
+                // runs against the authoritative snapshot.
+                var academy = getAcademySnapshot(appData);
+                if (!academy) {
+                    return {
+                        valid: false,
+                        message: 'Academy store is not available.'
+                    };
+                }
+
+                var cdStore = academy.classDisciplines;
+                if (isPlainObject(cdStore) &&
+                    isPlainObject(cdStore[targetClass]) &&
+                    cdStore[targetClass][targetDiscipline]) {
+                    return {
+                        valid: false,
+                        message: 'This class already offers this discipline.'
+                    };
+                }
+
+                // Build the plan.
+                plan = buildAddClassDisciplinePlan(
+                    targetClass,
+                    targetDiscipline,
+                    config,
+                    range,
+                    isMandatory
+                );
+
+                if (!plan) {
+                    return {
+                        valid: false,
+                        message: 'Failed to build class-discipline plan.'
+                    };
+                }
+
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                if (!plan) {
+                    throw new Error('Plan was not built.');
+                }
+
+                var academy = getAcademySnapshot(appData);
+                if (!academy) {
+                    throw new Error('Academy store is not available.');
+                }
+
+                // 1. Write the class-discipline record.
+                var cdBucket = ensureClassBucket(
+                    academy, 'classDisciplines', targetClass
+                );
+                cdBucket[targetDiscipline] = deepClone(plan.classDiscipline);
+
+                // 2. Write enrolments for mandatory offerings.
+                if (plan.isMandatory && plan.enrolledCharIds.length > 0) {
+                    var enrBucket = ensureClassBucket(
+                        academy, 'enrolments', targetClass
+                    );
+                    for (var i = 0; i < plan.enrolledCharIds.length; i++) {
+                        var charId = plan.enrolledCharIds[i];
+                        if (!Array.isArray(enrBucket[charId])) {
+                            enrBucket[charId] = [];
+                        }
+                        enrBucket[charId].push({
+                            disciplineId: targetDiscipline,
+                            startWeek: startWeek,
+                            endWeek: endWeek
+                        });
+                    }
+                }
+
+                return {
+                    classDiscipline: plan.classDiscipline,
+                    isMandatory: plan.isMandatory,
+                    studentsEnrolled: plan.enrolledCharIds.length,
+                    studentsSkipped: plan.skippedCharIds.length
+                };
+            },
+            logMessage: function(result) {
+                var msg = 'Created class-discipline: ' +
+                    (cls.name || targetClass) + ' / ' +
+                    (discipline.name || targetDiscipline);
+                if (result.isMandatory && result.studentsEnrolled > 0) {
+                    msg += ' (' + result.studentsEnrolled +
+                        ' student' + (result.studentsEnrolled === 1 ? '' : 's') +
+                        ' enrolled)';
+                }
+                return msg;
+            },
+            successMessage: function(result) {
+                if (result.isMandatory && result.studentsEnrolled > 0) {
+                    return 'Class-discipline created. ' +
+                        result.studentsEnrolled +
+                        ' student' + (result.studentsEnrolled === 1 ? '' : 's') +
+                        ' enrolled.';
+                }
+                return 'Class-discipline created.';
+            },
+            failureMessage: 'Failed to create class-discipline.'
+        });
+    }
+
+    /**
+     * Build the plan for addClassDiscipline. Pure — no writes.
+     *
+     * Returns { classDiscipline, isMandatory, enrolledCharIds, skippedCharIds }
+     * or null on malformed input.
+     */
+    function buildAddClassDisciplinePlan(classId, disciplineId, config, range, isMandatory) {
+        var now = new Date().toISOString();
+
+        var classDiscipline = {
+            classId: classId,
+            disciplineId: disciplineId,
+            startWeek: range.startWeek,
+            endWeek: range.endWeek,
+            weeklyHours: isFiniteNumber(config.weeklyHours) ? config.weeklyHours : 1,
+            weight: isFiniteNumber(config.weight) ? config.weight : 1,
+            gradeSchemeId: isNonEmptyString(config.gradeSchemeId)
+                ? config.gradeSchemeId
+                : 'numeric',
+            assessmentWeights: isPlainObject(config.assessmentWeights)
+                ? deepClone(config.assessmentWeights)
+                : null,
+            mandatory: isMandatory,
+            createdAt: now,
+            updatedAt: now
+        };
+
+        var enrolledCharIds = [];
+        var skippedCharIds = [];
+
+        if (isMandatory) {
+            var roster = getClassRoster(classId);
+            for (var i = 0; i < roster.length; i++) {
+                var student = roster[i];
+                if (!student || !student.id) { continue; }
+                var studentId = String(student.id);
+
+                // Skip eliminated students.
+                var eliminated = false;
+                try {
+                    eliminated = EliminationQueries.isCharacterEliminatedByWeek(
+                        studentId, range.startWeek
+                    ) === true;
+                } catch (e) {
+                    // If the check fails, we default to NOT skipping.
+                    // This is the safer default: an unexplained
+                    // elimination query failure shouldn't silently
+                    // drop students from their own class.
+                    eliminated = false;
+                }
+
+                if (eliminated) {
+                    skippedCharIds.push(studentId);
+                } else {
+                    enrolledCharIds.push(studentId);
+                }
             }
         }
 
         return {
-            total: total,
-            byDiscipline: byDiscipline
+            classDiscipline: classDiscipline,
+            isMandatory: isMandatory,
+            enrolledCharIds: enrolledCharIds,
+            skippedCharIds: skippedCharIds
         };
     }
 
     // ============================================================
-    // STUDENT SCHEDULE - WRITE OPERATIONS (Promise-based)
+    // SECTION 5 — removeClassDiscipline
     // ============================================================
 
     /**
-     * Set a student's schedule slot.
+     * End a class-discipline and everything downstream.
+     *
+     * effectiveWeek is the first week that is NOT covered by the
+     * offering. The class-discipline's endWeek is set to
+     * effectiveWeek - 1 (inclusive bounds).
+     *
+     * Ends in one transaction:
+     *   - The class-discipline window
+     *   - Every teaching group for the class-discipline
+     *   - Every session for those groups
+     *   - Every student's enrolment window in the class-discipline
+     *
+     * One transaction. All-or-nothing.
+     *
+     * @param {string} classId
+     * @param {string} disciplineId
+     * @param {number|string} effectiveWeek
+     * @returns {Promise<{success, data?, message?}>}
      */
-    function setStudentScheduleClass(studentId, week, day, hour, disciplineId, duration, metadata) {
-        if (!checkDependencies()) {
-            return Promise.resolve(failure('Dependencies not available.'));
+    function removeClassDiscipline(classId, disciplineId, effectiveWeek) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
         }
-
-        if (!isNonEmptyString(studentId)) {
-            return Promise.resolve(failure('Student ID is required.'));
-        }
-
         if (!isNonEmptyString(disciplineId)) {
             return Promise.resolve(failure('Discipline ID is required.'));
         }
 
-        var weekNum = parseWeek(week);
-        if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
+        var week = parseWeekStrict(effectiveWeek);
+        if (week === null) {
+            return Promise.resolve(failure(
+                'Valid effective week is required (' +
+                MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
         }
 
-        var dayNum = parseDay(day);
-        if (dayNum === null || dayNum < MIN_DAY || dayNum > MAX_DAY) {
-            return Promise.resolve(failure('Valid day is required (' + MIN_DAY + '-' + MAX_DAY + ').'));
-        }
-
-        var hourNum = parseHour(hour);
-        if (hourNum === null || hourNum < MIN_HOUR || hourNum > MAX_HOUR) {
-            return Promise.resolve(failure('Valid hour is required (' + MIN_HOUR + '-' + MAX_HOUR + ').'));
-        }
-
-        var durationNum = parseDuration(duration);
-        if (durationNum === null || durationNum < MIN_CLASS_DURATION || durationNum > MAX_DURATION) {
-            return Promise.resolve(failure('Duration must be between ' + MIN_CLASS_DURATION + ' and ' + MAX_DURATION + ' hours.'));
-        }
-
-        if (hourNum + durationNum > MAX_HOUR + 1) {
-            return Promise.resolve(failure('Class extends beyond the end of the day.'));
-        }
-
-        // Check for conflicts before delegating.
-        var schedule = _calendarProvider.getStudentSchedule(studentId, weekNum);
-        if (_calendarProvider.hasConflict(schedule, dayNum, hourNum, durationNum)) {
-            return Promise.resolve(failure('Student already has a class during this time.'));
-        }
-
-        return asPromise(function() {
-            return _calendarProvider.setStudentSlot(
-                studentId,
-                weekNum,
-                dayNum,
-                hourNum,
-                disciplineId,
-                durationNum,
-                metadata || {}
-            );
-        }).then(function(providerResult) {
-            if (providerResult && providerResult.success) {
-                return success(providerResult.data !== undefined ? providerResult.data : providerResult);
-            }
-            return failure(
-                providerResult && providerResult.message
-                    ? providerResult.message
-                    : 'Failed to set class.'
-            );
-        });
-    }
-
-    function removeStudentScheduleClass(studentId, week, day, hour, duration) {
-        if (!checkDependencies()) {
-            return Promise.resolve(failure('Dependencies not available.'));
-        }
-
-        if (!isNonEmptyString(studentId)) {
-            return Promise.resolve(failure('Student ID is required.'));
-        }
-
-        var weekNum = parseWeek(week);
-        if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
-        }
-
-        var dayNum = parseDay(day);
-        if (dayNum === null || dayNum < MIN_DAY || dayNum > MAX_DAY) {
-            return Promise.resolve(failure('Valid day is required (' + MIN_DAY + '-' + MAX_DAY + ').'));
-        }
-
-        var hourNum = parseHour(hour);
-        if (hourNum === null || hourNum < MIN_HOUR || hourNum > MAX_HOUR) {
-            return Promise.resolve(failure('Valid hour is required (' + MIN_HOUR + '-' + MAX_HOUR + ').'));
-        }
-
-        return asPromise(function() {
-            return _calendarProvider.removeStudentSlot(studentId, weekNum, dayNum, hourNum, duration);
-        }).then(function(providerResult) {
-            if (providerResult && providerResult.success) {
-                return success(providerResult.data !== undefined ? providerResult.data : providerResult);
-            }
-            return failure(
-                providerResult && providerResult.message
-                    ? providerResult.message
-                    : 'Failed to remove class.'
-            );
-        });
-    }
-
-    function clearStudentSchedule(studentId, week) {
-        if (!checkDependencies()) {
-            return Promise.resolve(failure('Dependencies not available.'));
-        }
-
-        if (!isNonEmptyString(studentId)) {
-            return Promise.resolve(failure('Student ID is required.'));
-        }
-
-        var weekNum = parseWeek(week);
-        if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
-        }
-
-        return asPromise(function() {
-            return _calendarProvider.clearStudentSchedule(studentId, weekNum);
-        }).then(function(providerResult) {
-            if (providerResult && providerResult.success) {
-                return success(providerResult.data !== undefined ? providerResult.data : providerResult);
-            }
-            return failure(
-                providerResult && providerResult.message
-                    ? providerResult.message
-                    : 'Failed to clear schedule.'
-            );
-        });
-    }
-
-    function duplicateStudentSchedule(studentId, fromWeek, toWeek) {
-        if (!checkDependencies()) {
-            return Promise.resolve(failure('Dependencies not available.'));
-        }
-
-        if (!isNonEmptyString(studentId)) {
-            return Promise.resolve(failure('Student ID is required.'));
-        }
-
-        var fromWeekNum = parseWeek(fromWeek);
-        var toWeekNum = parseWeek(toWeek);
-
-        if (fromWeekNum === null || fromWeekNum < MIN_WEEK || fromWeekNum > MAX_WEEK) {
-            return Promise.resolve(failure('Valid source week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
-        }
-
-        if (toWeekNum === null || toWeekNum < MIN_WEEK || toWeekNum > MAX_WEEK) {
-            return Promise.resolve(failure('Valid target week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
-        }
-
-        if (fromWeekNum === toWeekNum) {
-            return Promise.resolve(failure('Source and target weeks must be different.'));
-        }
-
-        return asPromise(function() {
-            return _calendarProvider.duplicateStudentSchedule(studentId, fromWeekNum, toWeekNum);
-        }).then(function(providerResult) {
-            if (providerResult && providerResult.success) {
-                return success(providerResult.data !== undefined ? providerResult.data : providerResult);
-            }
-            return failure(
-                providerResult && providerResult.message
-                    ? providerResult.message
-                    : 'Failed to duplicate schedule.'
-            );
-        });
-    }
-
-    // ============================================================
-    // REST DAYS - READS (synchronous)
-    // ============================================================
-
-    function getStudentRestDays(studentId, week) {
-        if (!checkDependencies()) {
-            return [];
-        }
-
-        if (!isNonEmptyString(studentId)) {
-            return [];
-        }
-
-        var weekNum = parseWeek(week);
-        if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            return [];
-        }
-
-        return _calendarProvider.getStudentRestDays(studentId, weekNum);
-    }
-
-    // ============================================================
-    // REST DAYS - WRITES (Promise-based)
-    // ============================================================
-
-    function setStudentRestDays(studentId, week, days) {
-        if (!checkDependencies()) {
-            return Promise.resolve(failure('Dependencies not available.'));
-        }
-
-        if (!isNonEmptyString(studentId)) {
-            return Promise.resolve(failure('Student ID is required.'));
-        }
-
-        var weekNum = parseWeek(week);
-        if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
-        }
-
-        if (!Array.isArray(days)) {
-            return Promise.resolve(failure('Rest days must be an array.'));
-        }
-
-        for (var i = 0; i < days.length; i++) {
-            var dayNum = parseDay(days[i]);
-            if (dayNum === null || dayNum < MIN_DAY || dayNum > MAX_DAY) {
-                return Promise.resolve(failure('Valid day is required (' + MIN_DAY + '-' + MAX_DAY + ').'));
-            }
-        }
-
-        return asPromise(function() {
-            return _calendarProvider.setRestDays(studentId, weekNum, days);
-        }).then(function(providerResult) {
-            if (providerResult && providerResult.success) {
-                return success(providerResult.data !== undefined ? providerResult.data : providerResult);
-            }
-            return failure(
-                providerResult && providerResult.message
-                    ? providerResult.message
-                    : 'Failed to set rest days.'
-            );
-        });
-    }
-
-    function clearStudentRestDays(studentId, week) {
-        if (!checkDependencies()) {
-            return Promise.resolve(failure('Dependencies not available.'));
-        }
-
-        if (!isNonEmptyString(studentId)) {
-            return Promise.resolve(failure('Student ID is required.'));
-        }
-
-        var weekNum = parseWeek(week);
-        if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
-        }
-
-        return asPromise(function() {
-            return _calendarProvider.removeRestDays(studentId, weekNum);
-        }).then(function(providerResult) {
-            if (providerResult && providerResult.success) {
-                return success(providerResult.data !== undefined ? providerResult.data : providerResult);
-            }
-            return failure(
-                providerResult && providerResult.message
-                    ? providerResult.message
-                    : 'Failed to clear rest days.'
-            );
-        });
-    }
-
-    // ============================================================
-    // CONFLICT DETECTION (synchronous, pure)
-    // ============================================================
-
-    function hasStudentScheduleConflict(studentId, week, day, hour, duration) {
-        if (!checkDependencies()) {
-            return true;
-        }
-
-        if (!isNonEmptyString(studentId)) {
-            return true;
-        }
-
-        var weekNum = parseWeek(week);
-        var dayNum = parseDay(day);
-        var hourNum = parseHour(hour);
-        var durationNum = parseDuration(duration);
-
-        if (weekNum === null || dayNum === null || hourNum === null || durationNum === null) {
-            return true;
-        }
-
-        var schedule = _calendarProvider.getStudentSchedule(studentId, weekNum);
-        return _calendarProvider.hasConflict(schedule, dayNum, hourNum, durationNum);
-    }
-
-    function isStudentRestDay(studentId, week, day) {
-        if (!checkDependencies()) {
-            return false;
-        }
-
-        if (!isNonEmptyString(studentId)) {
-            return false;
-        }
-
-        var weekNum = parseWeek(week);
-        var dayNum = parseDay(day);
-
-        if (weekNum === null || dayNum === null) {
-            return false;
-        }
-
-        var restDays = _calendarProvider.getStudentRestDays(studentId, weekNum);
-        for (var i = 0; i < restDays.length; i++) {
-            if (restDays[i] === dayNum) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    // ============================================================
-    // CLASS METADATA HELPERS (synchronous)
-    // ============================================================
-
-    function getClassInstructor(studentId, week, day, hour) {
-        var details = getClassDetails(studentId, week, day, hour);
-        return details ? details.instructorId : null;
-    }
-
-    function getClassDuration(studentId, week, day, hour) {
-        var details = getClassDetails(studentId, week, day, hour);
-        return details ? details.duration : 1;
-    }
-
-    function getClassLabel(studentId, week, day, hour) {
-        var details = getClassDetails(studentId, week, day, hour);
-        return details ? details.label : '';
-    }
-
-    function findClassStartHour(studentId, week, day, hour) {
-        if (!checkDependencies()) {
-            return null;
-        }
-
-        if (!isNonEmptyString(studentId)) {
-            return null;
-        }
-
-        var weekNum = parseWeek(week);
-        var dayNum = parseDay(day);
-        var hourNum = parseHour(hour);
-
-        if (weekNum === null || dayNum === null || hourNum === null) {
-            return null;
-        }
-
-        var schedule = _calendarProvider.getStudentSchedule(studentId, weekNum);
-        var metadataMap = buildMetadataMap(studentId, weekNum, schedule);
-
-        var result = _calendarProvider.findClassStart(
-            schedule,
-            metadataMap,
-            studentId,
-            weekNum,
-            dayNum,
-            hourNum
+        var existing = AcademyClassDisciplines.getClassDiscipline(
+            classId, disciplineId
         );
+        if (!existing) {
+            return Promise.resolve(failure(
+                'This class does not offer this discipline.'
+            ));
+        }
 
-        return result ? result.startHour : null;
-    }
+        var targetClass = String(classId);
+        var targetDiscipline = String(disciplineId);
+        var endWeek = week - 1;
 
-    function getFullClassDetails(studentId, week, day, hour) {
-        return getClassDetails(studentId, week, day, hour);
+        // Sanity: the caller cannot end the offering before it starts.
+        if (endWeek < existing.startWeek) {
+            return Promise.resolve(failure(
+                'Effective week would end the offering before it begins.'
+            ));
+        }
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+                var academy = getAcademySnapshot(appData);
+                if (!academy) {
+                    return {
+                        valid: false,
+                        message: 'Academy store is not available.'
+                    };
+                }
+                // Re-verify the class-discipline still exists.
+                var cdBucket = academy.classDisciplines &&
+                    academy.classDisciplines[targetClass];
+                if (!isPlainObject(cdBucket) ||
+                    !cdBucket[targetDiscipline]) {
+                    return {
+                        valid: false,
+                        message: 'Class-discipline no longer exists.'
+                    };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var academy = getAcademySnapshot(appData);
+                if (!academy) {
+                    throw new Error('Academy store is not available.');
+                }
+
+                var stats = {
+                    classDisciplineEnded: false,
+                    groupsEnded: 0,
+                    sessionsEnded: 0,
+                    enrolmentsEnded: 0
+                };
+
+                // 1. Truncate the class-discipline window.
+                var cdRecord = academy.classDisciplines[targetClass][targetDiscipline];
+                if (cdRecord && isPlainObject(cdRecord)) {
+                    if (cdRecord.endWeek === null ||
+                        cdRecord.endWeek === undefined ||
+                        cdRecord.endWeek >= week) {
+                        cdRecord.endWeek = endWeek;
+                        cdRecord.updatedAt = new Date().toISOString();
+                        stats.classDisciplineEnded = true;
+                    }
+                }
+
+                // 2. Truncate every teaching group for this class-discipline.
+                var groupIds = [];
+                if (isPlainObject(academy.teachingGroups)) {
+                    Object.keys(academy.teachingGroups).forEach(function(gid) {
+                        var g = academy.teachingGroups[gid];
+                        if (!isPlainObject(g)) { return; }
+                        if (String(g.classId) !== targetClass) { return; }
+                        if (String(g.disciplineId) !== targetDiscipline) { return; }
+                        groupIds.push(gid);
+                    });
+                }
+
+                for (var i = 0; i < groupIds.length; i++) {
+                    var group = academy.teachingGroups[groupIds[i]];
+                    if (!isPlainObject(group)) { continue; }
+                    if (group.endWeek === null ||
+                        group.endWeek === undefined ||
+                        group.endWeek >= week) {
+                        if (group.startWeek < week) {
+                            group.endWeek = endWeek;
+                            group.updatedAt = new Date().toISOString();
+                            stats.groupsEnded++;
+                        }
+                    }
+                }
+
+                // 3. Truncate every session for those groups.
+                if (isPlainObject(academy.teachingSessions)) {
+                    var groupIdSet = Object.create(null);
+                    for (var gk = 0; gk < groupIds.length; gk++) {
+                        groupIdSet[String(groupIds[gk])] = true;
+                    }
+
+                    Object.keys(academy.teachingSessions).forEach(function(sid) {
+                        var session = academy.teachingSessions[sid];
+                        if (!isPlainObject(session)) { return; }
+                        if (!groupIdSet[String(session.groupId)]) { return; }
+                        if (session.endWeek === null ||
+                            session.endWeek === undefined ||
+                            session.endWeek >= week) {
+                            if (session.startWeek < week) {
+                                session.endWeek = endWeek;
+                                session.updatedAt = new Date().toISOString();
+                                stats.sessionsEnded++;
+                            }
+                        }
+                    });
+                }
+
+                // 4. Truncate every student's enrolment in this class-discipline.
+                var enrBucket = academy.enrolments &&
+                    academy.enrolments[targetClass];
+                if (isPlainObject(enrBucket)) {
+                    Object.keys(enrBucket).forEach(function(charId) {
+                        var intervals = enrBucket[charId];
+                        if (!Array.isArray(intervals)) { return; }
+                        for (var k = 0; k < intervals.length; k++) {
+                            var entry = intervals[k];
+                            if (!entry) { continue; }
+                            if (String(entry.disciplineId) !== targetDiscipline) {
+                                continue;
+                            }
+                            if (entry.endWeek === null ||
+                                entry.endWeek === undefined ||
+                                entry.endWeek >= week) {
+                                if (entry.startWeek < week) {
+                                    entry.endWeek = endWeek;
+                                    stats.enrolmentsEnded++;
+                                }
+                            }
+                        }
+                    });
+                }
+
+                return stats;
+            },
+            logMessage: function(result) {
+                var parts = [];
+                if (result.groupsEnded > 0) {
+                    parts.push(result.groupsEnded + ' group(s)');
+                }
+                if (result.sessionsEnded > 0) {
+                    parts.push(result.sessionsEnded + ' session(s)');
+                }
+                if (result.enrolmentsEnded > 0) {
+                    parts.push(result.enrolmentsEnded + ' enrolment(s)');
+                }
+                var suffix = parts.length > 0
+                    ? ' (' + parts.join(', ') + ')'
+                    : '';
+                return 'Ended class-discipline: ' + targetClass +
+                    ' / ' + targetDiscipline + suffix;
+            },
+            successMessage: 'Class-discipline ended.',
+            failureMessage: 'Failed to end class-discipline.'
+        });
     }
 
     // ============================================================
-    // BULK OPERATIONS (Promise-based, sequential)
+    // SECTION 6 — scheduleGroupMeeting
     // ============================================================
 
     /**
-     * Save multiple schedule slots at once.
+     * Create a teaching session for a group, with a blocking
+     * collision check.
      *
-     * SLOTS are applied SEQUENTIALLY. If any write fails, subsequent
-     * writes are skipped and the failure is reported in `errors`.
-     * Successful writes before the failure remain applied — there is
-     * no cross-slot transaction here.
+     * COLLISION BEHAVIOUR:
+     *   By default (collisionMode: 'block'), the coordinator runs
+     *   an instructor collision check and a student collision check.
+     *   If either fires, the mutation is rejected WITHOUT writing.
+     *   The resolved result carries:
+     *     success: false
+     *     reason: 'instructor_collision' | 'student_collision'
+     *     data.collision: { ... details ... }
      *
-     * CONFLICT CHECKING:
-     *   The conflict check for each slot reads the CURRENT schedule
-     *   from the provider. Because writes are sequential, later
-     *   slots in the same batch see the effects of earlier ones.
-     *   That is the correct behavior for a batch that might include
-     *   two slots for the same student.
+     *   The caller is expected to show a confirmation modal and
+     *   re-invoke with allowCollisions: true on confirmation.
      *
-     * @param {array} slots - Array of slot objects
-     * @param {object} options - Save options
-     * @returns {Promise<{ success, data?, message? }>}
+     *   Set collisionMode: 'ignore' to skip the check entirely.
+     *   Set allowCollisions: true to bypass a would-be block.
+     *
+     * LOCATION COLLISIONS ARE NEVER CHECKED.
+     *   Rooms may be double-booked silently. If a location is
+     *   provided, it's stored on the session as-is.
+     *
+     * One transaction. All-or-nothing.
+     *
+     * @param {string} groupId
+     * @param {object} config
+     *   { day, startTime, duration, locationId, startWeek, endWeek,
+     *     collisionMode, allowCollisions }
+     * @returns {Promise<{success, data?, message?, reason?}>}
      */
-    function saveScheduleSlots(slots, options) {
-        if (!checkDependencies()) {
-            return Promise.resolve(failure('Dependencies not available.'));
+    function scheduleGroupMeeting(groupId, config) {
+        if (!isNonEmptyString(groupId)) {
+            return Promise.resolve(failure('Group ID is required.'));
+        }
+        if (!isPlainObject(config)) {
+            return Promise.resolve(failure('Config must be an object.'));
         }
 
-        if (!Array.isArray(slots) || slots.length === 0) {
-            return Promise.resolve(failure('Schedule slots array is required.'));
+        var group = AcademyTeachingGroups.getGroup(groupId);
+        if (!group) {
+            return Promise.resolve(failure('Teaching group not found.'));
         }
 
-        options = options || {};
-        var overwrite = options.overwrite !== false;
+        var day = CalendarValidation.parseDay(config.day);
+        if (day === null) {
+            return Promise.resolve(failure(
+                'Valid day is required (' +
+                CalendarConstants.MIN_DAY + '-' +
+                CalendarConstants.MAX_DAY + ').'
+            ));
+        }
 
-        var counters = {
-            created: 0,
-            updated: 0,
-            skipped: 0
+        var startTime = CalendarValidation.parseHour(config.startTime);
+        if (startTime === null) {
+            return Promise.resolve(failure(
+                'Valid start time is required (' +
+                CalendarConstants.MIN_HOUR + '-' +
+                CalendarConstants.MAX_HOUR + ').'
+            ));
+        }
+
+        var duration = CalendarValidation.parseDuration(config.duration);
+        if (duration === null) {
+            return Promise.resolve(failure(
+                'Duration must be between ' +
+                CalendarConstants.MIN_CLASS_DURATION + ' and ' +
+                CalendarConstants.MAX_CLASS_DURATION + ' hours.'
+            ));
+        }
+
+        if (startTime + duration > CalendarConstants.MAX_HOUR + 1) {
+            return Promise.resolve(failure(
+                'Session extends beyond the end of the day.'
+            ));
+        }
+
+        var range = parseWeekRange(config.startWeek, config.endWeek);
+        if (!range) {
+            return Promise.resolve(failure(
+                'Valid week range is required (' +
+                MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
+        }
+
+        // Collision mode resolution.
+        var collisionMode = 'block';
+        if (config.collisionMode === 'ignore') {
+            collisionMode = 'ignore';
+        }
+        if (config.allowCollisions === true) {
+            collisionMode = 'ignore';
+        }
+
+        var locationId = isNonEmptyString(config.locationId)
+            ? String(config.locationId)
+            : null;
+
+        var targetGroup = String(groupId);
+
+        // ---- Collision check runs BEFORE the transaction ----
+        if (collisionMode === 'block') {
+            var candidate = {
+                day: day,
+                startTime: startTime,
+                duration: duration,
+                startWeek: range.startWeek,
+                endWeek: range.endWeek
+            };
+
+            var rejection = buildCollisionRejection(
+                targetGroup, group, candidate
+            );
+            if (rejection) {
+                return Promise.resolve(rejection);
+            }
+        }
+
+        var sessionId = IdUtils.generateId('tsession');
+        var now = new Date().toISOString();
+
+        var newSession = {
+            id: sessionId,
+            groupId: targetGroup,
+            day: day,
+            startTime: startTime,
+            duration: duration,
+            locationId: locationId,
+            startWeek: range.startWeek,
+            endWeek: range.endWeek,
+            createdAt: now,
+            updatedAt: now
         };
-        var errors = [];
-        var succeeded = 0;
 
-        // Pre-flight: validate the entire batch before running any writes.
-        var validated = [];
-        for (var i = 0; i < slots.length; i++) {
-            var slot = slots[i];
-            if (!slot || typeof slot !== 'object') {
-                errors.push({ index: i, error: 'Invalid slot data.' });
-                continue;
-            }
-            if (!slot.studentId || !slot.disciplineId ||
-                slot.week === undefined || slot.day === undefined || slot.hour === undefined) {
-                errors.push({
-                    index: i,
-                    error: 'Missing required fields: studentId, disciplineId, week, day, hour'
-                });
-                continue;
-            }
-            validated.push({ index: i, slot: slot });
-        }
-
-        if (validated.length === 0) {
-            return Promise.resolve(success({
-                total: slots.length,
-                created: 0,
-                updated: 0,
-                skipped: 0,
-                errors: errors,
-                successCount: 0
-            }));
-        }
-
-        // Sequential write chain. Each slot is applied via
-        // setStudentScheduleClass, which reads the current schedule
-        // from the provider for its conflict check. Because the
-        // chain is sequential, later slots see earlier writes.
-        var chain = Promise.resolve();
-
-        validated.forEach(function(item) {
-            chain = chain.then(function() {
-                var slot = item.slot;
-                var dayNum = parseDay(slot.day);
-                var hourNum = parseHour(slot.hour);
-
-                if (dayNum === null || hourNum === null) {
-                    errors.push({ index: item.index, error: 'Invalid day or hour.' });
-                    return;
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
-
-                var weekNum = parseWeek(slot.week);
-                if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-                    errors.push({ index: item.index, error: 'Invalid week.' });
-                    return;
+                var academy = getAcademySnapshot(appData);
+                if (!academy) {
+                    return {
+                        valid: false,
+                        message: 'Academy store is not available.'
+                    };
                 }
-
-                var schedule = _calendarProvider.getStudentSchedule(slot.studentId, weekNum);
-                var exists = schedule[dayNum] && schedule[dayNum][hourNum];
-
-                if (exists && !overwrite) {
-                    counters.skipped++;
-                    return;
+                if (!isPlainObject(academy.teachingGroups) ||
+                    !academy.teachingGroups[targetGroup]) {
+                    return {
+                        valid: false,
+                        message: 'Teaching group no longer exists.'
+                    };
                 }
-
-                var duration = slot.duration || 1;
-                var metadata = slot.metadata || {};
-
-                return setStudentScheduleClass(
-                    slot.studentId,
-                    slot.week,
-                    slot.day,
-                    slot.hour,
-                    slot.disciplineId,
-                    duration,
-                    metadata
-                ).then(function(result) {
-                    if (result && result.success) {
-                        if (exists) {
-                            counters.updated++;
-                        } else {
-                            counters.created++;
-                        }
-                        succeeded++;
-                    } else {
-                        errors.push({
-                            index: item.index,
-                            error: result && result.message ? result.message : 'Unknown error.'
-                        });
-                    }
-                });
-            });
-        });
-
-        return chain.then(function() {
-            return success({
-                total: slots.length,
-                created: counters.created,
-                updated: counters.updated,
-                skipped: counters.skipped,
-                errors: errors,
-                successCount: succeeded
-            });
+                if (isPlainObject(academy.teachingSessions) &&
+                    academy.teachingSessions[sessionId]) {
+                    return {
+                        valid: false,
+                        message: 'Session ID collision.'
+                    };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var academy = getAcademySnapshot(appData);
+                if (!academy) {
+                    throw new Error('Academy store is not available.');
+                }
+                if (!isPlainObject(academy.teachingSessions)) {
+                    academy.teachingSessions = {};
+                }
+                academy.teachingSessions[sessionId] = deepClone(newSession);
+                return {
+                    session: newSession,
+                    sessionId: sessionId
+                };
+            },
+            logMessage: 'Scheduled group meeting for group ' + targetGroup +
+                ' on day ' + day + ' at ' + startTime,
+            successMessage: 'Session scheduled.',
+            failureMessage: 'Failed to schedule session.'
         });
     }
 
     // ============================================================
-    // EXPOSE
+    // SECTION 7 — addStudentToTeachingGroup
     // ============================================================
 
-    window.AcademySchedule = {
-        // Configuration
-        configure: configure,
+    /**
+     * Add a student to a teaching group.
+     *
+     * Validation:
+     *   - The group exists.
+     *   - The character exists.
+     *   - The character is enrolled in the group's class-discipline
+     *     during the requested week.
+     *   - The character is not already an active member of the group.
+     *   - The character is not eliminated as of the requested week.
+     *
+     * One transaction. All-or-nothing.
+     *
+     * @param {string} groupId
+     * @param {string} charId
+     * @param {number|string} startWeek
+     * @returns {Promise<{success, data?, message?}>}
+     */
+    function addStudentToTeachingGroup(groupId, charId, startWeek) {
+        if (!isNonEmptyString(groupId)) {
+            return Promise.resolve(failure('Group ID is required.'));
+        }
+        if (!isNonEmptyString(charId)) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
 
-        // ---- Student Schedule: Reads (synchronous) ----
-        getStudentSchedule: getStudentSchedule,
-        getStudentClasses: getStudentClasses,
-        getClassDetails: getClassDetails,
-        getStudentWeeklyUsage: getStudentWeeklyUsage,
+        var week = parseWeekStrict(startWeek);
+        if (week === null) {
+            return Promise.resolve(failure(
+                'Valid start week is required (' +
+                MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
+        }
 
-        // ---- Student Schedule: Writes (Promise-based) ----
-        setStudentScheduleClass: setStudentScheduleClass,
-        removeStudentScheduleClass: removeStudentScheduleClass,
-        clearStudentSchedule: clearStudentSchedule,
-        duplicateStudentSchedule: duplicateStudentSchedule,
+        var group = AcademyTeachingGroups.getGroup(groupId);
+        if (!group) {
+            return Promise.resolve(failure('Teaching group not found.'));
+        }
 
-        // ---- Rest Days: Reads (synchronous) ----
-        getStudentRestDays: getStudentRestDays,
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char) {
+            return Promise.resolve(failure('Character not found.'));
+        }
 
-        // ---- Rest Days: Writes (Promise-based) ----
-        setStudentRestDays: setStudentRestDays,
-        clearStudentRestDays: clearStudentRestDays,
+        // Elimination check.
+        if (EliminationQueries.isCharacterEliminatedByWeek(charId, week)) {
+            return Promise.resolve(failure(
+                'This character is eliminated and cannot join new groups.'
+            ));
+        }
 
-        // ---- Conflict Detection (synchronous) ----
-        hasStudentScheduleConflict: hasStudentScheduleConflict,
-        isStudentRestDay: isStudentRestDay,
+        // Enrolment check.
+        var classId = String(group.classId);
+        var disciplineId = String(group.disciplineId);
 
-        // ---- Class Metadata (synchronous) ----
-        getClassInstructor: getClassInstructor,
-        getClassDuration: getClassDuration,
-        getClassLabel: getClassLabel,
-        findClassStartHour: findClassStartHour,
-        getFullClassDetails: getFullClassDetails,
+        if (!AcademyEnrolments.isEnrolledInWeek(
+            charId, classId, disciplineId, week
+        )) {
+            return Promise.resolve(failure(
+                'The character is not enrolled in this discipline ' +
+                'during the requested week.'
+            ));
+        }
 
-        // ---- Bulk Operations (Promise-based) ----
-        saveScheduleSlots: saveScheduleSlots,
+        // Existing membership check.
+        var alreadyMember = AcademyTeachingGroups.isMemberOfGroup(
+            groupId, charId, week
+        );
+        if (alreadyMember) {
+            return Promise.resolve(failure(
+                'The character is already a member of this group.'
+            ));
+        }
 
-        // ---- Constants ----
+        var targetGroup = String(groupId);
+        var targetChar = String(charId);
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+                var academy = getAcademySnapshot(appData);
+                if (!academy) {
+                    return {
+                        valid: false,
+                        message: 'Academy store is not available.'
+                    };
+                }
+                var g = academy.teachingGroups &&
+                    academy.teachingGroups[targetGroup];
+                if (!isPlainObject(g)) {
+                    return {
+                        valid: false,
+                        message: 'Teaching group no longer exists.'
+                    };
+                }
+                if (!Array.isArray(g.members)) {
+                    // Will be repaired in mutate.
+                    return { valid: true };
+                }
+                for (var i = 0; i < g.members.length; i++) {
+                    var m = g.members[i];
+                    if (!m) { continue; }
+                    if (String(m.characterId) !== targetChar) { continue; }
+                    if (weekInRange(week, m.startWeek, m.endWeek)) {
+                        return {
+                            valid: false,
+                            message: 'The character is already a member of this group.'
+                        };
+                    }
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var academy = getAcademySnapshot(appData);
+                if (!academy) {
+                    throw new Error('Academy store is not available.');
+                }
+                var g = academy.teachingGroups[targetGroup];
+                if (!isPlainObject(g)) {
+                    throw new Error('Teaching group not found.');
+                }
+                if (!Array.isArray(g.members)) {
+                    g.members = [];
+                }
+
+                g.members.push({
+                    characterId: targetChar,
+                    startWeek: week,
+                    endWeek: null
+                });
+                g.updatedAt = new Date().toISOString();
+
+                return {
+                    groupId: targetGroup,
+                    characterId: targetChar,
+                    startWeek: week
+                };
+            },
+            logMessage: 'Added ' + targetChar + ' to group ' + targetGroup +
+                ' from week ' + week,
+            successMessage: 'Student added to group.',
+            failureMessage: 'Failed to add student to group.'
+        });
+    }
+
+    // ============================================================
+    // SECTION 8 — dropStudentFromClass
+    // ============================================================
+
+    /**
+     * Drop a student from a class.
+     *
+     * effectiveWeek is the first week the student is no longer in
+     * the class. Every window truncates at effectiveWeek - 1.
+     *
+     * In one transaction:
+     *   - Truncate every active enrolment interval for the student
+     *     in this class.
+     *   - Truncate every active group membership for the student in
+     *     groups of this class.
+     *   - Remove the classId from the character's classIds array.
+     *
+     * One transaction. All-or-nothing.
+     *
+     * @param {string} classId
+     * @param {string} charId
+     * @param {number|string} effectiveWeek
+     * @returns {Promise<{success, data?, message?}>}
+     */
+    function dropStudentFromClass(classId, charId, effectiveWeek) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        if (!isNonEmptyString(charId)) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
+
+        var week = parseWeekStrict(effectiveWeek);
+        if (week === null) {
+            return Promise.resolve(failure(
+                'Valid effective week is required (' +
+                MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
+        }
+
+        var cls = AcademyClasses.getClass(classId);
+        if (!cls) {
+            return Promise.resolve(failure('Class not found.'));
+        }
+
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char) {
+            return Promise.resolve(failure('Character not found.'));
+        }
+
+        var targetClass = String(classId);
+        var targetChar = String(charId);
+        var endWeek = week - 1;
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+                if (!Array.isArray(appData.characters)) {
+                    return {
+                        valid: false,
+                        message: 'Character store is not available.'
+                    };
+                }
+                var found = false;
+                for (var i = 0; i < appData.characters.length; i++) {
+                    var c = appData.characters[i];
+                    if (c && String(c.id) === targetChar) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    return {
+                        valid: false,
+                        message: 'Character no longer exists.'
+                    };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var stats = {
+                    enrolmentsEnded: 0,
+                    membershipsEnded: 0,
+                    removedFromClass: false
+                };
+
+                // 1. Truncate enrolments in this class.
+                var academy = getAcademySnapshot(appData);
+                if (academy) {
+                    var enrBucket = academy.enrolments &&
+                        academy.enrolments[targetClass];
+                    if (isPlainObject(enrBucket) &&
+                        Array.isArray(enrBucket[targetChar])) {
+                        var intervals = enrBucket[targetChar];
+                        for (var i = 0; i < intervals.length; i++) {
+                            var entry = intervals[i];
+                            if (!entry) { continue; }
+                            if (entry.endWeek === null ||
+                                entry.endWeek === undefined ||
+                                entry.endWeek >= week) {
+                                if (entry.startWeek < week) {
+                                    entry.endWeek = endWeek;
+                                    stats.enrolmentsEnded++;
+                                }
+                            }
+                        }
+                    }
+
+                    // 2. Truncate memberships in groups of this class.
+                    if (isPlainObject(academy.teachingGroups)) {
+                        Object.keys(academy.teachingGroups).forEach(function(gid) {
+                            var g = academy.teachingGroups[gid];
+                            if (!isPlainObject(g)) { return; }
+                            if (String(g.classId) !== targetClass) { return; }
+                            if (!Array.isArray(g.members)) { return; }
+
+                            for (var j = 0; j < g.members.length; j++) {
+                                var m = g.members[j];
+                                if (!m) { continue; }
+                                if (String(m.characterId) !== targetChar) {
+                                    continue;
+                                }
+                                if (m.endWeek === null ||
+                                    m.endWeek === undefined ||
+                                    m.endWeek >= week) {
+                                    if (m.startWeek < week) {
+                                        m.endWeek = endWeek;
+                                        stats.membershipsEnded++;
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
+
+                // 3. Remove classId from the character.
+                for (var ci = 0; ci < appData.characters.length; ci++) {
+                    var c = appData.characters[ci];
+                    if (!c || String(c.id) !== targetChar) { continue; }
+                    if (!Array.isArray(c.classIds)) {
+                        c.classIds = [];
+                        break;
+                    }
+                    var before = c.classIds.length;
+                    c.classIds = c.classIds.filter(function(id) {
+                        return String(id) !== targetClass;
+                    });
+                    if (c.classIds.length !== before) {
+                        stats.removedFromClass = true;
+                    }
+                    break;
+                }
+
+                return stats;
+            },
+            logMessage: function(result) {
+                var parts = [];
+                if (result.enrolmentsEnded > 0) {
+                    parts.push(result.enrolmentsEnded + ' enrolment(s)');
+                }
+                if (result.membershipsEnded > 0) {
+                    parts.push(result.membershipsEnded + ' membership(s)');
+                }
+                var suffix = parts.length > 0
+                    ? ' (' + parts.join(', ') + ')'
+                    : '';
+                return 'Dropped ' + targetChar + ' from class ' +
+                    targetClass + suffix;
+            },
+            successMessage: 'Student dropped from class.',
+            failureMessage: 'Failed to drop student from class.'
+        });
+    }
+
+    // ============================================================
+    // SECTION 9 — EXPOSE
+    // ============================================================
+
+    window.AcademySchedule = Object.freeze({
+        // Mutations
+        addClassDiscipline: addClassDiscipline,
+        removeClassDiscipline: removeClassDiscipline,
+        scheduleGroupMeeting: scheduleGroupMeeting,
+        addStudentToTeachingGroup: addStudentToTeachingGroup,
+        dropStudentFromClass: dropStudentFromClass,
+
+        // Constants (re-exported for callers)
         MIN_WEEK: MIN_WEEK,
-        MAX_WEEK: MAX_WEEK,
-        MIN_DAY: MIN_DAY,
-        MAX_DAY: MAX_DAY,
-        MIN_HOUR: MIN_HOUR,
-        MAX_HOUR: MAX_HOUR,
-        CALENDAR_START_HOUR: CALENDAR_START_HOUR,
-        CALENDAR_END_HOUR: CALENDAR_END_HOUR,
-        MAX_DURATION: MAX_DURATION,
-        MIN_CLASS_DURATION: MIN_CLASS_DURATION
-    };
+        MAX_WEEK: MAX_WEEK
+    });
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.AcademySchedule;
+        var missing = [];
+
+        var required = [
+            'addClassDiscipline',
+            'removeClassDiscipline',
+            'scheduleGroupMeeting',
+            'addStudentToTeachingGroup',
+            'dropStudentFromClass'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        if (missing.length > 0) {
+            console.warn(
+                '[AcademySchedule] Verification - some exports may be ' +
+                'missing:', missing.join(', ')
+            );
+        }
+    })();
 
 })();
