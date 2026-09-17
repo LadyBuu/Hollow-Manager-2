@@ -31,25 +31,41 @@
  *   - This module does not reimplement the predicate. It calls
  *     TeamQueries.isTeamOperational.
  *
+ * MEMBER INTERVALS MODEL (v24):
+ *   A team member entry carries an `intervals` array:
+ *
+ *     {
+ *       memberId,        // stable per-entry identifier
+ *       characterId,
+ *       role,
+ *       intervals: [
+ *         { joinPeriod, leavePeriod },
+ *         ...
+ *       ]
+ *     }
+ *
+ *   Each interval describes one stint. A character may have multiple
+ *   stints on the same team. The member VM produced by this module
+ *   carries the full intervals array, plus a flat convenience
+ *   summary (joinPeriod / leavePeriod from the first interval) for
+ *   renderers that show one period per member.
+ *
  * MEMBER ACTIVE-AT-PERIOD SEMANTICS:
- *   - TeamQueries.getActiveTeamMembers is the SINGLE SOURCE OF TRUTH
- *     for "which members are active at period P".
- *   - This module uses its result to build an active-id set. It does
- *     NOT re-parse joinPeriod / leavePeriod.
+ *   TeamQueries.getActiveTeamMembers is the SINGLE SOURCE OF TRUTH
+ *   for "which members are active at period P". This module uses its
+ *   result to build an active-id set. It does NOT re-parse intervals.
  *
  * MEMBER-MODAL CANDIDATE SEMANTICS:
- *   - The member-modal VM's `candidates` array is the pool of
- *     characters that CAN be added to the team.
+ *   The member-modal VM's `candidates` array is the pool of
+ *   characters that CAN be added to the team.
  *   - CANDIDATE POOL: when the team has a classId, the pool is
  *     restricted to the class roster at the requested period. When
- *     the team has no classId, the pool falls back to all characters.
- *   - EXCLUSIONS: current team members, instructors, and characters
- *     already in the pool via other teams' active rosters are all
- *     excluded. Instructors are excluded because they are not
- *     students.
- *   - This scoping is done HERE, not at the caller. Both the Teams
- *     tab's member modal and the Academy Weekly Teams member manager
- *     consume the same VM and get the same scoped pool.
+ *     the team has no classId, the pool falls back to all
+ *     characters.
+ *   - EXCLUSIONS: current team members (any character with an entry
+ *     on the team, active or former), instructors, and characters
+ *     already in another academic team of the same class this
+ *     period are all excluded.
  *
  * RANKING SEMANTICS:
  *   - Ranking history lives on the team as `rankingHistory`.
@@ -208,9 +224,6 @@
      *
      * ONE getCharacterById call per summary. Do not split this into
      * four helpers that each look up the character again.
-     *
-     * @param {string} charId
-     * @returns {object} { characterId, displayName, status, age, deceased }
      */
     function buildCharacterSummary(charId) {
         if (!isNonEmptyString(charId)) {
@@ -262,21 +275,130 @@
         return TeamConstants.getPeriodLabel(type);
     }
 
+    /**
+     * Does the given interval contain the given period?
+     * Both bounds inclusive. Blank bounds are unbounded on that side.
+     */
+    function intervalContainsPeriod(interval, periodNum) {
+        if (!interval || typeof interval !== 'object') {
+            return false;
+        }
+
+        var hasJoin = interval.joinPeriod !== undefined &&
+                      interval.joinPeriod !== null &&
+                      interval.joinPeriod !== '';
+        var hasLeave = interval.leavePeriod !== undefined &&
+                       interval.leavePeriod !== null &&
+                       interval.leavePeriod !== '';
+
+        if (hasJoin) {
+            var join = TeamConstants.parsePeriod(interval.joinPeriod);
+            if (join === null) { return false; }
+            if (join > periodNum) { return false; }
+        }
+
+        if (hasLeave) {
+            var leave = TeamConstants.parsePeriod(interval.leavePeriod);
+            if (leave === null) { return false; }
+            if (leave < periodNum) { return false; }
+        }
+
+        return true;
+    }
+
+    /**
+     * Build a member VM from a raw member entry.
+     *
+     * Carries:
+     *   - memberId: stable per-entry identifier
+     *   - intervals: one per stint, each with its own activeAtPeriod
+     *   - flat joinPeriod / leavePeriod: convenience, from the first
+     *     interval (or blank when there are no intervals)
+     *   - activeAtPeriod: true if any interval contains `periodNum`
+     *
+     * When `periodNum` is null, activeAtPeriod is false for every
+     * interval (nothing to compare against).
+     */
+    function buildMemberVM(member, periodNum) {
+        if (!member || typeof member !== 'object') {
+            return null;
+        }
+
+        var charId = member.characterId;
+        if (!charId) {
+            return null;
+        }
+
+        var summary = buildCharacterSummary(charId);
+
+        var intervalsVM = [];
+        var firstJoin = '';
+        var firstLeave = '';
+        var anyActive = false;
+
+        if (Array.isArray(member.intervals)) {
+            for (var i = 0; i < member.intervals.length; i++) {
+                var iv = member.intervals[i];
+                if (!iv || typeof iv !== 'object') { continue; }
+
+                var ivJoin = (iv.joinPeriod !== undefined &&
+                              iv.joinPeriod !== null)
+                    ? String(iv.joinPeriod)
+                    : '';
+                var ivLeave = (iv.leavePeriod !== undefined &&
+                               iv.leavePeriod !== null)
+                    ? String(iv.leavePeriod)
+                    : '';
+
+                var active = false;
+                if (periodNum !== null) {
+                    active = intervalContainsPeriod(iv, periodNum);
+                }
+
+                if (i === 0) {
+                    firstJoin = ivJoin;
+                    firstLeave = ivLeave;
+                }
+
+                if (active) { anyActive = true; }
+
+                intervalsVM.push({
+                    joinPeriod: ivJoin,
+                    leavePeriod: ivLeave,
+                    activeAtPeriod: active
+                });
+            }
+        }
+
+        return {
+            characterId: charId,
+            memberId: isNonEmptyString(member.memberId)
+                ? String(member.memberId)
+                : '',
+            displayName: summary.displayName,
+            status: summary.status,
+            age: summary.age,
+            deceased: summary.deceased,
+            role: member.role || 'Member',
+            intervals: intervalsVM,
+            // Convenience flat fields: the FIRST interval's bounds.
+            // Renderers that show one period per member use these.
+            // Renderers that expand per-stint use `intervals`.
+            joinPeriod: firstJoin,
+            leavePeriod: firstLeave,
+            activeAtPeriod: anyActive
+        };
+    }
+
     // ============================================================
-    // PERIOD DISPLAY (moved here from TeamQueries)
+    // PERIOD DISPLAY
     // ============================================================
-    //
-    // These are presentation strings. They belong to the projection
-    // layer, not the query layer.
 
     /**
      * Format a team's period range for display.
      *
      * Academic: "Wk 3 - Wk 14", "From Wk 3", "Until Wk 14", or "-"
      * Other:    "2025 - 2027", "From 2025", "Until 2027", or "-"
-     *
-     * @param {object} team
-     * @returns {string}
      */
     function getTeamPeriodDisplay(team) {
         if (!team || typeof team !== 'object') {
@@ -323,9 +445,6 @@
 
     /**
      * Format a team's ranking history as a display string.
-     *
-     * @param {object} team
-     * @returns {string} e.g. "2024: #3 → 2025: #1", or "No ranking history"
      */
     function getRankingHistoryDisplay(team) {
         var summary = TeamQueries.getRankingSummary(team);
@@ -351,9 +470,8 @@
      *
      * @param {string} teamId
      * @param {object} options
-     * @param {number|string} options.period - REQUIRED for member and ranking
-     *                                         resolution. Invalid -> empty
-     *                                         members / rankings.
+     * @param {number|string} options.period - REQUIRED for member and
+     *                                         ranking resolution.
      * @param {boolean} options.includeMembers
      * @param {boolean} options.includeRankings
      * @param {boolean} options.includeClass
@@ -411,21 +529,13 @@
         if (includeMembers) {
             if (periodNum !== null) {
                 var activeMembers = TeamQueries.getActiveTeamMembers(team, periodNum);
-                viewModel.members = activeMembers.map(function(member) {
-                    var summary = buildCharacterSummary(member.characterId);
-                    return {
-                        characterId: member.characterId,
-                        displayName: summary.displayName,
-                        status: summary.status,
-                        age: summary.age,
-                        deceased: summary.deceased,
-                        role: member.role || 'Member',
-                        joinPeriod: member.joinPeriod || '',
-                        leavePeriod: member.leavePeriod || '',
-                        activeAtPeriod: true
-                    };
-                });
-                viewModel.activeMemberCount = viewModel.members.length;
+                var memberVMs = [];
+                for (var i = 0; i < activeMembers.length; i++) {
+                    var vm = buildMemberVM(activeMembers[i], periodNum);
+                    if (vm) { memberVMs.push(vm); }
+                }
+                viewModel.members = memberVMs;
+                viewModel.activeMemberCount = memberVMs.length;
                 viewModel.totalMemberCount = team.members ? team.members.length : 0;
             } else {
                 viewModel.members = [];
@@ -451,17 +561,6 @@
 
     /**
      * Get a list of team list VMs.
-     *
-     * @param {object} options
-     * @param {string} options.type
-     * @param {string} options.status
-     * @param {number|string} options.period - REQUIRED. Invalid -> empty
-     *                                         member counts.
-     * @param {boolean} options.includeInactive
-     * @param {string} options.search
-     * @param {string} options.sort
-     * @param {string} options.sortDirection
-     * @returns {object} { teams: array, total: number, filtered: number }
      */
     function getTeamListViewModel(options) {
         options = options || {};
@@ -473,8 +572,6 @@
         var sort = options.sort || 'name';
         var sortDirection = options.sortDirection || 'asc';
 
-        // getTeams returns clones. The clones are safe to read and
-        // cannot mutate the store.
         var teams = TeamQueries.getTeams(
             type,
             status,
@@ -577,11 +674,11 @@
      *
      * Membership classification uses TeamQueries.getActiveTeamMembers
      * as the source of truth. The result set is turned into an
-     * active-id set. This module does NOT re-parse join/leave.
+     * active-id set. This module does NOT re-parse intervals.
      *
-     * @param {string} teamId
-     * @param {number|string} period
-     * @returns {object|null}
+     * Each member VM carries `intervals[]` for per-stint rendering,
+     * plus a flat convenience `joinPeriod` / `leavePeriod` (first
+     * interval's bounds) and `activeAtPeriod`.
      */
     function getTeamMembersViewModel(teamId, period) {
         if (!isNonEmptyString(teamId)) {
@@ -610,20 +707,16 @@
 
         var allMembers = Array.isArray(team.members) ? team.members : [];
 
-        var memberViewModels = allMembers.map(function(member) {
-            var summary = buildCharacterSummary(member.characterId);
-            return {
-                characterId: member.characterId,
-                displayName: summary.displayName,
-                status: summary.status,
-                age: summary.age,
-                deceased: summary.deceased,
-                role: member.role || 'Member',
-                joinPeriod: member.joinPeriod || '',
-                leavePeriod: member.leavePeriod || '',
-                activeAtPeriod: activeIds[String(member.characterId)] === true
-            };
-        });
+        var memberViewModels = [];
+        for (var j = 0; j < allMembers.length; j++) {
+            var vm = buildMemberVM(allMembers[j], periodNum);
+            if (!vm) { continue; }
+            // Override activeAtPeriod with the authoritative set.
+            // (The per-interval computation and the set both agree
+            // post-refactor, but the set is the source of truth.)
+            vm.activeAtPeriod = activeIds[String(vm.characterId)] === true;
+            memberViewModels.push(vm);
+        }
 
         // Active members first, then alphabetical within each group.
         memberViewModels.sort(function(a, b) {
@@ -652,14 +745,6 @@
 
     /**
      * Get a page-level view model.
-     *
-     * @param {object} options
-     * @param {string} options.type
-     * @param {string} options.status
-     * @param {number|string} options.period
-     * @param {string} options.expandedTeamId
-     * @param {string} options.search
-     * @returns {object}
      */
     function getTeamPageViewModel(options) {
         options = options || {};
@@ -669,7 +754,6 @@
         var expandedTeamId = options.expandedTeamId || null;
         var search = options.search || '';
 
-        // ---- List ----
         var listVM = getTeamListViewModel({
             type: type,
             status: status,
@@ -678,9 +762,6 @@
         });
 
         // ---- Reconcile expanded team ----
-        // The expanded team must be in the filtered list. A stale ID
-        // from UI state (e.g. team deleted, or type filter changed)
-        // is invalidated rather than silently returned.
         var expandedTeam = null;
         var resolvedExpandedId = null;
 
@@ -701,7 +782,6 @@
             }
         }
 
-        // ---- Counts by type ----
         var countProfessional = countTeamsByType('professional');
         var countTemporary = countTeamsByType('temporary');
         var countCivilian = countTeamsByType('civilian');
@@ -736,9 +816,6 @@
         };
     }
 
-    /**
-     * Count teams of a given type. Operational only.
-     */
     function countTeamsByType(type) {
         var teams = TeamQueries.getTeams(type, 'operational', false);
         return teams.length;
@@ -750,13 +827,6 @@
 
     /**
      * Get a view model for the team form.
-     *
-     * Consumed by TeamEvents when opening the team form. Contains the
-     * existing team (or null for create), the class selector options,
-     * and the mission selector options. No raw domain entities.
-     *
-     * @param {string|null} teamId
-     * @returns {object}
      */
     function getTeamFormViewModel(teamId) {
         var team = null;
@@ -767,7 +837,6 @@
         var isEdit = !!team;
         var t = team || {};
 
-        // ---- Class options ----
         var classOptions = [];
         if (AcademyQueries && typeof AcademyQueries.getClasses === 'function') {
             var classes = AcademyQueries.getClasses() || [];
@@ -781,12 +850,6 @@
             }
         }
 
-        // ---- Mission options ----
-        // Missions live in window.data.missions. This is a
-        // Mission-domain read. It should eventually come from a
-        // MissionQueries call; for now it reads the store directly
-        // because no Mission read surface is available in this code
-        // path.
         var missionOptions = [];
         var data = window.data || {};
         var missions = Array.isArray(data.missions) ? data.missions : [];
@@ -828,23 +891,9 @@
     /**
      * Get a view model for the member modal.
      *
-     * CANDIDATE POOL:
-     *   - When the team has a classId, candidates are restricted to
-     *     the class roster at the requested period.
-     *   - When the team has no classId, candidates fall back to all
-     *     characters.
-     *
-     * EXCLUSIONS:
-     *   - Current team members (all of them, not just active).
-     *   - Instructors (they are not students).
-     *   - Characters who are members of ANOTHER academic team for the
-     *     same class at the requested period. This prevents a
-     *     character from being added to two academic teams within the
-     *     same class and week.
-     *
-     * @param {string} teamId
-     * @param {number|string} period
-     * @returns {object|null}
+     * Member list carries intervals[] per member. Candidate pool is
+     * unchanged: any character with an entry on the team (active or
+     * former) is excluded from the pool.
      */
     function getMemberModalViewModel(teamId, period) {
         if (!isNonEmptyString(teamId)) {
@@ -860,7 +909,6 @@
 
         var membersVM = getTeamMembersViewModel(teamId, periodNum);
 
-        // ---- Current member IDs (all, not just active) ----
         var currentIds = Object.create(null);
         if (Array.isArray(team.members)) {
             for (var i = 0; i < team.members.length; i++) {
@@ -871,11 +919,6 @@
             }
         }
 
-        // ---- Allowed set (class-scoped) ----
-        // When the team has a classId, restrict the pool to the class
-        // roster at the requested period. When the team has no
-        // classId, allowedIds stays null and the pool is unrestricted
-        // (except for the exclusions below).
         var allowedIds = null;
         var teamClassId = isNonEmptyString(team.classId) ? String(team.classId) : null;
 
@@ -889,11 +932,6 @@
             }
         }
 
-        // ---- Assigned-elsewhere set ----
-        // For each OTHER academic team in the same class, collect the
-        // active member IDs at the requested period. Those IDs are
-        // excluded from the candidate pool. This enforces "one
-        // academic team per class per week" for the candidate list.
         var assignedElsewhere = Object.create(null);
         if (teamClassId !== null && periodNum !== null) {
             var siblingTeams = TeamQueries.getTeamsByClass(
@@ -921,7 +959,6 @@
             }
         }
 
-        // ---- Build candidate pool ----
         var allChars = CharacterQueries.getCharacters() || [];
         var candidates = [];
 
@@ -931,17 +968,9 @@
 
             var charId = String(char.id);
 
-            // Exclude current team members.
             if (currentIds[charId]) { continue; }
-
-            // Exclude instructors.
             if (CharacterQueries.isInstructor(char)) { continue; }
-
-            // Exclude characters not in the class roster.
             if (allowedIds !== null && !allowedIds[charId]) { continue; }
-
-            // Exclude characters already assigned to another academic
-            // team for this class at this period.
             if (assignedElsewhere[charId]) { continue; }
 
             candidates.push({
@@ -967,9 +996,6 @@
 
     /**
      * Get a view model for the ranking modal.
-     *
-     * @param {string} teamId
-     * @returns {object|null}
      */
     function getRankingModalViewModel(teamId) {
         if (!isNonEmptyString(teamId)) {
@@ -995,12 +1021,6 @@
 
     /**
      * Get a view model for the filter bar.
-     *
-     * Consumed by TeamRender.renderFilterBar. Reads persisted filter
-     * state from TeamUI when it is available.
-     *
-     * @param {string} tab
-     * @returns {object}
      */
     function getFilterBarViewModel(tab) {
         var normalized = TeamConstants.normalizeTeamType(tab) || 'professional';
@@ -1025,32 +1045,6 @@
 
     /**
      * Get candidate characters for a team type at a period.
-     *
-     * Returns VM objects, not raw Character entities. Any caller that
-     * needs the raw entity for a mutation uses CharacterQueries
-     * directly. The UI projection does not hand out live records.
-     *
-     * ELIGIBILITY RULES:
-     *   These rules are Team-domain policy. They currently live here
-     *   because the only consumer is this projection. If the
-     *   mutation path ever needs to revalidate eligibility, the rules
-     *   should move to TeamQueries.getEligibleCharacters and both
-     *   this module and the mutation path call it.
-     *
-     *   Rules:
-     *     - Team exists (any status).
-     *     - Period is valid for the team type.
-     *     - Character is not deceased.
-     *     - Character status is compatible with the team type.
-     *       academic:     trainee, rookie, junior, student
-     *       civilian:     civilian
-     *       professional: trainee, rookie, junior, senior, instructor,
-     *                     support, student
-     *       temporary:    same as professional
-     *
-     * @param {string} teamType
-     * @param {number|string} period
-     * @returns {array} Array of { id, name, status }
      */
     function getCandidateCharactersAtPeriod(teamType, period) {
         var normalizedType = TeamConstants.normalizeTeamType(teamType);
@@ -1111,7 +1105,6 @@
         if (teamType === 'civilian') {
             return ['civilian'];
         }
-        // professional, temporary
         return ['trainee', 'rookie', 'junior', 'senior', 'instructor', 'support', 'student'];
     }
 
