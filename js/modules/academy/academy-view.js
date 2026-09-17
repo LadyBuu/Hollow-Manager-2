@@ -23,6 +23,7 @@
  *     exam-pair-remove)
  *   - Handle Weekly Teams create/edit/delete/manage-members
  *   - Handle Auto-Distribute for Weekly Teams
+ *   - Handle Empty Teams (clear this class's weekly-team windows)
  *   - Handle character class membership mutations
  *     (character-remove-from-class)
  *
@@ -38,12 +39,19 @@
  *   Manage Members for a weekly team routes to
  *   AcademyWeeklyTeamsMembers, which is Academy-scoped. It reads the
  *   candidate pool from the class roster, writes membership to
- *   academy.weeklyTeams via the ranged API (AcademyWeeklyTeams.addMember
- *   / endMembership / removeMemberRecord), and never touches the
- *   persistent Team entity or its roster. This preserves the Option 1
- *   split: week-scoped assignments live in weeklyTeams; persistent
- *   membership lives on team.members; the two stores are intentionally
- *   independent.
+ *   academy.weeklyTeams via the ranged API
+ *   (AcademyWeeklyTeams.addMember / endMembership / removeMemberRecord),
+ *   and never touches the persistent Team entity or its roster
+ *   directly. Since v22, weekly-team membership lives exclusively on
+ *   the persistent Team entity's members[] array, and the ranged
+ *   API writes through to that array via transaction-local helpers.
+ *
+ * EMPTY TEAMS:
+ *   "Empty Teams" clears every weekly-team window record for the
+ *   current class in a single transaction. It does NOT delete the
+ *   persistent Team entities; those remain and continue to appear
+ *   in the Teams tab and the Tournaments view. It only removes the
+ *   teams from the Weekly Teams schedule.
  *
  * TEAM CORE CONFIGURATION:
  *   TeamCore requires a characterProvider via configure(). The Teams
@@ -69,18 +77,29 @@
  *       team for this class at this week are considered.
  *     - "Assigned" is derived from TeamQueries.getActiveTeamMembers
  *       for every active academic team of the class at the week.
+ *     - Distribution is PER STUDENT. For each unassigned student,
+ *       the existing team with the lowest current active-member count
+ *       that still has capacity is chosen. A team's capacity is
+ *       `groupSize - currentCount`. When no existing team has
+ *       capacity, a new team is created.
  *     - New teams are named `<namePrefix><N>`, continuing from the
  *       highest numeric suffix already in use (or starting at 1 if
  *       none exists).
  *     - New teams are academic, start at the current week, and have
  *       an open endPeriod.
- *     - A trailing partial group of size 1 is absorbed into the
- *       previous group rather than left unassigned.
- *     - Best-fit: existing teams with capacity are filled in
- *       ascending order of current active-member count.
+ *     - Newly-created teams are immediately opened for the current
+ *       week via AcademyWeeklyTeams.ensureWindow, so they appear in
+ *       the Weekly Teams list without waiting for a member add.
  *     - Both TeamCore.addMember (persistent team entity) and
- *       AcademyWeeklyTeams.addMember (ranged week-scoped assignment)
- *       are written so the two stores stay in sync.
+ *       AcademyWeeklyTeams.ensureWindow (week window) are written so
+ *       the two stores stay in sync.
+ *
+ *   CLEAR EXISTING:
+ *     The Auto-Distribute modal exposes a "Clear existing teams"
+ *     checkbox. When checked, every weekly-team window record for
+ *     the class is deleted before distribution runs. Persistent Team
+ *     entities are NOT deleted. This is the same operation as the
+ *     "Empty Teams" button.
  *
  *   IDEMPOTENCY:
  *     Running Auto-Distribute twice in a row is safe. The second run
@@ -90,13 +109,21 @@
  *     Each mutation (createTeam, addMember) goes through
  *     MutationPipeline and is individually atomic. The sequence as a
  *     whole is not. If a step fails, earlier steps remain applied.
- *     This matches the semantics of academy-distribute.js and is
+ *     This matches the semantics of the distribution workflow and is
  *     documented in the user-facing summary.
  *
  * ACTION ROUTING:
  *   Actions carry a prefix (people-, character-, discipline-,
  *   location-, ranking-, weekly-teams-, exam-) so dispatch is
  *   deterministic and does not rely on handler chaining.
+ *
+ *   Weekly Teams verbs:
+ *     weekly-teams-create-team       open the create form
+ *     weekly-teams-edit-team         open the edit form
+ *     weekly-teams-delete-team       delete the persistent Team
+ *     weekly-teams-auto-distribute   open the distribute modal
+ *     weekly-teams-manage-members    open the member manager
+ *     weekly-teams-empty-teams       clear this class's week windows
  *
  *   Exam reopen verbs (v21):
  *     exam-reopen-exam     flips the exam status back to 'active'
@@ -120,6 +147,7 @@
  *   - AcademyDisciplineView / AcademyLocationView / AcademyRankingView /
  *     AcademyWeeklyTeamsView / AcademyTournamentView
  *   - AcademyWeeklyTeamsMembers (Academy-scoped member manager)
+ *   - AcademyWeeklyTeams (window mutations)
  *   - CalendarRenderer
  *   - TeamCore / TeamQueries / TeamConstants
  *   - Modal / NotificationSystem
@@ -1459,9 +1487,69 @@
             case 'weekly-teams-manage-members':
                 openWeeklyTeamMembersModal(el.dataset.teamId);
                 return;
+            case 'weekly-teams-empty-teams':
+                handleWeeklyTeamsEmpty();
+                return;
             default:
                 return;
         }
+    }
+
+    /**
+     * Empty Teams: delete every weekly-team window record for the
+     * current class. Persistent Team entities are NOT touched; they
+     * remain and continue to appear in the Teams tab and Tournaments
+     * view. Only the Weekly Teams schedule is cleared.
+     */
+    function handleWeeklyTeamsEmpty() {
+        if (!_selectedWeeklyTeamsClassId) {
+            notify('Select a class first.', 'error');
+            return;
+        }
+
+        var AWT = getAcademyWeeklyTeams();
+        if (!AWT || typeof AWT.clearClassWindows !== 'function') {
+            notify('Weekly Teams module not available.', 'error');
+            return;
+        }
+
+        // Count the current windows so the confirmation is informative.
+        var records = [];
+        try {
+            records = AWT.getAllTeamRecords(_selectedWeeklyTeamsClassId) || [];
+        } catch (e) {
+            records = [];
+        }
+
+        if (records.length === 0) {
+            notify('No teams are scheduled for this class.', 'info');
+            return;
+        }
+
+        var message =
+            'Remove all ' + records.length +
+            ' scheduled team' + (records.length === 1 ? '' : 's') +
+            ' from the Weekly Teams view for this class?\n\n' +
+            'The teams themselves are NOT deleted. They will still ' +
+            'appear in the Teams tab and in Exams. Only their ' +
+            'scheduling for the weekly view is cleared.';
+
+        if (!confirm(message)) {
+            return;
+        }
+
+        AWT.clearClassWindows(_selectedWeeklyTeamsClassId)
+            .then(function(result) {
+                if (result && result.success) {
+                    _selectedWeeklyTeamId = null;
+                    refreshView();
+                }
+                // On failure, MutationPipeline has already notified.
+            })
+            .catch(function(err) {
+                console.warn('[AcademyView] clearClassWindows failed:', err);
+                notify('Failed to empty teams.', 'error');
+            });
     }
 
     function openWeeklyTeamForm(teamId) {
@@ -1601,10 +1689,45 @@
             }
 
             promise.then(function(result) {
-                if (result && result.success) {
-                    close();
-                    refreshView();
+                if (!result || !result.success) {
+                    return;
                 }
+
+                // On create, open the week window so the new team
+                // immediately appears in the Weekly Teams list.
+                if (!isEdit) {
+                    var createdId = result.data && result.data.id
+                        ? String(result.data.id)
+                        : (result.data && result.data.team && result.data.team.id
+                            ? String(result.data.team.id)
+                            : null);
+
+                    var AWT = getAcademyWeeklyTeams();
+                    if (createdId && AWT &&
+                        typeof AWT.ensureWindow === 'function') {
+                        AWT.ensureWindow(
+                            _selectedWeeklyTeamsClassId,
+                            createdId,
+                            week
+                        ).then(function() {
+                            close();
+                            refreshView();
+                        }).catch(function(err) {
+                            console.warn(
+                                '[AcademyView] ensureWindow for new team failed:',
+                                err
+                            );
+                            // The team exists; it just may not show in
+                            // the current week. Still refresh.
+                            close();
+                            refreshView();
+                        });
+                        return;
+                    }
+                }
+
+                close();
+                refreshView();
             }).catch(function(err) {
                 console.warn('[AcademyView] save weekly team failed:', err);
                 notify('Failed to save team.', 'error');
@@ -1750,7 +1873,8 @@
         }
 
         var AWT = getAcademyWeeklyTeams();
-        if (!AWT || typeof AWT.addMember !== 'function') {
+        if (!AWT || typeof AWT.addMember !== 'function' ||
+            typeof AWT.ensureWindow !== 'function') {
             notify('Weekly teams store is not available.', 'error');
             return;
         }
@@ -1832,7 +1956,8 @@
                 className: className,
                 week: week,
                 groupSize: payload.groupSize,
-                namePrefix: payload.namePrefix
+                namePrefix: payload.namePrefix,
+                clearExisting: payload.clearExisting === true
             }).then(function(result) {
                 if (result && result.success) {
                     close();
@@ -1845,6 +1970,24 @@
         });
     }
 
+    /**
+     * Auto-Distribute. Places unassigned students into existing
+     * academic teams, or creates new teams when no existing team has
+     * capacity.
+     *
+     * Distribution is PER STUDENT. For each unassigned student, the
+     * existing team with the lowest current active-member count that
+     * still has capacity is chosen. Capacity is
+     * `groupSize - currentCount`. New teams are only created when
+     * every existing team has reached groupSize.
+     *
+     * When `ctx.clearExisting` is true, every weekly-team window
+     * record for the class is deleted first. Persistent Team
+     * entities are NOT deleted; they simply become unscheduled for
+     * the weekly view. The distribution then runs against an empty
+     * set of existing week teams, so every student lands in a new
+     * team.
+     */
     function runAutoDistribute(ctx) {
         var TeamCore = getTeamCore();
         var TeamQ = getTeamQueries();
@@ -1867,6 +2010,32 @@
             });
         }
 
+        // ---- Clear existing week windows (optional) ----
+        var preChain = Promise.resolve();
+        if (ctx.clearExisting === true &&
+            typeof AWT.clearClassWindows === 'function') {
+            preChain = AWT.clearClassWindows(ctx.classId).then(function() {
+                // Recurse with clearExisting disabled. The clear
+                // operation is now done; the recursive call will see
+                // an empty set of week windows.
+                return null;
+            }).catch(function(err) {
+                console.warn(
+                    '[AcademyView] clearClassWindows failed during ' +
+                    'Auto-Distribute:', err
+                );
+                // Continue anyway; the distribution will just treat
+                // existing windows as present.
+                return null;
+            });
+        }
+
+        return preChain.then(function() {
+            return runAutoDistributeCore(ctx, groupSize, TeamCore, TeamQ, TeamConstants, AWT);
+        });
+    }
+
+    function runAutoDistributeCore(ctx, groupSize, TeamCore, TeamQ, TeamConstants, AWT) {
         var roster = AcademyAggregator.getClassStudentsViewModel(ctx.classId) || [];
         if (roster.length === 0) {
             notify('The class has no students.', 'info');
@@ -1890,12 +2059,14 @@
             activeThisWeek.push(t);
         }
 
+        // Current active counts per team, and the set of students
+        // already assigned.
         var assignedIds = Object.create(null);
-        var teamCurrentCounts = {};
+        var teamCounts = Object.create(null);
         for (var a = 0; a < activeThisWeek.length; a++) {
             var team = activeThisWeek[a];
             var activeMembers = TeamQ.getActiveTeamMembers(team, ctx.week);
-            teamCurrentCounts[String(team.id)] = activeMembers.length;
+            teamCounts[String(team.id)] = activeMembers.length;
             for (var b = 0; b < activeMembers.length; b++) {
                 var m = activeMembers[b];
                 if (m && m.characterId) {
@@ -1904,6 +2075,7 @@
             }
         }
 
+        // Unassigned students, alphabetically.
         var unassigned = [];
         for (var r = 0; r < roster.length; r++) {
             var student = roster[r];
@@ -1911,185 +2083,160 @@
             if (assignedIds[String(student.id)]) { continue; }
             unassigned.push(student);
         }
+        unassigned.sort(function(a2, b2) {
+            return String(a2.name || '').localeCompare(String(b2.name || ''));
+        });
 
         if (unassigned.length === 0) {
-            notify('All students are already assigned to a team this week.', 'info');
+            notify(
+                'All students are already assigned to a team this week.',
+                'info'
+            );
             return Promise.resolve({
                 success: false,
                 message: 'No unassigned students.'
             });
         }
 
-        var shuffled = shuffleArray(unassigned);
-        var groups = [];
-        for (var g = 0; g < shuffled.length; g += groupSize) {
-            groups.push(shuffled.slice(g, g + groupSize));
-        }
-
-        if (groups.length >= 2 && groups[groups.length - 1].length === 1) {
-            var lastGroup = groups.pop();
-            groups[groups.length - 1] = groups[groups.length - 1].concat(lastGroup);
-        }
-
-        var capacityQueue = [];
-        for (var c = 0; c < activeThisWeek.length; c++) {
-            var t2 = activeThisWeek[c];
-            var count = teamCurrentCounts[String(t2.id)] || 0;
-            capacityQueue.push({
-                teamId: t2.id,
-                teamName: t2.name || 'Unnamed Team',
-                currentCount: count,
-                capacity: Math.max(0, groupSize - count)
-            });
-        }
-        capacityQueue.sort(function(a2, b2) {
-            if (a2.currentCount !== b2.currentCount) {
-                return a2.currentCount - b2.currentCount;
-            }
-            return (a2.teamName || '').localeCompare(b2.teamName || '');
+        // Sort existing teams by current count ascending (best-fit).
+        var rankedExisting = activeThisWeek.slice().sort(function(a2, b2) {
+            var ca = teamCounts[String(a2.id)] || 0;
+            var cb = teamCounts[String(b2.id)] || 0;
+            if (ca !== cb) { return ca - cb; }
+            return String(a2.name || '').localeCompare(String(b2.name || ''));
         });
 
         var namePrefix = ctx.namePrefix || 'Team ';
         var highestExistingNumber = findHighestTeamNumber(activeThisWeek, namePrefix);
         var nextNumber = highestExistingNumber + 1;
 
-        var plan = [];
-        var capacityIdx = 0;
-        var newTeamsCreated = 0;
+        // Per-team assignment plan.
+        var existingPlans = [];
+        for (var e = 0; e < rankedExisting.length; e++) {
+            existingPlans.push({
+                type: 'existing',
+                teamId: String(rankedExisting[e].id),
+                teamName: rankedExisting[e].name || 'Unnamed Team',
+                charIds: []
+            });
+        }
+        var newPlans = [];
 
-        for (var p = 0; p < groups.length; p++) {
-            var group = groups[p];
+        // Per-student placement.
+        for (var u = 0; u < unassigned.length; u++) {
+            var studentId = String(unassigned[u].id);
 
-            var placed = false;
-            while (capacityIdx < capacityQueue.length) {
-                var slot = capacityQueue[capacityIdx];
-                if (slot.capacity >= group.length) {
-                    plan.push({
-                        type: 'existing',
-                        teamId: slot.teamId,
-                        teamName: slot.teamName,
-                        charIds: group.map(function(s) { return String(s.id); })
-                    });
-                    slot.capacity -= group.length;
-                    slot.currentCount += group.length;
-                    placed = true;
-                    break;
+            var bestPlan = null;
+            var bestCount = Infinity;
+            for (var p = 0; p < existingPlans.length; p++) {
+                var plan = existingPlans[p];
+                var existingCount = teamCounts[plan.teamId] || 0;
+                var plannedCount = plan.charIds.length;
+                var total = existingCount + plannedCount;
+                if (total >= groupSize) { continue; }
+                if (total < bestCount) {
+                    bestCount = total;
+                    bestPlan = plan;
                 }
-                capacityIdx++;
             }
 
-            if (!placed) {
-                var newName = namePrefix + nextNumber;
-                nextNumber++;
-                newTeamsCreated++;
-                plan.push({
-                    type: 'create',
-                    teamName: newName,
-                    charIds: group.map(function(s) { return String(s.id); })
-                });
+            if (bestPlan) {
+                bestPlan.charIds.push(studentId);
+                continue;
             }
+
+            var newName = namePrefix + nextNumber;
+            nextNumber++;
+            var newPlan = {
+                type: 'create',
+                teamName: newName,
+                charIds: [studentId]
+            };
+            newPlans.push(newPlan);
         }
 
-        var existingTeamIdsInPlan = Object.create(null);
-        var addedToExisting = 0;
-
-        var createdNewTeams = 0;
+        // Execute. Existing plans first, then new plans.
         var failed = false;
         var failureMessage = null;
-
+        var addedToExisting = 0;
+        var createdNewTeams = 0;
         var chain = Promise.resolve();
 
-        plan.forEach(function(entry) {
-            chain = chain.then(function() {
-                if (failed) { return; }
-
-                if (entry.type === 'existing') {
-                    var teamId = String(entry.teamId);
-                    existingTeamIdsInPlan[teamId] = true;
-                    var memberChain = Promise.resolve();
-                    entry.charIds.forEach(function(charId) {
-                        memberChain = memberChain.then(function() {
-                            if (failed) { return; }
-
-                            return TeamCore.addMember(teamId, {
-                                characterId: charId,
-                                role: 'Member',
-                                joinPeriod: String(ctx.week),
-                                leavePeriod: ''
-                            }).then(function(res) {
-                                if (!res || !res.success) {
-                                    failed = true;
-                                    failureMessage =
-                                        'Could not add a student to an existing team: ' +
-                                        (res && res.message ? res.message : 'unknown error');
-                                    console.warn(
-                                        '[AcademyView] addMember rejected:',
-                                        res && res.message
-                                    );
-                                    return;
-                                }
-
-                                return AWT.addMember(
-                                    ctx.classId, teamId, charId, ctx.week
-                                ).then(function(rangedRes) {
-                                    if (!rangedRes || !rangedRes.success) {
-                                        failed = true;
-                                        failureMessage =
-                                            'Could not save the weekly assignment: ' +
-                                            (rangedRes && rangedRes.message
-                                                ? rangedRes.message
-                                                : 'unknown error');
-                                        console.warn(
-                                            '[AcademyView] AWT.addMember rejected:',
-                                            rangedRes && rangedRes.message
-                                        );
-                                        return;
-                                    }
-                                    addedToExisting++;
-                                });
-                            });
-                        });
-                    });
-                    return memberChain;
-                }
-
-                if (entry.type === 'create') {
-                    return TeamCore.createTeam({
-                        name: entry.teamName,
-                        type: 'academic',
-                        classId: ctx.classId,
-                        startPeriod: String(ctx.week),
-                        endPeriod: '',
-                        status: 'active'
+        existingPlans.forEach(function(plan) {
+            if (plan.charIds.length === 0) { return; }
+            plan.charIds.forEach(function(charId) {
+                chain = chain.then(function() {
+                    if (failed) { return; }
+                    return TeamCore.addMember(plan.teamId, {
+                        characterId: charId,
+                        role: 'Member',
+                        joinPeriod: String(ctx.week),
+                        leavePeriod: ''
                     }).then(function(res) {
                         if (!res || !res.success) {
                             failed = true;
                             failureMessage =
-                                'Could not create a new team: ' +
+                                'Could not add a student to ' + plan.teamName + ': ' +
                                 (res && res.message ? res.message : 'unknown error');
                             console.warn(
-                                '[AcademyView] createTeam rejected:',
+                                '[AcademyView] addMember rejected:',
                                 res && res.message
                             );
                             return;
                         }
+                        addedToExisting++;
+                    });
+                });
+            });
+        });
 
-                        var newTeamId = res.data && res.data.id
-                            ? String(res.data.id)
-                            : (res.data && res.data.team && res.data.team.id
-                                ? String(res.data.team.id)
-                                : null);
+        newPlans.forEach(function(plan) {
+            chain = chain.then(function() {
+                if (failed) { return; }
+                return TeamCore.createTeam({
+                    name: plan.teamName,
+                    type: 'academic',
+                    classId: ctx.classId,
+                    startPeriod: String(ctx.week),
+                    endPeriod: '',
+                    status: 'active'
+                }).then(function(res) {
+                    if (!res || !res.success) {
+                        failed = true;
+                        failureMessage =
+                            'Could not create team ' + plan.teamName + ': ' +
+                            (res && res.message ? res.message : 'unknown error');
+                        console.warn(
+                            '[AcademyView] createTeam rejected:',
+                            res && res.message
+                        );
+                        return;
+                    }
 
-                        if (!newTeamId) {
-                            failed = true;
-                            failureMessage = 'Newly-created team has no id.';
-                            return;
-                        }
+                    var newTeamId = res.data && res.data.id
+                        ? String(res.data.id)
+                        : (res.data && res.data.team && res.data.team.id
+                            ? String(res.data.team.id)
+                            : null);
 
-                        createdNewTeams++;
+                    if (!newTeamId) {
+                        failed = true;
+                        failureMessage =
+                            'Newly-created team ' + plan.teamName + ' has no id.';
+                        return;
+                    }
 
+                    createdNewTeams++;
+
+                    // Open the week window first, then add members.
+                    // The window must exist for the team to appear in
+                    // the Weekly Teams list even if a member add
+                    // fails later.
+                    return AWT.ensureWindow(
+                        ctx.classId, newTeamId, ctx.week
+                    ).then(function() {
                         var memberChain = Promise.resolve();
-                        entry.charIds.forEach(function(charId) {
+                        plan.charIds.forEach(function(charId) {
                             memberChain = memberChain.then(function() {
                                 if (failed) { return; }
                                 return TeamCore.addMember(newTeamId, {
@@ -2101,7 +2248,8 @@
                                     if (!inner || !inner.success) {
                                         failed = true;
                                         failureMessage =
-                                            'Could not add a student to a new team: ' +
+                                            'Could not add a student to ' +
+                                            plan.teamName + ': ' +
                                             (inner && inner.message
                                                 ? inner.message
                                                 : 'unknown error');
@@ -2109,51 +2257,33 @@
                                             '[AcademyView] addMember rejected:',
                                             inner && inner.message
                                         );
-                                        return;
                                     }
-                                    return AWT.addMember(
-                                        ctx.classId,
-                                        newTeamId,
-                                        charId,
-                                        ctx.week
-                                    ).then(function(rangedRes) {
-                                        if (!rangedRes || !rangedRes.success) {
-                                            failed = true;
-                                            failureMessage =
-                                                'Could not save the weekly assignment: ' +
-                                                (rangedRes && rangedRes.message
-                                                    ? rangedRes.message
-                                                    : 'unknown error');
-                                            console.warn(
-                                                '[AcademyView] AWT.addMember rejected:',
-                                                rangedRes && rangedRes.message
-                                            );
-                                        }
-                                    });
                                 });
                             });
                         });
                         return memberChain;
                     });
-                }
+                });
             });
         });
 
         return chain.then(function() {
             if (failed) {
                 notify(failureMessage || 'Auto-Distribute failed.', 'error');
-                return { success: false, message: failureMessage };
+                return {
+                    success: false,
+                    message: failureMessage
+                };
             }
 
-            var existingCount = plan.filter(function(en) {
-                return en.type === 'existing';
+            var existingCount = existingPlans.filter(function(en) {
+                return en.charIds.length > 0;
             }).length;
-            var newCount = plan.filter(function(en) {
-                return en.type === 'create';
-            }).length;
-            var totalStudents = plan.reduce(function(sum, en) {
-                return sum + en.charIds.length;
-            }, 0);
+            var newCount = newPlans.length;
+            var totalStudents = addedToExisting;
+            for (var n = 0; n < newPlans.length; n++) {
+                totalStudents += newPlans[n].charIds.length;
+            }
 
             var parts = [];
             parts.push('Placed ' + totalStudents +
@@ -2199,17 +2329,6 @@
         }
 
         return highest;
-    }
-
-    function shuffleArray(arr) {
-        var result = arr.slice();
-        for (var i = result.length - 1; i > 0; i--) {
-            var j = Math.floor(Math.random() * (i + 1));
-            var tmp = result[i];
-            result[i] = result[j];
-            result[j] = tmp;
-        }
-        return result;
     }
 
     // ============================================================
