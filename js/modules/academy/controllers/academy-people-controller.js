@@ -26,7 +26,7 @@
  *   - The character detail panel (when a character is selected), and
  *     the tabs within it.
  *   - The character-mode checkbox (student / instructor toggle).
- *   - The Drop Out flow (CharacterEliminations.addStandalone).
+ *   - The Drop Out flow (AcademyEliminations.addStandalone).
  *   - The Remove from Class flow
  *     (CharacterClasses.removeClassById).
  *   - The Enroll / Leave Discipline flows
@@ -80,6 +80,12 @@
  *   else unmount" pattern, expressed as "always unmount first."
  *   Unmount is idempotent, so this is safe.
  *
+ * ELIMINATION OWNERSHIP:
+ *   Drop Out routes through AcademyEliminations.addStandalone. The
+ *   AcademyEliminations module owns the character-side standalone
+ *   elimination mutation. Tournament-generated eliminations are the
+ *   cascade's concern and are not touched here.
+ *
  * DEPENDENCIES:
  *   - window.AcademyUI
  *   - window.AcademyAggregator
@@ -91,10 +97,10 @@
  *   - window.AcademyCRUDModals          (lazy)
  *   - window.AcademyDisciplines         (lazy)
  *   - window.AcademyEnrolments          (lazy)
+ *   - window.AcademyEliminations        (lazy)
  *   - window.AcademyGroups              (lazy)
  *   - window.CharacterQueries           (lazy)
  *   - window.CharacterClasses           (lazy)
- *   - window.CharacterEliminations      (lazy)
  *   - window.NotificationSystem
  */
 
@@ -183,6 +189,10 @@
 
     function getEnrolments() {
         return window.AcademyEnrolments || null;
+    }
+
+    function getAcademyEliminations() {
+        return window.AcademyEliminations || null;
     }
 
     function getGroups() {
@@ -937,14 +947,14 @@
             return;
         }
 
-        var CE = window.CharacterEliminations;
-        if (!CE || typeof CE.addStandalone !== 'function') {
+        var AE = getAcademyEliminations();
+        if (!AE || typeof AE.addStandalone !== 'function') {
             notify('Elimination module not available.', 'error');
             return;
         }
 
         var week = AcademyUI.getDisplayWeek();
-        CE.addStandalone(charId, week, 'Dropped out').then(function(result) {
+        AE.addStandalone(charId, week, 'Dropped out').then(function(result) {
             if (result && result.success) {
                 var ctx = getContext();
                 ctx.onChange();
@@ -1398,10 +1408,7 @@
 
         // Reset the character tab bookkeeping. The active tab is
         // feature state: it is reset on unmount so that coming back
-        // to the People view starts on 'main'. This matches the
-        // pre-S1.5 shell's behavior, which reset the tab whenever
-        // the selected character changed (and any view switch
-        // necessarily triggers a character-detail refresh).
+        // to the People view starts on 'main'.
         _activeCharacterTab = 'main';
         _lastCharacterIdForTab = null;
 
