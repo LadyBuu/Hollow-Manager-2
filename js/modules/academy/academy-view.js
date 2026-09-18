@@ -1357,7 +1357,15 @@
             return;
         }
 
+        // C5 — edit exam. Opens a modal; the events module routes
+        // the collected payload through TournamentCore.updateTournament.
+        if (action === 'exam-edit') {
+            Events.editExam(el.dataset.examId);
+            return;
+        }
+
         var examId = el.dataset.examId || null;
+
 
         switch (action) {
             case 'exam-create':
