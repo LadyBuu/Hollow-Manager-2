@@ -226,16 +226,46 @@
     <!-- ============================================================
          CHARACTER DOMAIN
          ============================================================
+         Load order within this block matters:
+
+           character-generator.js
+           character-stats.js       — stat + magic calculation,
+                                      class derivation, HP/MP.
+                                      No move ownership as of S10.2.
+           character-moves.js       — special-move record store.
+                                      Owns char.specialMoves reads
+                                      and mutations. Loads AFTER
+                                      character-stats.js so the
+                                      stats module has no runtime
+                                      dependency on it, and
+                                      BEFORE character-events.js
+                                      so the event handlers can
+                                      resolve CharacterMoves at
+                                      module-init time.
+           character-crud.js
+           character-aggregator.js
+           character-list.js
+           character-form.js
+           character-detail.js
+           character-class-view.js
+           character-stats-view.js
+           character-views.js
+           character-events.js      — depends on both
+                                      CharacterStats (stat rolls)
+                                      and CharacterMoves (move
+                                      add/remove). Loads after
+                                      both.
+           index.js
+
          Note: character-eliminations.js and
          character-elimination-view.js were removed in the E-track.
-
-         character-classes.js is scheduled for removal in S10.1
-         (mutations move to academy-classes.js).
+         character-classes.js was removed in S10.1 (mutations moved
+         to academy-classes.js).
          ============================================================ -->
     <script src="js/modules/characters/character-generator.js"></script>
     <script src="js/modules/characters/character-stats.js"></script>
+    <script src="js/modules/characters/character-moves.js"></script>
     <script src="js/modules/characters/character-crud.js"></script>
-    <script src="js/modules/characters/character-classes.js"></script>
     <script src="js/modules/characters/character-aggregator.js"></script>
     <script src="js/modules/characters/character-list.js"></script>
     <script src="js/modules/characters/character-form.js"></script>
