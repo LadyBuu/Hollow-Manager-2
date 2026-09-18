@@ -147,9 +147,15 @@
  *
  *   PER-PARTITION CALLS:
  *     For each partition, generateMatches is called with an
- *     explicit participants list, one at a time in sequence. Each
+ *     explicit `participants` list, one at a time in sequence. Each
  *     call is its own transaction. A failing call does not roll
  *     back the partitions that already succeeded.
+ *
+ *     The `participants` option is what makes this work. Without it,
+ *     generateMatches re-derives the pool from the snapshot on every
+ *     call and would emit the same matches every time (or, in the
+ *     degenerate case, see an empty eligible pool and throw). The
+ *     tolerant wrapper is the ONLY caller that passes it.
  *
  *   RETURN SHAPE:
  *     {
@@ -1810,6 +1816,26 @@
     //   back and nothing is created. Callers that want partial
     //   success (skip the bad group, keep the good ones) use
     //   generateMatchesTolerant.
+    //
+    // EXPLICIT BASE POOL (options.participants):
+    //   By default, the eligible pool is derived from the snapshot:
+    //   every tournament participant who is not eliminated and not
+    //   already in a match this round.
+    //
+    //   When `options.participants` is supplied, it REPLACES that
+    //   derivation: the caller has already done the partition and is
+    //   asking this function to build matches for exactly these
+    //   participants. The caller is responsible for ensuring the
+    //   list contains only eligible, non-eliminated, non-already-
+    //   assigned participants; this function still validates each
+    //   participant against the snapshot before building, so a
+    //   stale list fails loudly rather than producing garbage.
+    //
+    //   This option exists so that generateMatchesTolerant can call
+    //   generateMatches once per partition without re-deriving the
+    //   pool each time. Without it, every per-partition call would
+    //   see the full snapshot, re-derive the same eligible list, and
+    //   re-emit the same first-partition matches.
 
     function generateMatches(tournamentId, roundId, options) {
         options = options || {};
@@ -1843,6 +1869,32 @@
             options.isPairExam === true;
         if (isPairExam) {
             matchSize = 2;
+        }
+
+        // Explicit base pool, when supplied. Normalised to a strict
+        // array of IDs once, here, so the mutate callback does not
+        // have to defend against duplicates or malformed entries.
+        var explicitPool = null;
+        if (options.participants !== undefined &&
+            options.participants !== null) {
+            if (!Array.isArray(options.participants)) {
+                return Promise.resolve(failure(
+                    'options.participants must be an array when supplied.'
+                ));
+            }
+            explicitPool = normaliseIdArrayStrict(options.participants);
+            if (explicitPool === null) {
+                return Promise.resolve(failure(
+                    'options.participants contains an invalid or ' +
+                    'duplicate participant ID.'
+                ));
+            }
+            if (explicitPool.length < 2) {
+                return Promise.resolve(failure(
+                    'options.participants must contain at least 2 ' +
+                    'participants.'
+                ));
+            }
         }
 
         var targetTournamentId = normaliseId(tournamentId);
@@ -1886,46 +1938,63 @@
                     );
                 }
 
-                var pool = [];
-                if (Array.isArray(snapshotTournament.participants)) {
-                    for (var p = 0;
-                         p < snapshotTournament.participants.length;
-                         p++) {
-                        var participant =
-                            snapshotTournament.participants[p];
-                        if (!participant || !participant.id) { continue; }
-                        if (Schema.isParticipantEliminated(
-                            snapshotTournament,
-                            participant.id
-                        )) {
+                var eligible;
+
+                if (explicitPool !== null) {
+                    // Caller-supplied pool. Validate against the
+                    // snapshot before using it.
+                    var poolCheck = validateMatchParticipantsInSnapshot(
+                        appData,
+                        targetTournamentId,
+                        explicitPool
+                    );
+                    if (!poolCheck.valid) {
+                        throw new Error(poolCheck.message);
+                    }
+                    eligible = explicitPool.slice();
+                } else {
+                    // Derive the eligible pool from the snapshot.
+                    var pool = [];
+                    if (Array.isArray(snapshotTournament.participants)) {
+                        for (var p = 0;
+                             p < snapshotTournament.participants.length;
+                             p++) {
+                            var participant =
+                                snapshotTournament.participants[p];
+                            if (!participant || !participant.id) { continue; }
+                            if (Schema.isParticipantEliminated(
+                                snapshotTournament,
+                                participant.id
+                            )) {
+                                continue;
+                            }
+                            pool.push(String(participant.id));
+                        }
+                    }
+
+                    var alreadyInRound = Object.create(null);
+                    for (var m = 0; m < snapshotRound.matches.length; m++) {
+                        var existing = snapshotRound.matches[m];
+                        if (!existing ||
+                            !Array.isArray(existing.participants)) {
                             continue;
                         }
-                        pool.push(String(participant.id));
-                    }
-                }
-
-                var alreadyInRound = Object.create(null);
-                for (var m = 0; m < snapshotRound.matches.length; m++) {
-                    var existing = snapshotRound.matches[m];
-                    if (!existing ||
-                        !Array.isArray(existing.participants)) {
-                        continue;
-                    }
-                    for (var pi = 0;
-                         pi < existing.participants.length;
-                         pi++) {
-                        var pid = normaliseId(
-                            existing.participants[pi]
-                        );
-                        if (pid !== null) {
-                            alreadyInRound[pid] = true;
+                        for (var pi = 0;
+                             pi < existing.participants.length;
+                             pi++) {
+                            var pid = normaliseId(
+                                existing.participants[pi]
+                            );
+                            if (pid !== null) {
+                                alreadyInRound[pid] = true;
+                            }
                         }
                     }
-                }
 
-                var eligible = pool.filter(function(id) {
-                    return !alreadyInRound[id];
-                });
+                    eligible = pool.filter(function(id) {
+                        return !alreadyInRound[id];
+                    });
+                }
 
                 if (eligible.length < 2) {
                     throw new Error(
@@ -2016,6 +2085,13 @@
     //   caller continues to see the same semantics. The tolerant
     //   variant is a separate entry point with an explicit name, so
     //   the partial-success behavior is opt-in and self-documenting.
+    //
+    // EXPLICIT BASE POOL:
+    //   Each per-partition call passes `participants: group` to
+    //   generateMatches. That is what makes the wrapper correct:
+    //   generateMatches builds matches for exactly the partition it
+    //   was handed, instead of re-deriving the full eligible pool on
+    //   every call and re-emitting the first partition's matches.
     //
     // CONCURRENCY:
     //   Partitions are processed in sequence, not in parallel. The
@@ -2158,7 +2234,8 @@
         }
 
         // ---- 3. Per-partition calls, in sequence. Each partition
-        //         is one generateMatches call. A failing call is
+        //         is one generateMatches call, with the partition
+        //         passed as an explicit base pool. A failing call is
         //         caught, and the partition's participants are
         //         re-classified as skipped.
         if (partitions.length === 0) {
@@ -2177,7 +2254,13 @@
             chain = chain.then(function() {
                 return generateMatches(tournamentId, roundId, {
                     matchSize: matchSize,
-                    isPairExam: isPairExam
+                    isPairExam: isPairExam,
+                    // THE FIX: hand the partition to generateMatches
+                    // as an explicit base pool. Without this, every
+                    // call re-derives the same eligible list from the
+                    // snapshot and the run collapses to the first
+                    // partition.
+                    participants: group
                 }).then(function(result) {
                     if (result && result.success) {
                         var matches = (result.data &&
