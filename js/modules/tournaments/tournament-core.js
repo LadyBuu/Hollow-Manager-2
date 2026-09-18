@@ -8,6 +8,7 @@
  *   - Tournament CRUD (create, update, archive, purge)
  *   - Participant management (add, remove)
  *   - Round management (add, remove, reopen) — by stable round ID
+ *   - Elimination week shift when endWeek changes (T8)
  *
  * NOT RESPONSIBILITIES:
  *   - Match-level mutations (TournamentMatches)
@@ -69,6 +70,18 @@
  *
  *   Both run inside the same transaction as the structural mutation.
  *   If persistence fails, both roll back together.
+ *
+ * ELIMINATION WEEK SHIFT (T8):
+ *   updateTournament shifts every tournament-driven elimination
+ *   record for the tournament to the new endWeek, on both sides,
+ *   when endWeek changes. The elimination week is derived from
+ *   endWeek (see TournamentEliminationCascade.applyFailEliminations),
+ *   so when endWeek moves, the eliminations move with it.
+ *
+ *   Standalone eliminations (Drop Out) are not touched.
+ *
+ *   The shift runs inside the same transaction as the endWeek
+ *   update. If persistence fails, both roll back together.
  *
  * REOPEN SEMANTICS (v21):
  *   The model treats a completed match as committed: its eliminations
@@ -195,6 +208,13 @@
             'function') {
         _missing.push(
             'TournamentEliminationCascade.reverseTournamentEliminations'
+        );
+    }
+    if (!EliminationCascade ||
+        typeof EliminationCascade.shiftTournamentEliminationWeeks !==
+            'function') {
+        _missing.push(
+            'TournamentEliminationCascade.shiftTournamentEliminationWeeks'
         );
     }
     if (!CalendarValidation ||
@@ -606,6 +626,13 @@
         var targetId = normaliseId(id);
         var updatesCopy = deepClone(updates);
 
+        // Cache the pre-update endWeek so the mutate callback can
+        // detect a change without re-reading the tournament. The
+        // pipeline hands a snapshot, but the tournament reference
+        // we already resolved is live, and the pipeline clones it
+        // before mutate runs.
+        var previousEndWeek = tournament.endWeek;
+
         return MutationPipeline.performMutation({
             validate: function(appDataSnapshot) {
                 var current = findTournamentInSnapshot(
@@ -683,9 +710,50 @@
                     current[keys[i]] = deepClone(updatesCopy[keys[i]]);
                 }
 
-                return { tournament: current, id: targetId };
+                // ---- T8: shift elimination weeks if endWeek changed ----
+                //
+                // The elimination week is derived from the tournament
+                // endWeek (see TournamentEliminationCascade.
+                // applyFailEliminations). When endWeek moves, every
+                // tournament-driven elimination record for this
+                // tournament moves with it, on both sides.
+                //
+                // Standalone eliminations (Drop Out) are not touched.
+                //
+                // The check is "endWeek was present in the update
+                // AND the new value differs from the pre-update
+                // value." Saving the same week again is a no-op.
+                var shiftResult = null;
+                if (updatesCopy.endWeek !== undefined) {
+                    var newEndWeek = parseWeek(current.endWeek);
+                    var oldEndWeek = parseWeek(previousEndWeek);
+                    if (newEndWeek !== null &&
+                        oldEndWeek !== null &&
+                        newEndWeek !== oldEndWeek) {
+                        shiftResult = EliminationCascade
+                            .shiftTournamentEliminationWeeks(
+                                appDataSnapshot,
+                                targetId,
+                                newEndWeek
+                            );
+                    }
+                }
+
+                return {
+                    tournament: current,
+                    id: targetId,
+                    eliminationShift: shiftResult
+                };
             },
-            logMessage: 'Updated tournament',
+            logMessage: function(result) {
+                if (result && result.eliminationShift &&
+                    result.eliminationShift.shifted > 0) {
+                    return 'Updated tournament (shifted ' +
+                        result.eliminationShift.shifted +
+                        ' elimination week(s))';
+                }
+                return 'Updated tournament';
+            },
             successMessage: 'Tournament updated successfully!',
             failureMessage: 'Failed to update tournament.'
         });
@@ -1364,9 +1432,6 @@
                 }
 
                 // ---- Reverse eliminations keyed to this round ----
-                // Runs BEFORE flipping match statuses, so the
-                // reversal sees the same elimination records that
-                // completeMatch wrote.
                 var reversal = EliminationCascade
                     .reverseRoundEliminations(
                         appDataSnapshot,
@@ -1375,9 +1440,6 @@
                     );
 
                 // ---- Flip every match in the round to pending ----
-                // Results are preserved. The user is editing, not
-                // restarting. Individual match results can be
-                // cleared field-by-field in the form.
                 var reopenedCount = 0;
                 if (Array.isArray(liveRound.matches)) {
                     for (var i = 0; i < liveRound.matches.length; i++) {
@@ -1391,9 +1453,6 @@
                 }
 
                 // ---- Reset the round's own status ----
-                // No reconciliation needed here: reopen is an
-                // explicit reset. Reconciliation will run again on
-                // the next match mutation.
                 liveRound.status = 'pending';
 
                 return {
