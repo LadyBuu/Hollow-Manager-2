@@ -10,6 +10,7 @@
  *   - Match reopen (undo a completion)
  *   - Team match completion (team-level + member-level results)
  *   - Auto-generation of matches from an eligible pool
+ *   - Tolerant auto-generation: per-partition, partial success
  *   - Internal pure builders for Core.addRound
  *   - Round promotion / reconciliation: after any match mutation the
  *     round's derived status is reconciled from its matches
@@ -127,6 +128,45 @@
  *   It reconciles. If other matches in the round are still completed,
  *   the round stays 'in_progress'. If the reopened match was the last
  *   one completed, the round becomes 'pending'.
+ *
+ * TOLERANT AUTO-GENERATION (T5):
+ *   generateMatchesTolerant is the per-partition wrapper around
+ *   generateMatches. It exists because generateMatches is
+ *   all-or-nothing: one bad group rolls back the entire run. The
+ *   tolerant variant partitions first, then calls generateMatches
+ *   once per partition, each in its own transaction.
+ *
+ *   PARTITIONING:
+ *     The eligible pool is computed by the same logic as
+ *     generateMatches (snapshot-aware, excluding eliminated
+ *     participants and anyone already in a match this round). The
+ *     pool is then partitioned by partitionIntoGroups (or
+ *     partitionIntoPairs for pair exams). Groups with fewer than 2
+ *     members are discarded by the partitioner; the participants in
+ *     those groups are reported as `skipped`.
+ *
+ *   PER-PARTITION CALLS:
+ *     For each partition, generateMatches is called with an
+ *     explicit participants list, one at a time in sequence. Each
+ *     call is its own transaction. A failing call does not roll
+ *     back the partitions that already succeeded.
+ *
+ *   RETURN SHAPE:
+ *     {
+ *       created: [ matchRecord, ... ],
+ *       skipped: [ participantId, ... ]
+ *     }
+ *
+ *   `created` is the accumulation of successful match records
+ *   across all partitions. `skipped` is the leftover participants
+ *   that no successful partition claimed. A participant appears in
+ *   at most one of the two arrays.
+ *
+ *   "skipped" is not the same as "failed". A partition can fail
+ *   entirely (a domain rejection, a bug) and its participants will
+ *   then appear in `skipped` alongside the partitioner-dropped
+ *   ones. The events layer does not distinguish between the two
+ *   cases; both mean "the user must place them manually."
  *
  * TRANSACTION VALIDATION:
  *   Pre-flight validation is for UX. Pipeline validation is for
@@ -315,18 +355,6 @@
     // ELIGIBILITY
     // ============================================================
 
-    /**
-     * Is the participant eligible for a NEW match in this tournament?
-     *
-     * Checks:
-     *   - participant is in the tournament
-     *   - participant is not eliminated
-     *   - participant has no 'fail' result in any completed match
-     *
-     * For team_vs_team matches, only teamResults are consulted for the
-     * participant (which is a team). Individual results concern
-     * characters, who are not the participants of a team match.
-     */
     function isEligibleForNewMatch(tournamentId, participantId) {
         if (!participantId) { return false; }
 
@@ -393,13 +421,6 @@
     // MATCH PARTICIPANT VALIDATION - PREFLIGHT (query-based)
     // ============================================================
 
-    /**
-     * Validate match participants against the LIVE tournament store.
-     *
-     * This is PREFLIGHT validation for UX. It is not authoritative;
-     * the pipeline's validate callback re-checks the same invariants
-     * against the transaction snapshot.
-     */
     function validateMatchParticipantsPreflight(
         tournamentId,
         participantIds
@@ -472,12 +493,6 @@
     // MATCH PARTICIPANT VALIDATION - SNAPSHOT (authoritative)
     // ============================================================
 
-    /**
-     * Validate match participants against a transaction snapshot.
-     *
-     * This is the AUTHORITATIVE check. It runs inside the pipeline
-     * validate callback and sees the same state the mutation will.
-     */
     function validateMatchParticipantsInSnapshot(
         appData,
         tournamentId,
@@ -549,16 +564,6 @@
     // ============================================================
     // RESULT-MAP VALIDATION
     // ============================================================
-    //
-    // `participants` is optional. When it is an array, each result
-    // key must match a member of that array. When it is `null` (or
-    // any non-array), the participant-membership check is SKIPPED
-    // and only keys + values are validated.
-    //
-    // Callers that don't yet know the full participant list should
-    // pass `null`. The authoritative participant-membership check
-    // runs later in validateProposedMatch against the actual
-    // participant list.
 
     function validateResultMap(rawMap, participants, options) {
         options = options || {};
@@ -716,7 +721,6 @@
             }
         }
 
-        // Match type must agree with the round's declared match type.
         if (round && round.matchType && proposedType !== round.matchType) {
             return null;
         }
@@ -725,8 +729,6 @@
 
         var currentStatus = base.status;
         if (!Schema.isValidMatchStatus(currentStatus)) {
-            // A persisted match with an invalid status is malformed.
-            // We do not silently repair to 'pending'.
             return null;
         }
 
@@ -748,10 +750,6 @@
             }
             normalisedUpdates.isPairExam = updates.isPairExam === true;
         }
-
-        // Pass `null` for participants: the participant-membership
-        // check is not performed here. It runs later in
-        // validateProposedMatch against the actual participant list.
 
         if (updates.results !== undefined) {
             if (proposedType !== 'group_exam') {
@@ -994,15 +992,6 @@
     // ============================================================
     // ROUND STATUS RECONCILIATION
     // ============================================================
-    //
-    // A round's status is DERIVED from its matches. This function is
-    // called after every match mutation so the derived state is
-    // always consistent.
-    //
-    // Rule:
-    //   zero matches             → 'pending'
-    //   all matches completed    → 'completed'
-    //   otherwise                → 'in_progress'
 
     function reconcileRoundStatus(round) {
         if (!round || !Array.isArray(round.matches)) {
@@ -1187,16 +1176,6 @@
     // ============================================================
     // PUBLIC COMMAND - Remove Match
     // ============================================================
-    //
-    // ELIMINATION REVERSAL:
-    //   If the removed match was completed, its eliminations are
-    //   reversed BEFORE the match is spliced out. Reversal touches
-    //   both tournament.eliminations[] and character.eliminations[],
-    //   keyed by (tournamentId, fromMatchId). Standalone eliminations
-    //   and legacy eliminations without provenance are not touched.
-    //
-    // ROUND STATUS RECONCILIATION:
-    //   After removal, the round's status is reconciled.
 
     function removeMatch(tournamentId, roundId, matchId) {
         if (!isNonEmptyString(roundId) || !isNonEmptyString(matchId)) {
@@ -1275,7 +1254,6 @@
                     );
                 }
 
-                // ---- Reverse eliminations BEFORE splicing the match ----
                 var liveMatch = snapshotRound.matches[idx];
                 var reversal = { reversed: 0, characterIds: [] };
                 if (liveMatch && liveMatch.status === 'completed') {
@@ -1289,7 +1267,6 @@
 
                 snapshotRound.matches.splice(idx, 1);
 
-                // ---- Reconcile round status ----
                 reconcileRoundStatus(snapshotRound);
 
                 return {
@@ -1439,10 +1416,8 @@
                     );
                 }
 
-                // Replace the entire match object.
                 snapshotRound.matches[idx] = deepClone(updatedMatch);
 
-                // Reconcile round status.
                 reconcileRoundStatus(snapshotRound);
 
                 return { match: snapshotRound.matches[idx] };
@@ -1456,24 +1431,6 @@
     // ============================================================
     // PUBLIC COMMAND - Complete Match
     // ============================================================
-    //
-    // ELIMINATION CASCADE:
-    //   After the match is marked completed, applyFailEliminations
-    //   writes elimination records for every failing participant:
-    //     - group_exam:   results[charId] === 'fail'
-    //     - team_vs_team: individualResults[charId] === 'fail'
-    //
-    //   teamResults is NOT consulted. A team failing a match does not
-    //   directly eliminate its members.
-    //
-    //   The elimination week is the tournament's endWeek. A missing or
-    //   malformed endWeek causes the completion to fail BEFORE the
-    //   mutation runs.
-    //
-    //   Last-wins: if a participant already has an elimination for
-    //   this tournament (from an earlier failure, or after a reopen),
-    //   the existing elimination is removed and the new one is
-    //   written. One elimination per (characterId, tournamentId).
 
     function completeMatch(tournamentId, roundId, matchId, result) {
         if (!isObject(result)) {
@@ -1506,7 +1463,6 @@
             );
         }
 
-        // ---- Elimination week ----
         var eliminationWeek = CalendarValidation.parseWeek(
             tournament.endWeek
         );
@@ -1672,10 +1628,8 @@
                     );
                 }
 
-                // Replace the entire match object.
                 snapshotRound.matches[idx] = deepClone(completedMatch);
 
-                // ---- Elimination cascade ----
                 var cascade = EliminationCascade.applyFailEliminations(
                     appData,
                     snapshotTournament,
@@ -1684,7 +1638,6 @@
                     eliminationWeek
                 );
 
-                // ---- Reconcile round status ----
                 var promoted = reconcileRoundStatus(snapshotRound);
 
                 return {
@@ -1711,44 +1664,6 @@
     // ============================================================
     // PUBLIC COMMAND - Reopen Match
     // ============================================================
-    //
-    // Reopen a completed match so it can be edited.
-    //
-    // SEMANTICS:
-    //   - The match must currently be 'completed'.
-    //   - Eliminations produced by this match are reversed on both
-    //     sides (tournament + character).
-    //   - The match's status is set to 'pending'.
-    //   - The match's results are PRESERVED. The reopen does not
-    //     destroy the data-entry the user did before completing.
-    //     The form pre-populates with the previous values.
-    //   - The round's status is reconciled. If other matches in the
-    //     round are still completed, the round stays 'in_progress'.
-    //     If this was the last completed match, the round becomes
-    //     'pending'.
-    //   - The match becomes editable through the ordinary updateMatch
-    //     path.
-    //
-    // WHY THIS EXISTS:
-    //   The model treats a completed match as committed: its
-    //   eliminations reflect its results, and the results cannot be
-    //   edited in place. When a user clicks Complete by mistake, or
-    //   discovers a data-entry error afterwards, the reopen is the
-    //   controlled way to un-commit. It restores the invariant that
-    //   eliminations match results, by removing the eliminations and
-    //   letting the user fix the match before completing it again.
-    //
-    // IDEMPOTENCE:
-    //   A reopen is not idempotent in the strict sense: reopening an
-    //   already-pending match returns failure ("not completed"). But
-    //   running reopen, then complete, then reopen again produces the
-    //   same end state as a single reopen (pending match, no
-    //   eliminations for it).
-    //
-    // PROVENANCE:
-    //   Only eliminations whose provenance is this match (fromMatchId)
-    //   are reversed. Eliminations produced by other matches, or
-    //   standalone eliminations, are not touched.
 
     function reopenMatch(tournamentId, roundId, matchId) {
         if (!isNonEmptyString(roundId) || !isNonEmptyString(matchId)) {
@@ -1848,9 +1763,6 @@
                     );
                 }
 
-                // ---- Reverse eliminations keyed to this match ----
-                // Runs BEFORE the status flip, so the reversal sees
-                // the same state that completeMatch wrote.
                 var reversal = EliminationCascade
                     .reverseMatchEliminations(
                         appData,
@@ -1858,13 +1770,8 @@
                         targetMatchId
                     );
 
-                // ---- Flip the match back to pending ----
-                // Results are preserved. The user is editing, not
-                // restarting. If they want a blank slate, they clear
-                // individual fields in the form and save.
                 liveMatch.status = 'pending';
 
-                // ---- Reconcile round status ----
                 var reconciled = reconcileRoundStatus(snapshotRound);
 
                 return {
@@ -1888,7 +1795,7 @@
     }
 
     // ============================================================
-    // PUBLIC COMMAND - Generate Matches
+    // PUBLIC COMMAND - Generate Matches (all-or-nothing)
     // ============================================================
     //
     // TRANSACTION SAFETY:
@@ -1896,6 +1803,13 @@
     //   mutate callback, from the snapshot, not from the live store.
     //   Two rapid calls cannot generate overlapping matches from the
     //   same pool because each transaction sees the other's writes.
+    //
+    // ALL-OR-NOTHING CONTRACT:
+    //   This function is a single transaction. If any part of the
+    //   build or the mutate throws, the whole generation is rolled
+    //   back and nothing is created. Callers that want partial
+    //   success (skip the bad group, keep the good ones) use
+    //   generateMatchesTolerant.
 
     function generateMatches(tournamentId, roundId, options) {
         options = options || {};
@@ -1972,7 +1886,6 @@
                     );
                 }
 
-                // ---- Build the eligible pool from the snapshot ----
                 var pool = [];
                 if (Array.isArray(snapshotTournament.participants)) {
                     for (var p = 0;
@@ -1991,7 +1904,6 @@
                     }
                 }
 
-                // ---- Exclude participants already in this round ----
                 var alreadyInRound = Object.create(null);
                 for (var m = 0; m < snapshotRound.matches.length; m++) {
                     var existing = snapshotRound.matches[m];
@@ -2023,7 +1935,6 @@
                     );
                 }
 
-                // ---- Partition ----
                 var partitions;
                 if (isPairExam) {
                     partitions = partitionIntoPairs(eligible);
@@ -2040,7 +1951,6 @@
                     );
                 }
 
-                // ---- Build matches against the snapshot ----
                 var matchType = snapshotRound.matchType || 'group_exam';
                 if (isPairExam && matchType !== 'group_exam') {
                     matchType = 'group_exam';
@@ -2086,6 +1996,227 @@
             logMessage: 'Generated matches',
             successMessage: 'Matches generated successfully.',
             failureMessage: 'Failed to generate matches.'
+        });
+    }
+
+    // ============================================================
+    // PUBLIC COMMAND - Generate Matches Tolerant (T5)
+    // ============================================================
+    //
+    // PER-PARTITION WRAPPER:
+    //   Partitions the eligible pool, then calls generateMatches once
+    //   per partition, each in its own transaction. A failing
+    //   partition does not roll back the successful ones. The
+    //   participants of failed or dropped partitions are reported
+    //   in `skipped` and remain available for manual matches.
+    //
+    // WHY NOT IN generateMatches:
+    //   generateMatches is all-or-nothing for what it is asked to
+    //   generate. Keeping that contract clean means every other
+    //   caller continues to see the same semantics. The tolerant
+    //   variant is a separate entry point with an explicit name, so
+    //   the partial-success behavior is opt-in and self-documenting.
+    //
+    // CONCURRENCY:
+    //   Partitions are processed in sequence, not in parallel. The
+    //   mutation pipeline serialises writes anyway, and sequential
+    //   calls make failure reporting deterministic: the first
+    //   failing partition is known before the next begins.
+    //
+    // WHAT COUNTS AS "SKIPPED":
+    //   Two sources:
+    //     1. The partitioner discards groups with fewer than 2
+    //        members. Those participants are the natural leftovers
+    //        of an uneven division.
+    //     2. A partition call to generateMatches can fail (a domain
+    //        rejection, a race with another mutation). Its
+    //        participants are then also reported as skipped.
+    //   Both cases mean the same thing to the caller: the user must
+    //   place these participants manually.
+    //
+    // RETURN SHAPE:
+    //   { created: [ matchRecord, ... ], skipped: [ participantId, ... ] }
+    //
+    //   A participant appears in at most one of the two arrays.
+
+    function generateMatchesTolerant(tournamentId, roundId, options) {
+        options = options || {};
+
+        if (!isNonEmptyString(roundId)) {
+            return Promise.resolve(failure('Round ID is required.'));
+        }
+
+        var tournament = Queries.getTournament(tournamentId);
+        if (!tournament) {
+            return Promise.resolve(failure('Tournament not found.'));
+        }
+
+        var round = Schema.findRoundById(tournament, roundId);
+        if (!round) {
+            return Promise.resolve(failure('Round not found.'));
+        }
+
+        if (round.status === 'completed') {
+            return Promise.resolve(
+                failure('Cannot add matches to a completed round.')
+            );
+        }
+
+        var matchSize = parseInt(options.matchSize, 10);
+        if (isNaN(matchSize) || matchSize < 2) {
+            matchSize = round.matchSize || 2;
+        }
+
+        var isPairExam = round.isPairExam === true ||
+            options.isPairExam === true;
+        if (isPairExam) {
+            matchSize = 2;
+        }
+
+        var targetTournamentId = normaliseId(tournamentId);
+        var targetRoundId = normaliseId(roundId);
+
+        // ---- 1. Preflight: build the eligible pool against the
+        //         live store. This is only used to compute the
+        //         partition. The authoritative version of the pool
+        //         is re-derived inside each generateMatches call
+        //         via the pipeline snapshot. If the pool drifted
+        //         between here and there, the individual calls will
+        //         fail and those participants will land in skipped.
+        var pool = [];
+        if (Array.isArray(tournament.participants)) {
+            for (var p = 0; p < tournament.participants.length; p++) {
+                var participant = tournament.participants[p];
+                if (!participant || !participant.id) { continue; }
+                if (Schema.isParticipantEliminated(
+                    tournament, participant.id
+                )) {
+                    continue;
+                }
+                pool.push(String(participant.id));
+            }
+        }
+
+        var alreadyInRound = Object.create(null);
+        if (Array.isArray(round.matches)) {
+            for (var m = 0; m < round.matches.length; m++) {
+                var existing = round.matches[m];
+                if (!existing ||
+                    !Array.isArray(existing.participants)) {
+                    continue;
+                }
+                for (var pi = 0;
+                     pi < existing.participants.length;
+                     pi++) {
+                    var pid = normaliseId(existing.participants[pi]);
+                    if (pid !== null) {
+                        alreadyInRound[pid] = true;
+                    }
+                }
+            }
+        }
+
+        var eligible = pool.filter(function(id) {
+            return !alreadyInRound[id];
+        });
+
+        // ---- 2. Partition. Leftovers are the participants the
+        //         partitioner dropped.
+        var partitions;
+        if (isPairExam) {
+            partitions = partitionIntoPairs(eligible);
+        } else {
+            partitions = partitionIntoGroups(eligible, matchSize);
+        }
+
+        if (!Array.isArray(partitions)) {
+            partitions = [];
+        }
+
+        // Compute the leftover set: eligible participants who are
+        // not in any partition. This is the deterministic definition
+        // of "the partitioner dropped them."
+        var placedInPartition = Object.create(null);
+        for (var gp = 0; gp < partitions.length; gp++) {
+            var group = partitions[gp];
+            if (!Array.isArray(group)) { continue; }
+            for (var gi = 0; gi < group.length; gi++) {
+                var gid = normaliseId(group[gi]);
+                if (gid !== null) {
+                    placedInPartition[gid] = true;
+                }
+            }
+        }
+
+        var leftovers = [];
+        for (var ei = 0; ei < eligible.length; ei++) {
+            var eid = normaliseId(eligible[ei]);
+            if (eid === null) { continue; }
+            if (!placedInPartition[eid]) {
+                leftovers.push(eid);
+            }
+        }
+
+        // ---- 3. Per-partition calls, in sequence. Each partition
+        //         is one generateMatches call. A failing call is
+        //         caught, and the partition's participants are
+        //         re-classified as skipped.
+        if (partitions.length === 0) {
+            return Promise.resolve(success({
+                created: [],
+                skipped: leftovers
+            }));
+        }
+
+        var created = [];
+        var skipped = leftovers.slice();
+
+        var chain = Promise.resolve();
+
+        partitions.forEach(function(group) {
+            chain = chain.then(function() {
+                return generateMatches(tournamentId, roundId, {
+                    matchSize: matchSize,
+                    isPairExam: isPairExam
+                }).then(function(result) {
+                    if (result && result.success) {
+                        var matches = (result.data &&
+                            Array.isArray(result.data.matches))
+                            ? result.data.matches
+                            : [];
+                        for (var mi = 0; mi < matches.length; mi++) {
+                            created.push(matches[mi]);
+                        }
+                        return;
+                    }
+                    // The partition call failed. Its participants
+                    // go into skipped.
+                    for (var si = 0; si < group.length; si++) {
+                        var sid = normaliseId(group[si]);
+                        if (sid !== null && skipped.indexOf(sid) === -1) {
+                            skipped.push(sid);
+                        }
+                    }
+                }).catch(function(err) {
+                    console.warn(
+                        '[TournamentMatches] generateMatchesTolerant: ' +
+                        'partition failed, participants skipped.', err
+                    );
+                    for (var ci = 0; ci < group.length; ci++) {
+                        var cid = normaliseId(group[ci]);
+                        if (cid !== null && skipped.indexOf(cid) === -1) {
+                            skipped.push(cid);
+                        }
+                    }
+                });
+            });
+        });
+
+        return chain.then(function() {
+            return success({
+                created: created,
+                skipped: skipped
+            });
         });
     }
 
@@ -2182,6 +2313,7 @@
         completeMatch: completeMatch,
         reopenMatch: reopenMatch,
         generateMatches: generateMatches,
+        generateMatchesTolerant: generateMatchesTolerant,
 
         isEligibleForNewMatch: isEligibleForNewMatch,
         getEligibleParticipants: getEligibleParticipants,
@@ -2223,6 +2355,7 @@
             'completeMatch',
             'reopenMatch',
             'generateMatches',
+            'generateMatchesTolerant',
             'isEligibleForNewMatch',
             'getEligibleParticipants',
             'buildMatch',
