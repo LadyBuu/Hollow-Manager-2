@@ -61,6 +61,16 @@
  *   close handlers invoke the caller-supplied `options.onClose`
  *   callback.
  *
+ * MEMBER CANDIDATE RENDER (post list-fix):
+ *   The candidate dropdown in the Teams-tab member modal is built
+ *   by populateMemberCandidates. Candidates arrive from
+ *   TeamAggregator.getMemberModalViewModel pre-sorted into four
+ *   tiers (inClass/unassigned, inClass/assigned, otherClass/
+ *   unassigned, otherClass/assigned) with deceased characters
+ *   included. This module does not re-sort. It only renders the
+ *   list, appending a dagger marker for candidates whose
+ *   `deceased` flag is true.
+ *
  * DEPENDENCIES:
  *   - window.TeamCore       (MANDATORY)
  *   - window.TeamAggregator (MANDATORY)
@@ -762,6 +772,26 @@
         showModal(modal);
     }
 
+    /**
+     * Populate the character <select> in the member modal.
+     *
+     * Candidates arrive from TeamAggregator.getMemberModalViewModel
+     * PRE-SORTED into four tiers:
+     *
+     *   Tier 0: in class,  not on another team of this type
+     *   Tier 1: in class,      on another team of this type
+     *   Tier 2: other class, not on another team of this type
+     *   Tier 3: other class,     on another team of this type
+     *
+     * Alphabetical within each tier. Deceased characters are
+     * included and carry the same tier position as everyone else.
+     *
+     * This function does NOT re-sort. It renders the list in the
+     * order the aggregator supplied, appending a dagger marker to
+     * the option label when the candidate's `deceased` flag is
+     * true. The marker is the same symbol the Academy member
+     * manager uses for deceased members, so the two pickers agree.
+     */
     function populateMemberCandidates(modal, candidates) {
         var select = modal.querySelector('#member-character');
         if (!select) return;
@@ -769,8 +799,14 @@
         var html = '<option value="">Select character...</option>';
         for (var i = 0; i < candidates.length; i++) {
             var c = candidates[i];
+
+            var label = c.name;
+            if (c.deceased === true) {
+                label += ' \u2020';
+            }
+
             html += '<option value="' + escapeAttr(c.id) + '">' +
-                        escapeHtml(c.name) +
+                        escapeHtml(label) +
                     '</option>';
         }
         select.innerHTML = html;
@@ -917,6 +953,13 @@
         if (listContainer) {
             listContainer.innerHTML = TeamRender.renderMemberList(vm);
         }
+
+        // Refresh the candidate pool: a character just added to this
+        // team is now a current member and must not appear in the
+        // picker. A character already on another team of the same
+        // type may have changed tier. Rebuilding the option list
+        // keeps the picker consistent with the aggregator's tiers.
+        populateMemberCandidates(modal, vm.candidates);
     }
 
     // ============================================================
@@ -1691,8 +1734,17 @@
                 html += '<option value="">Select a character...</option>';
                 for (var k = 0; k < candidates.length; k++) {
                     var c = candidates[k];
+
+                    var label = c.name;
+                    if (isNonEmptyString(c.status)) {
+                        label += ' (' + c.status + ')';
+                    }
+                    if (c.deceased === true) {
+                        label += ' \u2020';
+                    }
+
                     html += '<option value="' + escapeAttr(c.id) + '">' +
-                                escapeHtml(c.name + (isNonEmptyString(c.status) ? ' (' + c.status + ')' : '')) +
+                                escapeHtml(label) +
                             '</option>';
                 }
                 html += '</select>';
