@@ -1,73 +1,57 @@
 /**
  * modules/teams/team-events.js - Team Events
- * Event orchestration for the team domain.
+ * Event orchestration for the Team domain.
  *
  * Path: js/modules/teams/team-events.js
  *
- * This module is responsible for:
- *   - init / destroy - bind and unbind delegated listeners
- *   - Routing user interactions to TeamCore mutations
- *   - Updating TeamUI state
- *   - Requesting fresh view models from TeamAggregator
- *   - Handing view models to TeamRender
- *   - Managing the open/close of modals
- *   - Reading and writing form field values
+ * RESPONSIBILITIES:
+ *   - init / destroy: bind and unbind delegated listeners on the
+ *     container.
+ *   - Route user interactions to TeamCore mutations.
+ *   - Update TeamUI state.
+ *   - Request fresh VMs from TeamAggregator and TeamQueries.
+ *   - Hand VMs to TeamRender.
+ *   - Open and close modals.
+ *   - Read and write form field values.
  *
  * IMPORTANT:
- *   - Orchestration only. This module does NOT query the domain,
- *     does NOT generate HTML, does NOT read raw storage.
- *   - TeamCore owns mutations. TeamAggregator owns projections.
- *     TeamUI owns transient UI state. TeamRender owns HTML.
- *   - All mutation results are Promises from MutationPipeline. On
- *     success, request a fresh VM and re-render. On failure, the
- *     pipeline has already notified; do not double-notify.
- *   - Delegation is scoped to the container. No document-level
- *     listeners that could match unrelated UI.
+ *   - Orchestration only. No domain reads beyond TeamQueries,
+ *     TeamAggregator, and the two scalar reads (window.data.currentYear,
+ *     the tab's filterYear).
+ *   - No HTML construction. All markup comes from TeamRender.
+ *   - TeamCore owns mutations; TeamAggregator owns projections;
+ *     TeamUI owns transient state; TeamRender owns HTML.
+ *   - Mutation results are Promises. On success, request a fresh VM
+ *     and re-render. On failure, the pipeline has already notified;
+ *     do not double-notify.
+ *   - Delegation is scoped to the container. Modal shells are
+ *     appended to document.body and are wired directly by the
+ *     function that opens them.
  *
- * MEMBER MANAGER (BUG-E13):
- *   The professional member manager is now the SHARED manager
- *   (window.MemberManager), wired through
- *   window.MemberAdapterTeams. The manager lives in
- *   js/modules/shared/member-manager.js and is identical on both
- *   the Teams tab and Academy Weekly Teams. All the per-domain
- *   logic lives in the adapter.
+ * MEMBER MANAGER:
+ *   The professional member manager is the shared window.MemberManager
+ *   wired through window.MemberAdapterTeams. All domain logic lives
+ *   in the adapter.
  *
- *   This module's only remaining job for the member manager is:
- *     1. Create the modal shell once (on demand).
- *     2. Append a .modal-content.
- *     3. Modal.modalSetup + Modal.showModal.
- *     4. MemberManager.open(contentEl, { teamId, period, adapter, onClose }).
+ *   The modal shell is created on demand, appended to document.body,
+ *   and removed when the manager closes. It is not inside the
+ *   container, so refreshUI cannot destroy it.
  *
- *   The modal shell is created OUTSIDE the container that
- *   refreshUI() rebuilds. refreshUI() no longer destroys it. This
- *   is what fixes the "Member modal not found" bug: the shell is
- *   owned by document.body, not by the Teams-tab container.
+ * MODAL STATE:
+ *   TeamUI does not track modal state. The team ID a modal is acting
+ *   on lives on the modal's own dataset (`data-edit-id`, form
+ *   arguments). There is no cross-render modal state.
  *
- * REMOVED (BUG-E13):
- *   - showMemberModal, closeMemberModal, addMemberFromModal,
- *     refreshMemberListInPlace, populateMemberCandidates,
- *     bindMemberModal.
- *   - openMemberManager and all its external renderers
- *     (renderMemberManagerBody, renderManagerMemberRow,
- *     renderManagerPlaceholderRow, renderMemberEditorBody,
- *     bindManagerEvents, bindEditorClose, bindEditorEvents).
- *   - The single-row edit-member modal and its submit handler.
- *
- * DEPENDENCIES:
- *   - window.TeamCore       (MANDATORY)
- *   - window.TeamAggregator (MANDATORY)
- *   - window.TeamUI         (MANDATORY)
- *   - window.TeamRender     (MANDATORY)
- *   - window.Modal          (MANDATORY)
- *   - window.MemberManager  (MANDATORY — shared component)
- *   - window.MemberAdapterTeams (MANDATORY — professional adapter)
- *   - window.NotificationSystem (MANDATORY)
- *   - window.DomUtils       (MANDATORY)
- *
- * USAGE:
- *   var TE = window.TeamEvents;
- *   TE.init(container);
- *   TE.destroy();
+ * DEPENDENCIES (MANDATORY):
+ *   - window.TeamCore
+ *   - window.TeamQueries
+ *   - window.TeamAggregator
+ *   - window.TeamUI
+ *   - window.TeamRender
+ *   - window.Modal
+ *   - window.MemberManager
+ *   - window.MemberAdapterTeams
+ *   - window.NotificationSystem
  */
 
 (function() {
@@ -79,10 +63,11 @@
     window.__teamEventsLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCIES
     // ============================================================
 
     var TeamCore = window.TeamCore;
+    var TeamQueries = window.TeamQueries;
     var TeamAggregator = window.TeamAggregator;
     var TeamUI = window.TeamUI;
     var TeamRender = window.TeamRender;
@@ -90,120 +75,107 @@
     var MemberManager = window.MemberManager;
     var MemberAdapterTeams = window.MemberAdapterTeams;
     var NotificationSystem = window.NotificationSystem;
-    var DomUtils = window.DomUtils;
 
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
+    var _missing = [];
 
-    function checkDependencies() {
-        var missing = [];
-
-        // TeamCore — creation / update / delete / rankings only.
-        // Member mutations live in the shared manager via the
-        // adapter; this module no longer calls them directly.
-        if (!TeamCore || typeof TeamCore.createTeam !== 'function') {
-            missing.push('TeamCore.createTeam');
-        }
-        if (!TeamCore || typeof TeamCore.updateTeam !== 'function') {
-            missing.push('TeamCore.updateTeam');
-        }
-        if (!TeamCore || typeof TeamCore.deleteTeam !== 'function') {
-            missing.push('TeamCore.deleteTeam');
-        }
-        if (!TeamCore || typeof TeamCore.addRanking !== 'function') {
-            missing.push('TeamCore.addRanking');
-        }
-        if (!TeamCore || typeof TeamCore.removeRanking !== 'function') {
-            missing.push('TeamCore.removeRanking');
-        }
-
-        if (!TeamAggregator || typeof TeamAggregator.getTeamPageViewModel !== 'function') {
-            missing.push('TeamAggregator.getTeamPageViewModel');
-        }
-        if (!TeamAggregator || typeof TeamAggregator.getTeamFormViewModel !== 'function') {
-            missing.push('TeamAggregator.getTeamFormViewModel');
-        }
-        if (!TeamAggregator || typeof TeamAggregator.getRankingModalViewModel !== 'function') {
-            missing.push('TeamAggregator.getRankingModalViewModel');
-        }
-        if (!TeamAggregator || typeof TeamAggregator.getFilterBarViewModel !== 'function') {
-            missing.push('TeamAggregator.getFilterBarViewModel');
-        }
-
-        if (!TeamUI || typeof TeamUI.getCurrentTab !== 'function') {
-            missing.push('TeamUI.getCurrentTab');
-        }
-        if (!TeamUI || typeof TeamUI.getExpandedTeamId !== 'function') {
-            missing.push('TeamUI.getExpandedTeamId');
-        }
-
-        if (!TeamRender || typeof TeamRender.renderContainer !== 'function') {
-            missing.push('TeamRender.renderContainer');
-        }
-        if (!TeamRender || typeof TeamRender.renderFilterBar !== 'function') {
-            missing.push('TeamRender.renderFilterBar');
-        }
-        if (!TeamRender || typeof TeamRender.renderTeamForm !== 'function') {
-            missing.push('TeamRender.renderTeamForm');
-        }
-        if (!TeamRender || typeof TeamRender.renderRankingForm !== 'function') {
-            missing.push('TeamRender.renderRankingForm');
-        }
-        if (!TeamRender || typeof TeamRender.renderRankingList !== 'function') {
-            missing.push('TeamRender.renderRankingList');
-        }
-        if (!TeamRender || typeof TeamRender.renderNameHistoryRow !== 'function') {
-            missing.push('TeamRender.renderNameHistoryRow');
-        }
-
-        if (!Modal ||
-            typeof Modal.createModal !== 'function' ||
-            typeof Modal.showModal !== 'function' ||
-            typeof Modal.closeModal !== 'function' ||
-            typeof Modal.modalSetup !== 'function') {
-            missing.push('Modal API');
-        }
-
-        if (!MemberManager || typeof MemberManager.open !== 'function') {
-            missing.push('MemberManager.open');
-        }
-
-        if (!MemberAdapterTeams ||
-            typeof MemberAdapterTeams.fetchVM !== 'function' ||
-            typeof MemberAdapterTeams.addMember !== 'function' ||
-            typeof MemberAdapterTeams.updateMembers !== 'function' ||
-            typeof MemberAdapterTeams.removeStint !== 'function' ||
-            typeof MemberAdapterTeams.rejoinStint !== 'function' ||
-            typeof MemberAdapterTeams.removeMember !== 'function') {
-            missing.push('MemberAdapterTeams API');
-        }
-
-        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
-            missing.push('NotificationSystem.notify');
-        }
-
-        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
-            missing.push('DomUtils.escapeHtml');
-        }
-        if (!DomUtils || typeof DomUtils.escapeAttribute !== 'function') {
-            missing.push('DomUtils.escapeAttribute');
-        }
-
-        if (missing.length > 0) {
-            console.warn('[TeamEvents] Missing dependencies:', missing.join(', '));
-            return false;
-        }
-
-        return true;
+    if (!TeamCore || typeof TeamCore.createTeam !== 'function') {
+        _missing.push('TeamCore.createTeam');
+    }
+    if (!TeamCore || typeof TeamCore.updateTeam !== 'function') {
+        _missing.push('TeamCore.updateTeam');
+    }
+    if (!TeamCore || typeof TeamCore.deleteTeam !== 'function') {
+        _missing.push('TeamCore.deleteTeam');
+    }
+    if (!TeamCore || typeof TeamCore.addRanking !== 'function') {
+        _missing.push('TeamCore.addRanking');
+    }
+    if (!TeamCore || typeof TeamCore.removeRanking !== 'function') {
+        _missing.push('TeamCore.removeRanking');
     }
 
-    // ============================================================
-    // NOTIFICATION
-    // ============================================================
+    if (!TeamQueries || typeof TeamQueries.getTeamName !== 'function') {
+        _missing.push('TeamQueries.getTeamName');
+    }
+    if (!TeamQueries || typeof TeamQueries.getRankingSummary !== 'function') {
+        _missing.push('TeamQueries.getRankingSummary');
+    }
 
-    function notify(message, type) {
-        NotificationSystem.notify(message, type || 'info');
+    if (!TeamAggregator ||
+        typeof TeamAggregator.getTeamPageViewModel !== 'function') {
+        _missing.push('TeamAggregator.getTeamPageViewModel');
+    }
+    if (!TeamAggregator ||
+        typeof TeamAggregator.getTeamFormViewModel !== 'function') {
+        _missing.push('TeamAggregator.getTeamFormViewModel');
+    }
+    if (!TeamAggregator ||
+        typeof TeamAggregator.getRankingModalViewModel !== 'function') {
+        _missing.push('TeamAggregator.getRankingModalViewModel');
+    }
+    if (!TeamAggregator ||
+        typeof TeamAggregator.getFilterBarViewModel !== 'function') {
+        _missing.push('TeamAggregator.getFilterBarViewModel');
+    }
+
+    if (!TeamUI || typeof TeamUI.getCurrentTab !== 'function') {
+        _missing.push('TeamUI.getCurrentTab');
+    }
+    if (!TeamUI || typeof TeamUI.getExpandedTeamId !== 'function') {
+        _missing.push('TeamUI.getExpandedTeamId');
+    }
+
+    if (!TeamRender || typeof TeamRender.renderContainer !== 'function') {
+        _missing.push('TeamRender.renderContainer');
+    }
+    if (!TeamRender || typeof TeamRender.renderFilterBar !== 'function') {
+        _missing.push('TeamRender.renderFilterBar');
+    }
+    if (!TeamRender || typeof TeamRender.renderTeamForm !== 'function') {
+        _missing.push('TeamRender.renderTeamForm');
+    }
+    if (!TeamRender || typeof TeamRender.renderRankingForm !== 'function') {
+        _missing.push('TeamRender.renderRankingForm');
+    }
+    if (!TeamRender || typeof TeamRender.renderRankingList !== 'function') {
+        _missing.push('TeamRender.renderRankingList');
+    }
+    if (!TeamRender || typeof TeamRender.renderNameHistoryRow !== 'function') {
+        _missing.push('TeamRender.renderNameHistoryRow');
+    }
+
+    if (!Modal ||
+        typeof Modal.createModal !== 'function' ||
+        typeof Modal.showModal !== 'function' ||
+        typeof Modal.closeModal !== 'function' ||
+        typeof Modal.modalSetup !== 'function') {
+        _missing.push('Modal API');
+    }
+
+    if (!MemberManager || typeof MemberManager.open !== 'function') {
+        _missing.push('MemberManager.open');
+    }
+
+    if (!MemberAdapterTeams ||
+        typeof MemberAdapterTeams.fetchVM !== 'function' ||
+        typeof MemberAdapterTeams.addMember !== 'function' ||
+        typeof MemberAdapterTeams.updateMembers !== 'function' ||
+        typeof MemberAdapterTeams.removeStint !== 'function' ||
+        typeof MemberAdapterTeams.rejoinStint !== 'function' ||
+        typeof MemberAdapterTeams.removeMember !== 'function') {
+        _missing.push('MemberAdapterTeams API');
+    }
+
+    if (!NotificationSystem ||
+        typeof NotificationSystem.notify !== 'function') {
+        _missing.push('NotificationSystem.notify');
+    }
+
+    if (_missing.length > 0) {
+        throw new Error(
+            '[TeamEvents] Missing mandatory dependencies: ' +
+            _missing.join(', ')
+        );
     }
 
     // ============================================================
@@ -214,28 +186,38 @@
         return typeof value === 'string' && value.trim() !== '';
     }
 
+    function notify(message, type) {
+        NotificationSystem.notify(message, type || 'info');
+    }
+
     // ============================================================
-    // STATE
+    // MODULE STATE
     // ============================================================
 
     var _initialized = false;
     var _container = null;
     var _eventListeners = [];
 
-    // The open member-manager modal. Created on demand, appended
-    // to document.body, removed when the manager closes. Kept here
-    // so destroy() can close it if the Teams tab is torn down
-    // while it's open.
+    // The open member-manager modal. Created on demand, appended to
+    // document.body, removed when the manager closes. Kept here so
+    // destroy() can close it if the Teams tab is torn down while
+    // it is open.
     var _memberManagerModal = null;
 
     // ============================================================
-    // EVENT BINDING
+    // LISTENER BOOKKEEPING
     // ============================================================
 
     function addBoundListener(element, eventName, handler) {
-        if (!element) return;
+        if (!element) {
+            return;
+        }
         element.addEventListener(eventName, handler);
-        _eventListeners.push({ element: element, eventName: eventName, handler: handler });
+        _eventListeners.push({
+            element: element,
+            eventName: eventName,
+            handler: handler
+        });
     }
 
     function removeAllEventListeners() {
@@ -243,7 +225,9 @@
             var item = _eventListeners[i];
             try {
                 item.element.removeEventListener(item.eventName, item.handler);
-            } catch (e) { /* ignore */ }
+            } catch (e) {
+                // Ignore
+            }
         }
         _eventListeners = [];
     }
@@ -254,27 +238,42 @@
         }
 
         function wrapped(e) {
-            if (!_container) return;
-            if (!_container.contains(e.target)) return;
+            if (!_container) {
+                return;
+            }
+            if (!_container.contains(e.target)) {
+                return;
+            }
 
-            var target = e.target.closest ? e.target.closest(selector) : null;
-            if (!target) return;
-            if (!_container.contains(target)) return;
+            var target = e.target.closest
+                ? e.target.closest(selector)
+                : null;
+            if (!target) {
+                return;
+            }
+            if (!_container.contains(target)) {
+                return;
+            }
 
             handler(e, target);
         }
 
         _container.addEventListener(eventName, wrapped);
-        _eventListeners.push({ element: _container, eventName: eventName, handler: wrapped });
+        _eventListeners.push({
+            element: _container,
+            eventName: eventName,
+            handler: wrapped
+        });
     }
 
     // ============================================================
-    // PERIOD HELPERS
+    // PERIOD RESOLUTION
     // ============================================================
 
     function getCurrentPeriod(tab) {
         var filter = TeamUI.getFilter(tab);
-        if (filter && filter.filterYear) {
+        if (filter && filter.filterYear !== undefined &&
+            filter.filterYear !== null && filter.filterYear !== '') {
             var parsed = parseInt(filter.filterYear, 10);
             if (!isNaN(parsed) && parsed >= 1) {
                 return parsed;
@@ -282,7 +281,8 @@
         }
 
         var data = window.data || {};
-        if (typeof data.currentYear === 'number' && isFinite(data.currentYear)) {
+        if (typeof data.currentYear === 'number' &&
+            isFinite(data.currentYear)) {
             return data.currentYear;
         }
 
@@ -330,10 +330,6 @@
             destroy();
         }
 
-        if (!checkDependencies()) {
-            return;
-        }
-
         if (!container) {
             container = document.getElementById('tab-teams');
         }
@@ -348,22 +344,17 @@
         bindTabSwitching();
         bindAddTeam();
         bindTeamActions();
-        bindModalCloseDelegation();
-        bindTeamFormModal();
-        bindRankingModal();
         bindFilters();
-        bindNameHistoryAddRemove();
 
         _initialized = true;
     }
 
     function destroy() {
-        // Close the shared member manager if it's open.
         if (_memberManagerModal) {
             try {
                 Modal.closeModal(_memberManagerModal);
             } catch (e) {
-                // Ignore.
+                // Ignore
             }
             _memberManagerModal = null;
         }
@@ -374,81 +365,17 @@
     }
 
     // ============================================================
-    // MODAL CLOSE DELEGATION
-    // ============================================================
-
-    function bindModalCloseDelegation() {
-        delegate('.modal .close-modal', 'click', function(e, target) {
-            e.preventDefault();
-            e.stopPropagation();
-
-            var modal = target.closest('.modal');
-            if (!modal) return;
-
-            closeModalAndClearState(modal);
-        });
-    }
-
-    function closeModalAndClearState(modal) {
-        if (!modal) return;
-
-        try {
-            if (Modal && typeof Modal.closeModal === 'function') {
-                Modal.closeModal(modal);
-            } else if (Modal && typeof Modal.hideModal === 'function') {
-                Modal.hideModal(modal);
-            } else {
-                modal.classList.add('hidden');
-                modal.style.display = 'none';
-            }
-        } catch (err) {
-            console.warn('[TeamEvents] modal close failed:', err);
-            modal.classList.add('hidden');
-            modal.style.display = 'none';
-        }
-
-        TeamUI.clearModalState();
-    }
-
-    // ============================================================
-    // MODAL SHOW HELPER
-    // ============================================================
-
-    function showModal(modal) {
-        if (!modal) return;
-
-        try {
-            if (Modal && typeof Modal.modalSetup === 'function') {
-                Modal.modalSetup(modal);
-            }
-        } catch (err) {
-            console.warn('[TeamEvents] Modal.modalSetup failed:', err);
-        }
-
-        try {
-            if (Modal && typeof Modal.showModal === 'function') {
-                Modal.showModal(modal);
-                return;
-            }
-        } catch (err) {
-            console.warn('[TeamEvents] Modal.showModal failed:', err);
-        }
-
-        modal.classList.remove('hidden');
-        modal.style.display = 'flex';
-    }
-
-    // ============================================================
     // TAB SWITCHING
     // ============================================================
 
     function bindTabSwitching() {
         delegate('.tab-btn', 'click', function(e, target) {
             var tab = target.dataset.tab;
-            if (!tab) return;
+            if (!tab) {
+                return;
+            }
 
             TeamUI.setCurrentTab(tab);
-
             refreshUI();
         });
     }
@@ -458,7 +385,8 @@
     // ============================================================
 
     function bindAddTeam() {
-        delegate('#add-team-btn', 'click', function() {
+        delegate('#add-team-btn', 'click', function(e) {
+            e.preventDefault();
             showTeamForm(null);
         });
     }
@@ -470,7 +398,6 @@
             return;
         }
 
-        // Create the modal shell on demand.
         var modal = Modal.createModal('team-form-modal');
         if (!modal) {
             notify('Could not open team form.', 'error');
@@ -481,57 +408,78 @@
         var contentEl = document.createElement('div');
         contentEl.className = 'modal-content';
         modal.appendChild(contentEl);
-
         contentEl.innerHTML = TeamRender.renderTeamForm(formVM);
 
-        // Title.
-        var titleEl = contentEl.querySelector('#team-form-title');
-        if (titleEl) {
-            titleEl.textContent = formVM.isEdit ? 'Edit Team' : 'Add Team';
-        }
+        Modal.showModal(modal);
 
-        TeamUI.setModalTeamId(formVM.isEdit ? formVM.teamId : null);
-
-        showModal(modal);
-
-        // Wire submit + cancel + name-history add.
-        bindTeamFormSubmit(modal, contentEl);
+        bindTeamFormEvents(modal, contentEl);
     }
 
-    function bindTeamFormSubmit(modal, contentEl) {
+    function bindTeamFormEvents(modal, contentEl) {
         var form = contentEl.querySelector('#team-form-inner');
-        if (!form) return;
+        if (!form) {
+            return;
+        }
+
+        function close() {
+            closeModal(modal);
+        }
 
         var closeBtn = contentEl.querySelector('#close-team-form');
         if (closeBtn) {
-            closeBtn.addEventListener('click', function() {
-                closeModalAndClearState(modal);
-            });
+            closeBtn.addEventListener('click', close);
         }
 
         var cancelBtn = contentEl.querySelector('#cancel-team-form');
         if (cancelBtn) {
-            cancelBtn.addEventListener('click', function() {
-                closeModalAndClearState(modal);
-            });
+            cancelBtn.addEventListener('click', close);
         }
-
-        form.addEventListener('submit', function(e) {
-            e.preventDefault();
-            saveTeam(form, modal);
-        });
 
         var addNameBtn = contentEl.querySelector('#add-name-history-btn');
         if (addNameBtn) {
             addNameBtn.addEventListener('click', function() {
                 var containerEl = form.querySelector('#name-history-container');
-                if (containerEl) {
-                    var wrapper = document.createElement('div');
-                    wrapper.innerHTML = TeamRender.renderNameHistoryRow(null);
-                    containerEl.appendChild(wrapper.firstElementChild);
+                if (!containerEl) {
+                    return;
                 }
+                var wrapper = document.createElement('div');
+                wrapper.innerHTML = TeamRender.renderNameHistoryRow(null);
+                containerEl.appendChild(wrapper.firstElementChild);
             });
         }
+
+        // Name history row removal. Modal-scoped, not container-delegated,
+        // because the modal lives outside the container.
+        contentEl.addEventListener('click', function(e) {
+            var removeBtn = e.target.closest
+                ? e.target.closest('.remove-name')
+                : null;
+            if (!removeBtn) {
+                return;
+            }
+            e.preventDefault();
+
+            var entry = removeBtn.closest('.name-history-entry');
+            if (!entry) {
+                return;
+            }
+            var parent = entry.parentElement;
+            if (!parent) {
+                return;
+            }
+
+            if (parent.querySelectorAll('.name-history-entry').length <= 1) {
+                notify('You need at least one name entry.', 'error');
+                return;
+            }
+
+            entry.remove();
+        });
+
+        form.addEventListener('submit', function(e) {
+            e.preventDefault();
+            saveTeam(form, modal);
+        });
     }
 
     function saveTeam(form, modal) {
@@ -577,7 +525,7 @@
             if (!result || !result.success) {
                 return;
             }
-            closeModalAndClearState(modal);
+            closeModal(modal);
             refreshUI();
         }).catch(function(err) {
             console.warn('[TeamEvents] saveTeam failed:', err);
@@ -596,7 +544,9 @@
             var endEl = entry.querySelector('.name-history-end');
 
             var name = nameEl ? nameEl.value.trim() : '';
-            if (!name) continue;
+            if (!name) {
+                continue;
+            }
 
             history.push({
                 name: name,
@@ -609,11 +559,12 @@
     }
 
     // ============================================================
-    // TEAM ACTIONS
+    // TEAM ROW ACTIONS
     // ============================================================
 
     function bindTeamActions() {
         delegate('.edit-team', 'click', function(e, target) {
+            e.preventDefault();
             var teamId = target.dataset.id;
             if (teamId) {
                 showTeamForm(teamId);
@@ -621,6 +572,7 @@
         });
 
         delegate('.delete-team', 'click', function(e, target) {
+            e.preventDefault();
             var teamId = target.dataset.id;
             if (teamId) {
                 deleteTeam(teamId);
@@ -628,6 +580,7 @@
         });
 
         delegate('.manage-members', 'click', function(e, target) {
+            e.preventDefault();
             var teamId = target.dataset.id;
             if (teamId) {
                 openMemberManager(teamId);
@@ -635,6 +588,7 @@
         });
 
         delegate('.manage-rankings', 'click', function(e, target) {
+            e.preventDefault();
             var teamId = target.dataset.id;
             if (teamId) {
                 showRankingModal(teamId);
@@ -642,8 +596,11 @@
         });
 
         delegate('.toggle-members', 'click', function(e, target) {
+            e.preventDefault();
             var teamId = target.dataset.id;
-            if (!teamId) return;
+            if (!teamId) {
+                return;
+            }
 
             var current = TeamUI.getExpandedTeamId();
             if (current && String(current) === String(teamId)) {
@@ -657,23 +614,9 @@
     }
 
     function deleteTeam(teamId) {
-        var currentTab = TeamUI.getCurrentTab();
-        var period = getCurrentPeriod(currentTab);
-        var pageVM = TeamAggregator.getTeamPageViewModel({
-            type: currentTab,
-            period: period
-        });
-
-        var team = null;
-        for (var i = 0; i < pageVM.teams.length; i++) {
-            if (String(pageVM.teams[i].id) === String(teamId)) {
-                team = pageVM.teams[i];
-                break;
-            }
-        }
-
-        var name = team ? team.name : 'this team';
-        if (!confirm('Delete "' + name + '"? The team will be removed from the manager.')) {
+        var name = TeamQueries.getTeamName(teamId) || 'this team';
+        if (!confirm('Delete "' + name +
+            '"? The team will be removed from the manager.')) {
             return;
         }
 
@@ -694,20 +637,8 @@
     }
 
     // ============================================================
-    // MEMBER MANAGER (shared)
+    // MEMBER MANAGER
     // ============================================================
-    //
-    // Opens the shared MemberManager with the Teams adapter.
-    //
-    // MODAL LIFECYCLE:
-    //   - The shell is created on demand here.
-    //   - It's appended to document.body by Modal.showModal.
-    //   - It is NOT in _container, so refreshUI cannot destroy it.
-    //   - On close, the manager calls our onClose callback, which
-    //     calls Modal.closeModal (removes the shell) and
-    //     refreshUI (updates the list behind).
-    //
-    //   Next open creates a fresh shell. No stale state.
 
     function openMemberManager(teamId) {
         if (!isNonEmptyString(teamId)) {
@@ -722,12 +653,11 @@
             return;
         }
 
-        // Close any prior instance.
         if (_memberManagerModal) {
             try {
                 Modal.closeModal(_memberManagerModal);
             } catch (e) {
-                // Ignore.
+                // Ignore
             }
             _memberManagerModal = null;
         }
@@ -746,7 +676,6 @@
         _memberManagerModal = modal;
 
         Modal.modalSetup(modal, function() {
-            // Backdrop click or Escape → close.
             closeMemberManagerModal();
         });
         Modal.showModal(modal);
@@ -769,7 +698,7 @@
             try {
                 Modal.closeModal(modal);
             } catch (e) {
-                // Ignore.
+                // Ignore
             }
         }
 
@@ -777,7 +706,7 @@
     }
 
     // ============================================================
-    // RANKING MODAL (Teams tab)
+    // RANKING MODAL
     // ============================================================
 
     function showRankingModal(teamId) {
@@ -800,9 +729,12 @@
         var html = '';
         html += '<div class="modal-header">';
         html += '<h3 id="ranking-modal-title">' +
-                    DomUtils.escapeHtml(vm.teamName) +
-                    ' - Ranking History</h3>';
-        html += '<button type="button" class="close-modal">&times;</button>';
+                    escapeHtmlSafe(vm.teamName) +
+                    ' - Ranking History' +
+                '</h3>';
+        html += '<button type="button" class="close-modal">' +
+                    '&times;' +
+                '</button>';
         html += '</div>';
         html += '<div class="modal-body">';
         html += '<div id="ranking-form-container">' +
@@ -815,20 +747,40 @@
         contentEl.innerHTML = html;
         modal.appendChild(contentEl);
 
-        TeamUI.setModalTeamId(teamId);
+        Modal.showModal(modal);
 
-        showModal(modal);
-
-        // Wire add / remove buttons against this modal.
         bindRankingModalEvents(modal, contentEl, teamId);
     }
 
+    /**
+     * Escape a value for HTML insertion. Uses the same escaper as
+     * TeamRender but does not import it as a public dependency,
+     * because the escaper is a small utility and the alternative is
+     * a hard dependency on TeamRender.escapeHtml.
+     *
+     * Kept local because this is the only string interpolation in
+     * this module that is not already escaped by a renderer.
+     */
+    function escapeHtmlSafe(value) {
+        if (value === undefined || value === null) {
+            return '';
+        }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
     function bindRankingModalEvents(modal, contentEl, teamId) {
+        function close() {
+            closeModal(modal);
+        }
+
         var closeBtn = contentEl.querySelector('.close-modal');
         if (closeBtn) {
-            closeBtn.addEventListener('click', function() {
-                closeModalAndClearState(modal);
-            });
+            closeBtn.addEventListener('click', close);
         }
 
         var addBtn = contentEl.querySelector('#add-ranking-btn');
@@ -842,13 +794,19 @@
             var removeBtn = e.target.closest
                 ? e.target.closest('.remove-ranking')
                 : null;
-            if (!removeBtn) return;
+            if (!removeBtn) {
+                return;
+            }
             e.preventDefault();
 
             var period = removeBtn.dataset.period;
-            if (!period) return;
+            if (!period) {
+                return;
+            }
 
-            if (!confirm('Remove this ranking entry?')) { return; }
+            if (!confirm('Remove this ranking entry?')) {
+                return;
+            }
 
             TeamCore.removeRanking(teamId, period)
                 .then(function(result) {
@@ -858,7 +816,9 @@
                     }
                 })
                 .catch(function(err) {
-                    console.warn('[TeamEvents] removeRanking failed:', err);
+                    console.warn(
+                        '[TeamEvents] removeRanking failed:', err
+                    );
                     notify('Failed to remove ranking.', 'error');
                 });
         });
@@ -882,9 +842,15 @@
 
         TeamCore.addRanking(teamId, period, rank)
             .then(function(result) {
-                if (!result || !result.success) { return; }
-                if (periodEl) periodEl.value = '';
-                if (rankEl) rankEl.value = '';
+                if (!result || !result.success) {
+                    return;
+                }
+                if (periodEl) {
+                    periodEl.value = '';
+                }
+                if (rankEl) {
+                    rankEl.value = '';
+                }
                 refreshRankingListInPlace(modal, teamId);
                 refreshUI();
             })
@@ -896,7 +862,9 @@
 
     function refreshRankingListInPlace(modal, teamId) {
         var vm = TeamAggregator.getRankingModalViewModel(teamId);
-        if (!vm) return;
+        if (!vm) {
+            return;
+        }
 
         var listContainer = modal.querySelector('#ranking-list');
         if (listContainer) {
@@ -909,19 +877,23 @@
     // ============================================================
 
     function bindFilters() {
-        delegate('#apply-filter-btn', 'click', function() {
+        delegate('#apply-filter-btn', 'click', function(e) {
+            e.preventDefault();
             applyFilters();
         });
 
         delegate('#team-filter-year', 'keydown', function(e) {
             if (e.key === 'Enter') {
+                e.preventDefault();
                 applyFilters();
             }
         });
 
-        delegate('.filter-container input[type="checkbox"]', 'change', function() {
-            applyFilters();
-        });
+        delegate('.filter-container input[type="checkbox"]', 'change',
+            function() {
+                applyFilters();
+            }
+        );
     }
 
     function applyFilters() {
@@ -931,83 +903,59 @@
             var yearEl = _container.querySelector('#team-filter-year');
             if (yearEl) {
                 var yearRaw = yearEl.value.trim();
-                var yearNum = parseInt(yearRaw, 10);
                 if (yearRaw === '') {
                     TeamUI.setFilter(tab, 'filterYear', '');
-                } else if (!isNaN(yearNum) && yearNum >= 1) {
-                    TeamUI.setFilter(tab, 'filterYear', yearNum);
+                } else {
+                    var yearNum = parseInt(yearRaw, 10);
+                    if (!isNaN(yearNum) && yearNum >= 1) {
+                        TeamUI.setFilter(tab, 'filterYear', yearNum);
+                    }
                 }
             }
         }
 
-        var inactiveEl = _container.querySelector('#' + tab + '-show-inactive');
+        var inactiveEl = _container.querySelector(
+            '#' + tab + '-show-inactive'
+        );
         if (inactiveEl) {
-            TeamUI.setFilter(tab, 'filterStatus', inactiveEl.checked ? 'inactive' : 'active');
+            TeamUI.setFilter(
+                tab,
+                'filterStatus',
+                inactiveEl.checked ? 'inactive' : 'active'
+            );
         }
 
         refreshUI();
     }
 
     // ============================================================
-    // NAME HISTORY ADD / REMOVE (delegated)
+    // MODAL CLOSE
     // ============================================================
 
-    function bindNameHistoryAddRemove() {
-        delegate('.remove-name', 'click', function(e, target) {
-            e.preventDefault();
-            var entry = target.closest('.name-history-entry');
-            if (!entry) return;
-            var container = entry.parentElement;
-            if (!container) return;
-
-            if (container.querySelectorAll('.name-history-entry').length <= 1) {
-                notify('You need at least one name entry.', 'error');
-                return;
-            }
-
-            entry.remove();
-        });
+    function closeModal(modal) {
+        if (!modal) {
+            return;
+        }
+        try {
+            Modal.closeModal(modal);
+        } catch (e) {
+            console.warn('[TeamEvents] modal close failed:', e);
+        }
     }
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
-    window.TeamEvents = {
+    window.TeamEvents = Object.freeze({
         init: init,
         destroy: destroy,
 
         refreshUI: refreshUI,
 
-        // Modal controls (Teams tab internal)
         showTeamForm: showTeamForm,
         showRankingModal: showRankingModal,
         openMemberManager: openMemberManager
-    };
-
-    // ============================================================
-    // VERIFICATION
-    // ============================================================
-
-    (function verify() {
-        var exports = window.TeamEvents;
-        var missing = [];
-
-        var required = [
-            'init', 'destroy', 'refreshUI',
-            'showTeamForm', 'showRankingModal',
-            'openMemberManager'
-        ];
-
-        for (var i = 0; i < required.length; i++) {
-            if (typeof exports[required[i]] !== 'function') {
-                missing.push(required[i]);
-            }
-        }
-
-        if (missing.length > 0) {
-            console.warn('[TeamEvents] Verification - some exports may be missing:', missing.join(', '));
-        }
-    })();
+    });
 
 })();

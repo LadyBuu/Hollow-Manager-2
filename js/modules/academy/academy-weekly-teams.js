@@ -5,49 +5,30 @@
  * Path: js/modules/academy/academy-weekly-teams.js
  *
  * WHAT THIS MODULE OWNS:
- *   The week window during which a persistent Team entity appears in
- *   the Weekly Teams view for a class. A weekly-team record is a
- *   thin wrapper:
+ *   The week window during which a persistent Team entity appears
+ *   in the Weekly Teams view for a class:
  *
  *     academy.weeklyTeams[classId][teamId] = {
  *       id, classId, teamId,
- *       startWeek, endWeek,       // null = ongoing; endWeek inclusive
+ *       startWeek, endWeek,
  *       createdAt, updatedAt
  *     }
  *
  * WHAT THIS MODULE DOES NOT OWN:
- *   Team membership. The roster lives EXCLUSIVELY on the persistent
- *   Team entity's members[] array, where each member entry carries
- *   an `intervals` array describing that character's stints on the
- *   team. This module's writes route membership mutations through
- *   transaction-local helpers that operate on the persistent Team
- *   entity.
+ *   Team membership. The roster lives on the persistent Team entity's
+ *   members[] array, where each entry carries an intervals array.
+ *   Membership mutations route through transaction-local helpers
+ *   that operate on the persistent Team entity.
  *
- * MEMBER MODEL (v24):
- *   Each team.members[] entry is:
- *
- *     {
- *       memberId,        // stable per-entry identifier
- *       characterId,
- *       role,
- *       intervals: [
- *         { joinPeriod, leavePeriod },
- *         ...
- *       ]
- *     }
- *
- *   Each interval describes one stint. `joinPeriod` is the first
- *   period the character was on the team; `leavePeriod` is the last.
- *   Both inclusive. Blank means "unbounded on that side."
- *
- *   A character may have multiple stints on the same team. The
- *   intervals within one entry MUST be non-overlapping. This is
- *   enforced at the mutation layer (see applyMemberChange and the
- *   addMember/syncAddMemberInterval helpers).
- *
- *   `joinPeriod` is IMMUTABLE once set. To move a stint's start,
- *   purge the interval and add a new one. This keeps the interval
- *   identifier stable across edits.
+ * PREDICATE OWNERSHIP:
+ *   Interval and period containment are owned by TeamQueries. This
+ *   module does not reimplement them. Specifically:
+ *     - "Does this interval contain this week?"
+ *         -> TeamQueries.intervalContains
+ *     - "Is this member active at this week?"
+ *         -> TeamQueries.isMemberActive
+ *     - "Does this window contain this week?"
+ *         -> TeamQueries.windowContains
  *
  * READS:
  *   - getWeeklyTeams(classId, week)
@@ -57,69 +38,33 @@
  *   - suggestClassForTeam(teamId)
  *
  * WRITES:
- *   Window operations (unchanged by v24):
- *     - ensureWindow(classId, teamId, week)
- *     - setWindow(classId, teamId, startWeek, endWeek)
- *     - removeTeamRecord(classId, teamId)
- *     - clearClassWindows(classId)
- *     - assignTeamToClass(classId, teamId)
- *
- *   Member operations (interval-aware after v24):
- *     - addMember(classId, teamId, charId, week)
- *         Append a new stint starting at `week`. If the character
- *         already has an entry, append an interval to it.
- *     - addMemberInterval(classId, teamId, charId, joinPeriod,
- *                         leavePeriod)
- *         Append a specific interval. Same semantics as addMember
- *         but with explicit bounds.
- *     - endMembership(classId, teamId, charId, effectiveWeek)
- *         Close the currently-active interval at effectiveWeek - 1.
- *         "Effective week N" means "first week they are NOT on the
- *         team." The interval's leavePeriod becomes N - 1.
- *     - setLeaveAtWeek(classId, teamId, identifier, week)
- *         Close the currently-active interval AT `week`. The
- *         interval's leavePeriod becomes `week`. This is the
- *         "Leave at display week" primitive: "their last active
- *         week was this one."
- *     - updateMemberWindows(classId, teamId, changes[])
- *         Apply a list of interval-window edits in one transaction.
- *         Edits `leavePeriod` only; `joinPeriod` is immutable.
- *     - updateMemberWindow(classId, teamId, identifier, updates)
- *         Single-interval convenience wrapper.
- *     - purgeMemberRecords(classId, teamId, identifier)
- *         Hard-delete ONE interval. If the member is left with
- *         zero intervals, the whole entry is pruned.
- *     - removeMemberEntry(classId, teamId, charId)
- *         Hard-delete the WHOLE member entry (all intervals).
- *     - clearAllMembershipsForClass(classId, week)
- *         Remove every member whose active window covers `week`.
- *         Past and future stints are untouched. Backs the "Clear
- *         Rosters" button.
+ *   - Window operations: ensureWindow, setWindow, removeTeamRecord,
+ *     clearClassWindows, assignTeamToClass.
+ *   - Member operations (interval-aware): addMember, addMemberInterval,
+ *     endMembership, setLeaveAtWeek, updateMemberWindow,
+ *     updateMemberWindows, purgeMemberRecords, removeMemberEntry,
+ *     clearAllMembershipsForClass.
  *
  * MEMBER IDENTITY:
- *   Every entry carries a `memberId`. Mutation entry points accept
- *   either a `memberId` string or a
- *   `{ characterId, joinPeriod }` composite. The composite form is
- *   the canonical interval identifier: it addresses a specific
- *   stint by its joinPeriod within a character's entry.
+ *   Every entry carries a memberId. Mutation entry points accept
+ *   either a memberId string or a { characterId, joinPeriod }
+ *   composite.
  *
  * WEEK SEMANTICS:
  *   - Weeks are bounded [MIN_WEEK, MAX_WEEK].
- *   - startWeek / endWeek / joinPeriod / leavePeriod are integers
- *     in that range.
- *   - endWeek / leavePeriod === null or '' means "ongoing."
- *   - Both bounds are INCLUSIVE.
+ *   - Both bounds are inclusive.
+ *   - Blank bounds mean "ongoing".
  *
  * DEPENDENCIES (MANDATORY):
- *   - window.ObjectUtils          (deepClone)
- *   - window.ValidationUtils      (isNonEmptyString)
- *   - window.CalendarValidation   (parseWeek)
- *   - window.CalendarConstants    (MIN_WEEK, MAX_WEEK)
- *   - window.MutationPipeline     (performMutation)
- *   - window.TeamQueries          (getTeamById, getActiveTeamMembers,
- *                                  getTeamsByClass, isTeamActiveAtPeriod)
- *   - window.TeamConstants        (parsePeriod, normalizeTeamType,
- *                                  isValidPeriod)
+ *   - window.ObjectUtils
+ *   - window.ValidationUtils
+ *   - window.CalendarValidation
+ *   - window.CalendarConstants
+ *   - window.MutationPipeline
+ *   - window.TeamQueries
+ *   - window.TeamConstants
+ *   - window.CharacterQueries
+ *   - window.AcademyQueries
  */
 
 (function() {
@@ -155,16 +100,20 @@
     var MutationPipeline = window.MutationPipeline;
     var TeamQueries = window.TeamQueries;
     var TeamConstants = window.TeamConstants;
+    var CharacterQueries = window.CharacterQueries;
+    var AcademyQueries = window.AcademyQueries;
 
     var _missing = [];
 
     if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
         _missing.push('ObjectUtils.deepClone');
     }
-    if (!ValidationUtils || typeof ValidationUtils.isNonEmptyString !== 'function') {
+    if (!ValidationUtils ||
+        typeof ValidationUtils.isNonEmptyString !== 'function') {
         _missing.push('ValidationUtils.isNonEmptyString');
     }
-    if (!CalendarValidation || typeof CalendarValidation.parseWeek !== 'function') {
+    if (!CalendarValidation ||
+        typeof CalendarValidation.parseWeek !== 'function') {
         _missing.push('CalendarValidation.parseWeek');
     }
     if (!CalendarConstants ||
@@ -172,23 +121,53 @@
         typeof CalendarConstants.MAX_WEEK !== 'number') {
         _missing.push('CalendarConstants.MIN_WEEK/MAX_WEEK');
     }
-    if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
+    if (!MutationPipeline ||
+        typeof MutationPipeline.performMutation !== 'function') {
         _missing.push('MutationPipeline.performMutation');
     }
-    if (!TeamQueries || typeof TeamQueries.getTeamById !== 'function') {
+    if (!TeamQueries ||
+        typeof TeamQueries.getTeamById !== 'function') {
         _missing.push('TeamQueries.getTeamById');
     }
-    if (!TeamQueries || typeof TeamQueries.getActiveTeamMembers !== 'function') {
+    if (!TeamQueries ||
+        typeof TeamQueries.getActiveTeamMembers !== 'function') {
         _missing.push('TeamQueries.getActiveTeamMembers');
     }
-    if (!TeamQueries || typeof TeamQueries.getTeamsByClass !== 'function') {
+    if (!TeamQueries ||
+        typeof TeamQueries.getTeamsByClass !== 'function') {
         _missing.push('TeamQueries.getTeamsByClass');
     }
-    if (!TeamQueries || typeof TeamQueries.isTeamActiveAtPeriod !== 'function') {
+    if (!TeamQueries ||
+        typeof TeamQueries.isTeamActiveAtPeriod !== 'function') {
         _missing.push('TeamQueries.isTeamActiveAtPeriod');
     }
-    if (!TeamConstants || typeof TeamConstants.parsePeriod !== 'function') {
+    if (!TeamQueries ||
+        typeof TeamQueries.intervalContains !== 'function') {
+        _missing.push('TeamQueries.intervalContains');
+    }
+    if (!TeamQueries ||
+        typeof TeamQueries.isMemberActive !== 'function') {
+        _missing.push('TeamQueries.isMemberActive');
+    }
+    if (!TeamQueries ||
+        typeof TeamQueries.windowContains !== 'function') {
+        _missing.push('TeamQueries.windowContains');
+    }
+    if (!TeamConstants ||
+        typeof TeamConstants.parsePeriod !== 'function') {
         _missing.push('TeamConstants.parsePeriod');
+    }
+    if (!CharacterQueries ||
+        typeof CharacterQueries.getCharacterById !== 'function') {
+        _missing.push('CharacterQueries.getCharacterById');
+    }
+    if (!AcademyQueries ||
+        typeof AcademyQueries.getClasses !== 'function') {
+        _missing.push('AcademyQueries.getClasses');
+    }
+    if (!AcademyQueries ||
+        typeof AcademyQueries.getClass !== 'function') {
+        _missing.push('AcademyQueries.getClass');
     }
 
     if (_missing.length > 0) {
@@ -200,7 +179,7 @@
 
     window.__academyWeeklyTeamsLoaded = true;
 
-    diag('Module loaded (v24, interval-aware, sibling-overlap enforcing).');
+    diag('Module loaded (v24, interval-aware, delegate predicates).');
 
     // ============================================================
     // CONSTANTS
@@ -225,9 +204,12 @@
 
     function deepClone(value) {
         var result = ObjectUtils.deepClone(value);
-        if (result === value && value !== null && typeof value === 'object') {
+        if (result === value &&
+            value !== null &&
+            typeof value === 'object') {
             throw new Error(
-                '[AcademyWeeklyTeams] deepClone returned the original reference.'
+                '[AcademyWeeklyTeams] deepClone returned the original ' +
+                'reference.'
             );
         }
         return result;
@@ -252,19 +234,6 @@
         return parsed;
     }
 
-    function weekInRange(week, start, end) {
-        if (start === null || start === undefined) {
-            return false;
-        }
-        if (week < start) {
-            return false;
-        }
-        if (end !== null && end !== undefined && week > end) {
-            return false;
-        }
-        return true;
-    }
-
     function canonicaliseMemberBound(value) {
         if (value === undefined || value === null || value === '') {
             return '';
@@ -277,50 +246,14 @@
     }
 
     // ============================================================
-    // MEMBER INTERVAL HELPERS
+    // MEMBER INTERVAL HELPERS — DELEGATE TO TeamQueries
     // ============================================================
-
-    function intervalActiveInWeek(interval, week) {
-        if (!interval || typeof interval !== 'object') {
-            return false;
-        }
-
-        var hasJoin = interval.joinPeriod !== undefined &&
-                      interval.joinPeriod !== null &&
-                      interval.joinPeriod !== '';
-        var hasLeave = interval.leavePeriod !== undefined &&
-                       interval.leavePeriod !== null &&
-                       interval.leavePeriod !== '';
-
-        if (hasJoin) {
-            var join = TeamConstants.parsePeriod(interval.joinPeriod);
-            if (join === null) { return false; }
-            if (week < join) { return false; }
-        }
-
-        if (hasLeave) {
-            var leave = TeamConstants.parsePeriod(interval.leavePeriod);
-            if (leave === null) { return false; }
-            if (week > leave) { return false; }
-        }
-
-        return true;
-    }
-
-    function memberActiveInWeek(member, week) {
-        if (!member || typeof member !== 'object') {
-            return false;
-        }
-        if (!Array.isArray(member.intervals)) {
-            return false;
-        }
-        for (var i = 0; i < member.intervals.length; i++) {
-            if (intervalActiveInWeek(member.intervals[i], week)) {
-                return true;
-            }
-        }
-        return false;
-    }
+    //
+    // The canonical implementations live in TeamQueries:
+    //   - intervalContains(interval, week)
+    //   - isMemberActive(member, week)
+    //
+    // This module calls them. Do not reimplement them here.
 
     function findMemberEntryByCharacterId(team, charId) {
         if (!team || !Array.isArray(team.members)) {
@@ -329,7 +262,8 @@
         var target = String(charId);
         for (var i = 0; i < team.members.length; i++) {
             var m = team.members[i];
-            if (m && typeof m === 'object' && String(m.characterId) === target) {
+            if (m && typeof m === 'object' &&
+                String(m.characterId) === target) {
                 return m;
             }
         }
@@ -345,8 +279,11 @@
             : String(joinPeriod);
         for (var i = 0; i < entry.intervals.length; i++) {
             var iv = entry.intervals[i];
-            if (!iv || typeof iv !== 'object') { continue; }
-            var ivJoin = (iv.joinPeriod === undefined || iv.joinPeriod === null)
+            if (!iv || typeof iv !== 'object') {
+                continue;
+            }
+            var ivJoin = (iv.joinPeriod === undefined ||
+                          iv.joinPeriod === null)
                 ? ''
                 : String(iv.joinPeriod);
             if (ivJoin === target) {
@@ -362,17 +299,23 @@
         }
 
         if (typeof identifier === 'object') {
-            var charId = identifier.characterId !== undefined &&
-                         identifier.characterId !== null
-                ? String(identifier.characterId)
-                : null;
-            if (charId === null) { return null; }
+            var charId =
+                identifier.characterId !== undefined &&
+                identifier.characterId !== null
+                    ? String(identifier.characterId)
+                    : null;
+            if (charId === null) {
+                return null;
+            }
 
             var entry = findMemberEntryByCharacterId(team, charId);
-            if (!entry) { return null; }
+            if (!entry) {
+                return null;
+            }
 
             var interval = findIntervalInEntry(
-                entry, identifier.joinPeriod
+                entry,
+                identifier.joinPeriod
             );
 
             return { entry: entry, interval: interval };
@@ -381,7 +324,9 @@
         var targetId = String(identifier);
         for (var i = 0; i < team.members.length; i++) {
             var m = team.members[i];
-            if (!m || typeof m !== 'object') { continue; }
+            if (!m || typeof m !== 'object') {
+                continue;
+            }
             if (m.memberId !== undefined &&
                 m.memberId !== null &&
                 String(m.memberId) === targetId) {
@@ -399,7 +344,8 @@
         if (!window.data || typeof window.data !== 'object') {
             return null;
         }
-        if (!window.data.academy || typeof window.data.academy !== 'object') {
+        if (!window.data.academy ||
+            typeof window.data.academy !== 'object') {
             return null;
         }
         var store = window.data.academy.weeklyTeams;
@@ -413,7 +359,8 @@
         if (!appData || typeof appData !== 'object') {
             return null;
         }
-        if (!appData.academy || typeof appData.academy !== 'object') {
+        if (!appData.academy ||
+            typeof appData.academy !== 'object') {
             return null;
         }
         var store = appData.academy.weeklyTeams;
@@ -424,7 +371,8 @@
     }
 
     function ensureStore(appData) {
-        if (!appData.academy || typeof appData.academy !== 'object') {
+        if (!appData.academy ||
+            typeof appData.academy !== 'object') {
             appData.academy = {};
         }
         if (!appData.academy.weeklyTeams ||
@@ -436,7 +384,9 @@
     }
 
     function getTeamRecordInternalFromStore(store, classId, teamId) {
-        if (!store || !isNonEmptyString(classId) || !isNonEmptyString(teamId)) {
+        if (!store ||
+            !isNonEmptyString(classId) ||
+            !isNonEmptyString(teamId)) {
             return null;
         }
         var byClass = store[String(classId)];
@@ -448,10 +398,6 @@
             return null;
         }
         return record;
-    }
-
-    function getTeamRecordInternal(classId, teamId) {
-        return getTeamRecordInternalFromStore(getStore(), classId, teamId);
     }
 
     // ============================================================
@@ -491,7 +437,9 @@
         if (!team) {
             return 'Team no longer exists.';
         }
-        if (team.classId === null || team.classId === undefined || team.classId === '') {
+        if (team.classId === null ||
+            team.classId === undefined ||
+            team.classId === '') {
             return 'Team is not assigned to a class. Assign a class first.';
         }
         if (String(team.classId) !== String(classId)) {
@@ -505,10 +453,15 @@
             Math.random().toString(36).slice(2, 8);
     }
 
-    /**
-     * Effective start of an interval for overlap comparison.
-     * Blank joinPeriod is treated as 0 (always been on team).
-     */
+    // ============================================================
+    // INTERVAL OVERLAP — LOCAL, SPECIFIC TO INTERVAL BOUNDS
+    // ============================================================
+    //
+    // TeamQueries does not expose interval-to-interval overlap; it
+    // exposes containment. Overlap is a different question and its
+    // implementation stays here. The bounds-comparison semantics
+    // (blank = unbounded) are the same as everywhere else.
+
     function effectiveIntervalStart(interval) {
         if (!interval) return 0;
         var v = interval.joinPeriod;
@@ -517,10 +470,6 @@
         return n === null ? 0 : n;
     }
 
-    /**
-     * Effective end of an interval for overlap comparison.
-     * Blank leavePeriod is treated as +Infinity.
-     */
     function effectiveIntervalEnd(interval) {
         if (!interval) return Infinity;
         var v = interval.leavePeriod;
@@ -529,11 +478,10 @@
         return n === null ? Infinity : n;
     }
 
-    /**
-     * Do two intervals overlap? Inclusive on both ends.
-     */
     function intervalsOverlap(a, b) {
-        if (!a || !b) { return false; }
+        if (!a || !b) {
+            return false;
+        }
         var aStart = effectiveIntervalStart(a);
         var aEnd = effectiveIntervalEnd(a);
         var bStart = effectiveIntervalStart(b);
@@ -541,19 +489,6 @@
         return aStart <= bEnd && bStart <= aEnd;
     }
 
-    /**
-     * Does the proposed interval overlap any interval in the
-     * member entry OTHER than the one identified by `excludeJoin`?
-     *
-     * `proposed` is { joinPeriod, leavePeriod } with canonical
-     * string values (or blanks).
-     *
-     * `excludeJoin` is the joinPeriod of the interval being edited,
-     * so it doesn't collide with itself. Pass null to skip exclusion
-     * (used when adding a brand-new interval).
-     *
-     * Returns the conflicting interval, or null.
-     */
     function findSiblingOverlap(entry, proposed, excludeJoin) {
         if (!entry || !Array.isArray(entry.intervals)) {
             return null;
@@ -565,12 +500,16 @@
 
         for (var i = 0; i < entry.intervals.length; i++) {
             var iv = entry.intervals[i];
-            if (!iv || typeof iv !== 'object') { continue; }
+            if (!iv || typeof iv !== 'object') {
+                continue;
+            }
 
             if (exclude !== null) {
-                var ivJoin = (iv.joinPeriod === undefined || iv.joinPeriod === null)
-                    ? ''
-                    : String(iv.joinPeriod);
+                var ivJoin =
+                    (iv.joinPeriod === undefined ||
+                     iv.joinPeriod === null)
+                        ? ''
+                        : String(iv.joinPeriod);
                 if (ivJoin === exclude) {
                     continue;
                 }
@@ -588,13 +527,15 @@
      *
      * - If no entry exists for the character: create one with a
      *   fresh memberId and a single interval.
-     * - If an entry exists: append a new interval (after overlap
-     *   check against the entry's other intervals).
-     *
-     * Returns { added, entry, reason? }.
+     * - If an entry exists: append a new interval after an overlap
+     *   check against the entry's other intervals.
      */
     function syncAddMemberIntervalToPersistentRoster(
-        team, charId, joinPeriod, leavePeriod, role
+        team,
+        charId,
+        joinPeriod,
+        leavePeriod,
+        role
     ) {
         if (!team) {
             return { added: false, entry: null, reason: 'no-team' };
@@ -607,7 +548,11 @@
         var joinStr = canonicaliseMemberBound(joinPeriod);
         var leaveStr = canonicaliseMemberBound(leavePeriod);
         if (joinStr === null || leaveStr === null) {
-            return { added: false, entry: null, reason: 'invalid-period' };
+            return {
+                added: false,
+                entry: null,
+                reason: 'invalid-period'
+            };
         }
 
         var roleStr = isNonEmptyString(role) ? String(role) : 'Member';
@@ -652,11 +597,14 @@
 
     /**
      * Close the currently-active interval of a member entry.
-     *
-     * `effectiveWeek` is the FIRST week the member is NOT on the
-     * team. The interval's leavePeriod becomes effectiveWeek - 1.
+     * `effectiveWeek` is the first week the member is NOT on the
+     * team.
      */
-    function syncEndMembershipOnPersistentRoster(team, charId, effectiveWeek) {
+    function syncEndMembershipOnPersistentRoster(
+        team,
+        charId,
+        effectiveWeek
+    ) {
         if (!team || !Array.isArray(team.members)) {
             return { ended: false, reason: 'no-team' };
         }
@@ -670,7 +618,10 @@
 
         var matched = null;
         for (var i = 0; i < entry.intervals.length; i++) {
-            if (intervalActiveInWeek(entry.intervals[i], lastActiveWeek)) {
+            if (TeamQueries.intervalContains(
+                entry.intervals[i],
+                lastActiveWeek
+            )) {
                 matched = entry.intervals[i];
                 break;
             }
@@ -683,8 +634,10 @@
         if (matched.leavePeriod !== undefined &&
             matched.leavePeriod !== null &&
             matched.leavePeriod !== '') {
-            var currentLeave = TeamConstants.parsePeriod(matched.leavePeriod);
-            if (currentLeave !== null && currentLeave <= lastActiveWeek) {
+            var currentLeave =
+                TeamConstants.parsePeriod(matched.leavePeriod);
+            if (currentLeave !== null &&
+                currentLeave <= lastActiveWeek) {
                 return { ended: false, reason: 'already-closed' };
             }
         }
@@ -698,7 +651,11 @@
     // ============================================================
 
     function getTeamRecord(classId, teamId) {
-        var record = getTeamRecordInternal(classId, teamId);
+        var record = getTeamRecordInternalFromStore(
+            getStore(),
+            classId,
+            teamId
+        );
         return record ? deepClone(record) : null;
     }
 
@@ -730,14 +687,17 @@
         if (weekNum === null) {
             return [];
         }
-        if (!isNonEmptyString(classId) || !isNonEmptyString(teamId)) {
+        if (!isNonEmptyString(classId) ||
+            !isNonEmptyString(teamId)) {
             return [];
         }
         var team = TeamQueries.getTeamById(teamId);
         if (!team) {
             return [];
         }
-        if (team.classId === null || team.classId === undefined || team.classId === '') {
+        if (team.classId === null ||
+            team.classId === undefined ||
+            team.classId === '') {
             return [];
         }
         if (String(team.classId) !== String(classId)) {
@@ -756,14 +716,17 @@
     }
 
     function getAllMembers(classId, teamId) {
-        if (!isNonEmptyString(classId) || !isNonEmptyString(teamId)) {
+        if (!isNonEmptyString(classId) ||
+            !isNonEmptyString(teamId)) {
             return [];
         }
         var team = TeamQueries.getTeamById(teamId);
         if (!team) {
             return [];
         }
-        if (team.classId === null || team.classId === undefined || team.classId === '') {
+        if (team.classId === null ||
+            team.classId === undefined ||
+            team.classId === '') {
             return [];
         }
         if (String(team.classId) !== String(classId)) {
@@ -797,13 +760,21 @@
             if (!isPlainObject(record)) {
                 continue;
             }
-            if (!weekInRange(weekNum, record.startWeek, record.endWeek)) {
+            if (!TeamQueries.windowContains(
+                record.startWeek,
+                record.endWeek,
+                weekNum
+            )) {
                 continue;
             }
             if (!isPersistentTeamVisibleInWeek(teamId, weekNum)) {
                 continue;
             }
-            result[teamId] = getActiveMembers(classId, teamId, weekNum);
+            result[teamId] = getActiveMembers(
+                classId,
+                teamId,
+                weekNum
+            );
         }
         return result;
     }
@@ -889,7 +860,8 @@
             if (start === null) {
                 continue;
             }
-            var end = record.endWeek === null || record.endWeek === undefined
+            var end = record.endWeek === null ||
+                      record.endWeek === undefined
                 ? null
                 : parseWeekStrict(record.endWeek);
             var effectiveEnd = (end === null) ? MAX_WEEK : end;
@@ -898,7 +870,9 @@
                 weeks[w] = true;
             }
         }
-        var result = Object.keys(weeks).map(function(k) { return parseInt(k, 10); });
+        var result = Object.keys(weeks).map(function(k) {
+            return parseInt(k, 10);
+        });
         result.sort(function(a, b) { return a - b; });
         return result;
     }
@@ -923,7 +897,12 @@
             var teamIds = Object.keys(byClass);
             for (var j = 0; j < teamIds.length; j++) {
                 var record = byClass[teamIds[j]];
-                if (isPlainObject(record) && weekInRange(weekNum, record.startWeek, record.endWeek)) {
+                if (isPlainObject(record) &&
+                    TeamQueries.windowContains(
+                        record.startWeek,
+                        record.endWeek,
+                        weekNum
+                    )) {
                     hasAny = true;
                     break;
                 }
@@ -952,85 +931,99 @@
     // ============================================================
 
     function getOrphanAcademicTeams() {
-        if (!Array.isArray(window.data && window.data.teams)) {
-            return [];
-        }
+        var teams = TeamQueries.getTeams('academic', null, true);
         var result = [];
-        var teams = window.data.teams;
+
         for (var i = 0; i < teams.length; i++) {
             var team = teams[i];
-            if (!team || typeof team !== 'object') continue;
-            if (TeamConstants.normalizeTeamType(team.type) !== 'academic') continue;
+            if (!team) {
+                continue;
+            }
             if (team.classId !== null &&
                 team.classId !== undefined &&
                 team.classId !== '') {
                 continue;
             }
-            var memberCount = Array.isArray(team.members) ? team.members.length : 0;
+            var memberCount = Array.isArray(team.members)
+                ? team.members.length
+                : 0;
             result.push({
                 id: String(team.id),
-                name: isNonEmptyString(team.name) ? team.name : 'Unnamed Team',
+                name: isNonEmptyString(team.name)
+                    ? team.name
+                    : 'Unnamed Team',
                 memberCount: memberCount,
                 startPeriod: team.startPeriod || '',
                 endPeriod: team.endPeriod || '',
                 suggestedClassId: suggestClassForTeam(team.id)
             });
         }
+
         result.sort(function(a, b) {
             return (a.name || '').localeCompare(b.name || '');
         });
         return result;
     }
 
+    /**
+     * Suggest a class for a team based on its members' class
+     * memberships.
+     *
+     * The majority class wins; a tie returns null. Reads route
+     * through TeamQueries and CharacterQueries — this module does
+     * not walk raw storage.
+     */
     function suggestClassForTeam(teamId) {
         if (!isNonEmptyString(teamId)) {
             return null;
         }
-        if (!window.data || !Array.isArray(window.data.teams) ||
-            !Array.isArray(window.data.characters)) {
-            return null;
-        }
-        if (!window.data.academy || typeof window.data.academy !== 'object') {
-            return null;
-        }
-        var classes = window.data.academy.graduatingClasses;
-        if (!classes || typeof classes !== 'object') {
+
+        var team = TeamQueries.getTeamById(teamId);
+        if (!team ||
+            !Array.isArray(team.members) ||
+            team.members.length === 0) {
             return null;
         }
 
-        var team = null;
-        for (var t = 0; t < window.data.teams.length; t++) {
-            if (String(window.data.teams[t].id) === String(teamId)) {
-                team = window.data.teams[t];
-                break;
-            }
-        }
-        if (!team || !Array.isArray(team.members) || team.members.length === 0) {
+        var classes = AcademyQueries.getClasses() || [];
+        if (classes.length === 0) {
             return null;
+        }
+
+        var validClassIds = Object.create(null);
+        for (var c = 0; c < classes.length; c++) {
+            var cls = classes[c];
+            if (cls && cls.id) {
+                validClassIds[String(cls.id)] = true;
+            }
         }
 
         var counts = Object.create(null);
+
         for (var m = 0; m < team.members.length; m++) {
             var member = team.members[m];
-            if (!member || !member.characterId) continue;
-            var charId = String(member.characterId);
-            var char = null;
-            for (var c = 0; c < window.data.characters.length; c++) {
-                if (String(window.data.characters[c].id) === charId) {
-                    char = window.data.characters[c];
-                    break;
-                }
+            if (!member || !member.characterId) {
+                continue;
             }
-            if (!char || !Array.isArray(char.classIds)) continue;
+            var char = CharacterQueries.getCharacterById(
+                member.characterId
+            );
+            if (!char || !Array.isArray(char.classIds)) {
+                continue;
+            }
             for (var ci = 0; ci < char.classIds.length; ci++) {
                 var classId = String(char.classIds[ci]);
-                if (!classes[classId]) continue;
+                if (!validClassIds[classId]) {
+                    continue;
+                }
                 counts[classId] = (counts[classId] || 0) + 1;
             }
         }
 
         var keys = Object.keys(counts);
-        if (keys.length === 0) return null;
+        if (keys.length === 0) {
+            return null;
+        }
 
         var bestClassId = null;
         var bestCount = 0;
@@ -1046,7 +1039,9 @@
             }
         }
 
-        if (tie) return null;
+        if (tie) {
+            return null;
+        }
         return bestClassId;
     }
 
@@ -1069,8 +1064,14 @@
 
     function touchTeamRecord(appData, classId, teamId) {
         var store = getStoreFromSnapshot(appData);
-        if (!store) { return; }
-        var record = getTeamRecordInternalFromStore(store, classId, teamId);
+        if (!store) {
+            return;
+        }
+        var record = getTeamRecordInternalFromStore(
+            store,
+            classId,
+            teamId
+        );
         if (record) {
             record.updatedAt = new Date().toISOString();
         }
@@ -1080,21 +1081,16 @@
     // CHANGE APPLICATION
     // ============================================================
     //
-    // One function implements what an "interval window change" is:
-    // validation, canonicalisation, comparison against the current
-    // interval, sibling-overlap check, and the write. The bulk
-    // mutation's validate phase and mutate phase both call this.
-    // Because it is deterministic given the same team state, the two
-    // phases cannot diverge.
+    // applyMemberChange validates and applies a single member
+    // interval edit. It reads only from the `team` argument it is
+    // given — never from window.data. This is what allows the
+    // pipeline's validate() and mutate() phases to call it and
+    // guarantee they see identical state: the caller supplies the
+    // same `team` reference to both.
     //
-    // joinPeriod is IMMUTABLE. Attempts to change it are rejected.
-    //
-    // SIBLING OVERLAP:
-    //   When the proposed leavePeriod change would cause the interval
-    //   to overlap a different interval of the same member, the
-    //   change is rejected. This is the mutation-layer enforcement of
-    //   the "no two intervals of one member overlap" invariant. The
-    //   UI also pre-checks; both layers enforce.
+    // INVARIANT: do not add any read of window.data or any other
+    // global inside this function. Doing so would let the two
+    // phases diverge.
 
     function applyMemberChange(team, change) {
         if (!change || typeof change !== 'object') {
@@ -1103,39 +1099,46 @@
 
         var identifier = change.identifier;
         if (!identifier) {
-            return { ok: false, message: 'Change is missing an identifier.' };
+            return {
+                ok: false,
+                message: 'Change is missing an identifier.'
+            };
         }
 
         var resolved = resolveMemberByIdentifier(team, identifier);
         if (!resolved) {
-            return { ok: false, message: 'Member not found on this team.' };
+            return {
+                ok: false,
+                message: 'Member not found on this team.'
+            };
         }
 
         var entry = resolved.entry;
         var interval = resolved.interval;
 
-        // Reject joinPeriod edits outright.
         if (change.joinPeriod !== undefined) {
             return {
                 ok: false,
-                message: 'joinPeriod is immutable; remove the interval and add a new one.'
+                message: 'joinPeriod is immutable; remove the interval ' +
+                    'and add a new one.'
             };
         }
 
-        // Only leavePeriod is editable through this path.
         if (change.leavePeriod === undefined) {
             return { ok: true, changed: false };
         }
 
-        // memberId-form identifier doesn't carry interval context.
         if (!interval) {
             return {
                 ok: false,
-                message: 'A specific interval is required; use { characterId, joinPeriod }.'
+                message: 'A specific interval is required; use ' +
+                    '{ characterId, joinPeriod }.'
             };
         }
 
-        var canonicalLeave = canonicaliseMemberBound(change.leavePeriod);
+        var canonicalLeave = canonicaliseMemberBound(
+            change.leavePeriod
+        );
         if (canonicalLeave === null) {
             return {
                 ok: false,
@@ -1144,13 +1147,13 @@
             };
         }
 
-        var proposedJoin = (interval.joinPeriod === undefined ||
-                            interval.joinPeriod === null)
-            ? ''
-            : String(interval.joinPeriod);
+        var proposedJoin =
+            (interval.joinPeriod === undefined ||
+             interval.joinPeriod === null)
+                ? ''
+                : String(interval.joinPeriod);
         var proposedLeave = canonicalLeave;
 
-        // An interval with no bounds at all is meaningless.
         if (proposedJoin === '' && proposedLeave === '') {
             return {
                 ok: false,
@@ -1158,7 +1161,6 @@
             };
         }
 
-        // Join <= leave when both present.
         if (proposedJoin !== '' && proposedLeave !== '') {
             var jn = parseInt(proposedJoin, 10);
             var lv = parseInt(proposedLeave, 10);
@@ -1170,18 +1172,20 @@
             }
         }
 
-        // ---- SIBLING OVERLAP CHECK ----
-        // Reopening an interval (or extending its leave) must not
-        // collide with another interval of the same member.
         var proposed = {
             joinPeriod: proposedJoin,
             leavePeriod: proposedLeave
         };
-        var conflict = findSiblingOverlap(entry, proposed, proposedJoin);
+        var conflict = findSiblingOverlap(
+            entry,
+            proposed,
+            proposedJoin
+        );
         if (conflict) {
             return {
                 ok: false,
-                message: 'Leave week ' + (proposedLeave || '(ongoing)') +
+                message: 'Leave week ' +
+                    (proposedLeave || '(ongoing)') +
                     ' would overlap another stint of the same member ' +
                     '(join ' + (conflict.joinPeriod || '\u2014') +
                     ', leave ' + (conflict.leavePeriod || '\u2014') + ').'
@@ -1189,10 +1193,11 @@
         }
 
         var changed = false;
-        var currentLeave = (interval.leavePeriod === undefined ||
-                            interval.leavePeriod === null)
-            ? ''
-            : String(interval.leavePeriod);
+        var currentLeave =
+            (interval.leavePeriod === undefined ||
+             interval.leavePeriod === null)
+                ? ''
+                : String(interval.leavePeriod);
 
         if (currentLeave !== canonicalLeave) {
             interval.leavePeriod = canonicalLeave;
@@ -1203,7 +1208,7 @@
     }
 
     // ============================================================
-    // MUTATIONS - WINDOW
+    // MUTATIONS — WINDOW
     // ============================================================
 
     function ensureWindow(classId, teamId, week) {
@@ -1216,9 +1221,10 @@
 
         var weekNum = parseWeekStrict(week);
         if (weekNum === null) {
-            return Promise.resolve(
-                failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').')
-            );
+            return Promise.resolve(failure(
+                'Valid week is required (' +
+                MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
         }
 
         var targetClass = String(classId);
@@ -1227,10 +1233,15 @@
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
                 var classError = validateTeamClassInSnapshot(
-                    appData, targetTeam, targetClass
+                    appData,
+                    targetTeam,
+                    targetClass
                 );
                 if (classError) {
                     return { valid: false, message: classError };
@@ -1245,13 +1256,21 @@
 
                 var record = store[targetClass][targetTeam];
                 if (!isPlainObject(record)) {
-                    record = buildNewTeamRecord(targetClass, targetTeam, weekNum);
+                    record = buildNewTeamRecord(
+                        targetClass,
+                        targetTeam,
+                        weekNum
+                    );
                     store[targetClass][targetTeam] = record;
-                    return { created: true, record: deepClone(record) };
+                    return {
+                        created: true,
+                        record: deepClone(record)
+                    };
                 }
 
                 var changed = false;
-                if (typeof record.startWeek !== 'number' || weekNum < record.startWeek) {
+                if (typeof record.startWeek !== 'number' ||
+                    weekNum < record.startWeek) {
                     record.startWeek = weekNum;
                     changed = true;
                 }
@@ -1265,10 +1284,15 @@
                     record.updatedAt = new Date().toISOString();
                 }
 
-                return { created: false, changed: changed, record: deepClone(record) };
+                return {
+                    created: false,
+                    changed: changed,
+                    record: deepClone(record)
+                };
             },
-            logMessage: 'Opened weekly-team window for team ' + targetTeam +
-                ' in class ' + targetClass + ' at week ' + weekNum,
+            logMessage: 'Opened weekly-team window for team ' +
+                targetTeam + ' in class ' + targetClass +
+                ' at week ' + weekNum,
             successMessage: 'Team opened for this week.',
             failureMessage: 'Failed to open team for this week.'
         });
@@ -1284,23 +1308,27 @@
 
         var startNum = parseWeekStrict(startWeek);
         if (startNum === null) {
-            return Promise.resolve(
-                failure('Valid start week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').')
-            );
+            return Promise.resolve(failure(
+                'Valid start week is required (' +
+                MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
         }
 
         var endNum = null;
-        if (endWeek !== undefined && endWeek !== null && endWeek !== '') {
+        if (endWeek !== undefined &&
+            endWeek !== null &&
+            endWeek !== '') {
             endNum = parseWeekStrict(endWeek);
             if (endNum === null) {
-                return Promise.resolve(
-                    failure('Valid end week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').')
-                );
+                return Promise.resolve(failure(
+                    'Valid end week is required (' +
+                    MIN_WEEK + '-' + MAX_WEEK + ').'
+                ));
             }
             if (endNum < startNum) {
-                return Promise.resolve(
-                    failure('End week cannot be before start week.')
-                );
+                return Promise.resolve(failure(
+                    'End week cannot be before start week.'
+                ));
             }
         }
 
@@ -1310,10 +1338,15 @@
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
                 var classError = validateTeamClassInSnapshot(
-                    appData, targetTeam, targetClass
+                    appData,
+                    targetTeam,
+                    targetClass
                 );
                 if (classError) {
                     return { valid: false, message: classError };
@@ -1326,7 +1359,8 @@
                 var classIds = Object.keys(store);
                 for (var c = 0; c < classIds.length; c++) {
                     var bucket = store[classIds[c]];
-                    if (bucket && typeof bucket === 'object' && bucket[targetTeam]) {
+                    if (bucket && typeof bucket === 'object' &&
+                        bucket[targetTeam]) {
                         delete bucket[targetTeam];
                         if (Object.keys(bucket).length === 0) {
                             delete store[classIds[c]];
@@ -1356,8 +1390,8 @@
                     endWeek: endNum
                 };
             },
-            logMessage: 'Re-ranged weekly-team window for team ' + targetTeam +
-                ' in class ' + targetClass +
+            logMessage: 'Re-ranged weekly-team window for team ' +
+                targetTeam + ' in class ' + targetClass +
                 ' (weeks ' + startNum + '-' +
                 (endNum === null ? 'ongoing' : endNum) + ')',
             successMessage: 'Team window updated.',
@@ -1379,14 +1413,25 @@
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
                 var team = findTeamInSnapshot(appData, targetTeam);
                 if (!team) {
-                    return { valid: false, message: 'Team no longer exists.' };
+                    return {
+                        valid: false,
+                        message: 'Team no longer exists.'
+                    };
                 }
-                if (TeamConstants.normalizeTeamType(team.type) !== 'academic') {
-                    return { valid: false, message: 'Only academic teams can be assigned to a class.' };
+                if (TeamConstants.normalizeTeamType(team.type) !==
+                    'academic') {
+                    return {
+                        valid: false,
+                        message: 'Only academic teams can be assigned ' +
+                            'to a class.'
+                    };
                 }
                 if (team.classId !== null &&
                     team.classId !== undefined &&
@@ -1396,7 +1441,8 @@
                     }
                     return {
                         valid: false,
-                        message: 'Team is already assigned to a different class.'
+                        message: 'Team is already assigned to a ' +
+                            'different class.'
                     };
                 }
                 return { valid: true };
@@ -1415,10 +1461,13 @@
                     store[targetClass] = {};
                 }
 
-                var startWeek = TeamConstants.parsePeriod(team.startPeriod);
-                var endWeek = TeamConstants.parsePeriod(team.endPeriod);
+                var startWeek =
+                    TeamConstants.parsePeriod(team.startPeriod);
+                var endWeek =
+                    TeamConstants.parsePeriod(team.endPeriod);
 
-                if (startWeek !== null && !store[targetClass][targetTeam]) {
+                if (startWeek !== null &&
+                    !store[targetClass][targetTeam]) {
                     var now = new Date().toISOString();
                     store[targetClass][targetTeam] = {
                         id: targetTeam,
@@ -1426,23 +1475,28 @@
                         teamId: targetTeam,
                         startWeek: startWeek,
                         endWeek: endWeek,
-                        createdAt: (typeof team.createdAt === 'string' && team.createdAt)
+                        createdAt: (typeof team.createdAt === 'string' &&
+                                    team.createdAt)
                             ? team.createdAt
                             : now,
                         updatedAt: now
                     };
                 }
 
-                return { teamId: targetTeam, classId: targetClass };
+                return {
+                    teamId: targetTeam,
+                    classId: targetClass
+                };
             },
-            logMessage: 'Assigned team ' + targetTeam + ' to class ' + targetClass,
+            logMessage: 'Assigned team ' + targetTeam +
+                ' to class ' + targetClass,
             successMessage: 'Team assigned to class.',
             failureMessage: 'Failed to assign team to class.'
         });
     }
 
     // ============================================================
-    // MUTATIONS - MEMBER
+    // MUTATIONS — MEMBER
     // ============================================================
 
     function addMember(classId, teamId, charId, week) {
@@ -1453,14 +1507,17 @@
             return Promise.resolve(failure('Team ID is required.'));
         }
         if (!isNonEmptyString(charId)) {
-            return Promise.resolve(failure('Character ID is required.'));
+            return Promise.resolve(
+                failure('Character ID is required.')
+            );
         }
 
         var weekNum = parseWeekStrict(week);
         if (weekNum === null) {
-            return Promise.resolve(
-                failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').')
-            );
+            return Promise.resolve(failure(
+                'Valid week is required (' +
+                MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
         }
 
         var targetClass = String(classId);
@@ -1470,10 +1527,15 @@
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
                 var classError = validateTeamClassInSnapshot(
-                    appData, targetTeam, targetClass
+                    appData,
+                    targetTeam,
+                    targetClass
                 );
                 if (classError) {
                     return { valid: false, message: classError };
@@ -1488,26 +1550,37 @@
 
                 var record = store[targetClass][targetTeam];
                 if (!isPlainObject(record)) {
-                    record = buildNewTeamRecord(targetClass, targetTeam, weekNum);
+                    record = buildNewTeamRecord(
+                        targetClass,
+                        targetTeam,
+                        weekNum
+                    );
                     store[targetClass][targetTeam] = record;
                 }
 
                 var windowStart = record.startWeek;
                 var windowEnd = record.endWeek;
 
-                if (typeof windowStart !== 'number' || weekNum < windowStart) {
+                if (typeof windowStart !== 'number' ||
+                    weekNum < windowStart) {
                     record.startWeek = weekNum;
                 }
-                if (windowEnd !== null && windowEnd !== undefined &&
+                if (windowEnd !== null &&
+                    windowEnd !== undefined &&
                     weekNum > windowEnd) {
                     record.endWeek = null;
                 }
                 record.updatedAt = new Date().toISOString();
 
                 var team = findTeamInSnapshot(appData, targetTeam);
-                var syncResult = syncAddMemberIntervalToPersistentRoster(
-                    team, targetChar, String(weekNum), '', 'Member'
-                );
+                var syncResult =
+                    syncAddMemberIntervalToPersistentRoster(
+                        team,
+                        targetChar,
+                        String(weekNum),
+                        '',
+                        'Member'
+                    );
 
                 if (syncResult.reason === 'overlap') {
                     throw new Error(
@@ -1528,14 +1601,21 @@
                     teamId: targetTeam
                 };
             },
-            logMessage: 'Added ' + targetChar + ' to team ' + targetTeam +
-                ' in ' + targetClass + ' from week ' + weekNum,
+            logMessage: 'Added ' + targetChar + ' to team ' +
+                targetTeam + ' in ' + targetClass +
+                ' from week ' + weekNum,
             successMessage: 'Member added to team.',
             failureMessage: 'Failed to add member to team.'
         });
     }
 
-    function addMemberInterval(classId, teamId, charId, joinPeriod, leavePeriod) {
+    function addMemberInterval(
+        classId,
+        teamId,
+        charId,
+        joinPeriod,
+        leavePeriod
+    ) {
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
         }
@@ -1543,7 +1623,9 @@
             return Promise.resolve(failure('Team ID is required.'));
         }
         if (!isNonEmptyString(charId)) {
-            return Promise.resolve(failure('Character ID is required.'));
+            return Promise.resolve(
+                failure('Character ID is required.')
+            );
         }
 
         var joinCanon = canonicaliseMemberBound(joinPeriod);
@@ -1556,14 +1638,18 @@
         }
 
         if (joinCanon === '' && leaveCanon === '') {
-            return Promise.resolve(failure('Set at least one of Join or Leave.'));
+            return Promise.resolve(failure(
+                'Set at least one of Join or Leave.'
+            ));
         }
 
         if (joinCanon !== '' && leaveCanon !== '') {
             var jn = parseInt(joinCanon, 10);
             var lv = parseInt(leaveCanon, 10);
             if (!isNaN(jn) && !isNaN(lv) && lv < jn) {
-                return Promise.resolve(failure('Leave cannot be before join.'));
+                return Promise.resolve(failure(
+                    'Leave cannot be before join.'
+                ));
             }
         }
 
@@ -1574,10 +1660,15 @@
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
                 var classError = validateTeamClassInSnapshot(
-                    appData, targetTeam, targetClass
+                    appData,
+                    targetTeam,
+                    targetClass
                 );
                 if (classError) {
                     return { valid: false, message: classError };
@@ -1596,16 +1687,23 @@
                         ? parseInt(joinCanon, 10)
                         : MIN_WEEK;
                     record = buildNewTeamRecord(
-                        targetClass, targetTeam, initialWeek
+                        targetClass,
+                        targetTeam,
+                        initialWeek
                     );
                     store[targetClass][targetTeam] = record;
                 }
                 record.updatedAt = new Date().toISOString();
 
                 var team = findTeamInSnapshot(appData, targetTeam);
-                var syncResult = syncAddMemberIntervalToPersistentRoster(
-                    team, targetChar, joinCanon, leaveCanon, 'Member'
-                );
+                var syncResult =
+                    syncAddMemberIntervalToPersistentRoster(
+                        team,
+                        targetChar,
+                        joinCanon,
+                        leaveCanon,
+                        'Member'
+                    );
 
                 if (syncResult.reason === 'overlap') {
                     throw new Error(
@@ -1626,8 +1724,8 @@
                     teamId: targetTeam
                 };
             },
-            logMessage: 'Added interval to ' + targetChar + ' on team ' +
-                targetTeam,
+            logMessage: 'Added interval to ' + targetChar +
+                ' on team ' + targetTeam,
             successMessage: 'Interval added.',
             failureMessage: 'Failed to add interval.'
         });
@@ -1637,14 +1735,17 @@
         if (!isNonEmptyString(classId) ||
             !isNonEmptyString(teamId) ||
             !isNonEmptyString(charId)) {
-            return Promise.resolve(failure('Class, team, and character IDs are required.'));
+            return Promise.resolve(failure(
+                'Class, team, and character IDs are required.'
+            ));
         }
 
         var weekNum = parseWeekStrict(effectiveWeek);
         if (weekNum === null) {
-            return Promise.resolve(
-                failure('Valid effective week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').')
-            );
+            return Promise.resolve(failure(
+                'Valid effective week is required (' +
+                MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
         }
 
         var targetClass = String(classId);
@@ -1654,10 +1755,15 @@
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
                 var classError = validateTeamClassInSnapshot(
-                    appData, targetTeam, targetClass
+                    appData,
+                    targetTeam,
+                    targetClass
                 );
                 if (classError) {
                     return { valid: false, message: classError };
@@ -1670,24 +1776,34 @@
                     return { ended: false, reason: 'no-team' };
                 }
 
-                var syncResult = syncEndMembershipOnPersistentRoster(
-                    team, targetChar, weekNum
-                );
+                var syncResult =
+                    syncEndMembershipOnPersistentRoster(
+                        team,
+                        targetChar,
+                        weekNum
+                    );
 
                 if (syncResult.ended) {
                     team.updatedAt = new Date().toISOString();
-                    touchTeamRecord(appData, targetClass, targetTeam);
+                    touchTeamRecord(
+                        appData,
+                        targetClass,
+                        targetTeam
+                    );
                 }
 
                 return {
                     ended: syncResult.ended,
                     reason: syncResult.reason,
                     teamId: targetTeam,
-                    endWeek: syncResult.ended ? (weekNum - 1) : null
+                    endWeek: syncResult.ended
+                        ? (weekNum - 1)
+                        : null
                 };
             },
-            logMessage: 'Ended membership of ' + targetChar + ' in team ' +
-                targetTeam + ' effective week ' + weekNum,
+            logMessage: 'Ended membership of ' + targetChar +
+                ' in team ' + targetTeam +
+                ' effective week ' + weekNum,
             successMessage: 'Member removed from team.',
             failureMessage: 'Failed to remove member from team.'
         });
@@ -1701,14 +1817,17 @@
             return Promise.resolve(failure('Team ID is required.'));
         }
         if (!identifier) {
-            return Promise.resolve(failure('Member identifier is required.'));
+            return Promise.resolve(failure(
+                'Member identifier is required.'
+            ));
         }
 
         var weekNum = parseWeekStrict(week);
         if (weekNum === null) {
-            return Promise.resolve(
-                failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').')
-            );
+            return Promise.resolve(failure(
+                'Valid week is required (' +
+                MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
         }
 
         var targetClass = String(classId);
@@ -1717,10 +1836,15 @@
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
                 var classError = validateTeamClassInSnapshot(
-                    appData, targetTeam, targetClass
+                    appData,
+                    targetTeam,
+                    targetClass
                 );
                 if (classError) {
                     return { valid: false, message: classError };
@@ -1728,17 +1852,27 @@
 
                 var team = findTeamInSnapshot(appData, targetTeam);
                 if (!team) {
-                    return { valid: false, message: 'Team no longer exists.' };
+                    return {
+                        valid: false,
+                        message: 'Team no longer exists.'
+                    };
                 }
 
-                var resolved = resolveMemberByIdentifier(team, identifier);
+                var resolved = resolveMemberByIdentifier(
+                    team,
+                    identifier
+                );
                 if (!resolved) {
-                    return { valid: false, message: 'Member not found on this team.' };
+                    return {
+                        valid: false,
+                        message: 'Member not found on this team.'
+                    };
                 }
                 if (!resolved.interval) {
                     return {
                         valid: false,
-                        message: 'A specific interval is required; use { characterId, joinPeriod }.'
+                        message: 'A specific interval is required; ' +
+                            'use { characterId, joinPeriod }.'
                     };
                 }
 
@@ -1747,28 +1881,33 @@
                               interval.joinPeriod !== null &&
                               interval.joinPeriod !== '';
                 if (hasJoin) {
-                    var join = TeamConstants.parsePeriod(interval.joinPeriod);
+                    var join = TeamConstants.parsePeriod(
+                        interval.joinPeriod
+                    );
                     if (join !== null && weekNum < join) {
                         return {
                             valid: false,
-                            message: 'Leave week cannot be before the interval\'s join week.'
+                            message: 'Leave week cannot be before the ' +
+                                'interval\'s join week.'
                         };
                     }
                 }
 
-                // Sibling overlap check.
                 var proposed = {
                     joinPeriod: interval.joinPeriod || '',
                     leavePeriod: String(weekNum)
                 };
                 var conflict = findSiblingOverlap(
-                    resolved.entry, proposed, interval.joinPeriod
+                    resolved.entry,
+                    proposed,
+                    interval.joinPeriod
                 );
                 if (conflict) {
                     return {
                         valid: false,
                         message: 'Leave week ' + weekNum +
-                            ' would overlap another stint of the same member.'
+                            ' would overlap another stint of the ' +
+                            'same member.'
                     };
                 }
 
@@ -1780,7 +1919,10 @@
                     throw new Error('Team not found in data store.');
                 }
 
-                var resolved = resolveMemberByIdentifier(team, identifier);
+                var resolved = resolveMemberByIdentifier(
+                    team,
+                    identifier
+                );
                 if (!resolved || !resolved.interval) {
                     throw new Error('Interval not found.');
                 }
@@ -1796,8 +1938,8 @@
                     leavePeriod: resolved.interval.leavePeriod
                 };
             },
-            logMessage: 'Set leave at week ' + weekNum + ' for a member of team ' +
-                targetTeam,
+            logMessage: 'Set leave at week ' + weekNum +
+                ' for a member of team ' + targetTeam,
             successMessage: 'Member left successfully.',
             failureMessage: 'Failed to set leave.'
         });
@@ -1815,7 +1957,9 @@
             return Promise.resolve(failure('Team ID is required.'));
         }
         if (!Array.isArray(changes)) {
-            return Promise.resolve(failure('Changes must be an array.'));
+            return Promise.resolve(failure(
+                'Changes must be an array.'
+            ));
         }
         if (changes.length === 0) {
             return Promise.resolve(success({
@@ -1830,10 +1974,15 @@
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
                 var classError = validateTeamClassInSnapshot(
-                    appData, targetTeam, targetClass
+                    appData,
+                    targetTeam,
+                    targetClass
                 );
                 if (classError) {
                     return { valid: false, message: classError };
@@ -1841,7 +1990,10 @@
 
                 var team = findTeamInSnapshot(appData, targetTeam);
                 if (!team) {
-                    return { valid: false, message: 'Team no longer exists.' };
+                    return {
+                        valid: false,
+                        message: 'Team no longer exists.'
+                    };
                 }
 
                 for (var i = 0; i < changes.length; i++) {
@@ -1849,7 +2001,8 @@
                     if (!probe.ok) {
                         return {
                             valid: false,
-                            message: 'Change ' + (i + 1) + ': ' + probe.message
+                            message: 'Change ' + (i + 1) + ': ' +
+                                probe.message
                         };
                     }
                 }
@@ -1868,12 +2021,18 @@
                     if (!result.ok) {
                         throw new Error(result.message);
                     }
-                    if (result.changed) { changedCount++; }
+                    if (result.changed) {
+                        changedCount++;
+                    }
                 }
 
                 if (changedCount > 0) {
                     team.updatedAt = new Date().toISOString();
-                    touchTeamRecord(appData, targetClass, targetTeam);
+                    touchTeamRecord(
+                        appData,
+                        targetClass,
+                        targetTeam
+                    );
                 }
 
                 return {
@@ -1898,7 +2057,12 @@
         });
     }
 
-    function updateMemberWindow(classId, teamId, identifier, updates) {
+    function updateMemberWindow(
+        classId,
+        teamId,
+        identifier,
+        updates
+    ) {
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
         }
@@ -1906,10 +2070,14 @@
             return Promise.resolve(failure('Team ID is required.'));
         }
         if (!identifier) {
-            return Promise.resolve(failure('Member identifier is required.'));
+            return Promise.resolve(failure(
+                'Member identifier is required.'
+            ));
         }
         if (!updates || typeof updates !== 'object') {
-            return Promise.resolve(failure('Updates must be an object.'));
+            return Promise.resolve(failure(
+                'Updates must be an object.'
+            ));
         }
 
         var change = {
@@ -1923,10 +2091,14 @@
     function purgeMemberRecords(classId, teamId, identifier) {
         if (!isNonEmptyString(classId) ||
             !isNonEmptyString(teamId)) {
-            return Promise.resolve(failure('Class and team IDs are required.'));
+            return Promise.resolve(failure(
+                'Class and team IDs are required.'
+            ));
         }
         if (!identifier) {
-            return Promise.resolve(failure('Member identifier is required.'));
+            return Promise.resolve(failure(
+                'Member identifier is required.'
+            ));
         }
 
         var targetClass = String(classId);
@@ -1935,33 +2107,54 @@
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
                 var classError = validateTeamClassInSnapshot(
-                    appData, targetTeam, targetClass
+                    appData,
+                    targetTeam,
+                    targetClass
                 );
                 if (classError) {
                     return { valid: false, message: classError };
                 }
                 var team = findTeamInSnapshot(appData, targetTeam);
                 if (!team) {
-                    return { valid: false, message: 'Team no longer exists.' };
+                    return {
+                        valid: false,
+                        message: 'Team no longer exists.'
+                    };
                 }
-                var resolved = resolveMemberByIdentifier(team, identifier);
+                var resolved = resolveMemberByIdentifier(
+                    team,
+                    identifier
+                );
                 if (!resolved) {
-                    return { valid: false, message: 'Member not found on this team.' };
+                    return {
+                        valid: false,
+                        message: 'Member not found on this team.'
+                    };
                 }
-                if (!resolved.interval && typeof identifier === 'string') {
+                if (!resolved.interval &&
+                    typeof identifier === 'string') {
                     if (Array.isArray(resolved.entry.intervals) &&
                         resolved.entry.intervals.length > 1) {
                         return {
                             valid: false,
-                            message: 'Entry has multiple intervals; specify which one with { characterId, joinPeriod }.'
+                            message: 'Entry has multiple intervals; ' +
+                                'specify which one with ' +
+                                '{ characterId, joinPeriod }.'
                         };
                     }
                 }
-                if (!resolved.interval && typeof identifier !== 'string') {
-                    return { valid: false, message: 'Interval not found.' };
+                if (!resolved.interval &&
+                    typeof identifier !== 'string') {
+                    return {
+                        valid: false,
+                        message: 'Interval not found.'
+                    };
                 }
                 return { valid: true };
             },
@@ -1971,7 +2164,10 @@
                     return { removed: false };
                 }
 
-                var resolved = resolveMemberByIdentifier(team, identifier);
+                var resolved = resolveMemberByIdentifier(
+                    team,
+                    identifier
+                );
                 if (!resolved) {
                     throw new Error('Member not found on team.');
                 }
@@ -2015,7 +2211,8 @@
                     entryPruned: entryPruned
                 };
             },
-            logMessage: 'Purged a member interval from team ' + targetTeam,
+            logMessage: 'Purged a member interval from team ' +
+                targetTeam,
             successMessage: 'Interval removed.',
             failureMessage: 'Failed to remove interval.'
         });
@@ -2025,7 +2222,9 @@
         if (!isNonEmptyString(classId) ||
             !isNonEmptyString(teamId) ||
             !isNonEmptyString(charId)) {
-            return Promise.resolve(failure('Class, team, and character IDs are required.'));
+            return Promise.resolve(failure(
+                'Class, team, and character IDs are required.'
+            ));
         }
 
         var targetClass = String(classId);
@@ -2035,30 +2234,46 @@
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
                 var classError = validateTeamClassInSnapshot(
-                    appData, targetTeam, targetClass
+                    appData,
+                    targetTeam,
+                    targetClass
                 );
                 if (classError) {
                     return { valid: false, message: classError };
                 }
                 var team = findTeamInSnapshot(appData, targetTeam);
                 if (!team) {
-                    return { valid: false, message: 'Team no longer exists.' };
+                    return {
+                        valid: false,
+                        message: 'Team no longer exists.'
+                    };
                 }
                 if (!Array.isArray(team.members)) {
-                    return { valid: false, message: 'Team has no members array.' };
+                    return {
+                        valid: false,
+                        message: 'Team has no members array.'
+                    };
                 }
                 var found = false;
                 for (var i = 0; i < team.members.length; i++) {
-                    if (String(team.members[i].characterId) === targetChar) {
+                    if (String(team.members[i].characterId) ===
+                        targetChar) {
                         found = true;
                         break;
                     }
                 }
                 if (!found) {
-                    return { valid: false, message: 'Character is not a member of this team.' };
+                    return {
+                        valid: false,
+                        message: 'Character is not a member of this ' +
+                            'team.'
+                    };
                 }
                 return { valid: true };
             },
@@ -2070,12 +2285,15 @@
 
                 var before = team.members.length;
                 team.members = team.members.filter(function(m) {
-                    return !m || String(m.characterId) !== targetChar;
+                    return !m ||
+                        String(m.characterId) !== targetChar;
                 });
                 var removed = before - team.members.length;
 
                 if (removed === 0) {
-                    throw new Error('Character not found in team members.');
+                    throw new Error(
+                        'Character not found in team members.'
+                    );
                 }
 
                 team.updatedAt = new Date().toISOString();
@@ -2083,15 +2301,19 @@
 
                 return { removed: removed };
             },
-            logMessage: 'Removed whole member entry from team ' + targetTeam,
+            logMessage: 'Removed whole member entry from team ' +
+                targetTeam,
             successMessage: 'Member removed.',
             failureMessage: 'Failed to remove member.'
         });
     }
 
     function removeTeamRecord(classId, teamId) {
-        if (!isNonEmptyString(classId) || !isNonEmptyString(teamId)) {
-            return Promise.resolve(failure('Class and team IDs are required.'));
+        if (!isNonEmptyString(classId) ||
+            !isNonEmptyString(teamId)) {
+            return Promise.resolve(failure(
+                'Class and team IDs are required.'
+            ));
         }
 
         var targetClass = String(classId);
@@ -2100,7 +2322,10 @@
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
                 return { valid: true };
             },
@@ -2111,7 +2336,10 @@
                 }
                 var byClass = store[targetClass];
                 if (!isPlainObject(byClass) ||
-                    !Object.prototype.hasOwnProperty.call(byClass, targetTeam)) {
+                    !Object.prototype.hasOwnProperty.call(
+                        byClass,
+                        targetTeam
+                    )) {
                     return { removed: false };
                 }
                 delete byClass[targetTeam];
@@ -2137,7 +2365,10 @@
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
                 return { valid: true };
             },
@@ -2155,7 +2386,8 @@
                 return { cleared: count };
             },
             logMessage: function(result) {
-                return 'Cleared ' + (result && result.cleared ? result.cleared : 0) +
+                return 'Cleared ' +
+                    (result && result.cleared ? result.cleared : 0) +
                     ' weekly-team window(s) for class ' + targetClass;
             },
             successMessage: function(result) {
@@ -2163,8 +2395,8 @@
                 if (n === 0) {
                     return 'No teams were scheduled.';
                 }
-                return 'Cleared ' + n + ' team' + (n === 1 ? '' : 's') +
-                    ' from the schedule.';
+                return 'Cleared ' + n + ' team' +
+                    (n === 1 ? '' : 's') + ' from the schedule.';
             },
             failureMessage: 'Failed to clear schedule.'
         });
@@ -2173,9 +2405,7 @@
     /**
      * Remove every member whose active window covers `week` across
      * every academic team of the class. Past and future stints are
-     * untouched. Teams themselves are untouched.
-     *
-     * This is the "Clear Rosters" primitive.
+     * untouched.
      */
     function clearAllMembershipsForClass(classId, week) {
         if (!isNonEmptyString(classId)) {
@@ -2184,9 +2414,10 @@
 
         var weekNum = parseWeekStrict(week);
         if (weekNum === null) {
-            return Promise.resolve(
-                failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').')
-            );
+            return Promise.resolve(failure(
+                'Valid week is required (' +
+                MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
         }
 
         var targetClass = String(classId);
@@ -2194,10 +2425,16 @@
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
                 if (!Array.isArray(appData.teams)) {
-                    return { valid: false, message: 'Team store is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Team store is not available.'
+                    };
                 }
                 return { valid: true };
             },
@@ -2208,26 +2445,45 @@
 
                 for (var i = 0; i < teams.length; i++) {
                     var team = teams[i];
-                    if (!team || typeof team !== 'object') continue;
+                    if (!team || typeof team !== 'object') {
+                        continue;
+                    }
 
-                    if (TeamConstants.normalizeTeamType(team.type) !== 'academic') continue;
+                    if (TeamConstants.normalizeTeamType(team.type) !==
+                        'academic') {
+                        continue;
+                    }
 
                     if (team.classId === null ||
                         team.classId === undefined ||
-                        team.classId === '') continue;
-                    if (String(team.classId) !== targetClass) continue;
+                        team.classId === '') {
+                        continue;
+                    }
+                    if (String(team.classId) !== targetClass) {
+                        continue;
+                    }
 
-                    var teamStart = TeamConstants.parsePeriod(team.startPeriod);
-                    var teamEnd = TeamConstants.parsePeriod(team.endPeriod);
-                    if (teamStart !== null && weekNum < teamStart) continue;
-                    if (teamEnd !== null && weekNum > teamEnd) continue;
+                    var teamStart =
+                        TeamConstants.parsePeriod(team.startPeriod);
+                    var teamEnd =
+                        TeamConstants.parsePeriod(team.endPeriod);
+                    if (teamStart !== null && weekNum < teamStart) {
+                        continue;
+                    }
+                    if (teamEnd !== null && weekNum > teamEnd) {
+                        continue;
+                    }
 
-                    if (!Array.isArray(team.members)) continue;
+                    if (!Array.isArray(team.members)) {
+                        continue;
+                    }
 
                     var before = team.members.length;
                     team.members = team.members.filter(function(m) {
-                        if (!m) return true;
-                        return !memberActiveInWeek(m, weekNum);
+                        if (!m) {
+                            return true;
+                        }
+                        return !TeamQueries.isMemberActive(m, weekNum);
                     });
                     var removed = before - team.members.length;
 
@@ -2244,24 +2500,31 @@
                 };
             },
             logMessage: function(result) {
-                return 'Cleared ' + (result && result.membershipsRemoved
-                        ? result.membershipsRemoved : 0) +
+                return 'Cleared ' +
+                    (result && result.membershipsRemoved
+                        ? result.membershipsRemoved
+                        : 0) +
                     ' membership(s) across ' +
                     (result && result.teamsProcessed
-                        ? result.teamsProcessed : 0) +
+                        ? result.teamsProcessed
+                        : 0) +
                     ' team(s) for class ' + targetClass +
                     ' at week ' + weekNum;
             },
             successMessage: function(result) {
                 var n = result && result.membershipsRemoved
-                    ? result.membershipsRemoved : 0;
+                    ? result.membershipsRemoved
+                    : 0;
                 var t = result && result.teamsProcessed
-                    ? result.teamsProcessed : 0;
+                    ? result.teamsProcessed
+                    : 0;
                 if (n === 0) {
                     return 'No memberships to clear for this week.';
                 }
-                return 'Cleared ' + n + ' membership' + (n === 1 ? '' : 's') +
-                    ' across ' + t + ' team' + (t === 1 ? '' : 's') + '.';
+                return 'Cleared ' + n + ' membership' +
+                    (n === 1 ? '' : 's') +
+                    ' across ' + t + ' team' +
+                    (t === 1 ? '' : 's') + '.';
             },
             failureMessage: 'Failed to clear memberships.'
         });
@@ -2271,7 +2534,11 @@
     // CASCADE HELPERS
     // ============================================================
 
-    function endCharacterMemberships(appData, charId, effectiveWeek) {
+    function endCharacterMemberships(
+        appData,
+        charId,
+        effectiveWeek
+    ) {
         var result = { membershipsEnded: 0 };
 
         if (!appData || !isNonEmptyString(charId)) {
@@ -2295,24 +2562,35 @@
             }
             for (var j = 0; j < team.members.length; j++) {
                 var entry = team.members[j];
-                if (!entry) { continue; }
-                if (String(entry.characterId) !== target) { continue; }
-                if (!Array.isArray(entry.intervals)) { continue; }
+                if (!entry) {
+                    continue;
+                }
+                if (String(entry.characterId) !== target) {
+                    continue;
+                }
+                if (!Array.isArray(entry.intervals)) {
+                    continue;
+                }
 
                 for (var k = 0; k < entry.intervals.length; k++) {
                     var iv = entry.intervals[k];
-                    if (!iv) { continue; }
+                    if (!iv) {
+                        continue;
+                    }
 
                     var hasLeave = iv.leavePeriod !== undefined &&
                                    iv.leavePeriod !== null &&
                                    iv.leavePeriod !== '';
-                    if (hasLeave) { continue; }
+                    if (hasLeave) {
+                        continue;
+                    }
 
                     var hasJoin = iv.joinPeriod !== undefined &&
                                   iv.joinPeriod !== null &&
                                   iv.joinPeriod !== '';
                     if (hasJoin) {
-                        var join = TeamConstants.parsePeriod(iv.joinPeriod);
+                        var join =
+                            TeamConstants.parsePeriod(iv.joinPeriod);
                         if (join !== null && join >= weekNum) {
                             continue;
                         }
@@ -2373,7 +2651,10 @@
             if (!isPlainObject(byClass)) {
                 continue;
             }
-            if (Object.prototype.hasOwnProperty.call(byClass, target)) {
+            if (Object.prototype.hasOwnProperty.call(
+                byClass,
+                target
+            )) {
                 delete byClass[target];
                 result.recordsRemoved++;
             }
@@ -2389,7 +2670,7 @@
     // EXPOSE
     // ============================================================
 
-    window.AcademyWeeklyTeams = {
+    window.AcademyWeeklyTeams = Object.freeze({
         // Reads
         getTeamRecord: getTeamRecord,
         getAllTeamRecords: getAllTeamRecords,
@@ -2434,36 +2715,6 @@
         // Constants
         MIN_WEEK: MIN_WEEK,
         MAX_WEEK: MAX_WEEK
-    };
-
-    (function verify() {
-        var exports = window.AcademyWeeklyTeams;
-        var required = [
-            'getTeamRecord', 'getAllTeamRecords', 'getActiveMembers',
-            'getAllMembers', 'getWeeklyTeams', 'isCharacterAssigned',
-            'getAssignedTeamId', 'hasScheduledTeams', 'getAllAssignedTeamIds',
-            'getAssignedWeeksForClass', 'getAssignedClassesForWeek',
-            'isPersistentTeamVisibleInWeek',
-            'getOrphanAcademicTeams', 'suggestClassForTeam',
-            'ensureWindow', 'setWindow', 'assignTeamToClass',
-            'removeTeamRecord', 'clearClassWindows',
-            'addMember', 'addMemberInterval', 'endMembership',
-            'setLeaveAtWeek', 'updateMemberWindow', 'updateMemberWindows',
-            'purgeMemberRecords', 'removeMemberEntry',
-            'clearAllMembershipsForClass',
-            'endCharacterMemberships', 'stripClassRefs', 'stripTeamRefs'
-        ];
-        var missing = [];
-        for (var i = 0; i < required.length; i++) {
-            if (typeof exports[required[i]] !== 'function') {
-                missing.push(required[i]);
-            }
-        }
-        if (missing.length > 0) {
-            diagWarn('Verification missing:', missing.join(', '));
-        } else {
-            diag('Verification OK.');
-        }
-    })();
+    });
 
 })();

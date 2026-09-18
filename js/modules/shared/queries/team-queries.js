@@ -4,13 +4,14 @@
  *
  * Path: js/modules/shared/queries/team-queries.js
  *
- * This module provides the canonical read surface for the Team
- * domain:
+ * The canonical read surface for the Team domain:
  *   - Team lookup (by ID, by type, by class, by period)
  *   - Membership queries (active members at a period, character
  *     membership, character's teams)
- *   - Ranking queries (sorted history, current rank, rank at period,
- *     summary)
+ *   - Member predicates (is-member-active, is-member-former)
+ *   - Period predicates (team-window, interval, bounds-based)
+ *   - Ranking queries (sorted history, current rank, rank at
+ *     period, summary)
  *
  * IMPORTANT:
  *   - READ ONLY. This module never mutates.
@@ -22,116 +23,92 @@
  *     reimplement.
  *   - No presentation strings. Display text (type labels, period
  *     ranges, rank displays) belongs to TeamAggregator.
- *   - No mutations, no persistence, no UI dependencies, no DOM.
+ *
+ * PERIOD PREDICATE OWNERSHIP:
+ *   The three predicates below are the canonical answers to "does
+ *   this window/interval contain this period?" Every consumer
+ *   delegates to them:
+ *
+ *     teamWindowContains(team, period)
+ *       reads team.startPeriod / team.endPeriod
+ *
+ *     intervalContains(interval, period)
+ *       reads interval.joinPeriod / interval.leavePeriod
+ *
+ *     windowContains(start, end, period)
+ *       reads a bare pair of bounds
+ *
+ *   The bounds-based variant exists for callers that hold a pair of
+ *   values without an enclosing object — most notably the
+ *   academy.weeklyTeams window record, which stores startWeek /
+ *   endWeek. AcademyWeeklyTeams uses it directly.
+ *
+ * MEMBER PREDICATE OWNERSHIP:
+ *   isMemberActive(member, period) and isMemberFormer(member, period)
+ *   are the canonical answers to "is this member entry active or
+ *   former at this period?" They wrap the interval predicate.
+ *
+ *   Consumers: getActiveTeamMembers, TeamAggregator.buildMemberVM,
+ *   MemberAdapterTeams.buildVM, AcademyWeeklyTeams.
  *
  * YEAR SEMANTICS:
  *   - Years are UNBOUNDED positive integers.
- *   - Academic teams use bounded weeks (1-52), sourced from
- *     CalendarConstants via TeamConstants.
+ *   - Academic teams use bounded weeks (1-52) from CalendarConstants
+ *     via TeamConstants.
  *   - Non-academic teams accept any integer >= 1.
  *
  * OPERATIONAL SEMANTICS:
- *   A team is "operational" when it can still be operated on.
- *   Deprecated teams are excluded. Inactive teams are included,
- *   because inactive means "temporarily not running", not "retired".
- *   The distinction matters: inactive teams can be reactivated,
- *   deprecated teams cannot.
+ *   A team is operational when it can still be operated on.
+ *   Deprecated teams are excluded. Inactive teams are included.
  *
- *       status === 'active'   -> operational
- *       status === 'inactive' -> operational
+ *       status === 'active'     -> operational
+ *       status === 'inactive'   -> operational
  *       status === 'deprecated' -> NOT operational
- *
- *   `getActiveTeams()` and `getAllActiveTeams()` filter to
- *   status === 'active' only.
- *
- *   `getOperationalTeams()` and `getAllOperationalTeams()` filter to
- *   active + inactive.
  *
  * RANKING SEMANTICS:
  *   Ranking history lives on the team entity as `rankingHistory`,
- *   an array of { period, rank }. This is Team-domain ranking, not
- *   Academy student ranking. They are separate concepts and are not
- *   merged.
+ *   an array of { period, rank }. Team-domain ranking, not Academy
+ *   student ranking. `getCurrentRank()` is derived from
+ *   `rankingHistory`; it is not a persisted field.
  *
- *   The canonical form of a period is a numeric string
- *   ('1', '2', '42'). Persisted records may contain legacy formats;
- *   reads parse them, writes canonicalise them (via TeamCore).
- *
- *   `getCurrentRank()` is derived from `rankingHistory`. It is NOT
- *   a persisted field. Persisting it would create two sources of
- *   truth, and one of them would go stale.
- *
- * MEMBERSHIP SEMANTICS:
+ * MEMBER SEMANTICS:
  *   A team's members live in `team.members[]`. Each member entry is:
  *
  *     {
- *       memberId,        // stable per-entry identifier
+ *       memberId,
  *       characterId,
  *       role,
- *       intervals: [
- *         { joinPeriod, leavePeriod },
- *         ...
- *       ]
+ *       intervals: [{ joinPeriod, leavePeriod }, ...]
  *     }
  *
- *   Each interval describes one stint. `joinPeriod` is the first
- *   period the character was on the team; `leavePeriod` is the last.
- *   Both are inclusive. A blank bound means "unbounded on that
- *   side": `joinPeriod: ''` means "no lower bound," `leavePeriod:
- *   ''` means "ongoing."
+ *   Each interval describes one stint. Both bounds are inclusive.
+ *   A blank bound means "unbounded on that side."
  *
- *   A character may have multiple intervals for the same team (they
- *   left, they came back). The intervals within a member entry are
- *   expected to be non-overlapping and are identified by their
- *   joinPeriod.
+ *   A member entry is ACTIVE at period P when at least one of its
+ *   intervals contains P. It is FORMER at period P when no interval
+ *   contains P and at least one interval has a leavePeriod strictly
+ *   before P. The two predicates are mutually exclusive; an entry
+ *   with no intervals or with only future intervals is neither.
  *
- *   getActiveTeamMembers checks:
- *     - The team's own window (startPeriod / endPeriod). A team
- *       whose own window does not contain the queried period has
- *       NO active members at that period. This is the "team ends,
- *       members are freed" rule.
- *     - At least one interval in the member entry whose window
- *       contains the queried period.
- *
- *   The team-window check can only REMOVE members from the returned
- *   list. It can never add them.
- *
- * MEMBER IDENTITY:
- *   Every member entry carries a stable `memberId`. Entries created
- *   before the memberId introduction (v24) are backfilled during
- *   the v24 migration. Entries written after v24 always carry one.
- *
- *   Lookups:
- *     getTeamMember(team, characterId)
- *       Returns the FIRST matching entry. Callers that need a
- *       specific stint use the interval-scoped lookups.
- *     getTeamMemberByMemberId(team, memberId)
- *       Returns the entry by its memberId.
- *     getTeamMemberByComposite(team, characterId, joinPeriod)
- *       Returns the member entry that contains an interval whose
- *       joinPeriod matches. Useful for addressing a specific stint
- *       when memberId is unavailable.
- *
- *   Interval-scoped reads (return just the interval, not the member):
- *     getMemberInterval(member, joinPeriod)
- *     getMemberActiveIntervals(member, period)
- *     getMemberIntervalAtPeriod(member, period)
+ *   The team's own window (startPeriod / endPeriod) is checked
+ *   before the member list is returned. A team whose own window
+ *   does not contain the queried period has no active members at
+ *   that period, regardless of member-level intervals.
  *
  * DEPENDENCIES:
- *   - window.data          (canonical state) - reads directly
- *   - window.TeamConstants (from team-constants.js) - MANDATORY
- *   - window.ObjectUtils   (from object-utils.js) - MANDATORY
- *     (for deepClone)
+ *   - window.data          (canonical state)
+ *   - window.TeamConstants (mandatory)
+ *   - window.ObjectUtils   (mandatory; for deepClone)
  *
  * USAGE:
  *   var TQ = window.TeamQueries;
  *   var team = TQ.getTeamById('team_123');
  *   var teams = TQ.getTeams('professional', 'active');
  *   var members = TQ.getActiveTeamMembers(team, 5);
- *   var active = TQ.isTeamActiveAtPeriod(team, 2025);
+ *   var isActive = TQ.isTeamActiveAtPeriod(team, 2025);
  *   var rank = TQ.getCurrentRank(team);
- *   var entry = TQ.getTeamMemberByMemberId(team, 'mem_abc');
- *   var interval = TQ.getMemberIntervalAtPeriod(entry, 5);
+ *   var isFormer = TQ.isMemberFormer(memberEntry, 5);
+ *   var inWindow = TQ.windowContains(1, 20, 5);
  */
 
 (function() {
@@ -140,52 +117,49 @@
     if (window.__teamQueriesLoaded) {
         return;
     }
-    window.__teamQueriesLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCIES
     // ============================================================
 
     var TeamConstants = window.TeamConstants;
     var ObjectUtils = window.ObjectUtils;
 
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
+    var _missing = [];
 
-    function checkDependencies() {
-        var missing = [];
-
-        if (!TeamConstants) {
-            missing.push('TeamConstants');
-        } else {
-            var requiredConstants = [
-                'parsePeriod',
-                'isValidTeamStatus',
-                'isValidTeamType',
-                'normalizeTeamType',
-                'getPeriodRange'
-            ];
-            for (var i = 0; i < requiredConstants.length; i++) {
-                if (typeof TeamConstants[requiredConstants[i]] !== 'function') {
-                    missing.push('TeamConstants.' + requiredConstants[i]);
-                }
-            }
-        }
-
-        if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
-            missing.push('ObjectUtils.deepClone');
-        }
-
-        if (missing.length > 0) {
-            console.warn('[TeamQueries] Missing dependencies:', missing.join(', '));
-            return false;
-        }
-
-        return true;
+    if (!TeamConstants ||
+        typeof TeamConstants.parsePeriod !== 'function') {
+        _missing.push('TeamConstants.parsePeriod');
+    }
+    if (!TeamConstants ||
+        typeof TeamConstants.isValidTeamStatus !== 'function') {
+        _missing.push('TeamConstants.isValidTeamStatus');
+    }
+    if (!TeamConstants ||
+        typeof TeamConstants.isValidTeamType !== 'function') {
+        _missing.push('TeamConstants.isValidTeamType');
+    }
+    if (!TeamConstants ||
+        typeof TeamConstants.normalizeTeamType !== 'function') {
+        _missing.push('TeamConstants.normalizeTeamType');
+    }
+    if (!TeamConstants ||
+        typeof TeamConstants.getPeriodRange !== 'function') {
+        _missing.push('TeamConstants.getPeriodRange');
+    }
+    if (!ObjectUtils ||
+        typeof ObjectUtils.deepClone !== 'function') {
+        _missing.push('ObjectUtils.deepClone');
     }
 
-    checkDependencies();
+    if (_missing.length > 0) {
+        throw new Error(
+            '[TeamQueries] Missing mandatory dependencies: ' +
+            _missing.join(', ')
+        );
+    }
+
+    window.__teamQueriesLoaded = true;
 
     // ============================================================
     // HELPERS
@@ -199,8 +173,8 @@
      * Deep-clone a value for return to the caller.
      *
      * Wraps ObjectUtils.deepClone with an aliasing guard. If the
-     * clone aliases the input, that is a bug in ObjectUtils and we
-     * surface it here rather than silently returning a live
+     * clone aliases the input, that is a bug in ObjectUtils and is
+     * surfaced here rather than silently returning a live
      * reference.
      */
     function clone(value) {
@@ -213,17 +187,13 @@
         var result = ObjectUtils.deepClone(value);
         if (result === value) {
             throw new Error(
-                '[TeamQueries] ObjectUtils.deepClone returned the original reference. ' +
-                'Read safety is broken.'
+                '[TeamQueries] ObjectUtils.deepClone returned the ' +
+                'original reference. Read safety is broken.'
             );
         }
         return result;
     }
 
-    /**
-     * Parse a period value via the canonical parser.
-     * Returns a positive integer or null.
-     */
     function parsePeriod(value) {
         if (typeof TeamConstants.parsePeriod !== 'function') {
             return null;
@@ -231,24 +201,16 @@
         return TeamConstants.parsePeriod(value);
     }
 
-    /**
-     * Is the given status one of the operational statuses?
-     */
     function isOperationalStatus(status) {
         return status === 'active' || status === 'inactive';
     }
 
     /**
-     * Does the team's own window contain the given period?
-     *
-     * The team window is startPeriod (inclusive) to endPeriod
-     * (inclusive). Absent bounds are unbounded on that side.
-     *
-     * @param {object} team
-     * @param {number} periodNum - already-parsed integer
-     * @returns {boolean}
+     * Internal variant of teamWindowContains that expects an
+     * already-parsed integer. Public callers use
+     * teamWindowContains(team, period).
      */
-    function teamWindowContains(team, periodNum) {
+    function teamWindowContainsNum(team, periodNum) {
         if (!team || typeof team !== 'object') {
             return false;
         }
@@ -276,17 +238,11 @@
     }
 
     /**
-     * Does a single interval contain the given period?
-     *
-     * An interval is { joinPeriod, leavePeriod }. Blank bounds are
-     * unbounded on that side. Invalid (non-blank, non-integer)
-     * bounds make the interval fail the containment check.
-     *
-     * @param {object} interval
-     * @param {number} periodNum - already-parsed integer
-     * @returns {boolean}
+     * Internal variant of intervalContains that expects an
+     * already-parsed integer. Public callers use
+     * intervalContains(interval, period).
      */
-    function intervalContainsPeriod(interval, periodNum) {
+    function intervalContainsNum(interval, periodNum) {
         if (!interval || typeof interval !== 'object') {
             return false;
         }
@@ -313,67 +269,12 @@
         return true;
     }
 
-    /**
-     * Does the member's intervals array contain the given period?
-     * True when at least one interval matches.
-     */
-    function memberContainsPeriod(member, periodNum) {
-        if (!member || typeof member !== 'object') {
-            return false;
-        }
-        if (!Array.isArray(member.intervals)) {
-            return false;
-        }
-        for (var i = 0; i < member.intervals.length; i++) {
-            if (intervalContainsPeriod(member.intervals[i], periodNum)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Compare two member-entry identity keys.
-     *
-     * The canonical key for a member entry is its memberId when
-     * present. Otherwise it is the composite
-     * "characterId::joinPeriod" of the FIRST interval. This helper
-     * exists so that the fallback is consistent across the module.
-     */
-    function makeMemberIdentityKey(member) {
-        if (!member || typeof member !== 'object') {
-            return null;
-        }
-        if (member.memberId !== undefined &&
-            member.memberId !== null &&
-            String(member.memberId).trim() !== '') {
-            return 'id:' + String(member.memberId);
-        }
-        var charId = member.characterId !== undefined &&
-                     member.characterId !== null
-            ? String(member.characterId)
-            : '';
-        var firstJoin = '';
-        if (Array.isArray(member.intervals) && member.intervals.length > 0) {
-            var first = member.intervals[0];
-            if (first && first.joinPeriod !== undefined &&
-                first.joinPeriod !== null) {
-                firstJoin = String(first.joinPeriod);
-            }
-        }
-        return 'composite:' + charId + '::' + firstJoin;
-    }
-
     // ============================================================
     // DATA ACCESS
     // ============================================================
 
     /**
-     * Get the raw teams array from window.data.
-     *
-     * Internal only. Public reads do not expose this array.
-     *
-     * @returns {array}
+     * Raw teams array from window.data. Internal only.
      */
     function getTeamArray() {
         var data = window.data || {};
@@ -381,15 +282,205 @@
     }
 
     // ============================================================
-    // TEAM LOOKUP - SINGLE
+    // PERIOD PREDICATES
     // ============================================================
+    //
+    // Three predicates, three shapes. Every consumer delegates to
+    // one of them. Do not reimplement in a downstream module.
 
     /**
-     * Get a team by ID. Returns a deep clone, or null.
+     * Does the team's own window contain the given period?
      *
-     * @param {string} teamId
-     * @returns {object|null}
+     * The team window is startPeriod (inclusive) to endPeriod
+     * (inclusive). A blank bound is unbounded on that side.
+     *
+     * @param {object} team
+     * @param {number|string} period
+     * @returns {boolean} false when the period is invalid
      */
+    function teamWindowContains(team, period) {
+        if (!team || typeof team !== 'object') {
+            return false;
+        }
+        var periodNum = parsePeriod(period);
+        if (periodNum === null) {
+            return false;
+        }
+        return teamWindowContainsNum(team, periodNum);
+    }
+
+    /**
+     * Does the interval contain the given period?
+     *
+     * An interval is { joinPeriod, leavePeriod }. A blank bound is
+     * unbounded on that side. Invalid non-blank bounds make the
+     * interval fail the containment check.
+     *
+     * @param {object} interval
+     * @param {number|string} period
+     * @returns {boolean} false when the period is invalid
+     */
+    function intervalContains(interval, period) {
+        if (!interval || typeof interval !== 'object') {
+            return false;
+        }
+        var periodNum = parsePeriod(period);
+        if (periodNum === null) {
+            return false;
+        }
+        return intervalContainsNum(interval, periodNum);
+    }
+
+    /**
+     * Does [start, end] contain the given period?
+     *
+     * Both bounds are inclusive. A blank bound is unbounded on that
+     * side. Invalid non-blank bounds make the window fail the
+     * containment check.
+     *
+     * This is the bounds-based sibling of teamWindowContains and
+     * intervalContains. It exists for callers that hold a pair of
+     * bound values without an enclosing object — most notably the
+     * academy.weeklyTeams window record, which stores startWeek /
+     * endWeek.
+     *
+     * @param {number|string} start
+     * @param {number|string} end
+     * @param {number|string} period
+     * @returns {boolean}
+     */
+    function windowContains(start, end, period) {
+        var periodNum = parsePeriod(period);
+        if (periodNum === null) {
+            return false;
+        }
+
+        var hasStart = start !== undefined &&
+                       start !== null &&
+                       start !== '';
+        var hasEnd = end !== undefined &&
+                     end !== null &&
+                     end !== '';
+
+        if (hasStart) {
+            var startNum = parsePeriod(start);
+            if (startNum === null) { return false; }
+            if (startNum > periodNum) { return false; }
+        }
+
+        if (hasEnd) {
+            var endNum = parsePeriod(end);
+            if (endNum === null) { return false; }
+            if (endNum < periodNum) { return false; }
+        }
+
+        return true;
+    }
+
+    // ============================================================
+    // MEMBER PREDICATES
+    // ============================================================
+    //
+    // Member-level wrappers around the interval predicate. They are
+    // the canonical answers to "is this member active / former at
+    // this period?" Consumers: getActiveTeamMembers,
+    // TeamAggregator.buildMemberVM, MemberAdapterTeams.buildVM,
+    // AcademyWeeklyTeams.clearAllMembershipsForClass.
+
+    /**
+     * Is the member entry active at the given period?
+     *
+     * Active means: at least one interval contains the period.
+     *
+     * @param {object} member
+     * @param {number|string} period
+     * @returns {boolean}
+     */
+    function isMemberActive(member, period) {
+        if (!member || typeof member !== 'object') {
+            return false;
+        }
+        if (!Array.isArray(member.intervals)) {
+            return false;
+        }
+
+        var periodNum = parsePeriod(period);
+        if (periodNum === null) {
+            return false;
+        }
+
+        for (var i = 0; i < member.intervals.length; i++) {
+            if (intervalContainsNum(member.intervals[i], periodNum)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Is the member entry former at the given period?
+     *
+     * Former means: no interval contains the period, AND at least
+     * one interval has a leavePeriod strictly before the period.
+     *
+     * An entry with no intervals, or with only future intervals,
+     * is neither active nor former.
+     *
+     * @param {object} member
+     * @param {number|string} period
+     * @returns {boolean}
+     */
+    function isMemberFormer(member, period) {
+        if (!member || typeof member !== 'object') {
+            return false;
+        }
+        if (!Array.isArray(member.intervals)) {
+            return false;
+        }
+
+        var periodNum = parsePeriod(period);
+        if (periodNum === null) {
+            return false;
+        }
+
+        // Precondition: no interval contains the period.
+        for (var i = 0; i < member.intervals.length; i++) {
+            if (intervalContainsNum(member.intervals[i], periodNum)) {
+                return false;
+            }
+        }
+
+        // At least one interval has a leavePeriod before the period.
+        for (var j = 0; j < member.intervals.length; j++) {
+            var interval = member.intervals[j];
+            if (!interval || typeof interval !== 'object') {
+                continue;
+            }
+
+            var hasLeave = interval.leavePeriod !== undefined &&
+                           interval.leavePeriod !== null &&
+                           interval.leavePeriod !== '';
+            if (!hasLeave) {
+                continue;
+            }
+
+            var leave = parsePeriod(interval.leavePeriod);
+            if (leave === null) {
+                continue;
+            }
+
+            if (leave < periodNum) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // ============================================================
+    // TEAM LOOKUP
+    // ============================================================
+
     function getTeamById(teamId) {
         if (!isNonEmptyString(teamId)) {
             return null;
@@ -398,20 +489,35 @@
         var teams = getTeamArray();
         for (var i = 0; i < teams.length; i++) {
             var team = teams[i];
-            if (team && typeof team === 'object' && String(team.id) === target) {
+            if (team && typeof team === 'object' &&
+                String(team.id) === target) {
                 return clone(team);
             }
         }
         return null;
     }
 
+    function getTeamByIdInternal(teamId) {
+        if (!isNonEmptyString(teamId)) {
+            return null;
+        }
+        var target = String(teamId);
+        var teams = getTeamArray();
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (team && typeof team === 'object' &&
+                String(team.id) === target) {
+                return team;
+            }
+        }
+        return null;
+    }
+
     /**
-     * Get the display name of a team by ID. Convenience only.
+     * Display name for a team by ID.
+     *
      * Returns 'Unassigned' when teamId is empty, 'Unknown Team'
      * when the team does not exist.
-     *
-     * @param {string} teamId
-     * @returns {string}
      */
     function getTeamName(teamId) {
         if (!isNonEmptyString(teamId)) {
@@ -421,64 +527,10 @@
         return team ? (team.name || 'Unknown Team') : 'Unknown Team';
     }
 
-    /**
-     * Internal non-cloning lookup. Used by helper functions that
-     * only read a subset of fields. Public callers must use
-     * getTeamById.
-     *
-     * @param {string} teamId
-     * @returns {object|null} live reference
-     */
-    function getTeamByIdInternal(teamId) {
-        if (!isNonEmptyString(teamId)) {
-            return null;
-        }
-        var target = String(teamId);
-        var teams = getTeamArray();
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (team && typeof team === 'object' && String(team.id) === target) {
-                return team;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Get the index of a team in the array. Internal use only.
-     *
-     * @param {string} teamId
-     * @returns {number} index or -1
-     */
-    function getTeamIndex(teamId) {
-        if (!isNonEmptyString(teamId)) {
-            return -1;
-        }
-        var target = String(teamId);
-        var teams = getTeamArray();
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (team && typeof team === 'object' && String(team.id) === target) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
     // ============================================================
-    // TEAM STATUS PREDICATES
+    // STATUS PREDICATES
     // ============================================================
 
-    /**
-     * Is the team operational?
-     *
-     * Operational means active OR inactive. Deprecated teams are
-     * excluded. Missing status is treated as not operational —
-     * malformed records should not silently count as live teams.
-     *
-     * @param {object} team
-     * @returns {boolean}
-     */
     function isTeamOperational(team) {
         if (!team || typeof team !== 'object') {
             return false;
@@ -486,12 +538,6 @@
         return isOperationalStatus(team.status);
     }
 
-    /**
-     * Is the team active?
-     *
-     * @param {object} team
-     * @returns {boolean}
-     */
     function isTeamActive(team) {
         if (!team || typeof team !== 'object') {
             return false;
@@ -499,20 +545,6 @@
         return team.status === 'active';
     }
 
-    /**
-     * Is the team active at a given period?
-     *
-     * SEMANTICS:
-     *   - The team's startPeriod / endPeriod define its lifespan.
-     *   - Academic teams: period is a bounded week (from
-     *     CalendarConstants).
-     *   - Non-academic teams: period is any positive integer.
-     *   - Invalid period or type returns false.
-     *
-     * @param {object} team
-     * @param {number|string} period
-     * @returns {boolean}
-     */
     function isTeamActiveAtPeriod(team, period) {
         if (!team || typeof team !== 'object') {
             return false;
@@ -532,7 +564,7 @@
             return false;
         }
 
-        return teamWindowContains(team, periodNum);
+        return teamWindowContainsNum(team, periodNum);
     }
 
     // ============================================================
@@ -542,16 +574,14 @@
     /**
      * Get teams with optional filters.
      *
-     * @param {string} type - Team type filter (null for all)
-     * @param {string} status - 'active' | 'inactive' | 'operational' | null
-     *                          'operational' means active OR inactive.
-     * @param {boolean} includeDeleted - If true, includes deprecated teams.
-     *                                   (Named for historical reasons;
-     *                                   there is no 'deleted' status —
-     *                                   deprecated is what this excludes.)
-     * @returns {array} Array of cloned team objects
+     * @param {string} type - team type filter, or null
+     * @param {string} status - 'active' | 'inactive' | 'operational'
+     *                          | null
+     * @param {boolean} includeDeprecated - when false, deprecated
+     *                                     teams are excluded
+     * @returns {array} cloned team objects
      */
-    function getTeams(type, status, includeDeleted) {
+    function getTeams(type, status, includeDeprecated) {
         var teams = getTeamArray();
         var result = [];
 
@@ -562,7 +592,6 @@
             }
         }
 
-        // ---- Type filter ----
         if (type) {
             var normalizedType = TeamConstants.normalizeTeamType(type);
             if (normalizedType === null) {
@@ -570,27 +599,32 @@
             }
             var typeFiltered = [];
             for (var j = 0; j < result.length; j++) {
-                if (TeamConstants.normalizeTeamType(result[j].type) === normalizedType) {
+                if (TeamConstants.normalizeTeamType(result[j].type) ===
+                    normalizedType) {
                     typeFiltered.push(result[j]);
                 }
             }
             result = typeFiltered;
         }
 
-        // ---- Status filter ----
         if (status === 'active') {
-            result = result.filter(function(t) { return t.status === 'active'; });
+            result = result.filter(function(t) {
+                return t.status === 'active';
+            });
         } else if (status === 'inactive') {
-            result = result.filter(function(t) { return t.status === 'inactive'; });
+            result = result.filter(function(t) {
+                return t.status === 'inactive';
+            });
         } else if (status === 'operational') {
-            result = result.filter(function(t) { return isOperationalStatus(t.status); });
+            result = result.filter(function(t) {
+                return isOperationalStatus(t.status);
+            });
         } else if (status) {
-            // Unknown status filter -> empty result, not "no filter".
+            // Unknown status filter returns empty, not "no filter".
             return [];
         }
 
-        // ---- Deprecated filter ----
-        if (!includeDeleted) {
+        if (!includeDeprecated) {
             result = result.filter(function(t) {
                 return t.status !== 'deprecated';
             });
@@ -600,7 +634,6 @@
             return (a.name || '').localeCompare(b.name || '');
         });
 
-        // Return clones.
         var out = [];
         for (var k = 0; k < result.length; k++) {
             out.push(clone(result[k]));
@@ -608,31 +641,18 @@
         return out;
     }
 
-    /**
-     * Get all operational teams (active + inactive, not deprecated).
-     * Returns clones.
-     */
     function getAllOperationalTeams() {
         return getTeams(null, 'operational', false);
     }
 
-    /**
-     * Get all active teams. Returns clones.
-     */
     function getAllActiveTeams() {
         return getTeams(null, 'active', false);
     }
 
-    /**
-     * Get teams by type. Defaults to operational status. Returns clones.
-     */
     function getTeamsByType(type, status) {
         return getTeams(type, status || 'operational', false);
     }
 
-    /**
-     * Get teams that belong to an academic class. Returns clones.
-     */
     function getTeamsByClass(classId, status) {
         if (!isNonEmptyString(classId)) {
             return [];
@@ -644,7 +664,8 @@
 
         for (var i = 0; i < teams.length; i++) {
             var team = teams[i];
-            if (team && team.type === 'academic' && String(team.classId) === target) {
+            if (team && team.type === 'academic' &&
+                String(team.classId) === target) {
                 result.push(team);
             }
         }
@@ -652,9 +673,6 @@
         return result;
     }
 
-    /**
-     * Get teams active at a given period. Returns clones.
-     */
     function getTeamsByPeriod(type, period, status) {
         var periodNum = parsePeriod(period);
         if (periodNum === null) {
@@ -674,34 +692,21 @@
     }
 
     // ============================================================
-    // MEMBERSHIP QUERIES
+    // MEMBERSHIP — TEAM-SCOPED READS
     // ============================================================
 
     /**
      * Get members of a team who are active at a given period.
      *
-     * Returns clones.
+     * A member is active at P when:
+     *   - the team itself is active at P (team window check), AND
+     *   - at least one of the member's intervals contains P.
      *
-     * A member is active at period P when ALL of the following hold:
-     *
-     *   - The team itself is active at P. A team whose own
-     *     startPeriod / endPeriod does not contain P has no active
-     *     members at P, regardless of member-level intervals. This
-     *     is the "team ends, members are freed" rule.
-     *
-     *   - At least one of the member's intervals contains P. An
-     *     interval contains P when its joinPeriod is blank or <= P,
-     *     AND its leavePeriod is blank or >= P.
-     *
-     * The team-window check can only REMOVE members from the
-     * returned list. It can never add them.
-     *
-     * Each returned member entry is cloned verbatim from the source
-     * record, so the intervals array and memberId are preserved.
+     * The team-window check can only remove members from the list.
      *
      * @param {object} team
      * @param {number|string} period
-     * @returns {array} Array of cloned member objects
+     * @returns {array} cloned member entries
      */
     function getActiveTeamMembers(team, period) {
         if (!team || !Array.isArray(team.members)) {
@@ -722,7 +727,7 @@
             return [];
         }
 
-        if (!teamWindowContains(team, periodNum)) {
+        if (!teamWindowContainsNum(team, periodNum)) {
             return [];
         }
 
@@ -732,8 +737,7 @@
             if (!member || typeof member !== 'object') {
                 continue;
             }
-
-            if (memberContainsPeriod(member, periodNum)) {
+            if (isMemberActive(member, periodNum)) {
                 result.push(clone(member));
             }
         }
@@ -741,16 +745,10 @@
         return result;
     }
 
-    /**
-     * Count of active members at a period.
-     */
     function getActiveTeamMemberCount(team, period) {
         return getActiveTeamMembers(team, period).length;
     }
 
-    /**
-     * Is a character an active member of a team at a period?
-     */
     function isCharacterInTeamAtPeriod(team, characterId, period) {
         if (!team || !isNonEmptyString(characterId)) {
             return false;
@@ -758,7 +756,8 @@
         var members = getActiveTeamMembers(team, period);
         var target = String(characterId);
         for (var i = 0; i < members.length; i++) {
-            if (members[i] && String(members[i].characterId) === target) {
+            if (members[i] &&
+                String(members[i].characterId) === target) {
                 return true;
             }
         }
@@ -766,22 +765,23 @@
     }
 
     /**
-     * Get a team's member record for a character, regardless of period.
-     * Returns a clone, or null.
+     * Get a team's member entry for a character, regardless of
+     * period. Returns a clone, or null.
      *
-     * When multiple stints exist for the same character (Alice was
-     * on the team weeks 1-5 and again from week 12), this returns
+     * When multiple stints exist for the same character, returns
      * the FIRST matching entry. Callers that need a specific stint
      * use getTeamMemberByMemberId or getTeamMemberByComposite.
      */
     function getTeamMember(team, characterId) {
-        if (!team || !Array.isArray(team.members) || !isNonEmptyString(characterId)) {
+        if (!team || !Array.isArray(team.members) ||
+            !isNonEmptyString(characterId)) {
             return null;
         }
         var target = String(characterId);
         for (var i = 0; i < team.members.length; i++) {
             var member = team.members[i];
-            if (member && typeof member === 'object' && String(member.characterId) === target) {
+            if (member && typeof member === 'object' &&
+                String(member.characterId) === target) {
                 return clone(member);
             }
         }
@@ -791,20 +791,18 @@
     /**
      * Get a specific member entry by memberId. Returns a clone, or
      * null.
-     *
-     * Every member entry written after the v24 migration carries a
-     * memberId. Entries persisted before v24 receive one during the
-     * migration. There is no scenario in which an entry lacks one
-     * post-migration.
      */
     function getTeamMemberByMemberId(team, memberId) {
-        if (!team || !Array.isArray(team.members) || !isNonEmptyString(memberId)) {
+        if (!team || !Array.isArray(team.members) ||
+            !isNonEmptyString(memberId)) {
             return null;
         }
         var target = String(memberId);
         for (var i = 0; i < team.members.length; i++) {
             var member = team.members[i];
-            if (!member || typeof member !== 'object') { continue; }
+            if (!member || typeof member !== 'object') {
+                continue;
+            }
             if (member.memberId !== undefined &&
                 member.memberId !== null &&
                 String(member.memberId) === target) {
@@ -815,23 +813,13 @@
     }
 
     /**
-     * Get a team's member record for a character, scoped by which
-     * interval's joinPeriod matches. Returns the FULL member entry
-     * (with its intervals array), or null.
-     *
-     * The `joinPeriod` identifies which interval inside the entry
-     * to match against. If a member entry contains an interval with
-     * that joinPeriod, the entry is returned. Otherwise null.
-     *
-     * `joinPeriod` may be '' for entries whose first interval has no
-     * join bound. Comparison is on the canonical string form of the
-     * stored joinPeriod, not the parsed integer, so '' matches ''.
-     *
-     * Callers that want just the interval should use
-     * getMemberInterval on the returned entry.
+     * Get a team's member entry for a character scoped by
+     * interval joinPeriod. Returns the FULL member entry (with its
+     * intervals array), or null.
      */
     function getTeamMemberByComposite(team, characterId, joinPeriod) {
-        if (!team || !Array.isArray(team.members) || !isNonEmptyString(characterId)) {
+        if (!team || !Array.isArray(team.members) ||
+            !isNonEmptyString(characterId)) {
             return null;
         }
         var targetChar = String(characterId);
@@ -841,17 +829,26 @@
 
         for (var i = 0; i < team.members.length; i++) {
             var member = team.members[i];
-            if (!member || typeof member !== 'object') { continue; }
-            if (String(member.characterId) !== targetChar) { continue; }
-            if (!Array.isArray(member.intervals)) { continue; }
+            if (!member || typeof member !== 'object') {
+                continue;
+            }
+            if (String(member.characterId) !== targetChar) {
+                continue;
+            }
+            if (!Array.isArray(member.intervals)) {
+                continue;
+            }
 
             for (var j = 0; j < member.intervals.length; j++) {
                 var interval = member.intervals[j];
-                if (!interval || typeof interval !== 'object') { continue; }
-                var intervalJoin = (interval.joinPeriod === undefined ||
-                                    interval.joinPeriod === null)
-                    ? ''
-                    : String(interval.joinPeriod);
+                if (!interval || typeof interval !== 'object') {
+                    continue;
+                }
+                var intervalJoin =
+                    (interval.joinPeriod === undefined ||
+                     interval.joinPeriod === null)
+                        ? ''
+                        : String(interval.joinPeriod);
                 if (intervalJoin === targetJoin) {
                     return clone(member);
                 }
@@ -864,12 +861,8 @@
      * Get all member entries for a team, current or former, as a
      * flat array of clones.
      *
-     * The caller decides what to do with entries whose window is in
-     * the past, present, or future. This function does not filter by
-     * period, by team window, or by member window. It is the raw
-     * member list.
-     *
-     * Each entry preserves its memberId and its intervals array.
+     * No period filtering, no team-window filtering. The raw member
+     * list.
      */
     function getAllTeamMemberRecords(team) {
         if (!team || !Array.isArray(team.members)) {
@@ -885,111 +878,8 @@
         return result;
     }
 
-    // ============================================================
-    // INTERVAL-SCOPED READS
-    // ============================================================
-    //
-    // These take a MEMBER ENTRY (not a team) and return information
-    // about its intervals. They are the read primitives the UI and
-    // aggregator use to render one row per stint.
-
     /**
-     * Find an interval inside a member entry by its joinPeriod.
-     *
-     * Comparison is on the canonical string form of the stored
-     * joinPeriod. `''` matches intervals with no join bound.
-     *
-     * @param {object} member - member entry
-     * @param {number|string} joinPeriod
-     * @returns {object|null} cloned interval, or null
-     */
-    function getMemberInterval(member, joinPeriod) {
-        if (!member || typeof member !== 'object') {
-            return null;
-        }
-        if (!Array.isArray(member.intervals)) {
-            return null;
-        }
-
-        var targetJoin = (joinPeriod === undefined || joinPeriod === null)
-            ? ''
-            : String(joinPeriod);
-
-        for (var i = 0; i < member.intervals.length; i++) {
-            var interval = member.intervals[i];
-            if (!interval || typeof interval !== 'object') { continue; }
-            var intervalJoin = (interval.joinPeriod === undefined ||
-                                interval.joinPeriod === null)
-                ? ''
-                : String(interval.joinPeriod);
-            if (intervalJoin === targetJoin) {
-                return clone(interval);
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Get every interval inside a member entry whose window contains
-     * the given period.
-     *
-     * Usually zero or one interval matches. If the entry somehow
-     * carries overlapping intervals (shouldn't happen after the
-     * refactor — TeamCore rejects overlap on write), all matching
-     * intervals are returned.
-     *
-     * @param {object} member
-     * @param {number|string} period
-     * @returns {array} Array of cloned intervals
-     */
-    function getMemberActiveIntervals(member, period) {
-        if (!member || typeof member !== 'object') {
-            return [];
-        }
-        if (!Array.isArray(member.intervals)) {
-            return [];
-        }
-
-        var periodNum = parsePeriod(period);
-        if (periodNum === null) {
-            return [];
-        }
-
-        var result = [];
-        for (var i = 0; i < member.intervals.length; i++) {
-            var interval = member.intervals[i];
-            if (intervalContainsPeriod(interval, periodNum)) {
-                result.push(clone(interval));
-            }
-        }
-        return result;
-    }
-
-    /**
-     * Get the first interval inside a member entry whose window
-     * contains the given period. Returns a clone, or null.
-     *
-     * Convenience for "what stint is this member currently in."
-     * When intervals are properly non-overlapping there is at most
-     * one match; when they overlap, the first is returned.
-     *
-     * @param {object} member
-     * @param {number|string} period
-     * @returns {object|null}
-     */
-    function getMemberIntervalAtPeriod(member, period) {
-        var matches = getMemberActiveIntervals(member, period);
-        return matches.length > 0 ? matches[0] : null;
-    }
-
-    /**
-     * Get teams a character belongs to at a period. Returns clones.
-     *
-     * @param {string} characterId
-     * @param {number|string} period
-     * @param {string} teamType - Optional type filter. Invalid type
-     *                            returns [] (not "no filter").
-     * @returns {array}
+     * Get teams a character belongs to at a period.
      */
     function getTeamsForCharacter(characterId, period, teamType) {
         if (!isNonEmptyString(characterId)) {
@@ -1002,7 +892,9 @@
         }
 
         var normalizedFilter = null;
-        if (teamType !== undefined && teamType !== null && teamType !== '') {
+        if (teamType !== undefined &&
+            teamType !== null &&
+            teamType !== '') {
             normalizedFilter = TeamConstants.normalizeTeamType(teamType);
             if (normalizedFilter === null) {
                 return [];
@@ -1022,7 +914,8 @@
             }
 
             if (normalizedFilter !== null) {
-                if (TeamConstants.normalizeTeamType(team.type) !== normalizedFilter) {
+                if (TeamConstants.normalizeTeamType(team.type) !==
+                    normalizedFilter) {
                     continue;
                 }
             }
@@ -1044,10 +937,9 @@
     }
 
     /**
-     * Get a character's membership record for a team. Returns a clone,
-     * or null.
-     *
-     * Returns the FIRST matching entry when multiple stints exist.
+     * Get a character's membership record for a team. Returns a
+     * clone, or null. Returns the FIRST matching entry when
+     * multiple stints exist.
      */
     function getCharacterTeamMembership(teamId, characterId) {
         var team = getTeamByIdInternal(teamId);
@@ -1058,24 +950,12 @@
     }
 
     // ============================================================
-    // RANKING QUERIES
+    // RANKINGS
     // ============================================================
-    //
-    // Ranking history lives on the team as `rankingHistory`, an
-    // array of { period, rank }. This is Team-domain ranking.
-    //
-    // `getCurrentRank()` is DERIVED from rankingHistory. It is not a
-    // persisted field. Persisting it would create two sources of
-    // truth.
 
     /**
      * Get the sorted ranking history for a team.
-     *
-     * Malformed entries (invalid period or rank) are filtered out.
-     * Returns clones. Sorted ascending by period.
-     *
-     * @param {object} team
-     * @returns {array} Array of { period, rank }
+     * Malformed entries are filtered out.
      */
     function getSortedRankings(team) {
         if (!team || !Array.isArray(team.rankingHistory)) {
@@ -1109,31 +989,16 @@
         return history;
     }
 
-    /**
-     * Get the most recent ranking entry for a team. Returns a clone,
-     * or null.
-     */
     function getMostRecentRanking(team) {
         var history = getSortedRankings(team);
         return history.length > 0 ? history[history.length - 1] : null;
     }
 
-    /**
-     * Get the current rank for a team. Derived from sorted history.
-     * Returns a string (numeric), or '' when the team has no
-     * rankings.
-     *
-     * @param {object} team
-     * @returns {string}
-     */
     function getCurrentRank(team) {
         var most = getMostRecentRanking(team);
         return most ? String(most.rank) : '';
     }
 
-    /**
-     * Get the rank at a specific period. Returns a number or null.
-     */
     function getRankAtPeriod(team, period) {
         if (!team || !Array.isArray(team.rankingHistory)) {
             return null;
@@ -1149,9 +1014,12 @@
 
         for (var i = 0; i < history.length; i++) {
             var entry = history[i];
-            if (!entry) { continue; }
+            if (!entry) {
+                continue;
+            }
             var entryPeriod = parsePeriod(entry.period);
-            if (entryPeriod !== null && String(entryPeriod) === target) {
+            if (entryPeriod !== null &&
+                String(entryPeriod) === target) {
                 var rank = parsePeriod(entry.rank);
                 if (rank !== null) {
                     return rank;
@@ -1162,30 +1030,6 @@
         return null;
     }
 
-    /**
-     * Get the rank change between two periods.
-     *
-     * @returns {object|null} { from, to, change } or null when either
-     *                        period has no ranking entry
-     */
-    function getRankChange(team, fromPeriod, toPeriod) {
-        var from = getRankAtPeriod(team, fromPeriod);
-        var to = getRankAtPeriod(team, toPeriod);
-
-        if (from === null || to === null) {
-            return null;
-        }
-
-        return {
-            from: from,
-            to: to,
-            change: to - from
-        };
-    }
-
-    /**
-     * Does the team have any ranking history?
-     */
     function hasRankings(team) {
         if (!team) {
             return false;
@@ -1193,19 +1037,21 @@
         return getSortedRankings(team).length > 0;
     }
 
-    /**
-     * Get a summary of a team's ranking history.
-     *
-     * @returns {object} { total, current, mostRecent, history }
-     */
     function getRankingSummary(team) {
         if (!team) {
-            return { total: 0, current: '', mostRecent: null, history: [] };
+            return {
+                total: 0,
+                current: '',
+                mostRecent: null,
+                history: []
+            };
         }
 
         var history = getSortedRankings(team);
         var total = history.length;
-        var current = total > 0 ? String(history[total - 1].rank) : '';
+        var current = total > 0
+            ? String(history[total - 1].rank)
+            : '';
         var mostRecent = total > 0 ? history[total - 1] : null;
 
         return {
@@ -1220,18 +1066,26 @@
     // EXPOSE
     // ============================================================
 
-    window.TeamQueries = {
-        // ---- Team lookup ----
+    window.TeamQueries = Object.freeze({
+        // Team lookup
         getTeamById: getTeamById,
         getTeamName: getTeamName,
-        getTeamIndex: getTeamIndex,
 
-        // ---- Status / period predicates ----
+        // Status predicates
         isTeamOperational: isTeamOperational,
         isTeamActive: isTeamActive,
         isTeamActiveAtPeriod: isTeamActiveAtPeriod,
 
-        // ---- Team lists ----
+        // Period predicates
+        teamWindowContains: teamWindowContains,
+        intervalContains: intervalContains,
+        windowContains: windowContains,
+
+        // Member predicates
+        isMemberActive: isMemberActive,
+        isMemberFormer: isMemberFormer,
+
+        // Team lists
         getTeams: getTeams,
         getAllOperationalTeams: getAllOperationalTeams,
         getAllActiveTeams: getAllActiveTeams,
@@ -1239,7 +1093,7 @@
         getTeamsByClass: getTeamsByClass,
         getTeamsByPeriod: getTeamsByPeriod,
 
-        // ---- Membership ----
+        // Membership
         getActiveTeamMembers: getActiveTeamMembers,
         getActiveTeamMemberCount: getActiveTeamMemberCount,
         isCharacterInTeamAtPeriod: isCharacterInTeamAtPeriod,
@@ -1250,20 +1104,14 @@
         getTeamsForCharacter: getTeamsForCharacter,
         getCharacterTeamMembership: getCharacterTeamMembership,
 
-        // ---- Interval-scoped reads ----
-        getMemberInterval: getMemberInterval,
-        getMemberActiveIntervals: getMemberActiveIntervals,
-        getMemberIntervalAtPeriod: getMemberIntervalAtPeriod,
-
-        // ---- Rankings ----
+        // Rankings
         getSortedRankings: getSortedRankings,
         getMostRecentRanking: getMostRecentRanking,
         getCurrentRank: getCurrentRank,
         getRankAtPeriod: getRankAtPeriod,
-        getRankChange: getRankChange,
         hasRankings: hasRankings,
         getRankingSummary: getRankingSummary
-    };
+    });
 
     // ============================================================
     // VERIFICATION
@@ -1274,8 +1122,10 @@
         var missing = [];
 
         var required = [
-            'getTeamById', 'getTeamName', 'getTeamIndex',
+            'getTeamById', 'getTeamName',
             'isTeamOperational', 'isTeamActive', 'isTeamActiveAtPeriod',
+            'teamWindowContains', 'intervalContains', 'windowContains',
+            'isMemberActive', 'isMemberFormer',
             'getTeams', 'getAllOperationalTeams', 'getAllActiveTeams',
             'getTeamsByType', 'getTeamsByClass', 'getTeamsByPeriod',
             'getActiveTeamMembers', 'getActiveTeamMemberCount',
@@ -1283,11 +1133,8 @@
             'getTeamMemberByMemberId', 'getTeamMemberByComposite',
             'getAllTeamMemberRecords',
             'getTeamsForCharacter', 'getCharacterTeamMembership',
-            'getMemberInterval', 'getMemberActiveIntervals',
-            'getMemberIntervalAtPeriod',
             'getSortedRankings', 'getMostRecentRanking', 'getCurrentRank',
-            'getRankAtPeriod', 'getRankChange', 'hasRankings',
-            'getRankingSummary'
+            'getRankAtPeriod', 'hasRankings', 'getRankingSummary'
         ];
 
         for (var i = 0; i < required.length; i++) {
@@ -1297,7 +1144,10 @@
         }
 
         if (missing.length > 0) {
-            console.warn('[TeamQueries] Verification - some exports may be missing:', missing.join(', '));
+            console.warn(
+                '[TeamQueries] Verification — some exports may be ' +
+                'missing:', missing.join(', ')
+            );
         }
     })();
 

@@ -1,38 +1,55 @@
 /**
- * modules/teams/team-ui.js - Team UI State Management
- * Manages transient UI state for the team module
- * 
- * This module provides:
- *   - UI state management (currentTab, expandedTeamId, filters, modal state)
- *   - State persistence (sessionStorage)
- *   - State restoration on page load
- *   - Filter state management
- *   - Default filter values
- * 
+ * modules/teams/team-ui.js - Team UI State
+ * Transient UI state for the Team module.
+ *
+ * Path: js/modules/teams/team-ui.js
+ *
+ * This module is the SINGLE SOURCE OF TRUTH for Team UI state:
+ *   - Which tab is selected (professional | temporary | civilian)
+ *   - Which team is expanded in the list
+ *   - Per-tab filter values (year, status)
+ *
  * IMPORTANT:
- *   - UI STATE ONLY - no domain data, no mutations
- *   - No TeamQueries dependencies - state is purely UI
- *   - No persistence to IndexedDB (sessionStorage only for UX)
- *   - Filters are UI state, not domain queries
- *   - This module is the SINGLE SOURCE OF TRUTH for UI state
- * 
- * STATE CATEGORIES:
- *   - Navigation: currentTab, expandedTeamId
- *   - Filters: filter values per tab
- *   - Modal state: which modal is open, IDs for editing
- *   - Flags: listExpanded, showInactive
- * 
+ *   - UI state only. No domain data. No mutations. No domain reads.
+ *   - Persistence is sessionStorage only. UI state is deliberately
+ *     ephemeral; anything that must survive a page reload belongs
+ *     in window.data, not here.
+ *   - Every setter is typed and validates its input. There are no
+ *     generic escape hatches for setting arbitrary keys.
+ *   - Returned state is a structural clone. A caller cannot mutate
+ *     live state by holding the reference.
+ *   - Modal context is NOT tracked here. The team or member a modal
+ *     is acting on lives on the modal's own DOM (dataset attributes,
+ *     form arguments). There is no cross-render modal state.
+ *
+ * STORAGE VERSION:
+ *   The key is versioned ('team_ui_state_v1'). A version bump
+ *   abandons the previous state entirely; there is no migration
+ *   between versions. This is deliberate — UI state is a cache,
+ *   and caching stale shape across a code change produces bugs
+ *   that are harder to diagnose than losing a saved tab.
+ *
+ * TAB VOCABULARY:
+ *   The valid tabs are:
+ *     'professional' | 'temporary' | 'civilian'
+ *
+ *   'academic' is NOT a tab here. Academic teams are managed by the
+ *   Academy module. TeamUI never sees them.
+ *
+ * FILTER SEMANTICS:
+ *   Filters are per-tab. Each tab has its own filter object. Setting
+ *   a filter on one tab does not affect another. The filter object
+ *   for a tab is created on first access from the canonical defaults.
+ *
  * DEPENDENCIES:
- *   - None (self-contained)
- * 
+ *   None.
+ *
  * USAGE:
  *   var UI = window.TeamUI;
- *   UI.init();
+ *   UI.getCurrentTab();
  *   UI.setCurrentTab('professional');
- *   var tab = UI.getCurrentTab();
+ *   UI.getFilter('professional');
  *   UI.setFilter('professional', 'filterYear', 2025);
- *   var filter = UI.getFilter('professional');
- *   var defaultFilter = UI.getDefaultFilter('professional');
  */
 
 (function() {
@@ -44,551 +61,413 @@
     window.__teamUILoaded = true;
 
     // ============================================================
-    // DEFAULT STATE - Immutable template
+    // CONSTANTS
     // ============================================================
 
-    var DEFAULT_STATE = {
-        // Navigation
-        currentTab: 'professional',
+    var STORAGE_KEY = 'team_ui_state_v1';
+
+    var VALID_TABS = ['professional', 'temporary', 'civilian'];
+    var DEFAULT_TAB = 'professional';
+
+    // ============================================================
+    // DEFAULT STATE
+    // ============================================================
+    //
+    // Frozen. Callers cannot mutate the template by holding a
+    // reference. getDefaultState() returns a fresh structural clone.
+
+    var DEFAULT_STATE = Object.freeze({
+        currentTab: DEFAULT_TAB,
         expandedTeamId: null,
 
-        // Filters per tab
-        filters: {
-            professional: {
+        filters: Object.freeze({
+            professional: Object.freeze({
                 filterYear: '',
                 filterStatus: 'active'
-            },
-            temporary: {
+            }),
+            temporary: Object.freeze({
                 filterYear: '',
                 filterStatus: 'active'
-            },
-            civilian: {
+            }),
+            civilian: Object.freeze({
                 filterStatus: 'active'
-            }
-        },
+            })
+        })
+    });
 
-        // Modal state
-        modalTeamId: null,
-        modalMemberId: null,
-        modalRankingPeriod: null,
-
-        // UI flags
-        listExpanded: false,
-        showInactive: false
-    };
-
-    // ============================================================
-    // DEFAULT FILTERS (moved from team-filters.js)
-    // ============================================================
-
-    var DEFAULT_FILTERS = {
-        'professional': { filterYear: '', filterStatus: 'active' },
-        'temporary': { filterYear: '', filterStatus: 'active' },
-        'civilian': { filterStatus: 'active' }
-    };
+    // Frozen. Same rationale as DEFAULT_STATE.
+    var DEFAULT_FILTERS = Object.freeze({
+        professional: Object.freeze({
+            filterYear: '',
+            filterStatus: 'active'
+        }),
+        temporary: Object.freeze({
+            filterYear: '',
+            filterStatus: 'active'
+        }),
+        civilian: Object.freeze({
+            filterStatus: 'active'
+        })
+    });
 
     // ============================================================
-    // LIVE STATE
+    // HELPERS
     // ============================================================
 
-    var _state = null;
-
-    // ============================================================
-    // STORAGE KEY
-    // ============================================================
-
-    var STORAGE_KEY = 'team_ui_state';
-
-    // ============================================================
-    // STATE INITIALIZATION
-    // ============================================================
+    function clone(value) {
+        if (value === null || typeof value !== 'object') {
+            return value;
+        }
+        try {
+            return JSON.parse(JSON.stringify(value));
+        } catch (e) {
+            // Cloning a plain state object cannot fail in practice.
+            // If it does, return the empty default rather than a
+            // possibly-aliased input.
+            return {};
+        }
+    }
 
     function getDefaultState() {
-        return JSON.parse(JSON.stringify(DEFAULT_STATE));
+        return clone(DEFAULT_STATE);
     }
+
+    function getFilterDefaults(tab) {
+        var defaults = DEFAULT_FILTERS[tab] || DEFAULT_FILTERS[DEFAULT_TAB];
+        return clone(defaults);
+    }
+
+    // ============================================================
+    // STORAGE
+    // ============================================================
 
     function loadState() {
         try {
             var saved = sessionStorage.getItem(STORAGE_KEY);
-            if (saved) {
-                var parsed = JSON.parse(saved);
-                var merged = getDefaultState();
-                for (var key in parsed) {
-                    if (Object.prototype.hasOwnProperty.call(merged, key)) {
-                        if (key === 'filters' && typeof parsed[key] === 'object') {
-                            for (var tab in parsed[key]) {
-                                if (Object.prototype.hasOwnProperty.call(merged[key], tab)) {
-                                    for (var filterKey in parsed[key][tab]) {
-                                        merged[key][tab][filterKey] = parsed[key][tab][filterKey];
-                                    }
-                                }
-                            }
-                        } else {
-                            merged[key] = parsed[key];
-                        }
+            if (!saved) {
+                return getDefaultState();
+            }
+            var parsed = JSON.parse(saved);
+            if (!parsed || typeof parsed !== 'object') {
+                return getDefaultState();
+            }
+            return mergeWithDefaults(parsed);
+        } catch (e) {
+            return getDefaultState();
+        }
+    }
+
+    /**
+     * Merge persisted state with defaults.
+     *
+     * Unknown fields are dropped. Invalid values fall back to the
+     * default. This is what makes a future schema change safe: a
+     * stale value is rejected instead of being carried forward.
+     */
+    function mergeWithDefaults(parsed) {
+        var merged = getDefaultState();
+
+        if (typeof parsed.currentTab === 'string' &&
+            VALID_TABS.indexOf(parsed.currentTab) !== -1) {
+            merged.currentTab = parsed.currentTab;
+        }
+
+        if (typeof parsed.expandedTeamId === 'string' &&
+            parsed.expandedTeamId !== '') {
+            merged.expandedTeamId = parsed.expandedTeamId;
+        }
+
+        if (parsed.filters && typeof parsed.filters === 'object') {
+            for (var t = 0; t < VALID_TABS.length; t++) {
+                var tab = VALID_TABS[t];
+                var saved = parsed.filters[tab];
+                if (!saved || typeof saved !== 'object') {
+                    continue;
+                }
+                var defaults = DEFAULT_FILTERS[tab] || {};
+                var keys = Object.keys(defaults);
+                for (var i = 0; i < keys.length; i++) {
+                    var key = keys[i];
+                    if (Object.prototype.hasOwnProperty.call(saved, key)) {
+                        merged.filters[tab][key] = saved[key];
                     }
                 }
-                return merged;
             }
-        } catch (e) {
-            // Ignore storage errors
         }
-        return getDefaultState();
+
+        return merged;
     }
 
     function saveState() {
-        if (!_state) {
-            return;
-        }
         try {
             sessionStorage.setItem(STORAGE_KEY, JSON.stringify(_state));
         } catch (e) {
-            // Ignore storage errors
+            // Storage full or unavailable. UI state is disposable.
         }
     }
 
     // ============================================================
-    // PUBLIC API
+    // LIVE STATE
+    // ============================================================
+    //
+    // Initialized at declaration. There is no separate init step;
+    // the state is ready the moment this module loads.
+    //
+    // init() remains exported for callers that expect a lifecycle
+    // hook. It reloads from storage.
+
+    var _state = loadState();
+
+    // ============================================================
+    // LIFECYCLE
     // ============================================================
 
     /**
-     * Initialize the UI state.
-     * Should be called once at module startup.
+     * Reload state from storage. Idempotent.
      */
     function init() {
         _state = loadState();
     }
 
-    /**
-     * Get the current UI state.
-     * 
-     * @param {string} key - Optional state key
-     * @returns {*} State value or entire state
-     */
-    function getState(key) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
-        if (key) {
-            return _state[key];
-        }
-        return _state;
-    }
-
-    /**
-     * Set a UI state value.
-     * 
-     * @param {string} key - State key
-     * @param {*} value - Value to set
-     */
-    function setState(key, value) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
-        _state[key] = value;
-        saveState();
-    }
-
-    /**
-     * Update multiple state values at once.
-     * 
-     * @param {object} updates - Key-value pairs to update
-     */
-    function updateState(updates) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
-        for (var key in updates) {
-            if (Object.prototype.hasOwnProperty.call(updates, key)) {
-                _state[key] = updates[key];
-            }
-        }
-        saveState();
-    }
-
-    /**
-     * Reset state to defaults.
-     */
     function resetState() {
         _state = getDefaultState();
         saveState();
     }
 
+    // ============================================================
+    // STATE SNAPSHOT
+    // ============================================================
+
     /**
-     * Get the current tab.
-     * 
-     * @returns {string} Current tab ID
+     * Get a structural clone of the entire UI state.
+     *
+     * The clone means a caller cannot mutate live state through
+     * the returned object.
      */
+    function getState() {
+        return clone(_state);
+    }
+
+    // ============================================================
+    // TAB
+    // ============================================================
+
+    function isValidTab(tab) {
+        return typeof tab === 'string' && VALID_TABS.indexOf(tab) !== -1;
+    }
+
+    function getValidTab(tab) {
+        return isValidTab(tab) ? tab : DEFAULT_TAB;
+    }
+
     function getCurrentTab() {
-        if (!_state) {
-            _state = getDefaultState();
-        }
         return _state.currentTab;
     }
 
     /**
      * Set the current tab.
-     * 
-     * @param {string} tab - Tab ID ('professional', 'temporary', 'civilian')
+     *
+     * Rejects invalid tabs rather than storing them. A typo in a
+     * caller would otherwise persist and surface as an empty list
+     * on the next render, which is harder to diagnose than a
+     * rejected setter.
+     *
+     * @param {string} tab
+     * @returns {boolean} true when the value was accepted
      */
     function setCurrentTab(tab) {
-        if (!_state) {
-            _state = getDefaultState();
+        if (!isValidTab(tab)) {
+            return false;
         }
-        if (tab !== _state.currentTab) {
-            _state.currentTab = tab;
-            saveState();
+        if (tab === _state.currentTab) {
+            return true;
         }
+        _state.currentTab = tab;
+        saveState();
+        return true;
     }
 
-    /**
-     * Get the expanded team ID.
-     * 
-     * @returns {string|null} Expanded team ID or null
-     */
+    function getValidTabs() {
+        return VALID_TABS.slice();
+    }
+
+    // ============================================================
+    // EXPANDED TEAM
+    // ============================================================
+
     function getExpandedTeamId() {
-        if (!_state) {
-            _state = getDefaultState();
-        }
         return _state.expandedTeamId;
     }
 
-    /**
-     * Set the expanded team ID.
-     * 
-     * @param {string|null} teamId - Team ID to expand, or null to collapse
-     */
     function setExpandedTeamId(teamId) {
-        if (!_state) {
-            _state = getDefaultState();
+        var next = (typeof teamId === 'string' && teamId !== '')
+            ? teamId
+            : null;
+        if (next === _state.expandedTeamId) {
+            return;
         }
-        _state.expandedTeamId = teamId;
+        _state.expandedTeamId = next;
         saveState();
     }
 
     /**
      * Toggle the expanded state of a team.
-     * 
-     * @param {string} teamId - Team ID to toggle
-     * @returns {boolean} True if expanded after toggle
+     * Returns the state AFTER the toggle.
      */
     function toggleExpandedTeam(teamId) {
-        if (!_state) {
-            _state = getDefaultState();
+        if (typeof teamId !== 'string' || teamId === '') {
+            return false;
         }
         if (_state.expandedTeamId === teamId) {
             _state.expandedTeamId = null;
             saveState();
             return false;
-        } else {
-            _state.expandedTeamId = teamId;
-            saveState();
-            return true;
         }
+        _state.expandedTeamId = teamId;
+        saveState();
+        return true;
     }
 
-    /**
-     * Check if a team is expanded.
-     * 
-     * @param {string} teamId - Team ID to check
-     * @returns {boolean} True if expanded
-     */
     function isTeamExpanded(teamId) {
-        if (!_state) {
-            _state = getDefaultState();
+        if (typeof teamId !== 'string' || teamId === '') {
+            return false;
         }
         return _state.expandedTeamId === teamId;
     }
 
     // ============================================================
-    // FILTER MANAGEMENT
+    // FILTERS
     // ============================================================
 
     /**
-     * Get default filter for a tab.
-     * Moved from team-filters.js.
-     * 
-     * @param {string} tab - Tab ID
-     * @returns {object} Default filter object
+     * Get the default filter object for a tab.
+     * Returns a fresh copy. Mutating the return value does not
+     * affect the template.
      */
     function getDefaultFilter(tab) {
-        return DEFAULT_FILTERS[tab] || DEFAULT_FILTERS['professional'];
+        return getFilterDefaults(tab);
     }
 
     /**
-     * Get filters for a specific tab.
-     * 
-     * @param {string} tab - Tab ID
-     * @returns {object} Filter object
+     * Get a tab's current filter as a shallow copy.
+     *
+     * Filter values are primitives (number, string, boolean), so a
+     * shallow copy is a full isolation guarantee.
      */
     function getFilter(tab) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
         var filters = _state.filters[tab];
         if (!filters) {
-            return Object.assign({}, getDefaultFilter(tab));
+            return getFilterDefaults(tab);
         }
         return Object.assign({}, filters);
     }
 
     /**
-     * Set a filter value for a specific tab.
-     * 
-     * @param {string} tab - Tab ID
-     * @param {string} key - Filter key
-     * @param {*} value - Filter value
+     * Set one filter key on a tab.
+     *
+     * The tab must be valid; the key must already exist on the
+     * tab's default filter. Setting an unknown key is rejected.
+     * This is what keeps the filter shape canonical.
      */
     function setFilter(tab, key, value) {
-        if (!_state) {
-            _state = getDefaultState();
+        if (!isValidTab(tab)) {
+            return false;
+        }
+        var defaults = DEFAULT_FILTERS[tab];
+        if (!defaults ||
+            !Object.prototype.hasOwnProperty.call(defaults, key)) {
+            return false;
         }
         if (!_state.filters[tab]) {
-            _state.filters[tab] = Object.assign({}, getDefaultFilter(tab));
+            _state.filters[tab] = getFilterDefaults(tab);
+        }
+        if (_state.filters[tab][key] === value) {
+            return true;
         }
         _state.filters[tab][key] = value;
         saveState();
+        return true;
     }
 
     /**
-     * Update multiple filter values for a specific tab.
-     * 
-     * @param {string} tab - Tab ID
-     * @param {object} updates - Key-value pairs to update
+     * Update multiple filter keys on a tab atomically.
+     *
+     * Any invalid key rejects the entire call; no key is updated.
+     * This mirrors AcademyUI.setPeopleFilter's contract.
      */
     function updateFilter(tab, updates) {
-        if (!_state) {
-            _state = getDefaultState();
+        if (!isValidTab(tab)) {
+            return false;
         }
-        if (!_state.filters[tab]) {
-            _state.filters[tab] = Object.assign({}, getDefaultFilter(tab));
+        if (!updates || typeof updates !== 'object') {
+            return false;
         }
-        for (var key in updates) {
-            if (Object.prototype.hasOwnProperty.call(updates, key)) {
-                _state.filters[tab][key] = updates[key];
+
+        var defaults = DEFAULT_FILTERS[tab];
+        if (!defaults) {
+            return false;
+        }
+
+        var keys = Object.keys(updates);
+        for (var i = 0; i < keys.length; i++) {
+            if (!Object.prototype.hasOwnProperty.call(defaults, keys[i])) {
+                return false;
             }
         }
-        saveState();
+
+        if (!_state.filters[tab]) {
+            _state.filters[tab] = getFilterDefaults(tab);
+        }
+
+        var changed = false;
+        for (var j = 0; j < keys.length; j++) {
+            var key = keys[j];
+            if (_state.filters[tab][key] !== updates[key]) {
+                _state.filters[tab][key] = updates[key];
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            saveState();
+        }
+        return true;
     }
 
-    /**
-     * Reset filters for a specific tab to defaults.
-     * 
-     * @param {string} tab - Tab ID
-     */
     function resetFilter(tab) {
-        if (!_state) {
-            _state = getDefaultState();
+        if (!isValidTab(tab)) {
+            return;
         }
-        _state.filters[tab] = Object.assign({}, getDefaultFilter(tab));
+        _state.filters[tab] = getFilterDefaults(tab);
         saveState();
     }
 
-    /**
-     * Reset all filters to defaults.
-     */
     function resetAllFilters() {
-        if (!_state) {
-            _state = getDefaultState();
+        for (var i = 0; i < VALID_TABS.length; i++) {
+            var tab = VALID_TABS[i];
+            _state.filters[tab] = getFilterDefaults(tab);
         }
-        _state.filters = JSON.parse(JSON.stringify(DEFAULT_FILTERS));
         saveState();
     }
-
-    // ============================================================
-    // MODAL STATE MANAGEMENT
-    // ============================================================
-
-    /**
-     * Get the current modal team ID.
-     * 
-     * @returns {string|null} Modal team ID or null
-     */
-    function getModalTeamId() {
-        if (!_state) {
-            _state = getDefaultState();
-        }
-        return _state.modalTeamId;
-    }
-
-    /**
-     * Set the modal team ID.
-     * 
-     * @param {string|null} teamId - Team ID for modal, or null
-     */
-    function setModalTeamId(teamId) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
-        _state.modalTeamId = teamId;
-        saveState();
-    }
-
-    /**
-     * Get the modal member ID.
-     * 
-     * @returns {string|null} Modal member ID or null
-     */
-    function getModalMemberId() {
-        if (!_state) {
-            _state = getDefaultState();
-        }
-        return _state.modalMemberId;
-    }
-
-    /**
-     * Set the modal member ID.
-     * 
-     * @param {string|null} memberId - Member ID for modal, or null
-     */
-    function setModalMemberId(memberId) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
-        _state.modalMemberId = memberId;
-        saveState();
-    }
-
-    /**
-     * Get the modal ranking period.
-     * 
-     * @returns {string|null} Modal ranking period or null
-     */
-    function getModalRankingPeriod() {
-        if (!_state) {
-            _state = getDefaultState();
-        }
-        return _state.modalRankingPeriod;
-    }
-
-    /**
-     * Set the modal ranking period.
-     * 
-     * @param {string|null} period - Ranking period for modal, or null
-     */
-    function setModalRankingPeriod(period) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
-        _state.modalRankingPeriod = period;
-        saveState();
-    }
-
-    /**
-     * Clear all modal state.
-     */
-    function clearModalState() {
-        if (!_state) {
-            _state = getDefaultState();
-        }
-        _state.modalTeamId = null;
-        _state.modalMemberId = null;
-        _state.modalRankingPeriod = null;
-        saveState();
-    }
-
-    // ============================================================
-    // FLAG MANAGEMENT
-    // ============================================================
-
-    /**
-     * Check if the list is expanded.
-     * 
-     * @returns {boolean} True if expanded
-     */
-    function isListExpanded() {
-        if (!_state) {
-            _state = getDefaultState();
-        }
-        return _state.listExpanded || false;
-    }
-
-    /**
-     * Set the list expanded state.
-     * 
-     * @param {boolean} expanded - Expanded state
-     */
-    function setListExpanded(expanded) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
-        _state.listExpanded = expanded;
-        saveState();
-    }
-
-    /**
-     * Check if inactive teams should be shown.
-     * 
-     * @returns {boolean} True if inactive should be shown
-     */
-    function shouldShowInactive() {
-        if (!_state) {
-            _state = getDefaultState();
-        }
-        return _state.showInactive || false;
-    }
-
-    /**
-     * Set the show inactive flag.
-     * 
-     * @param {boolean} show - Show inactive state
-     */
-    function setShowInactive(show) {
-        if (!_state) {
-            _state = getDefaultState();
-        }
-        _state.showInactive = show;
-        saveState();
-    }
-
-    // ============================================================
-    // VALIDATION
-    // ============================================================
-
-    /**
-     * Validate a tab ID.
-     * 
-     * @param {string} tab - Tab ID to validate
-     * @returns {boolean} True if valid
-     */
-    function isValidTab(tab) {
-        return tab === 'professional' || tab === 'temporary' || tab === 'civilian';
-    }
-
-    /**
-     * Get a valid tab ID, falling back to default.
-     * 
-     * @param {string} tab - Tab ID to validate
-     * @returns {string} Valid tab ID
-     */
-    function getValidTab(tab) {
-        return isValidTab(tab) ? tab : 'professional';
-    }
-
-    // ============================================================
-    // INITIALIZATION
-    // ============================================================
-
-    // Auto-initialize on load
-    init();
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
-    window.TeamUI = {
-        // State management
+    window.TeamUI = Object.freeze({
+        // Lifecycle
         init: init,
-        getState: getState,
-        setState: setState,
-        updateState: updateState,
         resetState: resetState,
+        getState: getState,
 
-        // Navigation
+        // Tab
         getCurrentTab: getCurrentTab,
         setCurrentTab: setCurrentTab,
+        getValidTabs: getValidTabs,
+        isValidTab: isValidTab,
+        getValidTab: getValidTab,
 
-        // Expansion
+        // Expanded team
         getExpandedTeamId: getExpandedTeamId,
         setExpandedTeamId: setExpandedTeamId,
         toggleExpandedTeam: toggleExpandedTeam,
@@ -602,28 +481,9 @@
         resetFilter: resetFilter,
         resetAllFilters: resetAllFilters,
 
-        // Modal
-        getModalTeamId: getModalTeamId,
-        setModalTeamId: setModalTeamId,
-        getModalMemberId: getModalMemberId,
-        setModalMemberId: setModalMemberId,
-        getModalRankingPeriod: getModalRankingPeriod,
-        setModalRankingPeriod: setModalRankingPeriod,
-        clearModalState: clearModalState,
-
-        // Flags
-        isListExpanded: isListExpanded,
-        setListExpanded: setListExpanded,
-        shouldShowInactive: shouldShowInactive,
-        setShowInactive: setShowInactive,
-
-        // Validation
-        isValidTab: isValidTab,
-        getValidTab: getValidTab,
-
-        // Default state (read-only)
+        // Read-only constants
         DEFAULT_STATE: DEFAULT_STATE,
         DEFAULT_FILTERS: DEFAULT_FILTERS
-    };
+    });
 
 })();
