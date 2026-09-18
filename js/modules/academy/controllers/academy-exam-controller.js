@@ -5,8 +5,7 @@
  * Path: js/modules/academy/controllers/academy-exam-controller.js
  *
  * The Exams feature controller. Owns the Exams view: its render, its
- * event handlers, the exam class selection, and the pair-picker DOM
- * interactions.
+ * event handlers, and the pair-picker DOM interactions.
  *
  * WHAT THIS OWNS:
  *   - Rendering the Exams view into the shell's content host, via
@@ -14,10 +13,6 @@
  *     AcademyTournamentView.renderHTML.
  *   - Handling clicks, changes, inputs, and keydowns routed by the
  *     shell for events that occur inside the host.
- *   - The exam class selection (_selectedExamClassId). This is
- *     feature state: which class's exam the user is looking at.
- *     Defaults to the shell's People-view class selection when no
- *     exam class has been chosen yet.
  *   - Routing exam-* actions to AcademyTournamentEvents (create,
  *     edit, delete, reopen, add round, remove round, reopen round,
  *     auto-generate, add match, edit match, complete match, reopen
@@ -36,6 +31,12 @@
  *   - The week. The shell owns it; the controller reads it from
  *     AcademyUI on each render via context.week, falling back to
  *     AcademyUI.getDisplayWeek() if context does not carry one.
+ *   - The class selection. That is SHARED Academy state, owned by
+ *     AcademyUI. This controller reads AcademyUI.getSelectedClassId()
+ *     on every render and routes class changes through
+ *     AcademyUI.selectClass(). It holds no local class field, so a
+ *     class chosen in any other Academy view is honoured here, and a
+ *     class chosen here is honoured by every other view.
  *   - Re-rendering the shell. When a mutation succeeds, the
  *     controller calls context.onChange().
  *   - Tournament reads and writes. AcademyTournamentAggregator
@@ -113,7 +114,8 @@
 
     if (!AcademyUI ||
         typeof AcademyUI.getDisplayWeek !== 'function' ||
-        typeof AcademyUI.getSelectedClassId !== 'function') {
+        typeof AcademyUI.getSelectedClassId !== 'function' ||
+        typeof AcademyUI.selectClass !== 'function') {
         _missing.push('AcademyUI week/class accessors');
     }
     if (!AcademyTournamentAggregator ||
@@ -182,15 +184,13 @@
     // ============================================================
     // MODULE STATE
     // ============================================================
+    //
+    // The class selection is NOT held here. It is shared Academy
+    // state owned by AcademyUI. This controller reads it on every
+    // render and writes it only through AcademyUI.selectClass().
 
     var _host = null;
     var _context = null;
-
-    // Feature state: which class's exam the user is viewing. Owned by
-    // the controller. Defaults to the shell's People-view class
-    // selection on first render if the user has not yet chosen an
-    // exam class.
-    var _selectedExamClassId = null;
 
     // ============================================================
     // CONTEXT NORMALISATION
@@ -242,19 +242,14 @@
             );
         }
 
-        // Sync the exam class selection: default to the shell's
-        // People-view class if no exam class has been chosen yet.
-        if (!_selectedExamClassId) {
-            var peopleClassId = AcademyUI.getSelectedClassId();
-            if (peopleClassId) {
-                _selectedExamClassId = peopleClassId;
-            }
-        }
+        // Class selection is shared Academy state. Read it fresh
+        // each render; never cache it locally.
+        var selectedClassId = AcademyUI.getSelectedClassId();
 
         var vm;
         try {
             vm = AcademyTournamentAggregator.getExamViewModel(
-                _selectedExamClassId,
+                selectedClassId,
                 _context.week
             );
         } catch (e) {
@@ -268,13 +263,6 @@
                     '</p>' +
                 '</div>';
             return;
-        }
-
-        // Adopt the VM's resolved classId if the aggregator resolved
-        // one (it does so when the shell-supplied id no longer names
-        // a real class, or when the VM resolved from state).
-        if (vm && vm.classId) {
-            _selectedExamClassId = vm.classId;
         }
 
         var html;
@@ -356,7 +344,7 @@
             case 'exam-create':
                 e.preventDefault();
                 Events.createExam(
-                    _selectedExamClassId,
+                    AcademyUI.getSelectedClassId(),
                     getContext().week
                 );
                 return;
@@ -471,7 +459,8 @@
         if (!target || !target.id) { return; }
 
         if (target.id === 'at-class-select') {
-            _selectedExamClassId = target.value || null;
+            // Route class changes through the shared Academy state.
+            AcademyUI.selectClass(target.value || null);
             var ctx = getContext();
             ctx.onChange();
             return;
@@ -600,12 +589,9 @@
     // ============================================================
 
     function unmount() {
-        // The exam class selection is feature state. It is
-        // deliberately NOT cleared on unmount: the user's chosen exam
-        // class should survive a switch to another view and back.
-        // This is consistent with the discipline filter, which also
-        // survives. State the user explicitly set persists; transient
-        // edit state (like the discipline draft) does not.
+        // Class selection is shared state owned by AcademyUI; this
+        // controller holds no copy of it, so there is nothing to
+        // persist or clear here.
 
         _host = null;
         _context = null;
