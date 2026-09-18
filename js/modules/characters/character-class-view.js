@@ -4,12 +4,15 @@
  * Path: js/modules/characters/character-class-view.js
  *
  * This module is responsible for:
- *   - Rendering the class dropdown (add to class)
- *   - Rendering class tags with role labels (Trainee / Instructor)
- *   - Rendering academic team memberships (historical)
- *   - Rendering enrolled disciplines per class (Phase 4 model)
- *   - Rendering the grades table (discipline / class / week / score)
- *   - The combined Academic tab layout
+ *   - The entire Academic tab layout for the character form
+ *   - The class dropdown (add to class)
+ *   - Class tags with role labels (Trainee / Instructor)
+ *   - Academic team memberships (historical)
+ *   - Enrolled disciplines per class (Phase 4 model)
+ *   - The grades table (discipline / class / week / score)
+ *   - The elimination status banner (year-scoped)
+ *   - Tournament eliminations list
+ *   - Standalone eliminations list (with remove button)
  *   - Populating the character list's class filter dropdown
  *
  * IMPORTANT:
@@ -20,6 +23,9 @@
  *   - Uses AcademyDisciplines for discipline names
  *   - Uses TeamQueries for team lookups
  *   - Uses CharacterQueries for character data
+ *   - Uses EliminationQueries for elimination reads
+ *   - Uses TournamentQueries for tournament name resolution
+ *   - Uses CalendarValidation for week parsing
  *   - Uses DomUtils for safe DOM operations
  *   - All user-controlled content uses textContent
  *   - No event binding here (delegated to CharacterEvents)
@@ -31,8 +37,22 @@
  *     and MUST NOT call the individual section renderers directly.
  *   - The section renderers (renderAddClassSection, renderClassesSection,
  *     renderAcademicTeamsSection, renderEnrollmentSection,
- *     renderGradesSection) are implementation details. They are
- *     exported for testing only.
+ *     renderGradesSection, renderEliminationStatusSection,
+ *     renderTournamentEliminationsSection,
+ *     renderStandaloneEliminationsSection) are implementation details.
+ *     They are exported for testing only.
+ *
+ * ELIMINATION OWNERSHIP:
+ *   Reads route through EliminationQueries. Writes route through
+ *   AcademyEliminations (addStandalone) and
+ *   TournamentEliminationCascade (all tournament-driven paths).
+ *   This module is a renderer; it does not own any elimination data.
+ *
+ *   The standalone eliminations list emits a click action
+ *   (`data-action="remove-standalone-elim"`) with
+ *   `data-elimination-id`. CharacterEvents handles the click and calls
+ *   AcademyEliminations.removeStandalone. This module does not bind
+ *   listeners.
  *
  * CLASS FILTER CONTRACT:
  *   - populateClassFilter() populates #char-class-filter (the class
@@ -45,24 +65,26 @@
  *   - Enrollment is CLASS-SCOPED. Source of truth is
  *     AcademyEnrolments.getStudentDisciplines(charId, classId).
  *   - character.disciplineIds is dead and is NOT read here.
- *   - The enrollment section shows, for each class the character
- *     belongs to, the disciplines they are enrolled in for that class.
  *
  * ROLE LABELS:
  *   - A character is an "Instructor" for a class when
  *     class.instructorId === char.id.
  *   - Otherwise the character is a "Trainee" for that class.
- *   - This is derived from class data, not from career status.
  *
- * DEPENDENCIES:
- *   - window.AcademyClasses       (from academy-classes.js) - MANDATORY
- *   - window.AcademyGrades        (from academy-grades.js) - MANDATORY
- *   - window.AcademyEnrolments    (from academy-enrolments.js) - MANDATORY
- *   - window.AcademyDisciplines   (from academy-disciplines.js) - MANDATORY
- *   - window.CharacterQueries     (from character-queries.js) - MANDATORY
- *   - window.DisciplineQueries    (from discipline-queries.js) - MANDATORY
- *   - window.DomUtils             (from dom-utils.js) - MANDATORY
- *   - window.TeamQueries          (from team-queries.js) - MANDATORY
+ * DEPENDENCIES (MANDATORY):
+ *   - window.AcademyClasses
+ *   - window.AcademyGrades
+ *   - window.AcademyEnrolments
+ *   - window.AcademyDisciplines
+ *   - window.CharacterQueries
+ *   - window.DomUtils
+ *   - window.TeamQueries
+ *
+ * DEPENDENCIES (LAZY):
+ *   - window.EliminationQueries      (elimination reads)
+ *   - window.TournamentQueries       (tournament name resolution)
+ *   - window.CalendarValidation      (week parsing)
+ *   - window.DisciplineQueries       (fallback discipline name lookup)
  */
 
 (function() {
@@ -82,9 +104,28 @@
     var AcademyEnrolments = window.AcademyEnrolments;
     var AcademyDisciplines = window.AcademyDisciplines;
     var CharacterQueries = window.CharacterQueries;
-    var DisciplineQueries = window.DisciplineQueries;
     var DomUtils = window.DomUtils;
     var TeamQueries = window.TeamQueries;
+
+    // ============================================================
+    // LAZY DEPENDENCY ACCESSORS
+    // ============================================================
+
+    function getEliminationQueries() {
+        return window.EliminationQueries || null;
+    }
+
+    function getTournamentQueries() {
+        return window.TournamentQueries || null;
+    }
+
+    function getCalendarValidation() {
+        return window.CalendarValidation || null;
+    }
+
+    function getDisciplineQueries() {
+        return window.DisciplineQueries || null;
+    }
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -120,8 +161,9 @@
             missing.push('DomUtils.createElement');
         }
 
-        // DisciplineQueries and TeamQueries are used but degrade
-        // gracefully. They are not required for the module to load.
+        // TeamQueries, EliminationQueries, TournamentQueries, and
+        // CalendarValidation are used but degrade gracefully. They
+        // are not required for the module to load.
 
         if (missing.length > 0) {
             throw new Error('[CharacterClassView] Missing dependencies: ' + missing.join(', '));
@@ -208,8 +250,9 @@
             if (d && d.name) { return d.name; }
         }
 
-        if (DisciplineQueries && typeof DisciplineQueries.getDiscipline === 'function') {
-            var d2 = DisciplineQueries.getDiscipline(disciplineId);
+        var DQ = getDisciplineQueries();
+        if (DQ && typeof DQ.getDiscipline === 'function') {
+            var d2 = DQ.getDiscipline(disciplineId);
             if (d2 && d2.name) { return d2.name; }
         }
 
@@ -233,6 +276,79 @@
             return Math.round((score / max) * 100);
         }
         return null;
+    }
+
+    /**
+     * Resolve a tournament ID to its display name.
+     *
+     * Uses TournamentQueries.getTournament. Returns
+     * 'Unknown Tournament' when the ID is missing, the query module is
+     * unavailable, or the tournament does not exist.
+     */
+    function getTournamentName(tournamentId) {
+        if (!tournamentId) {
+            return 'Unknown Tournament';
+        }
+
+        var TQ = getTournamentQueries();
+        if (!TQ || typeof TQ.getTournament !== 'function') {
+            return 'Unknown Tournament';
+        }
+
+        var tourn = null;
+        try {
+            tourn = TQ.getTournament(tournamentId);
+        } catch (e) {
+            console.warn(
+                '[CharacterClassView] getTournament failed:',
+                tournamentId,
+                e
+            );
+            return 'Unknown Tournament';
+        }
+
+        if (tourn) {
+            return tourn.name || 'Unknown Tournament';
+        }
+
+        return 'Unknown Tournament';
+    }
+
+    // ============================================================
+    // SHAPE FILTERS
+    // ============================================================
+    //
+    // These are LOCAL predicates on the eliminations array. They
+    // split records by shape (standalone vs tournament). They do not
+    // consult EliminationQueries; the query module answers semantic
+    // questions like "is this character eliminated as of year Y."
+
+    function getTournamentEliminations(char) {
+        if (!char || !Array.isArray(char.eliminations)) {
+            return [];
+        }
+        var result = [];
+        for (var i = 0; i < char.eliminations.length; i++) {
+            var e = char.eliminations[i];
+            if (e && !e.standalone) {
+                result.push(e);
+            }
+        }
+        return result;
+    }
+
+    function getStandaloneEliminations(char) {
+        if (!char || !Array.isArray(char.eliminations)) {
+            return [];
+        }
+        var result = [];
+        for (var i = 0; i < char.eliminations.length; i++) {
+            var e = char.eliminations[i];
+            if (e && e.standalone) {
+                result.push(e);
+            }
+        }
+        return result;
     }
 
     // ============================================================
@@ -259,12 +375,10 @@
             allClasses = AcademyClasses.getClasses() || [];
         }
 
-        // Sort alphabetically by name
         var sorted = allClasses.slice().sort(function(a, b) {
             return (a.name || '').localeCompare(b.name || '');
         });
 
-        // Rebuild options
         select.textContent = '';
 
         var allOption = document.createElement('option');
@@ -283,7 +397,6 @@
             select.appendChild(option);
         }
 
-        // Restore previous selection if it still exists
         var stillExists = false;
         for (var j = 0; j < select.options.length; j++) {
             if (select.options[j].value === previousValue) {
@@ -325,9 +438,12 @@
 
         container.appendChild(renderAddClassSection(char));
         container.appendChild(renderClassesSection(char));
+        container.appendChild(renderEliminationStatusSection(char));
         container.appendChild(renderAcademicTeamsSection(char));
         container.appendChild(renderEnrollmentSection(char));
         container.appendChild(renderGradesSection(char));
+        container.appendChild(renderTournamentEliminationsSection(char));
+        container.appendChild(renderStandaloneEliminationsSection(char));
     }
 
     // ============================================================
@@ -489,7 +605,124 @@
     }
 
     // ============================================================
-    // SECTION 3 — Academic teams
+    // SECTION 3 — Elimination status banner
+    // ============================================================
+    //
+    // Year-scoped. The banner is the most important fact about the
+    // character's academic record: whether they have been knocked out
+    // of the competitive exam sequence, and as of which year.
+
+    function renderEliminationStatusSection(char) {
+        var section = document.createElement('div');
+        section.className = 'academic-section academic-elimination-status';
+        section.style.cssText = 'margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--border-soft);';
+
+        var EQ = getEliminationQueries();
+        if (!EQ || typeof EQ.isCharacterEliminatedByYear !== 'function') {
+            return section;
+        }
+
+        var yearNum = resolveCurrentYear();
+
+        var eliminated = false;
+        try {
+            eliminated = EQ.isCharacterEliminatedByYear(char, yearNum) === true;
+        } catch (e) {
+            console.warn(
+                '[CharacterClassView] isCharacterEliminatedByYear threw:', e
+            );
+            eliminated = false;
+        }
+
+        var elimYear = null;
+        if (typeof EQ.getEliminationYear === 'function') {
+            try { elimYear = EQ.getEliminationYear(char); }
+            catch (e) { elimYear = null; }
+        }
+
+        var elimWeek = null;
+        if (typeof EQ.getEliminationWeek === 'function') {
+            try { elimWeek = EQ.getEliminationWeek(char); }
+            catch (e) { elimWeek = null; }
+        }
+
+        var reason = 'Unknown';
+        if (typeof EQ.getEliminationReason === 'function') {
+            try { reason = EQ.getEliminationReason(char) || 'Unknown'; }
+            catch (e) { reason = 'Unknown'; }
+        }
+
+        var banner = document.createElement('div');
+        banner.className = 'academic-elimination-banner';
+        banner.style.cssText =
+            'padding:8px 12px;background:var(--bg);border-radius:4px;' +
+            'border-left:4px solid ' +
+            (eliminated ? 'var(--danger)' : 'var(--accent)') +
+            ';font-size:0.8rem;display:flex;align-items:center;gap:8px;' +
+            'flex-wrap:wrap;';
+
+        if (eliminated) {
+            var icon = document.createElement('span');
+            icon.textContent = '\u26a0';
+            icon.style.cssText = 'color:var(--danger);font-size:1rem;';
+            banner.appendChild(icon);
+
+            var headline = 'Eliminated';
+            if (elimYear !== null && elimYear === yearNum && elimWeek !== null) {
+                headline = 'Eliminated in Week ' + elimWeek +
+                    ' of Year ' + elimYear;
+            } else if (elimYear !== null) {
+                headline = 'Eliminated in Year ' + elimYear;
+            }
+
+            var headlineEl = document.createElement('span');
+            headlineEl.style.cssText =
+                'font-weight:600;color:var(--danger);';
+            headlineEl.textContent = headline;
+            banner.appendChild(headlineEl);
+
+            if (reason && reason !== 'Unknown') {
+                var reasonEl = document.createElement('span');
+                reasonEl.style.cssText =
+                    'color:var(--text-dim);font-size:0.7rem;';
+                reasonEl.textContent = ' - ' + reason;
+                banner.appendChild(reasonEl);
+            }
+        } else {
+            var okIcon = document.createElement('span');
+            okIcon.textContent = '\u2713';
+            okIcon.style.cssText = 'color:var(--accent);font-size:1rem;';
+            banner.appendChild(okIcon);
+
+            var okText = document.createElement('span');
+            okText.style.cssText =
+                'font-weight:600;color:var(--accent);';
+            okText.textContent = 'Not eliminated';
+            banner.appendChild(okText);
+
+            var yearEl = document.createElement('span');
+            yearEl.style.cssText =
+                'color:var(--text-dim);font-size:0.7rem;';
+            yearEl.textContent = '(as of year ' + yearNum + ')';
+            banner.appendChild(yearEl);
+        }
+
+        section.appendChild(banner);
+        return section;
+    }
+
+    function resolveCurrentYear() {
+        var data = window.data || {};
+        if (typeof data.currentYear === 'number' &&
+            isFinite(data.currentYear) &&
+            data.currentYear > 0) {
+            return Math.floor(data.currentYear);
+        }
+        return new Date().getFullYear();
+    }
+
+    // ============================================================
+    // SECTION 4 — Academic teams
     // ============================================================
 
     function renderAcademicTeamsSection(char) {
@@ -613,12 +846,8 @@
     }
 
     // ============================================================
-    // SECTION 4 — Enrollment (class-scoped)
+    // SECTION 5 — Enrollment (class-scoped)
     // ============================================================
-    //
-    // For each class the character belongs to, show the disciplines
-    // they are enrolled in for that class. Enrollment is class-scoped
-    // and lives in AcademyEnrolments.
 
     function renderEnrollmentSection(char) {
         var section = document.createElement('div');
@@ -708,15 +937,8 @@
     }
 
     // ============================================================
-    // SECTION 5 — Grades table (class-scoped)
+    // SECTION 6 — Grades table (class-scoped)
     // ============================================================
-    //
-    // Grades are shown per class. AcademyGrades.getStudentClassGrades
-    // returns all grades for a (student, class) pair, sorted.
-    //
-    // The table consolidates grades across the character's classes so
-    // the Academic tab has one place to see everything. A "Class"
-    // column makes the grouping visible.
 
     function renderGradesSection(char) {
         var section = document.createElement('div');
@@ -737,8 +959,6 @@
                 gradesForClass = AcademyGrades.getStudentClassGrades(char.id, classId) || [];
             }
 
-            // Tag each grade with the class so the table can render a
-            // Class column without a second lookup per row.
             for (var g = 0; g < gradesForClass.length; g++) {
                 allGrades.push({
                     grade: gradesForClass[g],
@@ -820,7 +1040,6 @@
         table.appendChild(tbody);
         section.appendChild(table);
 
-        // Summary line
         var summary = computeGradeSummary(allGrades);
         if (summary.count > 0) {
             var summaryEl = document.createElement('p');
@@ -855,6 +1074,175 @@
     }
 
     // ============================================================
+    // SECTION 7 — Tournament eliminations
+    // ============================================================
+
+    function renderTournamentEliminationsSection(char) {
+        var section = document.createElement('div');
+        section.className = 'academic-section academic-eliminations-tournament';
+        section.style.cssText =
+            'margin-top:16px;padding-top:12px;' +
+            'border-top:1px solid var(--border-soft);';
+
+        var heading = document.createElement('div');
+        heading.style.cssText =
+            'font-size:0.75rem;color:var(--danger);' +
+            'font-weight:600;margin-bottom:6px;';
+        heading.textContent = 'Tournament Eliminations';
+        section.appendChild(heading);
+
+        var tournamentElims = getTournamentEliminations(char);
+
+        if (tournamentElims.length === 0) {
+            var empty = document.createElement('p');
+            empty.className = 'empty-state';
+            empty.style.cssText =
+                'padding:4px;font-size:0.7rem;color:var(--text-dim);';
+            empty.textContent = 'No tournament eliminations recorded.';
+            section.appendChild(empty);
+            return section;
+        }
+
+        var list = document.createElement('div');
+        list.style.cssText = 'display:flex;flex-direction:column;gap:3px;';
+
+        tournamentElims.forEach(function(elim) {
+            var tournName = getTournamentName(elim.tournamentId);
+
+            var row = document.createElement('div');
+            row.className = 'tournament-elimination-entry';
+            row.style.cssText =
+                'display:flex;justify-content:space-between;' +
+                'align-items:center;padding:4px 8px;' +
+                'background:var(--danger-soft);border-radius:4px;' +
+                'border-left:3px solid var(--danger);font-size:0.72rem;';
+
+            var left = document.createElement('span');
+            left.style.cssText = 'display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;';
+
+            var nameEl = document.createElement('strong');
+            nameEl.textContent = tournName;
+            left.appendChild(nameEl);
+
+            var details = [];
+            if (elim.year) { details.push('Year ' + elim.year); }
+            if (elim.week) { details.push('Week ' + elim.week); }
+            if (details.length > 0) {
+                var detailsEl = document.createElement('span');
+                detailsEl.style.cssText =
+                    'color:var(--text-dim);font-size:0.65rem;';
+                detailsEl.textContent = '(' + details.join(', ') + ')';
+                left.appendChild(detailsEl);
+            }
+
+            if (elim.reason) {
+                var reasonEl = document.createElement('span');
+                reasonEl.style.cssText =
+                    'color:var(--text-dim);font-size:0.65rem;';
+                reasonEl.textContent = ' - ' + elim.reason;
+                left.appendChild(reasonEl);
+            }
+
+            row.appendChild(left);
+            list.appendChild(row);
+        });
+
+        section.appendChild(list);
+        return section;
+    }
+
+    // ============================================================
+    // SECTION 8 — Standalone eliminations
+    // ============================================================
+
+    function renderStandaloneEliminationsSection(char) {
+        var section = document.createElement('div');
+        section.className = 'academic-section academic-eliminations-standalone';
+        section.style.cssText =
+            'margin-top:8px;padding-top:12px;' +
+            'border-top:1px solid var(--border-soft);';
+
+        var heading = document.createElement('div');
+        heading.style.cssText =
+            'font-size:0.75rem;color:var(--warning);' +
+            'font-weight:600;margin-bottom:6px;';
+        heading.textContent = 'Standalone Eliminations';
+        section.appendChild(heading);
+
+        var standaloneItems = getStandaloneEliminations(char);
+
+        if (standaloneItems.length === 0) {
+            var empty = document.createElement('p');
+            empty.className = 'empty-state';
+            empty.style.cssText =
+                'padding:4px;font-size:0.7rem;color:var(--text-dim);';
+            empty.textContent = 'No standalone eliminations recorded.';
+            section.appendChild(empty);
+            return section;
+        }
+
+        var list = document.createElement('div');
+        list.style.cssText = 'display:flex;flex-direction:column;gap:3px;';
+
+        standaloneItems.forEach(function(elim) {
+            var row = document.createElement('div');
+            row.className = 'standalone-elimination-entry';
+            row.dataset.eliminationId = elim.id || '';
+            row.style.cssText =
+                'display:flex;justify-content:space-between;' +
+                'align-items:center;padding:4px 8px;' +
+                'background:var(--warning-soft);border-radius:4px;' +
+                'border-left:3px solid var(--warning);font-size:0.72rem;';
+
+            var left = document.createElement('span');
+            left.style.cssText =
+                'display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;';
+
+            var details = [];
+            if (elim.year) { details.push('Year ' + elim.year); }
+            if (elim.week) { details.push('Week ' + elim.week); }
+            if (details.length > 0) {
+                var detailsEl = document.createElement('span');
+                detailsEl.textContent = details.join(', ');
+                left.appendChild(detailsEl);
+            }
+
+            if (elim.reason) {
+                var reasonEl = document.createElement('span');
+                reasonEl.style.cssText =
+                    'color:var(--text-dim);font-size:0.65rem;';
+                reasonEl.textContent = ' - ' + elim.reason;
+                left.appendChild(reasonEl);
+            }
+
+            var standaloneLabel = document.createElement('span');
+            standaloneLabel.style.cssText =
+                'color:var(--warning);font-size:0.6rem;margin-left:4px;';
+            standaloneLabel.textContent = '[Standalone]';
+            left.appendChild(standaloneLabel);
+
+            var removeBtn = document.createElement('button');
+            removeBtn.type = 'button';
+            removeBtn.className = 'remove-standalone-elim small danger';
+            removeBtn.style.cssText =
+                'background:none;border:none;color:var(--danger);' +
+                'cursor:pointer;font-size:0.65rem;padding:0 4px;';
+            removeBtn.dataset.action = 'remove-standalone-elim';
+            removeBtn.dataset.eliminationId = elim.id || '';
+            removeBtn.dataset.characterId = char.id || '';
+            removeBtn.textContent = '\u2715';
+            removeBtn.setAttribute('aria-label', 'Remove elimination');
+
+            row.appendChild(left);
+            row.appendChild(removeBtn);
+            list.appendChild(row);
+        });
+
+        section.appendChild(list);
+        return section;
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -869,9 +1257,14 @@
         // should use renderAcademicTab)
         renderAddClassSection: renderAddClassSection,
         renderClassesSection: renderClassesSection,
+        renderEliminationStatusSection: renderEliminationStatusSection,
         renderAcademicTeamsSection: renderAcademicTeamsSection,
         renderEnrollmentSection: renderEnrollmentSection,
         renderGradesSection: renderGradesSection,
+        renderTournamentEliminationsSection:
+            renderTournamentEliminationsSection,
+        renderStandaloneEliminationsSection:
+            renderStandaloneEliminationsSection,
 
         // Helpers (exposed for testing only)
         getAcademicTeamMemberships: getAcademicTeamMemberships,
