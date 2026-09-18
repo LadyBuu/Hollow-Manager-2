@@ -270,18 +270,34 @@
          ACADEMY CONTROLLERS
          ============================================================
          Load order:
-           controller-contract.js           — the documented interface
-                                              + invoke helper.
-           academy-controllers.js           — the registry.
-           academy-weekly-teams-controller.js — the first controller.
+           1. Contract  — the documented interface + invoke helper.
+           2. Registry  — the view id → controller map.
+           3. One file per controller, in any order (they do not
+              reference each other).
 
          Registration happens in modules/academy/index.js, not here
-         and not inside the controllers. Every controller the shell
-         can resolve is enumerated in index.js.
+         and not inside the controllers.
          ============================================================ -->
     <script src="js/modules/academy/controllers/controller-contract.js"></script>
     <script src="js/modules/academy/controllers/academy-controllers.js"></script>
+
+    <script src="js/modules/academy/controllers/academy-people-controller.js"></script>
+    <script src="js/modules/academy/controllers/academy-exam-controller.js"></script>
     <script src="js/modules/academy/controllers/academy-weekly-teams-controller.js"></script>
+    <!-- Uncomment after S1.7 ships: -->
+    <!-- <script src="js/modules/academy/controllers/academy-ranking-controller.js"></script> -->
+    <script src="js/modules/academy/controllers/academy-discipline-controller.js"></script>
+    <script src="js/modules/academy/controllers/academy-location-controller.js"></script>
+
+    <!-- ============================================================
+         ACADEMY WEEKLY TEAMS OPERATIONS (S1.9)
+         ============================================================
+         Extracted from academy-weekly-teams-controller.js in S1.9.
+         Not yet shipped. The controller currently holds the
+         auto-distribute algorithm inline.
+         ============================================================ -->
+    <!-- Uncomment after S1.9 ships: -->
+    <!-- <script src="js/modules/academy/academy-weekly-teams-operations.js"></script> -->
 
     <script src="js/modules/academy/index.js"></script>
 
