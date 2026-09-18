@@ -21,6 +21,8 @@
  *   - Handle Auto-Distribute
  *   - Handle Clear Rosters
  *   - Handle character class membership mutations
+ *   - Preserve scroll position of same-view sidebars across
+ *     refreshes (C6)
  *
  * NOT RESPONSIBILITIES:
  *   - Domain reads. Those happen in the aggregators.
@@ -84,6 +86,35 @@
  *   The People sidebar Status filter ('eliminated') reads the week-
  *   scoped elimination state on each person VM, which is computed by
  *   the aggregator via EliminationQueries.isCharacterEliminatedByWeek.
+ *
+ * SCROLL RESTORATION (C6):
+ *   Same-view refreshes only. When render() runs, it captures the
+ *   scrollTop of any scrollable sidebar currently in the DOM, swaps
+ *   the container's innerHTML, then restores the captured scrollTop
+ *   onto the same selector in the new DOM.
+ *
+ *   The set of selectors is deliberately small and explicit:
+ *     - .academy-people-sidebar
+ *     - .academy-weekly-teams-sidebar
+ *     - .academy-exams-sidebar
+ *     - .academy-exams-detail
+ *
+ *   Rules:
+ *     - A selector that is absent before the swap is not captured.
+ *     - A selector that is absent after the swap is not restored.
+ *     - No fallback to document scroll.
+ *     - No module state. The map lives on the stack of a single
+ *       render() call.
+ *     - Not persisted. Leaving a view and returning resets to 0.
+ *
+ *   Two known limitations, both deliberate:
+ *     1. A collapse toggle that shrinks content above the viewport
+ *        (C4) can leave the restored scrollTop slightly stale. The
+ *        simple version is what ships. A relative-anchor restore is
+ *        a follow-up (C7, deferred).
+ *     2. If a sidebar's rendered content is shorter after the swap
+ *        than before, the browser clamps scrollTop to the new max.
+ *        The restore is best-effort; the browser enforces the bound.
  *
  * DEPENDENCIES (MANDATORY):
  *   - AcademyUI
@@ -285,6 +316,87 @@
     var VALID_VIEW_IDS = VIEWS.map(function(v) { return v.id; });
 
     // ============================================================
+    // SCROLL RESTORATION (C6)
+    // ============================================================
+    //
+    // Same-view-only capture and restore of scrollTop for a small,
+    // explicit set of scrollable sidebars. Called from render()
+    // around the innerHTML swap.
+    //
+    // The selectors are ordered by view, not by likelihood. Order
+    // does not matter to correctness; every present selector is
+    // captured and every present selector is restored.
+
+    var SCROLL_RESTORE_SELECTORS = [
+        '.academy-people-sidebar',
+        '.academy-weekly-teams-sidebar',
+        '.academy-exams-sidebar',
+        '.academy-exams-detail'
+    ];
+
+    /**
+     * Capture the scrollTop of every tracked selector currently in
+     * the DOM.
+     *
+     * @param {Element} container - The Academy container element
+     *   about to be re-rendered. Null/undefined is tolerated and
+     *   produces an empty map.
+     * @returns {object} Map of selector -> scrollTop (integer)
+     */
+    function captureSidebarScroll(container) {
+        var captured = {};
+        if (!container || typeof container.querySelector !== 'function') {
+            return captured;
+        }
+
+        for (var i = 0; i < SCROLL_RESTORE_SELECTORS.length; i++) {
+            var selector = SCROLL_RESTORE_SELECTORS[i];
+            var el = container.querySelector(selector);
+            if (!el) { continue; }
+            if (typeof el.scrollTop !== 'number') { continue; }
+            captured[selector] = el.scrollTop;
+        }
+
+        return captured;
+    }
+
+    /**
+     * Restore the captured scrollTop of every tracked selector
+     * present in the DOM after a swap.
+     *
+     * Missing selectors are skipped. A captured value of 0 is
+     * written (it means "was at the top"), so the caller does not
+     * need to distinguish "no record" from "top".
+     *
+     * @param {Element} container - The Academy container element
+     *   after the innerHTML swap.
+     * @param {object} captured - Map produced by captureSidebarScroll.
+     */
+    function restoreSidebarScroll(container, captured) {
+        if (!container || typeof container.querySelector !== 'function') {
+            return;
+        }
+        if (!captured || typeof captured !== 'object') {
+            return;
+        }
+
+        for (var i = 0; i < SCROLL_RESTORE_SELECTORS.length; i++) {
+            var selector = SCROLL_RESTORE_SELECTORS[i];
+            if (!Object.prototype.hasOwnProperty.call(captured, selector)) {
+                continue;
+            }
+            var el = container.querySelector(selector);
+            if (!el) { continue; }
+            if (typeof el.scrollTop !== 'number') { continue; }
+            var value = captured[selector];
+            if (typeof value !== 'number' || !isFinite(value)) {
+                continue;
+            }
+            el.scrollTop = value;
+        }
+    }
+
+    // ============================================================
     // MODULE STATE
     // ============================================================
 
@@ -407,7 +519,15 @@
                 html += renderPlaceholder('Unknown view: ' + view);
         }
 
+        // C6 — capture scrollable sidebars before the innerHTML
+        // swap. Restore after. Same-view refresh only; when the view
+        // changes, the old selectors are absent from the new DOM and
+        // the restore step is a no-op for them.
+        var capturedScroll = captureSidebarScroll(container);
+
         container.innerHTML = html;
+
+        restoreSidebarScroll(container, capturedScroll);
 
         bindEvents(container);
         wireCRUDModalsCallbacks();
@@ -1223,6 +1343,17 @@
         }
         if (action === 'exam-pair-remove') {
             handlePairRemove(el);
+            return;
+        }
+
+        // C4 — round collapse. UI-only. No domain call. The events
+        // module owns the read/invert/write against AcademyUI and
+        // the re-render trigger.
+        if (action === 'exam-toggle-round-collapse') {
+            Events.toggleRoundCollapse(
+                el.dataset.examId,
+                el.dataset.roundId
+            );
             return;
         }
 
