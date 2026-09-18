@@ -46,9 +46,7 @@
  * WHAT THIS DOES NOT OWN:
  *   - The content host. The shell provides it.
  *   - The class selection, character selection, display week, people
- *     filter, and character mode. Those live in AcademyUI (shared
- *     cross-view state). The controller reads and writes them via
- *     AcademyUI's typed API.
+ *     filter, and character mode. Those live in AcademyUI.
  *   - Re-rendering the shell. When state changes, the controller
  *     calls context.onChange().
  *   - Domain reads and writes. The aggregators produce VMs; the
@@ -57,6 +55,19 @@
  *     elsewhere; other views navigate here via their own
  *     onOpenCharacterInPeople callbacks.
  *
+ * ENROLMENT (BUG-E1):
+ *   The "Enroll Discipline" flow now sources its candidate list from
+ *   AcademyClassDisciplines.getClassDisciplinesForClass(classId),
+ *   filtered to offerings active in the display week. Previously it
+ *   sourced from AcademyDisciplines.getDisciplines() — the GLOBAL
+ *   discipline list — which offered disciplines the class did not
+ *   teach. Enrolling in one of those succeeded at the storage layer
+ *   but never appeared on the character's Academic tab, because the
+ *   tab reads enrolments class-scoped.
+ *
+ *   The picker is still a prompt(). Replacing it with a proper modal
+ *   is logged as follow-up E1-ui.
+ *
  * DEPENDENCY DIRECTION:
  *   Shell → registry → this controller.
  *   This controller never references window.AcademyView.
@@ -64,27 +75,12 @@
  * RENDER SIGNATURE:
  *   render(host, context)
  *
- *   host    — the HTMLElement the shell allocates for the active
- *             controller.
+ *   host    — the HTMLElement the shell allocates.
  *   context — { onChange: function() }
  *
  * SUB-EDITOR MOUNTING:
  *   The grades editor and schedule grid are mounted synchronously,
- *   immediately after the controller writes the host's HTML. This
- *   matches the pre-S1.5 shell, which called them from render() in
- *   the same call stack. No microtask, no requestAnimationFrame.
- *
- *   On every render, the controller unmounts both sub-editors and
- *   then conditionally re-mounts them based on the active tab. This
- *   is the same net effect as the shell's "mount if tab matches,
- *   else unmount" pattern, expressed as "always unmount first."
- *   Unmount is idempotent, so this is safe.
- *
- * ELIMINATION OWNERSHIP:
- *   Drop Out routes through AcademyEliminations.addStandalone. The
- *   AcademyEliminations module owns the character-side standalone
- *   elimination mutation. Tournament-generated eliminations are the
- *   cascade's concern and are not touched here.
+ *   immediately after the controller writes the host's HTML.
  *
  * DEPENDENCIES:
  *   - window.AcademyUI
@@ -92,15 +88,16 @@
  *   - window.AcademyCharacterDetailAggregator
  *   - window.AcademyClassDetail
  *   - window.AcademyCharacterDetail
- *   - window.AcademyGradesEditor        (lazy)
- *   - window.CalendarRenderer           (lazy)
- *   - window.AcademyCRUDModals          (lazy)
- *   - window.AcademyDisciplines         (lazy)
- *   - window.AcademyEnrolments          (lazy)
- *   - window.AcademyEliminations        (lazy)
- *   - window.AcademyGroups              (lazy)
- *   - window.CharacterQueries           (lazy)
- *   - window.CharacterClasses           (lazy)
+ *   - window.AcademyClassDisciplines         (BUG-E1 — for offerings)
+ *   - window.AcademyGradesEditor             (lazy)
+ *   - window.CalendarRenderer                (lazy)
+ *   - window.AcademyCRUDModals               (lazy)
+ *   - window.AcademyDisciplines              (lazy)
+ *   - window.AcademyEnrolments               (lazy)
+ *   - window.AcademyEliminations             (lazy)
+ *   - window.AcademyGroups                   (lazy)
+ *   - window.CharacterQueries                 (lazy)
+ *   - window.CharacterClasses                 (lazy)
  *   - window.NotificationSystem
  */
 
@@ -185,6 +182,10 @@
 
     function getDisciplines() {
         return window.AcademyDisciplines || null;
+    }
+
+    function getClassDisciplines() {
+        return window.AcademyClassDisciplines || null;
     }
 
     function getEnrolments() {
@@ -292,7 +293,6 @@
                         '</p>' +
                     '</div>';
 
-            // No class: no sub-editors to mount.
             host.innerHTML = html;
             unmountSubEditors();
             return;
@@ -358,8 +358,6 @@
 
         host.innerHTML = html;
 
-        // Sub-editors attach synchronously, after the HTML is in
-        // place. Same call stack as the pre-S1.5 shell.
         unmountSubEditors();
         if (charId) {
             if (_activeCharacterTab === 'grades') {
@@ -909,8 +907,6 @@
         var newMode = checked ? 'instructor' : 'student';
         AcademyUI.setCharacterMode(charId, newMode);
 
-        // Instructor mode cannot show the grades or teams tabs.
-        // Fall back to main when the active tab is incompatible.
         if (newMode === 'instructor' &&
             (_activeCharacterTab === 'grades' ||
                 _activeCharacterTab === 'teams')) {
@@ -1017,8 +1013,19 @@
     }
 
     // ============================================================
-    // DISCIPLINE ENROLMENT FLOWS
+    // DISCIPLINE ENROLMENT FLOWS (BUG-E1)
     // ============================================================
+    //
+    // The candidate list is sourced from the CLASS'S OFFERINGS, not
+    // the global discipline list. Each candidate is filtered to
+    // offerings active in the display week, and further filtered to
+    // exclude what the student is already enrolled in for this
+    // class.
+    //
+    // This is what makes the enrolment appear on the Academic tab
+    // afterwards. The tab reads enrolments class-scoped. An
+    // enrolment in a discipline the class doesn't offer is stored
+    // but never displayed.
 
     function handleEnrollDiscipline(charId) {
         if (!charId) { return; }
@@ -1038,27 +1045,66 @@
             return;
         }
 
+        var ACD = getClassDisciplines();
+        if (!ACD ||
+            typeof ACD.getClassDisciplinesForClass !== 'function' ||
+            typeof ACD.isActiveInWeek !== 'function') {
+            notify(
+                'Class-discipline module not available.', 'error'
+            );
+            return;
+        }
+
         var AD = getDisciplines();
-        if (!AD || typeof AD.getDisciplines !== 'function') {
+        if (!AD || typeof AD.getDiscipline !== 'function') {
             notify('Discipline module not available.', 'error');
             return;
         }
 
-        var allDisciplines = AD.getDisciplines() || [];
-        if (allDisciplines.length === 0) {
-            notify('No disciplines exist yet.', 'error');
+        var week = AcademyUI.getDisplayWeek();
+
+        // ---- Offerings active in the display week ----
+        var offerings = ACD.getClassDisciplinesForClass(classId) || [];
+        var activeOfferings = [];
+        for (var o = 0; o < offerings.length; o++) {
+            var rec = offerings[o];
+            if (!rec || !rec.disciplineId) { continue; }
+            if (!ACD.isActiveInWeek(classId, rec.disciplineId, week)) {
+                continue;
+            }
+            activeOfferings.push(rec);
+        }
+
+        if (activeOfferings.length === 0) {
+            notify(
+                'This class has no discipline offerings active in ' +
+                'week ' + week + '.',
+                'info'
+            );
             return;
         }
 
+        // ---- Exclude already-enrolled ----
         var currentIds = AE.getStudentDisciplines(charId, classId) || [];
         var enrolledSet = {};
         for (var i = 0; i < currentIds.length; i++) {
             enrolledSet[String(currentIds[i])] = true;
         }
 
-        var candidates = allDisciplines.filter(function(d) {
-            return d && d.id && !enrolledSet[String(d.id)];
-        });
+        // ---- Build candidates ----
+        var candidates = [];
+        for (var c = 0; c < activeOfferings.length; c++) {
+            var did = String(activeOfferings[c].disciplineId);
+            if (enrolledSet[did]) { continue; }
+
+            var disc = AD.getDiscipline(did);
+            if (!disc) { continue; }
+
+            candidates.push({
+                id: did,
+                name: disc.name || 'Unnamed Discipline'
+            });
+        }
 
         candidates.sort(function(a, b) {
             return (a.name || '').localeCompare(b.name || '');
@@ -1066,13 +1112,16 @@
 
         if (candidates.length === 0) {
             notify(
-                'Character is enrolled in all disciplines.', 'info'
+                'Character is already enrolled in every active ' +
+                'discipline for this class.',
+                'info'
             );
             return;
         }
 
+        // ---- Prompt for the choice ----
         var names = candidates.map(function(d, idx) {
-            return (idx + 1) + '. ' + (d.name || d.id);
+            return (idx + 1) + '. ' + d.name;
         }).join('\n');
 
         var input = prompt(
@@ -1090,7 +1139,6 @@
         }
 
         var picked = candidates[choice - 1];
-        var week = AcademyUI.getDisplayWeek();
 
         AE.enrol(charId, classId, picked.id, week).then(function(result) {
             if (result && result.success) {
@@ -1396,19 +1444,13 @@
     // ============================================================
 
     function unmount() {
-        // Tear down sub-editors.
         unmountSubEditors();
 
-        // Clear the search debounce. A pending search refresh after
-        // the view is gone should not fire.
         if (_searchTimer) {
             clearTimeout(_searchTimer);
             _searchTimer = null;
         }
 
-        // Reset the character tab bookkeeping. The active tab is
-        // feature state: it is reset on unmount so that coming back
-        // to the People view starts on 'main'.
         _activeCharacterTab = 'main';
         _lastCharacterIdForTab = null;
 
