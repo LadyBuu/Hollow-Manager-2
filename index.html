@@ -41,14 +41,6 @@
                              rest-day states, and legend. Loads
                              last so it can override any conflicting
                              base rule without fighting specificity.
-
-         Retired: style.css. Every block has been migrated into the
-         files above. The standalone Tournaments tab and standalone
-         Calendar tab have been retired, so css/tournaments.css and
-         css/calendar.css (the retired one) are not loaded (and do
-         not exist). The css/calendar.css link below is a NEW file
-         that styles the calendar renderer embedded in the Academy
-         character detail panel, not the retired tab.
          ============================================================ -->
     <link rel="stylesheet" href="css/shared.css" />
     <link rel="stylesheet" href="css/dashboard.css" />
@@ -183,6 +175,7 @@
     <script src="js/modules/academy/academy-locations.js"></script>
 
     <script src="js/modules/academy/academy-cascade.js"></script>
+    <script src="js/modules/academy/academy-eliminations.js"></script>
     <script src="js/modules/academy/academy-settings.js"></script>
     <script src="js/modules/academy/academy-enrolments.js"></script>
     <script src="js/modules/academy/academy-social-score.js"></script>
@@ -232,18 +225,22 @@
 
     <!-- ============================================================
          CHARACTER DOMAIN
+         ============================================================
+         Note: character-eliminations.js and
+         character-elimination-view.js were removed in the E-track.
+
+         character-classes.js is scheduled for removal in S10.1
+         (mutations move to academy-classes.js).
          ============================================================ -->
     <script src="js/modules/characters/character-generator.js"></script>
     <script src="js/modules/characters/character-stats.js"></script>
     <script src="js/modules/characters/character-crud.js"></script>
     <script src="js/modules/characters/character-classes.js"></script>
-    <script src="js/modules/characters/character-eliminations.js"></script>
     <script src="js/modules/characters/character-aggregator.js"></script>
     <script src="js/modules/characters/character-list.js"></script>
     <script src="js/modules/characters/character-form.js"></script>
     <script src="js/modules/characters/character-detail.js"></script>
     <script src="js/modules/characters/character-class-view.js"></script>
-    <script src="js/modules/characters/character-elimination-view.js"></script>
     <script src="js/modules/characters/character-stats-view.js"></script>
     <script src="js/modules/characters/character-views.js"></script>
     <script src="js/modules/characters/character-events.js"></script>
@@ -259,13 +256,6 @@
 
     <!-- ============================================================
          ACADEMY VIEW SHELL
-         ============================================================
-         The shell and its renderer/aggregator dependencies. The
-         shell itself captures nothing at IIFE time except AcademyUI,
-         DomUtils, and CalendarConstants; the renderers and
-         aggregators listed here are captured by the controllers
-         below, not by the shell. They are grouped with the shell
-         because they are part of the shell's output pipeline.
          ============================================================ -->
     <script src="js/modules/academy/academy-character-detail-aggregator.js"></script>
     <script src="js/modules/academy/academy-class-detail.js"></script>
@@ -286,10 +276,6 @@
 
     <!-- ============================================================
          TEAM DOMAIN
-         ============================================================
-         TeamCore, TeamQueries, and TeamConstants are captured at
-         IIFE time by AcademyWeeklyTeamsController (below). The Team
-         Domain block must load BEFORE the controllers block.
          ============================================================ -->
     <script src="js/modules/teams/team-aggregator.js"></script>
     <script src="js/modules/teams/team-ui.js"></script>
@@ -307,16 +293,18 @@
            3. One file per controller, in any order. They do not
               reference each other.
 
-         Controllers capture their domain dependencies at IIFE time
-         (TeamCore, TeamQueries, TeamConstants, aggregators,
-         renderers). They must load AFTER every module they capture.
-         The TEAM DOMAIN block above provides TeamCore, TeamQueries,
-         and TeamConstants; the ACADEMY VIEW SHELL block above
-         provides the aggregators and renderers; the ACADEMY DOMAIN
-         and SHARED QUERIES blocks above provide the rest.
+         Controllers capture their domain dependencies at IIFE time.
+         They must load AFTER every module they capture:
+           - TeamCore, TeamQueries, TeamConstants (from TEAM DOMAIN
+             above)
+           - AcademyAggregator, AcademyTournamentAggregator,
+             AcademyCharacterDetailAggregator, renderers (from
+             ACADEMY VIEW SHELL above)
+           - AcademyWeeklyTeams, AcademyWeeklyTeamsMembers (from
+             ACADEMY DOMAIN and ACADEMY VIEW SHELL above)
+           - AcademyEliminations (from ACADEMY DOMAIN above)
 
-         Registration happens in modules/academy/index.js below, not
-         here and not inside the controllers.
+         Registration happens in modules/academy/index.js below.
          ============================================================ -->
     <script src="js/modules/academy/controllers/controller-contract.js"></script>
     <script src="js/modules/academy/controllers/academy-controllers.js"></script>
@@ -329,13 +317,12 @@
     <script src="js/modules/academy/controllers/academy-location-controller.js"></script>
 
     <!-- ============================================================
-         ACADEMY WEEKLY TEAMS OPERATIONS (S1.9)
+         ACADEMY WEEKLY TEAMS OPERATIONS
          ============================================================
          The auto-distribute algorithm, extracted from the Weekly
-         Teams controller in S1.9. The controller reads it lazily at
-         call time via window.AcademyWeeklyTeamsOperations, so load
-         order relative to the controller does not matter. Placed
-         here so the block stays self-contained.
+         Teams controller. The controller reads it lazily at call
+         time, so load order relative to the controller does not
+         matter.
          ============================================================ -->
     <script src="js/modules/academy/academy-weekly-teams-operations.js"></script>
 
