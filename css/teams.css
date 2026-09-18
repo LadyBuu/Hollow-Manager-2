@@ -4,8 +4,8 @@
  * The Teams tab (Professional / Temporary / Civilian).
  *
  * Covers:
- *   - Team list header + rows (.team-list, .list-header.team-header,
- *     .list-item.team-item)
+ *   - Team list header + rows (#team-list-container,
+ *     .list-header.team-header, .list-item.team-item)
  *   - Team members expanded section (.team-members-expanded)
  *   - Member rows and status classes (.member-entry)
  *   - Per-interval member rows (.member-interval-row) — v24
@@ -18,24 +18,39 @@
  *
  * Load order: shared.css → teams.css
  *
- * MOBILE MODEL:
- *   Below 600px the team list becomes a card list. One card per
- *   team: name row, meta rows, action row. The column header is
- *   hidden. The desktop grid is untouched.
+ * GRID MODEL:
+ *   The desktop layout is a five-column grid:
+ *     Name | Period | Rank | Members | Actions
  *
- *   The previous mobile rules referenced --team-columns-mobile,
- *   which was never defined. That made the grid fall back to block
- *   flow and the five cells collapse into one run-on line. The
- *   card layout replaces that broken breakpoint.
+ *   The grid template is declared ONCE, on the container that
+ *   actually renders (#team-list-container). Both the header row
+ *   and the team rows read --team-columns from that container
+ *   through the cascade.
+ *
+ *   The previous version declared --team-columns on .team-list.
+ *   Nothing in the rendered output ever carried .team-list, so the
+ *   custom property resolved to the empty string, the grid
+ *   declaration was invalid, and the five cells fell back to
+ *   inline flow on BOTH desktop and mobile.
+ *
+ * MOBILE MODEL:
+ *   Below 600px the grid becomes a card list. One card per team:
+ *   name row, meta rows, action row. The column header is hidden.
+ *   The desktop grid is untouched.
  */
 
 /* ============================================================
    TEAM LIST
    ============================================================ */
 
-.team-list {
+#team-list-container,
+.team-list-container {
     /* Column template for the 5-column layout:
-       Name, Period, Rank, Members, Actions. */
+       Name, Period, Rank, Members, Actions.
+
+       Declared on the container that renderContainer() actually
+       emits. Both .list-header.team-header and .list-item.team-item
+       inherit it through the cascade. */
     --team-columns: 1.2fr 0.8fr 0.6fr 0.6fr 1fr;
 }
 
@@ -523,20 +538,23 @@
    Below 600px the five-column grid becomes a card list.
    One card per team:
      Row 1: name + type badge + inactive marker
-     Row 2: period · rank · member count (meta line)
-     Row 3: action buttons (evenly spaced)
+     Row 2: period · rank · member count
+     Row 3: action buttons
 
    The grid header row is hidden entirely; each card is
    self-describing.
 
-   ROOT CAUSE OF THE PRIOR BREAKAGE:
-     The old breakpoint set --team-columns to --team-columns-mobile,
-     which was never defined. CSS custom properties resolve undefined
-     to the empty string, so `grid-template-columns: ;` was invalid,
-     the `display: grid` declaration on .list-item.team-item was
-     discarded, and the children fell back to block/inline flow.
-     Five inline spans collapsed into one run-on line, with the
-     action buttons stacked below.
+   ROOT CAUSE OF THE PRIOR BREAKAGE (both desktop and mobile):
+     --team-columns was declared on .team-list, which nothing in
+     the rendered output carries. The container that renders is
+     #team-list-container. Because the custom property resolved
+     to the empty string, `grid-template-columns: var(--team-columns)`
+     was invalid, so `display: grid` on the header and rows was
+     discarded. The children fell back to block/inline flow:
+     five inline spans collapsing into one run-on line, with the
+     action buttons stacked below. On desktop the run-on line
+     happened to fit on one visual row by luck; on mobile it
+     wrapped. Both were broken.
    ============================================================ */
 
 @media (max-width: 600px) {
@@ -546,7 +564,8 @@
     }
 
     /* ---- The container that wraps the rows ---- */
-    #team-list-container {
+    #team-list-container,
+    .team-list-container {
         display: block;
     }
 
