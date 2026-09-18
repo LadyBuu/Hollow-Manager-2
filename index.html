@@ -265,8 +265,24 @@
     <script src="js/modules/academy/academy-tournament-aggregator.js"></script>
     <script src="js/modules/academy/academy-crud-modals.js"></script>
     <script src="js/modules/academy/academy-view.js"></script>
+
+    <!-- ============================================================
+         ACADEMY CONTROLLERS
+         ============================================================
+         Load order:
+           controller-contract.js           — the documented interface
+                                              + invoke helper.
+           academy-controllers.js           — the registry.
+           academy-weekly-teams-controller.js — the first controller.
+
+         Registration happens in modules/academy/index.js, not here
+         and not inside the controllers. Every controller the shell
+         can resolve is enumerated in index.js.
+         ============================================================ -->
     <script src="js/modules/academy/controllers/controller-contract.js"></script>
     <script src="js/modules/academy/controllers/academy-controllers.js"></script>
+    <script src="js/modules/academy/controllers/academy-weekly-teams-controller.js"></script>
+
     <script src="js/modules/academy/index.js"></script>
 
     <!-- ============================================================
