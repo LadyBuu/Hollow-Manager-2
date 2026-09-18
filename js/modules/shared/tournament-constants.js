@@ -161,7 +161,6 @@
     ]);
 
     var VALID_MATCH_TYPES = resolveEnum('VALID_MATCH_TYPES', [
-        'standard',
         'group_exam',
         'team_vs_team'
     ]);
@@ -191,7 +190,7 @@
 
     var DEFAULT_STATUS = 'draft';
     var DEFAULT_MODE = 'teams';
-    var DEFAULT_MATCH_TYPE = 'standard';
+    var DEFAULT_MATCH_TYPE = 'group_exam';
     var DEFAULT_ROUND_MATCH_SIZE = 2;
     var DEFAULT_TOTAL_ROUNDS = 1;
 
