@@ -27,6 +27,9 @@
  *     context.onSelectTeam).
  *   - Class selection (delegates back to the shell via
  *     context.onSelectClass).
+ *   - Member-row click navigation (delegates back to the shell via
+ *     context.onOpenCharacterInPeople, which switches to the People
+ *     view with the character selected).
  *
  * WHAT THIS DOES NOT OWN:
  *   - The content host. The shell provides it.
@@ -58,30 +61,28 @@
  *               selectedTeamId: string|null,
  *               onChange: function(updates?),
  *               onSelectTeam: function(teamId|null),
- *               onSelectClass: function(classId|null)
+ *               onSelectClass: function(classId|null),
+ *               onOpenCharacterInPeople: function(charId)
  *             }
  *
  *   The context argument is documented as part of this controller's
  *   contract with the shell. The controller-contract.js docblock
  *   describes render(host) only; the context argument is a
- *   controller-specific extension and is noted here. If the shell
- *   ever calls render(host) with no context, the controller falls
- *   back to sensible defaults (current week from AcademyUI, null
- *   selections, no-op callbacks). That path is not exercised in
- *   normal operation.
+ *   controller-specific extension and is noted here.
  *
  * STATE:
  *   This controller holds NO long-lived state. Every render rebuilds
  *   the view from the context and the aggregator. The class and team
  *   selections live in the shell; the week lives in AcademyUI. The
  *   only thing the controller holds across calls is a reference to
- *   the most recently opened modal, so unmount can close it.
+ *   the most recently opened modal, so unmount can close it, and the
+ *   most recent render context, so event handlers can use it.
  *
  * EVENT ROUTING:
  *   The controller's handle* methods receive the raw DOM event. They
  *   find their targets via dataset reads, exactly as the shell did.
  *   Action names and data attributes are unchanged from the pre-S1
- *   shell. This is deliberate: the renderers already emit
+ *   shell. The renderers already emit
  *   `data-action="weekly-teams-..."` attributes and the controller
  *   handles the same strings the shell's handler did. No renderer
  *   changes are needed.
@@ -158,7 +159,6 @@
         typeof TeamCore.createTeam !== 'function' ||
         typeof TeamCore.updateTeam !== 'function' ||
         typeof TeamCore.deleteTeam !== 'function' ||
-        typeof TeamCore.addMember !== 'function' ||
         typeof TeamCore.configure !== 'function') {
         _missing.push('TeamCore API');
     }
@@ -229,21 +229,19 @@
     // MODULE STATE
     // ============================================================
     //
-    // The only thing this controller holds across calls is the
-    // currently open modal, so unmount can close it. Everything else
-    // is derived from the context and the aggregator on each render.
+    // The only things this controller holds across calls are the
+    // currently open modal (so unmount can close it) and the most
+    // recent render context (so event handlers can use it). Every
+    // other value is derived from the context and the aggregator on
+    // each render.
 
     var _openModal = null;
+    var _renderContext = null;
     var _teamCoreConfigured = false;
 
     // ============================================================
     // TEAM CORE CONFIGURATION (idempotent)
     // ============================================================
-    //
-    // TeamCore requires a character-existence provider to be
-    // configured once. The shell did this; the controller does it
-    // now, because the controller is the only place that creates
-    // teams.
 
     function ensureTeamCoreConfigured() {
         if (_teamCoreConfigured) { return true; }
@@ -299,10 +297,6 @@
     // CONTEXT NORMALISATION
     // ============================================================
 
-    /**
-     * Coerce a context object into the shape render expects. Any
-     * missing field gets a safe default.
-     */
     function normaliseContext(rawContext) {
         var ctx = rawContext && typeof rawContext === 'object'
             ? rawContext
@@ -332,13 +326,19 @@
             ? ctx.onSelectClass
             : function() {};
 
+        var onOpenCharacterInPeople =
+            typeof ctx.onOpenCharacterInPeople === 'function'
+                ? ctx.onOpenCharacterInPeople
+                : function() {};
+
         return {
             week: week,
             selectedClassId: selectedClassId,
             selectedTeamId: selectedTeamId,
             onChange: onChange,
             onSelectTeam: onSelectTeam,
-            onSelectClass: onSelectClass
+            onSelectClass: onSelectClass,
+            onOpenCharacterInPeople: onOpenCharacterInPeople
         };
     }
 
@@ -346,15 +346,6 @@
     // RENDER
     // ============================================================
 
-    /**
-     * Render the Weekly Teams view into the host.
-     *
-     * Rebuilds the view from the context and the aggregator on every
-     * call. Nothing is cached.
-     *
-     * @param {HTMLElement} host
-     * @param {object} [rawContext]
-     */
     function render(host, rawContext) {
         if (!host || typeof host !== 'object') {
             return;
@@ -383,12 +374,6 @@
             return;
         }
 
-        // The VM's resolved classId may differ from the shell's
-        // selection when the shell passed null and the aggregator
-        // resolved from state. If so, we do not reach back to the
-        // shell here; the shell will pick up the resolved id on its
-        // own next render. We do, however, keep the resolved ids so
-        // the handlers below can use them.
         var resolvedClassId = isNonEmptyString(vm.classId)
             ? String(vm.classId)
             : null;
@@ -396,35 +381,21 @@
             ? String(vm.selectedTeamId)
             : null;
 
-        // Stash the resolved ids on a per-render object that the
-        // handlers close over via module state. This is the one piece
-        // of transient state the controller keeps between render and
-        // event delivery, and it is scoped to the active view: when
-        // the controller is not rendered (i.e. another view is
-        // active), the shell does not route events here.
         _renderContext = {
             week: ctx.week,
             classId: resolvedClassId,
             teamId: resolvedTeamId,
             onChange: ctx.onChange,
             onSelectTeam: ctx.onSelectTeam,
-            onSelectClass: ctx.onSelectClass
+            onSelectClass: ctx.onSelectClass,
+            onOpenCharacterInPeople: ctx.onOpenCharacterInPeople
         };
 
         host.innerHTML = View.renderHTML(vm);
     }
 
-    // The shell routes events to the controller only while it is the
-    // active view, so this is effectively scoped to "the most recent
-    // render of this controller". It is cleared on unmount.
-    var _renderContext = null;
-
     function getRenderContext() {
         if (_renderContext) { return _renderContext; }
-        // Defensive fallback: if a handler is somehow invoked before
-        // render runs (which should not happen; the shell routes only
-        // to a controller it just rendered), construct a minimal
-        // context from AcademyUI. No selection ids. No-op callbacks.
         return normaliseContext(null);
     }
 
@@ -449,14 +420,9 @@
         // ---- Member row: open the character in People view ----
         var memberRow = target.closest('.academy-weekly-team-member-row');
         if (memberRow && memberRow.dataset && memberRow.dataset.characterId) {
-            // Not currently supported: the pre-S1 shell opened the
-            // character in People via AcademyUI.selectCharacter +
-            // setSelectedView. With the split, that is a shell-level
-            // action, not a feature-level one, and the pinboard's
-            // dependency rule forbids the controller from calling
-            // setSelectedView. The action is dropped in S1.2. If we
-            // want it back, it needs a shell-level context callback
-            // (e.g. onOpenCharacterInPeople). That is a follow-up.
+            e.preventDefault();
+            var ctx = getRenderContext();
+            ctx.onOpenCharacterInPeople(memberRow.dataset.characterId);
             return;
         }
 
@@ -778,8 +744,6 @@
         TeamCore.deleteTeam(teamId).then(function(result) {
             if (result && result.success) {
                 var ctx = getRenderContext();
-                // If we just deleted the selected team, clear the
-                // selection before re-rendering.
                 if (ctx.teamId &&
                     String(ctx.teamId) === String(teamId)) {
                     ctx.onSelectTeam(null);
@@ -881,9 +845,6 @@
 
         var className = resolveClassName(classId);
 
-        // Count eligible students for the modal's confirmation gate.
-        // The count excludes eliminated and deceased students, matching
-        // the filter runAutoDistributeCore applies.
         var rawRoster = AcademyAggregator.getClassStudentsViewModel(
             classId,
             week
@@ -968,10 +929,6 @@
     // academy-weekly-teams-operations.js. Until then it lives here,
     // because the controller is the application layer for the
     // feature.
-    //
-    // Nothing about the algorithm changes. The only structural
-    // difference is that it is a private function of this controller
-    // instead of a private function of the shell.
 
     function runAutoDistribute(ctx) {
         var groupSize = parseInt(ctx.groupSize, 10);
@@ -1004,12 +961,6 @@
     }
 
     function runAutoDistributeCore(ctx, groupSize) {
-        // ---- Roster (filtered) ----
-        //
-        // Exclude eliminated and deceased students. Elimination is
-        // week-scoped: a student eliminated at exactly the display
-        // week is still eligible (E < W rule, enforced by the
-        // aggregator).
         var rawRoster = AcademyAggregator.getClassStudentsViewModel(
             ctx.classId,
             ctx.week
@@ -1467,9 +1418,6 @@
     // ============================================================
     // MODAL PLUMBING
     // ============================================================
-    //
-    // These mirror the shell's pre-S1.2 helpers. The controller owns
-    // the modal lifecycle for the modals it opens.
 
     function openModalShell(className, contentHTML, onBind) {
         var modal = Modal.createModal(className);
@@ -1541,9 +1489,6 @@
     }
 
     function trackOpenModal(modal) {
-        // Only one modal at a time in this controller. If a modal is
-        // already open (should not happen, but defensive), close it
-        // first so we do not leak.
         if (_openModal && _openModal !== modal) {
             closeModal(_openModal);
         }
