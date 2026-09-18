@@ -11,6 +11,7 @@
  *   - Per-character display mode (student / instructor)
  *   - People filter state
  *   - Expanded element ids
+ *   - Tournament round collapse state (C4)
  *
  * IMPORTANT:
  *   - UI STATE ONLY. No domain data. No mutations. No domain reads.
@@ -60,6 +61,24 @@
  *   and can decide what to do (typically: leave the input element
  *   as-is so the user sees their mistake).
  *
+ * TOURNAMENT ROUND COLLAPSE (C4):
+ *   The Exams view renders a round header with a collapse toggle.
+ *   The collapse state is persisted here, keyed by
+ *   `${examId}::${roundId}` so different exams do not share collapse
+ *   state for rounds that happen to have the same round ID across
+ *   tournaments (which should not happen, but the namespacing is
+ *   cheap insurance).
+ *
+ *   The default is EXPANDED. There is no "first round only" special
+ *   case. A round the user has never touched is expanded; the user
+ *   collapses it and the choice persists in session storage.
+ *
+ *   Storage shape: `{ [compositeKey]: true }` — only collapsed
+ *   rounds are recorded. A missing key means "expanded" (the
+ *   default). Storing only the non-default state keeps the
+ *   persisted object small and lets the default change in the
+ *   future without leaving stale entries behind.
+ *
  * DEPENDENCIES:
  *   - window.CalendarConstants (MIN_WEEK, MAX_WEEK) — MANDATORY
  *
@@ -72,6 +91,11 @@
  *   AcademyUI.setCharacterMode('char_456', 'instructor');
  *   AcademyUI.getPeopleFilter();
  *   AcademyUI.setPeopleFilter({ role: 'student' });
+ *
+ *   // Tournament round collapse
+ *   AcademyUI.isRoundExpanded('tourn_abc', 'round_xyz', true);
+ *   AcademyUI.setRoundExpanded('tourn_abc', 'round_xyz', false);
+ *   AcademyUI.getExpandedRoundIds();
  */
 
 (function() {
@@ -150,7 +174,11 @@
                 }
             },
             expandedIds: {},
-            characterModes: {}
+            characterModes: {},
+            // C4 — tournament round collapse state.
+            // { [compositeKey]: true } for collapsed rounds.
+            // Absence means "expanded".
+            expandedRoundIds: {}
         };
     }
 
@@ -330,6 +358,27 @@
             }
         }
 
+        // C4 — round collapse state.
+        //
+        // Only keys shaped like `${examId}::${roundId}` are accepted.
+        // Both halves must be non-empty strings. A malformed key is
+        // dropped; a malformed value is dropped. This is the same
+        // strictness the rest of the merge uses: never carry forward
+        // state we cannot vouch for.
+        if (parsed.expandedRoundIds &&
+            typeof parsed.expandedRoundIds === 'object' &&
+            !Array.isArray(parsed.expandedRoundIds)) {
+            var roundKeys = Object.keys(parsed.expandedRoundIds);
+            for (var k = 0; k < roundKeys.length; k++) {
+                var composite = roundKeys[k];
+                if (typeof composite !== 'string') { continue; }
+                if (!isValidRoundCompositeKey(composite)) { continue; }
+                if (parsed.expandedRoundIds[composite] === true) {
+                    merged.expandedRoundIds[composite] = true;
+                }
+            }
+        }
+
         return merged;
     }
 
@@ -386,7 +435,8 @@
                 }
             },
             expandedIds: Object.assign({}, _state.expandedIds),
-            characterModes: Object.assign({}, _state.characterModes)
+            characterModes: Object.assign({}, _state.characterModes),
+            expandedRoundIds: Object.assign({}, _state.expandedRoundIds)
         };
     }
 
@@ -675,6 +725,180 @@
     }
 
     // ============================================================
+    // TOURNAMENT ROUND COLLAPSE (C4)
+    // ============================================================
+    //
+    // STATE MODEL:
+    //   The stored map holds ONLY collapsed rounds. A key that is
+    //   absent means "expanded" — the default. This is the
+    //   "non-default only" convention: it keeps the persisted object
+    //   small, and a future change of the default (if we ever flip
+    //   to collapsed-by-default) will not leave behind stale entries
+    //   that silently mean the old default.
+    //
+    // KEY FORMAT:
+    //   `${examId}::${roundId}`. The double-colon separator is chosen
+    //   because neither IDs contain it. IDs are normalised to trimmed
+    //   strings before use. Both halves must be non-empty.
+    //
+    // WHY NOT A NESTED MAP (examId → roundId → bool):
+    //   The aggregator reads collapse state per round in a loop over
+    //   rounds. A flat map with composite keys is O(1) per lookup and
+    //   serialises to a compact JSON object. A nested map is a
+    //   marginal readability improvement at the cost of a deeper
+    //   merge on load and a deeper clone on getState. Flat wins.
+
+    var ROUND_KEY_SEPARATOR = '::';
+
+    /**
+     * Validate a composite round key. Exposed for the merge path and
+     * for callers that want to assert the shape.
+     */
+    function isValidRoundCompositeKey(key) {
+        if (typeof key !== 'string') { return false; }
+        var idx = key.indexOf(ROUND_KEY_SEPARATOR);
+        if (idx <= 0) { return false; }
+        if (idx + ROUND_KEY_SEPARATOR.length >= key.length) {
+            return false;
+        }
+        return true;
+    }
+
+    function makeRoundKey(examId, roundId) {
+        var e = normaliseId(examId);
+        var r = normaliseId(roundId);
+        if (e === null || r === null) {
+            return null;
+        }
+        return e + ROUND_KEY_SEPARATOR + r;
+    }
+
+    /**
+     * Get the full set of collapsed round keys.
+     *
+     * Returns a shallow clone of the internal map. Callers cannot
+     * mutate live state by holding onto the returned object.
+     *
+     * @returns {object} { [compositeKey]: true }
+     */
+    function getExpandedRoundIds() {
+        return Object.assign({}, _state.expandedRoundIds);
+    }
+
+    /**
+     * Is a specific round expanded?
+     *
+     * `defaultExpanded` is required and explicit: the caller states
+     * the default instead of this module assuming one. That keeps the
+     * default policy at the call site (the aggregator, in C4) where
+     * it is visible, instead of hidden in a storage module.
+     *
+     * @param {string} examId
+     * @param {string} roundId
+     * @param {boolean} defaultExpanded - value to return when the
+     *   round has no stored state.
+     * @returns {boolean}
+     */
+    function isRoundExpanded(examId, roundId, defaultExpanded) {
+        var key = makeRoundKey(examId, roundId);
+        if (key === null) {
+            return defaultExpanded === true;
+        }
+        // Stored entries mean "collapsed". Absence means "expanded".
+        // So:
+        //   stored === true  → collapsed → return false
+        //   stored !== true  → no record → return default
+        if (_state.expandedRoundIds[key] === true) {
+            return false;
+        }
+        return defaultExpanded === true;
+    }
+
+    /**
+     * Set a specific round's expanded state.
+     *
+     * SEMANTICS:
+     *   expanded === true  → remove the collapse record (default)
+     *   expanded === false → write the collapse record
+     *
+     * This preserves the "non-default only" invariant: a round the
+     * user has never collapsed has no record, exactly as if they had
+     * explicitly expanded it. Removing a record is idempotent.
+     *
+     * No-ops when either ID is missing. Returns true when the call
+     * was accepted (whether or not it changed anything), false when
+     * the input was invalid.
+     *
+     * @returns {boolean}
+     */
+    function setRoundExpanded(examId, roundId, expanded) {
+        var key = makeRoundKey(examId, roundId);
+        if (key === null) {
+            return false;
+        }
+        var wantCollapsed = expanded === false;
+        var currentlyCollapsed = _state.expandedRoundIds[key] === true;
+
+        if (wantCollapsed === currentlyCollapsed) {
+            return true;
+        }
+
+        if (wantCollapsed) {
+            _state.expandedRoundIds[key] = true;
+        } else {
+            delete _state.expandedRoundIds[key];
+        }
+        saveState();
+        return true;
+    }
+
+    /**
+     * Toggle a round's expanded state.
+     *
+     * The caller must state the current default so the toggle knows
+     * what "before" means for a round with no stored record.
+     *
+     * @returns {boolean} the state AFTER the toggle. When the input
+     *   is invalid, returns `defaultExpanded`.
+     */
+    function toggleRoundExpanded(examId, roundId, defaultExpanded) {
+        var key = makeRoundKey(examId, roundId);
+        if (key === null) {
+            return defaultExpanded === true;
+        }
+
+        // Translate "stored or default" into a concrete current state,
+        // then flip it.
+        var currentlyExpanded = true;
+        if (_state.expandedRoundIds[key] === true) {
+            currentlyExpanded = false;
+        } else {
+            currentlyExpanded = defaultExpanded === true;
+        }
+
+        var next = !currentlyExpanded;
+
+        if (next === true) {
+            delete _state.expandedRoundIds[key];
+        } else {
+            _state.expandedRoundIds[key] = true;
+        }
+        saveState();
+        return next;
+    }
+
+    /**
+     * Forget every round collapse record.
+     *
+     * Not called from anywhere in the current build. Exposed for
+     * symmetry with clearExpanded() and for tests.
+     */
+    function clearExpandedRoundIds() {
+        _state.expandedRoundIds = {};
+        saveState();
+    }
+
+    // ============================================================
     // SELECTIONS
     // ============================================================
 
@@ -765,12 +989,19 @@
         setPeopleStatus: setPeopleStatus,
         resetPeopleFilter: resetPeopleFilter,
 
-        // Expansion
+        // Expansion (generic — used by other views)
         isExpanded: isExpanded,
         setExpanded: setExpanded,
         toggleExpanded: toggleExpanded,
         getExpandedIds: getExpandedIds,
         clearExpanded: clearExpanded,
+
+        // Tournament round collapse (C4)
+        getExpandedRoundIds: getExpandedRoundIds,
+        isRoundExpanded: isRoundExpanded,
+        setRoundExpanded: setRoundExpanded,
+        toggleRoundExpanded: toggleRoundExpanded,
+        clearExpandedRoundIds: clearExpandedRoundIds,
 
         // Selections
         clearSelection: clearSelection,
