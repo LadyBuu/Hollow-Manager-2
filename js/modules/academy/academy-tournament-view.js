@@ -12,6 +12,8 @@
  *     rounds, matches, eliminations, final passers)
  *   - Build modal HTML from a VM
  *   - Collect raw form values from modals
+ *   - Render a collapse toggle on each round header (C4)
+ *   - Render prior-round pass/retry badges in the picker (C8)
  *
  * NOT RESPONSIBILITIES:
  *   - Event binding. AcademyView binds; this module emits data-*.
@@ -19,6 +21,11 @@
  *   - Domain validation. Collectors return raw field values.
  *   - Name resolution. The aggregator resolves display names.
  *   - Eligibility computation. The aggregator builds the pool.
+ *   - Collapse-state persistence. AcademyUI owns it; this module
+ *     only reads `round.isCollapsed` off the VM.
+ *   - Prior-round derivation. TournamentQueries owns it; this
+ *     module only reads `priorRoundOutcome` off pool items and
+ *     eligible-participant entries.
  *
  * VM CONTRACT:
  *   The main page VM (from AcademyTournamentAggregator.getExamViewModel):
@@ -55,6 +62,7 @@
  *     matchSize,
  *     matchType, matchTypeLabel,
  *     isPairExam,
+ *     isCollapsed,           // C4 — read-only; written by AcademyUI
  *     matches: [ MatchVM ],
  *     matchCount
  *   }
@@ -102,7 +110,8 @@
  *   PoolItemVM:
  *   {
  *     id, name, subtitle,
- *     inExam, eliminated
+ *     inExam, eliminated,
+ *     priorRoundOutcome: 'pass' | 'retry' | null    // C8
  *   }
  *
  * MODAL VM CONTRACT:
@@ -113,13 +122,13 @@
  *     examId, roundId,
  *     mode,                  // 'individuals' | 'teams'
  *     isPairExam,            // boolean
- *     eligibleParticipants   // [ { id, name } ]
+ *     eligibleParticipants   // [ { id, name, priorRoundOutcome } ]
  *   })
  *
  *   buildEditMatchModalHTML({
  *     examId, roundId, matchId,
  *     mode, isPairExam,
- *     eligibleParticipants,  // [ { id, name } ]
+ *     eligibleParticipants,  // [ { id, name, priorRoundOutcome } ]
  *     currentParticipants    // [ id, ... ]
  *   })
  *
@@ -145,6 +154,7 @@
  *     exam-add-round
  *     exam-remove-round
  *     exam-reopen-round
+ *     exam-toggle-round-collapse        (C4)
  *     exam-auto-generate-round
  *     exam-add-match
  *     exam-edit-match
@@ -159,7 +169,8 @@
  *
  * ID SEMANTICS:
  *   data-exam-id      on every exam-scoped action
- *   data-round-id     on every round- and match-scoped action
+ *   data-round-id     on every round- and match-scoped action,
+ *                     including the collapse toggle
  *   data-match-id     on every match-scoped action
  *   data-pool-id      on pool toggle actions
  *   data-character-id on elimination restore actions
@@ -178,31 +189,24 @@
  *   .at-pair-remove button emitting data-action="exam-pair-remove".
  *   The collector reads the rows.
  *
- * REOPEN SEMANTICS (v21):
- *   The view exposes three Reopen buttons:
+ *   C8 does NOT render prior-outcome badges in the pair picker. The
+ *   pair picker's selection model is different (three selects plus an
+ *   Add button), and the C8 addendum is about the participant
+ *   checkbox picker. Pair-picker badges are a follow-up if wanted.
  *
- *     exam-reopen-exam    (header, when exam.status === 'completed')
- *       Flips the exam's status back to 'active'. Ungates the round
- *       and match edit buttons. No eliminations are reversed: the
- *       exam's eliminations reflect the state of its matches, and
- *       the matches are not being reopened by this action.
+ * ROUND COLLAPSE (C4):
+ *   Each round header carries a toggle button. The button's label
+ *   and icon reflect the current `round.isCollapsed`. The body of the
+ *   round (matches) is wrapped in a container that is hidden when the
+ *   round is collapsed.
  *
- *     exam-reopen-round   (round header, when the round has any
- *                          completed match, and exam is not
- *                          completed)
- *       Reverses every elimination produced by every match in the
- *       round, flips every match in the round to 'pending', and
- *       sets the round's status to 'pending'. Results on each
- *       match are preserved.
+ *   The view does NOT decide the default. `round.isCollapsed` is
+ *   computed by the aggregator, which reads it from AcademyUI. If the
+ *   VM carries `isCollapsed: false`, the round is expanded. If it
+ *   carries `isCollapsed: true`, the round is collapsed.
  *
- *     exam-reopen-match   (match footer, when the match is complete,
- *                          and exam is not completed)
- *       Reverses the eliminations produced by this match, flips the
- *       match's status to 'pending'. Results preserved.
- *
- *   The exam-level reopen does not touch eliminations. It is a
- *   status-label change. The round and match reopens own the
- *   elimination reversal.
+ *   Collapse does NOT affect eliminations or any other section. Only
+ *   the round's own matches are hidden.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -307,6 +311,31 @@
         return '<span class="' + escapeAttribute(cls) + '" ' +
                     'title="' + escapeAttribute(label) + '">' +
                     escapeHtml(text) +
+                '</span>';
+    }
+
+    // ============================================================
+    // PRIOR-ROUND OUTCOME BADGE (C8)
+    // ============================================================
+    //
+    // Renders a small pass/retry badge next to a picker candidate's
+    // name when the candidate has a prior-round outcome. Returns the
+    // empty string for null/undefined/'fail'/anything unexpected.
+    //
+    // The badge is display-only. It has no data-action, is not
+    // clickable, and does not affect selection.
+
+    function renderPriorOutcomeBadge(outcome) {
+        if (outcome !== 'pass' && outcome !== 'retry') {
+            return '';
+        }
+        var label = outcome === 'pass' ? 'Pass' : 'Retry';
+        var cls = 'at-prior-outcome at-prior-outcome-' + outcome;
+        return '<span class="' + escapeAttribute(cls) + '" ' +
+                    'title="' +
+                        escapeAttribute('Previous round: ' + label) +
+                    '">' +
+                    escapeHtml(label) +
                 '</span>';
     }
 
@@ -683,12 +712,46 @@
         var canReopenRound = !isExamComplete &&
             roundHasCompletedMatch(round);
 
+        // C4 — collapse state comes from the VM. The aggregator
+        // resolves it from AcademyUI; the view treats it as a
+        // read-only fact. Default when the field is missing is
+        // "expanded", matching the aggregator's stated policy.
+        var isCollapsed = round.isCollapsed === true;
+
+        var roundClasses = 'at-round';
+        if (isCollapsed) { roundClasses += ' is-collapsed'; }
+
         var html = '';
-        html += '<div class="at-round" ' +
+        html += '<div class="' + roundClasses + '" ' +
                     'data-round-id="' +
                         escapeAttribute(round.id || '') + '">';
 
         html += '<div class="at-round-header">';
+
+        // ---- Collapse toggle (C4) ----
+        // The toggle is the leftmost element in the header. It
+        // carries data-exam-id and data-round-id so the events
+        // layer has everything it needs without walking the DOM.
+        // It has no state of its own; the round's isCollapsed
+        // determines its label and icon.
+        html += '<button type="button" ' +
+                    'class="at-round-collapse-toggle" ' +
+                    'data-action="exam-toggle-round-collapse" ' +
+                    'data-exam-id="' + escapeAttribute(exam.id) + '" ' +
+                    'data-round-id="' +
+                        escapeAttribute(round.id || '') + '" ' +
+                    'title="' +
+                        escapeAttribute(isCollapsed
+                            ? 'Expand this round'
+                            : 'Collapse this round') + '" ' +
+                    'aria-expanded="' +
+                        escapeAttribute(isCollapsed ? 'false' : 'true') +
+                    '">';
+        html += '<span class="at-round-collapse-icon">' +
+                    (isCollapsed ? '\u25b8' : '\u25be') +
+                '</span>';
+        html += '</button>';
+
         html += '<div class="at-round-title">';
         html += '<strong>Round ' +
                     escapeHtml(String(round.roundNumber || '')) +
@@ -759,6 +822,14 @@
 
         html += '</div>';
 
+        // ---- Round body (collapsible) ----
+        //
+        // The body is always rendered. Collapse is a CSS class that
+        // hides it. This keeps the DOM stable across toggles, so the
+        // delegated listeners see the same structure and scroll
+        // restoration (C6) has something to anchor to.
+        html += '<div class="at-round-body">';
+
         var matches = isArray(round.matches) ? round.matches : [];
         if (matches.length === 0) {
             html += '<p class="empty-state small">No matches yet.</p>';
@@ -769,6 +840,8 @@
             }
             html += '</div>';
         }
+
+        html += '</div>';
 
         html += '</div>';
         return html;
@@ -1574,10 +1647,19 @@
         for (var i = 0; i < eligible.length; i++) {
             var item = eligible[i];
             if (!item || !item.id) { continue; }
+
+            // C8 — prior-outcome badge. Read-only; renders the empty
+            // string when the outcome is null or anything else
+            // unrecognised.
+            var badge = renderPriorOutcomeBadge(item.priorRoundOutcome);
+
             html += '<label class="at-picker-item">' +
                         '<input type="checkbox" class="at-picker-check" ' +
                             'value="' + escapeAttribute(item.id) + '">' +
-                        '<span>' + escapeHtml(item.name || '') + '</span>' +
+                        '<span class="at-picker-item-name">' +
+                            escapeHtml(item.name || '') +
+                        '</span>' +
+                        badge +
                     '</label>';
         }
         html += '</div>';
@@ -1787,24 +1869,37 @@
         var combined = Object.create(null);
         var ordered = [];
 
-        function addEntry(id, name) {
+        function addEntry(id, name, priorRoundOutcome) {
             var key = String(id);
             if (combined[key]) { return; }
-            combined[key] = { id: key, name: name };
+            combined[key] = {
+                id: key,
+                name: name,
+                priorRoundOutcome: priorRoundOutcome
+            };
             ordered.push(combined[key]);
         }
 
         for (var i = 0; i < eligible.length; i++) {
             var e = eligible[i];
             if (!e || !e.id) { continue; }
-            addEntry(e.id, e.name || '');
+            addEntry(
+                e.id,
+                e.name || '',
+                e.priorRoundOutcome
+            );
         }
 
         for (var j = 0; j < currentIds.length; j++) {
             var id = currentIds[j];
             if (!id) { continue; }
             if (combined[String(id)]) { continue; }
-            addEntry(id, String(id));
+            // Current participants who are not in the eligible list
+            // are rendered without a prior-outcome badge. Their
+            // outcome is not knowable here: eligible was computed
+            // against the previous round, and these participants are
+            // already in this match.
+            addEntry(id, String(id), null);
         }
 
         var currentSet = Object.create(null);
@@ -1831,11 +1926,16 @@
         for (var m = 0; m < ordered.length; m++) {
             var item = ordered[m];
             var isChecked = currentSet[String(item.id)] === true;
+            var badge = renderPriorOutcomeBadge(item.priorRoundOutcome);
+
             html += '<label class="at-picker-item">' +
                         '<input type="checkbox" class="at-picker-check" ' +
                             'value="' + escapeAttribute(item.id) + '"' +
                             (isChecked ? ' checked' : '') + '>' +
-                        '<span>' + escapeHtml(item.name) + '</span>' +
+                        '<span class="at-picker-item-name">' +
+                            escapeHtml(item.name) +
+                        '</span>' +
+                        badge +
                     '</label>';
         }
         html += '</div>';
