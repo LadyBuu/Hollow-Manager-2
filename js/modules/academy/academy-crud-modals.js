@@ -84,19 +84,28 @@
  *   Academy UI's age formatting and keeps the dropdown readable
  *   when the age is unavailable.
  *
+ * ADD CHARACTER TO CLASS — MUTATION OWNERSHIP (post-S10.1):
+ *   The class-membership mutation lives on AcademyClasses:
+ *     AcademyClasses.addToClass(charId, classId)
+ *
+ *   The retired CharacterClasses module owned this mutation before
+ *   S10.1. That module is gone; its mutations moved to AcademyClasses.
+ *   This file was one of the consumers the S10.1 sweep missed; the
+ *   accessor and call site are now on AcademyClasses.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
  *   - window.Modal
  *   - window.NotificationSystem
  *   - window.ValidationUtils
- *   - window.AcademyClasses
+ *   - window.AcademyClasses         (Add Character to Class mutates
+ *                                    through AcademyClasses.addToClass)
  *   - window.AcademyDisciplines
  *   - window.AcademyLocations
  *   - window.CharacterQueries
  *   - window.AcademyAggregator
  *
  * DEPENDENCIES (OPTIONAL, lazily accessed):
- *   - window.CharacterClasses   — required for Add Character to Class
  *   - window.AcademySocialScore — required for the Social Score modal
  */
 
@@ -147,6 +156,9 @@
     if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function') {
         _missing.push('AcademyClasses.getClass');
     }
+    if (!AcademyClasses || typeof AcademyClasses.addToClass !== 'function') {
+        _missing.push('AcademyClasses.addToClass');
+    }
     if (!AcademyClasses || !Array.isArray(AcademyClasses.VALID_STATUSES)) {
         _missing.push('AcademyClasses.VALID_STATUSES');
     }
@@ -186,10 +198,6 @@
     // ============================================================
     // OPTIONAL DEPENDENCY ACCESSORS
     // ============================================================
-
-    function getCharacterClasses() {
-        return window.CharacterClasses || null;
-    }
 
     function getAcademySocialScore() {
         return window.AcademySocialScore || null;
@@ -1019,17 +1027,16 @@
     // ============================================================
     // OPEN — ADD CHARACTER TO CLASS
     // ============================================================
+    //
+    // The mutation lives on AcademyClasses.addToClass. AcademyClasses
+    // is a mandatory import at the top of this file, so the module is
+    // guaranteed to be present. There is no gate here; if the import
+    // is missing, the module would not have loaded.
 
     function openAddCharacterToClass(classId) {
         var vm = buildAddCharacterToClassViewModel(classId);
         if (!vm) {
             notify('Class not found.', 'error');
-            return;
-        }
-
-        var CharacterClasses = getCharacterClasses();
-        if (!CharacterClasses || typeof CharacterClasses.addToClass !== 'function') {
-            notify('Character classes module not available.', 'error');
             return;
         }
 
@@ -1051,7 +1058,7 @@
                     return;
                 }
 
-                CharacterClasses.addToClass(charId, vm.classId).then(function(result) {
+                AcademyClasses.addToClass(charId, vm.classId).then(function(result) {
                     if (result && result.success) {
                         close();
                         notifyChange();
@@ -1291,7 +1298,7 @@
     // EXPOSE
     // ============================================================
 
-    window.AcademyCRUDModals = {
+    window.AcademyCRUDModals = Object.freeze({
         // Class
         openClassForm: openClassForm,
         openClassDelete: openClassDelete,
@@ -1318,6 +1325,6 @@
         buildLocationFormHTML: buildLocationFormHTML,
         buildLocationDeleteHTML: buildLocationDeleteHTML,
         buildSocialScoreFormHTML: buildSocialScoreFormHTML
-    };
+    });
 
 })();
