@@ -25,6 +25,16 @@
  *   - The reset runs BEFORE getCharacterFormHTML so the initial HTML
  *     reflects the reset tab.
  *
+ * FORM TAB BUTTONS (BUG-E12):
+ *   - getTabsHTML() emits <button type="button"> for every tab.
+ *     Without type="button", a button inside a <form> defaults to
+ *     type="submit", so clicking a tab submits the form, which fires
+ *     the submit handler in character-events.js (handleSave), which
+ *     shows a success toast on every tab switch. The explicit type
+ *     prevents the form submission.
+ *   - This is the ONLY bare <button> emitted inside #character-form.
+ *     Every other button in this file already carries type="button".
+ *
  * EDIT ID RESOLUTION:
  *   - getCurrentEditId() / setCurrentEditId() prefer the global
  *     functions exposed by characters/index.js.
@@ -597,7 +607,7 @@
         for (var i = 0; i < VALID_TABS.length; i++) {
             var tab = VALID_TABS[i];
             var isActive = tab === state.currentTab;
-            html += '<button class="form-tab-btn ' + (isActive ? 'active' : '') + '" data-tab="' + tab + '" style="background:transparent;border:none;border-bottom:2px solid ' + (isActive ? 'var(--accent)' : 'transparent') + ';color:' + (isActive ? 'var(--accent)' : 'var(--text-dim)') + ';padding:4px 10px;cursor:pointer;font-size:0.7rem;transition:0.2s;">' + tabNames[tab] + '</button>';
+            html += '<button type="button" class="form-tab-btn ' + (isActive ? 'active' : '') + '" data-tab="' + tab + '" style="background:transparent;border:none;border-bottom:2px solid ' + (isActive ? 'var(--accent)' : 'transparent') + ';color:' + (isActive ? 'var(--accent)' : 'var(--text-dim)') + ';padding:4px 10px;cursor:pointer;font-size:0.7rem;transition:0.2s;">' + tabNames[tab] + '</button>';
         }
         return html;
     }
