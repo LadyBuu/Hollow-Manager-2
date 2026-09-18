@@ -6,13 +6,9 @@
  *
  * RESPONSIBILITIES:
  *   - Domain condition validation (not state permissions)
- *   - Week range validation
  *   - Participant eligibility checks
  *   - Result-map validation
- *   - Match result and match completion validation
  *   - Round addition and removal validation
- *   - Completion readiness
- *   - Tournament start conditions
  *
  * IMPORTANT:
  *   - This is the CANONICAL authority for domain conditions.
@@ -57,22 +53,84 @@
  *   - 'fail'  : not advanced; eliminated from this tournament
  *   - Advancement = 'pass' OR 'retry'.
  *
- * COMPLETION READINESS:
- *   - A tournament can be completed when every round's matches are
- *     completed. No winner required. A tournament may end with zero,
- *     one, or many final passers.
+ * RESULT-MAP VALIDATION OWNERSHIP:
+ *   validateResultMap is the SINGLE canonical implementation for
+ *   result-map validation in the tournament module. TournamentMatches
+ *   has historically carried a near-identical duplicate for its
+ *   pre-completion validation path. That duplicate is now redundant;
+ *   callers should delegate to this function.
+ *
+ *   CALLING CONVENTION:
+ *     validateResultMap(results, expectedIds, options)
+ *
+ *     expectedIds — when an array, every result key must be a member
+ *                   of it. When null/undefined, only the map shape
+ *                   and values are checked.
+ *
+ *     options.requireAll — when true (the default), every expectedId
+ *                   must appear in the map. Callers that validate a
+ *                   partially-filled result map (e.g. the pre-
+ *                   completion phase of an edit form) must pass
+ *                   { requireAll: false } explicitly.
+ *
+ *   The default of `requireAll: true` is the strictest interpretation
+ *   and the correct one for "this match is being completed, are all
+ *   results present?". Callers whose semantics are looser must opt
+ *   out, not in.
  *
  * ROUND REMOVAL:
- *   - A round with any completed match may not be removed by the
- *     ordinary remove-round operation. Removing a completed match
- *     from tournament history is not a normal editing operation.
- *   - There is no separate destructive path in this module. If
- *     destructive cleanup is needed, it belongs to an explicit
- *     administrative operation that does not go through Rules.
+ *   A round with any completed match may not be removed by the
+ *   ordinary remove-round operation. Removing a completed match
+ *   from tournament history is not a normal editing operation.
+ *   There is no separate destructive path in this module. If
+ *   destructive cleanup is needed, it belongs to an explicit
+ *   administrative operation that does not go through Rules.
  *
  * ROUND ADDITION:
- *   - There is no cap. totalRounds is a planning hint, not an
- *     invariant. Callers may add rounds beyond it.
+ *   There is no cap. totalRounds is a planning hint, not an
+ *   invariant. Callers may add rounds beyond it.
+ *
+ * EXPORT SURFACE (v2, trimmed):
+ *   Removed from the public export in this revision (kept as private
+ *   helpers where used internally):
+ *
+ *     - validateWeekRange
+ *         General-purpose week-range check. No caller in the
+ *         tournament module. Callers that want it can inline the
+ *         two parseWeek calls plus the comparison, or request the
+ *         helper be re-exported.
+ *
+ *     - isWeekInTournamentRange
+ *         Same reasoning.
+ *
+ *     - validateCompletionReadiness
+ *         The implementation behind the demoted isReadyForCompletion
+ *         and getCompletionReadinessReport. No external caller.
+ *
+ *     - validateMatchResult
+ *         The implementation behind the deleted isValidMatchResult.
+ *         TournamentMatches does its own result validation inline.
+ *         Kept for possible future use; not exported.
+ *
+ *     - validateMatchCompletion
+ *         The implementation behind the deleted canCompleteMatch.
+ *         Same reasoning.
+ *
+ *   Deleted outright in this revision:
+ *     - isValidWeekRange
+ *         Pure alias of validateWeekRange().valid.
+ *     - canAddRound
+ *         Pure alias of validateRoundAddition().valid.
+ *     - canRemoveRound
+ *         Pure alias of validateRoundRemoval().valid.
+ *     - isReadyForCompletion
+ *         Pure alias of validateCompletionReadiness().valid.
+ *     - getCompletionReadinessReport
+ *         Same output as validateCompletionReadiness.
+ *     - isValidMatchResult
+ *         Pure alias of validateMatchResult().valid.
+ *     - canCompleteMatch
+ *         Pure alias of validateMatchCompletion().valid.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TournamentConstants
@@ -80,18 +138,15 @@
  *   - window.CalendarValidation
  *
  * DEPENDENCIES (OPTIONAL):
- *   - window.ObjectUtils (used only for deep-cloning participant
- *     arrays in a couple of defensive returns; falls back to a
- *     structuredClone/JSON clone when absent)
+ *   - window.ObjectUtils (unused in this revision; kept as a lazy
+ *     accessor for any future defensive-copy needs)
  *
  * USAGE:
  *   var Rules = window.TournamentRules;
  *
- *   Rules.validateWeekRange(start, end);
  *   Rules.isParticipantEligible(tournament, participantId, 'character');
  *   Rules.validateMatchCompletion(match, result);
  *   Rules.validateRoundRemoval(tournament, roundIndex);
- *   Rules.isReadyForCompletion(tournament);
  */
 
 (function() {
@@ -184,30 +239,6 @@
     window.__tournamentRulesLoaded = true;
 
     // ============================================================
-    // OPTIONAL DEPENDENCIES
-    // ============================================================
-
-    function getObjectUtils() {
-        return window.ObjectUtils || null;
-    }
-
-    function deepClone(value) {
-        var ObjectUtils = getObjectUtils();
-        if (ObjectUtils && typeof ObjectUtils.deepClone === 'function') {
-            return ObjectUtils.deepClone(value);
-        }
-        if (value === null || typeof value !== 'object') {
-            return value;
-        }
-        if (typeof structuredClone === 'function') {
-            try { return structuredClone(value); } catch (_) {}
-        }
-        try { return JSON.parse(JSON.stringify(value)); } catch (_) {
-            return value;
-        }
-    }
-
-    // ============================================================
     // HELPERS
     // ============================================================
 
@@ -261,12 +292,11 @@
     // ============================================================
     // WEEK RANGE
     // ============================================================
+    //
+    // Private helpers. Not part of the public surface in this
+    // revision. Kept for internal use; a caller that wants them
+    // back can request re-export.
 
-    /**
-     * Validate a week range.
-     *
-     * @returns {object} { valid, message?, start?, end? }
-     */
     function validateWeekRange(startWeek, endWeek) {
         var minWeek = Constants.MIN_WEEK;
         var maxWeek = Constants.MAX_WEEK;
@@ -304,10 +334,6 @@
         }
 
         return { valid: true, start: start, end: end };
-    }
-
-    function isValidWeekRange(startWeek, endWeek) {
-        return validateWeekRange(startWeek, endWeek).valid;
     }
 
     function isWeekInTournamentRange(tournament, week) {
@@ -436,6 +462,10 @@
     /**
      * Validate a result map against a set of expected keys.
      *
+     * This is the CANONICAL result-map validator for the tournament
+     * module. See the file header for the full calling convention
+     * and the requireAll default.
+     *
      * @param {object} results
      * @param {array|null} expectedIds - when an array, each result key
      *   must be a member of it. When null/undefined, only the map shape
@@ -506,6 +536,11 @@
     // ============================================================
     // MATCH RESULT VALIDATION
     // ============================================================
+    //
+    // Private helpers. The public surface for match-result validation
+    // is validateResultMap above. These wrap it for the two match
+    // types. TournamentMatches does its own inline validation; these
+    // remain for callers that want a Rules-layer check.
 
     /**
      * Validate a match result payload against a match's shape.
@@ -574,12 +609,9 @@
         };
     }
 
-    function isValidMatchResult(match, result) {
-        return validateMatchResult(match, result).valid;
-    }
-
     /**
      * Validate that a match can be completed with the given result.
+     * Private helper behind the deleted canCompleteMatch alias.
      */
     function validateMatchCompletion(match, result) {
         if (!match || typeof match !== 'object') {
@@ -598,10 +630,6 @@
         }
 
         return validateMatchResult(match, result);
-    }
-
-    function canCompleteMatch(match, result) {
-        return validateMatchCompletion(match, result).valid;
     }
 
     // ============================================================
@@ -660,10 +688,6 @@
         return { valid: true };
     }
 
-    function canRemoveRound(tournament, roundIndex) {
-        return validateRoundRemoval(tournament, roundIndex).valid;
-    }
-
     /**
      * Validate that a round can be added with the given configuration.
      *
@@ -712,21 +736,16 @@
         return { valid: true };
     }
 
-    function canAddRound(tournament, roundData) {
-        return validateRoundAddition(tournament, roundData).valid;
-    }
-
     // ============================================================
     // COMPLETION READINESS
     // ============================================================
     //
-    // A tournament is ready to complete when every round's matches
-    // are completed. No winner is required. A tournament may end with
-    // zero, one, or many final passers.
-    //
-    // A tournament with no rounds is trivially ready. This is
-    // deliberate: a draft that never ran anything can be marked
-    // complete without ceremony.
+    // Private helper. Not part of the public surface in this
+    // revision. The public surface for "can this tournament be
+    // completed?" is: the caller reads the tournament's rounds and
+    // checks each round.status === 'completed'. No winner is
+    // required; a tournament may end with zero, one, or many final
+    // passers.
 
     function validateCompletionReadiness(tournament) {
         if (!tournament || typeof tournament !== 'object') {
@@ -799,24 +818,11 @@
         };
     }
 
-    function isReadyForCompletion(tournament) {
-        return validateCompletionReadiness(tournament).valid;
-    }
-
-    function getCompletionReadinessReport(tournament) {
-        return validateCompletionReadiness(tournament);
-    }
-
     // ============================================================
     // EXPOSE
     // ============================================================
 
-    window.TournamentRules = {
-        // Week range
-        validateWeekRange: validateWeekRange,
-        isValidWeekRange: isValidWeekRange,
-        isWeekInTournamentRange: isWeekInTournamentRange,
-
+    window.TournamentRules = Object.freeze({
         // Participant eligibility
         validateParticipantEligibility: validateParticipantEligibility,
         isParticipantEligible: isParticipantEligible,
@@ -824,23 +830,10 @@
         // Result maps
         validateResultMap: validateResultMap,
 
-        // Match results
-        validateMatchResult: validateMatchResult,
-        isValidMatchResult: isValidMatchResult,
-        validateMatchCompletion: validateMatchCompletion,
-        canCompleteMatch: canCompleteMatch,
-
         // Round operations
         validateRoundRemoval: validateRoundRemoval,
-        canRemoveRound: canRemoveRound,
-        validateRoundAddition: validateRoundAddition,
-        canAddRound: canAddRound,
-
-        // Completion readiness
-        validateCompletionReadiness: validateCompletionReadiness,
-        isReadyForCompletion: isReadyForCompletion,
-        getCompletionReadinessReport: getCompletionReadinessReport
-    };
+        validateRoundAddition: validateRoundAddition
+    });
 
     // ============================================================
     // VERIFICATION
@@ -851,23 +844,11 @@
         var missing = [];
 
         var required = [
-            'validateWeekRange',
-            'isValidWeekRange',
-            'isWeekInTournamentRange',
             'validateParticipantEligibility',
             'isParticipantEligible',
             'validateResultMap',
-            'validateMatchResult',
-            'isValidMatchResult',
-            'validateMatchCompletion',
-            'canCompleteMatch',
             'validateRoundRemoval',
-            'canRemoveRound',
-            'validateRoundAddition',
-            'canAddRound',
-            'validateCompletionReadiness',
-            'isReadyForCompletion',
-            'getCompletionReadinessReport'
+            'validateRoundAddition'
         ];
 
         for (var i = 0; i < required.length; i++) {

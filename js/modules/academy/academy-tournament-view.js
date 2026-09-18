@@ -2325,7 +2325,7 @@
         collectAddMatchForm: collectAddMatchForm,
         collectEditMatchForm: collectEditMatchForm,
         collectCompleteMatchForm: collectCompleteMatchForm
-    };
+    }
 
     // ============================================================
     // VERIFICATION

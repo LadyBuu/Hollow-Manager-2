@@ -83,6 +83,12 @@
  *   The shift runs inside the same transaction as the endWeek
  *   update. If persistence fails, both roll back together.
  *
+ *   The comparison is made entirely against the transaction snapshot:
+ *   the pre-update endWeek is read from the snapshot immediately
+ *   before the updates are applied. This makes the shift decision
+ *   provably correct against the transaction's own view, rather than
+ *   dependent on a preflight read of the live store.
+ *
  * REOPEN SEMANTICS (v21):
  *   The model treats a completed match as committed: its eliminations
  *   reflect its results, and the results cannot be edited in place.
@@ -116,9 +122,14 @@
  *   correctness. Every invariant is re-checked against the
  *   transaction snapshot.
  *
+ * INTEGER PARSING:
+ *   Positive-integer parsing goes through
+ *   TournamentConstants.parsePositiveInteger, the single strict
+ *   parser for the domain. This file has no local parser.
+ *
  * DEPENDENCIES (MANDATORY):
- *   - window.TournamentSchema
  *   - window.TournamentConstants
+ *   - window.TournamentSchema
  *   - window.TournamentRules
  *   - window.TournamentMatches
  *   - window.TournamentQueries
@@ -140,8 +151,8 @@
     // MANDATORY DEPENDENCIES
     // ============================================================
 
-    var Schema = window.TournamentSchema;
     var Constants = window.TournamentConstants;
+    var Schema = window.TournamentSchema;
     var Rules = window.TournamentRules;
     var Matches = window.TournamentMatches;
     var Queries = window.TournamentQueries;
@@ -153,6 +164,10 @@
 
     var _missing = [];
 
+    if (!Constants ||
+        typeof Constants.parsePositiveInteger !== 'function') {
+        _missing.push('TournamentConstants.parsePositiveInteger');
+    }
     if (!Schema || typeof Schema.findRoundByIdInternal !== 'function') {
         _missing.push('TournamentSchema.findRoundByIdInternal');
     }
@@ -183,7 +198,6 @@
     if (!Schema || typeof Schema.normaliseId !== 'function') {
         _missing.push('TournamentSchema.normaliseId');
     }
-    if (!Constants) { _missing.push('TournamentConstants'); }
     if (!Rules) { _missing.push('TournamentRules'); }
     if (!Matches || typeof Matches.buildRound !== 'function') {
         _missing.push('TournamentMatches.buildRound');
@@ -272,33 +286,17 @@
     }
 
     /**
-     * Strict positive integer parse.
+     * Strict positive-integer parse.
+     * Delegates to TournamentConstants.parsePositiveInteger, the
+     * canonical strict parser for the tournament domain. See the
+     * header of tournament-constants.js for the full contract.
      *
-     * Accepts:
-     *   - integers (numbers)
-     *   - pure digit strings ("5", "42")
-     *
-     * Rejects everything else. No "12abc", no "12.5", no "-1".
+     * Accepts: integers (numbers), pure-digit strings.
+     * Rejects: floats, negatives, "12abc", "12.5", "-1", "", "   ",
+     * NaN, Infinity, booleans, objects, arrays.
      */
-    function parseStrictPositiveInteger(value) {
-        if (typeof value === 'number') {
-            if (!Number.isInteger(value) || value < 1) {
-                return null;
-            }
-            return value;
-        }
-        if (typeof value === 'string') {
-            var trimmed = value.trim();
-            if (trimmed === '' || !/^\d+$/.test(trimmed)) {
-                return null;
-            }
-            var n = Number(trimmed);
-            if (!Number.isSafeInteger(n) || n < 1) {
-                return null;
-            }
-            return n;
-        }
-        return null;
+    function parsePositiveInteger(value) {
+        return Constants.parsePositiveInteger(value);
     }
 
     function parseWeek(value) {
@@ -457,7 +455,7 @@
         var totalRounds = data.totalRounds !== undefined
             ? data.totalRounds
             : 1;
-        var parsedRounds = parseStrictPositiveInteger(totalRounds);
+        var parsedRounds = parsePositiveInteger(totalRounds);
         if (parsedRounds === null) {
             return Promise.resolve(failure('Invalid total rounds.'));
         }
@@ -626,13 +624,6 @@
         var targetId = normaliseId(id);
         var updatesCopy = deepClone(updates);
 
-        // Cache the pre-update endWeek so the mutate callback can
-        // detect a change without re-reading the tournament. The
-        // pipeline hands a snapshot, but the tournament reference
-        // we already resolved is live, and the pipeline clones it
-        // before mutate runs.
-        var previousEndWeek = tournament.endWeek;
-
         return MutationPipeline.performMutation({
             validate: function(appDataSnapshot) {
                 var current = findTournamentInSnapshot(
@@ -653,7 +644,7 @@
                 }
 
                 if (updatesCopy.totalRounds !== undefined) {
-                    var newTotal = parseStrictPositiveInteger(
+                    var newTotal = parsePositiveInteger(
                         proposed.totalRounds
                     );
                     if (newTotal !== null &&
@@ -704,6 +695,22 @@
                         'Tournament not found in data store.'
                     );
                 }
+
+                // ---- Capture pre-update endWeek FROM THE SNAPSHOT ----
+                //
+                // The shift decision (T8) must be made against the
+                // transaction's own view. Reading the previous value
+                // here, before applying the updates, ensures the
+                // comparison is between the snapshot's current endWeek
+                // and the proposed new endWeek. If a prior mutation in
+                // the same transaction had already changed endWeek,
+                // this read sees the change.
+                //
+                // The preflight read in getTournamentInternal is used
+                // only for the "tournament exists" check and the
+                // allowed-keys validation. It is NOT the source of the
+                // shift comparison.
+                var previousEndWeek = current.endWeek;
 
                 var keys = Object.keys(updatesCopy);
                 for (var i = 0; i < keys.length; i++) {
@@ -1114,7 +1121,7 @@
 
         if (roundData && typeof roundData === 'object') {
             if (roundData.matchSize !== undefined) {
-                var size = parseStrictPositiveInteger(
+                var size = parsePositiveInteger(
                     roundData.matchSize
                 );
                 if (size === null || size < 2) {
@@ -1488,7 +1495,7 @@
     // EXPOSE
     // ============================================================
 
-    window.TournamentCore = {
+    window.TournamentCore = Object.freeze({
         // Tournament lifecycle
         createTournament: createTournament,
         updateTournament: updateTournament,
@@ -1503,7 +1510,7 @@
         addRound: addRound,
         removeRound: removeRound,
         reopenRound: reopenRound
-    };
+    });
 
     // ============================================================
     // VERIFICATION

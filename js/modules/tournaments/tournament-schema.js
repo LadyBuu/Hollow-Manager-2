@@ -102,6 +102,44 @@
  *   - Years are UNBOUNDED positive integers.
  *   - Tournaments are scoped to WEEKS (bounded 1-52).
  *
+ * EXPORT SURFACE (v2, trimmed):
+ *   Removed from the public export in this revision (kept as private
+ *   helpers where used internally):
+ *
+ *     - getParticipantIdKey, getParticipantIdKeyFromParts,
+ *       participantMatches
+ *         Participant identity helpers. No external caller. If a
+ *         caller needs the composite key, it builds it locally or
+ *         asks for the helper to be re-exported.
+ *
+ *     - getParticipants, getRounds, getEliminations
+ *         Defensive-copy getters. TournamentQueries owns the query
+ *         surface for these. No external caller.
+ *
+ *     - getValidationReport
+ *         Diagnostic-only. No caller.
+ *
+ *     - validateParticipant, validateParticipants,
+ *       validateRound, validateRounds,
+ *       validateElimination, validateEliminations
+ *         Used internally by validateTournament. No external caller
+ *         except validateTournament itself.
+ *
+ *     - cloneTournament, cloneParticipant, cloneElimination
+ *         Convenience wrappers around deepClone. No external caller.
+ *         cloneRound and cloneMatch are kept because the public
+ *         findRoundById / findMatchById use them.
+ *
+ *     - normalisePairing, normaliseResultsMap
+ *         Used internally by normalisePairings and normaliseMatch.
+ *         No external caller.
+ *
+ *   Deleted outright in this revision:
+ *     - isValidGroupExamResult
+ *         Pure alias of isValidResult. No caller.
+ *     - isValidGraduatingClassId
+ *         No caller. The check is trivial and inlined where needed.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.CalendarConstants
  *   - window.ObjectUtils
@@ -218,9 +256,16 @@
      * Accepts:
      *   - an integer number
      *   - a string whose trimmed value is a pure digit sequence
+     *     with an optional leading minus sign
      *
-     * Rejects everything else. Does not accept "12abc", "12.5", "-1",
+     * Rejects everything else. Does not accept "12abc", "12.5",
      * "1e2", Infinity, NaN, booleans, objects.
+     *
+     * NOTE: This is a SAFE-INTEGER parser and permits negatives.
+     * Years and deltas use it directly. Bounds-checking (e.g.
+     * "must be >= 1") is the caller's job. The tournament
+     * module's strict positive-only parser is
+     * TournamentConstants.parsePositiveInteger.
      *
      * This is the ONLY numeric coercion permitted by the strict
      * normalisation contract.
@@ -248,6 +293,9 @@
         return ObjectUtils.deepClone(value);
     }
 
+    // Kept as private helpers. cloneRound and cloneMatch are used by
+    // the public findRoundById / findMatchById (defensive-copy
+    // lookups). The others are unused internally and not exported.
     function cloneParticipant(participant) {
         if (!participant || typeof participant !== 'object') {
             return null;
@@ -311,21 +359,11 @@
         return VALID_RESULTS.indexOf(value) !== -1;
     }
 
-    function isValidGroupExamResult(value) {
-        return isValidResult(value);
-    }
-
-    function isValidGraduatingClassId(value) {
-        if (value === undefined || value === null || value === '') {
-            return true;
-        }
-        return normaliseId(value) !== null;
-    }
-
     // ============================================================
     // PAIRINGS HELPERS
     // ============================================================
 
+    // Private helper. Used by normalisePairings; not exported.
     function normalisePairing(pairing) {
         if (!Array.isArray(pairing)) {
             return null;
@@ -400,6 +438,7 @@
     // RESULT MAP HELPERS
     // ============================================================
 
+    // Private helper. Used by normaliseMatch; not exported.
     function normaliseResultsMap(map) {
         if (!isObject(map)) {
             return null;
@@ -1077,6 +1116,7 @@
         return false;
     }
 
+    // Private helpers. Not exported.
     function getParticipantIdKey(participant) {
         if (!participant || typeof participant !== 'object') {
             return null;
@@ -1236,6 +1276,9 @@
     // ============================================================
     // STRUCTURAL GETTERS - DEFENSIVE COPIES
     // ============================================================
+    //
+    // Private helpers. Kept for internal use; not exported. Callers
+    // that want these go through TournamentQueries.
 
     function getParticipants(tournament) {
         if (!tournament || !Array.isArray(tournament.participants)) {
@@ -1363,6 +1406,10 @@
     // ============================================================
     // STRUCTURAL VALIDATION
     // ============================================================
+    //
+    // validateMatch is kept public because tournament-matches.js
+    // calls it from validateProposedMatch. The others are used
+    // internally by validateTournament; they are not exported.
 
     function validateParticipant(participant, mode) {
         var errors = [];
@@ -1433,6 +1480,9 @@
      * Participant count rules per type:
      *   group_exam   : participants.length === round.matchSize
      *   team_vs_team : participants.length >= 2
+     *
+     * This function is part of the public export. It is called from
+     * TournamentMatches.validateProposedMatch.
      */
     function validateMatch(match, round, strict) {
         var errors = [];
@@ -1696,6 +1746,7 @@
         }
     }
 
+    // Private helper.
     function validateMatches(round, strict) {
         var errors = [];
         if (!round || !Array.isArray(round.matches)) {
@@ -1711,6 +1762,7 @@
         return errors;
     }
 
+    // Private helper.
     function validateRound(round, strict) {
         var errors = [];
 
@@ -1752,6 +1804,7 @@
         return errors;
     }
 
+    // Private helper.
     function validateRounds(rounds, strict) {
         var errors = [];
 
@@ -1804,6 +1857,7 @@
         return errors;
     }
 
+    // Private helper.
     function validateElimination(elimination, strict) {
         var errors = [];
 
@@ -1847,6 +1901,7 @@
         return errors;
     }
 
+    // Private helper.
     function validateEliminations(eliminations, strict) {
         var errors = [];
         var seen = Object.create(null);
@@ -1889,8 +1944,7 @@
      * tournament.participants, and that match IDs are globally unique.
      *
      *   Exception: in `teams` mode, the elimination cross-entity
-     *   check for participant IDs is skipped. Team-mode tournaments
-     *   legitimately carry character-side elimination records
+     *   check for participant IDs is skipped. Team-mode tournaments     *   legitimately carry character-side elimination records
      *   (from individualResults of team matches), and those
      *   characters are not in tournament.participants. The
      *   participantType consistency check still runs and correctly
@@ -2132,6 +2186,9 @@
     // ============================================================
     // VALIDATION REPORT
     // ============================================================
+    //
+    // Private helper. Kept for internal use; not exported. If a
+    // diagnostic caller needs it, it can be re-exported.
 
     function getValidationReport(tournament) {
         if (!tournament || typeof tournament !== 'object') {
@@ -2221,7 +2278,7 @@
     // EXPOSE
     // ============================================================
 
-    window.TournamentSchema = {
+    window.TournamentSchema = Object.freeze({
         VALID_STATUSES: VALID_STATUSES,
         VALID_MODES: VALID_MODES,
         VALID_MATCH_TYPES: VALID_MATCH_TYPES,
@@ -2239,28 +2296,20 @@
         normaliseId: normaliseId,
 
         deepClone: deepClone,
-        cloneTournament: cloneTournament,
-        cloneParticipant: cloneParticipant,
-        cloneMatch: cloneMatch,
         cloneRound: cloneRound,
-        cloneElimination: cloneElimination,
+        cloneMatch: cloneMatch,
 
         normaliseTournament: normaliseTournament,
         normaliseParticipant: normaliseParticipant,
         normaliseMatch: normaliseMatch,
         normaliseRound: normaliseRound,
         normaliseElimination: normaliseElimination,
-        normalisePairing: normalisePairing,
         normalisePairings: normalisePairings,
-        normaliseResultsMap: normaliseResultsMap,
 
         getCanonicalParticipantType: getCanonicalParticipantType,
         isParticipantTypeCanonical: isParticipantTypeCanonical,
         getParticipantTypeFromRecord: getParticipantTypeFromRecord,
         isParticipantInTournament: isParticipantInTournament,
-        getParticipantIdKey: getParticipantIdKey,
-        getParticipantIdKeyFromParts: getParticipantIdKeyFromParts,
-        participantMatches: participantMatches,
 
         findRoundById: findRoundById,
         findRoundByIdInternal: findRoundByIdInternal,
@@ -2269,10 +2318,6 @@
         findMatchByIdInternal: findMatchByIdInternal,
         findMatchIndexById: findMatchIndexById,
         findMatchInTournament: findMatchInTournament,
-
-        getParticipants: getParticipants,
-        getRounds: getRounds,
-        getEliminations: getEliminations,
 
         deriveAdvancing: deriveAdvancing,
         deriveFinalPassers: deriveFinalPassers,
@@ -2284,17 +2329,10 @@
         isValidMatchStatus: isValidMatchStatus,
         isValidParticipantType: isValidParticipantType,
         isValidResult: isValidResult,
-        isValidGroupExamResult: isValidGroupExamResult,
-        isValidGraduatingClassId: isValidGraduatingClassId,
         isParticipantEliminated: isParticipantEliminated,
 
         validateTournament: validateTournament,
-        getValidationReport: getValidationReport,
-        validateMatch: validateMatch,
-        validateParticipant: validateParticipant,
-        validateRound: validateRound,
-        validateRounds: validateRounds,
-        validateElimination: validateElimination
-    };
+        validateMatch: validateMatch
+    });
 
 })();

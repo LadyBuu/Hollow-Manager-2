@@ -1,6 +1,7 @@
 /**
  * modules/tournaments/tournament-constants.js - Tournament Constants
- * Single source of truth for all tournament-related constants
+ * Single source of truth for all tournament-related constants.
+ *
  * Path: js/modules/tournaments/tournament-constants.js
  *
  * LIFECYCLE MODEL (SIMPLIFIED):
@@ -38,9 +39,59 @@
  *   corresponding export on TournamentSchema — they are the same
  *   array by reference.
  *
+ * LABEL OWNERSHIP:
+ *   Every tournament-vocabulary label lives here. Callers that render
+ *   a status, mode, match type, match status, participant type, or
+ *   result MUST use the get*Label helpers below rather than
+ *   re-implementing the mapping. Before this module owned the
+ *   labels, the mapping was duplicated in the Academy-side exam
+ *   aggregator; that duplication is now closed.
+ *
+ *   The label helpers return a safe fallback for unrecognised input
+ *   (String(value) for a defined value; '' for null/undefined). They
+ *   do not throw. This matches the historical behaviour of the
+ *   aggregator's local helpers, which is where these were lifted
+ *   from.
+ *
+ *   CSS class names, icons, and any other presentation mapping are
+ *   NOT part of this module. Those belong to the renderer. The
+ *   aggregator retains its own getResultCategory / getOutcomeDisplay
+ *   for the exams UI, because those return CSS class names.
+ *
+ * INTEGER PARSING:
+ *   parsePositiveInteger is the canonical strict parser for
+ *   "positive integer" values: a number or a pure-digit string,
+ *   non-empty, no sign, no decimal, no trailing characters, within
+ *   Number.isSafeInteger bounds, >= 1.
+ *
+ *   It returns the parsed integer, or null. It never coerces.
+ *   "12abc", "-1", "1.5", "1e2", NaN, Infinity, booleans, objects,
+ *   arrays, and whitespace-only strings all return null.
+ *
+ *   Callers that need a different shape (e.g. an integer that may be
+ *   negative, or an integer bounded to a week range) build on this
+ *   parser rather than re-implementing it. Schema.coerceInteger is
+ *   the safe-integer variant and remains in Schema for the cases
+ *   where negative values are legitimate (years, deltas).
+ *
  * DEPENDENCIES:
  *   - window.CalendarConstants    (for week bounds) - LAZY
  *   - window.TournamentSchema     (for canonical enums) - LAZY
+ *
+ * ENUM RESOLUTION AND LOAD ORDER:
+ *   TournamentSchema and CalendarConstants are resolved lazily at
+ *   load time and re-checked at each dependency-touching call. When
+ *   TournamentSchema is absent at load, the local fallback arrays are
+ *   used; when CalendarConstants is absent at load, week bounds
+ *   default to [1, 52]. Both fallbacks are conservative copies of
+ *   the canonical values and are frozen identically.
+ *
+ *   The enums defined here — including the labels — do NOT change
+ *   with load order. A caller that imports this module before
+ *   Schema will get the fallback arrays; a caller that imports it
+ *   after Schema will get Schema's canonical arrays. Both sets
+ *   contain the same string values, which is what the label maps
+ *   are keyed on.
  */
 
 (function() {
@@ -276,7 +327,7 @@
     var _resultSet = buildSet(VALID_RESULTS);
 
     // ============================================================
-    // LOOKUP FUNCTIONS
+    // VALIDATION LOOKUPS
     // ============================================================
 
     function isValidStatus(status) {
@@ -332,6 +383,128 @@
             return [];
         }
         return STATUS_TRANSITIONS[status] || [];
+    }
+
+    // ============================================================
+    // LABEL LOOKUPS
+    // ============================================================
+    //
+    // The tournament vocabulary is here. Callers that render any
+    // tournament value use these helpers.
+    //
+    // Contract:
+    //   - Known enum value  -> its human label.
+    //   - Unknown but non-null/undefined -> String(value). This is
+    //     the historical aggregator behaviour, preserved so that a
+    //     malformed record still renders something readable.
+    //   - null/undefined -> ''. A missing value renders as nothing,
+    //     not "null" or "undefined".
+    //
+    // No helper throws. The tournament record is a record; a bad
+    // label is not a reason to fail a render.
+
+    var STATUS_LABELS = Object.freeze({
+        'draft':     'Draft',
+        'active':    'Active',
+        'completed': 'Completed'
+    });
+
+    var MODE_LABELS = Object.freeze({
+        'teams':       'Teams',
+        'individuals': 'Individuals'
+    });
+
+    var MATCH_STATUS_LABELS = Object.freeze({
+        'pending':     'Pending',
+        'in_progress': 'In Progress',
+        'completed':   'Completed'
+    });
+
+    var MATCH_TYPE_LABELS = Object.freeze({
+        'group_exam':   'Group Exam',
+        'team_vs_team': 'Team Match'
+    });
+
+    var PARTICIPANT_TYPE_LABELS = Object.freeze({
+        'character': 'Character',
+        'team':      'Team'
+    });
+
+    var RESULT_LABELS = Object.freeze({
+        'pass':  'Pass',
+        'retry': 'Retry',
+        'fail':  'Fail'
+    });
+
+    function labelOrDefault(map, value) {
+        if (value === null || value === undefined) {
+            return '';
+        }
+        var key = String(value);
+        if (Object.prototype.hasOwnProperty.call(map, key)) {
+            return map[key];
+        }
+        return key;
+    }
+
+    function getStatusLabel(status) {
+        return labelOrDefault(STATUS_LABELS, status);
+    }
+
+    function getModeLabel(mode) {
+        return labelOrDefault(MODE_LABELS, mode);
+    }
+
+    function getMatchStatusLabel(status) {
+        return labelOrDefault(MATCH_STATUS_LABELS, status);
+    }
+
+    function getMatchTypeLabel(type) {
+        return labelOrDefault(MATCH_TYPE_LABELS, type);
+    }
+
+    function getParticipantTypeLabel(type) {
+        return labelOrDefault(PARTICIPANT_TYPE_LABELS, type);
+    }
+
+    function getResultLabel(result) {
+        return labelOrDefault(RESULT_LABELS, result);
+    }
+
+    // ============================================================
+    // INTEGER PARSING
+    // ============================================================
+    //
+    // parsePositiveInteger is the strict positive-integer parser for
+    // the tournament domain. It accepts numbers and pure-digit
+    // strings. Everything else returns null.
+    //
+    // See the file header for the full contract. This is the ONLY
+    // strict positive-integer parser in the tournament module.
+    // Callers must use it rather than re-implementing the check.
+
+    function parsePositiveInteger(value) {
+        if (typeof value === 'number') {
+            if (!Number.isInteger(value) || value < 1) {
+                return null;
+            }
+            if (!Number.isSafeInteger(value)) {
+                return null;
+            }
+            return value;
+        }
+        if (typeof value === 'string') {
+            var trimmed = value.trim();
+            if (trimmed === '' || !/^\d+$/.test(trimmed)) {
+                return null;
+            }
+            var n = Number(trimmed);
+            if (!Number.isSafeInteger(n) || n < 1) {
+                return null;
+            }
+            return n;
+        }
+        return null;
     }
 
     // ============================================================
@@ -421,7 +594,96 @@
             }
         }
 
+        // ---- Label map coverage ----
+        // Every enum value must have a label. A missing label means a
+        // caller will fall through to the raw string, which is a UX
+        // bug waiting to surface. Fail loudly at load.
+
+        function validateLabelCoverage(enumName, list, mapName, map) {
+            for (var i = 0; i < list.length; i++) {
+                var v = list[i];
+                if (!Object.prototype.hasOwnProperty.call(map, v)) {
+                    errors.push(
+                        mapName + ' missing label for ' + enumName +
+                        ' value: "' + v + '".'
+                    );
+                } else if (typeof map[v] !== 'string' || map[v] === '') {
+                    errors.push(
+                        mapName + ' has empty/non-string label for "' +
+                        v + '".'
+                    );
+                }
+            }
+        }
+
+        validateLabelCoverage(
+            'VALID_STATUSES', VALID_STATUSES,
+            'STATUS_LABELS', STATUS_LABELS
+        );
+        validateLabelCoverage(
+            'VALID_MODES', VALID_MODES,
+            'MODE_LABELS', MODE_LABELS
+        );
+        validateLabelCoverage(
+            'VALID_MATCH_STATUSES', VALID_MATCH_STATUSES,
+            'MATCH_STATUS_LABELS', MATCH_STATUS_LABELS
+        );
+        validateLabelCoverage(
+            'VALID_MATCH_TYPES', VALID_MATCH_TYPES,
+            'MATCH_TYPE_LABELS', MATCH_TYPE_LABELS
+        );
+        validateLabelCoverage(
+            'VALID_PARTICIPANT_TYPES', VALID_PARTICIPANT_TYPES,
+            'PARTICIPANT_TYPE_LABELS', PARTICIPANT_TYPE_LABELS
+        );
+        validateLabelCoverage(
+            'VALID_RESULTS', VALID_RESULTS,
+            'RESULT_LABELS', RESULT_LABELS
+        );
+
+        // ---- parsePositiveInteger smoke test ----
+        // The parser is load-bearing for the whole module. Prove it
+        // behaves before publishing. Any failure here is a load-time
+        // bug, not a runtime surprise.
+
+        function expectParse(input, expected, label) {
+            var got = parsePositiveInteger(input);
+            if (got !== expected) {
+                errors.push(
+                    'parsePositiveInteger(' + label + ') returned ' +
+                    got + ', expected ' + expected + '.'
+                );
+            }
+        }
+
+        expectParse(1, 1, '1');
+        expectParse(42, 42, '42');
+        expectParse('42', 42, '"42"');
+        expectParse('  7  ', 7, '"  7  "');
+        expectParse(0, null, '0');
+        expectParse(-1, null, '-1');
+        expectParse(1.5, null, '1.5');
+        expectParse('1.5', null, '"1.5"');
+        expectParse('12abc', null, '"12abc"');
+        expectParse('1e2', null, '"1e2"');
+        expectParse('', null, '""');
+        expectParse('   ', null, '"   "');
+        expectParse(null, null, 'null');
+        expectParse(undefined, null, 'undefined');
+        expectParse(NaN, null, 'NaN');
+        expectParse(Infinity, null, 'Infinity');
+        expectParse(true, null, 'true');
+        expectParse({}, null, '{}');
+        expectParse([], null, '[]');
+        expectParse(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER,
+            'MAX_SAFE_INTEGER');
+        expectParse(Number.MAX_SAFE_INTEGER + 1, null, 'MAX_SAFE_INTEGER+1');
+
         if (errors.length > 0) {
+            // Constant-table errors are load-order bugs, not runtime
+            // degradations. Surface them loudly. The module still
+            // publishes so downstream callers do not throw on load,
+            // but the console warning is unmissable.
             console.warn('[TournamentConstants] Validation errors:', errors);
         }
 
@@ -445,6 +707,8 @@
     // ============================================================
 
     window.TournamentConstants = Object.freeze({
+        // Enums (re-exported from TournamentSchema when available;
+        // local fallback otherwise)
         VALID_STATUSES: VALID_STATUSES,
         VALID_MODES: VALID_MODES,
         VALID_MATCH_TYPES: VALID_MATCH_TYPES,
@@ -453,19 +717,31 @@
         VALID_RESULTS: VALID_RESULTS,
         VALID_GROUP_EXAM_RESULTS: VALID_GROUP_EXAM_RESULTS,
 
+        // Defaults
         DEFAULT_STATUS: DEFAULT_STATUS,
         DEFAULT_MODE: DEFAULT_MODE,
         DEFAULT_MATCH_TYPE: DEFAULT_MATCH_TYPE,
         DEFAULT_ROUND_MATCH_SIZE: DEFAULT_ROUND_MATCH_SIZE,
         DEFAULT_TOTAL_ROUNDS: DEFAULT_TOTAL_ROUNDS,
 
+        // Rules tables
         LIFECYCLE_RULES: LIFECYCLE_RULES,
         STATUS_TRANSITIONS: STATUS_TRANSITIONS,
         MODE_TO_PARTICIPANT_TYPE: MODE_TO_PARTICIPANT_TYPE,
 
+        // Label maps (read-only references; frozen above)
+        STATUS_LABELS: STATUS_LABELS,
+        MODE_LABELS: MODE_LABELS,
+        MATCH_STATUS_LABELS: MATCH_STATUS_LABELS,
+        MATCH_TYPE_LABELS: MATCH_TYPE_LABELS,
+        PARTICIPANT_TYPE_LABELS: PARTICIPANT_TYPE_LABELS,
+        RESULT_LABELS: RESULT_LABELS,
+
+        // Bounds (computed lazily from CalendarConstants)
         get MIN_WEEK() { return getComputedBounds().MIN_WEEK; },
         get MAX_WEEK() { return getComputedBounds().MAX_WEEK; },
 
+        // Enum validation
         isValidStatus: isValidStatus,
         isValidMode: isValidMode,
         isValidMatchType: isValidMatchType,
@@ -474,16 +750,34 @@
         isValidResult: isValidResult,
         isValidGroupExamResult: isValidGroupExamResult,
 
+        // Mode → participant type
         getCanonicalParticipantType: getCanonicalParticipantType,
         isParticipantTypeCanonical: isParticipantTypeCanonical,
 
+        // Lifecycle helpers
         getLifecycleRules: getLifecycleRules,
         isStatusTransitionAllowed: isStatusTransitionAllowed,
         getAllowedTransitions: getAllowedTransitions,
 
+        // Label lookups
+        getStatusLabel: getStatusLabel,
+        getModeLabel: getModeLabel,
+        getMatchStatusLabel: getMatchStatusLabel,
+        getMatchTypeLabel: getMatchTypeLabel,
+        getParticipantTypeLabel: getParticipantTypeLabel,
+        getResultLabel: getResultLabel,
+
+        // Integer parsing
+        parsePositiveInteger: parsePositiveInteger,
+
+        // Diagnostics
         checkDependencies: checkDependencies,
         validateConstants: validateConstants
     });
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
 
     (function verify() {
         var exports = window.TournamentConstants;
@@ -503,7 +797,10 @@
             'isValidMatchStatus', 'isValidParticipantType', 'isValidResult',
             'isValidGroupExamResult',
             'getCanonicalParticipantType', 'isParticipantTypeCanonical',
-            'getLifecycleRules', 'isStatusTransitionAllowed', 'getAllowedTransitions'
+            'getLifecycleRules', 'isStatusTransitionAllowed', 'getAllowedTransitions',
+            'getStatusLabel', 'getModeLabel', 'getMatchStatusLabel',
+            'getMatchTypeLabel', 'getParticipantTypeLabel', 'getResultLabel',
+            'parsePositiveInteger'
         ];
         for (var i = 0; i < requiredFns.length; i++) {
             if (typeof exports[requiredFns[i]] !== 'function') {
@@ -514,7 +811,9 @@
         var requiredConsts = [
             'VALID_STATUSES', 'VALID_MODES', 'VALID_MATCH_TYPES',
             'VALID_MATCH_STATUSES', 'VALID_PARTICIPANT_TYPES', 'VALID_RESULTS',
-            'LIFECYCLE_RULES', 'STATUS_TRANSITIONS', 'MODE_TO_PARTICIPANT_TYPE'
+            'LIFECYCLE_RULES', 'STATUS_TRANSITIONS', 'MODE_TO_PARTICIPANT_TYPE',
+            'STATUS_LABELS', 'MODE_LABELS', 'MATCH_STATUS_LABELS',
+            'MATCH_TYPE_LABELS', 'PARTICIPANT_TYPE_LABELS', 'RESULT_LABELS'
         ];
         for (var j = 0; j < requiredConsts.length; j++) {
             if (exports[requiredConsts[j]] === undefined) {

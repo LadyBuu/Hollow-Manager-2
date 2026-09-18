@@ -33,6 +33,7 @@
  *     TeamQueries                  (team identity)
  *     EliminationQueries           (cross-tournament elimination state)
  *     CharacterQueries             (participant name resolution)
+ *     TournamentConstants          (tournament vocabulary labels)
  *              │
  *              ▼
  *     AcademyTournamentAggregator  (this module)
@@ -43,6 +44,13 @@
  * NO INTERMEDIATE VM LAYER. The generic TournamentAggregator is gone.
  * This module reads the canonical tournament record directly and
  * produces exactly the projection the Academy Exams view needs.
+ *
+ * LABEL OWNERSHIP:
+ *   Tournament-vocabulary labels — status, mode, match status, match
+ *   type, participant type — live on TournamentConstants. This module
+ *   delegates to them. The result-category and outcome-display
+ *   helpers stay local, because they carry CSS class names, which
+ *   are presentation, not vocabulary.
  *
  * IDENTITY PRESERVATION:
  *   Round and match IDs pass through unchanged. They are the dispatch
@@ -112,6 +120,7 @@
  * DEPENDENCIES (MANDATORY):
  *   - window.AcademyUI
  *   - window.AcademyAggregator
+ *   - window.TournamentConstants
  *   - window.TournamentQueries
  *   - window.TournamentSchema
  *   - window.TeamQueries
@@ -138,6 +147,7 @@
 
     var AcademyUI = window.AcademyUI;
     var AcademyAggregator = window.AcademyAggregator;
+    var Constants = window.TournamentConstants;
     var TournamentQueries = window.TournamentQueries;
     var Schema = window.TournamentSchema;
     var TeamQueries = window.TeamQueries;
@@ -158,6 +168,15 @@
     if (!AcademyAggregator ||
         typeof AcademyAggregator.getClassStudentsViewModel !== 'function') {
         _missing.push('AcademyAggregator.getClassStudentsViewModel');
+    }
+
+    if (!Constants ||
+        typeof Constants.getStatusLabel !== 'function' ||
+        typeof Constants.getModeLabel !== 'function' ||
+        typeof Constants.getMatchStatusLabel !== 'function' ||
+        typeof Constants.getMatchTypeLabel !== 'function' ||
+        typeof Constants.getParticipantTypeLabel !== 'function') {
+        _missing.push('TournamentConstants label lookups');
     }
 
     if (!TournamentQueries ||
@@ -184,7 +203,6 @@
         typeof TournamentQueries.getFinalPassers !== 'function') {
         _missing.push('TournamentQueries.getFinalPassers');
     }
-    // C8 — prior-round derivation.
     if (!TournamentQueries ||
         typeof TournamentQueries.getPriorRoundOutcomes !== 'function') {
         _missing.push('TournamentQueries.getPriorRoundOutcomes');
@@ -193,10 +211,6 @@
     if (!Schema ||
         typeof Schema.isParticipantEliminated !== 'function') {
         _missing.push('TournamentSchema.isParticipantEliminated');
-    }
-    if (!Schema ||
-        typeof Schema.getParticipantTypeFromRecord !== 'function') {
-        _missing.push('TournamentSchema.getParticipantTypeFromRecord');
     }
 
     if (!TeamQueries ||
@@ -591,7 +605,7 @@
             id: String(participantId),
             name: getCharacterName(participantId),
             type: 'character',
-            typeLabel: 'Character',
+            typeLabel: getParticipantTypeLabel('character'),
             result: result || null,
             resultCategory: getResultCategory(result),
             outcomeDisplay: getOutcomeDisplay(resultValue),
@@ -712,16 +726,6 @@
     // ============================================================
     // FINAL PASSERS VM
     // ============================================================
-    //
-    // FIX (T4): participant type is resolved via
-    // TournamentQueries.getParticipantTypeFromRecord, which takes
-    // (tournamentId, participantId). The previous version called
-    // Schema.getParticipantTypeFromRecord with the same argument
-    // shape, but the Schema function expects a tournament OBJECT,
-    // not an ID. It returned null for every participant, and the
-    // fallback `|| 'character'` was applied unconditionally. For
-    // team-mode exams, whose final passers are team IDs, that
-    // caused getCharacterName(teamId) to return 'Unknown'.
 
     function buildFinalPassersVM(examId) {
         var ids = TournamentQueries.getFinalPassers(examId) || [];
@@ -938,45 +942,42 @@
     // ============================================================
     // LABEL HELPERS
     // ============================================================
+    //
+    // Tournament-vocabulary labels delegate to TournamentConstants,
+    // which owns the canonical mapping. These local wrappers exist
+    // only so internal call sites read as `getStatusLabel(...)`
+    // rather than `Constants.getStatusLabel(...)`.
+    //
+    // The result-category and outcome-display helpers stay local.
+    // They return CSS class names, which are presentation, not
+    // vocabulary. Constants does not own them.
 
     function getStatusLabel(status) {
-        switch (status) {
-            case 'draft':     return 'Draft';
-            case 'active':    return 'Active';
-            case 'completed': return 'Completed';
-            default:          return safeString(status);
-        }
+        return Constants.getStatusLabel(status);
     }
 
     function getModeLabel(mode) {
-        if (mode === 'teams') { return 'Teams'; }
-        if (mode === 'individuals') { return 'Individuals'; }
-        return '';
+        return Constants.getModeLabel(mode);
     }
 
     function getMatchStatusLabel(status) {
-        switch (status) {
-            case 'pending':     return 'Pending';
-            case 'in_progress': return 'In Progress';
-            case 'completed':   return 'Completed';
-            default:            return safeString(status);
-        }
+        return Constants.getMatchStatusLabel(status);
     }
 
     function getMatchTypeLabel(type) {
-        switch (type) {
-            case 'group_exam':   return 'Group Exam';
-            case 'team_vs_team': return 'Team Match';
-            default:             return safeString(type);
-        }
+        return Constants.getMatchTypeLabel(type);
     }
 
     function getParticipantTypeLabel(type) {
-        if (type === 'character') { return 'Character'; }
-        if (type === 'team') { return 'Team'; }
-        return 'Unknown';
+        return Constants.getParticipantTypeLabel(type);
     }
 
+    /**
+     * Result → category mapping for CSS styling. Presentation only.
+     * Lives here, not in Constants, because the category strings
+     * ('passed', 'retry', 'failed', 'unknown') carry rendering
+     * meaning.
+     */
     function getResultCategory(resultValue) {
         if (resultValue === 'pass') { return 'passed'; }
         if (resultValue === 'retry') { return 'retry'; }
@@ -984,6 +985,10 @@
         return 'unknown';
     }
 
+    /**
+     * Result → outcome display tuple for the UI. Presentation only.
+     * The `class` field carries CSS class names.
+     */
     function getOutcomeDisplay(outcome) {
         var map = {
             'pass':      { text: '\u2713', class: 'outcome-pass',    label: 'Pass' },
@@ -1003,8 +1008,8 @@
     // EXPOSE
     // ============================================================
 
-    window.AcademyTournamentAggregator = {
+    window.AcademyTournamentAggregator = Object.freeze({
         getExamViewModel: getExamViewModel
-    };
+    });
 
 })();

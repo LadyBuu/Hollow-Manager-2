@@ -24,7 +24,8 @@
  *   - Domain reads via window.data. TournamentQueries owns reads.
  *   - Identity computation. Queries and Schema own it.
  *   - Eligibility computation for the pool panel. The aggregator
- *     owns the pool VM.
+ *     owns the pool VM; the eligibility pool for the match picker
+ *     comes from TournamentQueries.getEligibleParticipants.
  *   - Collapse-state persistence. AcademyUI owns it; this layer
  *     only reads and writes through its typed API.
  *   - Partitioning. TournamentMatches owns the partition helpers.
@@ -109,10 +110,11 @@
  *   - window.AcademyTournamentView
  *   - window.AcademyClasses
  *   - window.TournamentCore
- *   - window.TournamentMatches            (T5 added generateMatchesTolerant)
- *   - window.TournamentQueries            (C8 added getPriorRoundOutcomes)
+ *   - window.TournamentMatches
+ *   - window.TournamentQueries            (C8 added getPriorRoundOutcomes;
+ *                                          this revision adds
+ *                                          getEligibleParticipants)
  *   - window.TournamentEliminationCascade
- *   - window.TournamentSchema
  *   - window.CharacterQueries
  *   - window.TeamQueries
  *   - window.MutationPipeline
@@ -140,7 +142,6 @@
     var TournamentMatches = window.TournamentMatches;
     var TournamentQueries = window.TournamentQueries;
     var EliminationCascade = window.TournamentEliminationCascade;
-    var Schema = window.TournamentSchema;
     var CharacterQueries = window.CharacterQueries;
     var TeamQueries = window.TeamQueries;
     var MutationPipeline = window.MutationPipeline;
@@ -276,14 +277,8 @@
     if (!TournamentMatches || typeof TournamentMatches.reopenMatch !== 'function') {
         _missing.push('TournamentMatches.reopenMatch');
     }
-    if (!TournamentMatches || typeof TournamentMatches.generateMatches !== 'function') {
-        _missing.push('TournamentMatches.generateMatches');
-    }
     if (!TournamentMatches || typeof TournamentMatches.generateMatchesTolerant !== 'function') {
         _missing.push('TournamentMatches.generateMatchesTolerant');
-    }
-    if (!TournamentMatches || typeof TournamentMatches.getEligibleParticipants !== 'function') {
-        _missing.push('TournamentMatches.getEligibleParticipants');
     }
     if (!TournamentQueries || typeof TournamentQueries.getTournament !== 'function') {
         _missing.push('TournamentQueries.getTournament');
@@ -301,14 +296,15 @@
         typeof TournamentQueries.getPriorRoundOutcomes !== 'function') {
         _missing.push('TournamentQueries.getPriorRoundOutcomes');
     }
+    if (!TournamentQueries ||
+        typeof TournamentQueries.getEligibleParticipants !== 'function') {
+        _missing.push('TournamentQueries.getEligibleParticipants');
+    }
     if (!EliminationCascade ||
         typeof EliminationCascade.restoreCharacterElimination !== 'function') {
         _missing.push(
             'TournamentEliminationCascade.restoreCharacterElimination'
         );
-    }
-    if (!Schema || typeof Schema.findRoundById !== 'function') {
-        _missing.push('TournamentSchema.findRoundById');
     }
     if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
         _missing.push('CharacterQueries.getCharacterById');
@@ -535,7 +531,7 @@
     // ============================================================
 
     function buildEligibleForNewMatch(examId, roundId) {
-        var rawIds = TournamentMatches.getEligibleParticipants(examId)
+        var rawIds = TournamentQueries.getEligibleParticipants(examId)
             || [];
         var exam = TournamentQueries.getTournament(examId);
         if (!exam) { return []; }
@@ -1591,7 +1587,7 @@
     // EXPOSE
     // ============================================================
 
-    window.AcademyTournamentEvents = {
+    window.AcademyTournamentEvents = Object.freeze({
         setOnChangeCallback: setOnChangeCallback,
 
         createExam: createExam,
@@ -1614,7 +1610,7 @@
         restoreEliminatedParticipant: restoreEliminatedParticipant,
 
         completeExam: completeExam
-    };
+    });
 
     // ============================================================
     // VERIFICATION

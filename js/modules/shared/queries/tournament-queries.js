@@ -13,6 +13,7 @@
  *   - Final passers derivation
  *   - Type/status lookups
  *   - Prior-round outcome derivation (for the Exam picker indicator)
+ *   - Eligibility reads (getEligibleParticipants and friends)
  *
  * IDENTITY:
  *   Rounds and matches are identified by stable IDs, not indices.
@@ -22,6 +23,30 @@
  *   Positional ordering is provided as a separate concern via
  *   getRoundIndex / getMatchIndex. Those return display-order
  *   positions; they are NOT identity.
+ *
+ * READ-PATH CLONING:
+ *   Every public read returns a DEEP CLONE. The caller cannot mutate
+ *   the live store through the returned reference.
+ *
+ *   Internal resolution goes through the *Internal find* functions
+ *   (Schema.findRoundByIdInternal, findMatchByIdInternal) on a LIVE
+ *   reference, and the clone happens once at the boundary. This
+ *   replaces the previous behaviour where a single getRound call
+ *   cloned the tournament (via getTournament), then cloned the round
+ *   (via Schema.findRoundById), then the caller wrapped the result.
+ *   The clone chain was three deep on every round lookup; the exams
+ *   view calls it in loops.
+ *
+ * ELIMINATION READS:
+ *   isParticipantEliminated, getEliminationRecord, and
+ *   getEliminationCount all delegate to the same backing shape. The
+ *   predicate delegates to Schema.isParticipantEliminated on the
+ *   tournament record; the record lookup walks the eliminations
+ *   array directly.
+ *
+ *   Before this revision, the predicate reimplemented the Schema
+ *   logic inline. The delegation closes the drift risk: if the
+ *   elimination shape ever changes, there is one place to change it.
  *
  * ARCHIVED TOURNAMENTS:
  *   A tournament with a non-null `archivedAt` is considered archived.
@@ -48,8 +73,32 @@
  *   - 'retry' : advanced but not successful
  *   - 'fail'  : not advanced; eliminated from this tournament
  *
+ * EXPORT SURFACE (v2, trimmed):
+ *   Removed from the public export in this revision (kept as private
+ *   helpers where referenced internally):
+ *
+ *     - getMatchFailers
+ *         Convenience predicate. No caller in the tournament module.
+ *     - getTournamentStatistics
+ *         Diagnostic aggregate. No caller in the tournament module.
+ *     - getEliminationsByRound
+ *         Provenance filter. Documented as a debug/audit helper.
+ *     - getEliminationsByMatch
+ *         Same.
+ *
+ *   Deleted outright in this revision:
+ *     - getMatchPassers
+ *         Pure alias of getMatchAdvancing. Two names for one
+ *         function; the alias was gratuitous.
+ *
+ *   Added in this revision:
+ *     - getEligibleParticipants
+ *         Moved here from TournamentMatches. It is a read, and the
+ *         query module is where reads live.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.TournamentSchema
+ *   - window.TournamentRules
  *   - window.CalendarValidation
  *   - window.ObjectUtils
  */
@@ -66,6 +115,7 @@
     // ============================================================
 
     var Schema = window.TournamentSchema;
+    var Rules = window.TournamentRules;
     var CalendarValidation = window.CalendarValidation;
     var ObjectUtils = window.ObjectUtils;
 
@@ -74,8 +124,14 @@
     if (!Schema || typeof Schema.findRoundById !== 'function') {
         _missing.push('TournamentSchema.findRoundById');
     }
+    if (!Schema || typeof Schema.findRoundByIdInternal !== 'function') {
+        _missing.push('TournamentSchema.findRoundByIdInternal');
+    }
     if (!Schema || typeof Schema.findMatchById !== 'function') {
         _missing.push('TournamentSchema.findMatchById');
+    }
+    if (!Schema || typeof Schema.findMatchByIdInternal !== 'function') {
+        _missing.push('TournamentSchema.findMatchByIdInternal');
     }
     if (!Schema || typeof Schema.findRoundIndexById !== 'function') {
         _missing.push('TournamentSchema.findRoundIndexById');
@@ -100,6 +156,18 @@
     }
     if (!Schema || typeof Schema.normaliseId !== 'function') {
         _missing.push('TournamentSchema.normaliseId');
+    }
+    if (!Schema || typeof Schema.isParticipantEliminated !== 'function') {
+        _missing.push('TournamentSchema.isParticipantEliminated');
+    }
+    if (!Schema || typeof Schema.getParticipantTypeFromRecord !== 'function') {
+        _missing.push('TournamentSchema.getParticipantTypeFromRecord');
+    }
+    if (!Schema || typeof Schema.isParticipantInTournament !== 'function') {
+        _missing.push('TournamentSchema.isParticipantInTournament');
+    }
+    if (!Rules || typeof Rules.isParticipantEligible !== 'function') {
+        _missing.push('TournamentRules.isParticipantEligible');
     }
     if (!CalendarValidation ||
         typeof CalendarValidation.parseWeek !== 'function') {
@@ -163,6 +231,30 @@
                tournament.archivedAt !== '';
     }
 
+    /**
+     * Find a LIVE tournament reference in the store by ID.
+     * Returns null when absent.
+     *
+     * Internal helper. The public getTournament clones the result.
+     */
+    function findLiveTournamentById(id) {
+        var normalised = normaliseId(id);
+        if (normalised === null) {
+            return null;
+        }
+        var store = getStore();
+        if (!store) {
+            return null;
+        }
+        for (var i = 0; i < store.length; i++) {
+            var t = store[i];
+            if (t && normaliseId(t.id) === normalised) {
+                return t;
+            }
+        }
+        return null;
+    }
+
     // ============================================================
     // TOURNAMENT READS
     // ============================================================
@@ -177,23 +269,8 @@
      * @returns {object|null} Defensive clone, or null.
      */
     function getTournament(id) {
-        var normalised = normaliseId(id);
-        if (normalised === null) {
-            return null;
-        }
-
-        var store = getStore();
-        if (!store) {
-            return null;
-        }
-
-        for (var i = 0; i < store.length; i++) {
-            var t = store[i];
-            if (t && normaliseId(t.id) === normalised) {
-                return deepClone(t);
-            }
-        }
-        return null;
+        var live = findLiveTournamentById(id);
+        return live ? deepClone(live) : null;
     }
 
     /**
@@ -399,24 +476,29 @@
         return null;
     }
 
+    /**
+     * Get the persisted participant type for a participant in a
+     * tournament. Delegates to Schema's record lookup.
+     */
     function getParticipantTypeFromRecord(tournamentId, participantId) {
         var normalised = normaliseId(participantId);
         if (normalised === null) {
             return null;
         }
         var tournament = getTournament(tournamentId);
-        if (!tournament || !Array.isArray(tournament.participants)) {
+        if (!tournament) {
             return null;
         }
-        for (var i = 0; i < tournament.participants.length; i++) {
-            var p = tournament.participants[i];
-            if (p && normaliseId(p.id) === normalised) {
-                return p.type || null;
-            }
-        }
-        return null;
+        return Schema.getParticipantTypeFromRecord(
+            tournament,
+            normalised
+        );
     }
 
+    /**
+     * Is the participant in the tournament, and (optionally) of the
+     * expected type? Delegates to Schema's record lookup.
+     */
     function isParticipantInTournament(
         tournamentId,
         participantId,
@@ -427,22 +509,14 @@
             return false;
         }
         var tournament = getTournament(tournamentId);
-        if (!tournament || !Array.isArray(tournament.participants)) {
+        if (!tournament) {
             return false;
         }
-        for (var i = 0; i < tournament.participants.length; i++) {
-            var p = tournament.participants[i];
-            if (!p) { continue; }
-            if (normaliseId(p.id) === normalised) {
-                if (participantType !== undefined &&
-                    participantType !== null) {
-                    if (p.type === participantType) { return true; }
-                } else {
-                    return true;
-                }
-            }
-        }
-        return false;
+        return Schema.isParticipantInTournament(
+            tournament,
+            normalised,
+            participantType
+        );
     }
 
     function getActiveParticipants(tournamentId) {
@@ -456,6 +530,89 @@
             if (!p) { continue; }
             if (!isParticipantEliminated(tournamentId, p.id)) {
                 result.push(deepClone(p));
+            }
+        }
+        return result;
+    }
+
+    // ============================================================
+    // ELIGIBILITY READS
+    // ============================================================
+    //
+    // Moved here from TournamentMatches in this revision. These are
+    // reads; they belong on the query surface.
+    //
+    // The eligibility predicate is fail-closed against elimination:
+    // a participant eliminated as of the tournament's endWeek is not
+    // eligible. The endWeek is the elimination week for every match
+    // in the tournament.
+
+    /**
+     * Is the participant eligible for a new match?
+     *
+     * A participant is eligible when they are:
+     *   - in the tournament's participant list
+     *   - not eliminated (Schema.isParticipantEliminated)
+     *   - not recorded as failing in any completed match
+     *     (belt-and-braces; the elimination record is the primary
+     *     source of truth, and this second check catches an
+     *     elimination record that was somehow missed)
+     */
+    function isEligibleForNewMatch(tournamentId, participantId) {
+        if (!participantId) { return false; }
+
+        if (!isParticipantInTournament(tournamentId, participantId)) {
+            return false;
+        }
+
+        if (isParticipantEliminated(tournamentId, participantId)) {
+            return false;
+        }
+
+        var tournament = getTournament(tournamentId);
+        if (!tournament || !Array.isArray(tournament.rounds)) {
+            return true;
+        }
+
+        for (var r = 0; r < tournament.rounds.length; r++) {
+            var round = tournament.rounds[r];
+            if (!round || !Array.isArray(round.matches)) { continue; }
+            for (var m = 0; m < round.matches.length; m++) {
+                var match = round.matches[m];
+                if (!match || match.status !== 'completed') { continue; }
+
+                if (match.type === 'team_vs_team') {
+                    var tr = match.teamResults || {};
+                    if (tr[participantId] === 'fail') {
+                        return false;
+                    }
+                } else {
+                    var rr = match.results || {};
+                    if (rr[participantId] === 'fail') {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Get the participant IDs eligible for a new match in the given
+     * tournament. Returns a fresh array of strings.
+     */
+    function getEligibleParticipants(tournamentId) {
+        var tournament = getTournament(tournamentId);
+        if (!tournament || !Array.isArray(tournament.participants)) {
+            return [];
+        }
+        var result = [];
+        for (var i = 0; i < tournament.participants.length; i++) {
+            var p = tournament.participants[i];
+            if (!p || !p.id) { continue; }
+            if (isEligibleForNewMatch(tournamentId, p.id)) {
+                result.push(String(p.id));
             }
         }
         return result;
@@ -483,6 +640,14 @@
 
     /**
      * Get a round by its stable id.
+     *
+     * READ-PATH NOTE:
+     *   The live tournament is resolved once, the round is found via
+     *   the internal lookup (live reference), and the round is
+     *   cloned once at the boundary. The previous implementation
+     *   cloned the tournament (via getTournament), then cloned the
+     *   round (via Schema.findRoundById), for two clones per call.
+     *
      * @returns {object|null} A defensive clone, or null.
      */
     function getRound(tournamentId, roundId) {
@@ -490,12 +655,15 @@
         if (normalisedRound === null) {
             return null;
         }
-        var tournament = getTournament(tournamentId);
-        if (!tournament || !Array.isArray(tournament.rounds)) {
+        var liveTournament = findLiveTournamentById(tournamentId);
+        if (!liveTournament || !Array.isArray(liveTournament.rounds)) {
             return null;
         }
-        var round = Schema.findRoundById(tournament, normalisedRound);
-        return round ? deepClone(round) : null;
+        var live = Schema.findRoundByIdInternal(
+            liveTournament,
+            normalisedRound
+        );
+        return live ? deepClone(live) : null;
     }
 
     /**
@@ -509,11 +677,14 @@
         if (normalisedRound === null) {
             return -1;
         }
-        var tournament = getTournament(tournamentId);
-        if (!tournament || !Array.isArray(tournament.rounds)) {
+        var liveTournament = findLiveTournamentById(tournamentId);
+        if (!liveTournament || !Array.isArray(liveTournament.rounds)) {
             return -1;
         }
-        return Schema.findRoundIndexById(tournament, normalisedRound);
+        return Schema.findRoundIndexById(
+            liveTournament,
+            normalisedRound
+        );
     }
 
     // ============================================================
@@ -536,6 +707,14 @@
 
     /**
      * Get a single match by its stable id.
+     *
+     * READ-PATH NOTE:
+     *   The live tournament is resolved once, the round is found via
+     *   the internal lookup, the match is found via the internal
+     *   lookup, and the match is cloned once at the boundary. The
+     *   previous implementation went through getRound, which went
+     *   through getTournament, resulting in three clones per call.
+     *
      * @returns {object|null} A defensive clone, or null.
      */
     function getMatch(tournamentId, roundId, matchId) {
@@ -543,12 +722,22 @@
         if (normalisedMatch === null) {
             return null;
         }
-        var round = getRound(tournamentId, roundId);
-        if (!round || !Array.isArray(round.matches)) {
+        var liveTournament = findLiveTournamentById(tournamentId);
+        if (!liveTournament || !Array.isArray(liveTournament.rounds)) {
             return null;
         }
-        var match = Schema.findMatchById(round, normalisedMatch);
-        return match ? deepClone(match) : null;
+        var liveRound = Schema.findRoundByIdInternal(
+            liveTournament,
+            roundId
+        );
+        if (!liveRound || !Array.isArray(liveRound.matches)) {
+            return null;
+        }
+        var live = Schema.findMatchByIdInternal(
+            liveRound,
+            normalisedMatch
+        );
+        return live ? deepClone(live) : null;
     }
 
     /**
@@ -562,11 +751,18 @@
         if (normalisedMatch === null) {
             return -1;
         }
-        var round = getRound(tournamentId, roundId);
-        if (!round || !Array.isArray(round.matches)) {
+        var liveTournament = findLiveTournamentById(tournamentId);
+        if (!liveTournament || !Array.isArray(liveTournament.rounds)) {
             return -1;
         }
-        return Schema.findMatchIndexById(round, normalisedMatch);
+        var liveRound = Schema.findRoundByIdInternal(
+            liveTournament,
+            roundId
+        );
+        if (!liveRound || !Array.isArray(liveRound.matches)) {
+            return -1;
+        }
+        return Schema.findMatchIndexById(liveRound, normalisedMatch);
     }
 
     function getMatchCount(tournamentId, roundId) {
@@ -709,10 +905,8 @@
         return Schema.deriveAdvancing(match);
     }
 
-    function getMatchPassers(tournamentId, roundId, matchId) {
-        return getMatchAdvancing(tournamentId, roundId, matchId);
-    }
-
+    // Private helper. Kept for internal use; a caller that wants the
+    // full result map uses getMatchResults above.
     function getMatchFailers(tournamentId, roundId, matchId) {
         var match = getMatch(tournamentId, roundId, matchId);
         if (!match) { return []; }
@@ -904,14 +1098,24 @@
         return null;
     }
 
+    /**
+     * Is the participant eliminated from the tournament?
+     * Delegates to Schema.isParticipantEliminated on the tournament
+     * record. The delegation closes the drift risk: if the
+     * elimination shape changes, Schema is the one place to change
+     * it.
+     */
     function isParticipantEliminated(tournamentId, participantId) {
-        return getEliminationRecord(tournamentId, participantId) !== null;
+        var normalised = normaliseId(participantId);
+        if (normalised === null) { return false; }
+        var tournament = getTournament(tournamentId);
+        if (!tournament) { return false; }
+        return Schema.isParticipantEliminated(tournament, normalised);
     }
 
-    /**
-     * Get eliminations produced by a specific round.
-     * Useful for debugging and for round-level reversal audits.
-     */
+    // Private helper. Documented as a debug/audit read. Kept for
+    // internal use; a caller that wants provenance filtering walks
+    // getEliminations and filters by fromRoundId.
     function getEliminationsByRound(tournamentId, roundId) {
         var normalised = normaliseId(roundId);
         if (normalised === null) { return []; }
@@ -927,9 +1131,7 @@
         return result;
     }
 
-    /**
-     * Get eliminations produced by a specific match.
-     */
+    // Private helper. Same reasoning as getEliminationsByRound.
     function getEliminationsByMatch(tournamentId, matchId) {
         var normalised = normaliseId(matchId);
         if (normalised === null) { return []; }
@@ -962,6 +1164,8 @@
     // ============================================================
     // STATISTICS
     // ============================================================
+    //
+    // Private helper. Diagnostic aggregate. Kept for internal use.
 
     function getTournamentStatistics(tournamentId) {
         var tournament = getTournament(tournamentId);
@@ -1045,7 +1249,7 @@
     // EXPOSE
     // ============================================================
 
-    window.TournamentQueries = {
+    window.TournamentQueries = Object.freeze({
         // Tournament reads
         getTournament: getTournament,
         getTournaments: getTournaments,
@@ -1066,6 +1270,10 @@
         isParticipantInTournament: isParticipantInTournament,
         getActiveParticipants: getActiveParticipants,
 
+        // Eligibility reads
+        isEligibleForNewMatch: isEligibleForNewMatch,
+        getEligibleParticipants: getEligibleParticipants,
+
         // Round reads — by ID
         getRounds: getRounds,
         getRound: getRound,
@@ -1084,8 +1292,6 @@
         getIndividualResults: getIndividualResults,
         getPairings: getPairings,
         getMatchAdvancing: getMatchAdvancing,
-        getMatchPassers: getMatchPassers,
-        getMatchFailers: getMatchFailers,
 
         // Prior-round outcomes (for the Exam picker indicator)
         getPriorRoundOutcomes: getPriorRoundOutcomes,
@@ -1095,22 +1301,17 @@
         getEliminationCount: getEliminationCount,
         getEliminationRecord: getEliminationRecord,
         isParticipantEliminated: isParticipantEliminated,
-        getEliminationsByRound: getEliminationsByRound,
-        getEliminationsByMatch: getEliminationsByMatch,
 
         // Final passers
         getFinalPassers: getFinalPassers,
         getFinalPasserCount: getFinalPasserCount,
-
-        // Statistics
-        getTournamentStatistics: getTournamentStatistics,
 
         // Type / status helpers
         isValidTournamentStatus: isValidTournamentStatus,
         isValidMatchType: isValidMatchType,
         isValidResult: isValidResult,
         validateTournament: validateTournament
-    };
+    });
 
     // ============================================================
     // VERIFICATION
@@ -1129,18 +1330,16 @@
             'getParticipants', 'getParticipant', 'getParticipantIds',
             'getParticipantCount', 'getParticipantTypeFromRecord',
             'isParticipantInTournament', 'getActiveParticipants',
+            'isEligibleForNewMatch', 'getEligibleParticipants',
             'getRounds', 'getRound', 'getRoundCount', 'getRoundIndex',
             'getMatches', 'getMatch', 'getMatchCount', 'getMatchIndex',
             'isMatchComplete', 'getParticipantResult',
             'getMatchResults', 'getTeamResults', 'getIndividualResults',
-            'getPairings', 'getMatchAdvancing', 'getMatchPassers',
-            'getMatchFailers',
+            'getPairings', 'getMatchAdvancing',
             'getPriorRoundOutcomes',
             'getEliminations', 'getEliminationCount',
             'getEliminationRecord', 'isParticipantEliminated',
-            'getEliminationsByRound', 'getEliminationsByMatch',
             'getFinalPassers', 'getFinalPasserCount',
-            'getTournamentStatistics',
             'isValidTournamentStatus', 'isValidMatchType',
             'isValidResult', 'validateTournament'
         ];

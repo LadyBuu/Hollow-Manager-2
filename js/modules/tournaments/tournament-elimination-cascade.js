@@ -33,7 +33,7 @@
  *   effects, and that is not what these functions do.
  *
  *   What they DO guarantee:
- *     - They never touch window.data.
+ *     - They never touch window.data for domain reads.
  *     - They never enter the pipeline.
  *     - They never call saveData().
  *     - They operate only on the appData they are given.
@@ -43,14 +43,28 @@
  * CACHE MAINTENANCE:
  *   character.eliminatedWeeks[] is a derived cache. Its single
  *   implementation lives in EliminationQueries.rebuildEliminatedWeeks.
- *   This module calls it after every write or removal. Both this
- *   module and AcademyEliminations share the one implementation.
+ *   This module calls it directly after every write or removal. There
+ *   is no local re-export and no wrapper. Both this module and
+ *   AcademyEliminations call the same function by the same name.
  *
  * YEAR STAMPING (v25+):
  *   Every character-side elimination record carries a `year` — the
  *   year the character was eliminated. The year is resolved from the
  *   tournament's graduatingClassId → class.year. When the class year
  *   cannot be resolved, currentYear is used and a warning is logged.
+ *
+ *   Resolution order:
+ *     1. appData.academy.graduatingClasses[graduatingClassId].year
+ *     2. appData.currentYear
+ *     3. window.data.currentYear (with a warning)
+ *     4. The current calendar year
+ *
+ *   Steps 2 and 3 both read a "current year" scalar. Step 2 reads it
+ *   from the transaction snapshot; step 3 reads it from the live
+ *   store. Step 2 exists so that the transaction-local helper does
+ *   not have to reach outside its own snapshot in the common case.
+ *   Step 3 is the fallback for pipelines whose snapshot does not
+ *   carry a currentYear.
  *
  *   The tournament-side record also carries `year` for consistency,
  *   though its primary key is still the tournament's own identity.
@@ -82,10 +96,6 @@
  *     record for a tournament, on both sides. Used when a
  *     tournament's endWeek changes, because the elimination week is
  *     derived from endWeek and must move with it.
- *
- *   rebuildEliminatedWeeks(character)
- *     Forwarding wrapper. Delegates to
- *     EliminationQueries.rebuildEliminatedWeeks.
  *
  * PROVENANCE:
  *   Every elimination written by applyFailEliminations carries:
@@ -151,18 +161,6 @@
  *       caller (TournamentMatches.completeMatch) is responsible for
  *       ensuring the map only contains legitimate members.
  *
- *   Previous behaviour (bug, fixed in v21):
- *     getFailingParticipantIds rejected any ID that was not in
- *     match.participants, unconditionally. For team matches, the
- *     individual results are keyed by characters, which are not
- *     participants, so every entry was silently dropped and no
- *     character was ever eliminated. This is the bug that this
- *     version fixes.
- *
- *   v24 fix: unknown match types now THROW rather than falling
- *   through to group_exam semantics. A malformed record should fail
- *   the enclosing transaction, not generate pseudo-eliminations.
- *
  * TEAM MATCH SEMANTICS:
  *   For 'team_vs_team' matches, ONLY individualResults[charId] ===
  *   'fail' triggers a character elimination. teamResults[] never
@@ -201,9 +199,16 @@
  *
  *   `reversed` counts RECORDS removed, not characters touched.
  *   `characterIds` is the list of characters whose records changed.
- *   The two can diverge only if a malformed character had two
- *   matching elimination records; the invariant is one per
- *   (characterId, tournamentId).
+ *
+ * EXPORT SURFACE (v2, trimmed):
+ *   Removed from the public export in this revision:
+ *     - rebuildEliminatedWeeks
+ *         Forwarding wrapper around
+ *         EliminationQueries.rebuildEliminatedWeeks. The wrapper
+ *         was a leftover from the E4 fold. This module now calls
+ *         EliminationQueries.rebuildEliminatedWeeks directly.
+ *     - getFailingParticipantIds
+ *         Exposed "for testing". Kept as a private helper.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.IdUtils              (elimination record IDs on the
@@ -312,14 +317,16 @@
     }
 
     /**
-     * Rebuild character.eliminatedWeeks[] from character.eliminations[].
+     * Rebuild character.eliminatedWeeks[] from
+     * character.eliminations[].
      *
-     * Delegates to EliminationQueries.rebuildEliminatedWeeks, which is
-     * the single implementation shared by this module and
+     * Delegates directly to EliminationQueries.rebuildEliminatedWeeks,
+     * which is the single implementation shared by this module and
      * AcademyEliminations.
      *
-     * Exposed on this module's public surface as a forwarding wrapper
-     * for callers that already reference it here.
+     * This is a private helper. It does not re-export the function;
+     * callers that want the query-level function call
+     * EliminationQueries.rebuildEliminatedWeeks directly.
      */
     function rebuildEliminatedWeeks(character) {
         EliminationQueries.rebuildEliminatedWeeks(character);
@@ -333,17 +340,24 @@
     // year the character was eliminated. Resolution order:
     //
     //   1. The tournament's graduatingClassId → class.year.
-    //   2. window.data.currentYear.
-    //   3. The current calendar year.
+    //   2. appData.currentYear.
+    //   3. window.data.currentYear.
+    //   4. The current calendar year.
     //
-    // Step 2 logs a warning. A missing class year is a data-quality
-    // signal, not a silent default.
+    // Step 2 reads the transaction snapshot; step 3 is the fallback
+    // for pipelines whose snapshot does not carry a currentYear. In
+    // the common case, step 2 satisfies the read and this helper
+    // never touches window.data.
+    //
+    // Steps 3 and 4 log a warning. A missing class year is a
+    // data-quality signal, not a silent default.
 
     function getAcademyClasses() {
         return window.AcademyClasses || null;
     }
 
     function resolveEliminationYear(appData, tournament) {
+        // ---- 1. Class year from the tournament's graduatingClassId.
         if (tournament && tournament.graduatingClassId && appData &&
             appData.academy && appData.academy.graduatingClasses) {
             var cls = appData.academy.graduatingClasses[
@@ -357,6 +371,13 @@
             }
         }
 
+        // ---- 2. currentYear from the transaction snapshot.
+        if (appData && typeof appData.currentYear === 'number' &&
+            isFinite(appData.currentYear) && appData.currentYear > 0) {
+            return Math.floor(appData.currentYear);
+        }
+
+        // ---- 3. currentYear from the live store (with a warning).
         var data = window.data || {};
         if (typeof data.currentYear === 'number' &&
             isFinite(data.currentYear) &&
@@ -370,6 +391,7 @@
             return Math.floor(data.currentYear);
         }
 
+        // ---- 4. Calendar year (with a warning).
         console.warn(
             '[TournamentEliminationCascade] Tournament "' +
             (tournament ? tournament.id : 'unknown') +
@@ -416,16 +438,16 @@
      *     eliminate the team's members. Only individualResults
      *     drives character elimination.
      *
-     * [FIX-C3] Unknown match types THROW. Previously they fell
-     * through to group_exam semantics, which could generate nonsense
-     * eliminations from malformed data. This is an internal
-     * transaction helper; a contract violation should fail the
-     * enclosing transaction.
+     *   Unknown match types THROW. Previously they fell through to
+     *   group_exam semantics, which could generate nonsense
+     *   eliminations from malformed data. This is an internal
+     *   transaction helper; a contract violation should fail the
+     *   enclosing transaction.
      *
      * The result is de-duplicated. Only IDs that normalise to a
      * non-empty string are returned.
      *
-     * Exposed for testing.
+     * Private helper. Not exported.
      */
     function getFailingParticipantIds(match) {
         if (!match || typeof match !== 'object') {
@@ -479,7 +501,7 @@
             return failures;
         }
 
-        // [FIX-C3] Unknown type. Do NOT guess.
+        // Unknown type. Do NOT guess.
         throw new Error(
             '[TournamentEliminationCascade] Unsupported match type: "' +
             type + '". Expected "group_exam" or "team_vs_team".'
@@ -529,13 +551,10 @@
      * Remove character-side eliminations matching a predicate.
      * Returns { count, characterIds }.
      *
-     * [FIX-C1] The predicate receives BOTH the elimination record
-     * AND the containing character. This makes it possible to scope
-     * a removal to a specific character, which the manual-restore
-     * path needs. Previously the predicate only saw the elimination,
-     * so a restore by (tournamentId, characterId) had no way to
-     * check the character ID and removed the tournament's
-     * eliminations from every character.
+     * The predicate receives BOTH the elimination record AND the
+     * containing character. This makes it possible to scope a
+     * removal to a specific character, which the manual-restore
+     * path needs.
      *
      * Counts elimination RECORDS removed, not characters touched.
      */
@@ -598,14 +617,12 @@
      *   - character.eliminatedWeeks[] is rebuilt after any write.
      *   - Standalone eliminations are NOT touched.
      *
-     * [FIX-C2] Every failing character MUST exist in the snapshot.
-     * If a character ID does not resolve, this function THROWS. The
+     * Every failing character MUST exist in the snapshot. If a
+     * character ID does not resolve, this function THROWS. The
      * previous behaviour (silently skip the character-side write and
      * still report written: 1) could produce a "successful"
      * elimination that only half-existed — tournament-side record
-     * present, character-side record absent. That asymmetry is
-     * exactly the shape that lets an eliminated character still
-     * appear in Academy eligibility views.
+     * present, character-side record absent.
      *
      * THROWS on missing/invalid inputs. A caller that violates the
      * contract fails the enclosing transaction.
@@ -681,7 +698,7 @@
         for (var f = 0; f < failingIds.length; f++) {
             var charId = failingIds[f];
 
-            // [FIX-C2] Character MUST exist. Enforce both-sides-or-throw.
+            // Character MUST exist. Enforce both-sides-or-throw.
             var char = findCharacterInSnapshot(appData, charId);
             if (!char) {
                 throw new Error(
@@ -745,7 +762,8 @@
             });
 
             // ---- Write character-side record ----
-            // The character is guaranteed to exist by [FIX-C2].
+            // The character is guaranteed to exist by the earlier
+            // check.
             if (!Array.isArray(char.eliminations)) {
                 char.eliminations = [];
             }
@@ -946,11 +964,10 @@
      *
      * Standalone eliminations are NOT touched.
      *
-     * [FIX-C1] Character-side removal is scoped to BOTH the
-     * tournament AND the target character. The previous version
-     * checked only the tournament ID, so restoring one character
-     * from a tournament also removed every other character's
-     * eliminations for that tournament.
+     * Character-side removal is scoped to BOTH the tournament AND
+     * the target character. Checking only the tournament ID would
+     * mean restoring one character from a tournament also removed
+     * every other character's eliminations for that tournament.
      *
      * Called from AcademyTournamentEvents.restoreEliminatedParticipant
      * inside a MutationPipeline transaction.
@@ -1001,8 +1018,8 @@
         }
 
         // Character side: remove by (tournamentId, characterId).
-        // [FIX-C1] The predicate now receives the containing
-        // character, so the removal is scoped to BOTH IDs.
+        // The predicate receives the containing character, so the
+        // removal is scoped to BOTH IDs.
         var characterResult = removeCharacterEliminationsBy(
             appData,
             function(e, character) {
@@ -1035,9 +1052,7 @@
     //   The alternative — "eliminations keep the week they were
     //   created with" — is wrong here, because it would leave every
     //   elimination record stamped with a week that no longer
-    //   matches the exam it belongs to. Any UI that surfaces
-    //   "eliminated on week X" would show an X that disagrees with
-    //   the exam header.
+    //   matches the exam it belongs to.
     //
     // SCOPE:
     //   - Tournament-side: every record in
@@ -1076,10 +1091,6 @@
      * @param {number|string} newWeek - The new week; integer in
      *   [MIN_WEEK, MAX_WEEK]
      * @returns {object} { shifted, characterIds }
-     *   - shifted is the number of elimination RECORDS updated on
-     *     both sides combined.
-     *   - characterIds is the list of characters whose
-     *     eliminatedWeeks cache was rebuilt.
      */
     function shiftTournamentEliminationWeeks(
         appData,
@@ -1172,7 +1183,7 @@
     // EXPOSE
     // ============================================================
 
-    window.TournamentEliminationCascade = {
+    window.TournamentEliminationCascade = Object.freeze({
         // Writes
         applyFailEliminations: applyFailEliminations,
 
@@ -1186,12 +1197,8 @@
 
         // Week shift (T8)
         shiftTournamentEliminationWeeks:
-            shiftTournamentEliminationWeeks,
-
-        // Exposed for testing / advanced callers
-        getFailingParticipantIds: getFailingParticipantIds,
-        rebuildEliminatedWeeks: rebuildEliminatedWeeks
-    };
+            shiftTournamentEliminationWeeks
+    });
 
     // ============================================================
     // VERIFICATION
@@ -1207,9 +1214,7 @@
             'reverseRoundEliminations',
             'reverseTournamentEliminations',
             'restoreCharacterElimination',
-            'shiftTournamentEliminationWeeks',
-            'getFailingParticipantIds',
-            'rebuildEliminatedWeeks'
+            'shiftTournamentEliminationWeeks'
         ];
 
         for (var i = 0; i < required.length; i++) {
