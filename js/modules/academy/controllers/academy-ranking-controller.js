@@ -5,23 +5,26 @@
  * Path: js/modules/academy/controllers/academy-ranking-controller.js
  *
  * The Rankings feature controller. Owns the Rankings view: its
- * render, its class selection, and its row-click navigation to the
- * People view.
+ * render, and its row-click navigation to the People view.
  *
  * WHAT THIS OWNS:
  *   - Rendering the Rankings view into the shell's content host.
  *   - Handling clicks, changes, inputs, and keydowns routed by the
  *     shell for events that occur inside the host.
- *   - The ranking class selection (_selectedRankingClassId) —
- *     feature state. Defaults to the shell's People-view class
- *     selection when no ranking class has been chosen yet.
  *   - Row-click navigation to People, delegated to the shell via
  *     context.onOpenCharacterInPeople.
  *
  * WHAT THIS DOES NOT OWN:
  *   - The content host. The shell provides it.
- *   - The display week. The controller reads it from AcademyUI on
- *     each render via context.week (with an AcademyUI fallback).
+ *   - The week. The shell owns it; the controller reads it from
+ *     AcademyUI on each render via context.week, falling back to
+ *     AcademyUI.getDisplayWeek() if context does not carry one.
+ *   - The class selection. That is SHARED Academy state, owned by
+ *     AcademyUI. This controller reads AcademyUI.getSelectedClassId()
+ *     on every render and routes class changes through
+ *     AcademyUI.selectClass(). It holds no local class field, so a
+ *     class chosen in any other Academy view is honoured here, and a
+ *     class chosen here is honoured by every other view.
  *   - Re-rendering the shell. When a state change should re-render,
  *     the controller calls context.onChange().
  *   - Ranking reads. AcademyAggregator.getRankingViewModel produces
@@ -77,7 +80,8 @@
     if (!AcademyUI ||
         typeof AcademyUI.getDisplayWeek !== 'function' ||
         typeof AcademyUI.setDisplayWeek !== 'function' ||
-        typeof AcademyUI.getSelectedClassId !== 'function') {
+        typeof AcademyUI.getSelectedClassId !== 'function' ||
+        typeof AcademyUI.selectClass !== 'function') {
         _missing.push('AcademyUI week/class accessors');
     }
     if (!AcademyAggregator ||
@@ -108,14 +112,13 @@
     // ============================================================
     // MODULE STATE
     // ============================================================
+    //
+    // The class selection is NOT held here. It is shared Academy
+    // state owned by AcademyUI. This controller reads it on every
+    // render and writes it only through AcademyUI.selectClass().
 
     var _host = null;
     var _context = null;
-
-    // Feature state: which class's rankings the user is viewing.
-    // Defaults to the shell's People-view class selection on first
-    // render if the user has not yet chosen a ranking class.
-    var _selectedRankingClassId = null;
 
     // ============================================================
     // CONTEXT NORMALISATION
@@ -163,19 +166,14 @@
         _host = host;
         _context = normaliseContext(rawContext);
 
-        // Sync the ranking class selection: default to the shell's
-        // People-view class if no ranking class has been chosen yet.
-        if (!_selectedRankingClassId) {
-            var peopleClassId = AcademyUI.getSelectedClassId();
-            if (peopleClassId) {
-                _selectedRankingClassId = peopleClassId;
-            }
-        }
+        // Class selection is shared Academy state. Read it fresh
+        // each render; never cache it locally.
+        var selectedClassId = AcademyUI.getSelectedClassId();
 
         var vm;
         try {
             vm = AcademyAggregator.getRankingViewModel(
-                _selectedRankingClassId,
+                selectedClassId,
                 _context.week
             );
         } catch (e) {
@@ -189,14 +187,6 @@
                     '</p>' +
                 '</div>';
             return;
-        }
-
-        // Adopt the VM's resolved classId if the aggregator resolved
-        // one. This keeps the controller's view consistent with what
-        // was rendered when the shell-supplied id no longer names a
-        // real class.
-        if (vm && vm.classId) {
-            _selectedRankingClassId = vm.classId;
         }
 
         var html;
@@ -243,7 +233,8 @@
         if (!target || !target.id) { return; }
 
         if (target.id === 'academy-ranking-class-select') {
-            _selectedRankingClassId = target.value || null;
+            // Route class changes through the shared Academy state.
+            AcademyUI.selectClass(target.value || null);
             var ctx = getContext();
             ctx.onChange();
             return;
@@ -282,11 +273,9 @@
     // ============================================================
 
     function unmount() {
-        // The ranking class selection is feature state. It is
-        // deliberately NOT cleared on unmount: the user's chosen
-        // ranking class survives a switch to another view and back.
-        // This matches pre-S1.7 behavior (the shell's
-        // _selectedRankingClassId was module-scope and never cleared).
+        // Class selection is shared state owned by AcademyUI; this
+        // controller holds no copy of it, so there is nothing to
+        // persist or clear here.
 
         _host = null;
         _context = null;
