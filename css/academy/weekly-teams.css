@@ -3,26 +3,28 @@
  *
  * The Weekly Teams view of the Academy tab.
  *   - Rendered by academy-weekly-teams-view.js (main view)
- *   - Rendered by academy-weekly-teams-members.js (member manager
- *     modal and restore modal)
+ *   - The member manager is the SHARED manager
+ *     (js/modules/shared/member-manager.js), which renders into a
+ *     modal owned by academy-weekly-teams-controller.js. That
+ *     manager's markup is styled by css/teams.css's SHARED MEMBER
+ *     MANAGER block. This file no longer contains any member
+ *     manager rules.
  *
  * Covers:
  *   - Two-panel layout and top bar
- *   - Orphan teams section (unassigned academic teams)
+ *   - Orphan teams section
  *   - List panel (actions, list, rows)
  *   - Detail panel (header, members section)
  *   - Type and status badges
- *   - Member manager modal (.awtm-*) and restore modal
- *
- * NOTE (BUG-E13):
- *   The member manager markup is now shared with the professional
- *   Teams-tab manager. Its classes are all .member-*, styled in
- *   css/teams.css. The .awtm-* rules below still apply to the
- *   surrounding Weekly Teams view shell and to any academic view
- *   element that emits those class names. Do not remove them
- *   without auditing academy-weekly-teams-view.js first.
  *
  * Load order: shared.css → academy.css → academy/weekly-teams.css
+ *
+ * REMOVED (BUG-E13):
+ *   The .awtm-* member manager and restore modal rules. Those
+ *   styled the old academic member manager, which has been
+ *   replaced by the shared manager. The shared manager's markup
+ *   is emitted with .member-* class names and is styled by
+ *   css/teams.css. Nothing emits .awtm-* any more.
  */
 
 /* ============================================================
@@ -257,8 +259,7 @@
 }
 
 .academy-auto-distribute-btn,
-.academy-empty-teams-btn,
-.academy-clear-rosters-btn {
+.academy-empty-teams-btn {
     flex: 1 1 auto;
 }
 
@@ -578,309 +579,6 @@
 }
 
 /* ============================================================
-   MEMBER MANAGER MODAL (.awtm-*)
-   ============================================================
-   NOTE: The member manager RENDERERS no longer emit .awtm-*
-   classes. The current manager markup uses .member-* classes and
-   is styled by teams.css.
-
-   The .awtm-* rules below were kept because:
-     - They are harmless when nothing matches them.
-     - Auditing academy-weekly-teams-view.js confirmed no live
-       element still carries most of them, BUT a full deletion
-       pass was not performed. Removing them is a separate
-       cleanup task that requires checking every academic view
-       for any stale reference.
-   ============================================================ */
-
-.awtm-member-select {
-    width: 100%;
-    margin-bottom: 6px;
-    padding: 6px 8px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 4px;
-    font-size: 0.72rem;
-    font-family: 'Inter', sans-serif;
-}
-
-.awtm-member-select:focus {
-    outline: none;
-    border-color: var(--accent);
-}
-
-/* ============================================================
-   CURRENT MEMBERS LIST
-   ============================================================ */
-
-.awtm-members-list {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-
-.awtm-member-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    padding: 6px 8px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border-soft);
-    border-radius: 4px;
-}
-
-.awtm-member-row.deceased {
-    opacity: 0.6;
-}
-
-.awtm-member-name {
-    font-weight: 600;
-    font-size: 0.75rem;
-    color: var(--text);
-    flex: 0 0 auto;
-}
-
-.awtm-member-deceased {
-    color: var(--text-dim);
-    font-size: 0.7rem;
-}
-
-.awtm-member-status {
-    color: var(--text-dim);
-    font-size: 0.68rem;
-}
-
-/* ---------- Editable period fields ---------- */
-
-.awtm-member-fields {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    margin-left: auto;
-    flex-wrap: wrap;
-}
-
-.awtm-period-label {
-    font-size: 0.6rem;
-    color: var(--text-dim);
-    font-weight: 500;
-}
-
-.awtm-period-input {
-    width: 60px;
-    padding: 3px 6px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 3px;
-    font-size: 0.7rem;
-    font-family: 'Inter', sans-serif;
-    text-align: center;
-    font-variant-numeric: tabular-nums;
-}
-
-.awtm-period-input:focus {
-    outline: none;
-    border-color: var(--accent);
-}
-
-/* ============================================================
-   ADD MEMBER ROW
-   ============================================================ */
-
-.awtm-add-group {
-    margin-top: 14px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border-soft);
-}
-
-.awtm-add-row {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-    flex-wrap: wrap;
-}
-
-.awtm-add-row select {
-    flex: 1;
-    min-width: 140px;
-}
-
-/* ============================================================
-   FORMER MEMBERS SECTION
-   ============================================================ */
-
-.awtm-former-group {
-    margin-top: 14px;
-    padding-top: 12px;
-    border-top: 1px dashed var(--border-soft);
-}
-
-.awtm-former-list {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-
-.awtm-former-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 3px 8px;
-    color: var(--text-dim);
-    font-size: 0.7rem;
-    border-radius: 3px;
-    transition: background 0.15s;
-}
-
-.awtm-former-row:hover {
-    background: var(--panel-alt);
-}
-
-.awtm-former-name {
-    font-weight: 500;
-    flex: 0 0 auto;
-}
-
-.awtm-former-period {
-    margin-left: auto;
-    font-variant-numeric: tabular-nums;
-    font-size: 0.65rem;
-}
-
-.awtm-restore-btn {
-    margin-left: 8px;
-    flex: 0 0 auto;
-    font-size: 0.6rem;
-    padding: 2px 10px;
-}
-
-/* ============================================================
-   FOOTER (Save / Revert / Close)
-   ============================================================ */
-
-.awtm-footer {
-    display: flex;
-    gap: 8px;
-    justify-content: flex-end;
-    margin-top: 16px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border-soft);
-    flex-wrap: wrap;
-}
-
-.awtm-footer button {
-    font-size: 0.75rem;
-    padding: 6px 16px;
-}
-
-/* ============================================================
-   RESTORE MODAL (.awtm-restore-*)
-   ============================================================ */
-
-#awtm-restore-form {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-
-/* ---------- Option row (radio + body) ---------- */
-
-.awtm-restore-option {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 10px;
-    margin-bottom: 8px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border-soft);
-    border-radius: 4px;
-    cursor: pointer;
-    transition: background 0.15s;
-}
-
-.awtm-restore-option:hover {
-    background: var(--panel);
-}
-
-.awtm-restore-option input[type="radio"] {
-    margin-top: 2px;
-    accent-color: var(--accent);
-    cursor: pointer;
-    flex: 0 0 auto;
-}
-
-.awtm-restore-option-body {
-    display: block;
-    flex: 1;
-    min-width: 0;
-}
-
-.awtm-restore-option-body strong {
-    display: block;
-    font-size: 0.78rem;
-    color: var(--text);
-    margin-bottom: 2px;
-}
-
-.awtm-restore-option-hint {
-    display: block;
-    font-size: 0.65rem;
-    color: var(--text-dim);
-    margin: 2px 0 6px 0;
-    line-height: 1.4;
-}
-
-/* ---------- Input row inside each option ---------- */
-
-.awtm-restore-input-row {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    margin-right: 12px;
-    margin-top: 4px;
-}
-
-.awtm-restore-input-row label {
-    font-size: 0.65rem;
-    color: var(--text-dim);
-    font-weight: 500;
-}
-
-.awtm-restore-input-row input {
-    width: 60px;
-    padding: 3px 6px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 3px;
-    font-size: 0.7rem;
-    font-family: 'Inter', sans-serif;
-    text-align: center;
-    font-variant-numeric: tabular-nums;
-}
-
-.awtm-restore-input-row input:focus {
-    outline: none;
-    border-color: var(--accent);
-}
-
-/* ============================================================
-   MEMBER MANAGER MODAL — NEW MARKUP
-   ============================================================
-   The academic member manager (academy-weekly-teams-members.js)
-   now emits .member-* classes. Those are styled by teams.css.
-   The rule below only fixes the modal shell width so it matches
-   the professional Teams-tab member modal.
-   ============================================================ */
-
-#academy-weekly-team-members-modal .modal-content {
-    max-width: 700px;
-}
-
-/* ============================================================
    MOBILE
    ============================================================ */
 
@@ -900,50 +598,5 @@
 
     .academy-weekly-team-detail-title {
         font-size: 0.9rem;
-    }
-
-    .awtm-member-row {
-        flex-direction: column;
-        align-items: stretch;
-    }
-
-    .awtm-member-fields {
-        margin-left: 0;
-        justify-content: flex-end;
-    }
-
-    .awtm-former-row {
-        flex-wrap: wrap;
-    }
-
-    .awtm-former-period {
-        margin-left: 0;
-    }
-
-    .awtm-restore-btn {
-        margin-left: auto;
-    }
-
-    .awtm-footer {
-        flex-direction: column-reverse;
-    }
-
-    .awtm-footer button {
-        width: 100%;
-    }
-
-    .awtm-restore-input-row {
-        display: flex;
-        flex-direction: column;
-        align-items: stretch;
-        margin-right: 0;
-    }
-
-    .awtm-restore-input-row input {
-        width: 100%;
-    }
-
-    #academy-weekly-team-members-modal .modal-content {
-        max-width: none;
     }
 }

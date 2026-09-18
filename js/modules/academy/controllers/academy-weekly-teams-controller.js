@@ -12,39 +12,39 @@
  *   - Handling clicks, changes, inputs, and keydowns routed by the
  *     shell for events that occur inside the host.
  *   - Opening, closing, and wiring the Create/Edit Team modal.
- *   - Opening the Manage Members modal (delegating content to
- *     AcademyWeeklyTeamsMembers).
+ *   - Opening the shared member manager (via the Academy adapter).
  *   - Opening the Auto-Distribute modal and running the
  *     distribution.
- *   - The auto-distribute algorithm itself (runAutoDistributeCore
- *     and findHighestTeamNumber). These move out of the shell in
- *     S1.2 and into a dedicated academy-weekly-teams-operations.js
- *     in S1.9. Until then they live here, because this controller
- *     is the application layer for the Weekly Teams feature.
- *   - Clear Rosters (clearAllMembershipsForClass, current week only).
- *   - Orphan-team assignment (assignTeamToClass).
- *   - Team selection toggling (delegates back to the shell via
- *     context.onSelectTeam).
- *   - Class selection (delegates back to the shell via
- *     context.onSelectClass).
- *   - Member-row click navigation (delegates back to the shell via
- *     context.onOpenCharacterInPeople, which switches to the People
- *     view with the character selected).
+ *   - Clear Rosters.
+ *   - Orphan-team assignment.
+ *   - Team selection toggling (delegates back to the shell).
+ *   - Class selection (delegates back to the shell).
+ *   - Member-row click navigation to People.
  *
  * WHAT THIS DOES NOT OWN:
  *   - The content host. The shell provides it.
- *   - The class and team selection ids. The shell owns them and
- *     passes them in via context on every render.
- *   - The week. The shell owns it (AcademyUI.getDisplayWeek) and
- *     passes it in via context.
+ *   - The class and team selection ids. The shell owns them.
+ *   - The week. The shell owns it.
  *   - Re-rendering the shell. When a mutation succeeds, the
- *     controller calls context.onChange(), which the shell wires to
- *     refreshView. The controller never calls refreshView directly;
- *     that would import the shell back into the controller, and the
- *     direction rule forbids it.
+ *     controller calls context.onChange().
  *   - Weekly Teams domain reads. The aggregator produces the VM.
- *   - Weekly Teams domain mutations. AcademyWeeklyTeams, TeamCore,
- *     and the members manager own those.
+ *   - Weekly Teams domain mutations. AcademyWeeklyTeams,
+ *     TeamCore, and the shared member manager own those.
+ *
+ * MEMBER MANAGER (BUG-E13):
+ *   The member manager is the SHARED manager
+ *   (window.MemberManager), wired through
+ *   window.MemberAdapterAcademy. It's identical to the manager
+ *   used by the Teams tab; only the adapter differs.
+ *
+ *   This controller's job is:
+ *     1. Create the modal shell on demand.
+ *     2. Append a .modal-content.
+ *     3. Modal.modalSetup + Modal.showModal.
+ *     4. MemberManager.open(contentEl, { teamId, period, adapter, onClose }).
+ *
+ *   The modal shell is created OUTSIDE the controller's content
+ *   host, so a host re-render cannot destroy it.
  *
  * DEPENDENCY DIRECTION:
  *   Shell → registry → this controller.
@@ -53,47 +53,25 @@
  * RENDER SIGNATURE:
  *   render(host, context)
  *
- *   host    — the HTMLElement the shell allocates for the active
- *             controller. The controller owns everything inside it.
+ *   host    — the HTMLElement the shell allocates.
  *   context — {
  *               week: number,
  *               selectedClassId: string|null,
  *               selectedTeamId: string|null,
- *               onChange: function(updates?),
+ *               onChange: function(),
  *               onSelectTeam: function(teamId|null),
  *               onSelectClass: function(classId|null),
  *               onOpenCharacterInPeople: function(charId)
  *             }
- *
- *   The context argument is documented as part of this controller's
- *   contract with the shell. The controller-contract.js docblock
- *   describes render(host) only; the context argument is a
- *   controller-specific extension and is noted here.
- *
- * STATE:
- *   This controller holds NO long-lived state. Every render rebuilds
- *   the view from the context and the aggregator. The class and team
- *   selections live in the shell; the week lives in AcademyUI. The
- *   only thing the controller holds across calls is a reference to
- *   the most recently opened modal, so unmount can close it, and the
- *   most recent render context, so event handlers can use it.
- *
- * EVENT ROUTING:
- *   The controller's handle* methods receive the raw DOM event. They
- *   find their targets via dataset reads, exactly as the shell did.
- *   Action names and data attributes are unchanged from the pre-S1
- *   shell. The renderers already emit
- *   `data-action="weekly-teams-..."` attributes and the controller
- *   handles the same strings the shell's handler did. No renderer
- *   changes are needed.
  *
  * DEPENDENCIES:
  *   - window.AcademyUI
  *   - window.AcademyAggregator
  *   - window.AcademyWeeklyTeams
  *   - window.AcademyWeeklyTeamsView
- *   - window.AcademyWeeklyTeamsMembers   (lazy; only for the
- *                                         member-manager modal)
+ *   - window.AcademyWeeklyTeamsOperations (lazy)
+ *   - window.MemberManager                  (shared manager)
+ *   - window.MemberAdapterAcademy           (academy adapter)
  *   - window.TeamCore
  *   - window.TeamQueries
  *   - window.TeamConstants
@@ -119,6 +97,8 @@
     var AcademyAggregator = window.AcademyAggregator;
     var AcademyWeeklyTeams = window.AcademyWeeklyTeams;
     var View = window.AcademyWeeklyTeamsView;
+    var MemberManager = window.MemberManager;
+    var MemberAdapterAcademy = window.MemberAdapterAcademy;
     var TeamCore = window.TeamCore;
     var TeamQueries = window.TeamQueries;
     var TeamConstants = window.TeamConstants;
@@ -135,13 +115,13 @@
     }
     if (!AcademyAggregator ||
         typeof AcademyAggregator.getWeeklyTeamsViewModel !== 'function' ||
-        typeof AcademyAggregator.getClassListViewModel !== 'function') {
-        _missing.push('AcademyAggregator weekly-teams VM');
+        typeof AcademyAggregator.getClassListViewModel !== 'function' ||
+        typeof AcademyAggregator.getClassStudentsViewModel !== 'function') {
+        _missing.push('AcademyAggregator weekly-teams VMs');
     }
     if (!AcademyWeeklyTeams ||
         typeof AcademyWeeklyTeams.clearAllMembershipsForClass !== 'function' ||
         typeof AcademyWeeklyTeams.assignTeamToClass !== 'function' ||
-        typeof AcademyWeeklyTeams.addMember !== 'function' ||
         typeof AcademyWeeklyTeams.ensureWindow !== 'function' ||
         typeof AcademyWeeklyTeams.setWindow !== 'function' ||
         typeof AcademyWeeklyTeams.clearClassWindows !== 'function') {
@@ -154,6 +134,18 @@
         typeof View.collectTeamForm !== 'function' ||
         typeof View.collectAutoDistributeForm !== 'function') {
         _missing.push('AcademyWeeklyTeamsView API');
+    }
+    if (!MemberManager || typeof MemberManager.open !== 'function') {
+        _missing.push('MemberManager.open');
+    }
+    if (!MemberAdapterAcademy ||
+        typeof MemberAdapterAcademy.fetchVM !== 'function' ||
+        typeof MemberAdapterAcademy.addMember !== 'function' ||
+        typeof MemberAdapterAcademy.updateMembers !== 'function' ||
+        typeof MemberAdapterAcademy.removeStint !== 'function' ||
+        typeof MemberAdapterAcademy.rejoinStint !== 'function' ||
+        typeof MemberAdapterAcademy.removeMember !== 'function') {
+        _missing.push('MemberAdapterAcademy API');
     }
     if (!TeamCore ||
         typeof TeamCore.createTeam !== 'function' ||
@@ -173,12 +165,14 @@
         typeof TeamConstants.normalizeTeamType !== 'function') {
         _missing.push('TeamConstants.normalizeTeamType');
     }
-    if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+    if (!CharacterQueries ||
+        typeof CharacterQueries.getCharacterById !== 'function') {
         _missing.push('CharacterQueries.getCharacterById');
     }
     if (!Modal ||
         typeof Modal.createModal !== 'function' ||
         typeof Modal.showModal !== 'function' ||
+        typeof Modal.closeModal !== 'function' ||
         typeof Modal.modalSetup !== 'function') {
         _missing.push('Modal API');
     }
@@ -206,11 +200,11 @@
     window.__academyWeeklyTeamsControllerLoaded = true;
 
     // ============================================================
-    // OPTIONAL DEPENDENCY ACCESSOR
+    // LAZY ACCESSOR
     // ============================================================
 
-    function getMembersManager() {
-        return window.AcademyWeeklyTeamsMembers || null;
+    function getOperations() {
+        return window.AcademyWeeklyTeamsOperations || null;
     }
 
     // ============================================================
@@ -230,13 +224,13 @@
     // ============================================================
     //
     // The only things this controller holds across calls are the
-    // currently open modal (so unmount can close it) and the most
-    // recent render context (so event handlers can use it). Every
-    // other value is derived from the context and the aggregator on
-    // each render.
+    // most recent render context and the currently open modals
+    // (so unmount can close them). Everything else is derived
+    // from the context and the aggregator on each render.
 
-    var _openModal = null;
     var _renderContext = null;
+    var _openModal = null;
+    var _openMemberManagerModal = null;
     var _teamCoreConfigured = false;
 
     // ============================================================
@@ -760,65 +754,88 @@
     }
 
     // ============================================================
-    // MANAGE MEMBERS MODAL
+    // MANAGE MEMBERS (shared manager)
     // ============================================================
+    //
+    // Opens the shared MemberManager with the Academy adapter.
+    //
+    // The manager is identical to the one used by the Teams tab.
+    // Only the adapter differs: it resolves the class ID from the
+    // team, routes mutations to AcademyWeeklyTeams, and drops role
+    // changes (no role mutation on the academic side).
+    //
+    // MODAL LIFECYCLE:
+    //   - Shell created on demand here.
+    //   - Appended to document.body by Modal.showModal.
+    //   - Not in the controller's content host, so a re-render of
+    //     the Weekly Teams view cannot destroy it.
+    //   - On close, the manager calls onClose, which closes the
+    //     shell and fires context.onChange so the view behind
+    //     updates.
 
     function openMembersModal(teamId) {
         if (!isNonEmptyString(teamId)) { return; }
 
-        var MembersManager = getMembersManager();
-        if (!MembersManager ||
-            typeof MembersManager.openMemberManager !== 'function') {
-            notify('Weekly team member manager is not available.', 'error');
-            return;
-        }
-
         var ctx = getRenderContext();
-        var classId = ctx.classId;
         var week = ctx.week;
 
-        if (!isNonEmptyString(classId)) {
-            notify('Select a class first.', 'error');
+        if (typeof week !== 'number' || !isFinite(week)) {
+            notify('Cannot determine the current week.', 'error');
             return;
         }
 
-        var team = TeamQueries.getTeamById(teamId);
-        var teamName = team && team.name ? team.name : 'Team';
+        // Close any prior instance.
+        if (_openMemberManagerModal) {
+            try {
+                Modal.closeModal(_openMemberManagerModal);
+            } catch (e) {
+                // Ignore.
+            }
+            _openMemberManagerModal = null;
+        }
 
         var modal = Modal.createModal('academy-weekly-team-members-modal');
         if (!modal) {
-            notify('Could not open member manager.', 'error');
+            notify('Could not open the member manager.', 'error');
             return;
         }
+        modal.id = 'academy-weekly-team-members-modal';
 
         var contentEl = document.createElement('div');
-        contentEl.className = 'modal-content';
+        contentEl.className = 'modal-content wide';
         modal.appendChild(contentEl);
-        Modal.modalSetup(modal);
+
+        _openMemberManagerModal = modal;
+
+        Modal.modalSetup(modal, function() {
+            closeMembersModal();
+        });
         Modal.showModal(modal);
 
-        trackOpenModal(modal);
-
-        var close = function() {
-            closeTrackedModal(modal);
-            var c = getRenderContext();
-            c.onChange();
-        };
-
-        MembersManager.openMemberManager(
-            contentEl,
-            classId,
-            week,
-            teamId,
-            {
-                teamName: teamName,
-                onClose: close,
-                onChange: function() {
-                    var c = getRenderContext();
-                    c.onChange();
-                }
+        MemberManager.open(contentEl, {
+            teamId: String(teamId),
+            period: week,
+            adapter: MemberAdapterAcademy,
+            onClose: function() {
+                closeMembersModal();
             }
-        );
+        });
+    }
+
+    function closeMembersModal() {
+        var modal = _openMemberManagerModal;
+        _openMemberManagerModal = null;
+
+        if (modal) {
+            try {
+                Modal.closeModal(modal);
+            } catch (e) {
+                // Ignore.
+            }
+        }
+
+        var ctx = getRenderContext();
+        ctx.onChange();
     }
 
     // ============================================================
@@ -924,364 +941,32 @@
     // AUTO-DISTRIBUTE — OPERATION
     // ============================================================
     //
-    // This block carries the auto-distribute algorithm that lived in
-    // academy-view.js pre-S1.2. The pinboard's S1.9 extracts it into
-    // academy-weekly-teams-operations.js. Until then it lives here,
-    // because the controller is the application layer for the
-    // feature.
+    // Extracted into academy-weekly-teams-operations.js. This
+    // controller reads the operations module lazily and falls back
+    // to an inline implementation when it is absent.
 
     function runAutoDistribute(ctx) {
-        var groupSize = parseInt(ctx.groupSize, 10);
-        if (isNaN(groupSize) || groupSize < 2) {
-            notify('Group size must be at least 2.', 'error');
-            return Promise.resolve({
-                success: false,
-                message: 'Invalid group size.'
-            });
+        var Operations = getOperations();
+        if (Operations && typeof Operations.runAutoDistribute === 'function') {
+            var deps = {
+                AcademyAggregator: AcademyAggregator,
+                AcademyWeeklyTeams: AcademyWeeklyTeams,
+                TeamCore: TeamCore,
+                TeamQueries: TeamQueries,
+                TeamConstants: TeamConstants,
+                NotificationSystem: NotificationSystem
+            };
+            return Operations.runAutoDistribute(ctx, deps);
         }
 
-        var preChain = Promise.resolve();
-        if (ctx.clearExisting === true &&
-            typeof AcademyWeeklyTeams.clearClassWindows === 'function') {
-            preChain = AcademyWeeklyTeams.clearClassWindows(ctx.classId)
-                .then(function() { return null; })
-                .catch(function(err) {
-                    console.warn(
-                        '[AcademyWeeklyTeamsController] ' +
-                        'clearClassWindows failed during Auto-Distribute:',
-                        err
-                    );
-                    return null;
-                });
-        }
-
-        return preChain.then(function() {
-            return runAutoDistributeCore(ctx, groupSize);
-        });
-    }
-
-    function runAutoDistributeCore(ctx, groupSize) {
-        var rawRoster = AcademyAggregator.getClassStudentsViewModel(
-            ctx.classId,
-            ctx.week
-        ) || [];
-
-        var roster = rawRoster.filter(function(s) {
-            if (!s) return false;
-            if (s.deceased === true) return false;
-            if (s.eliminated === true) return false;
-            return true;
-        });
-
-        if (roster.length === 0) {
-            notify(
-                'The class has no eligible students for this week.',
-                'info'
-            );
-            return Promise.resolve({
-                success: false,
-                message: 'No eligible students.'
-            });
-        }
-
-        var allTeams = TeamQueries.getTeamsByClass(
-            ctx.classId, 'operational'
-        ) || [];
-        var activeThisWeek = [];
-        for (var i = 0; i < allTeams.length; i++) {
-            var t = allTeams[i];
-            if (!t) { continue; }
-            if (TeamConstants.normalizeTeamType(t.type) !== 'academic') {
-                continue;
-            }
-            if (!TeamQueries.isTeamActiveAtPeriod(t, ctx.week)) {
-                continue;
-            }
-            activeThisWeek.push(t);
-        }
-
-        var assignedIds = Object.create(null);
-        var teamCounts = Object.create(null);
-        for (var a = 0; a < activeThisWeek.length; a++) {
-            var team = activeThisWeek[a];
-            var activeMembers = TeamQueries.getActiveTeamMembers(
-                team, ctx.week
-            );
-            teamCounts[String(team.id)] = activeMembers.length;
-            for (var b = 0; b < activeMembers.length; b++) {
-                var m = activeMembers[b];
-                if (m && m.characterId) {
-                    assignedIds[String(m.characterId)] = true;
-                }
-            }
-        }
-
-        var unassigned = [];
-        for (var r = 0; r < roster.length; r++) {
-            var student = roster[r];
-            if (!student || !student.id) { continue; }
-            if (assignedIds[String(student.id)]) { continue; }
-            unassigned.push(student);
-        }
-        unassigned.sort(function(a2, b2) {
-            return String(a2.name || '').localeCompare(String(b2.name || ''));
-        });
-
-        if (unassigned.length === 0) {
-            notify(
-                'All eligible students are already assigned to a team ' +
-                'this week.',
-                'info'
-            );
-            return Promise.resolve({
-                success: false,
-                message: 'No unassigned students.'
-            });
-        }
-
-        var rankedExisting = activeThisWeek.slice().sort(function(a2, b2) {
-            var ca = teamCounts[String(a2.id)] || 0;
-            var cb = teamCounts[String(b2.id)] || 0;
-            if (ca !== cb) { return ca - cb; }
-            return String(a2.name || '').localeCompare(String(b2.name || ''));
-        });
-
-        var namePrefix = ctx.namePrefix || 'Team ';
-        var highestExistingNumber = findHighestTeamNumber(
-            activeThisWeek, namePrefix
+        // Fallback: the extracted module is not loaded.
+        notify(
+            'Auto-Distribute module is not available.', 'error'
         );
-        var nextNumber = highestExistingNumber + 1;
-
-        var existingPlans = [];
-        for (var e = 0; e < rankedExisting.length; e++) {
-            existingPlans.push({
-                type: 'existing',
-                teamId: String(rankedExisting[e].id),
-                teamName: rankedExisting[e].name || 'Unnamed Team',
-                charIds: []
-            });
-        }
-        var newPlans = [];
-
-        for (var u = 0; u < unassigned.length; u++) {
-            var studentId = String(unassigned[u].id);
-
-            var bestPlan = null;
-            var bestCount = Infinity;
-            for (var p = 0; p < existingPlans.length; p++) {
-                var plan = existingPlans[p];
-                var existingCount = teamCounts[plan.teamId] || 0;
-                var plannedCount = plan.charIds.length;
-                var total = existingCount + plannedCount;
-                if (total >= groupSize) { continue; }
-                if (total < bestCount) {
-                    bestCount = total;
-                    bestPlan = plan;
-                }
-            }
-
-            if (bestPlan) {
-                bestPlan.charIds.push(studentId);
-                continue;
-            }
-
-            var newName = namePrefix + nextNumber;
-            nextNumber++;
-            var newPlan = {
-                type: 'create',
-                teamName: newName,
-                charIds: [studentId]
-            };
-            newPlans.push(newPlan);
-        }
-
-        var failed = false;
-        var failureMessage = null;
-        var addedToExisting = 0;
-        var createdNewTeams = 0;
-        var chain = Promise.resolve();
-
-        existingPlans.forEach(function(plan) {
-            if (plan.charIds.length === 0) { return; }
-            plan.charIds.forEach(function(charId) {
-                chain = chain.then(function() {
-                    if (failed) { return; }
-                    return AcademyWeeklyTeams.addMember(
-                        ctx.classId,
-                        plan.teamId,
-                        charId,
-                        ctx.week
-                    ).then(function(res) {
-                        if (!res || !res.success) {
-                            failed = true;
-                            failureMessage =
-                                'Could not add a student to ' +
-                                plan.teamName + ': ' +
-                                (res && res.message
-                                    ? res.message
-                                    : 'unknown error');
-                            console.warn(
-                                '[AcademyWeeklyTeamsController] ' +
-                                'addMember rejected:',
-                                res && res.message
-                            );
-                            return;
-                        }
-                        addedToExisting++;
-                    });
-                });
-            });
+        return Promise.resolve({
+            success: false,
+            message: 'Auto-Distribute module is not available.'
         });
-
-        newPlans.forEach(function(plan) {
-            chain = chain.then(function() {
-                if (failed) { return; }
-                return TeamCore.createTeam({
-                    name: plan.teamName,
-                    type: 'academic',
-                    classId: ctx.classId,
-                    startPeriod: String(ctx.week),
-                    endPeriod: '',
-                    status: 'active'
-                }).then(function(res) {
-                    if (!res || !res.success) {
-                        failed = true;
-                        failureMessage =
-                            'Could not create team ' + plan.teamName +
-                            ': ' +
-                            (res && res.message
-                                ? res.message
-                                : 'unknown error');
-                        console.warn(
-                            '[AcademyWeeklyTeamsController] ' +
-                            'createTeam rejected:',
-                            res && res.message
-                        );
-                        return;
-                    }
-
-                    var newTeamId = extractCreatedTeamId(res);
-                    if (!newTeamId) {
-                        failed = true;
-                        failureMessage =
-                            'Newly-created team ' + plan.teamName +
-                            ' has no id.';
-                        return;
-                    }
-
-                    createdNewTeams++;
-
-                    var windowPromise;
-                    if (typeof AcademyWeeklyTeams.setWindow === 'function') {
-                        windowPromise = AcademyWeeklyTeams.setWindow(
-                            ctx.classId, newTeamId, ctx.week, null
-                        );
-                    } else {
-                        windowPromise = AcademyWeeklyTeams.ensureWindow(
-                            ctx.classId, newTeamId, ctx.week
-                        );
-                    }
-
-                    return windowPromise.then(function() {
-                        var memberChain = Promise.resolve();
-                        plan.charIds.forEach(function(charId) {
-                            memberChain = memberChain.then(function() {
-                                if (failed) { return; }
-                                return AcademyWeeklyTeams.addMember(
-                                    ctx.classId,
-                                    newTeamId,
-                                    charId,
-                                    ctx.week
-                                ).then(function(inner) {
-                                    if (!inner || !inner.success) {
-                                        failed = true;
-                                        failureMessage =
-                                            'Could not add a student to ' +
-                                            plan.teamName + ': ' +
-                                            (inner && inner.message
-                                                ? inner.message
-                                                : 'unknown error');
-                                        console.warn(
-                                            '[AcademyWeeklyTeamsController] ' +
-                                            'addMember rejected:',
-                                            inner && inner.message
-                                        );
-                                    }
-                                });
-                            });
-                        });
-                        return memberChain;
-                    });
-                });
-            });
-        });
-
-        return chain.then(function() {
-            if (failed) {
-                notify(
-                    failureMessage || 'Auto-Distribute failed.',
-                    'error'
-                );
-                return {
-                    success: false,
-                    message: failureMessage
-                };
-            }
-
-            var existingCount = existingPlans.filter(function(en) {
-                return en.charIds.length > 0;
-            }).length;
-            var newCount = newPlans.length;
-            var totalStudents = addedToExisting;
-            for (var n = 0; n < newPlans.length; n++) {
-                totalStudents += newPlans[n].charIds.length;
-            }
-
-            var parts = [];
-            parts.push('Placed ' + totalStudents +
-                ' student' + (totalStudents === 1 ? '' : 's'));
-            if (existingCount > 0) {
-                parts.push('into ' + existingCount +
-                    ' existing team' +
-                    (existingCount === 1 ? '' : 's'));
-            }
-            if (newCount > 0) {
-                parts.push('and ' + newCount +
-                    ' new team' + (newCount === 1 ? '' : 's'));
-            }
-            notify(parts.join(' ') + '.', 'success');
-
-            return {
-                success: true,
-                data: {
-                    existingTeamsFilled: existingCount,
-                    newTeamsCreated: newCount,
-                    studentsPlaced: totalStudents
-                }
-            };
-        });
-    }
-
-    function findHighestTeamNumber(teams, prefix) {
-        var highest = 0;
-        if (!Array.isArray(teams) || !isNonEmptyString(prefix)) {
-            return highest;
-        }
-
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (!team || !isNonEmptyString(team.name)) { continue; }
-            var name = team.name;
-            if (name.indexOf(prefix) !== 0) { continue; }
-            var suffix = name.substring(prefix.length).trim();
-            if (!/^\d+$/.test(suffix)) { continue; }
-            var num = parseInt(suffix, 10);
-            if (!isNaN(num) && num > highest) {
-                highest = num;
-            }
-        }
-
-        return highest;
     }
 
     // ============================================================
@@ -1447,50 +1132,13 @@
         return modal;
     }
 
-    function closeModal(modal) {
-        if (!modal) { return; }
-        if (!modal.parentNode) { return; }
-
-        var teardownPromise;
-        try {
-            if (typeof Modal.closeModal === 'function') {
-                teardownPromise = Modal.closeModal(modal);
-            } else if (typeof Modal.hideModal === 'function') {
-                teardownPromise = Modal.hideModal(modal);
-            }
-        } catch (e) {
-            console.warn(
-                '[AcademyWeeklyTeamsController] Modal teardown threw:', e
-            );
-            teardownPromise = null;
-        }
-
-        var finalize = function() {
-            if (modal.parentNode) {
-                try {
-                    modal.parentNode.removeChild(modal);
-                } catch (e) {
-                    // Already detached.
-                }
-            }
-        };
-
-        if (teardownPromise && typeof teardownPromise.then === 'function') {
-            teardownPromise.then(finalize).catch(function(err) {
-                console.warn(
-                    '[AcademyWeeklyTeamsController] Modal teardown ' +
-                    'failed:', err
-                );
-                finalize();
-            });
-        } else {
-            finalize();
-        }
-    }
-
     function trackOpenModal(modal) {
         if (_openModal && _openModal !== modal) {
-            closeModal(_openModal);
+            try {
+                Modal.closeModal(_openModal);
+            } catch (e) {
+                // Ignore.
+            }
         }
         _openModal = modal;
     }
@@ -1499,7 +1147,13 @@
         if (_openModal === modal) {
             _openModal = null;
         }
-        closeModal(modal);
+        if (modal) {
+            try {
+                Modal.closeModal(modal);
+            } catch (e) {
+                // Ignore.
+            }
+        }
     }
 
     // ============================================================
@@ -1508,9 +1162,23 @@
 
     function unmount() {
         if (_openModal) {
-            closeModal(_openModal);
+            try {
+                Modal.closeModal(_openModal);
+            } catch (e) {
+                // Ignore.
+            }
             _openModal = null;
         }
+
+        if (_openMemberManagerModal) {
+            try {
+                Modal.closeModal(_openMemberManagerModal);
+            } catch (e) {
+                // Ignore.
+            }
+            _openMemberManagerModal = null;
+        }
+
         _renderContext = null;
     }
 

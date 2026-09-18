@@ -161,6 +161,16 @@
     <script src="js/core/mutation-pipeline.js"></script>
 
     <!-- ============================================================
+         SHARED COMPONENTS
+         ============================================================
+         Cross-domain UI components that do not belong to any single
+         feature. The member manager is used by both the Teams tab
+         and the Academy Weekly Teams view, each through its own
+         adapter. The manager itself has no domain knowledge.
+         ============================================================ -->
+    <script src="js/modules/shared/member-manager.js"></script>
+
+    <!-- ============================================================
          CALENDAR RENDERER
          ============================================================ -->
     <script src="js/modules/calendar/calendar-renderer.js"></script>
@@ -209,6 +219,15 @@
     <script src="js/modules/academy/academy-calendar-aggregator.js"></script>
 
     <script src="js/modules/academy/academy-weekly-teams.js"></script>
+
+    <!-- ============================================================
+         ACADEMY MEMBER ADAPTER
+         ============================================================
+         Binds the shared MemberManager to the Academy domain.
+         Requires AcademyWeeklyTeams (just above), TeamQueries,
+         and CalendarConstants (both loaded earlier).
+         ============================================================ -->
+    <script src="js/modules/academy/member-adapter-academy.js"></script>
 
     <script src="js/modules/academy/academy-aggregator.js"></script>
     <script src="js/modules/academy/academy-ui.js"></script>
@@ -311,6 +330,16 @@
     <script src="js/modules/teams/team-ui.js"></script>
     <script src="js/modules/teams/team-render.js"></script>
     <script src="js/modules/teams/team-core.js"></script>
+
+    <!-- ============================================================
+         TEAMS MEMBER ADAPTER
+         ============================================================
+         Binds the shared MemberManager to the Teams domain.
+         Requires TeamAggregator (loaded above), TeamCore (just
+         above), and TeamConstants (loaded earlier).
+         ============================================================ -->
+    <script src="js/modules/teams/member-adapter-teams.js"></script>
+
     <script src="js/modules/teams/team-events.js"></script>
     <script src="js/modules/teams/index.js"></script>
 
@@ -333,6 +362,8 @@
            - AcademyWeeklyTeams, AcademyWeeklyTeamsMembers (from
              ACADEMY DOMAIN and ACADEMY VIEW SHELL above)
            - AcademyEliminations (from ACADEMY DOMAIN above)
+           - MemberManager, MemberAdapterAcademy (from SHARED
+             COMPONENTS and ACADEMY DOMAIN above)
 
          Registration happens in modules/academy/index.js below.
          ============================================================ -->

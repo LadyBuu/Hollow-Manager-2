@@ -11,12 +11,10 @@
  *   - renderTeamSummary(vm)       - single-line summary
  *   - renderContainer(vm)         - full page shell
  *   - renderFilterBar(filterVM)   - filter bar
- *   - renderMemberList(membersVM) - member rows (per interval)
  *   - renderRankingList(rankVM)   - ranking rows
  *   - renderTeamForm(formVM)      - team form markup
- *   - renderMemberForm(formVM)    - member form markup
- *   - renderRankingForm(formVM)   - ranking form markup
- *   - getModalsHTML()             - static modal shells
+ *   - renderRankingForm()         - ranking form markup
+ *   - renderNameHistoryRow(entry) - one name-history row
  *
  * IMPORTANT:
  *   - RENDER ONLY. No queries, no state, no mutations, no domain
@@ -43,22 +41,31 @@
  *   renderExpandedMembers iterates the intervals array to produce one
  *   sub-line per stint.
  *
- *   renderMemberList produces ONE ROW PER INTERVAL. Each row carries
- *   data-character-id and data-join-period so the caller can address
- *   the specific stint.
+ * REMOVED (BUG-E13):
+ *   - renderMemberList
+ *   - renderMemberIntervalRow
+ *   - renderMemberPlaceholderRow
+ *   - renderMemberForm
  *
- *   renderMemberForm edits ONE interval, identified by
- *   data-character-id and data-join-period. joinPeriod is read-only
- *   (immutable); role and leavePeriod are editable. Role applies to
- *   the whole member entry, not the single stint.
+ *   These rendered the compact member modal's body. That modal has
+ *   been replaced by the SHARED member manager
+ *   (js/modules/shared/member-manager.js). The manager owns its own
+ *   markup, its own modal shell, and its own lifecycle. This module
+ *   has no member-manager rendering responsibilities any more.
  *
- *   NOTE (BUG-E13): the .edit-member button that used to appear on
- *   each compact-modal member row has been removed. Per-stint editing
- *   is now handled by the full member manager
- *   (TeamEvents.openMemberManager), which renders the same markup as
- *   the academic member manager. The compact modal still supports
- *   adding members and removing stints; it no longer offers a
- *   single-row editor.
+ * REMOVED (BUG-E13) — from getModalsHTML:
+ *   - #team-form-modal
+ *   - #member-modal
+ *   - #edit-member-modal
+ *   - #ranking-modal
+ *
+ *   The modal shells are now created on demand by TeamEvents
+ *   (team-events.js) using Modal.createModal, and appended to
+ *   document.body. Emitting them inside renderContainer is what
+ *   caused refreshUI to destroy them and produce the
+ *   "Member modal not found" bug.
+ *
+ *   getModalsHTML() has therefore been deleted entirely.
  *
  * TEAM LIST MARKUP (mobile contract):
  *   renderList emits each team as a five-cell row. The first cell is
@@ -265,6 +272,9 @@
     //
     // The member VM carries `intervals[]`; each interval has its own
     // periodDisplay. The renderer prints one sub-line per interval.
+    //
+    // This is the INLINE EXPANSION in the team list. It is unrelated
+    // to the shared member manager. It is read-only.
 
     function renderExpandedMembers(membersVM) {
         if (!membersVM) {
@@ -506,173 +516,6 @@
     }
 
     // ============================================================
-    // MEMBER LIST (Teams tab modal — compact)
-    // ============================================================
-    //
-    // ONE ROW PER INTERVAL.
-    //
-    // The first interval row of a member shows the member's name.
-    // Subsequent rows are visually indented under it. Each row
-    // carries data-character-id and data-join-period so the caller
-    // can address the specific stint.
-    //
-    // Members with intervals: [] show a single "no stints" row with
-    // a Remove-member action, since there's no stint to act on.
-    //
-    // NOTE (BUG-E13): the per-row .edit-member button has been
-    // removed. Per-stint editing is handled by the full member
-    // manager (TeamEvents.openMemberManager). The compact modal
-    // still supports adding members and removing stints.
-
-    function renderMemberList(membersVM) {
-        if (!membersVM || !Array.isArray(membersVM.members)) {
-            return '<p class="empty-state">No members in this team</p>';
-        }
-
-        var members = membersVM.members;
-        if (members.length === 0) {
-            return '<p class="empty-state">No members in this team</p>';
-        }
-
-        var html = '';
-
-        for (var i = 0; i < members.length; i++) {
-            var member = members[i];
-            if (!member || !member.characterId) { continue; }
-
-            var intervals = Array.isArray(member.intervals)
-                ? member.intervals
-                : [];
-
-            if (intervals.length === 0) {
-                // Placeholder row: member exists but has no stints.
-                html += renderMemberPlaceholderRow(member);
-                continue;
-            }
-
-            for (var j = 0; j < intervals.length; j++) {
-                var iv = intervals[j];
-                if (!iv || typeof iv !== 'object') { continue; }
-                html += renderMemberIntervalRow(member, iv, j === 0);
-            }
-        }
-
-        return html;
-    }
-
-    /**
-     * Render one interval row for a member.
-     *
-     * `isFirstRowForMember` controls whether the member name is shown.
-     * The member name appears on the first row only; subsequent rows
-     * show an indented continuation.
-     */
-    function renderMemberIntervalRow(member, interval, isFirstRowForMember) {
-        var joinAttr = escapeAttribute(interval.joinPeriod || '');
-        var charAttr = escapeAttribute(member.characterId);
-        var memberIdAttr = escapeAttribute(member.memberId || '');
-
-        var joinDisplay = isNonEmptyString(interval.joinPeriod)
-            ? interval.joinPeriod
-            : '\u2014';
-        var leaveDisplay = isNonEmptyString(interval.leavePeriod)
-            ? interval.leavePeriod
-            : '\u2014';
-
-        var rowClass = 'member-entry member-interval-row';
-        if (!interval.activeAtPeriod) {
-            rowClass += ' member-entry-inactive';
-        }
-        if (!isFirstRowForMember) {
-            rowClass += ' member-interval-continuation';
-        }
-
-        var html = '';
-        html += '<div class="' + rowClass + '" ' +
-                    'data-character-id="' + charAttr + '" ' +
-                    'data-member-id="' + memberIdAttr + '" ' +
-                    'data-join-period="' + joinAttr + '">';
-
-        // ---- Left: name (first row only) + interval bounds ----
-        html += '<div class="member-interval-left">';
-        if (isFirstRowForMember) {
-            html += '<span class="member-name">' +
-                        '<strong>' + escapeHtml(member.displayName || 'Unknown') + '</strong>' +
-                    '</span> ';
-            html += '<span class="member-role">(' +
-                        escapeHtml(member.role || 'Member') +
-                    ')</span>';
-        } else {
-            html += '<span class="member-name-continuation">\u21b3</span>';
-        }
-        html += '</div>';
-
-        // ---- Middle: bounds ----
-        html += '<div class="member-interval-bounds">';
-        html += '<span class="member-join">Join: ' +
-                    escapeHtml(joinDisplay) +
-                '</span>';
-        html += '<span class="member-leave">Leave: ' +
-                    escapeHtml(leaveDisplay) +
-                '</span>';
-        html += '</div>';
-
-        // ---- Right: per-interval actions ----
-        //
-        // Only Remove is emitted. The .edit-member button has been
-        // removed; per-stint editing lives in the full member
-        // manager. See the file header for details.
-        html += '<div class="member-interval-actions">';
-        html += '<button type="button" class="small danger remove-member" ' +
-                    'data-character-id="' + charAttr + '" ' +
-                    'data-member-id="' + memberIdAttr + '" ' +
-                    'data-join-period="' + joinAttr + '" ' +
-                    'style="font-size:0.6rem;padding:2px 6px;">\u2715</button>';
-        html += '</div>';
-
-        html += '</div>';
-        return html;
-    }
-
-    /**
-     * Render a placeholder row for a member entry that has no
-     * intervals. The only available action is Remove-member
-     * (delete the whole entry).
-     */
-    function renderMemberPlaceholderRow(member) {
-        var charAttr = escapeAttribute(member.characterId);
-        var memberIdAttr = escapeAttribute(member.memberId || '');
-
-        var html = '';
-        html += '<div class="member-entry member-entry-placeholder" ' +
-                    'data-character-id="' + charAttr + '" ' +
-                    'data-member-id="' + memberIdAttr + '">';
-
-        html += '<div class="member-interval-left">';
-        html += '<span class="member-name">' +
-                    '<strong>' + escapeHtml(member.displayName || 'Unknown') + '</strong>' +
-                '</span> ';
-        html += '<span class="member-role">(' +
-                    escapeHtml(member.role || 'Member') +
-                ')</span>';
-        html += '</div>';
-
-        html += '<div class="member-interval-bounds">';
-        html += '<span class="member-placeholder">No stints recorded.</span>';
-        html += '</div>';
-
-        html += '<div class="member-interval-actions">';
-        html += '<button type="button" class="small danger remove-member-entry" ' +
-                    'data-character-id="' + charAttr + '" ' +
-                    'data-member-id="' + memberIdAttr + '" ' +
-                    'style="font-size:0.6rem;padding:2px 6px;">Remove member</button>';
-        html += '</div>';
-
-        html += '</div>';
-        return html;
-    }
-
-    // ============================================================
     // RANKING LIST
     // ============================================================
 
@@ -746,6 +589,17 @@
         }
 
         var html = '';
+
+        // Modal header. TeamEvents creates the modal shell; this
+        // renderer emits the header + body that go inside the
+        // .modal-content.
+        html += '<div class="modal-header">';
+        html += '<h3 id="team-form-title">' +
+                    (isEdit ? 'Edit Team' : 'Add Team') +
+                '</h3>';
+        html += '<button type="button" class="close-modal" ' +
+                    'id="close-team-form">&times;</button>';
+        html += '</div>';
 
         html += '<form id="team-form-inner" data-edit-id="' +
                     (isEdit ? escapeAttribute(formVM.teamId) : '') + '">';
@@ -871,87 +725,6 @@
     }
 
     // ============================================================
-    // MEMBER FORM (edit one interval)
-    // ============================================================
-    //
-    // The form edits ONE interval, identified by data-character-id
-    // and data-join-period.
-    //
-    // Editable:
-    //   - role (applies to the whole member entry)
-    //   - leavePeriod (this interval's leave week)
-    //
-    // Read-only:
-    //   - character (display)
-    //   - joinPeriod (immutable per the interval model)
-    //
-    // NOTE (BUG-E13): renderMemberForm is no longer invoked by
-    // TeamEvents. It is retained here as a standalone renderer for
-    // any caller that still wants the single-interval editor markup.
-    // The current Teams tab does not open it.
-
-    function renderMemberForm(formVM) {
-        if (!formVM || !formVM.characterId) {
-            return '';
-        }
-
-        var joinDisplay = isNonEmptyString(formVM.joinPeriod)
-            ? formVM.joinPeriod
-            : '\u2014';
-
-        var leaveValue = isNonEmptyString(formVM.leavePeriod)
-            ? formVM.leavePeriod
-            : '';
-
-        var html = '';
-        html += '<form id="edit-member-form" ' +
-                    'data-character-id="' + escapeAttribute(formVM.characterId) + '" ' +
-                    'data-join-period="' + escapeAttribute(formVM.joinPeriod || '') + '">';
-
-        html += '<div class="form-group">';
-        html += '<label>Character</label>';
-        html += '<p style="margin:4px 0 12px 0;font-weight:600;">' +
-                    escapeHtml(formVM.characterName || 'Unknown') +
-                '</p>';
-        html += '</div>';
-
-        html += '<div class="form-group">';
-        html += '<label for="edit-member-role">Role</label>';
-        html += '<input type="text" id="edit-member-role" value="' +
-                    escapeAttribute(formVM.role || '') + '">';
-        html += '<p class="field-hint">Applies to the whole member, not just this stint.</p>';
-        html += '</div>';
-
-        html += '<div class="form-group">';
-        html += '<label>Join Period</label>';
-        html += '<input type="text" value="' +
-                    escapeAttribute(joinDisplay) +
-                '" readonly disabled>';
-        html += '<p class="field-hint">' +
-                    'Join is immutable. To move a start week, remove this stint and add a new one.' +
-                '</p>';
-        html += '</div>';
-
-        html += '<div class="form-group">';
-        html += '<label for="edit-member-leave">Leave Period</label>';
-        html += '<input type="text" id="edit-member-leave" value="' +
-                    escapeAttribute(leaveValue) + '">';
-        html += '<p class="field-hint">' +
-                    'Blank means the stint is ongoing.' +
-                '</p>';
-        html += '</div>';
-
-        html += '<div class="form-actions">';
-        html += '<button type="button" id="cancel-edit-member" class="secondary">Cancel</button>';
-        html += '<button type="submit" id="save-edit-member" class="primary">Save Changes</button>';
-        html += '</div>';
-
-        html += '</form>';
-
-        return html;
-    }
-
-    // ============================================================
     // RANKING FORM
     // ============================================================
 
@@ -1047,68 +820,11 @@
 
         html += '</div>';
 
-        html += getModalsHTML();
+        // NOTE: No getModalsHTML() call. Modal shells are created on
+        // demand by TeamEvents, appended to document.body. Emitting
+        // them here is what caused refreshUI to destroy them.
 
         return html;
-    }
-
-    // ============================================================
-    // MODALS (static shells)
-    // ============================================================
-
-    function getModalsHTML() {
-        return [
-            '<!-- Team Form Modal -->',
-            '<div id="team-form-modal" class="modal hidden">',
-                '<div class="modal-content">',
-                    '<div class="modal-header">',
-                        '<h3 id="team-form-title">Add Team</h3>',
-                        '<button class="close-modal" id="close-team-form">&times;</button>',
-                    '</div>',
-                    '<div class="modal-body" id="team-form-body"></div>',
-                '</div>',
-            '</div>',
-
-            '<!-- Member Modal (compact) -->',
-            '<div id="member-modal" class="modal hidden">',
-                '<div class="modal-content">',
-                    '<div class="modal-header">',
-                        '<h3 id="modal-team-name">Team Members</h3>',
-                        '<button class="close-modal">&times;</button>',
-                    '</div>',
-                    '<div class="modal-body">',
-                        '<div class="member-form" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center;">',
-                            '<select id="member-character" style="flex:1;min-width:150px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">',
-                                '<option value="">Select character...</option>',
-                            '</select>',
-                            '<input type="text" id="member-role" placeholder="Role" style="flex:1;min-width:80px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">',
-                            '<input type="text" id="member-join" placeholder="Join" style="flex:1;min-width:80px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">',
-                            '<input type="text" id="member-leave" placeholder="Leave" style="flex:1;min-width:80px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">',
-                            '<button id="add-member-btn" class="primary small" type="button">Add Member</button>',
-                        '</div>',
-                        '<div id="members-list">',
-                            '<p class="empty-state">No members in this team</p>',
-                        '</div>',
-                    '</div>',
-                '</div>',
-            '</div>',
-
-            '<!-- Ranking Modal -->',
-            '<div id="ranking-modal" class="modal hidden">',
-                '<div class="modal-content">',
-                    '<div class="modal-header">',
-                        '<h3 id="ranking-modal-title">Ranking History</h3>',
-                        '<button class="close-modal">&times;</button>',
-                    '</div>',
-                    '<div class="modal-body">',
-                        '<div id="ranking-form-container"></div>',
-                        '<div id="ranking-list">',
-                            '<p class="empty-state">No ranking history</p>',
-                        '</div>',
-                    '</div>',
-                '</div>',
-            '</div>'
-        ].join('');
     }
 
     // ============================================================
@@ -1129,15 +845,10 @@
         renderFilterBar: renderFilterBar,
 
         // Modal contents
-        renderMemberList: renderMemberList,
         renderRankingList: renderRankingList,
         renderTeamForm: renderTeamForm,
-        renderMemberForm: renderMemberForm,
         renderRankingForm: renderRankingForm,
         renderNameHistoryRow: renderNameHistoryRow,
-
-        // Static modal shells
-        getModalsHTML: getModalsHTML,
 
         // Helpers
         escapeHtml: escapeHtml,
@@ -1156,10 +867,9 @@
             'renderContainer',
             'renderList', 'renderExpandedMembers', 'renderTeamCard', 'renderTeamSummary',
             'renderFilterBar',
-            'renderMemberList', 'renderRankingList',
-            'renderTeamForm', 'renderMemberForm', 'renderRankingForm',
+            'renderRankingList',
+            'renderTeamForm', 'renderRankingForm',
             'renderNameHistoryRow',
-            'getModalsHTML',
             'escapeHtml', 'escapeAttribute'
         ];
 
