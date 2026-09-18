@@ -29,6 +29,18 @@
  *   The class roster is DERIVED from character.classIds. There is no
  *   separate roster store; AcademyClasses owns the derivation.
  *
+ * ELIMINATION READS (year-scoped for the list):
+ *   Elimination is a year-scoped concept for the character list. A
+ *   character eliminated in year Y is filtered as eliminated for year
+ *   Y and every year after. EliminationQueries owns the semantics
+ *   (isCharacterEliminatedByYear). Week-based queries remain for
+ *   callers that operate inside a single year; the list filter does
+ *   not use them.
+ *
+ *   The filter year is resolved in resolveFilterYear: options.year
+ *   when supplied, then window.data.currentYear, then the current
+ *   calendar year.
+ *
  * DEATH TIMELINE SEMANTICS:
  *   - "Deceased" is TIME-DEPENDENT. A character with deathYear = 1920
  *     is alive in 1918 and dead in 1922.
@@ -210,6 +222,36 @@
     }
 
     /**
+     * Resolve the year the character list filters eliminated
+     * characters by.
+     *
+     * Resolution order:
+     *   1. options.year (integer >= 1).
+     *   2. window.data.currentYear.
+     *   3. The current calendar year.
+     *
+     * @param {object} [options]
+     * @returns {number}
+     */
+    function resolveFilterYear(options) {
+        if (options && options.year !== undefined && options.year !== null) {
+            var explicit = parseInt(options.year, 10);
+            if (!isNaN(explicit) && explicit >= 1) {
+                return explicit;
+            }
+        }
+
+        var data = window.data || {};
+        if (typeof data.currentYear === 'number' &&
+            isFinite(data.currentYear) &&
+            data.currentYear > 0) {
+            return Math.floor(data.currentYear);
+        }
+
+        return new Date().getFullYear();
+    }
+
+    /**
      * Check whether a character is deceased as of the current year.
      *
      * Prefers CharacterQueries.isDeceased (the canonical query), which
@@ -381,6 +423,10 @@
      * to the fallback 'Unknown Tournament' name instead of killing
      * the whole character detail render.
      *
+     * The elimination record now carries a `year` (v25+). It is
+     * passed through as-is; display callers decide whether to show
+     * year, week, or both.
+     *
      * @param {object} elim - Elimination record
      * @param {string} charId - Character ID (unused but kept for symmetry)
      * @returns {object|null} Formatted elimination or null
@@ -390,10 +436,17 @@
 
         var TournamentQueries = getTournamentQueries();
 
+        var year = parseInt(elim.year, 10);
+        if (isNaN(year) || year < 1) { year = null; }
+
+        var week = parseInt(elim.week, 10);
+        if (isNaN(week) || week < 1) { week = null; }
+
         if (elim.standalone) {
             return {
                 id: elim.id,
-                week: elim.week || '?',
+                year: year,
+                week: week,
                 reason: elim.reason || '',
                 standalone: true
             };
@@ -423,7 +476,8 @@
             id: elim.id,
             tournamentId: elim.tournamentId,
             tournamentName: tournamentName,
-            week: elim.week || '?',
+            year: year,
+            week: week,
             reason: elim.reason || '',
             fromMatch: elim.fromMatch || false,
             standalone: false
@@ -720,11 +774,15 @@
         var standaloneEliminations = [];
         var isEliminated = false;
         var eliminationWeek = null;
+        var eliminationYear = null;
         var eliminationReason = 'Unknown';
 
         if (includeEliminations && EliminationQueries) {
-            isEliminated = EliminationQueries.isCharacterEliminated(characterId, weekNum);
+            isEliminated = EliminationQueries.isCharacterEliminatedByWeek(characterId, weekNum);
             eliminationWeek = EliminationQueries.getEliminationWeek(characterId);
+            eliminationYear = (typeof EliminationQueries.getEliminationYear === 'function')
+                ? EliminationQueries.getEliminationYear(characterId)
+                : null;
             eliminationReason = EliminationQueries.getEliminationReason(characterId) || 'Unknown';
 
             var rawEliminations = char.eliminations || [];
@@ -851,6 +909,7 @@
             // Eliminations
             isEliminated: isEliminated,
             eliminationWeek: eliminationWeek,
+            eliminationYear: eliminationYear,
             eliminationReason: eliminationReason,
             tournamentEliminations: tournamentEliminations,
             standaloneEliminations: standaloneEliminations,
@@ -891,6 +950,7 @@
      * @param {boolean} options.hideDeceased - Hide deceased characters
      * @param {boolean} options.hideEliminated - Hide eliminated characters
      * @param {number} options.week - Week number (default: current)
+     * @param {number} options.year - Elimination filter year (default: currentYear)
      * @returns {Array} Array of character list items
      */
     function getCharacterListViewModel(options) {
@@ -932,16 +992,33 @@
         }
 
         // ---- Pre-compute elimination status for all characters ----
+        //
+        // Year, not week. The character list is year-scoped; a
+        // character eliminated in year Y is filtered as eliminated
+        // for year Y and every year after. The filter year comes from
+        // resolveFilterYear (options.year, then currentYear).
+        var filterYear = resolveFilterYear(options);
         var eliminationStatus = {};
         if (EliminationQueries) {
             characters.forEach(function(char) {
                 if (!char || !char.id) { return; }
+
+                var eliminated = false;
+                if (typeof EliminationQueries.isCharacterEliminatedByYear === 'function') {
+                    eliminated = EliminationQueries.isCharacterEliminatedByYear(
+                        char.id, filterYear
+                    );
+                }
+
                 eliminationStatus[char.id] = {
-                    eliminated: EliminationQueries.isCharacterEliminated(char.id, weekNum),
-                    week: EliminationQueries.getEliminationWeek
+                    eliminated: eliminated,
+                    year: (typeof EliminationQueries.getEliminationYear === 'function')
+                        ? EliminationQueries.getEliminationYear(char.id)
+                        : null,
+                    week: (typeof EliminationQueries.getEliminationWeek === 'function')
                         ? EliminationQueries.getEliminationWeek(char.id)
                         : null,
-                    reason: EliminationQueries.getEliminationReason
+                    reason: (typeof EliminationQueries.getEliminationReason === 'function')
                         ? EliminationQueries.getEliminationReason(char.id)
                         : 'Unknown'
                 };
@@ -1007,6 +1084,7 @@
 
             var elimStatus = eliminationStatus[char.id] || {
                 eliminated: false,
+                year: null,
                 week: null,
                 reason: 'Unknown'
             };
@@ -1017,6 +1095,7 @@
                 status: CharacterQueries.getCurrentStatus(char),
                 deceased: deceasedStatus[char.id] === true,
                 eliminated: elimStatus.eliminated,
+                eliminationYear: elimStatus.year,
                 eliminationWeek: elimStatus.week,
                 eliminationReason: elimStatus.reason,
                 classNames: classNames,
@@ -1065,12 +1144,16 @@
 
         var isEliminated = false;
         var eliminationWeek = null;
+        var eliminationYear = null;
         var eliminationReason = 'Unknown';
         var tournamentEliminations = [];
 
         if (EliminationQueries) {
-            isEliminated = EliminationQueries.isCharacterEliminated(characterId, weekNum);
+            isEliminated = EliminationQueries.isCharacterEliminatedByWeek(characterId, weekNum);
             eliminationWeek = EliminationQueries.getEliminationWeek(characterId);
+            eliminationYear = (typeof EliminationQueries.getEliminationYear === 'function')
+                ? EliminationQueries.getEliminationYear(characterId)
+                : null;
             eliminationReason = EliminationQueries.getEliminationReason(characterId) || 'Unknown';
 
             var rawEliminations = char.eliminations || [];
@@ -1091,6 +1174,7 @@
             grades: grades,
             classNames: classNames,
             isEliminated: isEliminated,
+            eliminationYear: eliminationYear,
             eliminationWeek: eliminationWeek,
             eliminationReason: eliminationReason,
             tournamentEliminations: tournamentEliminations
