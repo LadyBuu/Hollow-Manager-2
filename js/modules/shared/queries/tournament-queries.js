@@ -12,6 +12,7 @@
  *   - Result-map accessors
  *   - Final passers derivation
  *   - Type/status lookups
+ *   - Prior-round outcome derivation (for the Exam picker indicator)
  *
  * IDENTITY:
  *   Rounds and matches are identified by stable IDs, not indices.
@@ -603,24 +604,45 @@
         var normalised = normaliseId(participantId);
         if (normalised === null) { return null; }
 
+        return readParticipantResultFromMatch(match, normalised);
+    }
+
+    /**
+     * Internal helper: read a participant's result from a match
+     * record that is already in hand.
+     *
+     * SEMANTICS:
+     *   group_exam   : results[participantId]
+     *   team_vs_team : teamResults[participantId] if present,
+     *                  otherwise individualResults[participantId]
+     *
+     * No validation of match shape here; the caller is responsible
+     * for passing a structurally valid match record.
+     *
+     * @returns {string|null} 'pass' | 'fail' | 'retry' | null
+     */
+    function readParticipantResultFromMatch(match, normalisedParticipantId) {
+        if (!match || typeof match !== 'object') { return null; }
+        if (!isNonEmptyString(normalisedParticipantId)) { return null; }
+
         var type = match.type;
 
         if (type === 'group_exam') {
             if (match.results &&
-                match.results[normalised] !== undefined) {
-                return match.results[normalised];
+                match.results[normalisedParticipantId] !== undefined) {
+                return match.results[normalisedParticipantId];
             }
             return null;
         }
 
         if (type === 'team_vs_team') {
             if (match.teamResults &&
-                match.teamResults[normalised] !== undefined) {
-                return match.teamResults[normalised];
+                match.teamResults[normalisedParticipantId] !== undefined) {
+                return match.teamResults[normalisedParticipantId];
             }
             if (match.individualResults &&
-                match.individualResults[normalised] !== undefined) {
-                return match.individualResults[normalised];
+                match.individualResults[normalisedParticipantId] !== undefined) {
+                return match.individualResults[normalisedParticipantId];
             }
             return null;
         }
@@ -708,6 +730,136 @@
             }
         }
         return failers;
+    }
+
+    // ============================================================
+    // PRIOR-ROUND OUTCOMES
+    // ============================================================
+    //
+    // Reads the round that immediately precedes `beforeRoundId` (by
+    // positional order) and returns a map of participant ID to the
+    // participant's outcome in that round, restricted to 'pass' and
+    // 'retry'.
+    //
+    // This is the derivation behind the Exam picker's pass/retry
+    // indicator. The picker is opened to add a match to a specific
+    // round; the badge on each candidate reflects what that candidate
+    // did in the round immediately before.
+    //
+    // CONTRACT:
+    //   - Only COMPLETED matches contribute.
+    //   - 'fail' is dropped. A failing participant would be filtered
+    //     out of the picker pool anyway; recording 'fail' here would
+    //     be dead state that callers would then need to ignore.
+    //   - null (unresolved result on a completed match) is dropped.
+    //   - If a participant appears in MULTIPLE completed matches in
+    //     the previous round, the outcomes are reconciled:
+    //         any 'pass'   -> 'pass'
+    //         else any 'retry' -> 'retry'
+    //         otherwise absent
+    //     This makes the badge deterministic under match reordering.
+    //     The tie-break favours 'pass' because it is the stronger
+    //     outcome and the UI reads more naturally as "they passed".
+    //   - The previous round is the round at index-1 of the round
+    //     containing `beforeRoundId`. If `beforeRoundId` is the first
+    //     round, or not found, an empty map is returned.
+    //
+    // SEMANTICS BY MATCH TYPE:
+    //   group_exam   : reads match.results[participantId]
+    //   team_vs_team : reads match.teamResults[participantId]
+    //                  (NOT individualResults; see C8 spec, Q4)
+    //
+    // Return shape:
+    //   { [participantId]: 'pass' | 'retry' }
+    //
+    // The map is a plain object with String keys and String values.
+    // Entries whose value would be neither 'pass' nor 'retry' are
+    // omitted entirely.
+
+    /**
+     * Get the outcome map for the round immediately preceding
+     * `beforeRoundId`.
+     *
+     * @param {string} tournamentId
+     * @param {string} beforeRoundId - The round the picker is
+     *   targeting. The returned map describes the round BEFORE it.
+     * @returns {object} Map of participant ID to 'pass' | 'retry'.
+     *   Empty when there is no previous round, or when the previous
+     *   round has no completed matches.
+     */
+    function getPriorRoundOutcomes(tournamentId, beforeRoundId) {
+        var result = {};
+
+        var normalisedBefore = normaliseId(beforeRoundId);
+        if (normalisedBefore === null) {
+            return result;
+        }
+
+        var tournament = getTournament(tournamentId);
+        if (!tournament || !Array.isArray(tournament.rounds)) {
+            return result;
+        }
+
+        var beforeIndex = Schema.findRoundIndexById(
+            tournament,
+            normalisedBefore
+        );
+        if (beforeIndex <= 0) {
+            // Either the round is not found (-1) or it is the first
+            // round (0). Either way, there is no previous round.
+            return result;
+        }
+
+        var previousRound = tournament.rounds[beforeIndex - 1];
+        if (!previousRound || !Array.isArray(previousRound.matches)) {
+            return result;
+        }
+
+        // Two-pass reconcile: gather per-participant best outcome.
+        //   'pass' beats 'retry' beats absent.
+        // We track the best seen so far per participant and upgrade
+        // in place. This handles the multi-match case without a
+        // second walk.
+        var matches = previousRound.matches;
+
+        for (var m = 0; m < matches.length; m++) {
+            var match = matches[m];
+            if (!match) { continue; }
+            if (match.status !== 'completed') { continue; }
+
+            var participants = Array.isArray(match.participants)
+                ? match.participants
+                : [];
+
+            for (var p = 0; p < participants.length; p++) {
+                var pid = normaliseId(participants[p]);
+                if (pid === null) { continue; }
+
+                var raw = readParticipantResultFromMatch(match, pid);
+                if (raw !== 'pass' && raw !== 'retry') {
+                    // 'fail', null, or anything unexpected is
+                    // dropped. Participants who failed are excluded
+                    // from the picker pool by a separate filter.
+                    continue;
+                }
+
+                var current = result[pid];
+                if (current === 'pass') {
+                    continue;
+                }
+                if (raw === 'pass') {
+                    result[pid] = 'pass';
+                    continue;
+                }
+                // raw === 'retry'
+                if (current === undefined) {
+                    result[pid] = 'retry';
+                }
+                // current === 'retry' already, no change.
+            }
+        }
+
+        return result;
     }
 
     // ============================================================
@@ -935,6 +1087,9 @@
         getMatchPassers: getMatchPassers,
         getMatchFailers: getMatchFailers,
 
+        // Prior-round outcomes (for the Exam picker indicator)
+        getPriorRoundOutcomes: getPriorRoundOutcomes,
+
         // Elimination reads
         getEliminations: getEliminations,
         getEliminationCount: getEliminationCount,
@@ -980,6 +1135,7 @@
             'getMatchResults', 'getTeamResults', 'getIndividualResults',
             'getPairings', 'getMatchAdvancing', 'getMatchPassers',
             'getMatchFailers',
+            'getPriorRoundOutcomes',
             'getEliminations', 'getEliminationCount',
             'getEliminationRecord', 'isParticipantEliminated',
             'getEliminationsByRound', 'getEliminationsByMatch',
