@@ -14,6 +14,8 @@
  *   - Collect raw form values from modals
  *   - Render a collapse toggle on each round header (C4)
  *   - Render prior-round pass/retry badges in the picker (C8)
+ *   - Render an "Edit Exam" button in the exam header and provide
+ *     the edit modal builder/collector (C5)
  *
  * NOT RESPONSIBILITIES:
  *   - Event binding. AcademyView binds; this module emits data-*.
@@ -26,6 +28,8 @@
  *   - Prior-round derivation. TournamentQueries owns it; this
  *     module only reads `priorRoundOutcome` off pool items and
  *     eligible-participant entries.
+ *   - Exam update. The events layer routes the collected form
+ *     through TournamentCore.updateTournament.
  *
  * VM CONTRACT:
  *   The main page VM (from AcademyTournamentAggregator.getExamViewModel):
@@ -118,6 +122,12 @@
  *   The modal builders receive everything they need on the options
  *   object. They do NOT query the domain.
  *
+ *   buildEditExamModalHTML({
+ *     examId,
+ *     name,                  // string
+ *     week                   // number (single week)
+ *   })
+ *
  *   buildAddMatchModalHTML({
  *     examId, roundId,
  *     mode,                  // 'individuals' | 'teams'
@@ -150,6 +160,7 @@
  *   Action strings emitted by this module:
  *     exam-create
  *     exam-delete
+ *     exam-edit                (C5)
  *     exam-toggle-pool-member
  *     exam-add-round
  *     exam-remove-round
@@ -207,6 +218,24 @@
  *
  *   Collapse does NOT affect eliminations or any other section. Only
  *   the round's own matches are hidden.
+ *
+ * EDIT EXAM (C5):
+ *   The exam header carries an "Edit Exam" button next to the other
+ *   actions. Clicking it opens a modal built by
+ *   buildEditExamModalHTML. The modal exposes:
+ *
+ *     - Exam Name        (text input)
+ *     - Week             (single integer input)
+ *
+ *   A single week is used because this UI scopes exams to one week:
+ *   the create modal takes a single week and the aggregator renders
+ *   a single week. The events layer sets both `startWeek` and
+ *   `endWeek` to that value on submit.
+ *
+ *   No other fields are editable through this modal. Participants,
+ *   rounds, and matches are edited through their own affordances.
+ *   Mode cannot be changed after creation because the domain rejects
+ *   mode changes once participants exist.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -317,13 +346,6 @@
     // ============================================================
     // PRIOR-ROUND OUTCOME BADGE (C8)
     // ============================================================
-    //
-    // Renders a small pass/retry badge next to a picker candidate's
-    // name when the candidate has a prior-round outcome. Returns the
-    // empty string for null/undefined/'fail'/anything unexpected.
-    //
-    // The badge is display-only. It has no data-action, is not
-    // clickable, and does not affect selection.
 
     function renderPriorOutcomeBadge(outcome) {
         if (outcome !== 'pass' && outcome !== 'retry') {
@@ -629,6 +651,15 @@
 
         html += '<div class="academy-exams-detail-actions">';
 
+        // C5 — Edit Exam. Available regardless of exam status: the
+        // exam record is a soft-label record, and the user is the
+        // authority on when they want to correct the name or week.
+        html += '<button type="button" class="small secondary" ' +
+                    'data-action="exam-edit" ' +
+                    'data-exam-id="' + escapeAttribute(exam.id) + '">' +
+                    'Edit Exam' +
+                '</button>';
+
         if (!isComplete) {
             html += '<button type="button" class="small primary" ' +
                         'data-action="exam-add-round" ' +
@@ -729,11 +760,6 @@
         html += '<div class="at-round-header">';
 
         // ---- Collapse toggle (C4) ----
-        // The toggle is the leftmost element in the header. It
-        // carries data-exam-id and data-round-id so the events
-        // layer has everything it needs without walking the DOM.
-        // It has no state of its own; the round's isCollapsed
-        // determines its label and icon.
         html += '<button type="button" ' +
                     'class="at-round-collapse-toggle" ' +
                     'data-action="exam-toggle-round-collapse" ' +
@@ -823,11 +849,6 @@
         html += '</div>';
 
         // ---- Round body (collapsible) ----
-        //
-        // The body is always rendered. Collapse is a CSS class that
-        // hides it. This keeps the DOM stable across toggles, so the
-        // delegated listeners see the same structure and scroll
-        // restoration (C6) has something to anchor to.
         html += '<div class="at-round-body">';
 
         var matches = isArray(round.matches) ? round.matches : [];
@@ -1344,6 +1365,85 @@
     }
 
     // ============================================================
+    // MODAL BUILDER - Edit Exam (C5)
+    // ============================================================
+    //
+    // Fields:
+    //   - Exam Name        (text input)
+    //   - Week             (single integer input)
+    //
+    // A single week is used because this UI scopes exams to one
+    // week. On submit, the events layer sets both startWeek and
+    // endWeek to that value.
+    //
+    // No other fields are exposed. Participants, rounds, matches,
+    // and mode are edited through their own affordances. Mode in
+    // particular cannot be changed after creation: the domain
+    // rejects it once participants exist.
+
+    function buildEditExamModalHTML(options) {
+        options = options || {};
+        var examId = options.examId || '';
+        var name = options.name || '';
+        var week = options.week;
+
+        var weekValue = isFiniteNumber(week) ? String(week) : '';
+
+        var html = '';
+        html += '<form id="at-edit-exam-form" ' +
+                    'data-exam-id="' + escapeAttribute(examId) + '">';
+
+        html += renderModalHeader('Edit Exam');
+
+        html += '<div class="modal-body">';
+
+        html += '<div class="form-group">';
+        html += '<label for="at-edit-exam-name">Exam Name</label>';
+        html += '<input type="text" id="at-edit-exam-name" ' +
+                    'class="at-edit-exam-name" ' +
+                    'value="' + escapeAttribute(name) + '" required>';
+        html += '</div>';
+
+        html += '<div class="form-group">';
+        html += '<label for="at-edit-exam-week">Week</label>';
+        html += '<input type="number" id="at-edit-exam-week" ' +
+                    'class="at-edit-exam-week" ' +
+                    'value="' + escapeAttribute(weekValue) + '" ' +
+                    'min="1" max="52" required>';
+        html += '<p class="field-hint">' +
+                    'The week this exam runs. Sets both start and end ' +
+                    'week, because exams are scoped to a single week.' +
+                '</p>';
+        html += '</div>';
+
+        html += '<div class="form-actions">';
+        html += '<button type="button" ' +
+                    'class="cancel-modal-btn secondary">Cancel</button>';
+        html += '<button type="submit" class="primary">Save Changes</button>';
+        html += '</div>';
+
+        html += '</div>';
+        html += '</form>';
+
+        return html;
+    }
+
+    function collectEditExamForm(form) {
+        if (!form) { return null; }
+
+        var nameEl = form.querySelector('.at-edit-exam-name');
+        var weekEl = form.querySelector('.at-edit-exam-week');
+
+        var name = nameEl ? nameEl.value.trim() : '';
+        var week = weekEl ? parseInt(weekEl.value, 10) : NaN;
+
+        return {
+            name: name,
+            week: isNaN(week) ? null : week
+        };
+    }
+
+    // ============================================================
     // MODAL BUILDER - Delete Exam
     // ============================================================
 
@@ -1648,9 +1748,6 @@
             var item = eligible[i];
             if (!item || !item.id) { continue; }
 
-            // C8 — prior-outcome badge. Read-only; renders the empty
-            // string when the outcome is null or anything else
-            // unrecognised.
             var badge = renderPriorOutcomeBadge(item.priorRoundOutcome);
 
             html += '<label class="at-picker-item">' +
@@ -1894,11 +1991,6 @@
             var id = currentIds[j];
             if (!id) { continue; }
             if (combined[String(id)]) { continue; }
-            // Current participants who are not in the eligible list
-            // are rendered without a prior-outcome badge. Their
-            // outcome is not knowable here: eligible was computed
-            // against the previous round, and these participants are
-            // already in this match.
             addEntry(id, String(id), null);
         }
 
@@ -2213,6 +2305,7 @@
         renderHTML: renderHTML,
 
         buildCreateExamModalHTML: buildCreateExamModalHTML,
+        buildEditExamModalHTML: buildEditExamModalHTML,
         buildDeleteExamModalHTML: buildDeleteExamModalHTML,
         buildAddRoundModalHTML: buildAddRoundModalHTML,
         buildRemoveRoundModalHTML: buildRemoveRoundModalHTML,
@@ -2226,6 +2319,7 @@
         buildRemoveMatchModalHTML: buildRemoveMatchModalHTML,
 
         collectCreateExamForm: collectCreateExamForm,
+        collectEditExamForm: collectEditExamForm,
         collectAddRoundForm: collectAddRoundForm,
         collectAutoGenerateRoundForm: collectAutoGenerateRoundForm,
         collectAddMatchForm: collectAddMatchForm,
@@ -2244,6 +2338,7 @@
         var required = [
             'renderHTML',
             'buildCreateExamModalHTML',
+            'buildEditExamModalHTML',
             'buildDeleteExamModalHTML',
             'buildAddRoundModalHTML',
             'buildRemoveRoundModalHTML',
@@ -2256,6 +2351,7 @@
             'buildReopenExamModalHTML',
             'buildRemoveMatchModalHTML',
             'collectCreateExamForm',
+            'collectEditExamForm',
             'collectAddRoundForm',
             'collectAutoGenerateRoundForm',
             'collectAddMatchForm',
