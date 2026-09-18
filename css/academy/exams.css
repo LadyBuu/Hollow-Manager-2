@@ -12,8 +12,10 @@
  *   - Pool sidebar (eligible participants)
  *   - Exam detail panel (header, mode badge, status badge)
  *   - Rounds and matches
+ *   - Round collapse (C4)
  *   - Participants, pairings, team matches
  *   - Outcome badges (pass / retry / fail / pending)
+ *   - Prior-round picker badges (C8)
  *   - Eliminations and final passers sections
  *   - All exam modal contents (create, delete, round, match,
  *     complete, reopen, auto-generate, pair picker)
@@ -361,7 +363,6 @@
 
 .at-round-header {
     display: flex;
-    justify-content: space-between;
     align-items: center;
     gap: 8px;
     padding-bottom: 6px;
@@ -376,6 +377,8 @@
     gap: 6px;
     flex-wrap: wrap;
     font-size: 0.8rem;
+    flex: 1;
+    min-width: 0;
 }
 
 .at-round-title strong {
@@ -421,6 +424,69 @@
 .at-round-actions button {
     font-size: 0.6rem;
     padding: 2px 8px;
+}
+
+/* ============================================================
+   ROUND COLLAPSE (C4)
+   ============================================================ */
+   //
+   // The collapse toggle lives at the leftmost position of the
+   // round header. It is a plain square button that carries a
+   // small glyph (▾ when expanded, ▸ when collapsed). The icon
+   // is the only visual state indicator; the toggle is otherwise
+   // styled like the header row's neutral controls.
+   //
+   // The round body is always in the DOM. Collapse hides it via
+   // `display: none` on the parent modifier class. This keeps
+   // delegated listeners and scroll anchors stable across toggles.
+
+.at-round-collapse-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    min-width: 22px;
+    padding: 0;
+    background: var(--panel);
+    color: var(--text-dim);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.7rem;
+    line-height: 1;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    flex: 0 0 auto;
+}
+
+.at-round-collapse-toggle:hover {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+.at-round-collapse-toggle:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.at-round-collapse-icon {
+    display: inline-block;
+    width: 1em;
+    text-align: center;
+    pointer-events: none;
+}
+
+/* ---------- The collapse itself ---------- */
+
+.at-round-body {
+    /* No layout of its own. Exists purely as a hideable wrapper
+       so delegation and scroll-anchoring see a stable DOM. */
+}
+
+.at-round.is-collapsed .at-round-body {
+    display: none;
 }
 
 /* ============================================================
@@ -582,6 +648,43 @@
     color: var(--text-dim);
     background: var(--panel-alt);
     border-color: var(--border);
+}
+
+/* ============================================================
+   PRIOR-ROUND PICKER BADGES (C8)
+   ============================================================ */
+   //
+   // Rendered next to a picker candidate's name when the candidate
+   // has a known outcome in the round immediately before the target
+   // round. Display-only; no action, no selection effect.
+   //
+   // Three states are possible in the VM: 'pass', 'retry', and null.
+   // The view renders nothing for null, so only the two badge
+   // classes below ever appear in the DOM.
+
+.at-prior-outcome {
+    display: inline-block;
+    font-size: 0.5rem;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 8px;
+    border: 1px solid;
+    white-space: nowrap;
+    margin-left: 6px;
+    vertical-align: middle;
+    flex: 0 0 auto;
+}
+
+.at-prior-outcome-pass {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.at-prior-outcome-retry {
+    color: var(--warning);
+    background: var(--warning-soft);
+    border-color: var(--warning);
 }
 
 /* ============================================================
@@ -968,6 +1071,19 @@
     margin: 0;
     accent-color: var(--accent);
     cursor: pointer;
+    flex: 0 0 auto;
+}
+
+/* Wrapper around the candidate's name. Sits between the checkbox
+   and the optional prior-outcome badge (C8). Grows to consume the
+   remaining row width so the badge stays pinned to the trailing
+   edge regardless of name length. */
+.at-picker-item-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* ============================================================
@@ -1236,6 +1352,11 @@
     .at-outcome-badge {
         font-size: 0.5rem;
         padding: 1px 6px;
+    }
+
+    .at-prior-outcome {
+        font-size: 0.45rem;
+        padding: 1px 5px;
     }
 
     .at-completion-row,
