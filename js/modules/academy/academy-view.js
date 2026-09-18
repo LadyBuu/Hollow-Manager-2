@@ -5,15 +5,17 @@
  * Path: js/modules/academy/academy-view.js
  *
  * RESPONSIBILITIES:
- *   - Own the top-level Academy shell (view switcher)
- *   - Delegate rendering to the per-view controller registry
- *   - Own the class/character/week/people-filter shared state via
- *     AcademyUI (typed API)
- *   - Bind container-level event delegation for the active
- *     controller
- *   - Route events to the active controller
+ *   - Own the top-level Academy shell (view switcher).
+ *   - Resolve the active view's controller from the registry.
+ *   - Hand the controller its host element and a context.
+ *   - Own the single delegated listener set for the tab, and route
+ *     every event to the active controller.
+ *   - Own the shared CRUD modal callback wiring
+ *     (AcademyCRUDModals.setOnChangeCallback).
  *   - Preserve scroll position of same-view sidebars across
- *     refreshes (C6)
+ *     refreshes (C6).
+ *   - Call the outgoing controller's unmount() when the active view
+ *     changes and on shell teardown.
  *
  * NOT RESPONSIBILITIES:
  *   - Feature rendering. That is the controllers'.
@@ -29,7 +31,7 @@
  *     people          AcademyPeopleController
  *     tournaments     AcademyExamController      (rendered as "Exams")
  *     weeklyTeams     AcademyWeeklyTeamsController
- *     rankings        AcademyRankingController   (S1.7, not yet shipped)
+ *     rankings        AcademyRankingController
  *     disciplines     AcademyDisciplineController
  *     locations       AcademyLocationController
  *
@@ -51,18 +53,18 @@
  *   Shell → registry → controller.
  *   Controllers never reference this module.
  *
- * VIEW-BY-VIEW MIGRATION STATUS:
- *   After S1.6:
- *     people          controlled
- *     tournaments     controlled
- *     weeklyTeams     controlled
- *     disciplines     controlled
- *     locations       controlled
- *     rankings        still inline (S1.7)
+ * DEPENDENCY WHITELIST (S1.8):
+ *   This module may reference:
+ *     - window.AcademyUI
+ *     - window.AcademyControllers
+ *     - window.AcademyControllerContract
+ *     - window.DomUtils
+ *     - window.CalendarConstants
+ *     - window.AcademyCRUDModals
  *
- *   The Rankings branch is the only remaining feature-specific code
- *   in this file. S1.7 removes it, S1.8 removes the leftover inline
- *   dispatchers and confirms the dependency whitelist.
+ *   Nothing else. No aggregators. No renderers. No domain modules.
+ *   No feature-scoped state beyond the shell's own coordinator
+ *   bookkeeping.
  *
  * SCROLL RESTORATION (C6):
  *   Same-view refreshes only. When render() runs, it captures the
@@ -83,19 +85,6 @@
  *     - No module state. The map lives on the stack of a single
  *       render() call.
  *     - Not persisted. Leaving a view and returning resets to 0.
- *
- * DEPENDENCIES (MANDATORY):
- *   - AcademyUI
- *   - DomUtils
- *   - CalendarConstants
- *
- * DEPENDENCIES (OPTIONAL, feature-scoped):
- *   - AcademyAggregator                       (rankings, until S1.7)
- *   - AcademyRankingView                      (rankings, until S1.7)
- *   - AcademyControllers                      (registry)
- *   - AcademyControllerContract               (invoke helper)
- *   - AcademyCRUDModals                       (onChange wiring)
- *   - NotificationSystem                      (via controllers)
  */
 
 (function() {
@@ -130,9 +119,6 @@
     if (!AcademyUI || typeof AcademyUI.getDisplayWeek !== 'function') {
         _missing.push('AcademyUI.getDisplayWeek');
     }
-    if (!AcademyUI || typeof AcademyUI.setDisplayWeek !== 'function') {
-        _missing.push('AcademyUI.setDisplayWeek');
-    }
     if (!DomUtils ||
         typeof DomUtils.escapeHtml !== 'function' ||
         typeof DomUtils.escapeAttribute !== 'function') {
@@ -156,6 +142,12 @@
     // ============================================================
     // OPTIONAL DEPENDENCY ACCESSORS
     // ============================================================
+    //
+    // These are the entire optional surface this module may reach.
+    // Each is a lazy lookup because the shell loads before the
+    // controllers directory and before academy-crud-modals.js's
+    // setOnChangeCallback wiring is meaningful. The lookups run at
+    // call time, not at IIFE time.
 
     function getControllers() {
         return window.AcademyControllers || null;
@@ -165,27 +157,8 @@
         return window.AcademyControllerContract || null;
     }
 
-    function getAcademyAggregator() {
-        return window.AcademyAggregator || null;
-    }
-
-    function getRankingViewModule() {
-        return window.AcademyRankingView || null;
-    }
-
     function getAcademyCRUDModals() {
         return window.AcademyCRUDModals || null;
-    }
-
-    function getNotificationSystem() {
-        return window.NotificationSystem || null;
-    }
-
-    function notify(message, type) {
-        var NS = getNotificationSystem();
-        if (NS && typeof NS.notify === 'function') {
-            NS.notify(message, type || 'info');
-        }
     }
 
     // ============================================================
@@ -270,23 +243,21 @@
     // MODULE STATE
     // ============================================================
     //
-    // The shell owns exactly three pieces of module state:
-    //   - The bound container and its delegated handlers.
-    //   - The last view it rendered a controller for, so the
-    //     outgoing controller's unmount() runs on view switches.
-    //   - The Rankings class selection, which is still inline
-    //     (moved to a controller in S1.7).
+    // Three pieces of module state, all coordinator bookkeeping:
+    //
+    //   _boundContainer, _boundHandlers
+    //     The single delegated listener set for the tab.
+    //
+    //   _lastRenderedControllerView
+    //     The view whose controller was rendered on the previous
+    //     pass. Used to invoke that controller's unmount() when the
+    //     active view changes, and on shell teardown.
+    //
+    // No feature state. No timers. No sub-editor references.
 
     var _boundContainer = null;
     var _boundHandlers = null;
-
-    // The view whose controller was active on the previous render.
-    // Used to invoke that controller's unmount() when the active view
-    // changes.
     var _lastRenderedControllerView = null;
-
-    // Rankings inline state (S1.7 removes this).
-    var _selectedRankingClassId = null;
 
     // ============================================================
     // ENTRY POINT
@@ -301,9 +272,8 @@
         }
 
         // Unmount the outgoing controller before rendering the new
-        // view. On a same-view refresh, this is a no-op (the view id
-        // is unchanged and the controller's unmount is not called).
-        unmountOutgoingControllerIfPresent();
+        // view. On a same-view refresh, this is a no-op.
+        unmountOutgoingControllerIfPresent(false);
 
         var view = AcademyUI.getSelectedView();
         if (VALID_VIEW_IDS.indexOf(view) === -1) {
@@ -312,30 +282,7 @@
 
         var html = '';
         html += renderViewNav(view);
-
-        switch (view) {
-            case 'people':
-                html += renderControllerHost('academy-people-host');
-                break;
-            case 'tournaments':
-                html += renderControllerHost('academy-exams-host');
-                break;
-            case 'weeklyTeams':
-                html += renderControllerHost('academy-weekly-teams-host');
-                break;
-            case 'rankings':
-                // Rankings still renders inline (S1.7).
-                html += renderRankingView();
-                break;
-            case 'disciplines':
-                html += renderControllerHost('academy-disciplines-host');
-                break;
-            case 'locations':
-                html += renderControllerHost('academy-locations-host');
-                break;
-            default:
-                html += renderPlaceholder('Unknown view: ' + view);
-        }
+        html += renderControllerHostForView(view);
 
         // C6 — capture scrollable sidebars before the innerHTML
         // swap. Restore after.
@@ -359,9 +306,7 @@
 
     function unmount() {
         unmountOutgoingControllerIfPresent(true);
-
         unbindEvents();
-
         _boundContainer = null;
         _lastRenderedControllerView = null;
     }
@@ -378,12 +323,32 @@
             html += '<button type="button" ' +
                         'class="academy-view-btn' +
                             (isActive ? ' active' : '') + '" ' +
-                        'data-view="' + DomUtils.escapeAttribute(v.id) + '">' +
+                        'data-view="' +
+                            DomUtils.escapeAttribute(v.id) + '">' +
                         DomUtils.escapeHtml(v.label) +
                     '</button>';
         }
         html += '</div>';
         return html;
+    }
+
+    function renderControllerHostForView(view) {
+        switch (view) {
+            case 'people':
+                return renderControllerHost('academy-people-host');
+            case 'tournaments':
+                return renderControllerHost('academy-exams-host');
+            case 'weeklyTeams':
+                return renderControllerHost('academy-weekly-teams-host');
+            case 'rankings':
+                return renderControllerHost('academy-rankings-host');
+            case 'disciplines':
+                return renderControllerHost('academy-disciplines-host');
+            case 'locations':
+                return renderControllerHost('academy-locations-host');
+            default:
+                return renderPlaceholder('Unknown view: ' + view);
+        }
     }
 
     function renderControllerHost(hostId) {
@@ -399,58 +364,6 @@
                 '</p>' +
             '</div>'
         );
-    }
-
-    // ============================================================
-    // RANKINGS VIEW (INLINE — S1.7 MIGRATES)
-    // ============================================================
-
-    function renderRankingView() {
-        var Renderer = getRankingViewModule();
-        if (!Renderer || typeof Renderer.renderHTML !== 'function') {
-            return renderPlaceholder('Rankings');
-        }
-
-        var AcademyAggregator = getAcademyAggregator();
-        if (!AcademyAggregator ||
-            typeof AcademyAggregator.getRankingViewModel !== 'function') {
-            return renderPlaceholder('Rankings');
-        }
-
-        var week = AcademyUI.getDisplayWeek();
-
-        if (!_selectedRankingClassId) {
-            var peopleClassId = AcademyUI.getSelectedClassId();
-            if (peopleClassId) {
-                _selectedRankingClassId = peopleClassId;
-            }
-        }
-
-        var vm;
-        try {
-            vm = AcademyAggregator.getRankingViewModel(
-                _selectedRankingClassId,
-                week
-            );
-        } catch (e) {
-            console.warn(
-                '[AcademyView] getRankingViewModel threw:', e
-            );
-            return renderPlaceholder('Rankings');
-        }
-
-        if (vm && vm.classId) {
-            _selectedRankingClassId = vm.classId;
-        }
-
-        try {
-            return Renderer.renderHTML(vm);
-        } catch (e) {
-            console.warn(
-                '[AcademyView] AcademyRankingView.renderHTML threw:', e
-            );
-            return renderPlaceholder('Rankings');
-        }
     }
 
     // ============================================================
@@ -481,10 +394,18 @@
 
     function unbindEvents() {
         if (_boundContainer && _boundHandlers) {
-            _boundContainer.removeEventListener('click', _boundHandlers.click);
-            _boundContainer.removeEventListener('change', _boundHandlers.change);
-            _boundContainer.removeEventListener('input', _boundHandlers.input);
-            _boundContainer.removeEventListener('keydown', _boundHandlers.keydown);
+            _boundContainer.removeEventListener(
+                'click', _boundHandlers.click
+            );
+            _boundContainer.removeEventListener(
+                'change', _boundHandlers.change
+            );
+            _boundContainer.removeEventListener(
+                'input', _boundHandlers.input
+            );
+            _boundContainer.removeEventListener(
+                'keydown', _boundHandlers.keydown
+            );
         }
         _boundHandlers = null;
     }
@@ -495,7 +416,8 @@
             CRUD.setOnChangeCallback(refreshView);
         }
         // AcademyTournamentEvents.setOnChangeCallback is wired by
-        // AcademyExamController on each render.
+        // AcademyExamController on each render. The shell does not
+        // touch it.
     }
 
     // ============================================================
@@ -505,204 +427,108 @@
     function mountActiveControllerIfPresent() {
         var view = AcademyUI.getSelectedView();
 
-        if (view === 'people') {
-            mountPeopleControllerIfPresent();
-            return;
+        switch (view) {
+            case 'people':
+                mountControllerForView('people', 'academy-people-host', {
+                    onChange: function() { refreshView(); }
+                });
+                return;
+
+            case 'tournaments':
+                mountControllerForView(
+                    'tournaments',
+                    'academy-exams-host',
+                    {
+                        week: AcademyUI.getDisplayWeek(),
+                        onChange: function() { refreshView(); }
+                    }
+                );
+                return;
+
+            case 'weeklyTeams':
+                mountControllerForView(
+                    'weeklyTeams',
+                    'academy-weekly-teams-host',
+                    {
+                        week: AcademyUI.getDisplayWeek(),
+                        selectedClassId: AcademyUI.getSelectedClassId(),
+                        selectedTeamId: null,
+                        onChange: function() { refreshView(); },
+                        onSelectTeam: function() { refreshView(); },
+                        onSelectClass: function(classId) {
+                            AcademyUI.selectClass(classId || null);
+                            refreshView();
+                        },
+                        onOpenCharacterInPeople: function(charId) {
+                            openCharacterInPeople(charId);
+                        }
+                    }
+                );
+                return;
+
+            case 'rankings':
+                mountControllerForView(
+                    'rankings',
+                    'academy-rankings-host',
+                    {
+                        week: AcademyUI.getDisplayWeek(),
+                        onChange: function() { refreshView(); },
+                        onOpenCharacterInPeople: function(charId) {
+                            openCharacterInPeople(charId);
+                        }
+                    }
+                );
+                return;
+
+            case 'disciplines':
+                mountControllerForView(
+                    'disciplines',
+                    'academy-disciplines-host',
+                    {
+                        onChange: function() { refreshView(); }
+                    }
+                );
+                return;
+
+            case 'locations':
+                mountControllerForView(
+                    'locations',
+                    'academy-locations-host',
+                    {
+                        week: AcademyUI.getDisplayWeek(),
+                        onChange: function() { refreshView(); }
+                    }
+                );
+                return;
+
+            default:
+                return;
         }
-        if (view === 'tournaments') {
-            mountExamControllerIfPresent();
-            return;
-        }
-        if (view === 'weeklyTeams') {
-            mountWeeklyTeamsControllerIfPresent();
-            return;
-        }
-        if (view === 'disciplines') {
-            mountDisciplineControllerIfPresent();
-            return;
-        }
-        if (view === 'locations') {
-            mountLocationControllerIfPresent();
-            return;
-        }
-        // 'rankings' is inline (S1.7).
     }
 
-    function unmountOutgoingControllerIfPresent(isShellTeardown) {
-        var Registry = getControllers();
-        var Contract = getControllerContract();
-        if (!Registry || typeof Registry.get !== 'function') { return; }
-        if (!Contract || typeof Contract.invoke !== 'function') { return; }
-
-        var activeView = AcademyUI.getSelectedView();
-
-        // Determine which controller to unmount.
-        var outgoingView;
-        if (isShellTeardown === true) {
-            // Shell is being torn down: unmount whatever was last
-            // rendered, regardless of what the current view says.
-            outgoingView = _lastRenderedControllerView;
-        } else if (_lastRenderedControllerView &&
-                   _lastRenderedControllerView !== activeView) {
-            // View changed: unmount the previous view's controller.
-            outgoingView = _lastRenderedControllerView;
-        } else {
-            // Same view (or no prior view). Nothing to unmount.
-            return;
-        }
-
-        if (!outgoingView) { return; }
-
-        var outgoing = Registry.get(outgoingView);
-        if (!outgoing) {
-            _lastRenderedControllerView = isShellTeardown === true
-                ? null
-                : activeView;
-            return;
-        }
-
-        try {
-            Contract.invoke(outgoing, 'unmount', []);
-        } catch (e) {
-            console.warn(
-                '[AcademyView] controller unmount threw for view "' +
-                outgoingView + '":', e
-            );
-        }
-
-        _lastRenderedControllerView = isShellTeardown === true
-            ? null
-            : activeView;
-    }
-
-    // ---- Per-controller mount helpers ----
-
-    function mountPeopleControllerIfPresent() {
-        var controller = lookupController('people');
+    /**
+     * Resolve the controller for a view, find its host element, and
+     * invoke render(host, context).
+     *
+     * The view id is the registry key. The host id is the id of the
+     * controller host placeholder the shell emitted for that view.
+     * The context is supplied by the caller.
+     */
+    function mountControllerForView(viewId, hostId, context) {
+        var controller = lookupController(viewId);
         if (!controller) { return; }
 
-        var host = document.getElementById('academy-people-host');
+        var host = document.getElementById(hostId);
         if (!host) { return; }
 
-        var context = {
-            onChange: function() { refreshView(); }
-        };
-
-        invokeRender(controller, host, context, 'people');
-    }
-
-    function mountExamControllerIfPresent() {
-        var controller = lookupController('tournaments');
-        if (!controller) { return; }
-
-        var host = document.getElementById('academy-exams-host');
-        if (!host) { return; }
-
-        var context = {
-            week: AcademyUI.getDisplayWeek(),
-            onChange: function() { refreshView(); }
-        };
-
-        invokeRender(controller, host, context, 'tournaments');
-    }
-
-    function mountWeeklyTeamsControllerIfPresent() {
-        var controller = lookupController('weeklyTeams');
-        if (!controller) { return; }
-
-        var host = document.getElementById('academy-weekly-teams-host');
-        if (!host) { return; }
-
-        var context = {
-            week: AcademyUI.getDisplayWeek(),
-            selectedClassId: AcademyUI.getSelectedClassId(),
-            selectedTeamId: null,
-            onChange: function(updates) {
-                if (updates && typeof updates === 'object') {
-                    // The controller reports any selection it resolved
-                    // via the onChange payload. The shell does not
-                    // track the team selection separately; it lives
-                    // in the controller and is passed back on the
-                    // next render.
-                }
-                refreshView();
-            },
-            onSelectTeam: function(teamId) {
-                // The controller owns the team selection. It passes
-                // the resolved id back to itself on the next render.
-                // This callback is a signal that the selection
-                // changed and the shell should re-render.
-                refreshView();
-            },
-            onSelectClass: function(classId) {
-                if (classId) {
-                    AcademyUI.selectClass(classId);
-                } else {
-                    AcademyUI.selectClass(null);
-                }
-                refreshView();
-            },
-            onOpenCharacterInPeople: function(charId) {
-                if (!isNonEmptyString(charId)) { return; }
-                var classId = AcademyUI.getSelectedClassId();
-                if (classId) {
-                    AcademyUI.selectClass(classId);
-                }
-                AcademyUI.selectCharacter(charId);
-                AcademyUI.setSelectedView('people');
-                refreshView();
-            }
-        };
-
-        invokeRender(controller, host, context, 'weeklyTeams');
-    }
-
-    function mountDisciplineControllerIfPresent() {
-        var controller = lookupController('disciplines');
-        if (!controller) { return; }
-
-        var host = document.getElementById('academy-disciplines-host');
-        if (!host) { return; }
-
-        var context = {
-            onChange: function() { refreshView(); }
-        };
-
-        invokeRender(controller, host, context, 'disciplines');
-    }
-
-    function mountLocationControllerIfPresent() {
-        var controller = lookupController('locations');
-        if (!controller) { return; }
-
-        var host = document.getElementById('academy-locations-host');
-        if (!host) { return; }
-
-        var context = {
-            week: AcademyUI.getDisplayWeek(),
-            onChange: function() { refreshView(); }
-        };
-
-        invokeRender(controller, host, context, 'locations');
-    }
-
-    function lookupController(viewId) {
-        var Registry = getControllers();
-        if (!Registry || typeof Registry.get !== 'function') {
-            return null;
-        }
-        return Registry.get(viewId);
-    }
-
-    function invokeRender(controller, host, context, viewId) {
         var Contract = getControllerContract();
         if (!Contract || typeof Contract.invoke !== 'function') {
             return;
         }
 
-        // Record that we rendered this view's controller, so the
-        // outgoing-unmount step knows which controller to unmount on
-        // the next view change.
+        // Record that this view's controller is the active one.
+        // Used by unmountOutgoingControllerIfPresent on the next
+        // view change.
         _lastRenderedControllerView = viewId;
 
         try {
@@ -719,95 +545,113 @@
         }
     }
 
+    function lookupController(viewId) {
+        var Registry = getControllers();
+        if (!Registry || typeof Registry.get !== 'function') {
+            return null;
+        }
+        return Registry.get(viewId);
+    }
+
+    /**
+     * Unmount the outgoing controller.
+     *
+     * Two call sites:
+     *   - render(), before the new view is written. If the active
+     *     view differs from the last rendered view, the last
+     *     rendered controller is unmounted.
+     *   - unmount(), on shell teardown. The last rendered controller
+     *     is unmounted unconditionally.
+     *
+     * @param {boolean} isShellTeardown
+     */
+    function unmountOutgoingControllerIfPresent(isShellTeardown) {
+        var outgoingView;
+
+        if (isShellTeardown === true) {
+            outgoingView = _lastRenderedControllerView;
+        } else {
+            var activeView = AcademyUI.getSelectedView();
+            if (_lastRenderedControllerView &&
+                _lastRenderedControllerView !== activeView) {
+                outgoingView = _lastRenderedControllerView;
+            } else {
+                return;
+            }
+        }
+
+        if (!outgoingView) { return; }
+
+        var Registry = getControllers();
+        var Contract = getControllerContract();
+
+        if (Registry && typeof Registry.get === 'function' &&
+            Contract && typeof Contract.invoke === 'function') {
+            var outgoing = Registry.get(outgoingView);
+            if (outgoing) {
+                try {
+                    Contract.invoke(outgoing, 'unmount', []);
+                } catch (e) {
+                    console.warn(
+                        '[AcademyView] controller unmount threw for ' +
+                        'view "' + outgoingView + '":', e
+                    );
+                }
+            }
+        }
+
+        _lastRenderedControllerView = null;
+    }
+
+    /**
+     * Shared helper for the onOpenCharacterInPeople callback. Used
+     * by the Weekly Teams and Ranking mount contexts.
+     *
+     * Navigates to People with the given character selected. The
+     * class is whatever AcademyUI already has selected; if none, the
+     * character selection still happens and People renders its
+     * empty-class state.
+     */
+    function openCharacterInPeople(charId) {
+        if (!isNonEmptyString(charId)) { return; }
+        AcademyUI.selectCharacter(charId);
+        AcademyUI.setSelectedView('people');
+        refreshView();
+    }
+
     // ============================================================
-    // DELEGATED CLICK
+    // DELEGATED EVENT HANDLERS
     // ============================================================
+    //
+    // Every handler forwards to the active controller. The shell
+    // handles exactly one event itself: clicks on the view switcher,
+    // because the switcher is shell chrome rather than feature
+    // content.
 
     function onDelegatedClick(e) {
         var target = e.target;
 
-        // ---- View switcher ----
-        var viewBtn = target.closest('.academy-view-btn');
+        var viewBtn = target && target.closest
+            ? target.closest('.academy-view-btn')
+            : null;
         if (viewBtn) {
             e.preventDefault();
             handleViewSwitch(viewBtn.dataset.view);
             return;
         }
 
-        // ---- Rankings row (still inline until S1.7) ----
-        var rankingRow = target.closest('.academy-ranking-row');
-        if (rankingRow) {
-            e.preventDefault();
-            var rankingCharId = rankingRow.dataset
-                ? rankingRow.dataset.characterId
-                : null;
-            if (rankingCharId) {
-                var rankingClassId = _selectedRankingClassId ||
-                    AcademyUI.getSelectedClassId();
-                if (rankingClassId) {
-                    AcademyUI.selectClass(rankingClassId);
-                }
-                AcademyUI.selectCharacter(rankingCharId);
-                AcademyUI.setSelectedView('people');
-                refreshView();
-            }
-            return;
-        }
-
-        // ---- Route everything else to the active controller ----
         routeEventToActiveController('handleClick', e);
     }
 
-    // ============================================================
-    // DELEGATED CHANGE
-    // ============================================================
-
     function onDelegatedChange(e) {
-        var target = e.target;
-
-        // ---- Rankings week input (still inline until S1.7) ----
-        if (target.id === 'academy-ranking-week-input') {
-            commitRankingWeek(target.value);
-            return;
-        }
-
-        // ---- Rankings class select (still inline until S1.7) ----
-        if (target.id === 'academy-ranking-class-select') {
-            _selectedRankingClassId = target.value || null;
-            refreshView();
-            return;
-        }
-
-        // ---- Route everything else to the active controller ----
         routeEventToActiveController('handleChange', e);
     }
 
-    // ============================================================
-    // DELEGATED INPUT
-    // ============================================================
-
     function onDelegatedInput(e) {
-        // No shell-owned input handlers remain. Every input event is
-        // handled by the active controller.
         routeEventToActiveController('handleInput', e);
     }
 
-    // ============================================================
-    // DELEGATED KEYDOWN
-    // ============================================================
-
     function onDelegatedKeydown(e) {
-        var target = e.target;
-        if (e.key !== 'Enter') { return; }
-
-        // ---- Rankings week input (still inline until S1.7) ----
-        if (target.id === 'academy-ranking-week-input') {
-            e.preventDefault();
-            commitRankingWeek(target.value);
-            return;
-        }
-
-        // ---- Route everything else to the active controller ----
         routeEventToActiveController('handleKeydown', e);
     }
 
@@ -843,17 +687,6 @@
         if (!viewId) { return; }
         if (VALID_VIEW_IDS.indexOf(viewId) === -1) { return; }
         if (AcademyUI.setSelectedView(viewId)) {
-            refreshView();
-        }
-    }
-
-    // ============================================================
-    // RANKINGS WEEK (INLINE — S1.7 MIGRATES)
-    // ============================================================
-
-    function commitRankingWeek(value) {
-        var accepted = AcademyUI.setDisplayWeek(value);
-        if (accepted) {
             refreshView();
         }
     }
