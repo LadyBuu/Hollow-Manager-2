@@ -1887,6 +1887,15 @@
      * CROSS-ENTITY LAYER: DOES check that participants referenced by
      * matches and eliminations actually appear in
      * tournament.participants, and that match IDs are globally unique.
+     *
+     *   Exception: in `teams` mode, the elimination cross-entity
+     *   check for participant IDs is skipped. Team-mode tournaments
+     *   legitimately carry character-side elimination records
+     *   (from individualResults of team matches), and those
+     *   characters are not in tournament.participants. The
+     *   participantType consistency check still runs and correctly
+     *   short-circuits when the ID does not resolve to a
+     *   participant record.
      */
     function validateTournament(tournament, options) {
         options = options || {};
@@ -2070,12 +2079,26 @@
                 }
             }
 
+            // Team-mode tournaments can legitimately carry
+            // elimination records whose participantId is a
+            // CHARACTER id, not a team id. The elimination cascade
+            // writes character-side records for failing individuals
+            // in a team match, and those records live in
+            // tournament.eliminations[] alongside the team-side
+            // ones. The character is not in tournament.participants
+            // (which holds only team ids), so the participant-set
+            // check does NOT apply. Skip the missing-participant
+            // error in team mode, but still run the participantType
+            // consistency check when the ID resolves to a
+            // participant record.
+            var isTeamMode = tournament.mode === 'teams';
+
             for (var ei = 0; ei < tournament.eliminations.length; ei++) {
                 var elim = tournament.eliminations[ei];
                 if (!elim) { continue; }
                 var elimPid = normaliseId(elim.participantId);
                 if (elimPid === null) { continue; }
-                if (!elimParticipantIds[elimPid]) {
+                if (!elimParticipantIds[elimPid] && !isTeamMode) {
                     errors.push(
                         'Elimination ' + ei + ': participant ' + elimPid +
                         ' is not in tournament.participants.'
