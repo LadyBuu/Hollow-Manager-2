@@ -15,6 +15,7 @@
  *   - Surface rejected mutations as console warnings + toasts
  *   - Handle round collapse toggles (C4; UI-only, no mutation)
  *   - Enrich picker entries with prior-round outcomes (C8)
+ *   - Open the Edit Exam modal and route its submission (C5)
  *
  * NOT RESPONSIBILITIES:
  *   - HTML construction. The view module builds all modal HTML.
@@ -71,25 +72,27 @@
  *   isRoundExpanded — this module passes `true` explicitly so the
  *   policy is visible at the call site, not hidden in AcademyUI.
  *
- *   This is the ONLY place in this module that writes UI state. If
- *   that ever changes, the pattern to preserve is: the events layer
- *   owns the *intent* (user clicked collapse), AcademyUI owns the
- *   *storage*, and the aggregator owns the *read for render*.
+ * EDIT EXAM (C5):
+ *   Opens a modal that exposes the exam name and a single week.
+ *   On submit, updates the tournament via TournamentCore with
+ *   `{ name, startWeek, endWeek }`, setting start and end to the
+ *   same week. This mirrors how the exam was created (single-week
+ *   scope) and how it is rendered (single week in the header).
+ *
+ *   Only name and week are editable through this modal. Mode
+ *   cannot change after creation (the domain rejects it while
+ *   participants exist). Participants, rounds, and matches are
+ *   edited through their own affordances.
  *
  * PRIOR-ROUND OUTCOMES (C8):
  *   buildEligibleForNewMatch is called by addMatchManual and
- *   editMatch to produce the checkbox list the picker renders. Both
- *   callers pass through (examId, roundId); this function uses them
- *   to derive the outcome map for the round IMMEDIATELY BEFORE
- *   roundId, and stamps each entry.
+ *   editMatch to produce the checkbox list the picker renders.
+ *   It uses (examId, roundId) to derive the outcome map for the
+ *   round IMMEDIATELY BEFORE roundId, and stamps each entry.
  *
  *   The map is { [participantId]: 'pass' | 'retry' }. Participants
  *   whose outcome is absent get `priorRoundOutcome: null`, and the
  *   view renders no badge for them.
- *
- *   This is a read, not a mutation. It is called at modal-open time,
- *   not at render time, so the eligible list is always fresh with
- *   respect to the target round.
  *
  * RESTORE ELIMINATED PARTICIPANT:
  *   The Restore button in the Eliminated section routes to
@@ -223,6 +226,9 @@
     if (!View || typeof View.buildCreateExamModalHTML !== 'function') {
         _missing.push('AcademyTournamentView.buildCreateExamModalHTML');
     }
+    if (!View || typeof View.buildEditExamModalHTML !== 'function') {
+        _missing.push('AcademyTournamentView.buildEditExamModalHTML');
+    }
     if (!View || typeof View.buildDeleteExamModalHTML !== 'function') {
         _missing.push('AcademyTournamentView.buildDeleteExamModalHTML');
     }
@@ -258,6 +264,9 @@
     }
     if (!View || typeof View.collectCreateExamForm !== 'function') {
         _missing.push('AcademyTournamentView.collectCreateExamForm');
+    }
+    if (!View || typeof View.collectEditExamForm !== 'function') {
+        _missing.push('AcademyTournamentView.collectEditExamForm');
     }
     if (!View || typeof View.collectAddRoundForm !== 'function') {
         _missing.push('AcademyTournamentView.collectAddRoundForm');
@@ -420,10 +429,6 @@
         return 'character';
     }
 
-    /**
-     * Surface a rejected mutation. Logs to console AND toasts the
-     * message.
-     */
     function rejectMutation(label, result) {
         var message = (result && result.message)
             ? result.message
@@ -434,9 +439,6 @@
         notify(message, 'error');
     }
 
-    /**
-     * Surface a thrown error from a mutation.
-     */
     function failMutation(label, err, userMessage) {
         console.warn(
             '[AcademyTournamentEvents] ' + label + ' failed:', err
@@ -593,10 +595,6 @@
      * `roundId` (C8). When there is no previous round, or the
      * previous round has no completed matches for this participant,
      * the field is null and the view renders no badge.
-     *
-     * The prior-outcome derivation is a READ. It is not part of the
-     * mutation pipeline. It is called at modal-open time, so the
-     * eligible list is always fresh with respect to the target round.
      */
     function buildEligibleForNewMatch(examId, roundId) {
         var rawIds = TournamentMatches.getEligibleParticipants(examId)
@@ -606,7 +604,6 @@
 
         var mode = exam.mode || 'individuals';
 
-        // Exclude participants already in a match in this round.
         var alreadyAssigned = Object.create(null);
         var round = TournamentQueries.getRound(examId, roundId);
         if (round && isArray(round.matches)) {
@@ -621,10 +618,6 @@
             }
         }
 
-        // C8 — prior-round outcomes. One derivation, one map, reused
-        // for every entry. When there is no previous round or the
-        // query throws, the map is empty and every entry carries
-        // null.
         var priorOutcomes = {};
         try {
             priorOutcomes = TournamentQueries.getPriorRoundOutcomes(
@@ -704,26 +697,6 @@
     // ============================================================
     // ROUND COLLAPSE TOGGLE (C4)
     // ============================================================
-    //
-    // UI-ONLY. No mutation, no modal, no domain read. The handler:
-    //
-    //   1. Reads the current expanded state from AcademyUI. The
-    //      default passed in is `true`, matching the C4 policy:
-    //      "all rounds expanded on first view." If the default ever
-    //      changes, this call site is where the change goes.
-    //
-    //   2. Writes the opposite state back. AcademyUI stores
-    //      collapsed-only (absence means expanded), so passing
-    //      `true` here removes any stored record.
-    //
-    //   3. Calls notifyChange() to trigger a re-render of the
-    //      Exams view. The aggregator reads the new state on the
-    //      next buildExamViewModel call and stamps each round's
-    //      VM accordingly.
-    //
-    // The examId and roundId come from the button's data-*
-    // attributes. Both are required; missing either is a no-op
-    // (with a console warning, so a broken caller surfaces).
 
     function toggleRoundCollapse(examId, roundId) {
         if (!isNonEmptyString(examId) || !isNonEmptyString(roundId)) {
@@ -735,8 +708,6 @@
             return;
         }
 
-        // The default is "expanded". Passing it explicitly here keeps
-        // the policy at the call site.
         var currentExpanded = AcademyUI.isRoundExpanded(
             examId,
             roundId,
@@ -812,6 +783,72 @@
         });
     }
 
+    /**
+     * Open the Edit Exam modal (C5).
+     *
+     * Exposes the exam name and a single week. On submit, updates
+     * the tournament with `{ name, startWeek, endWeek }`, both week
+     * fields set to the same value. No other field is editable
+     * through this modal.
+     */
+    function editExam(examId) {
+        if (!isNonEmptyString(examId)) { return; }
+
+        var exam = TournamentQueries.getTournament(examId);
+        if (!exam) {
+            notify('Exam not found.', 'error');
+            return;
+        }
+
+        var html = View.buildEditExamModalHTML({
+            examId: exam.id,
+            name: exam.name || '',
+            week: exam.startWeek
+        });
+
+        openModal('at-edit-exam-modal', html, function(modal, close) {
+            bindCommonModalControls(modal, close);
+
+            var form = modal.querySelector('#at-edit-exam-form');
+            if (!form) { return; }
+
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+
+                var payload = View.collectEditExamForm(form);
+                if (!payload || !isNonEmptyString(payload.name)) {
+                    notify('Exam name is required.', 'error');
+                    return;
+                }
+
+                var weekNum = CalendarValidation.parseWeek(payload.week);
+                if (weekNum === null) {
+                    notify(
+                        'Week must be an integer between 1 and 52.',
+                        'error'
+                    );
+                    return;
+                }
+
+                handleMutation(
+                    TournamentCore.updateTournament(examId, {
+                        name: payload.name,
+                        startWeek: weekNum,
+                        endWeek: weekNum
+                    }),
+                    {
+                        label: 'updateTournament',
+                        errorMessage: 'Failed to update exam.',
+                        onSuccess: function() {
+                            close();
+                            notifyChange();
+                        }
+                    }
+                );
+            });
+        });
+    }
+
     function deleteExam(examId) {
         if (!isNonEmptyString(examId)) { return; }
 
@@ -853,13 +890,6 @@
     // REOPEN — EXAM
     // ============================================================
 
-    /**
-     * Reopen the exam itself. Flips status back to 'active'.
-     *
-     * Does NOT touch rounds, matches, or eliminations. It un-gates
-     * the round and match edit buttons by removing the
-     * exam.status === 'completed' condition they check.
-     */
     function reopenExam(examId) {
         if (!isNonEmptyString(examId)) { return; }
 
@@ -906,13 +936,6 @@
     // REOPEN — ROUND
     // ============================================================
 
-    /**
-     * Reopen every match in a round.
-     *
-     * Reverses every elimination produced by any match in the round,
-     * flips every match back to 'pending', and resets the round's
-     * status to 'pending'. Match results are preserved.
-     */
     function reopenRound(examId, roundId) {
         if (!isNonEmptyString(examId) ||
             !isNonEmptyString(roundId)) {
@@ -961,12 +984,6 @@
     // REOPEN — MATCH
     // ============================================================
 
-    /**
-     * Reopen a single match.
-     *
-     * Reverses eliminations produced by this match and flips the
-     * match back to 'pending'. Results preserved.
-     */
     function reopenMatch(examId, roundId, matchId) {
         if (!isNonEmptyString(examId) ||
             !isNonEmptyString(roundId) ||
@@ -1603,6 +1620,7 @@
         setOnChangeCallback: setOnChangeCallback,
 
         createExam: createExam,
+        editExam: editExam,
         deleteExam: deleteExam,
         reopenExam: reopenExam,
         togglePoolMember: togglePoolMember,
@@ -1634,6 +1652,7 @@
         var required = [
             'setOnChangeCallback',
             'createExam',
+            'editExam',
             'deleteExam',
             'reopenExam',
             'togglePoolMember',
