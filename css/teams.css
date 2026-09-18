@@ -15,6 +15,8 @@
  *   - Filter bar (#filter-container, .filter-row, .filter-group)
  *   - Team modal overrides (.modal-content.modal-form-content,
  *     .modal-content.modal-detail-content)
+ *   - Unified member manager markup (.member-*). See the
+ *     MEMBER MANAGER block below.
  *
  * Load order: shared.css → teams.css
  *
@@ -38,71 +40,6 @@
  *   name row, meta rows, action row. The column header is hidden.
  *   The desktop grid is untouched.
  */
-
-/* ============================================================
-   STATS ROW
-   ============================================================
-   The three count cards at the top of the Teams tab:
-   Professional / Temporary / Civilian. Rendered by
-   team-render.js renderContainer() into .stats-grid.
-   ============================================================ */
-
-.stats-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 10px;
-    margin-bottom: 12px;
-}
-
-.stat-card {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 4px;
-    padding: 12px 10px;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    text-align: center;
-}
-
-.stat-card h3 {
-    font-size: 0.7rem;
-    font-weight: 600;
-    color: var(--text-dim);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    margin: 0;
-}
-
-.stat-card .stat-number {
-    font-size: 1.6rem;
-    font-weight: 700;
-    font-family: 'Fraunces', serif;
-    color: var(--accent);
-    line-height: 1.1;
-    font-variant-numeric: tabular-nums;
-    margin: 0;
-}
-
-@media (max-width: 600px) {
-    .stats-grid {
-        grid-template-columns: repeat(3, 1fr);
-        gap: 6px;
-    }
-
-    .stat-card {
-        padding: 8px 6px;
-    }
-
-    .stat-card h3 {
-        font-size: 0.6rem;
-    }
-
-    .stat-card .stat-number {
-        font-size: 1.2rem;
-    }
-}
 
 /* ============================================================
    TEAM LIST
@@ -598,6 +535,471 @@
 }
 
 /* ============================================================
+   STATS ROW
+   ============================================================
+   The three count cards at the top of the Teams tab:
+   Professional / Temporary / Civilian. Rendered by
+   team-render.js renderContainer() into .stats-grid.
+   ============================================================ */
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.stat-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 12px 10px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    text-align: center;
+}
+
+.stat-card h3 {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 0;
+}
+
+.stat-card .stat-number {
+    font-size: 1.6rem;
+    font-weight: 700;
+    font-family: 'Fraunces', serif;
+    color: var(--accent);
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+    margin: 0;
+}
+
+/* ============================================================
+   MEMBER MANAGER (unified markup)
+   ============================================================
+   Shared by BOTH the Teams-tab member manager (rendered by
+   team-events.js openMemberManager) and the Academy Weekly Teams
+   member manager (rendered by academy-weekly-teams-members.js).
+
+   Both renderers emit the same class names, so this block styles
+   both. There is no academic-only or professional-only variant of
+   the markup itself; the only visual difference is that active
+   stint rows on the academic side carry an extra "Leave Now"
+   button, and that button has its own rule below.
+   ============================================================ */
+
+/* ---------- Outer list of member blocks ---------- */
+
+.member-manager-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+/* ---------- One member block ---------- */
+
+.member-entry-block {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+}
+
+.member-entry-block.member-entry-block-former {
+    border-left-color: var(--text-dim);
+    opacity: 0.85;
+}
+
+.member-entry-block .member-entry-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.member-entry-block .member-entry-name {
+    font-weight: 600;
+    font-size: 0.8rem;
+    color: var(--text);
+}
+
+.member-entry-block .member-entry-deceased {
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    line-height: 1;
+}
+
+.member-entry-block .member-entry-role {
+    flex: 0 1 140px;
+    min-width: 90px;
+    padding: 3px 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.member-entry-block .member-entry-role:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.member-entry-block .member-entry-status {
+    color: var(--text-dim);
+    font-size: 0.65rem;
+    font-style: italic;
+}
+
+.member-entry-block .member-entry-remove {
+    margin-left: auto;
+    font-size: 0.62rem;
+    padding: 2px 8px;
+    white-space: nowrap;
+}
+
+/* ---------- Interval rows inside a member block ---------- */
+
+.member-entry-block .member-interval-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-top: 2px;
+}
+
+.member-entry-block .member-interval-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 5px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 3px;
+}
+
+.member-entry-block .member-interval-row.is-active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.member-entry-block .member-interval-row.member-interval-former {
+    border-left: 2px solid var(--text-dim);
+    opacity: 0.85;
+}
+
+.member-entry-block .member-interval-left {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.member-entry-block .member-interval-bounds {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.member-entry-block .member-join,
+.member-entry-block .member-leave {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+}
+
+.member-entry-block .member-join label,
+.member-entry-block .member-leave label {
+    font-size: 0.6rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.member-interval-input {
+    width: 70px;
+    padding: 3px 6px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-family: 'Inter', sans-serif;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.member-interval-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.member-interval-input:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+    background: var(--panel);
+}
+
+.member-entry-block .member-interval-actions {
+    display: flex;
+    gap: 4px;
+    flex: 0 0 auto;
+    margin-left: auto;
+}
+
+.member-entry-block .member-interval-actions button {
+    font-size: 0.62rem;
+    padding: 3px 8px;
+    white-space: nowrap;
+}
+
+/* Leave Now — academic only. Rendered on active intervals. */
+
+.member-interval-leave-now {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.member-interval-leave-now:hover {
+    background: var(--accent-hover);
+}
+
+/* ---------- Empty / placeholder rows ---------- */
+
+.member-interval-empty {
+    padding: 4px 8px;
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+.member-former-no-stints {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+.member-entry-block .member-former-period {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Inline add-stint form ---------- */
+
+.member-inline-add-host {
+    margin-top: 4px;
+}
+
+.member-inline-add-btn {
+    font-size: 0.62rem;
+    padding: 3px 10px;
+}
+
+.member-inline-add-form {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    padding: 6px 8px;
+    background: var(--panel);
+    border: 1px dashed var(--accent);
+    border-radius: 4px;
+    margin-top: 4px;
+}
+
+.member-inline-add-label {
+    font-size: 0.6rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.member-inline-add-form button {
+    font-size: 0.62rem;
+    padding: 3px 10px;
+}
+
+/* ---------- Add-member row ---------- */
+
+.member-add-group {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-soft);
+}
+
+.member-form {
+    display: flex;
+    gap: 6px;
+    align-items: stretch;
+    flex-wrap: wrap;
+}
+
+.member-form-select {
+    flex: 2 1 200px;
+    min-width: 0;
+    padding: 5px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.member-form-select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.member-form-role,
+.member-form-join,
+.member-form-leave {
+    flex: 1 1 90px;
+    min-width: 0;
+    padding: 5px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-family: 'Inter', sans-serif;
+    text-align: left;
+}
+
+.member-form-join,
+.member-form-leave {
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.member-form-role:focus,
+.member-form-join:focus,
+.member-form-leave:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.member-form-add {
+    flex: 0 0 auto;
+    font-size: 0.68rem;
+    padding: 5px 14px;
+    white-space: nowrap;
+}
+
+/* ---------- Former-members section ---------- */
+
+.member-former-group {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--border-soft);
+}
+
+.member-former-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+/* ---------- Footer ---------- */
+
+.member-manager-footer {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-soft);
+    flex-wrap: wrap;
+}
+
+.member-manager-footer button {
+    font-size: 0.75rem;
+    padding: 6px 16px;
+}
+
+/* ---------- Restore modal ---------- */
+
+.member-restore-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px;
+    margin-bottom: 8px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.member-restore-option:hover {
+    background: var(--panel);
+}
+
+.member-restore-option input[type="radio"] {
+    margin-top: 2px;
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+
+.member-restore-option-body {
+    display: block;
+    flex: 1;
+    min-width: 0;
+}
+
+.member-restore-option-body strong {
+    display: block;
+    font-size: 0.78rem;
+    color: var(--text);
+    margin-bottom: 2px;
+}
+
+.member-restore-option-hint {
+    display: block;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    margin: 2px 0 6px 0;
+    line-height: 1.4;
+}
+
+.member-restore-input-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-right: 12px;
+    margin-top: 4px;
+}
+
+.member-restore-input-row label {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-weight: 500;
+}
+
+/* ============================================================
    MOBILE — CARD LAYOUT
    ============================================================
    Below 600px the five-column grid becomes a card list.
@@ -746,6 +1148,24 @@
         font-size: 0.68rem;
     }
 
+    /* ---- Stats row ---- */
+    .stats-grid {
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+    }
+
+    .stat-card {
+        padding: 8px 6px;
+    }
+
+    .stat-card h3 {
+        font-size: 0.6rem;
+    }
+
+    .stat-card .stat-number {
+        font-size: 1.2rem;
+    }
+
     /* ---- Filter row stacks ---- */
     .filter-row {
         flex-direction: column;
@@ -766,5 +1186,49 @@
     .tab-btn {
         font-size: 0.68rem;
         padding: 5px 10px;
+    }
+
+    /* ---- Member manager: tighter on mobile ---- */
+    .member-form {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .member-form-select,
+    .member-form-role,
+    .member-form-join,
+    .member-form-leave,
+    .member-form-add {
+        flex: 1 1 auto;
+        width: 100%;
+    }
+
+    .member-entry-block .member-interval-row {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .member-entry-block .member-interval-actions {
+        margin-left: 0;
+        justify-content: flex-end;
+    }
+
+    .member-manager-footer {
+        flex-direction: column-reverse;
+    }
+
+    .member-manager-footer button {
+        width: 100%;
+    }
+
+    .member-restore-input-row {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        margin-right: 0;
+    }
+
+    .member-restore-input-row .member-interval-input {
+        width: 100%;
     }
 }
