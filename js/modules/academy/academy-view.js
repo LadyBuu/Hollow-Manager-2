@@ -72,8 +72,16 @@
  * SCROLL RESTORATION (C6):
  *   Same-view refreshes only. When render() runs, it captures the
  *   scrollTop of any scrollable sidebar currently in the DOM, swaps
- *   the container's innerHTML, then restores the captured scrollTop
- *   onto the same selector in the new DOM.
+ *   the container's innerHTML, mounts the active controller (which
+ *   fills the content host with the sidebar HTML), then restores the
+ *   captured scrollTop onto the same selector in the new DOM.
+ *
+ *   ORDERING MATTERS:
+ *     The sidebar elements live inside the controller's content
+ *     host, not in the shell chrome. The host is empty until the
+ *     controller writes it. So restore MUST run AFTER
+ *     mountActiveControllerIfPresent(), not before. Restoring earlier
+ *     finds no elements and is a silent no-op.
  *
  *   The set of selectors is deliberately small and explicit:
  *     - .academy-people-sidebar
@@ -83,10 +91,8 @@
  *
  *   Rules:
  *     - A selector that is absent before the swap is not captured.
- *     - A selector that is absent after the swap is not restored.
+ *     - A selector that is absent after the mount is not restored.
  *     - No fallback to document scroll.
- *     - No module state. The map lives on the stack of a single
- *       render() call.
  *     - Not persisted. Leaving a view and returning resets to 0.
  */
 
@@ -296,16 +302,19 @@
         html += renderControllerHostForView(view);
 
         // C6 — capture scrollable sidebars before the innerHTML
-        // swap. Restore after.
+        // swap. Restore AFTER the active controller has rendered
+        // into its content host: the sidebar elements live inside
+        // the host, and the host is empty until the controller
+        // fills it. Restoring any earlier is a silent no-op.
         var capturedScroll = captureSidebarScroll(container);
 
         container.innerHTML = html;
 
-        restoreSidebarScroll(container, capturedScroll);
-
         bindEvents(container);
         wireCRUDModalsCallbacks();
         mountActiveControllerIfPresent();
+
+        restoreSidebarScroll(container, capturedScroll);
     }
 
     function refreshView() {
