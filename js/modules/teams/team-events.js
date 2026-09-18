@@ -26,17 +26,9 @@
  *
  * MEMBER INTERVALS (v24):
  *   A team member entry carries an `intervals` array. Editing a
- *   member's period is really "editing one interval." The Teams
- *   tab's edit form is scoped to a specific interval by
- *   data-character-id + data-join-period. Role edits apply to the
- *   whole member entry; leave edits apply to the one interval.
- *
- *   saveEditMember sequences up to two mutations:
- *     1. Role change → TeamCore.updateMember (role only)
- *     2. Leave change → TeamCore.endMemberInterval OR
- *                       TeamCore.reopenMemberInterval
- *
- *   joinPeriod is immutable. The edit form does not allow it.
+ *   member's period is really "editing one interval." Every row in
+ *   the member manager is scoped to a specific interval by
+ *   data-character-id + data-join-period.
  *
  * MODAL LIFECYCLE:
  *   Modal shells are declared in TeamRender.getModalsHTML() and
@@ -46,30 +38,50 @@
  *   followed by Modal.showModal(modal). Do not roll your own show
  *   path — that bypasses the lifecycle and leaves modals stuck open.
  *
- * EXTERNAL ENTRY POINTS:
- *   openMemberManager(container, teamId, period, options)
- *   openMemberEditor(container, teamId, charId, period, options)
+ * MEMBER MANAGER (BUG-E13 OVERHAUL):
+ *   The professional member manager has been rewritten to share the
+ *   academic member manager's visual language and feature set. Both
+ *   managers now emit the same markup — .member-entry-block,
+ *   .member-entry-header, .member-interval-row, .member-interval-
+ *   bounds, .member-interval-actions, .member-form — and both
+ *   support:
  *
- *   Both render into a container the caller owns, wire the
- *   add/remove/edit buttons to TeamCore directly, and re-render in
- *   place after mutations. They do not use TeamUI, they do not
+ *     - Inline Join / Leave editing per stint
+ *     - Multiple stints per member (add stint, remove stint)
+ *     - Remove-member (whole entry) and Remove-stint (one interval)
+ *     - Former-members section with a Restore modal offering two
+ *       paths (correct the leave period, or reopen with a new
+ *       interval)
+ *     - Role editing inline in the member header
+ *     - Batched Save: all dirty stint rows and role inputs commit
+ *       in one user gesture
+ *     - Revert (discard uncommitted edits) and Close
+ *
+ *   The two managers remain independent. This one is container-
+ *   based and uses TeamCore mutations; the academic one uses
+ *   AcademyWeeklyTeams mutations. They share markup, not code.
+ *
+ *   LEAVE NOW (academic only):
+ *     The academic manager has a per-row "Leave Now" button that
+ *     sets the active stint's leave to the display week. The
+ *     professional manager does NOT have this button. Professional
+ *     periods are years; a year-wide period has no meaningful
+ *     "now" for a single-week action. The user sets the Leave year
+ *     directly in the input.
+ *
+ * EXTERNAL ENTRY POINT:
+ *   openMemberManager(container, teamId, period, options)
+ *
+ *   Renders into a container the caller owns, wires the add /
+ *   remove / edit buttons to TeamCore directly, and re-renders in
+ *   place after mutations. It does not use TeamUI, it does not
  *   require the Teams tab to be mounted.
  *
- * CLOSE SEMANTICS (external entry points):
+ * CLOSE SEMANTICS (external entry point):
  *   The caller owns the modal shell. This module does not call
- *   Modal.closeModal / hideModal for those instances. Instead, the
+ *   Modal.closeModal / hideModal for that instance. Instead, the
  *   close handlers invoke the caller-supplied `options.onClose`
  *   callback.
- *
- * MEMBER CANDIDATE RENDER (post list-fix):
- *   The candidate dropdown in the Teams-tab member modal is built
- *   by populateMemberCandidates. Candidates arrive from
- *   TeamAggregator.getMemberModalViewModel pre-sorted into four
- *   tiers (inClass/unassigned, inClass/assigned, otherClass/
- *   unassigned, otherClass/assigned) with deceased characters
- *   included. This module does not re-sort. It only renders the
- *   list, appending a dagger marker for candidates whose
- *   `deceased` flag is true.
  *
  * DEPENDENCIES:
  *   - window.TeamCore       (MANDATORY)
@@ -80,7 +92,7 @@
  *   - window.NotificationSystem (MANDATORY)
  *   - window.DomUtils       (MANDATORY)
  *   - window.CharacterQueries (OPTIONAL, used by the external
- *     entry points to display names in the add-member picker)
+ *     entry point to display names in the add-member picker)
  *
  * USAGE:
  *   var TE = window.TeamEvents;
@@ -135,6 +147,9 @@
         }
         if (!TeamCore || typeof TeamCore.addMember !== 'function') {
             missing.push('TeamCore.addMember');
+        }
+        if (!TeamCore || typeof TeamCore.addMemberInterval !== 'function') {
+            missing.push('TeamCore.addMemberInterval');
         }
         if (!TeamCore || typeof TeamCore.removeMember !== 'function') {
             missing.push('TeamCore.removeMember');
@@ -240,6 +255,52 @@
 
     function isNonEmptyString(value) {
         return typeof value === 'string' && value.trim() !== '';
+    }
+
+    function escapeHtml(value) {
+        return DomUtils.escapeHtml(value);
+    }
+
+    function escapeAttr(value) {
+        return DomUtils.escapeAttribute(value);
+    }
+
+    /**
+     * Parse a strict positive integer. Returns null on any
+     * malformed input. Used for period parsing in the manager.
+     */
+    function parsePeriodStrict(value) {
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+        if (typeof value === 'number') {
+            if (!Number.isInteger(value)) return null;
+            if (value < 1) return null;
+            return value;
+        }
+        if (typeof value === 'string') {
+            var trimmed = value.trim();
+            if (trimmed === '' || !/^\d+$/.test(trimmed)) return null;
+            var n = Number(trimmed);
+            if (!Number.isInteger(n) || n < 1) return null;
+            return n;
+        }
+        return null;
+    }
+
+    function parseOptionalPeriodInput(raw) {
+        if (raw === undefined || raw === null) {
+            return { ok: true, value: '' };
+        }
+        var str = String(raw).trim();
+        if (str === '') {
+            return { ok: true, value: '' };
+        }
+        var parsed = parsePeriodStrict(str);
+        if (parsed === null) {
+            return { ok: false };
+        }
+        return { ok: true, value: String(parsed) };
     }
 
     // ============================================================
@@ -373,7 +434,6 @@
         bindModalCloseDelegation();
         bindTeamFormModal();
         bindMemberModal();
-        bindEditMemberModal();
         bindRankingModal();
         bindFilters();
         bindNameHistoryAddRemove();
@@ -729,8 +789,18 @@
     }
 
     // ============================================================
-    // MEMBER MODAL (Teams tab)
+    // MEMBER MODAL (Teams tab) — simple add/edit/remove
     // ============================================================
+    //
+    // This is the compact modal opened by .manage-members when the
+    // Teams tab is mounted. It uses TeamRender.renderMemberList
+    // (the compact list renderer) and TeamRender.renderMemberForm
+    // (the single-interval editor).
+    //
+    // The full-featured manager (inline stint editing, batched
+    // Save, former members, Restore) is the container-based
+    // openMemberManager below. Callers that want that manager pass
+    // their own container and open it directly.
 
     function showMemberModal(teamId) {
         var currentTab = TeamUI.getCurrentTab();
@@ -772,26 +842,6 @@
         showModal(modal);
     }
 
-    /**
-     * Populate the character <select> in the member modal.
-     *
-     * Candidates arrive from TeamAggregator.getMemberModalViewModel
-     * PRE-SORTED into four tiers:
-     *
-     *   Tier 0: in class,  not on another team of this type
-     *   Tier 1: in class,      on another team of this type
-     *   Tier 2: other class, not on another team of this type
-     *   Tier 3: other class,     on another team of this type
-     *
-     * Alphabetical within each tier. Deceased characters are
-     * included and carry the same tier position as everyone else.
-     *
-     * This function does NOT re-sort. It renders the list in the
-     * order the aggregator supplied, appending a dagger marker to
-     * the option label when the candidate's `deceased` flag is
-     * true. The marker is the same symbol the Academy member
-     * manager uses for deceased members, so the two pickers agree.
-     */
     function populateMemberCandidates(modal, candidates) {
         var select = modal.querySelector('#member-character');
         if (!select) return;
@@ -827,15 +877,6 @@
             addMemberFromModal();
         });
 
-        delegate('.edit-member', 'click', function(e, target) {
-            var charId = target.dataset.characterId;
-            var joinPeriod = target.dataset.joinPeriod;
-            var teamId = TeamUI.getModalTeamId();
-            if (teamId && charId) {
-                showEditMemberModal(teamId, charId, joinPeriod);
-            }
-        });
-
         delegate('.remove-member', 'click', function(e, target) {
             e.preventDefault();
 
@@ -844,14 +885,11 @@
             var teamId = TeamUI.getModalTeamId();
             if (!teamId || !charId) return;
 
-            // Remove ONE interval. If this is the last interval,
-            // purgeMemberInterval prunes the whole entry.
             if (!confirm('Remove this stint from the team?')) {
                 return;
             }
 
             if (!isNonEmptyString(joinPeriod)) {
-                // Defensive: no interval address available.
                 notify('This row does not identify a specific stint.', 'error');
                 return;
             }
@@ -915,8 +953,6 @@
             return;
         }
 
-        // TeamCore.addMember accepts the flat { joinPeriod, leavePeriod }
-        // form and wraps it into a single interval.
         TeamCore.addMember(teamId, {
             characterId: charId,
             role: roleEl ? roleEl.value.trim() : '',
@@ -954,287 +990,7 @@
             listContainer.innerHTML = TeamRender.renderMemberList(vm);
         }
 
-        // Refresh the candidate pool: a character just added to this
-        // team is now a current member and must not appear in the
-        // picker. A character already on another team of the same
-        // type may have changed tier. Rebuilding the option list
-        // keeps the picker consistent with the aggregator's tiers.
         populateMemberCandidates(modal, vm.candidates);
-    }
-
-    // ============================================================
-    // EDIT MEMBER MODAL (Teams tab)
-    // ============================================================
-
-    function showEditMemberModal(teamId, charId, joinPeriod) {
-        var currentTab = TeamUI.getCurrentTab();
-        var period = getCurrentPeriod(currentTab);
-
-        var vm = TeamAggregator.getMemberModalViewModel(teamId, period);
-        if (!vm) {
-            notify('Team not found.', 'error');
-            return;
-        }
-
-        var member = null;
-        for (var i = 0; i < vm.members.length; i++) {
-            if (String(vm.members[i].characterId) === String(charId)) {
-                member = vm.members[i];
-                break;
-            }
-        }
-
-        if (!member) {
-            notify('Member not found.', 'error');
-            return;
-        }
-
-        // Find the interval with the requested joinPeriod.
-        var interval = null;
-        var targetJoin = (joinPeriod === undefined || joinPeriod === null)
-            ? ''
-            : String(joinPeriod);
-        if (Array.isArray(member.intervals)) {
-            for (var j = 0; j < member.intervals.length; j++) {
-                var iv = member.intervals[j];
-                if (!iv) continue;
-                var ivJoin = (iv.joinPeriod === undefined || iv.joinPeriod === null)
-                    ? ''
-                    : String(iv.joinPeriod);
-                if (ivJoin === targetJoin) {
-                    interval = iv;
-                    break;
-                }
-            }
-        }
-
-        var modal = document.getElementById('edit-member-modal');
-        if (!modal) return;
-
-        var body = modal.querySelector('#edit-member-body');
-        if (!body) return;
-
-        // Build the form VM. When no interval was matched, the form
-        // opens in role-only mode (joinPeriod is blank, leave is
-        // read-only-disabled by the renderer because it can't know
-        // which interval to edit).
-        var formVM = {
-            characterId: member.characterId,
-            characterName: member.displayName,
-            role: member.role,
-            joinPeriod: interval ? interval.joinPeriod : '',
-            leavePeriod: interval ? interval.leavePeriod : ''
-        };
-
-        // If no specific interval was selected but the member has
-        // exactly one interval, fall back to that one.
-        if (!interval && Array.isArray(member.intervals) &&
-            member.intervals.length === 1) {
-            var only = member.intervals[0];
-            formVM.joinPeriod = (only.joinPeriod === undefined || only.joinPeriod === null)
-                ? ''
-                : String(only.joinPeriod);
-            formVM.leavePeriod = (only.leavePeriod === undefined || only.leavePeriod === null)
-                ? ''
-                : String(only.leavePeriod);
-        }
-
-        body.innerHTML = TeamRender.renderMemberForm(formVM);
-
-        TeamUI.setModalMemberId(charId);
-
-        showModal(modal);
-
-        bindEditMemberFormSubmit();
-    }
-
-    function closeEditMemberModal() {
-        var modal = document.getElementById('edit-member-modal');
-        if (modal) {
-            closeModalAndClearState(modal);
-        } else {
-            TeamUI.setModalMemberId(null);
-        }
-    }
-
-    function bindEditMemberModal() {
-        delegate('#cancel-edit-member', 'click', function(e) {
-            e.preventDefault();
-            closeEditMemberModal();
-        });
-    }
-
-    function bindEditMemberFormSubmit() {
-        var modal = document.getElementById('edit-member-modal');
-        if (!modal) return;
-
-        var form = modal.querySelector('#edit-member-form');
-        if (!form) return;
-
-        if (form._submitBound) {
-            return;
-        }
-        form._submitBound = true;
-
-        form.addEventListener('submit', function(e) {
-            e.preventDefault();
-            saveEditMember(form);
-        });
-    }
-
-    /**
-     * Save the edit-member form.
-     *
-     * SEQUENCED MUTATIONS:
-     *   1. Role change → TeamCore.updateMember (role only).
-     *   2. Leave change → TeamCore.endMemberInterval OR
-     *                     TeamCore.reopenMemberInterval.
-     *
-     * If a mutation fails, the chain stops and the modal stays open.
-     * On full success, the modal closes and the list refreshes.
-     *
-     * joinPeriod is IMMUTABLE. The form does not allow it.
-     */
-    function saveEditMember(form) {
-        var teamId = TeamUI.getModalTeamId();
-        var charId = form.dataset.characterId;
-        var joinPeriod = form.dataset.joinPeriod || '';
-
-        if (!teamId || !charId) {
-            notify('No member selected.', 'error');
-            return;
-        }
-
-        var roleEl = form.querySelector('#edit-member-role');
-        var leaveEl = form.querySelector('#edit-member-leave');
-
-        var newRole = roleEl ? roleEl.value.trim() : '';
-        var newLeaveRaw = leaveEl ? leaveEl.value.trim() : '';
-
-        // ---- Determine what changed ----
-        // We don't have the previous values on the form directly, so
-        // we re-fetch the member and compare. If the member no longer
-        // has the interval, the mutation for leave will fail with a
-        // clear message; that's the right outcome.
-        var currentTab = TeamUI.getCurrentTab();
-        var period = getCurrentPeriod(currentTab);
-        var vm = TeamAggregator.getMemberModalViewModel(teamId, period);
-
-        var member = null;
-        if (vm) {
-            for (var i = 0; i < vm.members.length; i++) {
-                if (String(vm.members[i].characterId) === String(charId)) {
-                    member = vm.members[i];
-                    break;
-                }
-            }
-        }
-
-        if (!member) {
-            notify('Member no longer exists.', 'error');
-            return;
-        }
-
-        var targetJoin = String(joinPeriod);
-        var interval = null;
-        if (Array.isArray(member.intervals)) {
-            for (var j = 0; j < member.intervals.length; j++) {
-                var iv = member.intervals[j];
-                if (!iv) continue;
-                var ivJoin = (iv.joinPeriod === undefined || iv.joinPeriod === null)
-                    ? ''
-                    : String(iv.joinPeriod);
-                if (ivJoin === targetJoin) {
-                    interval = iv;
-                    break;
-                }
-            }
-        }
-
-        if (!interval) {
-            // Role-only edit. Interval editing requires a specific
-            // stint address.
-            if (newRole === (member.role || '')) {
-                notify('No changes to save.', 'info');
-                return;
-            }
-            TeamCore.updateMember(teamId, charId, { role: newRole })
-                .then(function(result) {
-                    if (!result || !result.success) return;
-                    closeEditMemberModal();
-                    refreshMemberListInPlace(teamId);
-                    refreshUI();
-                })
-                .catch(function(err) {
-                    console.warn('[TeamEvents] updateMember (role) failed:', err);
-                    notify('Failed to update role.', 'error');
-                });
-            return;
-        }
-
-        // Determine changes.
-        var roleChanged = newRole !== (member.role || '');
-        var currentLeave = (interval.leavePeriod === undefined ||
-                            interval.leavePeriod === null)
-            ? ''
-            : String(interval.leavePeriod);
-        var leaveChanged = newLeaveRaw !== currentLeave;
-
-        if (!roleChanged && !leaveChanged) {
-            notify('No changes to save.', 'info');
-            return;
-        }
-
-        // Build the mutation chain.
-        var chain = Promise.resolve();
-        var roleFailed = false;
-        var leaveFailed = false;
-
-        if (roleChanged) {
-            chain = chain.then(function() {
-                return TeamCore.updateMember(teamId, charId, { role: newRole })
-                    .then(function(result) {
-                        if (!result || !result.success) {
-                            roleFailed = true;
-                        }
-                    });
-            });
-        }
-
-        if (leaveChanged) {
-            chain = chain.then(function() {
-                if (roleFailed) return;  // Abort on prior failure.
-                if (newLeaveRaw === '') {
-                    return TeamCore.reopenMemberInterval(
-                        teamId, charId, joinPeriod
-                    ).then(function(result) {
-                        if (!result || !result.success) {
-                            leaveFailed = true;
-                        }
-                    });
-                }
-                return TeamCore.endMemberInterval(
-                    teamId, charId, joinPeriod, newLeaveRaw
-                ).then(function(result) {
-                    if (!result || !result.success) {
-                        leaveFailed = true;
-                    }
-                });
-            });
-        }
-
-        chain.then(function() {
-            if (roleFailed || leaveFailed) {
-                // The pipeline already notified. Keep the modal open.
-                return;
-            }
-            closeEditMemberModal();
-            refreshMemberListInPlace(teamId);
-            refreshUI();
-        }).catch(function(err) {
-            console.warn('[TeamEvents] saveEditMember failed:', err);
-            notify('Failed to save changes.', 'error');
-        });
     }
 
     // ============================================================
@@ -1428,32 +1184,69 @@
     }
 
     // ============================================================
-    // ESCAPING
-    // ============================================================
-
-    function escapeHtml(value) {
-        return DomUtils.escapeHtml(value);
-    }
-
-    function escapeAttr(value) {
-        return DomUtils.escapeAttribute(value);
-    }
-
-    // ============================================================
-    // EXTERNAL ENTRY POINT - MEMBER MANAGER
+    // EXTERNAL ENTRY POINT — MEMBER MANAGER
     // ============================================================
     //
     // Container-based. Does not use TeamUI. Does not require the
     // Teams tab to be mounted.
     //
-    // RENDERS ONE ROW PER INTERVAL.
+    // MARKUP CONTRACT (post BUG-E13):
+    //   The emitted HTML uses the same class names as the academic
+    //   member manager in academy-weekly-teams-members.js:
     //
-    // The per-interval Remove button calls TeamCore.purgeMemberInterval.
-    // The whole-entry Remove button (on the placeholder row for a
-    // member with no stints) calls TeamCore.removeMember.
+    //     .member-entry.member-entry-block
+    //     .member-entry-header
+    //     .member-entry-name
+    //     .member-entry-role        (editable input)
+    //     .member-entry-status
+    //     .member-entry-remove
+    //     .member-interval-row
+    //     .member-interval-left
+    //     .member-interval-bounds
+    //     .member-join / .member-leave
+    //     .member-interval-input
+    //     .member-interval-actions
+    //     .member-interval-remove
+    //     .member-interval-former
+    //     .member-interval-restore
+    //     .member-form              (add-member flex row)
+    //     .member-manager-footer
+    //     .member-inline-add-host / .member-inline-add-form
+    //
+    //   Both managers render the same DOM. They differ only in
+    //   which mutation module they call:
+    //
+    //     Academic → AcademyWeeklyTeams.addMemberInterval,
+    //                AcademyWeeklyTeams.updateMemberWindows,
+    //                AcademyWeeklyTeams.purgeMemberRecords,
+    //                AcademyWeeklyTeams.removeMemberEntry,
+    //                AcademyWeeklyTeams.setLeaveAtWeek
+    //
+    //     Professional → TeamCore.addMemberInterval,
+    //                    TeamCore.endMemberInterval,
+    //                    TeamCore.reopenMemberInterval,
+    //                    TeamCore.purgeMemberInterval,
+    //                    TeamCore.removeMember,
+    //                    TeamCore.updateMember
+    //
+    //   Both managers support the same features:
+    //     - Inline Join / Leave editing per stint
+    //     - Multiple stints per member (add / remove)
+    //     - Role editing inline in the header
+    //     - Former-members section with Restore-with-two-options
+    //     - Batched Save / Revert / Close
+    //
+    //   The professional manager does NOT have a "Leave Now"
+    //   button. Professional periods are years; the display period
+    //   is a year-wide filter, so "leave now" would not name a
+    //   specific week. The user edits the Leave year directly.
+    //
+    // The manager maintains its own working state across the
+    // lifetime of the open session. The caller owns the container;
+    // this function owns everything inside it.
 
     function openMemberManager(container, teamId, period, options) {
-        if (!container || !teamId) {
+        if (!container || !isNonEmptyString(teamId)) {
             return null;
         }
 
@@ -1465,7 +1258,12 @@
             ? options.onMutation
             : null;
 
+        var periodNum = parsePeriodStrict(period);
+
         var disposed = false;
+        var clickHandler = null;
+        var currentVM = null;
+        var formerMembersVM = [];
 
         function invokeOnClose() {
             if (typeof onClose === 'function') {
@@ -1483,175 +1281,1031 @@
             }
         }
 
-        function render() {
-            if (disposed || !container.parentNode) {
-                return;
-            }
+        // --------------------------------------------------------
+        // VM fetch
+        // --------------------------------------------------------
+        //
+        // We use getMemberModalViewModel for the current members
+        // and candidates. Former members are computed here from
+        // the raw team record, because the aggregator does not
+        // currently surface them on the professional side.
+        //
+        // "Former" means: a member entry whose active intervals do
+        // NOT contain the display period, but which has at least
+        // one interval with a leavePeriod strictly less than the
+        // display period.
 
-            var vm = TeamAggregator.getMemberModalViewModel(teamId, period);
-
+        function fetchVM() {
+            var vm = TeamAggregator.getMemberModalViewModel(teamId, periodNum);
             if (!vm) {
-                container.innerHTML = renderMemberManagerBody({
-                    teamId: teamId,
-                    teamName: 'Team',
-                    members: [],
-                    candidates: []
-                }, { notFound: true });
-                bindCloseButtons(container, invokeOnClose);
-                return;
+                return null;
             }
 
-            container.innerHTML = renderMemberManagerBody(vm, { notFound: false });
-            bindManagerEvents(container, vm, {
-                onMutation: invokeOnMutation,
-                onClose: invokeOnClose,
-                refresh: render
-            });
-        }
-
-        function close() {
-            disposed = true;
-            invokeOnClose();
-        }
-
-        function isOpen() {
-            return !disposed && !!container.parentNode;
-        }
-
-        render();
-
-        return {
-            refresh: render,
-            close: close,
-            isOpen: isOpen
-        };
-    }
-
-    // ============================================================
-    // EXTERNAL ENTRY POINT - MEMBER EDITOR
-    // ============================================================
-    //
-    // Same container-based pattern as openMemberManager. Edits ONE
-    // interval identified by the form's data-join-period. Role is
-    // per-member; leave is per-interval.
-
-    function openMemberEditor(container, teamId, charId, period, options) {
-        if (!container || !teamId || !charId) {
-            return null;
-        }
-
-        options = options || {};
-        var onClose = (typeof options.onClose === 'function')
-            ? options.onClose
-            : null;
-        var onMutation = (typeof options.onMutation === 'function')
-            ? options.onMutation
-            : null;
-        var joinPeriod = isNonEmptyString(options.joinPeriod)
-            ? String(options.joinPeriod)
-            : '';
-
-        var disposed = false;
-
-        function invokeOnClose() {
-            if (typeof onClose === 'function') {
-                try { onClose(); } catch (e) {
-                    console.warn('[TeamEvents] onClose threw:', e);
-                }
-            }
-        }
-
-        function invokeOnMutation() {
-            if (typeof onMutation === 'function') {
-                try { onMutation(); } catch (e) {
-                    console.warn('[TeamEvents] onMutation threw:', e);
-                }
-            }
-        }
-
-        function render() {
-            if (disposed || !container.parentNode) {
-                return;
+            // Rebuild members and former members from the same
+            // source. getMemberModalViewModel gives us the active
+            // members via getTeamMembersViewModel; we need all
+            // members to partition. Ask the raw team.
+            var team = null;
+            if (window.TeamQueries &&
+                typeof window.TeamQueries.getTeamById === 'function') {
+                team = window.TeamQueries.getTeamById(teamId);
             }
 
-            var vm = TeamAggregator.getMemberModalViewModel(teamId, period);
-            if (!vm) {
-                container.innerHTML = renderMemberEditorBody(null, {
-                    teamName: 'Team',
-                    notFound: true
-                });
-                bindEditorClose(container, invokeOnClose);
-                return;
+            var partition = partitionMembers(team, periodNum);
+
+            return {
+                teamId: vm.teamId,
+                teamName: vm.teamName,
+                teamClassId: vm.teamClassId,
+                period: vm.period,
+                members: partition.active,
+                formerMembers: partition.former,
+                candidates: vm.candidates
+            };
+        }
+
+        function partitionMembers(team, periodNumValue) {
+            var active = [];
+            var former = [];
+
+            if (!team || !Array.isArray(team.members)) {
+                return { active: active, former: former };
             }
 
-            var member = null;
-            for (var i = 0; i < vm.members.length; i++) {
-                if (String(vm.members[i].characterId) === String(charId)) {
-                    member = vm.members[i];
-                    break;
+            var activeIds = Object.create(null);
+            var activeRecords = [];
+            if (window.TeamQueries &&
+                typeof window.TeamQueries.getActiveTeamMembers === 'function' &&
+                periodNumValue !== null) {
+                activeRecords = window.TeamQueries.getActiveTeamMembers(
+                    team, periodNumValue
+                ) || [];
+            }
+            for (var i = 0; i < activeRecords.length; i++) {
+                var r = activeRecords[i];
+                if (r && r.characterId) {
+                    activeIds[String(r.characterId)] = true;
                 }
             }
 
-            if (!member) {
-                container.innerHTML = renderMemberEditorBody(null, {
-                    teamName: vm.teamName,
-                    notFound: true
-                });
-                bindEditorClose(container, invokeOnClose);
-                return;
+            for (var m = 0; m < team.members.length; m++) {
+                var member = team.members[m];
+                if (!member || !member.characterId) { continue; }
+
+                var charId = String(member.characterId);
+                var memberVM = buildMemberVMLocal(member, periodNumValue);
+
+                if (activeIds[charId]) {
+                    active.push(memberVM);
+                    continue;
+                }
+
+                // Former: has at least one interval with a leave
+                // period strictly before the display period.
+                var isFormer = false;
+                if (Array.isArray(member.intervals) && periodNumValue !== null) {
+                    for (var iv = 0; iv < member.intervals.length; iv++) {
+                        var interval = member.intervals[iv];
+                        if (!interval) { continue; }
+                        var lv = parseInt(interval.leavePeriod, 10);
+                        if (!isNaN(lv) && lv < periodNumValue) {
+                            isFormer = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (isFormer) {
+                    former.push(memberVM);
+                }
             }
 
-            // Locate the interval.
-            var interval = null;
+            return { active: active, former: former };
+        }
+
+        function buildMemberVMLocal(member, periodNumValue) {
+            var summary = {
+                id: member.characterId,
+                name: 'Unknown',
+                status: ''
+            };
+            var char = null;
+            if (window.CharacterQueries &&
+                typeof window.CharacterQueries.getCharacterById === 'function') {
+                char = window.CharacterQueries.getCharacterById(member.characterId);
+            }
+            if (char && window.CharacterQueries.getDisplayName) {
+                summary.name = window.CharacterQueries.getDisplayName(char);
+            }
+            if (char && window.CharacterQueries.getCurrentStatus) {
+                summary.status = window.CharacterQueries.getCurrentStatus(char);
+            }
+
+            var intervals = [];
             if (Array.isArray(member.intervals)) {
-                for (var j = 0; j < member.intervals.length; j++) {
-                    var iv = member.intervals[j];
-                    if (!iv) continue;
-                    var ivJoin = (iv.joinPeriod === undefined || iv.joinPeriod === null)
+                for (var i = 0; i < member.intervals.length; i++) {
+                    var iv = member.intervals[i];
+                    if (!iv || typeof iv !== 'object') { continue; }
+
+                    var joinStr = (iv.joinPeriod === undefined ||
+                                   iv.joinPeriod === null)
                         ? ''
                         : String(iv.joinPeriod);
-                    if (ivJoin === joinPeriod) {
-                        interval = iv;
+                    var leaveStr = (iv.leavePeriod === undefined ||
+                                    iv.leavePeriod === null)
+                        ? ''
+                        : String(iv.leavePeriod);
+
+                    var periodDisplay = '';
+                    if (joinStr || leaveStr) {
+                        periodDisplay = (joinStr || '\u2014') +
+                            ' \u2013 ' + (leaveStr || '\u2014');
+                    }
+
+                    var activeAt = false;
+                    if (periodNumValue !== null) {
+                        var jn = parseInt(joinStr, 10);
+                        var lv = parseInt(leaveStr, 10);
+                        var ok = true;
+                        if (!isNaN(jn) && periodNumValue < jn) { ok = false; }
+                        if (!isNaN(lv) && periodNumValue > lv) { ok = false; }
+                        activeAt = ok;
+                    }
+
+                    intervals.push({
+                        joinPeriod: joinStr,
+                        leavePeriod: leaveStr,
+                        periodDisplay: periodDisplay,
+                        activeAtPeriod: activeAt
+                    });
+                }
+            }
+
+            return {
+                characterId: member.characterId,
+                memberId: member.memberId || '',
+                name: summary.name,
+                status: summary.status,
+                statusLabel: summary.status,
+                role: member.role || 'Member',
+                deceased: char && char.deceased === true,
+                intervals: intervals
+            };
+        }
+
+        // --------------------------------------------------------
+        // Render
+        // --------------------------------------------------------
+
+        function render() {
+            if (disposed || !container.parentNode) {
+                return;
+            }
+
+            var vm = fetchVM();
+            currentVM = vm;
+
+            if (!vm) {
+                container.innerHTML = renderManagerBody({
+                    teamId: teamId,
+                    teamName: 'Team',
+                    period: periodNum,
+                    members: [],
+                    formerMembers: [],
+                    candidates: []
+                }, { notFound: true });
+                bindEvents(container);
+                return;
+            }
+
+            formerMembersVM = vm.formerMembers;
+
+            container.innerHTML = renderManagerBody(vm, { notFound: false });
+            bindEvents(container);
+        }
+
+        function bindEvents(rootEl) {
+            if (clickHandler) {
+                rootEl.removeEventListener('click', clickHandler);
+            }
+            clickHandler = function(e) {
+                var target = e.target.closest('[data-action]');
+                if (!target) return;
+                var action = target.dataset.action;
+                switch (action) {
+                    case 'temm-close':
+                        e.preventDefault();
+                        close();
+                        return;
+                    case 'temm-save':
+                        e.preventDefault();
+                        handleSaveAll();
+                        return;
+                    case 'temm-revert':
+                        e.preventDefault();
+                        handleRevert();
+                        return;
+                    case 'temm-add':
+                        e.preventDefault();
+                        handleAdd();
+                        return;
+                    case 'temm-remove-member':
+                        e.preventDefault();
+                        handleRemoveMember(target);
+                        return;
+                    case 'temm-remove-interval':
+                        e.preventDefault();
+                        handleRemoveInterval(target);
+                        return;
+                    case 'temm-add-stint':
+                        e.preventDefault();
+                        handleAddStint(target);
+                        return;
+                    case 'temm-restore':
+                        e.preventDefault();
+                        handleOpenRestore(target);
+                        return;
+                    case 'temm-inline-add':
+                        e.preventDefault();
+                        handleInlineStintAdd(target);
+                        return;
+                    case 'temm-inline-cancel':
+                        e.preventDefault();
+                        handleInlineStintCancel(target);
+                        return;
+                    default:
+                        return;
+                }
+            };
+            rootEl.addEventListener('click', clickHandler);
+        }
+
+        // --------------------------------------------------------
+        // Save all — batched
+        // --------------------------------------------------------
+
+        function handleSaveAll() {
+            if (!currentVM) { return; }
+
+            var rows = container.querySelectorAll('.member-interval-row');
+            var stintChanges = [];
+            var roleChanges = [];
+            var invalidMessage = null;
+            var overlapMessage = null;
+
+            // ---- Role inputs ----
+            var roleInputs = container.querySelectorAll(
+                '[data-role="temm-role-input"]'
+            );
+            for (var r = 0; r < roleInputs.length; r++) {
+                var roleInput = roleInputs[r];
+                var block = roleInput.closest('.member-entry-block');
+                if (!block) continue;
+
+                var charIdR = block.dataset.characterId;
+                var newRole = roleInput.value.trim();
+                var initialRole = roleInput.dataset.initialRole || '';
+
+                if (newRole === initialRole) continue;
+
+                roleChanges.push({
+                    characterId: charIdR,
+                    role: newRole
+                });
+            }
+
+            // ---- Stint rows ----
+            for (var i = 0; i < rows.length; i++) {
+                var row = rows[i];
+
+                if (row.classList.contains('member-interval-former')) {
+                    continue;
+                }
+
+                var leaveInput = row.querySelector('.temm-leave-input');
+                if (!leaveInput) { continue; }
+
+                var leaveRaw = leaveInput.value;
+                var initialLeave = row.dataset.initialLeave || '';
+                var joinPeriod = row.dataset.joinPeriod || '';
+                var rowCharId = row.dataset.characterId || '';
+
+                var leaveParse = parseOptionalPeriodInput(leaveRaw);
+                if (!leaveParse.ok) {
+                    invalidMessage =
+                        'Leave period must be blank or a positive integer.';
+                    break;
+                }
+
+                var leaveCanonical = leaveParse.value;
+                if (leaveCanonical === initialLeave) {
+                    continue;
+                }
+
+                if (joinPeriod !== '' && leaveCanonical !== '') {
+                    var jn = parseInt(joinPeriod, 10);
+                    var lv = parseInt(leaveCanonical, 10);
+                    if (!isNaN(jn) && !isNaN(lv) && lv < jn) {
+                        invalidMessage =
+                            'Leave cannot be before Join (' + lv +
+                            ' < ' + jn + ').';
                         break;
                     }
                 }
+
+                var member = findMemberVM(rowCharId);
+                if (member) {
+                    var proposed = {
+                        joinPeriod: joinPeriod,
+                        leavePeriod: leaveCanonical
+                    };
+                    var conflict = wouldOverlap(member, joinPeriod, proposed);
+                    if (conflict) {
+                        overlapMessage =
+                            'Leave period ' + leaveCanonical + ' for ' +
+                            (member.name || 'this member') +
+                            ' overlaps an existing stint (join ' +
+                            (conflict.joinPeriod || '\u2014') + ').';
+                        break;
+                    }
+                }
+
+                stintChanges.push({
+                    characterId: rowCharId,
+                    joinPeriod: joinPeriod,
+                    leavePeriod: leaveCanonical
+                });
             }
 
-            // Fallback: single interval.
-            if (!interval && Array.isArray(member.intervals) &&
-                member.intervals.length === 1) {
-                interval = member.intervals[0];
+            if (invalidMessage) {
+                notify(invalidMessage, 'error');
+                return;
+            }
+            if (overlapMessage) {
+                notify(overlapMessage, 'error');
+                return;
             }
 
-            var formVM = {
-                characterId: member.characterId,
-                characterName: member.displayName,
-                role: member.role,
-                joinPeriod: interval
-                    ? (interval.joinPeriod === undefined || interval.joinPeriod === null)
-                        ? ''
-                        : String(interval.joinPeriod)
-                    : '',
-                leavePeriod: interval
-                    ? (interval.leavePeriod === undefined || interval.leavePeriod === null)
-                        ? ''
-                        : String(interval.leavePeriod)
-                    : ''
-            };
+            if (stintChanges.length === 0 && roleChanges.length === 0) {
+                notify('No changes to save.', 'info');
+                return;
+            }
 
-            container.innerHTML = renderMemberEditorBody(formVM, {
-                teamName: vm.teamName,
-                notFound: false
+            // ---- Commit ----
+            //
+            // Two-phase chain:
+            //   1. Role changes → TeamCore.updateMember(teamId, charId, { role })
+            //   2. Stint changes → sequential endMemberInterval /
+            //      reopenMemberInterval calls, one per changed row.
+            //
+            // Role changes go first. If a role change fails, the
+            // whole save aborts and the modal stays open.
+            //
+            // The stint changes need to be dispatched one at a time
+            // because TeamCore exposes per-interval mutations
+            // (endMemberInterval, reopenMemberInterval) rather than
+            // a bulk "set these leaves" call. Sequential dispatch
+            // through the pipeline is fine — the pipeline serialises
+            // anyway.
+
+            var chain = Promise.resolve();
+            var failed = false;
+
+            roleChanges.forEach(function(rc) {
+                chain = chain.then(function() {
+                    if (failed) return;
+                    return TeamCore.updateMember(
+                        teamId, rc.characterId, { role: rc.role }
+                    ).then(function(result) {
+                        if (!result || !result.success) {
+                            failed = true;
+                        }
+                    });
+                });
             });
-            bindEditorEvents(container, formVM, teamId, charId, {
-                onMutation: invokeOnMutation,
-                onClose: invokeOnClose,
-                refresh: render
+
+            stintChanges.forEach(function(sc) {
+                chain = chain.then(function() {
+                    if (failed) return;
+
+                    if (sc.leavePeriod === '') {
+                        return TeamCore.reopenMemberInterval(
+                            teamId, sc.characterId, sc.joinPeriod
+                        ).then(function(result) {
+                            if (!result || !result.success) {
+                                failed = true;
+                            }
+                        });
+                    }
+                    return TeamCore.endMemberInterval(
+                        teamId, sc.characterId, sc.joinPeriod, sc.leavePeriod
+                    ).then(function(result) {
+                        if (!result || !result.success) {
+                            failed = true;
+                        }
+                    });
+                });
+            });
+
+            chain.then(function() {
+                if (failed) {
+                    return;
+                }
+                render();
+                invokeOnMutation();
+            }).catch(function(err) {
+                console.warn('[TeamEvents] save-all failed:', err);
+                notify('Failed to save changes.', 'error');
             });
         }
 
+        function findMemberVM(charId) {
+            if (!currentVM) { return null; }
+            var target = String(charId);
+
+            var list = currentVM.members || [];
+            for (var i = 0; i < list.length; i++) {
+                if (String(list[i].characterId) === target) {
+                    return list[i];
+                }
+            }
+            var former = formerMembersVM || [];
+            for (var j = 0; j < former.length; j++) {
+                if (String(former[j].characterId) === target) {
+                    return former[j];
+                }
+            }
+            return null;
+        }
+
+        function handleRevert() {
+            render();
+        }
+
+        // --------------------------------------------------------
+        // Add member
+        // --------------------------------------------------------
+
+        function handleAdd() {
+            var select = container.querySelector('.member-form-select');
+            var charId = select ? select.value : '';
+            if (!charId) {
+                notify('Select a character to add.', 'error');
+                return;
+            }
+
+            var roleInput = container.querySelector('.member-form-role');
+            var joinInput = container.querySelector('.member-form-join');
+            var leaveInput = container.querySelector('.member-form-leave');
+
+            var role = roleInput ? roleInput.value.trim() : '';
+            var joinRaw = joinInput ? joinInput.value.trim() : '';
+            var leaveRaw = leaveInput ? leaveInput.value.trim() : '';
+
+            var joinParsed = joinRaw === ''
+                ? periodNum
+                : parsePeriodStrict(joinRaw);
+            if (joinParsed === null) {
+                notify('Join period must be a positive integer.', 'error');
+                return;
+            }
+
+            var leaveParsed = parseOptionalPeriodInput(leaveRaw);
+            if (!leaveParsed.ok) {
+                notify(
+                    'Leave period must be blank or a positive integer.',
+                    'error'
+                );
+                return;
+            }
+
+            if (leaveParsed.value !== '' &&
+                parseInt(leaveParsed.value, 10) < joinParsed) {
+                notify('Leave cannot be before join.', 'error');
+                return;
+            }
+
+            TeamCore.addMemberInterval(
+                teamId, charId, String(joinParsed), leaveParsed.value
+            ).then(function(result) {
+                if (result && result.success) {
+                    // If a role was provided, dispatch a role update
+                    // as a follow-up.
+                    if (role) {
+                        return TeamCore.updateMember(
+                            teamId, charId, { role: role }
+                        );
+                    }
+                    return null;
+                }
+                return null;
+            }).then(function() {
+                render();
+                invokeOnMutation();
+            }).catch(function(err) {
+                console.warn('[TeamEvents] addMemberInterval failed:', err);
+                notify('Failed to add member.', 'error');
+            });
+        }
+
+        // --------------------------------------------------------
+        // Remove member (whole entry)
+        // --------------------------------------------------------
+
+        function handleRemoveMember(btn) {
+            var charId = btn.dataset.characterId;
+            if (!charId) { return; }
+
+            var member = findMemberVM(charId);
+            var name = member && member.name ? member.name : 'this member';
+
+            if (!confirm(
+                'Remove ' + name + ' entirely (all stints)?\n\n' +
+                'This deletes the member\'s history on this team.'
+            )) {
+                return;
+            }
+
+            TeamCore.removeMember(teamId, charId)
+                .then(function(result) {
+                    if (result && result.success) {
+                        render();
+                        invokeOnMutation();
+                    }
+                })
+                .catch(function(err) {
+                    console.warn('[TeamEvents] removeMember failed:', err);
+                    notify('Failed to remove member.', 'error');
+                });
+        }
+
+        // --------------------------------------------------------
+        // Remove interval (one stint)
+        // --------------------------------------------------------
+
+        function handleRemoveInterval(btn) {
+            var charId = btn.dataset.characterId;
+            var joinPeriod = btn.dataset.joinPeriod;
+            if (!charId) { return; }
+
+            if (joinPeriod === undefined || joinPeriod === null) {
+                joinPeriod = '';
+            }
+
+            var member = findMemberVM(charId);
+            var name = member && member.name ? member.name : 'this member';
+
+            if (!confirm(
+                'Remove this stint from ' + name + '?\n\n' +
+                'If it is the last stint, the member is removed from the team.'
+            )) {
+                return;
+            }
+
+            TeamCore.purgeMemberInterval(teamId, charId, joinPeriod)
+                .then(function(result) {
+                    if (result && result.success) {
+                        render();
+                        invokeOnMutation();
+                    }
+                })
+                .catch(function(err) {
+                    console.warn('[TeamEvents] purgeMemberInterval failed:', err);
+                    notify('Failed to remove stint.', 'error');
+                });
+        }
+
+        // --------------------------------------------------------
+        // Add stint (inline form)
+        // --------------------------------------------------------
+
+        function handleAddStint(btn) {
+            var block = btn.closest('.member-entry-block');
+            if (!block) { return; }
+
+            var host = block.querySelector('.member-inline-add-host');
+            if (!host) { return; }
+
+            var charId = block.dataset.characterId;
+            var memberId = block.dataset.memberId || '';
+
+            var existing = host.querySelector('.member-inline-add-form');
+            if (existing) {
+                var existingJoin = existing.querySelector('.member-inline-add-join');
+                if (existingJoin) { existingJoin.focus(); }
+                return;
+            }
+
+            var member = findMemberVM(charId);
+            var suggestion = suggestNextJoinPeriod(member);
+
+            var html = '';
+            html += '<div class="member-inline-add-form" ' +
+                        'data-character-id="' + escapeAttr(charId) + '" ' +
+                        'data-member-id="' + escapeAttr(memberId) + '">';
+            html += '<label class="member-inline-add-label">Join</label>';
+            html += '<input type="number" ' +
+                        'class="member-interval-input member-inline-add-join" ' +
+                        'min="1" ' +
+                        'value="' + escapeAttr(String(suggestion)) + '" ' +
+                        'placeholder="Required">';
+            html += '<label class="member-inline-add-label">Leave</label>';
+            html += '<input type="number" ' +
+                        'class="member-interval-input member-inline-add-leave" ' +
+                        'min="1" ' +
+                        'placeholder="\u2014">';
+            html += '<button type="button" ' +
+                        'class="small primary" ' +
+                        'data-action="temm-inline-add">Add</button>';
+            html += '<button type="button" ' +
+                        'class="small secondary" ' +
+                        'data-action="temm-inline-cancel">Cancel</button>';
+            html += '</div>';
+
+            btn.style.display = 'none';
+            host.insertAdjacentHTML('beforeend', html);
+
+            var joinInput = host.querySelector('.member-inline-add-join');
+            if (joinInput) { joinInput.focus(); }
+        }
+
+        function suggestNextJoinPeriod(member) {
+            if (!member || !Array.isArray(member.intervals) ||
+                member.intervals.length === 0) {
+                return periodNum !== null ? periodNum : 1;
+            }
+
+            var latestLeave = 0;
+            for (var i = 0; i < member.intervals.length; i++) {
+                var iv = member.intervals[i];
+                if (!iv) continue;
+                var lv = parseInt(iv.leavePeriod, 10);
+                if (!isNaN(lv) && lv > latestLeave) {
+                    latestLeave = lv;
+                }
+            }
+
+            if (latestLeave > 0) {
+                return latestLeave + 1;
+            }
+
+            return periodNum !== null ? periodNum : 1;
+        }
+
+        function handleInlineStintCancel(btn) {
+            var form = btn.closest('.member-inline-add-form');
+            if (!form) { return; }
+
+            var block = form.closest('.member-entry-block');
+            if (!block) { return; }
+
+            form.remove();
+            var addBtn = block.querySelector('.member-inline-add-btn');
+            if (addBtn) {
+                addBtn.style.display = '';
+            }
+        }
+
+        function handleInlineStintAdd(btn) {
+            var form = btn.closest('.member-inline-add-form');
+            if (!form) { return; }
+
+            var block = form.closest('.member-entry-block');
+            if (!block) { return; }
+
+            var charId = block.dataset.characterId;
+
+            var joinInput = form.querySelector('.member-inline-add-join');
+            var leaveInput = form.querySelector('.member-inline-add-leave');
+
+            var joinParsed = parsePeriodStrict(joinInput ? joinInput.value : '');
+            if (joinParsed === null) {
+                notify('Join period must be a positive integer.', 'error');
+                return;
+            }
+
+            var leaveParsed = parseOptionalPeriodInput(
+                leaveInput ? leaveInput.value : ''
+            );
+            if (!leaveParsed.ok) {
+                notify(
+                    'Leave period must be blank or a positive integer.',
+                    'error'
+                );
+                return;
+            }
+
+            if (leaveParsed.value !== '' &&
+                parseInt(leaveParsed.value, 10) < joinParsed) {
+                notify('Leave cannot be before join.', 'error');
+                return;
+            }
+
+            var member = findMemberVM(charId);
+            var proposed = {
+                joinPeriod: String(joinParsed),
+                leavePeriod: leaveParsed.value
+            };
+            if (member) {
+                var conflict = wouldOverlap(member, '', proposed);
+                if (conflict) {
+                    notify(
+                        'This stint would overlap an existing one ' +
+                        '(join ' + (conflict.joinPeriod || '\u2014') +
+                        ', leave ' + (conflict.leavePeriod || '\u2014') + ').',
+                        'error'
+                    );
+                    return;
+                }
+            }
+
+            TeamCore.addMemberInterval(
+                teamId, charId, String(joinParsed), leaveParsed.value
+            ).then(function(result) {
+                if (result && result.success) {
+                    render();
+                    invokeOnMutation();
+                }
+            }).catch(function(err) {
+                console.warn('[TeamEvents] addMemberInterval failed:', err);
+                notify('Failed to add stint.', 'error');
+            });
+        }
+
+        // --------------------------------------------------------
+        // Restore
+        // --------------------------------------------------------
+
+        function handleOpenRestore(btn) {
+            var charId = btn.dataset.characterId;
+            var memberId = btn.dataset.memberId;
+            var joinPeriod = btn.dataset.joinPeriod;
+            var leavePeriod = btn.dataset.leavePeriod;
+
+            if (!charId) { return; }
+
+            openRestoreModal({
+                characterId: charId,
+                memberId: memberId || '',
+                joinPeriod: joinPeriod || '',
+                leavePeriod: leavePeriod || ''
+            });
+        }
+
+        function openRestoreModal(info) {
+            var modal = Modal.createModal('team-member-restore-modal');
+            if (!modal) {
+                notify('Could not open restore dialog.', 'error');
+                return;
+            }
+
+            var contentEl = document.createElement('div');
+            contentEl.className = 'modal-content';
+            contentEl.innerHTML = buildRestoreFormHTML(info);
+            modal.appendChild(contentEl);
+
+            Modal.modalSetup(modal);
+            Modal.showModal(modal);
+
+            var close = function() {
+                try {
+                    if (typeof Modal.closeModal === 'function') {
+                        Modal.closeModal(modal);
+                    } else if (typeof Modal.hideModal === 'function') {
+                        Modal.hideModal(modal);
+                    }
+                } catch (e) {
+                    console.warn('[TeamEvents] restore modal close failed:', e);
+                }
+                if (modal.parentNode) {
+                    modal.parentNode.removeChild(modal);
+                }
+            };
+
+            var closeBtn = modal.querySelector('.close-modal');
+            if (closeBtn) { closeBtn.addEventListener('click', close); }
+
+            var cancelBtn = modal.querySelector('.cancel-modal-btn');
+            if (cancelBtn) { cancelBtn.addEventListener('click', close); }
+
+            modal.addEventListener('click', function(ev) {
+                if (ev.target === modal) { close(); }
+            });
+
+            var form = modal.querySelector('#team-member-restore-form');
+            if (!form) { return; }
+
+            form.addEventListener('submit', function(ev) {
+                ev.preventDefault();
+
+                var modeInput = form.querySelector(
+                    'input[name="team-restore-mode"]:checked'
+                );
+                var modeValue = modeInput ? modeInput.value : '';
+
+                if (modeValue === 'correct') {
+                    handleRestoreCorrect(form, info, close);
+                    return;
+                }
+                if (modeValue === 'new') {
+                    handleRestoreNew(form, info, close);
+                    return;
+                }
+            });
+        }
+
+        function handleRestoreCorrect(form, info, close) {
+            var leaveInput = form.querySelector('.team-restore-leave-input');
+            var leaveRaw = leaveInput ? leaveInput.value : '';
+
+            var parsed = parseOptionalPeriodInput(leaveRaw);
+            if (!parsed.ok) {
+                notify(
+                    'Leave period must be blank or a positive integer.',
+                    'error'
+                );
+                return;
+            }
+
+            // Reopening an interval in-place: if the new leave is
+            // blank, use reopenMemberInterval. If the new leave is
+            // set, use endMemberInterval.
+            var promise;
+            if (parsed.value === '') {
+                promise = TeamCore.reopenMemberInterval(
+                    teamId, info.characterId, info.joinPeriod
+                );
+            } else {
+                promise = TeamCore.endMemberInterval(
+                    teamId, info.characterId, info.joinPeriod, parsed.value
+                );
+            }
+
+            promise.then(function(result) {
+                if (result && result.success) {
+                    close();
+                    render();
+                    invokeOnMutation();
+                }
+            }).catch(function(err) {
+                console.warn('[TeamEvents] restore (correct) failed:', err);
+                notify('Failed to restore member.', 'error');
+            });
+        }
+
+        function handleRestoreNew(form, info, close) {
+            var joinInput = form.querySelector('.team-restore-join-input');
+            var newLeaveInput = form.querySelector('.team-restore-newleave-input');
+
+            var joinRaw = joinInput ? joinInput.value : '';
+            var newLeaveRaw = newLeaveInput ? newLeaveInput.value : '';
+
+            var joinParsed = parsePeriodStrict(joinRaw);
+            if (joinParsed === null) {
+                notify(
+                    'New join period must be a positive integer.',
+                    'error'
+                );
+                return;
+            }
+
+            var newLeaveParsed = parseOptionalPeriodInput(newLeaveRaw);
+            if (!newLeaveParsed.ok) {
+                notify(
+                    'New leave period must be blank or a positive integer.',
+                    'error'
+                );
+                return;
+            }
+
+            if (newLeaveParsed.value !== '' &&
+                parseInt(newLeaveParsed.value, 10) < joinParsed) {
+                notify('Leave cannot be before join.', 'error');
+                return;
+            }
+
+            var member = findMemberVM(info.characterId);
+            if (member) {
+                var proposed = {
+                    joinPeriod: String(joinParsed),
+                    leavePeriod: newLeaveParsed.value
+                };
+                var conflict = wouldOverlap(member, '', proposed);
+                if (conflict) {
+                    notify(
+                        'This stint would overlap an existing one.',
+                        'error'
+                    );
+                    return;
+                }
+            }
+
+            TeamCore.addMemberInterval(
+                teamId,
+                info.characterId,
+                String(joinParsed),
+                newLeaveParsed.value
+            ).then(function(result) {
+                if (result && result.success) {
+                    close();
+                    render();
+                    invokeOnMutation();
+                }
+            }).catch(function(err) {
+                console.warn('[TeamEvents] restore (new) failed:', err);
+                notify('Failed to add stint.', 'error');
+            });
+        }
+
+        function buildRestoreFormHTML(info) {
+            var currentLeave = isNonEmptyString(info.leavePeriod)
+                ? info.leavePeriod
+                : '';
+
+            var html = '';
+            html += '<form id="team-member-restore-form">';
+
+            html += '<div class="modal-header">';
+            html += '<h3>Restore Member</h3>';
+            html += '<button type="button" class="close-modal">' +
+                        '&times;' +
+                    '</button>';
+            html += '</div>';
+
+            html += '<div class="modal-body">';
+
+            html += '<p class="field-hint">' +
+                        'Choose how to bring this member back.' +
+                    '</p>';
+
+            html += '<label class="member-restore-option">';
+            html += '<input type="radio" name="team-restore-mode" ' +
+                        'value="correct" checked>';
+            html += '<span class="member-restore-option-body">';
+            html += '<strong>Correct the leave period</strong>';
+            html += '<span class="member-restore-option-hint">' +
+                        'Edits this stint\'s existing window in place. ' +
+                        'Use this when the leave period was recorded wrong.' +
+                    '</span>';
+            html += '<span class="member-restore-input-row">';
+            html += '<label>Leave</label>';
+            html += '<input type="number" ' +
+                        'class="member-interval-input team-restore-leave-input" ' +
+                        'min="1" ' +
+                        'value="' + escapeAttr(currentLeave) + '" ' +
+                        'placeholder="\u2014">';
+            html += '</span>';
+            html += '</span>';
+            html += '</label>';
+
+            html += '<label class="member-restore-option">';
+            html += '<input type="radio" name="team-restore-mode" ' +
+                        'value="new">';
+            html += '<span class="member-restore-option-body">';
+            html += '<strong>Reopen with a new interval</strong>';
+            html += '<span class="member-restore-option-hint">' +
+                        'Preserves the former window and starts a fresh ' +
+                        'one. Use this when they took a break and came ' +
+                        'back.' +
+                    '</span>';
+            html += '<span class="member-restore-input-row">';
+            html += '<label>Join</label>';
+            html += '<input type="number" ' +
+                        'class="member-interval-input team-restore-join-input" ' +
+                        'min="1" ' +
+                        'value="' + escapeAttr(
+                            periodNum !== null ? String(periodNum) : ''
+                        ) + '">';
+            html += '<label>Leave</label>';
+            html += '<input type="number" ' +
+                        'class="member-interval-input team-restore-newleave-input" ' +
+                        'min="1" ' +
+                        'placeholder="\u2014">';
+            html += '</span>';
+            html += '</span>';
+            html += '</label>';
+
+            html += '<div class="form-actions">';
+            html += '<button type="button" ' +
+                        'class="cancel-modal-btn secondary">Cancel</button>';
+            html += '<button type="submit" class="primary">Restore</button>';
+            html += '</div>';
+
+            html += '</div>';
+            html += '</form>';
+
+            return html;
+        }
+
         function close() {
+            if (disposed) return;
             disposed = true;
+            if (clickHandler && container.parentNode) {
+                try {
+                    container.removeEventListener('click', clickHandler);
+                } catch (e) {}
+            }
+            clickHandler = null;
             invokeOnClose();
         }
 
@@ -1671,102 +2325,129 @@
     // ============================================================
     // EXTERNAL RENDERERS (not exported)
     // ============================================================
+    //
+    // MARKUP CONTRACT: same class names as the academic manager in
+    // academy-weekly-teams-members.js. See the docstring on
+    // openMemberManager above.
 
-    function renderMemberManagerBody(vm, opts) {
+    function renderManagerBody(vm, opts) {
         opts = opts || {};
         var notFound = opts.notFound === true;
-
-        var members = Array.isArray(vm.members) ? vm.members : [];
-        var candidates = Array.isArray(vm.candidates) ? vm.candidates : [];
 
         var html = '';
 
         html += '<div class="modal-header">';
-        html += '<h3>Manage Members \u2014 ' + escapeHtml(vm.teamName || 'Team') + '</h3>';
-        html += '<button type="button" class="close-modal team-events-close-btn">&times;</button>';
+        html += '<h3>Manage Members \u2014 ' +
+                    escapeHtml(vm.teamName || 'Team') +
+                '</h3>';
+        html += '<button type="button" ' +
+                    'class="close-modal" ' +
+                    'data-action="temm-close">&times;</button>';
         html += '</div>';
 
         html += '<div class="modal-body">';
 
         if (notFound) {
             html += '<p class="empty-state small">Team not found.</p>';
-        } else {
-            html += '<div class="form-group">';
-            html += '<label>Current Members (' + members.length + ')</label>';
-
-            if (members.length === 0) {
-                html += '<p class="empty-state small">No members yet.</p>';
-            } else {
-                html += '<div class="academy-team-members-list">';
-                for (var i = 0; i < members.length; i++) {
-                    var member = members[i];
-                    if (!member) continue;
-
-                    var intervals = Array.isArray(member.intervals)
-                        ? member.intervals
-                        : [];
-
-                    if (intervals.length === 0) {
-                        html += renderManagerPlaceholderRow(member);
-                        continue;
-                    }
-
-                    for (var j = 0; j < intervals.length; j++) {
-                        html += renderManagerMemberRow(
-                            member, intervals[j], j === 0
-                        );
-                    }
-                }
-                html += '</div>';
-            }
-
             html += '</div>';
+            return html;
+        }
 
-            html += '<div class="form-group">';
-            html += '<label for="te-member-select">Add Member</label>';
+        var members = Array.isArray(vm.members) ? vm.members : [];
+        var formerMembers = Array.isArray(vm.formerMembers)
+            ? vm.formerMembers
+            : [];
+        var candidates = Array.isArray(vm.candidates) ? vm.candidates : [];
 
-            if (candidates.length === 0) {
-                html += '<p class="field-hint">' +
-                            'No more characters available to add.' +
-                        '</p>';
-            } else {
-                html += '<select id="te-member-select" class="te-member-select">';
-                html += '<option value="">Select a character...</option>';
-                for (var k = 0; k < candidates.length; k++) {
-                    var c = candidates[k];
+        html += '<p class="field-hint">' +
+                    'Edit each stint\'s Join and Leave. Add a stint to ' +
+                    'record a member returning. Click Save to apply ' +
+                    'every change at once.' +
+                '</p>';
 
-                    var label = c.name;
-                    if (isNonEmptyString(c.status)) {
-                        label += ' (' + c.status + ')';
-                    }
-                    if (c.deceased === true) {
-                        label += ' \u2020';
-                    }
+        // ---- Current members ----
+        html += '<div class="form-group">';
+        html += '<label>Current Members (' + members.length + ')</label>';
 
-                    html += '<option value="' + escapeAttr(c.id) + '">' +
-                                escapeHtml(label) +
-                            '</option>';
-                }
-                html += '</select>';
-
-                html += '<div class="te-member-add-row">';
-                html += '<input type="text" class="te-member-role" ' +
-                            'placeholder="Role (optional)">';
-                html += '<input type="text" class="te-member-join" ' +
-                            'placeholder="Join period (optional)">';
-                html += '<input type="text" class="te-member-leave" ' +
-                            'placeholder="Leave period (optional)">';
-                html += '<button type="button" ' +
-                            'class="small primary te-member-add-btn">Add</button>';
-                html += '</div>';
+        if (members.length === 0) {
+            html += '<p class="empty-state small">' +
+                        'No members assigned to this team this period.' +
+                    '</p>';
+        } else {
+            html += '<div class="member-manager-list">';
+            for (var i = 0; i < members.length; i++) {
+                html += renderMemberBlock(members[i]);
             }
+            html += '</div>';
+        }
+        html += '</div>';
 
+        // ---- Add member ----
+        html += '<div class="form-group member-add-group">';
+        html += '<label for="temm-member-select">Add Member</label>';
+
+        if (candidates.length === 0) {
+            html += '<p class="field-hint">' +
+                        'No eligible characters available to add.' +
+                    '</p>';
+        } else {
+            html += '<div class="member-form">';
+            html += '<select id="temm-member-select" ' +
+                        'class="member-form-select">';
+            html += '<option value="">Select a character...</option>';
+            for (var j = 0; j < candidates.length; j++) {
+                var c = candidates[j];
+                var label = c.name;
+                if (c.deceased === true) {
+                    label += ' \u2020';
+                }
+                html += '<option value="' + escapeAttr(c.id) + '">' +
+                            escapeHtml(label) +
+                        '</option>';
+            }
+            html += '</select>';
+            html += '<input type="text" class="member-form-role" ' +
+                        'placeholder="Role (optional)">';
+            html += '<input type="number" class="member-form-join" ' +
+                        'placeholder="Join" min="1">';
+            html += '<input type="number" class="member-form-leave" ' +
+                        'placeholder="Leave" min="1">';
+            html += '<button type="button" ' +
+                        'class="small primary member-form-add" ' +
+                        'data-action="temm-add">Add</button>';
+            html += '</div>';
+            html += '<p class="field-hint">' +
+                        'Join defaults to ' +
+                        escapeHtml(
+                            vm.period !== null && vm.period !== undefined
+                                ? String(vm.period)
+                                : 'the current period'
+                        ) + ' when left blank.' +
+                    '</p>';
+        }
+        html += '</div>';
+
+        // ---- Former members ----
+        if (formerMembers.length > 0) {
+            html += '<div class="form-group member-former-group">';
+            html += '<label>Former Members (' +
+                        formerMembers.length + ')</label>';
+            html += '<div class="member-former-list">';
+            for (var k = 0; k < formerMembers.length; k++) {
+                html += renderFormerMemberBlock(formerMembers[k]);
+            }
+            html += '</div>';
             html += '</div>';
         }
 
-        html += '<div class="form-actions">';
-        html += '<button type="button" ' +
-                    'class="secondary te-member-close-btn">Close</button>';
+        // ---- Footer ----
+        html += '<div class="form-actions member-manager-footer">';
+        html += '<button type="button" class="secondary" ' +
+                    'data-action="temm-revert">Revert</button>';
+        html += '<button type="button" class="primary" ' +
+                    'data-action="temm-save">Save</button>';
+        html += '<button type="button" class="secondary" ' +
+                    'data-action="temm-close">Close</button>';
         html += '</div>';
 
         html += '</div>';
@@ -1774,383 +2455,255 @@
         return html;
     }
 
-    function renderManagerMemberRow(member, interval, isFirstIntervalRow) {
+    function renderMemberBlock(member) {
         if (!member || !member.characterId) { return ''; }
+
+        var memberIdAttr = escapeAttr(member.memberId || '');
+        var charIdAttr = escapeAttr(member.characterId);
+
+        var intervals = Array.isArray(member.intervals)
+            ? member.intervals
+            : [];
+
+        var headerClass = 'member-entry-header';
+        if (member.deceased === true) {
+            headerClass += ' deceased';
+        }
+
+        var html = '';
+        html += '<div class="member-entry member-entry-block" ' +
+                    'data-character-id="' + charIdAttr + '" ' +
+                    'data-member-id="' + memberIdAttr + '">';
+
+        html += '<div class="' + headerClass + '">';
+        html += '<span class="member-entry-name">' +
+                    escapeHtml(member.name || 'Unknown') +
+                '</span>';
+
+        if (member.deceased === true) {
+            html += '<span class="member-entry-deceased" ' +
+                        'title="Deceased">\u2020</span>';
+        }
+
+        html += '<input type="text" ' +
+                    'class="member-entry-role" ' +
+                    'data-role="temm-role-input" ' +
+                    'data-initial-role="' +
+                        escapeAttr(member.role || '') + '" ' +
+                    'value="' + escapeAttr(member.role || '') + '" ' +
+                    'placeholder="Member">';
+
+        if (isNonEmptyString(member.statusLabel)) {
+            html += '<span class="member-entry-status">' +
+                        escapeHtml(member.statusLabel) +
+                    '</span>';
+        }
+
+        html += '<button type="button" ' +
+                    'class="small danger member-entry-remove" ' +
+                    'data-action="temm-remove-member" ' +
+                    'data-character-id="' + charIdAttr + '" ' +
+                    'data-member-id="' + memberIdAttr + '">' +
+                    'Remove member' +
+                '</button>';
+        html += '</div>';
+
+        if (intervals.length === 0) {
+            html += '<div class="member-interval-empty">' +
+                        'No stints recorded. Use Add stint to create one.' +
+                    '</div>';
+        } else {
+            html += '<div class="member-interval-rows">';
+            for (var i = 0; i < intervals.length; i++) {
+                html += renderIntervalRow(member, intervals[i]);
+            }
+            html += '</div>';
+        }
+
+        html += '<div class="member-inline-add-host">';
+        html += '<button type="button" ' +
+                    'class="small secondary member-inline-add-btn" ' +
+                    'data-action="temm-add-stint" ' +
+                    'data-character-id="' + charIdAttr + '" ' +
+                    'data-member-id="' + memberIdAttr + '">' +
+                    '+ Add stint' +
+                '</button>';
+        html += '</div>';
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderIntervalRow(member, interval) {
         if (!interval || typeof interval !== 'object') { return ''; }
 
         var charIdAttr = escapeAttr(member.characterId);
-        var joinAttr = escapeAttr(
-            interval.joinPeriod === undefined || interval.joinPeriod === null
-                ? ''
-                : String(interval.joinPeriod)
-        );
+        var memberIdAttr = escapeAttr(member.memberId || '');
 
-        var rowClass = 'academy-team-member-row';
-        if (!isFirstIntervalRow) {
-            rowClass += ' academy-team-member-row-continuation';
+        var joinStr = (interval.joinPeriod === undefined ||
+                       interval.joinPeriod === null)
+            ? ''
+            : String(interval.joinPeriod);
+        var leaveStr = (interval.leavePeriod === undefined ||
+                        interval.leavePeriod === null)
+            ? ''
+            : String(interval.leavePeriod);
+
+        var joinAttr = escapeAttr(joinStr);
+        var initialLeaveAttr = escapeAttr(leaveStr);
+
+        var rowClass = 'member-interval-row';
+        if (interval.activeAtPeriod === true) {
+            rowClass += ' is-active';
         }
-
-        var joinDisplay = isNonEmptyString(interval.joinPeriod)
-            ? interval.joinPeriod
-            : '\u2014';
-        var leaveDisplay = isNonEmptyString(interval.leavePeriod)
-            ? interval.leavePeriod
-            : '\u2014';
-
-        var role = (isFirstIntervalRow && isNonEmptyString(member.role) && member.role !== 'Member')
-            ? member.role
-            : '';
 
         var html = '';
         html += '<div class="' + rowClass + '" ' +
                     'data-character-id="' + charIdAttr + '" ' +
-                    'data-join-period="' + joinAttr + '">';
+                    'data-member-id="' + memberIdAttr + '" ' +
+                    'data-join-period="' + joinAttr + '" ' +
+                    'data-initial-leave="' + initialLeaveAttr + '">';
 
-        if (isFirstIntervalRow) {
-            html += '<span class="academy-team-member-name">' +
-                        escapeHtml(member.displayName || 'Unknown') +
-                    '</span>';
-            if (role) {
-                html += '<span class="academy-team-member-role">' +
-                            escapeHtml(role) +
-                        '</span>';
-            }
-        } else {
-            html += '<span class="academy-team-member-name">' +
-                        '\u21b3' +
-                    '</span>';
-        }
+        html += '<div class="member-interval-left">';
+        html += '<div class="member-interval-bounds">';
 
-        html += '<span class="academy-team-member-period">' +
-                    'Join ' + escapeHtml(joinDisplay) +
-                    ' \u2013 Leave ' + escapeHtml(leaveDisplay) +
-                '</span>';
+        html += '<span class="member-join">';
+        html += '<label>Join</label>';
+        html += '<input type="number" ' +
+                    'class="member-interval-input temm-join-input" ' +
+                    'min="1" ' +
+                    'value="' + joinAttr + '" ' +
+                    'disabled readonly ' +
+                    'data-role="temm-join-input" ' +
+                    'title="Join period is fixed. Remove this stint and add a new one to change it.">';
+        html += '</span>';
+
+        html += '<span class="member-leave">';
+        html += '<label>Leave</label>';
+        html += '<input type="number" ' +
+                    'class="member-interval-input temm-leave-input" ' +
+                    'min="1" ' +
+                    'value="' + initialLeaveAttr + '" ' +
+                    'placeholder="\u2014" ' +
+                    'data-role="temm-leave-input">';
+        html += '</span>';
+
+        html += '</div>';
+        html += '</div>';
+
+        html += '<div class="member-interval-actions">';
+
+        // No Leave Now button on the professional side. The
+        // display period is a year; "leave now" would not name a
+        // specific week.
 
         html += '<button type="button" ' +
-                    'class="small danger te-member-remove-btn" ' +
+                    'class="small danger member-interval-remove" ' +
+                    'data-action="temm-remove-interval" ' +
                     'data-character-id="' + charIdAttr + '" ' +
-                    'data-join-period="' + joinAttr + '">' +
-                    'Remove stint' +
+                    'data-member-id="' + memberIdAttr + '" ' +
+                    'data-join-period="' + joinAttr + '" ' +
+                    'title="Remove this stint">' +
+                    '\u2715' +
                 '</button>';
 
+        html += '</div>';
         html += '</div>';
         return html;
     }
 
-    function renderManagerPlaceholderRow(member) {
+    function renderFormerMemberBlock(member) {
         if (!member || !member.characterId) { return ''; }
 
         var charIdAttr = escapeAttr(member.characterId);
+        var memberIdAttr = escapeAttr(member.memberId || '');
+
+        var intervals = Array.isArray(member.intervals)
+            ? member.intervals
+            : [];
 
         var html = '';
-        html += '<div class="academy-team-member-row academy-team-member-row-placeholder" ' +
-                    'data-character-id="' + charIdAttr + '">';
+        html += '<div class="member-entry member-entry-block member-entry-block-former" ' +
+                    'data-character-id="' + charIdAttr + '" ' +
+                    'data-member-id="' + memberIdAttr + '">';
 
-        html += '<span class="academy-team-member-name">' +
-                    escapeHtml(member.displayName || 'Unknown') +
+        html += '<div class="member-entry-header">';
+        html += '<span class="member-entry-name">' +
+                    escapeHtml(member.name || 'Unknown') +
                 '</span>';
-
-        html += '<span class="academy-team-member-period">' +
-                    'No stints recorded.' +
-                '</span>';
-
-        html += '<button type="button" ' +
-                    'class="small danger te-member-remove-entry-btn" ' +
-                    'data-character-id="' + charIdAttr + '">' +
-                    'Remove member' +
-                '</button>';
-
-        html += '</div>';
-        return html;
-    }
-
-    function renderMemberEditorBody(formVM, opts) {
-        opts = opts || {};
-        var notFound = opts.notFound === true;
-        var teamName = opts.teamName || 'Team';
-
-        var html = '';
-        html += '<div class="modal-header">';
-        html += '<h3>Edit Member \u2014 ' + escapeHtml(teamName) + '</h3>';
-        html += '<button type="button" class="close-modal te-member-editor-close">&times;</button>';
         html += '</div>';
 
-        html += '<div class="modal-body">';
-
-        if (notFound || !formVM) {
-            html += '<p class="empty-state small">Member not found.</p>';
+        if (intervals.length === 0) {
+            html += '<div class="member-interval-row member-interval-former">';
+            html += '<span class="member-former-no-stints">No stints recorded.</span>';
+            html += '</div>';
         } else {
-            var joinDisplay = isNonEmptyString(formVM.joinPeriod)
-                ? formVM.joinPeriod
-                : '\u2014';
-            var leaveValue = isNonEmptyString(formVM.leavePeriod)
-                ? formVM.leavePeriod
-                : '';
-
-            html += '<form id="te-member-editor-form" ' +
-                        'data-character-id="' + escapeAttr(formVM.characterId) + '" ' +
-                        'data-join-period="' + escapeAttr(formVM.joinPeriod || '') + '">';
-
-            html += '<div class="form-group">';
-            html += '<label>Character</label>';
-            html += '<p style="margin:4px 0 12px 0;font-weight:600;">' +
-                        escapeHtml(formVM.characterName || 'Unknown') +
-                    '</p>';
-            html += '</div>';
-
-            html += '<div class="form-group">';
-            html += '<label for="te-edit-member-role">Role</label>';
-            html += '<input type="text" id="te-edit-member-role" ' +
-                        'value="' + escapeAttr(formVM.role || '') + '">';
-            html += '<p class="field-hint">Applies to the whole member.</p>';
-            html += '</div>';
-
-            html += '<div class="form-group">';
-            html += '<label>Join Period</label>';
-            html += '<input type="text" value="' + escapeAttr(joinDisplay) + '" readonly disabled>';
-            html += '<p class="field-hint">' +
-                        'Join is immutable. Remove the stint to change it.' +
-                    '</p>';
-            html += '</div>';
-
-            html += '<div class="form-group">';
-            html += '<label for="te-edit-member-leave">Leave Period</label>';
-            html += '<input type="text" id="te-edit-member-leave" ' +
-                        'value="' + escapeAttr(leaveValue) + '">';
-            html += '<p class="field-hint">Blank means ongoing.</p>';
-            html += '</div>';
-
-            html += '<div class="form-actions">';
-            html += '<button type="button" class="secondary te-member-editor-cancel">Cancel</button>';
-            html += '<button type="submit" class="primary te-member-editor-save">Save Changes</button>';
-            html += '</div>';
-
-            html += '</form>';
-        }
-
-        if (notFound || !formVM) {
-            html += '<div class="form-actions">';
-            html += '<button type="button" class="secondary te-member-editor-cancel">Close</button>';
-            html += '</div>';
+            for (var i = 0; i < intervals.length; i++) {
+                html += renderFormerIntervalRow(member, intervals[i]);
+            }
         }
 
         html += '</div>';
         return html;
     }
 
-    // ============================================================
-    // EXTERNAL BINDINGS (not exported)
-    // ============================================================
+    function renderFormerIntervalRow(member, interval) {
+        if (!interval || typeof interval !== 'object') { return ''; }
 
-    function bindCloseButtons(container, onClose) {
-        var closeBtns = container.querySelectorAll(
-            '.team-events-close-btn, .te-member-close-btn'
-        );
-        for (var i = 0; i < closeBtns.length; i++) {
-            closeBtns[i].addEventListener('click', function() {
-                onClose();
-            });
-        }
-    }
+        var charIdAttr = escapeAttr(member.characterId);
+        var memberIdAttr = escapeAttr(member.memberId || '');
 
-    function bindManagerEvents(container, vm, ctx) {
-        bindCloseButtons(container, ctx.onClose);
+        var joinStr = (interval.joinPeriod === undefined ||
+                       interval.joinPeriod === null)
+            ? ''
+            : String(interval.joinPeriod);
+        var leaveStr = (interval.leavePeriod === undefined ||
+                        interval.leavePeriod === null)
+            ? ''
+            : String(interval.leavePeriod);
 
-        // ---- Per-interval Remove: purge this stint ----
-        var removeBtns = container.querySelectorAll('.te-member-remove-btn');
-        for (var j = 0; j < removeBtns.length; j++) {
-            (function(btn) {
-                btn.addEventListener('click', function() {
-                    var charId = btn.dataset.characterId;
-                    var joinPeriod = btn.dataset.joinPeriod;
-                    if (!charId) { return; }
-                    if (!confirm('Remove this stint from the team?')) {
-                        return;
-                    }
-                    if (!isNonEmptyString(joinPeriod)) {
-                        // Single-interval fallback: try purgeMemberInterval
-                        // without a joinPeriod. TeamCore will match the
-                        // only interval and reject otherwise.
-                        TeamCore.purgeMemberInterval(vm.teamId, charId, '')
-                            .then(function(result) {
-                                if (result && result.success) {
-                                    ctx.refresh();
-                                    ctx.onMutation();
-                                }
-                            })
-                            .catch(function(err) {
-                                console.warn('[TeamEvents] purgeMemberInterval failed:', err);
-                                notify('Failed to remove stint.', 'error');
-                            });
-                        return;
-                    }
-                    TeamCore.purgeMemberInterval(vm.teamId, charId, joinPeriod)
-                        .then(function(result) {
-                            if (result && result.success) {
-                                ctx.refresh();
-                                ctx.onMutation();
-                            }
-                        })
-                        .catch(function(err) {
-                            console.warn('[TeamEvents] purgeMemberInterval failed:', err);
-                            notify('Failed to remove stint.', 'error');
-                        });
-                });
-            })(removeBtns[j]);
+        var display = interval.periodDisplay;
+        if (!isNonEmptyString(display)) {
+            display = (joinStr || '\u2014') + ' \u2013 ' +
+                      (leaveStr || '\u2014');
         }
 
-        // ---- Whole-entry Remove: placeholder rows only ----
-        var removeEntryBtns = container.querySelectorAll('.te-member-remove-entry-btn');
-        for (var k = 0; k < removeEntryBtns.length; k++) {
-            (function(btn) {
-                btn.addEventListener('click', function() {
-                    var charId = btn.dataset.characterId;
-                    if (!charId) { return; }
-                    if (!confirm('Remove this member entirely (all stints)?')) {
-                        return;
-                    }
-                    TeamCore.removeMember(vm.teamId, charId)
-                        .then(function(result) {
-                            if (result && result.success) {
-                                ctx.refresh();
-                                ctx.onMutation();
-                            }
-                        })
-                        .catch(function(err) {
-                            console.warn('[TeamEvents] removeMember failed:', err);
-                            notify('Failed to remove member.', 'error');
-                        });
-                });
-            })(removeEntryBtns[k]);
-        }
+        var html = '';
+        html += '<div class="member-interval-row member-interval-former" ' +
+                    'data-character-id="' + charIdAttr + '" ' +
+                    'data-member-id="' + memberIdAttr + '" ' +
+                    'data-join-period="' + escapeAttr(joinStr) + '" ' +
+                    'data-initial-leave="' + escapeAttr(leaveStr) + '">';
 
-        // ---- Add member ----
-        var addBtn = container.querySelector('.te-member-add-btn');
-        if (addBtn) {
-            addBtn.addEventListener('click', function() {
-                var select = container.querySelector('.te-member-select');
-                var roleInput = container.querySelector('.te-member-role');
-                var joinInput = container.querySelector('.te-member-join');
-                var leaveInput = container.querySelector('.te-member-leave');
+        html += '<div class="member-interval-left">';
+        html += '<span class="member-former-period">' +
+                    escapeHtml(display) +
+                '</span>';
+        html += '</div>';
 
-                var charId = select ? select.value : '';
-                if (!charId) {
-                    notify('Select a character to add.', 'error');
-                    return;
-                }
+        html += '<div class="member-interval-actions">';
+        html += '<button type="button" ' +
+                    'class="small secondary member-interval-restore" ' +
+                    'data-action="temm-restore" ' +
+                    'data-character-id="' + charIdAttr + '" ' +
+                    'data-member-id="' + memberIdAttr + '" ' +
+                    'data-join-period="' + escapeAttr(joinStr) + '" ' +
+                    'data-leave-period="' + escapeAttr(leaveStr) + '">' +
+                    'Restore' +
+                '</button>';
+        html += '<button type="button" ' +
+                    'class="small danger member-interval-remove" ' +
+                    'data-action="temm-remove-interval" ' +
+                    'data-character-id="' + charIdAttr + '" ' +
+                    'data-member-id="' + memberIdAttr + '" ' +
+                    'data-join-period="' + escapeAttr(joinStr) + '" ' +
+                    'title="Remove this stint">' +
+                    '\u2715' +
+                '</button>';
+        html += '</div>';
 
-                TeamCore.addMember(vm.teamId, {
-                    characterId: charId,
-                    role: roleInput ? roleInput.value.trim() : '',
-                    joinPeriod: joinInput ? joinInput.value.trim() : '',
-                    leavePeriod: leaveInput ? leaveInput.value.trim() : ''
-                }).then(function(result) {
-                    if (result && result.success) {
-                        ctx.refresh();
-                        ctx.onMutation();
-                    }
-                }).catch(function(err) {
-                    console.warn('[TeamEvents] addMember failed:', err);
-                    notify('Failed to add member.', 'error');
-                });
-            });
-        }
-    }
-
-    function bindEditorClose(container, onClose) {
-        var closeBtns = container.querySelectorAll(
-            '.te-member-editor-close, .te-member-editor-cancel'
-        );
-        for (var i = 0; i < closeBtns.length; i++) {
-            closeBtns[i].addEventListener('click', function() {
-                onClose();
-            });
-        }
-    }
-
-    /**
-     * Bind the external editor's submit handler.
-     *
-     * The editor edits ONE interval. Save sequences:
-     *   1. Role change → TeamCore.updateMember (role only).
-     *   2. Leave change → TeamCore.endMemberInterval OR
-     *                     TeamCore.reopenMemberInterval.
-     *
-     * joinPeriod is IMMUTABLE; the form's join field is read-only.
-     */
-    function bindEditorEvents(container, formVM, teamId, charId, ctx) {
-        bindEditorClose(container, ctx.onClose);
-
-        var form = container.querySelector('#te-member-editor-form');
-        if (!form) { return; }
-
-        var joinPeriod = form.dataset.joinPeriod || '';
-
-        form.addEventListener('submit', function(e) {
-            e.preventDefault();
-
-            var roleInput = form.querySelector('#te-edit-member-role');
-            var leaveInput = form.querySelector('#te-edit-member-leave');
-
-            var newRole = roleInput ? roleInput.value.trim() : '';
-            var newLeaveRaw = leaveInput ? leaveInput.value.trim() : '';
-
-            var roleChanged = newRole !== (formVM.role || '');
-            var currentLeave = formVM.leavePeriod || '';
-            var leaveChanged = newLeaveRaw !== currentLeave;
-
-            if (!roleChanged && !leaveChanged) {
-                notify('No changes to save.', 'info');
-                return;
-            }
-
-            if (leaveChanged && !isNonEmptyString(formVM.joinPeriod)) {
-                notify(
-                    'A specific stint is required to edit the leave week.',
-                    'error'
-                );
-                return;
-            }
-
-            var chain = Promise.resolve();
-            var failed = false;
-
-            if (roleChanged) {
-                chain = chain.then(function() {
-                    return TeamCore.updateMember(teamId, charId, { role: newRole })
-                        .then(function(result) {
-                            if (!result || !result.success) { failed = true; }
-                        });
-                });
-            }
-
-            if (leaveChanged) {
-                chain = chain.then(function() {
-                    if (failed) return;
-                    if (newLeaveRaw === '') {
-                        return TeamCore.reopenMemberInterval(
-                            teamId, charId, formVM.joinPeriod
-                        ).then(function(result) {
-                            if (!result || !result.success) { failed = true; }
-                        });
-                    }
-                    return TeamCore.endMemberInterval(
-                        teamId, charId, formVM.joinPeriod, newLeaveRaw
-                    ).then(function(result) {
-                        if (!result || !result.success) { failed = true; }
-                    });
-                });
-            }
-
-            chain.then(function() {
-                if (failed) return;
-                ctx.onMutation();
-                ctx.onClose();
-            }).catch(function(err) {
-                console.warn('[TeamEvents] editor save failed:', err);
-                notify('Failed to save changes.', 'error');
-            });
-        });
+        html += '</div>';
+        return html;
     }
 
     // ============================================================
@@ -2172,8 +2725,7 @@
         closeRankingModal: closeRankingModal,
 
         // External entry points (container-based)
-        openMemberManager: openMemberManager,
-        openMemberEditor: openMemberEditor
+        openMemberManager: openMemberManager
     };
 
     // ============================================================
@@ -2189,7 +2741,7 @@
             'showTeamForm', 'closeTeamForm',
             'showMemberModal', 'closeMemberModal',
             'showRankingModal', 'closeRankingModal',
-            'openMemberManager', 'openMemberEditor'
+            'openMemberManager'
         ];
 
         for (var i = 0; i < required.length; i++) {
