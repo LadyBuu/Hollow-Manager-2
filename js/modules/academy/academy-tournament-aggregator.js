@@ -13,6 +13,7 @@
  *   - Surface final passers
  *   - Resolve participant and team display names for the UI
  *   - Stamp prior-round outcomes on pool items (C8)
+ *   - Stamp collapse state on round VMs (C4)
  *
  * NOT RESPONSIBILITIES:
  *   - Mutations
@@ -20,13 +21,14 @@
  *   - Domain validation (Schema / Rules)
  *   - Match generation (TournamentMatches)
  *   - Elimination writes (TournamentEliminationCascade)
- *   - Prior-round derivation (TournamentQueries owns it; this
- *     module only consumes the result)
+ *   - Prior-round derivation (TournamentQueries owns it)
+ *   - Collapse-state persistence (AcademyUI owns it)
  *
  * ARCHITECTURE:
  *
  *     TournamentQueries            (reads + prior-round derivation)
  *     TournamentSchema             (structural interpretation)
+ *     AcademyUI                    (UI state, incl. collapse)
  *     AcademyAggregator            (class + roster)
  *     TeamQueries                  (team identity)
  *     EliminationQueries           (cross-tournament elimination state)
@@ -97,12 +99,18 @@
  *   The derivation lives in TournamentQueries.getPriorRoundOutcomes.
  *   This module does not walk rounds itself; it consumes the map.
  *
- *   When `options.currentRoundId` is absent (e.g. the top-level view
- *   render, where no target round exists), every pool item carries
- *   `priorRoundOutcome: null`. The badge simply does not render.
- *   There is no "guess the round" heuristic.
+ * ROUND COLLAPSE (C4):
+ *   Each round VM carries `isCollapsed`, resolved from AcademyUI.
+ *   The default is "expanded": a round that has never been collapsed
+ *   carries `isCollapsed: false`.
+ *
+ *   The persistence and the default policy live in AcademyUI. This
+ *   module is a pure reader: it asks AcademyUI for the state of each
+ *   round and stamps the result. The view does not decide the
+ *   default; it reads `round.isCollapsed` as a fact.
  *
  * DEPENDENCIES (MANDATORY):
+ *   - window.AcademyUI
  *   - window.AcademyAggregator
  *   - window.TournamentQueries
  *   - window.TournamentSchema
@@ -128,6 +136,7 @@
     // MANDATORY DEPENDENCIES
     // ============================================================
 
+    var AcademyUI = window.AcademyUI;
     var AcademyAggregator = window.AcademyAggregator;
     var TournamentQueries = window.TournamentQueries;
     var Schema = window.TournamentSchema;
@@ -136,6 +145,11 @@
     var CalendarValidation = window.CalendarValidation;
 
     var _missing = [];
+
+    if (!AcademyUI ||
+        typeof AcademyUI.isRoundExpanded !== 'function') {
+        _missing.push('AcademyUI.isRoundExpanded');
+    }
 
     if (!AcademyAggregator ||
         typeof AcademyAggregator.getClassListViewModel !== 'function') {
@@ -398,7 +412,7 @@
         var roundsRaw = TournamentQueries.getRounds(examId) || [];
         var rounds = [];
         for (var i = 0; i < roundsRaw.length; i++) {
-            rounds.push(buildExamRoundVM(roundsRaw[i], i));
+            rounds.push(buildExamRoundVM(roundsRaw[i], i, examId));
         }
 
         return {
@@ -451,7 +465,16 @@
     // ROUNDS AND MATCHES
     // ============================================================
 
-    function buildExamRoundVM(round, index) {
+    /**
+     * Build a round VM.
+     *
+     * @param {object} round - The raw round record.
+     * @param {number} index - Positional index within the tournament.
+     * @param {string} examId - The owning tournament ID. Used to
+     *   resolve collapse state from AcademyUI, which is keyed by
+     *   (examId, roundId).
+     */
+    function buildExamRoundVM(round, index, examId) {
         if (!round) { return null; }
 
         var matches = [];
@@ -459,6 +482,21 @@
         for (var i = 0; i < matchesRaw.length; i++) {
             var m = buildExamMatchVM(matchesRaw[i], i);
             if (m) { matches.push(m); }
+        }
+
+        // C4 — resolve collapse state from AcademyUI. The default
+        // is "expanded", passed explicitly so the policy is visible
+        // at the call site. `isCollapsed` is the negation of the
+        // UI's `isRoundExpanded`, because the VM describes the state
+        // the view actually applies.
+        var isCollapsed = false;
+        if (isNonEmptyString(examId) && isNonEmptyString(round.id)) {
+            var isExpanded = AcademyUI.isRoundExpanded(
+                examId,
+                round.id,
+                true
+            );
+            isCollapsed = isExpanded !== true;
         }
 
         return {
@@ -475,6 +513,7 @@
             matchType: round.matchType || 'group_exam',
             matchTypeLabel: getMatchTypeLabel(round.matchType),
             isPairExam: round.isPairExam === true,
+            isCollapsed: isCollapsed,
             matches: matches,
             matchCount: matches.length
         };
@@ -673,6 +712,16 @@
     // ============================================================
     // FINAL PASSERS VM
     // ============================================================
+    //
+    // FIX (T4): participant type is resolved via
+    // TournamentQueries.getParticipantTypeFromRecord, which takes
+    // (tournamentId, participantId). The previous version called
+    // Schema.getParticipantTypeFromRecord with the same argument
+    // shape, but the Schema function expects a tournament OBJECT,
+    // not an ID. It returned null for every participant, and the
+    // fallback `|| 'character'` was applied unconditionally. For
+    // team-mode exams, whose final passers are team IDs, that
+    // caused getCharacterName(teamId) to return 'Unknown'.
 
     function buildFinalPassersVM(examId) {
         var ids = TournamentQueries.getFinalPassers(examId) || [];
@@ -680,8 +729,9 @@
         for (var i = 0; i < ids.length; i++) {
             var id = ids[i];
             if (!isNonEmptyString(id)) { continue; }
-            var type = Schema.getParticipantTypeFromRecord(examId, id)
-                || 'character';
+            var type = TournamentQueries.getParticipantTypeFromRecord(
+                examId, id
+            ) || 'character';
             result.push({
                 id: id,
                 name: resolveParticipantName(id, type),
@@ -713,14 +763,6 @@
     //   function calls TournamentQueries.getPriorRoundOutcomes(examId,
     //   currentRoundId) once and stamps each pool item with the
     //   participant's 'pass' | 'retry' outcome, or null.
-    //
-    //   The map lookup key is the participant ID for individuals,
-    //   and the team ID for team mode. The derivation itself is
-    //   mode-agnostic: TournamentQueries reads the appropriate result
-    //   map (results / teamResults) based on the match type.
-    //
-    //   When currentRoundId is null, or no exam exists, the map is
-    //   empty and every item carries priorRoundOutcome: null.
 
     function buildExamPool(classId, week, examVM, currentRoundId) {
         var mode = 'individuals';
@@ -757,9 +799,7 @@
      * Build the prior-outcome map for a pool.
      *
      * Returns an empty object when there is no exam, no current round,
-     * or the derivation throws. A throwing query is a bug, but a
-     * broken indicator must not take down the pool render. The
-     * console gets the error; the pool falls back to "no badges".
+     * or the derivation throws.
      */
     function resolvePriorOutcomes(examVM, currentRoundId) {
         if (!examVM || !isNonEmptyString(examVM.id)) {
@@ -791,8 +831,7 @@
      * Read the prior-round outcome for a pool item from the
      * pre-resolved map.
      *
-     * Returns 'pass' | 'retry' | null. Anything else is coerced to
-     * null. The view treats null as "no badge".
+     * Returns 'pass' | 'retry' | null.
      */
     function readPriorOutcome(map, id) {
         if (!map || !isNonEmptyString(id)) {
@@ -832,10 +871,6 @@
                         week
                     ) === true;
                 } catch (e) {
-                    // A query failure is not equivalent to "not
-                    // eliminated". Fall back to false and continue.
-                    // The pool still renders; the flag is simply
-                    // not asserted.
                     eliminated = false;
                 }
             }
