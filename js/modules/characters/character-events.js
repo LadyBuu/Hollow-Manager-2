@@ -13,12 +13,27 @@
  *     graph view, character search filter) are all delegated.
  *   - Academic tab uses a class DROPDOWN (not a free-text input) as of
  *     the Academic tab rework. The Add button reads the selected class
- *     from #academic-class-select and calls CharacterClasses.addToClass.
+ *     from #academic-class-select and calls AcademyClasses.addToClass.
  *   - SocialCore is initialized on-demand via ensureSocialCoreInitialized()
  *     so the character form's Social tab works even if the top-level
  *     Social tab was never opened.
  *   - Modals are HIDDEN (not destroyed) so they can be reused:
  *     use Modal.hideModal() not Modal.closeModal().
+ *
+ * SPECIAL MOVES (S10.2):
+ *   - Move mutations moved from CharacterStats to CharacterMoves.
+ *     The add and remove handlers call CharacterMoves.addSpecialMove
+ *     and CharacterMoves.removeSpecialMove.
+ *   - The dependency check requires CharacterMoves for those paths.
+ *     CharacterStats is still required for stat rolling, HP/MP, and
+ *     class derivation, but it is no longer the move authority.
+ *
+ * CLASS MEMBERSHIP (S10.1):
+ *   - Class mutations moved from CharacterClasses to AcademyClasses.
+ *     handleAddClassById, handleAddClassByName, and handleRemoveClass
+ *     call AcademyClasses.{addToClass, addClassByName, removeClassById}.
+ *   - CharacterClasses no longer exists. The dependency check and the
+ *     module-scope import have been updated accordingly.
  *
  * REFRESH CONTRACT:
  *   - refreshUI(char) is the SINGLE refresh entry point for the
@@ -73,8 +88,9 @@
     var CharacterForm = window.CharacterForm;
     var CharacterClassView = window.CharacterClassView;
     var CharacterGenerator = window.CharacterGenerator;
-    var CharacterClasses = window.CharacterClasses;
+    var AcademyClasses = window.AcademyClasses;
     var CharacterStats = window.CharacterStats;
+    var CharacterMoves = window.CharacterMoves;
     var CharacterStatsView = window.CharacterStatsView;
     var CharacterViews = window.CharacterViews;
     var CharacterConstants = window.CharacterConstants;
@@ -154,11 +170,17 @@
         if (!CharacterGenerator || typeof CharacterGenerator.generatePhysical !== 'function') {
             missing.push('CharacterGenerator.generatePhysical');
         }
-        if (!CharacterClasses || typeof CharacterClasses.addClassByName !== 'function') {
-            missing.push('CharacterClasses.addClassByName');
+        if (!AcademyClasses || typeof AcademyClasses.addClassByName !== 'function') {
+            missing.push('AcademyClasses.addClassByName');
         }
         if (!CharacterStats || typeof CharacterStats.rollPhysicalStats !== 'function') {
             missing.push('CharacterStats.rollPhysicalStats');
+        }
+        if (!CharacterMoves || typeof CharacterMoves.addSpecialMove !== 'function') {
+            missing.push('CharacterMoves.addSpecialMove');
+        }
+        if (!CharacterMoves || typeof CharacterMoves.removeSpecialMove !== 'function') {
+            missing.push('CharacterMoves.removeSpecialMove');
         }
         if (!CharacterStatsView || typeof CharacterStatsView.populateMagicalFields !== 'function') {
             missing.push('CharacterStatsView.populateMagicalFields');
@@ -774,7 +796,7 @@
     // The Academic tab no longer uses a free-text class tag input.
     // Instead it uses a dropdown (#academic-class-select) plus an Add
     // button (#academic-class-add-btn). The Add button reads the
-    // selected classId and calls CharacterClasses.addToClass, which
+    // selected classId and calls AcademyClasses.addToClass, which
     // goes through MutationPipeline and is Promise-based.
     //
     // Removal of a class tag still uses the same .remove-class-tag
@@ -1193,6 +1215,12 @@
     // ============================================================
     // COMBAT - SPECIAL MOVES
     // ============================================================
+    //
+    // S10.2: the move record store moved to CharacterMoves. These two
+    // handlers now call CharacterMoves.addSpecialMove and
+    // CharacterMoves.removeSpecialMove. The rendering path is
+    // unchanged — CharacterStatsView.renderMovesSection still reads
+    // char.specialMoves directly.
 
     function bindSpecialMoveButtons() {
         addSafeDelegatedListener('#add-physical-move-btn', 'click', function(e, target) {
@@ -1232,12 +1260,12 @@
             return;
         }
 
-        if (!CharacterStats || typeof CharacterStats.addSpecialMove !== 'function') {
-            notify('Stats module not available.', 'error');
+        if (!CharacterMoves || typeof CharacterMoves.addSpecialMove !== 'function') {
+            notify('Moves module not available.', 'error');
             return;
         }
 
-        CharacterStats.addSpecialMove(charId, type, name, desc)
+        CharacterMoves.addSpecialMove(charId, type, name, desc)
             .then(function(result) {
                 if (result && result.success) {
                     if (nameEl) { nameEl.value = ''; }
@@ -1263,12 +1291,12 @@
 
         if (!confirm('Remove this move?')) { return; }
 
-        if (!CharacterStats || typeof CharacterStats.removeSpecialMove !== 'function') {
-            notify('Stats module not available.', 'error');
+        if (!CharacterMoves || typeof CharacterMoves.removeSpecialMove !== 'function') {
+            notify('Moves module not available.', 'error');
             return;
         }
 
-        CharacterStats.removeSpecialMove(charId, type, moveId)
+        CharacterMoves.removeSpecialMove(charId, type, moveId)
             .then(function(result) {
                 if (result && result.success) {
                     var char = CharacterQueries.getCharacterById(charId);
@@ -1731,7 +1759,7 @@
     /**
      * Add a class to the character by class ID (via the dropdown).
      *
-     * Uses CharacterClasses.addToClass, which is Promise-based and
+     * Uses AcademyClasses.addToClass, which is Promise-based and
      * goes through MutationPipeline. On success, MutationPipeline has
      * already shown the success toast, so this handler does not notify
      * again — it just refreshes the affected UI.
@@ -1756,12 +1784,12 @@
             return;
         }
 
-        if (!CharacterClasses || typeof CharacterClasses.addToClass !== 'function') {
-            notify('Character classes module not available.', 'error');
+        if (!AcademyClasses || typeof AcademyClasses.addToClass !== 'function') {
+            notify('Academy classes module not available.', 'error');
             return;
         }
 
-        CharacterClasses.addToClass(charId, classId)
+        AcademyClasses.addToClass(charId, classId)
             .then(function(result) {
                 if (result && result.success) {
                     // MutationPipeline already showed the success toast.
@@ -1785,7 +1813,7 @@
      * Add a class to the character by name.
      *
      * Kept for backward compatibility. It is still called from places
-     * that have a name rather than an ID. Uses CharacterClasses.addClassByName,
+     * that have a name rather than an ID. Uses AcademyClasses.addClassByName,
      * which is Promise-based and goes through MutationPipeline.
      *
      * @param {string} name - Class name
@@ -1803,12 +1831,12 @@
             return;
         }
 
-        if (!CharacterClasses || typeof CharacterClasses.addClassByName !== 'function') {
-            notify('Character classes module not available.', 'error');
+        if (!AcademyClasses || typeof AcademyClasses.addClassByName !== 'function') {
+            notify('Academy classes module not available.', 'error');
             return;
         }
 
-        CharacterClasses.addClassByName(charId, name)
+        AcademyClasses.addClassByName(charId, name)
             .then(function(result) {
                 if (result && result.success) {
                     // MutationPipeline already showed the success toast.
@@ -1829,12 +1857,12 @@
             return;
         }
 
-        if (!CharacterClasses || typeof CharacterClasses.removeClassById !== 'function') {
-            notify('Character classes module not available.', 'error');
+        if (!AcademyClasses || typeof AcademyClasses.removeClassById !== 'function') {
+            notify('Academy classes module not available.', 'error');
             return;
         }
 
-        CharacterClasses.removeClassById(charId, classId)
+        AcademyClasses.removeClassById(charId, classId)
             .then(function(result) {
                 if (result && result.success) {
                     // MutationPipeline already showed the success toast.
