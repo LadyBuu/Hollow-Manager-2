@@ -58,6 +58,24 @@
  *   - The entry point does not call saveData.
  *   - All mutations go through TeamCore → MutationPipeline.
  *
+ * CHARACTER PROVIDER (BUG-E14 FIX):
+ *   TeamCore.addMember's pipeline validate() calls
+ *   _characterProvider.exists(snapshot, targetChar) with a
+ *   two-argument, snapshot-first signature, per the
+ *   MEMBER EXISTENCE contract documented in team-core.js.
+ *
+ *   The provider registered here MUST match that contract: it
+ *   reads from appData.characters when a snapshot is supplied.
+ *   It falls back to CharacterQueries.getCharacterById(id) when
+ *   only an id is given, so a legacy exists(id) call site still
+ *   works.
+ *
+ *   This provider and the one registered by
+ *   academy-weekly-teams-controller.js must agree on shape.
+ *   TeamCore.configure is idempotent — first successful call
+ *   wins — so if either provider is shape-incorrect, every
+ *   add-member call in BOTH tabs fails. Both must be correct.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.TabManager
  *   - window.CharacterQueries
@@ -232,7 +250,29 @@
 
     /**
      * Assemble and inject the character provider into TeamCore.
-     * Idempotent.
+     * Idempotent from this module's perspective.
+     *
+     * PROVIDER CONTRACT (per team-core.js MEMBER EXISTENCE):
+     *   exists(appData, characterId) -> boolean
+     *
+     *   - When appData is supplied (a pipeline snapshot), read from
+     *     appData.characters. This is the authoritative, snapshot-
+     *     aware path, and it is what addMember uses inside its
+     *     pipeline validate() callback.
+     *   - When appData is absent, fall back to live state via
+     *     CharacterQueries.getCharacterById(id). Kept so a legacy
+     *     call site that invokes exists(id) still works.
+     *
+     * WHY THE SIGNATURE MATTERS:
+     *   TeamCore.configure is idempotent: the first successful call
+     *   wins, and subsequent calls with a shape-valid provider are
+     *   treated as success (the new provider is discarded). Both
+     *   this module and academy-weekly-teams-controller.js register
+     *   providers. If either provider is shape-incorrect, the
+     *   configure call that lands first may be the incorrect one,
+     *   and every addMember call in BOTH tabs fails with
+     *   "Character not found." The two providers must agree on
+     *   shape.
      *
      * @returns {boolean}
      */
@@ -242,10 +282,30 @@
         }
 
         var characterProvider = {
-            exists: function(id) {
+            exists: function(appData, id) {
                 if (id === null || id === undefined || id === '') {
                     return false;
                 }
+
+                var target = String(id);
+
+                // Snapshot-aware path. This is the one TeamCore
+                // uses during addMember's pipeline validate().
+                if (appData &&
+                    typeof appData === 'object' &&
+                    Array.isArray(appData.characters)) {
+                    for (var i = 0; i < appData.characters.length; i++) {
+                        var c = appData.characters[i];
+                        if (c && String(c.id) === target) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+
+                // Fallback: no snapshot supplied. Read live state.
+                // Preserves compatibility with any caller that still
+                // invokes exists(id).
                 var char = CharacterQueries.getCharacterById(id);
                 return char !== null && char !== undefined;
             }
