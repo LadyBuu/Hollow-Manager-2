@@ -1370,3 +1370,29 @@
         font-size: 0.8rem;
     }
 }
+
+/* ============================================================
+   MODAL - EDIT EXAM (C5)
+   ============================================================ */
+   //
+   // The Edit Exam modal exposes two inputs: name and week. The
+   // styling matches the create-exam form fields so the two modals
+   // read as the same surface.
+
+.at-edit-exam-name,
+.at-edit-exam-week {
+    width: 100%;
+    padding: 6px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.at-edit-exam-name:focus,
+.at-edit-exam-week:focus {
+    outline: none;
+    border-color: var(--accent);
+}
