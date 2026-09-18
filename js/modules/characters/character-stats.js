@@ -1,10 +1,10 @@
 /**
  * modules/characters/character-stats.js - Character Stats & Magic System
  * Domain logic for physical stats, magical proficiencies, classes,
- * HP/MP, and special moves.
- * 
+ * and HP/MP.
+ *
  * Path: js/modules/characters/character-stats.js
- * 
+ *
  * This module handles:
  *   - Physical stat calculation, validation, modifiers
  *   - Random physical stat generation (6–18 range)
@@ -17,34 +17,51 @@
  *   - Fine magical class application (raises a single proficiency)
  *   - Total magical power (0–180 sum)
  *   - HP / MP calculation (random + modifiers)
- *   - Special moves CRUD (via MutationPipeline)
- * 
+ *
+ * WHAT THIS MODULE DOES NOT OWN:
+ *   - Special moves. As of S10.2, special moves are a record store
+ *     owned by character-moves.js. That module handles add / update /
+ *     remove / read of character.specialMoves. This module no longer
+ *     reads, validates, or mutates that field.
+ *   - Persistence. Mutations in this module (there are none left —
+ *     this file is pure calculation and derivation) would route
+ *     through MutationPipeline, but this module does not write.
+ *
  * IMPORTANT:
  *   - DOMAIN LOGIC ONLY - no rendering
- *   - All MUTATIONS use MutationPipeline
- *   - All mutation APIs accept characterId, not live character objects
- *   - Returns structured results for caller handling
+ *   - All functions here are PURE. No MutationPipeline use remains.
  *   - No UI dependencies (no notifications, no confirm, no rendering)
  *   - Uses CharacterConstants for physical classes
  *   - Uses MagicConstants for magical types, classes, levels
- *   - Uses CharacterQueries for character data and display names
- *   - Uses MutationPipeline for transaction management
- *   - Uses IdUtils for ID generation
- * 
+ *   - No dependency on CharacterQueries (moves were the only consumer
+ *     that needed character reads)
+ *   - No dependency on MutationPipeline (moves were the only mutator)
+ *   - No dependency on IdUtils (moves were the only id generator)
+ *
+ * S10.2 MIGRATION:
+ *   The special-moves record store moved to character-moves.js. That
+ *   includes the three mutations (addSpecialMove, updateSpecialMove,
+ *   removeSpecialMove), the two helpers (getSpecialMoves,
+ *   validateSpecialMovesStructure), and the three bounds constants
+ *   (MAX_SPECIAL_MOVES, MAX_MOVE_NAME_LENGTH,
+ *   MAX_MOVE_DESCRIPTION_LENGTH).
+ *
+ *   Callers that used to write `CharacterStats.addSpecialMove(...)`
+ *   now write `CharacterMoves.addSpecialMove(...)`.
+ *
+ *   character-stats-view.js reads char.specialMoves directly for
+ *   rendering; it does not go through either module.
+ *
  * DEPENDENCIES:
  *   - window.CharacterConstants - MANDATORY
  *   - window.MagicConstants - MANDATORY
- *   - window.CharacterQueries - MANDATORY
- *   - window.MutationPipeline - MANDATORY
- *   - window.IdUtils - MANDATORY
- * 
+ *
  * USAGE:
  *   var CS = window.CharacterStats;
  *   var stats = CS.rollPhysicalStats();
  *   var cls = CS.derivePhysicalClass(stats);
  *   var magic = CS.rollMagicalProficiencies();
  *   var classes = CS.deriveMagicalClasses(magic);
- *   CS.addSpecialMove('char_123', 'physical', 'Flurry Strike').then(...);
  */
 
 (function() {
@@ -61,9 +78,6 @@
 
     var CharacterConstants = window.CharacterConstants;
     var MagicConstants = window.MagicConstants;
-    var CharacterQueries = window.CharacterQueries;
-    var MutationPipeline = window.MutationPipeline;
-    var IdUtils = window.IdUtils;
 
     // ============================================================
     // CONSTANTS - Lazy access with fallback guards
@@ -82,10 +96,6 @@
     var MAGIC_MAX = (MagicConstants && MagicConstants.MAGIC_MAX) || 10;
     var MAGIC_FINE_CLASS_MIN = (MagicConstants && MagicConstants.MAGIC_FINE_CLASS_MIN) || 3;
 
-    var MAX_SPECIAL_MOVES = (CharacterConstants && CharacterConstants.MAX_SPECIAL_MOVES) || 20;
-    var MAX_MOVE_NAME_LENGTH = (CharacterConstants && CharacterConstants.MAX_MOVE_NAME_LENGTH) || 100;
-    var MAX_MOVE_DESCRIPTION_LENGTH = (CharacterConstants && CharacterConstants.MAX_MOVE_DESCRIPTION_LENGTH) || 500;
-
     // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
@@ -95,21 +105,6 @@
 
         if (!CharacterConstants) { missing.push('CharacterConstants'); }
         if (!MagicConstants) { missing.push('MagicConstants'); }
-
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-            missing.push('CharacterQueries.getDisplayName');
-        }
-
-        if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
-            missing.push('MutationPipeline.performMutation');
-        }
-
-        if (!IdUtils || typeof IdUtils.generateId !== 'function') {
-            missing.push('IdUtils.generateId');
-        }
 
         if (missing.length > 0) {
             console.warn('[CharacterStats] Missing dependencies:', missing.join(', '));
@@ -676,300 +671,6 @@
     }
 
     // ============================================================
-    // SPECIAL MOVES - Helpers
-    // ============================================================
-
-    function validateSpecialMovesStructure(char) {
-        var errors = [];
-
-        if (!char) {
-            errors.push('Character is required.');
-            return { valid: false, errors: errors };
-        }
-
-        if (!char.specialMoves || typeof char.specialMoves !== 'object' || Array.isArray(char.specialMoves)) {
-            errors.push('Special moves data is missing or malformed.');
-            return { valid: false, errors: errors };
-        }
-
-        if (!Array.isArray(char.specialMoves.physical)) {
-            errors.push('Physical moves must be an array.');
-        }
-        if (!Array.isArray(char.specialMoves.magical)) {
-            errors.push('Magical moves must be an array.');
-        }
-
-        return { valid: errors.length === 0, errors: errors };
-    }
-
-    function getSpecialMoves(char) {
-        if (!char) return { physical: [], magical: [] };
-        if (!char.specialMoves || typeof char.specialMoves !== 'object') {
-            return { physical: [], magical: [] };
-        }
-        var physical = Array.isArray(char.specialMoves.physical)
-            ? char.specialMoves.physical.map(function(move) {
-                return {
-                    id: move && move.id ? move.id : '',
-                    name: move && typeof move.name === 'string' ? move.name : '',
-                    description: move && typeof move.description === 'string' ? move.description : ''
-                };
-            })
-            : [];
-        var magical = Array.isArray(char.specialMoves.magical)
-            ? char.specialMoves.magical.map(function(move) {
-                return {
-                    id: move && move.id ? move.id : '',
-                    name: move && typeof move.name === 'string' ? move.name : '',
-                    description: move && typeof move.description === 'string' ? move.description : ''
-                };
-            })
-            : [];
-        return { physical: physical, magical: magical };
-    }
-
-    // ============================================================
-    // SPECIAL MOVES - Mutations
-    // ============================================================
-
-    function addSpecialMove(charId, type, name, description) {
-        if (!checkDependencies()) {
-            return Promise.resolve({ success: false, message: 'Dependencies not loaded.' });
-        }
-        if (!charId) {
-            return Promise.resolve({ success: false, message: 'Character ID is required.' });
-        }
-        if (type !== 'physical' && type !== 'magical') {
-            return Promise.resolve({ success: false, message: 'Invalid move type.' });
-        }
-        if (!name || typeof name !== 'string' || name.trim() === '') {
-            return Promise.resolve({ success: false, message: 'Move name is required.' });
-        }
-
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
-            return Promise.resolve({ success: false, message: 'Character not found.' });
-        }
-
-        var structureValidation = validateSpecialMovesStructure(char);
-        if (!structureValidation.valid) {
-            return Promise.resolve({
-                success: false,
-                message: 'Special moves data is corrupted: ' + structureValidation.errors.join(', ')
-            });
-        }
-
-        var moves = char.specialMoves[type] || [];
-        if (moves.length >= MAX_SPECIAL_MOVES) {
-            return Promise.resolve({
-                success: false,
-                message: 'Maximum of ' + MAX_SPECIAL_MOVES + ' ' + type + ' moves reached.'
-            });
-        }
-
-        var nameTruncated = name.trim().slice(0, MAX_MOVE_NAME_LENGTH);
-        var descTruncated = typeof description === 'string'
-            ? description.trim().slice(0, MAX_MOVE_DESCRIPTION_LENGTH)
-            : '';
-
-        var displayName = CharacterQueries.getDisplayName(char);
-
-        return MutationPipeline.performMutation({
-            validate: function() {
-                var current = CharacterQueries.getCharacterById(charId);
-                if (!current) {
-                    return { valid: false, message: 'Character no longer exists.' };
-                }
-                var v = validateSpecialMovesStructure(current);
-                if (!v.valid) {
-                    return { valid: false, message: 'Special moves data is corrupted.' };
-                }
-                var currentMoves = current.specialMoves[type] || [];
-                if (currentMoves.length >= MAX_SPECIAL_MOVES) {
-                    return { valid: false, message: 'Maximum moves reached.' };
-                }
-                return { valid: true };
-            },
-            mutate: function(data) {
-                var currentChar = data.characters.find(function(c) {
-                    return c && String(c.id) === String(charId);
-                });
-                if (!currentChar) {
-                    throw new Error('Character not found in data store.');
-                }
-
-                if (!currentChar.specialMoves || typeof currentChar.specialMoves !== 'object') {
-                    currentChar.specialMoves = { physical: [], magical: [] };
-                }
-                if (!Array.isArray(currentChar.specialMoves[type])) {
-                    currentChar.specialMoves[type] = [];
-                }
-
-                var move = {
-                    id: IdUtils.generateId('move'),
-                    name: nameTruncated,
-                    description: descTruncated
-                };
-
-                currentChar.specialMoves[type].push(move);
-                return { move: move, type: type, characterId: charId };
-            },
-            logMessage: function() {
-                return 'Added ' + type + ' move "' + nameTruncated + '" to ' + displayName;
-            },
-            successMessage: function() {
-                return type.charAt(0).toUpperCase() + type.slice(1) + ' move added!';
-            },
-            failureMessage: 'Failed to add move.'
-        });
-    }
-
-    function updateSpecialMove(charId, type, moveId, name, description) {
-        if (!checkDependencies()) {
-            return Promise.resolve({ success: false, message: 'Dependencies not loaded.' });
-        }
-        if (!charId || !moveId) {
-            return Promise.resolve({ success: false, message: 'Character ID and move ID are required.' });
-        }
-        if (type !== 'physical' && type !== 'magical') {
-            return Promise.resolve({ success: false, message: 'Invalid move type.' });
-        }
-
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
-            return Promise.resolve({ success: false, message: 'Character not found.' });
-        }
-
-        var newName = name !== undefined && name !== null ? String(name).trim() : '';
-        if (!newName) {
-            return Promise.resolve({ success: false, message: 'Move name is required.' });
-        }
-        var newDesc = description !== undefined ? String(description).trim() : '';
-
-        var displayName = CharacterQueries.getDisplayName(char);
-
-        return MutationPipeline.performMutation({
-            validate: function() {
-                var current = CharacterQueries.getCharacterById(charId);
-                if (!current) {
-                    return { valid: false, message: 'Character no longer exists.' };
-                }
-                var v = validateSpecialMovesStructure(current);
-                if (!v.valid) {
-                    return { valid: false, message: 'Special moves data is corrupted.' };
-                }
-                var moves = current.specialMoves[type] || [];
-                var found = moves.some(function(m) {
-                    return m && String(m.id) === String(moveId);
-                });
-                if (!found) {
-                    return { valid: false, message: 'Move not found.' };
-                }
-                return { valid: true };
-            },
-            mutate: function(data) {
-                var currentChar = data.characters.find(function(c) {
-                    return c && String(c.id) === String(charId);
-                });
-                if (!currentChar) {
-                    throw new Error('Character not found in data store.');
-                }
-                var moves = currentChar.specialMoves[type] || [];
-                var found = false;
-                for (var i = 0; i < moves.length; i++) {
-                    if (moves[i] && String(moves[i].id) === String(moveId)) {
-                        moves[i].name = newName.slice(0, MAX_MOVE_NAME_LENGTH);
-                        moves[i].description = newDesc.slice(0, MAX_MOVE_DESCRIPTION_LENGTH);
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) { throw new Error('Move not found.'); }
-                return { moveId: moveId, type: type, characterId: charId };
-            },
-            logMessage: function() {
-                return 'Updated ' + type + ' move on ' + displayName;
-            },
-            successMessage: function() {
-                return type.charAt(0).toUpperCase() + type.slice(1) + ' move updated!';
-            },
-            failureMessage: 'Failed to update move.'
-        });
-    }
-
-    function removeSpecialMove(charId, type, moveId) {
-        if (!checkDependencies()) {
-            return Promise.resolve({ success: false, message: 'Dependencies not loaded.' });
-        }
-        if (!charId || !moveId) {
-            return Promise.resolve({ success: false, message: 'Character ID and move ID are required.' });
-        }
-        if (type !== 'physical' && type !== 'magical') {
-            return Promise.resolve({ success: false, message: 'Invalid move type.' });
-        }
-
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
-            return Promise.resolve({ success: false, message: 'Character not found.' });
-        }
-
-        var displayName = CharacterQueries.getDisplayName(char);
-
-        return MutationPipeline.performMutation({
-            validate: function() {
-                var current = CharacterQueries.getCharacterById(charId);
-                if (!current) {
-                    return { valid: false, message: 'Character no longer exists.' };
-                }
-                var v = validateSpecialMovesStructure(current);
-                if (!v.valid) {
-                    return { valid: false, message: 'Special moves data is corrupted.' };
-                }
-                var moves = current.specialMoves[type] || [];
-                var found = moves.some(function(m) {
-                    return m && String(m.id) === String(moveId);
-                });
-                if (!found) {
-                    return { valid: false, message: 'Move not found.' };
-                }
-                return { valid: true };
-            },
-            mutate: function(data) {
-                var currentChar = data.characters.find(function(c) {
-                    return c && String(c.id) === String(charId);
-                });
-                if (!currentChar) {
-                    throw new Error('Character not found in data store.');
-                }
-                var found = false;
-                var removed = null;
-                currentChar.specialMoves[type] = (currentChar.specialMoves[type] || []).filter(function(m) {
-                    if (m && String(m.id) === String(moveId)) {
-                        found = true;
-                        removed = m;
-                        return false;
-                    }
-                    return true;
-                });
-                if (!found) { throw new Error('Move not found.'); }
-                return {
-                    moveId: moveId,
-                    type: type,
-                    characterId: charId,
-                    moveName: removed ? removed.name : ''
-                };
-            },
-            logMessage: function(result) {
-                return 'Removed ' + type + ' move "' + (result.moveName || '') + '" from ' + displayName;
-            },
-            successMessage: function() {
-                return type.charAt(0).toUpperCase() + type.slice(1) + ' move removed.';
-            },
-            failureMessage: 'Failed to remove move.'
-        });
-    }
-
-    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -1011,13 +712,7 @@
 
         // HP / MP
         rollHP: rollHP,
-        rollMP: rollMP,
-
-        // Special moves
-        getSpecialMoves: getSpecialMoves,
-        addSpecialMove: addSpecialMove,
-        updateSpecialMove: updateSpecialMove,
-        removeSpecialMove: removeSpecialMove
+        rollMP: rollMP
     };
 
 })();
