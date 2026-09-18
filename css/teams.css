@@ -17,6 +17,16 @@
  *     .modal-content.modal-detail-content)
  *
  * Load order: shared.css → teams.css
+ *
+ * MOBILE MODEL:
+ *   Below 600px the team list becomes a card list. One card per
+ *   team: name row, meta rows, action row. The column header is
+ *   hidden. The desktop grid is untouched.
+ *
+ *   The previous mobile rules referenced --team-columns-mobile,
+ *   which was never defined. That made the grid fall back to block
+ *   flow and the five cells collapse into one run-on line. The
+ *   card layout replaces that broken breakpoint.
  */
 
 /* ============================================================
@@ -508,43 +518,159 @@
 }
 
 /* ============================================================
-   MOBILE
+   MOBILE — CARD LAYOUT
+   ============================================================
+   Below 600px the five-column grid becomes a card list.
+   One card per team:
+     Row 1: name + type badge + inactive marker
+     Row 2: period · rank · member count (meta line)
+     Row 3: action buttons (evenly spaced)
+
+   The grid header row is hidden entirely; each card is
+   self-describing.
+
+   ROOT CAUSE OF THE PRIOR BREAKAGE:
+     The old breakpoint set --team-columns to --team-columns-mobile,
+     which was never defined. CSS custom properties resolve undefined
+     to the empty string, so `grid-template-columns: ;` was invalid,
+     the `display: grid` declaration on .list-item.team-item was
+     discarded, and the children fell back to block/inline flow.
+     Five inline spans collapsed into one run-on line, with the
+     action buttons stacked below.
    ============================================================ */
 
-@media (max-width: 480px) {
-    .team-list {
-        --team-columns: var(--team-columns-mobile);
-    }
-
+@media (max-width: 600px) {
+    /* ---- Hide the column header — cards don't need it ---- */
     .list-header.team-header {
-        font-size: 0.45rem;
-        gap: 2px;
-        padding: 3px 4px;
+        display: none;
     }
 
+    /* ---- The container that wraps the rows ---- */
+    #team-list-container {
+        display: block;
+    }
+
+    /* ---- One card per team ---- */
     .list-item.team-item {
-        gap: 2px;
-        padding: 3px 4px;
-        font-size: 0.55rem;
-    }
-
-    .list-item.team-item .actions button {
-        font-size: 0.45rem;
-        padding: 1px 3px;
-    }
-
-    .tab-btn {
-        font-size: 0.6rem;
-        padding: 4px 8px;
-    }
-
-    .filter-row {
+        display: flex;
+        flex-direction: column;
         gap: 6px;
-        padding: 6px 8px;
+        padding: 10px 12px;
+        margin-bottom: 8px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-top: 1px solid var(--border);
+        border-radius: var(--radius);
     }
 
-    .filter-group input[type="number"] {
-        width: 60px;
+    .list-item.team-item:last-child {
+        border-radius: var(--radius);
+    }
+
+    .list-item.team-item.inactive {
+        opacity: 0.6;
+    }
+
+    /* ---- Row 1: name + badges ---- */
+    .list-item.team-item > .team-name-cell {
+        display: flex;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 6px;
+        font-size: 0.9rem;
+        line-height: 1.3;
+    }
+
+    .list-item.team-item > .team-name-cell strong {
+        font-weight: 700;
+        color: var(--text);
+    }
+
+    .list-item.team-item .team-class {
+        font-size: 0.65rem;
+        color: var(--info);
+    }
+
+    .list-item.team-item .team-type-label {
+        font-size: 0.6rem;
+        color: var(--text-dim);
+        background: var(--panel-alt);
+        padding: 1px 6px;
+        border-radius: 3px;
+    }
+
+    .list-item.team-item .team-status-inactive {
+        font-size: 0.65rem;
+        color: var(--text-dim);
+        font-style: italic;
+    }
+
+    /* ---- Row 2: meta line ---- */
+    .list-item.team-item > .team-period,
+    .list-item.team-item > .team-rank,
+    .list-item.team-item > .team-member-count {
+        display: inline-block;
+        font-size: 0.72rem;
+        color: var(--text-dim);
+    }
+
+    .list-item.team-item > .team-rank::before {
+        content: "Rank: ";
+    }
+
+    .list-item.team-item > .team-member-count::before {
+        content: "Members: ";
+    }
+
+    /* ---- Row 3: actions ---- */
+    .list-item.team-item > .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 4px;
+        padding-top: 8px;
+        border-top: 1px solid var(--border-soft);
+    }
+
+    .list-item.team-item > .actions button {
+        flex: 1 1 auto;
+        min-width: 0;
+        font-size: 0.7rem;
+        padding: 5px 8px;
+        white-space: nowrap;
+    }
+
+    /* The collapse caret button is narrow; keep it from
+       stretching to fill the row. */
+    .list-item.team-item > .actions .toggle-members {
+        flex: 0 0 auto;
+        min-width: 32px;
+    }
+
+    /* ---- Expanded members inside a card ---- */
+    .team-members-expanded {
+        grid-column: auto;
+        margin-top: 8px;
+        padding: 8px 10px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        margin-bottom: 0;
+    }
+
+    .members-expanded-header {
+        font-size: 0.68rem;
+    }
+
+    /* ---- Filter row stacks ---- */
+    .filter-row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+    }
+
+    .filter-group {
+        justify-content: space-between;
     }
 
     .filter-row button {
@@ -552,18 +678,9 @@
         width: 100%;
     }
 
-    /* ---------- Member interval rows ---------- */
-
-    .member-interval-row {
-        flex-direction: column;
-        align-items: stretch;
-    }
-
-    .member-interval-bounds {
-        justify-content: space-between;
-    }
-
-    .member-interval-actions {
-        justify-content: flex-end;
+    /* ---- Tab nav wraps and shrinks ---- */
+    .tab-btn {
+        font-size: 0.68rem;
+        padding: 5px 10px;
     }
 }
