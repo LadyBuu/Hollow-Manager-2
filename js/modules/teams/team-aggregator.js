@@ -55,17 +55,46 @@
  *   for "which members are active at period P". This module uses its
  *   result to build an active-id set. It does NOT re-parse intervals.
  *
- * MEMBER-MODAL CANDIDATE SEMANTICS:
+ * MEMBER-MODAL CANDIDATE SEMANTICS (post list-fix):
  *   The member-modal VM's `candidates` array is the pool of
  *   characters that CAN be added to the team.
- *   - CANDIDATE POOL: when the team has a classId, the pool is
- *     restricted to the class roster at the requested period. When
- *     the team has no classId, the pool falls back to all
- *     characters.
- *   - EXCLUSIONS: current team members (any character with an entry
- *     on the team, active or former), instructors, and characters
- *     already in another academic team of the same class this
- *     period are all excluded.
+ *
+ *   FILTER (who appears at all):
+ *     - EXCLUDE current members of this team (any period).
+ *     - EXCLUDE civilians. Instructors are never excluded as
+ *       civilians, even if their status string reads 'civilian'.
+ *     - EXCLUDE characters eliminated as of the resolution year
+ *       (window.data.currentYear, falling back to the team's
+ *       startPeriod). When EliminationQueries is unavailable, this
+ *       filter is skipped rather than failing closed.
+ *     - INCLUDE instructors, support, other-class students, and
+ *       deceased characters.
+ *     - Class membership is NOT a filter. Characters from other
+ *       classes appear in the pool.
+ *
+ *   SORT (four tiers, alphabetical within each tier):
+ *     Tier 0: in class,   not on another team of this type
+ *     Tier 1: in class,       on another team of this type
+ *     Tier 2: other class, not on another team of this type
+ *     Tier 3: other class,     on another team of this type
+ *
+ *     "Another team of this type" is scoped to the team's own type
+ *     (professional / temporary / civilian / academic) at the
+ *     requested period. A character on an academic team does NOT
+ *     count as assigned for a professional team.
+ *
+ *     Deceased status does not affect the tier. Deceased candidates
+ *     carry `deceased: true` and the picker renders a marker.
+ *
+ *   Each candidate carries:
+ *     {
+ *       id,             // string
+ *       name,           // display name only
+ *       status,         // current status label
+ *       deceased,       // boolean
+ *       inClass,        // boolean — belongs to the team's class
+ *       onAnotherTeam   // boolean — on another team of this type
+ *     }
  *
  * RANKING SEMANTICS:
  *   - Ranking history lives on the team as `rankingHistory`.
@@ -99,6 +128,9 @@
  *   - window.AcademyQueries     (MANDATORY) — for class display names
  *     and class-scoped candidate pools
  *   - window.TeamUI             (OPTIONAL) — for filter bar VM defaults
+ *   - window.EliminationQueries (OPTIONAL) — for the member-modal
+ *     candidate elimination filter. When absent, the filter is
+ *     skipped.
  *
  * USAGE:
  *   var vm = TeamAggregator.getTeamViewModel('team_123', { period: 2025 });
@@ -217,6 +249,10 @@
 
     function getTeamUI() {
         return window.TeamUI || null;
+    }
+
+    function getEliminationQueries() {
+        return window.EliminationQueries || null;
     }
 
     /**
@@ -888,13 +924,55 @@
         };
     }
 
-    /**
-     * Get a view model for the member modal.
-     *
-     * Member list carries intervals[] per member. Candidate pool is
-     * unchanged: any character with an entry on the team (active or
-     * former) is excluded from the pool.
-     */
+    // ============================================================
+    // MEMBER MODAL VIEW MODEL
+    // ============================================================
+    //
+    // CANDIDATE POOL (post list-fix):
+    //   Included: non-civilian characters not already on this team
+    //             and not eliminated as of the display year.
+    //             Instructors and support are included; deceased
+    //             characters are included.
+    //   Excluded: civilians, current members of this team, and
+    //             characters eliminated as of the display year.
+    //
+    //   Class membership is NOT a filter. Characters from other
+    //   classes appear in the pool; they just sort below characters
+    //   from the team's own class.
+    //
+    // CANDIDATE RANKING (post list-fix):
+    //   Tier 0: in class,  not on another team of this type
+    //   Tier 1: in class,      on another team of this type
+    //   Tier 2: other class, not on another team of this type
+    //   Tier 3: other class,     on another team of this type
+    //   Within each tier, alphabetical by display name.
+    //
+    //   "Another team of this type" is scoped to the team's own
+    //   type (professional / temporary / civilian / academic) at
+    //   the requested period. A character on an academic team does
+    //   not count as "assigned" for a professional team.
+    //
+    //   Deceased characters sort by the same rule as everyone else.
+    //   They are surfaced as-is; the picker renders a marker for
+    //   them. Their tier position is not affected by their death.
+    //
+    // ELIMINATION YEAR:
+    //   Elimination is resolved by EliminationQueries
+    //   .isCharacterEliminatedByYear(charId, currentYear).
+    //   currentYear is read from window.data.currentYear, falling
+    //   back to the team's startPeriod if currentYear is absent.
+    //   When EliminationQueries is unavailable, the eliminated
+    //   filter is skipped entirely rather than failing closed: a
+    //   missing optional dependency must not make every character
+    //   look eliminated.
+    //
+    // CIVILIAN EXCLUSION:
+    //   A character is excluded as a civilian when
+    //   CharacterQueries.isCivilian(char) is true, OR when the
+    //   status string is 'civilian' and the character is not an
+    //   instructor. Instructors are never excluded as civilians,
+    //   even if their status string reads 'civilian'.
+
     function getMemberModalViewModel(teamId, period) {
         if (!isNonEmptyString(teamId)) {
             return null;
@@ -909,6 +987,7 @@
 
         var membersVM = getTeamMembersViewModel(teamId, periodNum);
 
+        // ---- Current members of this team (any period) ----
         var currentIds = Object.create(null);
         if (Array.isArray(team.members)) {
             for (var i = 0; i < team.members.length; i++) {
@@ -919,46 +998,96 @@
             }
         }
 
-        var allowedIds = null;
-        var teamClassId = isNonEmptyString(team.classId) ? String(team.classId) : null;
+        // ---- Class membership ----
+        // No longer a filter. A candidate is flagged as inClass when
+        // the team has a class and the character belongs to it.
+        var teamClassId = isNonEmptyString(team.classId)
+            ? String(team.classId)
+            : null;
 
+        var inClassSet = Object.create(null);
         if (teamClassId !== null) {
             var studentIds = AcademyQueries.getClassStudentIds(teamClassId);
-            if (Array.isArray(studentIds) && studentIds.length > 0) {
-                allowedIds = Object.create(null);
-                for (var k = 0; k < studentIds.length; k++) {
-                    allowedIds[String(studentIds[k])] = true;
+            if (Array.isArray(studentIds)) {
+                for (var s = 0; s < studentIds.length; s++) {
+                    inClassSet[String(studentIds[s])] = true;
                 }
+            }
+            // The team's class instructor is a class member for
+            // ranking purposes, even though they are not in the
+            // student roster.
+            var cls = (window.AcademyClasses &&
+                       typeof window.AcademyClasses.getClass === 'function')
+                ? window.AcademyClasses.getClass(teamClassId)
+                : null;
+            if (cls && cls.instructorId) {
+                inClassSet[String(cls.instructorId)] = true;
             }
         }
 
-        var assignedElsewhere = Object.create(null);
-        if (teamClassId !== null && periodNum !== null) {
-            var siblingTeams = TeamQueries.getTeamsByClass(
-                teamClassId,
-                'operational'
-            );
-            for (var s = 0; s < siblingTeams.length; s++) {
-                var sibling = siblingTeams[s];
-                if (!sibling || String(sibling.id) === String(team.id)) {
-                    continue;
-                }
-                if (TeamConstants.normalizeTeamType(sibling.type) !== 'academic') {
-                    continue;
-                }
-                var siblingMembers = TeamQueries.getActiveTeamMembers(
-                    sibling,
-                    periodNum
-                );
-                for (var t = 0; t < siblingMembers.length; t++) {
-                    var sm = siblingMembers[t];
-                    if (sm && sm.characterId) {
-                        assignedElsewhere[String(sm.characterId)] = true;
+        // ---- Already on another team of THIS TYPE at this period ----
+        //
+        // Scoped to the team's own type. A character on an academic
+        // team is NOT counted as assigned for a professional team.
+        //
+        // When the period is null, we cannot resolve "at this
+        // period," so every candidate is treated as not-on-another
+        // -team. That is the honest answer; it does not misrepresent
+        // the assignment state.
+        var onAnotherTeamSet = Object.create(null);
+        if (periodNum !== null && isNonEmptyString(team.type)) {
+            var normalizedType = TeamConstants.normalizeTeamType(team.type);
+            if (normalizedType !== null) {
+                var allTeams = TeamQueries.getTeams(normalizedType, null, true);
+                if (Array.isArray(allTeams)) {
+                    for (var t = 0; t < allTeams.length; t++) {
+                        var sibling = allTeams[t];
+                        if (!sibling || String(sibling.id) === String(team.id)) {
+                            continue;
+                        }
+                        var siblingMembers = TeamQueries.getActiveTeamMembers(
+                            sibling, periodNum
+                        );
+                        for (var sm = 0; sm < siblingMembers.length; sm++) {
+                            var member = siblingMembers[sm];
+                            if (member && member.characterId) {
+                                onAnotherTeamSet[String(member.characterId)] = true;
+                            }
+                        }
                     }
                 }
             }
         }
 
+        // ---- Elimination filter ----
+        //
+        // Optional dependency. When absent, the filter is skipped.
+        // A missing EliminationQueries must not make every
+        // character look eliminated.
+        var EQ = getEliminationQueries();
+        var canCheckElimination = EQ &&
+            typeof EQ.isCharacterEliminatedByYear === 'function';
+
+        // Elimination year: currentYear, falling back to the team's
+        // startPeriod when currentYear is absent. If neither is
+        // resolvable, the year is null and the elimination check is
+        // skipped per-candidate (nothing is filtered on this axis).
+        var eliminationYear = null;
+        if (canCheckElimination) {
+            var data = window.data || {};
+            if (typeof data.currentYear === 'number' &&
+                isFinite(data.currentYear) &&
+                data.currentYear > 0) {
+                eliminationYear = Math.floor(data.currentYear);
+            } else {
+                var startPeriodNum = TeamConstants.parsePeriod(team.startPeriod);
+                if (startPeriodNum !== null) {
+                    eliminationYear = startPeriodNum;
+                }
+            }
+        }
+
+        // ---- Build the candidate list ----
         var allChars = CharacterQueries.getCharacters() || [];
         var candidates = [];
 
@@ -968,19 +1097,53 @@
 
             var charId = String(char.id);
 
+            // Exclude current members of this team.
             if (currentIds[charId]) { continue; }
-            if (CharacterQueries.isInstructor(char)) { continue; }
-            if (allowedIds !== null && !allowedIds[charId]) { continue; }
-            if (assignedElsewhere[charId]) { continue; }
+
+            // Exclude civilians. Instructors are never excluded as
+            // civilians, even if their status string says so.
+            if (CharacterQueries.isInstructor(char) !== true) {
+                var isCivilian = false;
+                if (typeof CharacterQueries.isCivilian === 'function') {
+                    isCivilian = CharacterQueries.isCivilian(char) === true;
+                } else {
+                    var statusStr = CharacterQueries.getCurrentStatus(char);
+                    isCivilian = String(statusStr).toLowerCase() === 'civilian';
+                }
+                if (isCivilian) { continue; }
+            }
+
+            // Exclude eliminated characters. When either
+            // EliminationQueries or the elimination year is
+            // unavailable, this check is skipped rather than
+            // failing closed.
+            if (canCheckElimination && eliminationYear !== null) {
+                var eliminated = false;
+                try {
+                    eliminated = EQ.isCharacterEliminatedByYear(
+                        charId, eliminationYear
+                    ) === true;
+                } catch (e) {
+                    eliminated = false;
+                }
+                if (eliminated) { continue; }
+            }
 
             candidates.push({
                 id: char.id,
                 name: CharacterQueries.getDisplayName(char),
-                status: CharacterQueries.getCurrentStatus(char)
+                status: CharacterQueries.getCurrentStatus(char),
+                deceased: char.deceased === true,
+                inClass: inClassSet[charId] === true,
+                onAnotherTeam: onAnotherTeamSet[charId] === true
             });
         }
 
+        // ---- Four-tier sort ----
         candidates.sort(function(a, b) {
+            var tierA = candidateTier(a);
+            var tierB = candidateTier(b);
+            if (tierA !== tierB) { return tierA - tierB; }
             return a.name.localeCompare(b.name);
         });
 
@@ -992,6 +1155,24 @@
             members: membersVM ? membersVM.members : [],
             candidates: candidates
         };
+    }
+
+    /**
+     * Compute the sort tier for a candidate.
+     *
+     *   0  in class,  not on another team of this type
+     *   1  in class,      on another team of this type
+     *   2  other class, not on another team of this type
+     *   3  other class,     on another team of this type
+     *
+     * Deceased status does not affect the tier. Deceased characters
+     * sort by the same rule as everyone else.
+     */
+    function candidateTier(candidate) {
+        if (candidate.inClass) {
+            return candidate.onAnotherTeam ? 1 : 0;
+        }
+        return candidate.onAnotherTeam ? 3 : 2;
     }
 
     /**
