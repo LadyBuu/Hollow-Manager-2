@@ -16,6 +16,7 @@
  *   - Handle round collapse toggles (C4; UI-only, no mutation)
  *   - Enrich picker entries with prior-round outcomes (C8)
  *   - Open the Edit Exam modal and route its submission (C5)
+ *   - Run tolerant auto-generation and report leftovers (T5)
  *
  * NOT RESPONSIBILITIES:
  *   - HTML construction. The view module builds all modal HTML.
@@ -26,6 +27,7 @@
  *     owns the pool VM.
  *   - Collapse-state persistence. AcademyUI owns it; this layer
  *     only reads and writes through its typed API.
+ *   - Partitioning. TournamentMatches owns the partition helpers.
  *
  * ACTION NAMING:
  *   Every action element carries data-action with an 'exam-' prefix.
@@ -58,88 +60,39 @@
  *   failure, the result's message is logged and toasted.
  *
  * ROUND COLLAPSE (C4):
- *   The collapse toggle is a UI-ONLY action. It does not enter the
- *   mutation pipeline, does not touch domain data, and does not
- *   open a modal. The handler:
- *
- *     1. Reads the current expanded state via
- *        AcademyUI.isRoundExpanded(examId, roundId, true).
- *     2. Writes the opposite state via
- *        AcademyUI.setRoundExpanded(examId, roundId, !current).
- *     3. Calls notifyChange() to trigger a re-render.
- *
- *   The default is EXPANDED. That default lives in the call to
- *   isRoundExpanded — this module passes `true` explicitly so the
- *   policy is visible at the call site, not hidden in AcademyUI.
+ *   UI-ONLY. Reads and writes AcademyUI through its typed API;
+ *   no domain mutation, no modal.
  *
  * EDIT EXAM (C5):
- *   Opens a modal that exposes the exam name and a single week.
- *   On submit, updates the tournament via TournamentCore with
- *   `{ name, startWeek, endWeek }`, setting start and end to the
- *   same week. This mirrors how the exam was created (single-week
- *   scope) and how it is rendered (single week in the header).
- *
- *   Only name and week are editable through this modal. Mode
- *   cannot change after creation (the domain rejects it while
- *   participants exist). Participants, rounds, and matches are
- *   edited through their own affordances.
+ *   Opens a modal for name and week. On submit, updates the
+ *   tournament via TournamentCore with { name, startWeek, endWeek }
+ *   (both week fields set to the same value).
  *
  * PRIOR-ROUND OUTCOMES (C8):
- *   buildEligibleForNewMatch is called by addMatchManual and
- *   editMatch to produce the checkbox list the picker renders.
- *   It uses (examId, roundId) to derive the outcome map for the
- *   round IMMEDIATELY BEFORE roundId, and stamps each entry.
+ *   buildEligibleForNewMatch derives the outcome map for the round
+ *   IMMEDIATELY BEFORE the target round and stamps each entry.
  *
- *   The map is { [participantId]: 'pass' | 'retry' }. Participants
- *   whose outcome is absent get `priorRoundOutcome: null`, and the
- *   view renders no badge for them.
+ * AUTO-GENERATE (T5):
+ *   Uses generateMatchesTolerant, which partitions the eligible
+ *   pool and calls generateMatches once per partition. Partitions
+ *   that succeed are kept; partitions that fail are skipped. The
+ *   participants that were not placed remain available for manual
+ *   matches and are reported as a count in the success toast.
  *
  * RESTORE ELIMINATED PARTICIPANT:
- *   The Restore button in the Eliminated section routes to
- *   TournamentEliminationCascade.restoreCharacterElimination inside
- *   a MutationPipeline transaction. The cascade removes the
- *   elimination record on both the tournament side and the character
- *   side.
- *
- *   This is DISTINCT from the cascade reversal that runs inside
- *   removeMatch / removeRound / reopenMatch / reopenRound:
- *
- *     - Cascade reversal removes eliminations by provenance
- *       (fromMatchId / fromRoundId). Runs when the match, round, or
- *       tournament is removed, or when a match or round is reopened.
- *     - Manual restore removes eliminations by
- *       (tournamentId, characterId). Runs when the user clicks
- *       Restore. Provenance-agnostic.
- *
- *   All three compose safely.
+ *   Routes to TournamentEliminationCascade.restoreCharacterElimination
+ *   inside a MutationPipeline transaction. Distinct from the
+ *   cascade reversal that runs inside removeMatch / removeRound /
+ *   reopenMatch / reopenRound.
  *
  * REOPEN (v21):
- *   Three reopen actions, at three levels of granularity:
- *
- *     exam-reopen-exam    Reopen the exam itself. Sets status back
- *                         to 'active'. Does NOT touch eliminations
- *                         or match results. Ungates the round and
- *                         match edit buttons.
- *
- *     exam-reopen-round   Reopen every match in a round. Reverses
- *                         every elimination produced by any match in
- *                         the round. Sets every match to 'pending'.
- *                         Match results are preserved.
- *
- *     exam-reopen-match   Reopen one match. Reverses eliminations
- *                         produced by that match. Sets the match to
- *                         'pending'. Results preserved.
- *
- *   Each shows a confirmation modal before dispatching. The
- *   confirmation text explains what will be reversed.
+ *   Three reopen actions at three levels: exam, round, match. Each
+ *   shows a confirmation modal before dispatching.
  *
  * ARCHIVE vs DELETE:
- *   The "Delete Exam" button routes to TournamentCore.archiveTournament.
- *   Archive sets archivedAt and status 'completed'. All history —
- *   rounds, matches, eliminations — is preserved. The archived exam
- *   disappears from the pool panel and from getExamForClassAndWeek.
- *   Physical destruction is available via TournamentCore.purgeTournament
- *   but is not wired to any UI button.
+ *   "Delete Exam" routes to TournamentCore.archiveTournament. All
+ *   history is preserved. Physical destruction is available via
+ *   purgeTournament but is not wired to any UI button.
  *
  * ERROR HANDLING:
  *   - Domain mutations resolve to { success, data?, message? }. On
@@ -156,7 +109,7 @@
  *   - window.AcademyTournamentView
  *   - window.AcademyClasses
  *   - window.TournamentCore
- *   - window.TournamentMatches
+ *   - window.TournamentMatches            (T5 added generateMatchesTolerant)
  *   - window.TournamentQueries            (C8 added getPriorRoundOutcomes)
  *   - window.TournamentEliminationCascade
  *   - window.TournamentSchema
@@ -195,7 +148,6 @@
 
     var _missing = [];
 
-    // UI infrastructure
     if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
         _missing.push('DomUtils.escapeHtml');
     }
@@ -211,15 +163,12 @@
     if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
         _missing.push('NotificationSystem.notify');
     }
-
-    // C4 — collapse toggle needs AcademyUI for state read/write.
     if (!AcademyUI ||
         typeof AcademyUI.isRoundExpanded !== 'function' ||
         typeof AcademyUI.setRoundExpanded !== 'function') {
         _missing.push('AcademyUI round collapse API');
     }
 
-    // View layer
     if (!View || typeof View.renderHTML !== 'function') {
         _missing.push('AcademyTournamentView.renderHTML');
     }
@@ -284,12 +233,10 @@
         _missing.push('AcademyTournamentView.collectCompleteMatchForm');
     }
 
-    // Academy
     if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function') {
         _missing.push('AcademyClasses.getClass');
     }
 
-    // Domain
     if (!TournamentCore || typeof TournamentCore.createTournament !== 'function') {
         _missing.push('TournamentCore.createTournament');
     }
@@ -332,6 +279,9 @@
     if (!TournamentMatches || typeof TournamentMatches.generateMatches !== 'function') {
         _missing.push('TournamentMatches.generateMatches');
     }
+    if (!TournamentMatches || typeof TournamentMatches.generateMatchesTolerant !== 'function') {
+        _missing.push('TournamentMatches.generateMatchesTolerant');
+    }
     if (!TournamentMatches || typeof TournamentMatches.getEligibleParticipants !== 'function') {
         _missing.push('TournamentMatches.getEligibleParticipants');
     }
@@ -347,7 +297,6 @@
     if (!TournamentQueries || typeof TournamentQueries.isParticipantInTournament !== 'function') {
         _missing.push('TournamentQueries.isParticipantInTournament');
     }
-    // C8 — prior-round derivation.
     if (!TournamentQueries ||
         typeof TournamentQueries.getPriorRoundOutcomes !== 'function') {
         _missing.push('TournamentQueries.getPriorRoundOutcomes');
@@ -585,17 +534,6 @@
     // MODAL VM BUILDERS
     // ============================================================
 
-    /**
-     * Build the eligible-participant list for the Add-Match /
-     * Edit-Match modal.
-     *
-     * Each entry is { id, name, priorRoundOutcome }.
-     *
-     * priorRoundOutcome is derived from the round IMMEDIATELY BEFORE
-     * `roundId` (C8). When there is no previous round, or the
-     * previous round has no completed matches for this participant,
-     * the field is null and the view renders no badge.
-     */
     function buildEligibleForNewMatch(examId, roundId) {
         var rawIds = TournamentMatches.getEligibleParticipants(examId)
             || [];
@@ -654,10 +592,6 @@
         return result;
     }
 
-    /**
-     * Build the team VM list the Complete-Match modal needs for a
-     * team_vs_team match.
-     */
     function buildTeamCompletionVMs(match) {
         var teamIds = isArray(match.participants)
             ? match.participants
@@ -783,14 +717,6 @@
         });
     }
 
-    /**
-     * Open the Edit Exam modal (C5).
-     *
-     * Exposes the exam name and a single week. On submit, updates
-     * the tournament with `{ name, startWeek, endWeek }`, both week
-     * fields set to the same value. No other field is editable
-     * through this modal.
-     */
     function editExam(examId) {
         if (!isNonEmptyString(examId)) { return; }
 
@@ -1240,8 +1166,22 @@
     }
 
     // ============================================================
-    // MATCH GENERATION
+    // MATCH GENERATION (T5 — tolerant)
     // ============================================================
+    //
+    // Uses generateMatchesTolerant: partitions the eligible pool,
+    // calls generateMatches once per partition, and accumulates
+    // successes. Partitions that fail (or that the partitioner
+    // dropped) contribute their participants to `skipped`. Those
+    // participants remain available for manual matches.
+    //
+    // On success, closes the modal and reports counts:
+    //   "Generated N matches. M participant(s) remain available
+    //    for manual selection."
+    //
+    // On failure (the tolerant call itself rejects, which only
+    // happens on a bad-input preflight), falls back to the standard
+    // error handling.
 
     function autoGenerateRound(examId, roundId) {
         if (!isNonEmptyString(examId) ||
@@ -1275,23 +1215,58 @@
                 var payload = View.collectAutoGenerateRoundForm(form);
 
                 handleMutation(
-                    TournamentMatches.generateMatches(
+                    TournamentMatches.generateMatchesTolerant(
                         examId,
                         roundId,
                         { matchSize: payload.matchSize }
                     ),
                     {
-                        label: 'generateMatches',
+                        label: 'generateMatchesTolerant',
                         errorMessage:
                             'Failed to auto-generate matches.',
-                        onSuccess: function() {
+                        onSuccess: function(result) {
                             close();
                             notifyChange();
+                            reportGenerationResult(result);
                         }
                     }
                 );
             });
         });
+    }
+
+    /**
+     * Toast the outcome of a tolerant generation.
+     *
+     * Counts only. No names. The user is told how many matches
+     * were created and how many participants remain available for
+     * manual selection.
+     */
+    function reportGenerationResult(result) {
+        var data = (result && result.data) ? result.data : {};
+        var createdList = isArray(data.created) ? data.created : [];
+        var skippedList = isArray(data.skipped) ? data.skipped : [];
+
+        var createdCount = createdList.length;
+        var skippedCount = skippedList.length;
+
+        if (createdCount === 0 && skippedCount === 0) {
+            notify('Nothing to generate.', 'info');
+            return;
+        }
+
+        var parts = [];
+        parts.push('Generated ' + createdCount +
+            ' match' + (createdCount === 1 ? '' : 'es') + '.');
+
+        if (skippedCount > 0) {
+            parts.push(skippedCount + ' participant' +
+                (skippedCount === 1 ? '' : 's') +
+                ' remain available for manual selection.');
+        }
+
+        var type = (createdCount === 0) ? 'info' : 'success';
+        notify(parts.join(' '), type);
     }
 
     // ============================================================
