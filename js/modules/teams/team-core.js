@@ -135,10 +135,18 @@
     /**
      * Configure TeamCore with external dependencies.
      *
-     * Idempotent on the same provider identity. A second call with a
-     * DIFFERENT provider object is rejected: swapping character
-     * stores at runtime is never correct, and silently accepting it
-     * hides bugs.
+     * IDEMPOTENT. The first successful call wins. Subsequent calls
+     * with a shape-valid provider return true and leave the
+     * existing provider in place. This is deliberate: every caller
+     * builds an equivalent `{ exists(appData, characterId) }`
+     * provider, and multiple modules legitimately need to configure
+     * TeamCore without coordinating. The Teams tab and Academy's
+     * Weekly Teams controller are the two callers today.
+     *
+     * A call with a MALFORMED provider (missing exists, or exists
+     * not a function) is rejected with false and a console warning.
+     * Callers that only care about "is there a provider" should
+     * read the return value as a boolean.
      *
      * @param {object} deps - { characterProvider: {
      *     exists(appData, characterId) -> bool } }
@@ -159,14 +167,21 @@
         }
 
         if (_characterProviderConfigured) {
-            if (deps.characterProvider === _characterProvider) {
-                return true;
-            }
-            console.warn(
-                '[TeamCore] configure() called with a different provider. ' +
-                'The existing provider is kept; the new provider is ignored.'
-            );
-            return false;
+            // A provider is already configured. Every caller
+            // constructs an equivalent provider (the shape is
+            // `{ exists(appData, characterId) -> boolean }` and the
+            // semantics are identical), so a second call with a
+            // shape-valid provider is treated as success. The
+            // existing provider stays in place; the new one is
+            // discarded.
+            //
+            // Identity comparison was too strict: two callers
+            // (Teams tab and Academy Weekly Teams) build separate
+            // provider objects with the same behavior, and the
+            // second one used to be rejected as "a different
+            // provider", which broke team-form saves after the
+            // Teams tab had been visited.
+            return true;
         }
 
         _characterProvider = deps.characterProvider;
@@ -2056,188 +2071,4 @@
                 }
                 var check = validateRankingEntry(
                     { period: periodNum, rank: rankNum },
-                    target.type
-                );
-                if (!check.valid) {
-                    return { valid: false, message: check.message };
-                }
-                return { valid: true };
-            },
-            mutate: function(snapshot) {
-                var target = findTeamInData(snapshot, targetId);
-                if (!target) {
-                    throw new Error('Team not found in data store.');
-                }
-                if (!Array.isArray(target.rankingHistory)) {
-                    target.rankingHistory = [];
-                }
-
-                var existingIndex = -1;
-                for (var i = 0; i < target.rankingHistory.length; i++) {
-                    var entryPeriod = parsePeriod(target.rankingHistory[i].period);
-                    if (entryPeriod !== null && String(entryPeriod) === periodStr) {
-                        existingIndex = i;
-                        break;
-                    }
-                }
-
-                var newEntry = { period: periodStr, rank: rankNum };
-                if (existingIndex !== -1) {
-                    target.rankingHistory[existingIndex] = newEntry;
-                } else {
-                    target.rankingHistory.push(newEntry);
-                }
-
-                target.rankingHistory.sort(function(a, b) {
-                    var ap = parsePeriod(a.period);
-                    var bp = parsePeriod(b.period);
-                    return (ap || 0) - (bp || 0);
-                });
-
-                target.updatedAt = new Date().toISOString();
-
-                return { period: periodStr, rank: rankNum, teamId: targetId };
-            },
-            logMessage: 'Added ranking to team: ' + (current.name || targetId),
-            successMessage: 'Ranking added successfully!',
-            failureMessage: 'Failed to add ranking.'
-        });
-    }
-
-    function removeRanking(teamId, period) {
-        if (failIfMissing(checkBaseDependencies(), 'removeRanking')) {
-            return Promise.resolve(failure('Dependencies not loaded. Please refresh the page.'));
-        }
-
-        if (!isNonEmptyString(teamId)) {
-            return Promise.resolve(failure('Team ID is required.'));
-        }
-
-        var periodNum = parsePeriod(period);
-        if (periodNum === null) {
-            return Promise.resolve(failure('Period must be a positive integer.'));
-        }
-
-        var targetId = String(teamId).trim();
-        var periodStr = String(periodNum);
-
-        var current = findTeamInData(getDataStore(), targetId);
-        if (!current) {
-            return Promise.resolve(failure('Team not found.'));
-        }
-
-        return runMutation({
-            validate: function(snapshot) {
-                var target = findTeamInData(snapshot, targetId);
-                if (!target || !Array.isArray(target.rankingHistory)) {
-                    return { valid: false, message: 'Team no longer exists.' };
-                }
-                return { valid: true };
-            },
-            mutate: function(snapshot) {
-                var target = findTeamInData(snapshot, targetId);
-                if (!target || !Array.isArray(target.rankingHistory)) {
-                    throw new Error('Team not found in data store.');
-                }
-
-                var found = false;
-                target.rankingHistory = target.rankingHistory.filter(function(entry) {
-                    if (!entry) return true;
-                    var entryPeriod = parsePeriod(entry.period);
-                    if (entryPeriod !== null && String(entryPeriod) === periodStr) {
-                        found = true;
-                        return false;
-                    }
-                    return true;
-                });
-
-                if (!found) {
-                    throw new Error('Ranking entry not found.');
-                }
-
-                target.updatedAt = new Date().toISOString();
-                return { period: periodStr, teamId: targetId };
-            },
-            logMessage: 'Removed ranking from team: ' + (current.name || targetId),
-            successMessage: 'Ranking removed successfully!',
-            failureMessage: 'Failed to remove ranking.'
-        });
-    }
-
-    // ============================================================
-    // CASCADE HELPER
-    // ============================================================
-
-    /**
-     * Strip all references to a character from every team's members
-     * array.
-     *
-     * PURE with respect to appData: mutates the snapshot, does not
-     * touch window.data. Runs inside another module's pipeline
-     * transaction. Never throws.
-     *
-     * Malformed entries are preserved; this helper's job is to
-     * remove character references, not to repair team data.
-     *
-     * @param {object} appData
-     * @param {string} charId
-     * @returns {object} { membershipsRemoved }
-     */
-    function stripCharacterRefs(appData, charId) {
-        var result = { membershipsRemoved: 0 };
-
-        if (!appData || !charId) {
-            return result;
-        }
-        if (!Array.isArray(appData.teams)) {
-            return result;
-        }
-
-        var target = String(charId);
-
-        for (var i = 0; i < appData.teams.length; i++) {
-            var team = appData.teams[i];
-            if (!team || !Array.isArray(team.members)) {
-                continue;
-            }
-            var before = team.members.length;
-            team.members = team.members.filter(function(m) {
-                return !m || String(m.characterId) !== target;
-            });
-            result.membershipsRemoved += before - team.members.length;
-        }
-
-        return result;
-    }
-
-    // ============================================================
-    // EXPOSE
-    // ============================================================
-
-    window.TeamCore = {
-        // Configuration
-        configure: configure,
-
-        // Team CRUD
-        createTeam: createTeam,
-        updateTeam: updateTeam,
-        deleteTeam: deleteTeam,
-
-        // Member mutations
-        addMember: addMember,
-        addMemberInterval: addMemberInterval,
-        updateMember: updateMember,
-        removeMember: removeMember,
-        endMemberInterval: endMemberInterval,
-        reopenMemberInterval: reopenMemberInterval,
-        purgeMemberInterval: purgeMemberInterval,
-
-        // Ranking mutation
-        addRanking: addRanking,
-        removeRanking: removeRanking,
-
-        // Cross-domain cascade
-        stripCharacterRefs: stripCharacterRefs
-    };
-
-})();
+                   
