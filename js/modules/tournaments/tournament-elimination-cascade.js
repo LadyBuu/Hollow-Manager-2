@@ -62,6 +62,12 @@
  *     (tournamentId, characterId) pair, regardless of provenance.
  *     This is the user-initiated "Restore" action.
  *
+ *   shiftTournamentEliminationWeeks(appData, tournamentId, newWeek)
+ *     Set the `week` field on every tournament-driven elimination
+ *     record for a tournament, on both sides. Used when a
+ *     tournament's endWeek changes, because the elimination week is
+ *     derived from endWeek and must move with it.
+ *
  * PROVENANCE:
  *   Every elimination written by applyFailEliminations carries:
  *     fromRoundId   the round the match belongs to
@@ -79,6 +85,9 @@
  *       provenance-agnostic).
  *     - ARE touched by restoreCharacterElimination (which is
  *       provenance-agnostic).
+ *     - ARE touched by shiftTournamentEliminationWeeks (which is
+ *       provenance-agnostic; the shift operates on all
+ *       tournament-driven records for the tournament).
  *
  * LAST-WINS SEMANTICS:
  *   The tournament keeps ONE elimination per (characterId,
@@ -146,6 +155,10 @@
  *   it twice with the same inputs produces the same state on both
  *   sides.
  *
+ *   shiftTournamentEliminationWeeks is idempotent for a given
+ *   newWeek: calling it twice with the same value produces the same
+ *   state as calling it once.
+ *
  * CONTRACT ON INVALID INPUT:
  *   Invalid invocation (missing appData, missing tournament, missing
  *   match, missing round, invalid week, missing target character)
@@ -163,6 +176,7 @@
  *       written:  N,   // records written (apply only)
  *       replaced: N,   // records replaced by last-wins (apply only)
  *       reversed: N,   // elimination records removed (reverse/restore)
+ *       shifted:  N,   // records updated in place (shift only)
  *       characterIds: [ ... ],  // characters touched
  *     }
  *
@@ -209,6 +223,13 @@
  *   var restore =
  *       TournamentEliminationCascade.restoreCharacterElimination(
  *           appData, tournamentId, characterId
+ *       );
+ *
+ *   // Inside TournamentCore.updateTournament's mutate callback,
+ *   // when endWeek changes:
+ *   var shift =
+ *       TournamentEliminationCascade.shiftTournamentEliminationWeeks(
+ *           appData, tournamentId, newEndWeek
  *       );
  */
 
@@ -972,6 +993,158 @@
     }
 
     // ============================================================
+    // WEEK SHIFT (T8)
+    // ============================================================
+    //
+    // WHY THIS EXISTS:
+    //   The elimination week is not an independent fact. It is
+    //   derived from the tournament's endWeek at the moment the
+    //   elimination is written (see applyFailEliminations, which
+    //   reads `week` from the caller and the caller passes
+    //   tournament.endWeek). When the tournament's endWeek changes,
+    //   every elimination written by this mechanism must move with
+    //   it, on both sides, or the two views of "when was this
+    //   character eliminated" drift apart.
+    //
+    //   The alternative — "eliminations keep the week they were
+    //   created with" — is wrong here, because it would leave every
+    //   elimination record stamped with a week that no longer
+    //   matches the exam it belongs to. Any UI that surfaces
+    //   "eliminated on week X" would show an X that disagrees with
+    //   the exam header.
+    //
+    // SCOPE:
+    //   - Tournament-side: every record in
+    //     tournament.eliminations[]. All of them belong to this
+    //     tournament, all of them were stamped with this
+    //     tournament's endWeek, so all of them move.
+    //
+    //   - Character-side: every record in character.eliminations[]
+    //     where tournamentId matches AND standalone !== true.
+    //     Standalone eliminations (Drop Out) are user-authored
+    //     facts and must not move.
+    //
+    // SEMANTICS:
+    //   The shift SETS the week to newWeek. It does not add a delta
+    //   to the existing week. The elimination week is defined as
+    //   "the tournament's endWeek", so it moves to the new
+    //   endWeek, unconditionally.
+    //
+    // IDEMPOTENCE:
+    //   Calling twice with the same newWeek produces the same state
+    //   as calling once.
+    //
+    // CACHE:
+    //   character.eliminatedWeeks[] is rebuilt on every touched
+    //   character. The cascade is the last writer to touch
+    //   character.eliminations[] inside the transaction, so it is
+    //   responsible for keeping the derived cache in sync.
+
+    /**
+     * Set the `week` field on every tournament-driven elimination
+     * record for a tournament, on both sides.
+     *
+     * TRANSACTION-LOCAL. Mutates appData in place.
+     *
+     * @param {object} appData      - Pipeline snapshot
+     * @param {string} tournamentId - The tournament whose
+     *   eliminations should shift
+     * @param {number|string} newWeek - The new week; integer in
+     *   [MIN_WEEK, MAX_WEEK]
+     * @returns {object} { shifted, characterIds }
+     *   - shifted is the number of elimination RECORDS updated on
+     *     both sides combined.
+     *   - characterIds is the list of characters whose
+     *     eliminatedWeeks cache was rebuilt.
+     */
+    function shiftTournamentEliminationWeeks(
+        appData,
+        tournamentId,
+        newWeek
+    ) {
+        if (!appData || typeof appData !== 'object') {
+            throw new Error(
+                '[TournamentEliminationCascade] appData is required.'
+            );
+        }
+        if (!isNonEmptyString(tournamentId)) {
+            throw new Error(
+                '[TournamentEliminationCascade] tournamentId is required.'
+            );
+        }
+
+        var weekNum = CalendarValidation.parseWeek(newWeek);
+        if (weekNum === null) {
+            throw new Error(
+                '[TournamentEliminationCascade] Valid new week is ' +
+                'required. Got: ' + newWeek
+            );
+        }
+
+        var tId = normaliseId(tournamentId);
+
+        var result = {
+            shifted: 0,
+            characterIds: []
+        };
+
+        // ---- 1. Tournament side ----
+        var tournament = null;
+        if (Array.isArray(appData.tournaments)) {
+            for (var i = 0; i < appData.tournaments.length; i++) {
+                var t = appData.tournaments[i];
+                if (t && normaliseId(t.id) === tId) {
+                    tournament = t;
+                    break;
+                }
+            }
+        }
+
+        if (tournament && Array.isArray(tournament.eliminations)) {
+            for (var te = 0; te < tournament.eliminations.length; te++) {
+                var tourE = tournament.eliminations[te];
+                if (!tourE || typeof tourE !== 'object') { continue; }
+                if (tourE.week === weekNum) { continue; }
+                tourE.week = weekNum;
+                result.shifted++;
+            }
+        }
+
+        // ---- 2. Character side ----
+        if (Array.isArray(appData.characters)) {
+            for (var c = 0; c < appData.characters.length; c++) {
+                var char = appData.characters[c];
+                if (!char || !Array.isArray(char.eliminations)) {
+                    continue;
+                }
+
+                var touched = false;
+                for (var ce = 0;
+                     ce < char.eliminations.length;
+                     ce++) {
+                    var charE = char.eliminations[ce];
+                    if (!charE || typeof charE !== 'object') { continue; }
+                    if (charE.standalone === true) { continue; }
+                    if (normaliseId(charE.tournamentId) !== tId) {
+                        continue;
+                    }
+                    if (charE.week === weekNum) { continue; }
+                    charE.week = weekNum;
+                    result.shifted++;
+                    touched = true;
+                }
+
+                if (touched) {
+                    rebuildEliminatedWeeks(char);
+                    result.characterIds.push(String(char.id));
+                }
+            }
+        }
+
+        return result;
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -986,6 +1159,10 @@
 
         // Manual override
         restoreCharacterElimination: restoreCharacterElimination,
+
+        // Week shift (T8)
+        shiftTournamentEliminationWeeks:
+            shiftTournamentEliminationWeeks,
 
         // Exposed for testing / advanced callers
         getFailingParticipantIds: getFailingParticipantIds,
@@ -1006,6 +1183,7 @@
             'reverseRoundEliminations',
             'reverseTournamentEliminations',
             'restoreCharacterElimination',
+            'shiftTournamentEliminationWeeks',
             'getFailingParticipantIds',
             'rebuildEliminatedWeeks'
         ];
