@@ -6,6 +6,7 @@
  *
  * RESPONSIBILITIES:
  *   - Register with TabManager
+ *   - Register the six Academy controllers with AcademyControllers
  *   - Validate the academy data structure before mount
  *   - Hand the container to AcademyView for rendering
  *   - Handle DataLoader and tabChanged integration
@@ -19,6 +20,19 @@
  *   Do not add domain logic here. Do not add render logic here.
  *   Do not add per-feature bootstrapping here. If a feature needs
  *   initialization, its own module handles it.
+ *
+ * CONTROLLER REGISTRATION:
+ *   The six Academy controllers register themselves with
+ *   window.AcademyControllers here, NOT in their own files. The
+ *   controllers capture their domain dependencies at IIFE time,
+ *   so by the time this file runs they are fully constructed.
+ *   This file is the single owner of the controller registry
+ *   population, matching the load-order contract documented in
+ *   index.html.
+ *
+ *   Registration order matters: AcademyView iterates the registry
+ *   in insertion order when building the view switcher. The order
+ *   below matches the pinboard's expected list.
  *
  * SCHEDULE PROVIDER (retired):
  *   The old calendar-provider bridge — AcademySchedule.configure,
@@ -54,6 +68,9 @@
  *   - window.AcademyView
  *
  * DEPENDENCIES (OPTIONAL, feature-scoped):
+ *   - window.AcademyControllers — controller registry. When absent,
+ *     registration is skipped with a warning; the rest of the
+ *     module still functions.
  *   - window.DataLoader — readiness hook is skipped when absent
  *   - window.NotificationSystem — used by error paths when present
  *
@@ -117,6 +134,88 @@
             _missing.join(', ')
         );
     }
+
+    // ============================================================
+    // CONTROLLER REGISTRATION
+    // ============================================================
+    //
+    // The six controllers are loaded as separate script tags in
+    // index.html. They expose themselves on window and capture their
+    // domain dependencies at IIFE time. This block is the single
+    // owner of the registration step.
+    //
+    // Registration order is significant: AcademyView builds the view
+    // switcher by iterating the registry in insertion order. The
+    // order below matches the pinboard's expected list:
+    //   ['weeklyTeams','disciplines','tournaments','people',
+    //    'locations','rankings']
+    //
+    // AcademyControllers is treated as an optional dependency. When
+    // it is missing (e.g. a test harness that loads index.js without
+    // the controllers), registration is skipped with a warning. The
+    // rest of the module still works; AcademyView will surface an
+    // empty view switcher rather than crashing.
+
+    function registerAcademyControllers() {
+        var AcademyControllers = window.AcademyControllers;
+
+        if (!AcademyControllers || typeof AcademyControllers.register !== 'function') {
+            console.warn(
+                '[AcademyModule] AcademyControllers registry not available. ' +
+                'Academy controllers will not be registered. ' +
+                'Check that controller-contract.js and academy-controllers.js ' +
+                'are loaded before this module in index.html.'
+            );
+            return;
+        }
+
+        var registry = {
+            weeklyTeams: window.AcademyWeeklyTeamsController,
+            disciplines: window.AcademyDisciplineController,
+            tournaments: window.AcademyExamController,
+            people:      window.AcademyPeopleController,
+            locations:   window.AcademyLocationController,
+            rankings:    window.AcademyRankingController
+        };
+
+        var registered = [];
+        var missing = [];
+
+        Object.keys(registry).forEach(function(id) {
+            var controller = registry[id];
+            if (!controller || typeof controller !== 'object') {
+                missing.push(id);
+                return;
+            }
+            try {
+                AcademyControllers.register(id, controller);
+                registered.push(id);
+            } catch (e) {
+                console.error(
+                    '[AcademyModule] Failed to register controller "' + id + '":',
+                    e
+                );
+                missing.push(id);
+            }
+        });
+
+        if (missing.length > 0) {
+            console.warn(
+                '[AcademyModule] Some Academy controllers were not registered: ' +
+                missing.join(', ') + '. ' +
+                'Check that their script tags are present in index.html.'
+            );
+        }
+
+        if (registered.length > 0) {
+            console.log(
+                '[AcademyModule] Registered ' + registered.length +
+                ' Academy controller(s): ' + registered.join(', ')
+            );
+        }
+    }
+
+    registerAcademyControllers();
 
     window.__academyModuleLoaded = true;
 
