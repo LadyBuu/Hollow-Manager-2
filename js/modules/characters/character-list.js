@@ -2,14 +2,15 @@
  * modules/characters/character-list.js - Character List
  * Renders the character list with filtering
  * Path: js/modules/characters/character-list.js
- * 
+ *
  * This module is responsible for:
  *   - Rendering the character list
- *   - Filtering characters by name, class, deceased status, elimination status
+ *   - Filtering characters by name, class, deceased status,
+ *     elimination status
  *   - Sorting characters by name
  *   - Displaying character status badges (deceased, eliminated, class)
  *   - Handling character selection (delegates to index.js)
- * 
+ *
  * IMPORTANT:
  *   - RENDER ONLY - no event binding (handled by character-events.js)
  *   - No data mutations
@@ -19,7 +20,19 @@
  *   - Uses CharacterQueries for simple character data
  *   - Uses DomUtils for safe DOM operations
  *   - Uses State for current week (delegates to CalendarConstants)
- * 
+ *
+ * ELIMINATION BADGE:
+ *   The row VM carries `eliminationYear` and `eliminationWeek`. The
+ *   badge shows the year when available, and appends the week when
+ *   the week is also known:
+ *     "Eliminated 2026 Wk5"   (year and week)
+ *     "Eliminated 2026"       (year only)
+ *     "Eliminated"            (neither)
+ *
+ *   The year is the primary fact. Elimination is year-scoped for the
+ *   character list; a character eliminated in year Y is filtered as
+ *   eliminated for year Y and every year after.
+ *
  * DEPENDENCIES (lazily loaded):
  *   - window.CharacterAggregator (from character-aggregator.js)
  *   - window.CharacterQueries (from character-queries.js)
@@ -59,20 +72,19 @@
     }
 
     function getCalendarConstants() {
-        return window.CalendarConstants || window.CalendarConstants || null;
+        return window.CalendarConstants || null;
     }
 
     /**
      * Get the current edit ID from the global state.
      * This is lazily loaded from characters/index.js
-     * 
+     *
      * @returns {string|null} Current edit ID or null
      */
     function getCurrentEditId() {
         if (typeof window.getCurrentEditId === 'function') {
             return window.getCurrentEditId();
         }
-        // Try to get from global state
         if (window._currentEditId !== undefined) {
             return window._currentEditId;
         }
@@ -96,7 +108,6 @@
             missing.push('DomUtils (lazy)');
         }
 
-        // getCurrentEditId is lazily loaded from index.js
         if (typeof window.getCurrentEditId !== 'function' && window._currentEditId === undefined) {
             missing.push('getCurrentEditId (lazy)');
         }
@@ -109,7 +120,6 @@
         return true;
     }
 
-    // Run check but don't fail - will check again on each render
     checkDependencies();
 
     // ============================================================
@@ -121,7 +131,6 @@
         if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
             return DomUtils.escapeHtml(value);
         }
-        // Fallback
         if (value === undefined || value === null) {
             return '';
         }
@@ -195,7 +204,6 @@
         var previousValue = select.value;
         var AcademyQueries = getAcademyQueries();
 
-        // Use AcademyQueries for classes if available
         var classes = [];
         if (AcademyQueries && typeof AcademyQueries.getClasses === 'function') {
             classes = AcademyQueries.getClasses() || [];
@@ -216,7 +224,6 @@
             select.appendChild(option);
         }
 
-        // Restore previous selection if it still exists
         if (previousValue && previousValue !== 'all') {
             var exists = false;
             for (var j = 0; j < select.options.length; j++) {
@@ -256,7 +263,6 @@
         var filters = getFilterValues();
         var currentWeek = getCurrentWeek();
 
-        // Use CharacterAggregator for cross-domain data
         var items = [];
         try {
             items = CharacterAggregator.getCharacterListViewModel({
@@ -272,7 +278,6 @@
             return;
         }
 
-        // Ensure items is an array
         if (!Array.isArray(items)) {
             items = [];
         }
@@ -316,8 +321,13 @@
             }
             if (item.eliminated) {
                 var elimText = 'Eliminated';
-                if (item.eliminationWeek) {
-                    elimText += ' Wk' + escapeHtml(item.eliminationWeek);
+                if (item.eliminationYear) {
+                    elimText += ' ' + escapeHtml(String(item.eliminationYear));
+                    if (item.eliminationWeek) {
+                        elimText += ' Wk' + escapeHtml(String(item.eliminationWeek));
+                    }
+                } else if (item.eliminationWeek) {
+                    elimText += ' Wk' + escapeHtml(String(item.eliminationWeek));
                 }
                 badges.push('<span style="font-size:0.5rem;color:var(--warning);">' + elimText + '</span>');
             }
@@ -359,8 +369,6 @@
     // ============================================================
 
     function destroy() {
-        // No event listeners to clean up in this module
-        // But we can clear the container
         var container = document.getElementById('characters-container');
         if (container) {
             container.innerHTML = '';
@@ -404,7 +412,6 @@
 
         if (missing.length > 0) {
             console.warn('[CharacterList] Verification - some exports may be missing:', missing.join(', '));
-        } else {
         }
     })();
 
