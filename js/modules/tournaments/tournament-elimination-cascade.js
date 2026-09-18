@@ -40,6 +40,21 @@
  *     - They throw on contract violations (see below), so a broken
  *       caller fails the enclosing transaction loudly.
  *
+ * CACHE MAINTENANCE:
+ *   character.eliminatedWeeks[] is a derived cache. Its single
+ *   implementation lives in EliminationQueries.rebuildEliminatedWeeks.
+ *   This module calls it after every write or removal. Both this
+ *   module and AcademyEliminations share the one implementation.
+ *
+ * YEAR STAMPING (v25+):
+ *   Every character-side elimination record carries a `year` — the
+ *   year the character was eliminated. The year is resolved from the
+ *   tournament's graduatingClassId → class.year. When the class year
+ *   cannot be resolved, currentYear is used and a warning is logged.
+ *
+ *   The tournament-side record also carries `year` for consistency,
+ *   though its primary key is still the tournament's own identity.
+ *
  * PUBLIC OPERATIONS:
  *   applyFailEliminations(appData, tournament, match, round, week)
  *     Write eliminations for failing participants of a completed
@@ -67,6 +82,10 @@
  *     record for a tournament, on both sides. Used when a
  *     tournament's endWeek changes, because the elimination week is
  *     derived from endWeek and must move with it.
+ *
+ *   rebuildEliminatedWeeks(character)
+ *     Forwarding wrapper. Delegates to
+ *     EliminationQueries.rebuildEliminatedWeeks.
  *
  * PROVENANCE:
  *   Every elimination written by applyFailEliminations carries:
@@ -187,50 +206,15 @@
  *   (characterId, tournamentId).
  *
  * DEPENDENCIES (MANDATORY):
- *   - window.IdUtils            (elimination record IDs on the
- *                                character side)
- *   - window.CalendarValidation (validating the elimination week)
+ *   - window.IdUtils              (elimination record IDs on the
+ *                                  character side)
+ *   - window.CalendarValidation   (validating the elimination week)
+ *   - window.EliminationQueries   (rebuildEliminatedWeeks)
  *
- * DEPENDENCIES (OPTIONAL):
- *   - window.ObjectUtils        (not used internally; reserved for
- *                                callers if needed)
- *
- * USAGE:
- *   // Inside TournamentMatches.completeMatch's mutate callback:
- *   var cascade = TournamentEliminationCascade.applyFailEliminations(
- *       appData, tournament, match, round, tournament.endWeek
- *   );
- *
- *   // Inside TournamentMatches.removeMatch's mutate callback:
- *   var reversal =
- *       TournamentEliminationCascade.reverseMatchEliminations(
- *           appData, tournament, matchId
- *       );
- *
- *   // Inside TournamentCore.removeRound's mutate callback:
- *   var reversal =
- *       TournamentEliminationCascade.reverseRoundEliminations(
- *           appData, tournament, roundId
- *       );
- *
- *   // Inside TournamentCore.deleteTournament's mutate callback:
- *   var reversal =
- *       TournamentEliminationCascade.reverseTournamentEliminations(
- *           appData, tournamentId
- *       );
- *
- *   // Manual restore, from a UI event handler:
- *   var restore =
- *       TournamentEliminationCascade.restoreCharacterElimination(
- *           appData, tournamentId, characterId
- *       );
- *
- *   // Inside TournamentCore.updateTournament's mutate callback,
- *   // when endWeek changes:
- *   var shift =
- *       TournamentEliminationCascade.shiftTournamentEliminationWeeks(
- *           appData, tournamentId, newEndWeek
- *       );
+ * DEPENDENCIES (LAZY):
+ *   - window.AcademyClasses       (resolving class years for the
+ *                                  character-side elimination
+ *                                  record)
  */
 
 (function() {
@@ -246,6 +230,7 @@
 
     var IdUtils = window.IdUtils;
     var CalendarValidation = window.CalendarValidation;
+    var EliminationQueries = window.EliminationQueries;
 
     var _missing = [];
 
@@ -255,6 +240,10 @@
     if (!CalendarValidation ||
         typeof CalendarValidation.parseWeek !== 'function') {
         _missing.push('CalendarValidation.parseWeek');
+    }
+    if (!EliminationQueries ||
+        typeof EliminationQueries.rebuildEliminatedWeeks !== 'function') {
+        _missing.push('EliminationQueries.rebuildEliminatedWeeks');
     }
 
     if (_missing.length > 0) {
@@ -325,38 +314,69 @@
     /**
      * Rebuild character.eliminatedWeeks[] from character.eliminations[].
      *
-     * eliminatedWeeks[] is a derived cache. It is rebuilt here
-     * because the cascade is the last writer to touch
-     * character.eliminations[] inside the transaction.
+     * Delegates to EliminationQueries.rebuildEliminatedWeeks, which is
+     * the single implementation shared by this module and
+     * AcademyEliminations.
      *
-     * Exposed for testing and for callers that need to rebuild the
-     * cache after their own mutation.
+     * Exposed on this module's public surface as a forwarding wrapper
+     * for callers that already reference it here.
      */
     function rebuildEliminatedWeeks(character) {
-        if (!character) {
-            return;
-        }
-        if (!Array.isArray(character.eliminations)) {
-            character.eliminations = [];
+        EliminationQueries.rebuildEliminatedWeeks(character);
+    }
+
+    // ============================================================
+    // YEAR RESOLUTION
+    // ============================================================
+    //
+    // Every character-side elimination record carries a `year` — the
+    // year the character was eliminated. Resolution order:
+    //
+    //   1. The tournament's graduatingClassId → class.year.
+    //   2. window.data.currentYear.
+    //   3. The current calendar year.
+    //
+    // Step 2 logs a warning. A missing class year is a data-quality
+    // signal, not a silent default.
+
+    function getAcademyClasses() {
+        return window.AcademyClasses || null;
+    }
+
+    function resolveEliminationYear(appData, tournament) {
+        if (tournament && tournament.graduatingClassId && appData &&
+            appData.academy && appData.academy.graduatingClasses) {
+            var cls = appData.academy.graduatingClasses[
+                String(tournament.graduatingClassId)
+            ];
+            if (cls) {
+                var clsYear = parseInt(cls.year, 10);
+                if (!isNaN(clsYear) && clsYear > 0) {
+                    return clsYear;
+                }
+            }
         }
 
-        character.eliminatedWeeks = [];
-
-        for (var i = 0; i < character.eliminations.length; i++) {
-            var e = character.eliminations[i];
-            if (!e || typeof e !== 'object') {
-                continue;
-            }
-            var week = CalendarValidation.parseWeek(e.week);
-            if (week === null) {
-                continue;
-            }
-            if (character.eliminatedWeeks.indexOf(week) === -1) {
-                character.eliminatedWeeks.push(week);
-            }
+        var data = window.data || {};
+        if (typeof data.currentYear === 'number' &&
+            isFinite(data.currentYear) &&
+            data.currentYear > 0) {
+            console.warn(
+                '[TournamentEliminationCascade] Tournament "' +
+                (tournament ? tournament.id : 'unknown') +
+                '" has no resolvable class year. Falling back to ' +
+                'currentYear (' + data.currentYear + ').'
+            );
+            return Math.floor(data.currentYear);
         }
 
-        character.eliminatedWeeks.sort(function(a, b) { return a - b; });
+        console.warn(
+            '[TournamentEliminationCascade] Tournament "' +
+            (tournament ? tournament.id : 'unknown') +
+            '" has no resolvable class year and no currentYear is ' +
+            'set. Using calendar year.'
+        );
+        return new Date().getFullYear();
     }
 
     // ============================================================
@@ -573,6 +593,8 @@
      *     written. This is "last wins".
      *   - Every written elimination carries fromRoundId and
      *     fromMatchId.
+     *   - Every written elimination carries a `year`, resolved from
+     *     the tournament's class context.
      *   - character.eliminatedWeeks[] is rebuilt after any write.
      *   - Standalone eliminations are NOT touched.
      *
@@ -635,6 +657,8 @@
                 'week is required.'
             );
         }
+
+        var yearNum = resolveEliminationYear(appData, tournament);
 
         var result = {
             written: 0,
@@ -713,6 +737,7 @@
             tournament.eliminations.push({
                 participantId: charId,
                 participantType: 'character',
+                year: yearNum,
                 week: weekNum,
                 reason: reason,
                 fromRoundId: roundId,
@@ -729,6 +754,7 @@
                 tournamentId: tournamentId,
                 fromRoundId: roundId,
                 fromMatchId: matchId,
+                year: yearNum,
                 week: weekNum,
                 reason: reason,
                 standalone: false,
@@ -1036,9 +1062,7 @@
     //
     // CACHE:
     //   character.eliminatedWeeks[] is rebuilt on every touched
-    //   character. The cascade is the last writer to touch
-    //   character.eliminations[] inside the transaction, so it is
-    //   responsible for keeping the derived cache in sync.
+    //   character.
 
     /**
      * Set the `week` field on every tournament-driven elimination
