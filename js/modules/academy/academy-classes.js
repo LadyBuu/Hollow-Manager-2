@@ -1,35 +1,54 @@
 /**
  * js/modules/academy/academy-classes.js - Academy Classes
- * SINGLE SOURCE OF TRUTH for all academy class ENTITY data and operations
+ * SINGLE SOURCE OF TRUTH for all academy class ENTITY data AND
+ * character ↔ class membership mutations.
+ *
  * Path: js/modules/academy/academy-classes.js
  *
  * This module is responsible for:
  *   - Class entity CRUD operations (create, update, delete)
  *   - Class lookup (by ID, by name, by status)
  *   - Class entity mutations
+ *   - Character ↔ class membership mutations (addToClass,
+ *     removeClassById, addClassByName, removeFromAllClasses)
  *
  * This module is NOT responsible for:
- *   - Class membership storage. Membership lives on character.classIds.
- *   - Class roster derivation. AcademyQueries derives rosters from
+ *   - Class membership STORAGE. Membership lives on
+ *     character.classIds. That fact is unchanged by S10.1; what
+ *     changed is that the mutations which write to that array now
+ *     live here rather than in the character suite.
+ *   - Class roster DERIVATION. AcademyQueries derives rosters from
  *     character.classIds.
- *   - Character ↔ class relationship mutations. Those are owned by
- *     CharacterClasses.
  *   - Cross-domain cascade cleanup. That is owned by AcademyCascade.
  *
  * IMPORTANT (v15+):
- *   - This module OWNS class ENTITIES, not membership.
+ *   - This module OWNS class ENTITIES and now OWNS the mutations
+ *     that write character.classIds.
  *   - academy.classStudents no longer exists. It was removed in v15
  *     and must never be reintroduced.
  *   - Character membership is stored on character.classIds[].
- *   - The academy roster is DERIVED: characters whose classIds include
- *     classId. AcademyQueries owns that derivation.
- *   - This module's legacy membership methods (addStudent, removeStudent)
- *     are thin DELEGATORS to CharacterClasses. They exist for backwards
- *     compatibility during the Academy UI rework.
+ *   - The academy roster is DERIVED: characters whose classIds
+ *     include classId. AcademyQueries owns that derivation.
+ *
+ * S10.1 MIGRATION:
+ *   The four membership mutations (addToClass, removeClassById,
+ *   addClassByName, removeFromAllClasses) and the two
+ *   classIds-normalisation helpers (normaliseClassIds,
+ *   getNormalisedClassIds) were moved here from
+ *   character-classes.js. That file has been deleted.
+ *
+ *   The membership mutations previously delegated their class reads
+ *   through the retired AcademyQueries facade. They now go directly
+ *   to AcademyClasses's own internal accessors (getClassInternal,
+ *   getClassByNameInternal). This is the same class entity data,
+ *   read from the same store; the intermediate facade is gone.
+ *
+ *   The legacy addStudent / removeStudent shims that delegate back to
+ *   character-classes.js were deleted. Nothing calls them.
  *
  * READ SAFETY (Phase 2):
- *   - getAcademyStore() returns null (does NOT create academy.{...}) when
- *     the store is missing. Reads are side-effect free.
+ *   - getAcademyStore() returns null (does NOT create academy.{...})
+ *     when the store is missing. Reads are side-effect free.
  *   - Public lookups return DEEP CLONES.
  *   - Internal lookups return LIVE REFERENCES.
  *   - Pipeline validate() callbacks read from the `appData` argument.
@@ -59,7 +78,6 @@
  *   - window.IdUtils (from id-utils.js) - MANDATORY
  *   - window.ValidationUtils (from validation-utils.js) - MANDATORY
  *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
- *   - window.CharacterClasses (from character-classes.js) - LAZY
  *   - window.AcademyCascade (from academy-cascade.js) - LAZY
  *     When present, cross-domain cleanup on delete routes through it.
  *     When absent, cross-domain cleanup is skipped (the cascade
@@ -78,9 +96,11 @@
  *   var all = classes.getClasses();
  *   var byName = classes.getClassByName('Class of 2026');
  *
- *   // DEPRECATED membership delegates
- *   var result = classes.addStudent('class_123', 'student_456');
- *   var result = classes.removeStudent('class_123', 'student_456');
+ *   // Membership mutations (moved here in S10.1)
+ *   classes.addToClass('char_456', 'class_123').then(...);
+ *   classes.removeClassById('char_456', 'class_123').then(...);
+ *   classes.addClassByName('char_456', 'New Class').then(...);
+ *   classes.removeFromAllClasses('char_456').then(...);
  */
 
 (function() {
@@ -130,10 +150,6 @@
     // ============================================================
     // LAZY LOADING HELPERS
     // ============================================================
-
-    function getCharacterClasses() {
-        return window.CharacterClasses || null;
-    }
 
     function getAcademyCascade() {
         return window.AcademyCascade || null;
@@ -658,31 +674,6 @@
     }
 
     // ============================================================
-    // MEMBERSHIP - DEPRECATED DELEGATORS
-    // ============================================================
-    //
-    // These functions exist only for backwards compatibility while
-    // the Academy UI is being reworked. They delegate to
-    // CharacterClasses, which is the canonical membership mutation
-    // path.
-
-    function addStudent(classId, studentId) {
-        var CharacterClasses = getCharacterClasses();
-        if (!CharacterClasses || typeof CharacterClasses.addToClass !== 'function') {
-            return Promise.resolve(failure('CharacterClasses.addToClass is not available.'));
-        }
-        return CharacterClasses.addToClass(studentId, classId);
-    }
-
-    function removeStudent(classId, studentId) {
-        var CharacterClasses = getCharacterClasses();
-        if (!CharacterClasses || typeof CharacterClasses.removeClassById !== 'function') {
-            return Promise.resolve(failure('CharacterClasses.removeClassById is not available.'));
-        }
-        return CharacterClasses.removeClassById(studentId, classId);
-    }
-
-    // ============================================================
     // PUBLIC READ SURFACE (CLONES)
     // ============================================================
 
@@ -732,6 +723,471 @@
     }
 
     // ============================================================
+    // CLASS IDS NORMALISATION (moved here in S10.1)
+    // ============================================================
+    //
+    // The character record's classIds array can drift. Duplicates,
+    // empty strings, and non-array shapes all show up in practice.
+    // These two helpers are the canonical shape enforcement.
+    //
+    // normaliseClassIds(char) MUTATES the character in place, replacing
+    //   char.classIds with a deduplicated, filtered array.
+    // getNormalisedClassIds(char) RETURNS a deduplicated, filtered
+    //   array without touching the character.
+
+    function normaliseClassIds(char) {
+        if (!char) return;
+        if (!Array.isArray(char.classIds)) {
+            char.classIds = [];
+            return;
+        }
+
+        var seen = new Set();
+        char.classIds = char.classIds.filter(function(id) {
+            if (id === undefined || id === null || id === '') return false;
+            var key = String(id);
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    }
+
+    function getNormalisedClassIds(char) {
+        if (!char) return [];
+        if (!Array.isArray(char.classIds)) return [];
+
+        var seen = new Set();
+        return char.classIds.filter(function(id) {
+            if (id === undefined || id === null || id === '') return false;
+            var key = String(id);
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    }
+
+    // ============================================================
+    // MEMBERSHIP MUTATIONS (moved here in S10.1)
+    // ============================================================
+    //
+    // These four functions write character.classIds. They route
+    // through MutationPipeline. The class lookup goes through
+    // AcademyClasses's own internal accessors (getClassInternal,
+    // getClassByNameInternal), which read from the same store as the
+    // entity CRUD above. There is no facade between them.
+
+    /**
+     * Add a character to a class by class ID.
+     *
+     * @param {string} charId
+     * @param {string} classId
+     * @returns {Promise<{success, data?, message?}>}
+     */
+    function addToClass(charId, classId) {
+        if (!charId) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
+        if (!classId) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+
+        // Character read goes through CharacterQueries lazily; the
+        // character store is not owned here.
+        var CharacterQueries = window.CharacterQueries;
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            return Promise.resolve(failure('CharacterQueries is not available.'));
+        }
+
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char) {
+            return Promise.resolve(failure('Character not found.'));
+        }
+
+        var cls = getClassInternal(classId);
+        if (!cls) {
+            return Promise.resolve(failure('Class not found.'));
+        }
+
+        var classIds = getNormalisedClassIds(char);
+        if (classIds.some(function(cid) { return String(cid) === String(classId); })) {
+            return Promise.resolve(failure('Character is already in this class.'));
+        }
+
+        var name = CharacterQueries.getDisplayName(char);
+
+        return MutationPipeline.performMutation({
+            validate: function(data) {
+                var currentChar = CharacterQueries.getCharacterById(charId);
+                if (!currentChar) {
+                    return { valid: false, message: 'Character no longer exists.' };
+                }
+
+                if (!getClassInternal(classId)) {
+                    return { valid: false, message: 'Class no longer exists.' };
+                }
+
+                var currentClassIds = getNormalisedClassIds(currentChar);
+                if (currentClassIds.some(function(cid) { return String(cid) === String(classId); })) {
+                    return { valid: false, message: 'Character is already in this class.' };
+                }
+
+                return { valid: true };
+            },
+
+            mutate: function(data) {
+                var currentChar = data.characters.find(function(c) {
+                    return c && String(c.id) === String(charId);
+                });
+
+                if (!currentChar) {
+                    throw new Error('Character not found in data store.');
+                }
+
+                normaliseClassIds(currentChar);
+
+                if (currentChar.classIds.some(function(cid) { return String(cid) === String(classId); })) {
+                    throw new Error('Character is already in this class.');
+                }
+
+                currentChar.classIds.push(classId);
+
+                return {
+                    characterId: charId,
+                    classId: classId,
+                    className: cls.name
+                };
+            },
+
+            logMessage: function() {
+                return 'Added ' + name + ' to class: ' + cls.name;
+            },
+
+            successMessage: function() {
+                return 'Character added to class successfully!';
+            },
+            failureMessage: 'Failed to add character to class.'
+        });
+    }
+
+    /**
+     * Remove a character from a class by class ID.
+     *
+     * @param {string} charId
+     * @param {string} classId
+     * @returns {Promise<{success, data?, message?}>}
+     */
+    function removeClassById(charId, classId) {
+        if (!charId) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
+        if (!classId) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+
+        var CharacterQueries = window.CharacterQueries;
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            return Promise.resolve(failure('CharacterQueries is not available.'));
+        }
+
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char) {
+            return Promise.resolve(failure('Character not found.'));
+        }
+
+        var cls = getClassInternal(classId);
+        if (!cls) {
+            return Promise.resolve(failure('Class not found.'));
+        }
+
+        var classIds = getNormalisedClassIds(char);
+        if (!classIds.some(function(cid) { return String(cid) === String(classId); })) {
+            return Promise.resolve(failure('Character is not in this class.'));
+        }
+
+        var name = CharacterQueries.getDisplayName(char);
+
+        return MutationPipeline.performMutation({
+            validate: function(data) {
+                var currentChar = CharacterQueries.getCharacterById(charId);
+                if (!currentChar) {
+                    return { valid: false, message: 'Character no longer exists.' };
+                }
+
+                if (!getClassInternal(classId)) {
+                    return { valid: false, message: 'Class no longer exists.' };
+                }
+
+                var currentClassIds = getNormalisedClassIds(currentChar);
+                if (!currentClassIds.some(function(cid) { return String(cid) === String(classId); })) {
+                    return { valid: false, message: 'Character is not in this class.' };
+                }
+
+                return { valid: true };
+            },
+
+            mutate: function(data) {
+                var currentChar = data.characters.find(function(c) {
+                    return c && String(c.id) === String(charId);
+                });
+
+                if (!currentChar) {
+                    throw new Error('Character not found in data store.');
+                }
+
+                normaliseClassIds(currentChar);
+
+                var found = false;
+                currentChar.classIds = currentChar.classIds.filter(function(cid) {
+                    if (String(cid) === String(classId)) {
+                        found = true;
+                        return false;
+                    }
+                    return true;
+                });
+
+                if (!found) {
+                    throw new Error('Character is not in this class.');
+                }
+
+                return {
+                    characterId: charId,
+                    classId: classId,
+                    className: cls.name
+                };
+            },
+
+            logMessage: function() {
+                return 'Removed ' + name + ' from class: ' + cls.name;
+            },
+
+            successMessage: function() {
+                return 'Character removed from class successfully!';
+            },
+            failureMessage: 'Failed to remove character from class.'
+        });
+    }
+
+    /**
+     * Add a character to a class by class name. Creates the class
+     * entity inside the same transaction when the name does not
+     * already resolve to a class.
+     *
+     * ENTITY SHAPE CONTRACT:
+     *   The created class entity matches AcademyClasses.create's
+     *   shape exactly: { id, name, status, year, description,
+     *   instructorId, createdAt, updatedAt }.
+     *
+     * @param {string} charId
+     * @param {string} className
+     * @returns {Promise<{success, data?, message?}>}
+     */
+    function addClassByName(charId, className) {
+        if (!charId) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
+
+        if (!className || typeof className !== 'string' || className.trim() === '') {
+            return Promise.resolve(failure('Class name is required.'));
+        }
+
+        var trimmedName = className.trim();
+
+        var CharacterQueries = window.CharacterQueries;
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            return Promise.resolve(failure('CharacterQueries is not available.'));
+        }
+
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char) {
+            return Promise.resolve(failure('Character not found.'));
+        }
+
+        var existingClass = getClassByNameInternal(trimmedName);
+        var name = CharacterQueries.getDisplayName(char);
+
+        if (existingClass) {
+            var classIds = getNormalisedClassIds(char);
+            if (classIds.some(function(cid) { return String(cid) === String(existingClass.id); })) {
+                return Promise.resolve(failure('Character is already in this class.'));
+            }
+        }
+
+        return MutationPipeline.performMutation({
+            validate: function(data) {
+                var currentChar = CharacterQueries.getCharacterById(charId);
+                if (!currentChar) {
+                    return { valid: false, message: 'Character no longer exists.' };
+                }
+
+                var currentClass = getClassByNameInternal(trimmedName);
+                if (currentClass) {
+                    var currentClassIds = getNormalisedClassIds(currentChar);
+                    if (currentClassIds.some(function(cid) { return String(cid) === String(currentClass.id); })) {
+                        return { valid: false, message: 'Character is already in this class.' };
+                    }
+                }
+
+                return { valid: true };
+            },
+
+            mutate: function(data) {
+                // Look for the class entity inside the transaction's
+                // data snapshot, not the live store. This makes the
+                // operation consistent with the rest of the pipeline.
+                var classId = null;
+                var className_ = trimmedName;
+                var classCreated = false;
+
+                if (!data.academy || typeof data.academy !== 'object') {
+                    data.academy = {};
+                }
+                if (!data.academy.graduatingClasses ||
+                    typeof data.academy.graduatingClasses !== 'object' ||
+                    Array.isArray(data.academy.graduatingClasses)) {
+                    data.academy.graduatingClasses = {};
+                }
+
+                // Look up existing class by name inside the snapshot.
+                var nameLower = trimmedName.toLowerCase();
+                var existing = null;
+                Object.keys(data.academy.graduatingClasses).forEach(function(id) {
+                    var c = data.academy.graduatingClasses[id];
+                    if (c && c.name && String(c.name).toLowerCase() === nameLower) {
+                        existing = c;
+                        classId = id;
+                    }
+                });
+
+                // Create the class entity directly if it doesn't exist.
+                // We do NOT call AcademyClasses.create here — that is a
+                // separate Promise-based pipeline call, and nesting
+                // pipelines is not supported.
+                if (!existing) {
+                    var now = new Date().toISOString();
+                    classId = IdUtils.generateId('class');
+                    var newClass = {
+                        id: classId,
+                        name: trimmedName,
+                        status: 'active',
+                        year: null,
+                        description: '',
+                        instructorId: null,
+                        createdAt: now,
+                        updatedAt: now
+                    };
+                    data.academy.graduatingClasses[classId] = newClass;
+                    existing = newClass;
+                    classCreated = true;
+                    className_ = newClass.name;
+                } else {
+                    className_ = existing.name;
+                }
+
+                // Add classId to the character.
+                var currentChar = data.characters.find(function(c) {
+                    return c && String(c.id) === String(charId);
+                });
+
+                if (!currentChar) {
+                    throw new Error('Character not found in data store.');
+                }
+
+                normaliseClassIds(currentChar);
+
+                if (currentChar.classIds.some(function(cid) { return String(cid) === String(classId); })) {
+                    throw new Error('Character is already in this class.');
+                }
+
+                currentChar.classIds.push(classId);
+
+                return {
+                    characterId: charId,
+                    classId: classId,
+                    className: className_,
+                    classCreated: classCreated
+                };
+            },
+
+            logMessage: function(result) {
+                var action = result.classCreated ? 'created and added to' : 'added to';
+                return action + ' class "' + result.className + '" for ' + name;
+            },
+
+            successMessage: function(result) {
+                var action = result.classCreated ? 'created and added to' : 'added to';
+                return 'Character ' + action + ' class "' + result.className + '"!';
+            },
+            failureMessage: 'Failed to add character to class.'
+        });
+    }
+
+    /**
+     * Remove a character from every class they are a member of.
+     *
+     * @param {string} charId
+     * @returns {Promise<{success, data?, message?}>}
+     */
+    function removeFromAllClasses(charId) {
+        if (!charId) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
+
+        var CharacterQueries = window.CharacterQueries;
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            return Promise.resolve(failure('CharacterQueries is not available.'));
+        }
+
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char) {
+            return Promise.resolve(failure('Character not found.'));
+        }
+
+        var classIds = getNormalisedClassIds(char);
+        if (classIds.length === 0) {
+            return Promise.resolve(success({
+                count: 0,
+                message: 'Character is not in any classes.'
+            }));
+        }
+
+        var name = CharacterQueries.getDisplayName(char);
+
+        return MutationPipeline.performMutation({
+            validate: function(data) {
+                var currentChar = CharacterQueries.getCharacterById(charId);
+                if (!currentChar) {
+                    return { valid: false, message: 'Character no longer exists.' };
+                }
+                return { valid: true };
+            },
+
+            mutate: function(data) {
+                var currentChar = data.characters.find(function(c) {
+                    return c && String(c.id) === String(charId);
+                });
+
+                if (!currentChar) {
+                    throw new Error('Character not found in data store.');
+                }
+
+                var count = getNormalisedClassIds(currentChar).length;
+                currentChar.classIds = [];
+
+                return { removedCount: count };
+            },
+
+            logMessage: function(result) {
+                return 'Removed ' + result.removedCount + ' classes from ' + name;
+            },
+
+            successMessage: function(result) {
+                return 'Removed ' + result.removedCount + ' classes from ' + name + '.';
+            },
+            failureMessage: 'Failed to remove classes.'
+        });
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -741,9 +1197,11 @@
         update: update,
         delete: deleteClass,
 
-        // ---- Membership (DEPRECATED - delegates to CharacterClasses) ----
-        addStudent: addStudent,
-        removeStudent: removeStudent,
+        // ---- Membership mutations (S10.1) ----
+        addToClass: addToClass,
+        removeClassById: removeClassById,
+        addClassByName: addClassByName,
+        removeFromAllClasses: removeFromAllClasses,
 
         // ---- Public lookups (CLONES) ----
         getClass: getClass,
@@ -762,6 +1220,10 @@
         getClassDisplayNameInternal: getClassDisplayNameInternal,
         getCharacterClassNamesInternal: getCharacterClassNamesInternal,
         getCharacterClassesInternal: getCharacterClassesInternal,
+
+        // ---- Class IDs normalisation (S10.1) ----
+        normaliseClassIds: normaliseClassIds,
+        getNormalisedClassIds: getNormalisedClassIds,
 
         // ---- Constants ----
         VALID_STATUSES: VALID_STATUSES,
