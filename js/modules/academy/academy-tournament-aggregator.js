@@ -12,6 +12,7 @@
  *   - Surface eliminations with provenance for the UI
  *   - Surface final passers
  *   - Resolve participant and team display names for the UI
+ *   - Stamp prior-round outcomes on pool items (C8)
  *
  * NOT RESPONSIBILITIES:
  *   - Mutations
@@ -19,10 +20,12 @@
  *   - Domain validation (Schema / Rules)
  *   - Match generation (TournamentMatches)
  *   - Elimination writes (TournamentEliminationCascade)
+ *   - Prior-round derivation (TournamentQueries owns it; this
+ *     module only consumes the result)
  *
  * ARCHITECTURE:
  *
- *     TournamentQueries            (reads)
+ *     TournamentQueries            (reads + prior-round derivation)
  *     TournamentSchema             (structural interpretation)
  *     AcademyAggregator            (class + roster)
  *     TeamQueries                  (team identity)
@@ -77,6 +80,27 @@
  *   is available. When it is not, the pool does not fabricate
  *   "everyone is eligible" and does not fabricate "everyone is
  *   eliminated"; it defers the elimination flag entirely.
+ *
+ * PRIOR-ROUND OUTCOMES (C8):
+ *   The pool is opened by the Add-Match / Edit-Match modals, which
+ *   are always scoped to a specific target round. When the caller
+ *   provides `options.currentRoundId`, this aggregator resolves the
+ *   round IMMEDIATELY BEFORE it and stamps each pool item with
+ *   `priorRoundOutcome`:
+ *
+ *     'pass'  — the participant passed in the previous round
+ *     'retry' — the participant retried in the previous round
+ *     null    — no badge: no prior round, prior round incomplete,
+ *               or the participant did not appear in a completed
+ *               match of the prior round
+ *
+ *   The derivation lives in TournamentQueries.getPriorRoundOutcomes.
+ *   This module does not walk rounds itself; it consumes the map.
+ *
+ *   When `options.currentRoundId` is absent (e.g. the top-level view
+ *   render, where no target round exists), every pool item carries
+ *   `priorRoundOutcome: null`. The badge simply does not render.
+ *   There is no "guess the round" heuristic.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.AcademyAggregator
@@ -145,6 +169,11 @@
     if (!TournamentQueries ||
         typeof TournamentQueries.getFinalPassers !== 'function') {
         _missing.push('TournamentQueries.getFinalPassers');
+    }
+    // C8 — prior-round derivation.
+    if (!TournamentQueries ||
+        typeof TournamentQueries.getPriorRoundOutcomes !== 'function') {
+        _missing.push('TournamentQueries.getPriorRoundOutcomes');
     }
 
     if (!Schema ||
@@ -221,6 +250,23 @@
         return CalendarValidation.parseWeek(week);
     }
 
+    /**
+     * Resolve the target round ID from an options bag.
+     *
+     * Accepts a non-empty string. Anything else normalises to null,
+     * meaning "no target round; do not stamp prior-round outcomes."
+     */
+    function resolveCurrentRoundId(options) {
+        if (!options || typeof options !== 'object') {
+            return null;
+        }
+        var value = options.currentRoundId;
+        if (!isNonEmptyString(value)) {
+            return null;
+        }
+        return String(value);
+    }
+
     // ============================================================
     // NAME RESOLUTION
     // ============================================================
@@ -259,10 +305,17 @@
      *
      * @param {string} classId
      * @param {number|string} week
+     * @param {object} [options]
+     * @param {string} [options.currentRoundId]
+     *   The round the picker is targeting. When provided, the pool
+     *   carries `priorRoundOutcome` per item, derived from the round
+     *   immediately before this one. When omitted, every pool item
+     *   carries `priorRoundOutcome: null` and no badge renders.
      * @returns {object} View model
      */
-    function getExamViewModel(classId, week) {
+    function getExamViewModel(classId, week, options) {
         var weekNum = resolveWeek(week);
+        var currentRoundId = resolveCurrentRoundId(options);
 
         var classListFull = AcademyAggregator.getClassListViewModel() || [];
         var classListVM = classListFull.map(function(c) {
@@ -314,7 +367,8 @@
         var pool = buildExamPool(
             selectedClass.id,
             weekNum,
-            examVM
+            examVM,
+            currentRoundId
         );
 
         return {
@@ -653,8 +707,22 @@
     // When it is absent, the pool does not misrepresent elimination
     // state: characters are included, and the `eliminated` flag is
     // false because we do not know. That is the honest answer.
+    //
+    // PRIOR-ROUND OUTCOMES (C8):
+    //   When `currentRoundId` is provided AND an exam exists, this
+    //   function calls TournamentQueries.getPriorRoundOutcomes(examId,
+    //   currentRoundId) once and stamps each pool item with the
+    //   participant's 'pass' | 'retry' outcome, or null.
+    //
+    //   The map lookup key is the participant ID for individuals,
+    //   and the team ID for team mode. The derivation itself is
+    //   mode-agnostic: TournamentQueries reads the appropriate result
+    //   map (results / teamResults) based on the match type.
+    //
+    //   When currentRoundId is null, or no exam exists, the map is
+    //   empty and every item carries priorRoundOutcome: null.
 
-    function buildExamPool(classId, week, examVM) {
+    function buildExamPool(classId, week, examVM, currentRoundId) {
         var mode = 'individuals';
         if (examVM && examVM.mode) {
             mode = examVM.mode;
@@ -670,13 +738,79 @@
             }
         }
 
+        var priorOutcomes = resolvePriorOutcomes(
+            examVM,
+            currentRoundId
+        );
+
         if (mode === 'teams') {
-            return buildTeamPoolForClass(classId, week, inExamSet);
+            return buildTeamPoolForClass(
+                classId, week, inExamSet, priorOutcomes
+            );
         }
-        return buildCharacterPoolForClass(classId, week, inExamSet);
+        return buildCharacterPoolForClass(
+            classId, week, inExamSet, priorOutcomes
+        );
     }
 
-    function buildCharacterPoolForClass(classId, week, inExamSet) {
+    /**
+     * Build the prior-outcome map for a pool.
+     *
+     * Returns an empty object when there is no exam, no current round,
+     * or the derivation throws. A throwing query is a bug, but a
+     * broken indicator must not take down the pool render. The
+     * console gets the error; the pool falls back to "no badges".
+     */
+    function resolvePriorOutcomes(examVM, currentRoundId) {
+        if (!examVM || !isNonEmptyString(examVM.id)) {
+            return {};
+        }
+        if (!isNonEmptyString(currentRoundId)) {
+            return {};
+        }
+
+        try {
+            var map = TournamentQueries.getPriorRoundOutcomes(
+                examVM.id,
+                currentRoundId
+            );
+            if (!map || typeof map !== 'object') {
+                return {};
+            }
+            return map;
+        } catch (e) {
+            console.warn(
+                '[AcademyTournamentAggregator] ' +
+                'getPriorRoundOutcomes failed:', e
+            );
+            return {};
+        }
+    }
+
+    /**
+     * Read the prior-round outcome for a pool item from the
+     * pre-resolved map.
+     *
+     * Returns 'pass' | 'retry' | null. Anything else is coerced to
+     * null. The view treats null as "no badge".
+     */
+    function readPriorOutcome(map, id) {
+        if (!map || !isNonEmptyString(id)) {
+            return null;
+        }
+        var value = map[String(id)];
+        if (value === 'pass' || value === 'retry') {
+            return value;
+        }
+        return null;
+    }
+
+    function buildCharacterPoolForClass(
+        classId,
+        week,
+        inExamSet,
+        priorOutcomes
+    ) {
         var students = AcademyAggregator.getClassStudentsViewModel(
             classId
         ) || [];
@@ -711,14 +845,22 @@
                 name: student.name,
                 subtitle: student.status || '',
                 inExam: inExamSet[String(student.id)] === true,
-                eliminated: eliminated
+                eliminated: eliminated,
+                priorRoundOutcome: readPriorOutcome(
+                    priorOutcomes, student.id
+                )
             });
         }
 
         return pool;
     }
 
-    function buildTeamPoolForClass(classId, week, inExamSet) {
+    function buildTeamPoolForClass(
+        classId,
+        week,
+        inExamSet,
+        priorOutcomes
+    ) {
         var teams = TeamQueries.getTeamsByClass(classId) || [];
 
         var pool = [];
@@ -748,7 +890,10 @@
                     : 'Unnamed Team',
                 subtitle: subtitleParts.join(' \u00b7 '),
                 inExam: inExamSet[String(team.id)] === true,
-                eliminated: false
+                eliminated: false,
+                priorRoundOutcome: readPriorOutcome(
+                    priorOutcomes, team.id
+                )
             });
         }
 
