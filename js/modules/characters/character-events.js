@@ -24,14 +24,24 @@
  *   - refreshUI(char) is the SINGLE refresh entry point for the
  *     character module.
  *   - It re-renders the class filter dropdown, the character list,
- *     the academic tab, the elimination views, and the dashboard
- *     stats. It does NOT re-render the whole character form — the
- *     caller is responsible for that via CharacterForm.render(id),
- *     because some handlers (add class, remove class) want to
- *     re-render the form itself to refresh the dropdown + tag list.
+ *     the academic tab, and the dashboard stats. It does NOT
+ *     re-render the whole character form — the caller is responsible
+ *     for that via CharacterForm.render(id), because some handlers
+ *     (add class, remove class) want to re-render the form itself to
+ *     refresh the dropdown + tag list.
  *   - The academic tab refresh delegates to
  *     CharacterClassView.renderAcademicTab, which is the SINGLE
- *     rendering entry point for the academic tab.
+ *     rendering entry point for the academic tab. It now renders the
+ *     elimination status banner and both elimination lists as part
+ *     of its output.
+ *
+ * ELIMINATION OWNERSHIP:
+ *   Standalone eliminations are managed by AcademyEliminations
+ *   (js/modules/academy/academy-eliminations.js). The Drop Out action
+ *   routes through there (initiated from the Academy People view).
+ *   The academic tab's standalone-eliminations list emits
+ *   [data-action="remove-standalone-elim"] buttons; this module
+ *   handles the click and calls AcademyEliminations.removeStandalone.
  *
  * EDIT FLOW (characterEdit event):
  *   - CharacterDetail dispatches a `characterEdit` CustomEvent on
@@ -62,7 +72,6 @@
     var CharacterCRUD = window.CharacterCRUD;
     var CharacterForm = window.CharacterForm;
     var CharacterClassView = window.CharacterClassView;
-    var CharacterEliminationView = window.CharacterEliminationView;
     var CharacterGenerator = window.CharacterGenerator;
     var CharacterClasses = window.CharacterClasses;
     var CharacterStats = window.CharacterStats;
@@ -91,10 +100,18 @@
     var _socialEditId = null;
     var _socialCoreInitialized = false;
 
-    // [FIX] Guard against duplicate characterEdit listeners across
+    // Guard against duplicate characterEdit listeners across
     // re-inits. The listener lives on document and outlives container
     // swaps, so we install it once and never re-add.
     var _characterEditListenerInstalled = false;
+
+    // ============================================================
+    // LAZY DEPENDENCY ACCESSORS
+    // ============================================================
+
+    function getAcademyEliminations() {
+        return window.AcademyEliminations || null;
+    }
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -133,9 +150,6 @@
         }
         if (!CharacterClassView || typeof CharacterClassView.renderAcademicTab !== 'function') {
             missing.push('CharacterClassView.renderAcademicTab');
-        }
-        if (!CharacterEliminationView || typeof CharacterEliminationView.renderTournamentEliminations !== 'function') {
-            missing.push('CharacterEliminationView.renderTournamentEliminations');
         }
         if (!CharacterGenerator || typeof CharacterGenerator.generatePhysical !== 'function') {
             missing.push('CharacterGenerator.generatePhysical');
@@ -239,25 +253,26 @@
     //
     // REFRESH SCOPE:
     //   - Character list panel
-    //   - Academic tab (via CharacterClassView.renderAcademicTab)
-    //   - Elimination views
+    //   - Academic tab (via CharacterClassView.renderAcademicTab,
+    //     which renders the class chips, enrollment, grades, the
+    //     elimination status banner, and both elimination lists)
     //   - Dashboard stats
     //
     // NOT IN SCOPE:
-    //   - The character form itself. Callers that mutate form-visible
-    //     state (add class, remove class) must call CharacterForm.render(id)
-    //     themselves, because the form's tab structure needs a full rebuild
-    //     to pick up the change (dropdown loses the added class, tag list
-    //     gains it, etc.). Attempting to patch the form piecemeal here
-    //     would duplicate CharacterForm's rendering logic.
+    //   - The character form's other tabs. Callers that mutate
+    //     form-visible state on those tabs must call
+    //     CharacterForm.render(id) themselves.
     //
     // CHARACTER CLASS VIEW CONTRACT:
-    //   - renderAcademicTab(char, container) is the ONLY entry point for
-    //     the academic tab. It internally dispatches to
+    //   - renderAcademicTab(char, container) is the ONLY entry point
+    //     for the academic tab. It internally dispatches to
     //     renderAddClassSection / renderClassesSection /
-    //     renderAcademicTeamsSection / renderGradesSection.
-    //   - Do NOT call the individual section renderers from here. They
-    //     are implementation details of renderAcademicTab.
+    //     renderEliminationStatusSection / renderAcademicTeamsSection /
+    //     renderEnrollmentSection / renderGradesSection /
+    //     renderTournamentEliminationsSection /
+    //     renderStandaloneEliminationsSection.
+    //   - Do NOT call the individual section renderers from here.
+    //     They are implementation details of renderAcademicTab.
     //
     // @param {object|null} char - Character object (or null to clear)
     function refreshUI(char) {
@@ -272,20 +287,6 @@
             } catch (e) {
                 console.warn('[CharacterEvents] renderAcademicTab failed:', e);
             }
-        }
-
-        var tournElimContainer = document.getElementById('tournament-eliminations-view');
-        if (tournElimContainer && CharacterEliminationView) {
-            try {
-                CharacterEliminationView.renderTournamentEliminations(char, tournElimContainer);
-            } catch (e) {}
-        }
-
-        var standaloneElimContainer = document.getElementById('standalone-eliminations-container');
-        if (standaloneElimContainer && CharacterEliminationView) {
-            try {
-                CharacterEliminationView.renderStandaloneEliminations(char, standaloneElimContainer);
-            } catch (e) {}
         }
 
         if (typeof window.updateDashboardStats === 'function') {
@@ -379,8 +380,6 @@
             CharacterForm.render(charId);
             refreshUI(char);
 
-            // Scroll the form into view so the user sees the edit
-            // open. Matches handleCharacterSelect's behaviour.
             var formContainer = document.getElementById('character-form-container');
             if (formContainer) {
                 setTimeout(function() {
@@ -388,8 +387,6 @@
                 }, 100);
             }
 
-            // On mobile, close the character list panel so the form
-            // is not obscured. Matches handleCharacterSelect.
             if (window.innerWidth < UI_CONSTANTS.MOBILE_BREAKPOINT &&
                 typeof window.toggleCharacterList === 'function') {
                 window.toggleCharacterList(false);
@@ -423,7 +420,7 @@
         // mutations work even if the top-level Social tab was never opened.
         ensureSocialCoreInitialized();
 
-        // [FIX] Install the characterEdit listener exactly once.
+        // Install the characterEdit listener exactly once.
         installCharacterEditListener();
 
         // Static container elements
@@ -445,6 +442,7 @@
         bindCareerButtons();
         bindClassDropdown();
         bindClassTagRemoval();
+        bindStandaloneElimRemoval();
 
         // Combat tab bindings
         bindCombatRollButtons();
@@ -770,7 +768,7 @@
     }
 
     // ============================================================
-    // ACADEMIC TAB - Class dropdown + tag removal
+    // ACADEMIC TAB - Class dropdown + tag removal + elimination removal
     // ============================================================
     //
     // The Academic tab no longer uses a free-text class tag input.
@@ -779,8 +777,14 @@
     // selected classId and calls CharacterClasses.addToClass, which
     // goes through MutationPipeline and is Promise-based.
     //
-    // Removal still uses the same .remove-class-tag buttons rendered
-    // by CharacterClassView.
+    // Removal of a class tag still uses the same .remove-class-tag
+    // buttons rendered by CharacterClassView.
+    //
+    // Standalone elimination removal uses
+    // [data-action="remove-standalone-elim"] buttons rendered by
+    // CharacterClassView. The click routes to
+    // AcademyEliminations.removeStandalone, which is the character-
+    // side mutation authority for standalone eliminations.
 
     function bindClassDropdown() {
         addSafeDelegatedListener('#academic-class-add-btn', 'click', function(e, target) {
@@ -808,6 +812,67 @@
             var classId = target.dataset.id;
             if (classId) { handleRemoveClass(classId); }
         });
+    }
+
+    function bindStandaloneElimRemoval() {
+        addSafeDelegatedListener(
+            '[data-action="remove-standalone-elim"]',
+            'click',
+            function(e, target) {
+                e.preventDefault();
+                e.stopPropagation();
+                handleRemoveStandaloneElim(target);
+            }
+        );
+    }
+
+    function handleRemoveStandaloneElim(buttonEl) {
+        if (!buttonEl || !buttonEl.dataset) { return; }
+
+        var eliminationId = buttonEl.dataset.eliminationId;
+        var charId = buttonEl.dataset.characterId;
+
+        if (!eliminationId) {
+            notify('Elimination ID missing.', 'error');
+            return;
+        }
+        if (!charId) {
+            charId = typeof window.getCurrentEditId === 'function'
+                ? window.getCurrentEditId()
+                : null;
+        }
+        if (!charId) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        var AcademyEliminations = getAcademyEliminations();
+        if (!AcademyEliminations ||
+            typeof AcademyEliminations.removeStandalone !== 'function') {
+            notify('Elimination module not available.', 'error');
+            return;
+        }
+
+        if (!confirm('Remove this elimination record? The character ' +
+            'will be eligible for future exams again.')) {
+            return;
+        }
+
+        AcademyEliminations.removeStandalone(charId, eliminationId)
+            .then(function(result) {
+                if (result && result.success) {
+                    var refreshed = CharacterQueries.getCharacterById(charId);
+                    refreshUI(refreshed || null);
+                } else if (result && result.message) {
+                    notify(result.message, 'error');
+                }
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[CharacterEvents] removeStandalone failed:', err
+                );
+                notify('Failed to remove elimination.', 'error');
+            });
     }
 
     // ============================================================
