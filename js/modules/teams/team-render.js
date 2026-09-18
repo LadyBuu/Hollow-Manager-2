@@ -52,6 +52,14 @@
  *   (immutable); role and leavePeriod are editable. Role applies to
  *   the whole member entry, not the single stint.
  *
+ *   NOTE (BUG-E13): the .edit-member button that used to appear on
+ *   each compact-modal member row has been removed. Per-stint editing
+ *   is now handled by the full member manager
+ *   (TeamEvents.openMemberManager), which renders the same markup as
+ *   the academic member manager. The compact modal still supports
+ *   adding members and removing stints; it no longer offers a
+ *   single-row editor.
+ *
  * TEAM LIST MARKUP (mobile contract):
  *   renderList emits each team as a five-cell row. The first cell is
  *   wrapped in .team-name-cell so the mobile card layout can flow it
@@ -498,7 +506,7 @@
     }
 
     // ============================================================
-    // MEMBER LIST (Teams tab modal)
+    // MEMBER LIST (Teams tab modal — compact)
     // ============================================================
     //
     // ONE ROW PER INTERVAL.
@@ -510,6 +518,11 @@
     //
     // Members with intervals: [] show a single "no stints" row with
     // a Remove-member action, since there's no stint to act on.
+    //
+    // NOTE (BUG-E13): the per-row .edit-member button has been
+    // removed. Per-stint editing is handled by the full member
+    // manager (TeamEvents.openMemberManager). The compact modal
+    // still supports adding members and removing stints.
 
     function renderMemberList(membersVM) {
         if (!membersVM || !Array.isArray(membersVM.members)) {
@@ -605,12 +618,11 @@
         html += '</div>';
 
         // ---- Right: per-interval actions ----
+        //
+        // Only Remove is emitted. The .edit-member button has been
+        // removed; per-stint editing lives in the full member
+        // manager. See the file header for details.
         html += '<div class="member-interval-actions">';
-        html += '<button type="button" class="small edit-member" ' +
-                    'data-character-id="' + charAttr + '" ' +
-                    'data-member-id="' + memberIdAttr + '" ' +
-                    'data-join-period="' + joinAttr + '" ' +
-                    'style="font-size:0.6rem;padding:2px 6px;">Edit</button>';
         html += '<button type="button" class="small danger remove-member" ' +
                     'data-character-id="' + charAttr + '" ' +
                     'data-member-id="' + memberIdAttr + '" ' +
@@ -872,6 +884,11 @@
     // Read-only:
     //   - character (display)
     //   - joinPeriod (immutable per the interval model)
+    //
+    // NOTE (BUG-E13): renderMemberForm is no longer invoked by
+    // TeamEvents. It is retained here as a standalone renderer for
+    // any caller that still wants the single-interval editor markup.
+    // The current Teams tab does not open it.
 
     function renderMemberForm(formVM) {
         if (!formVM || !formVM.characterId) {
@@ -1052,7 +1069,7 @@
                 '</div>',
             '</div>',
 
-            '<!-- Member Modal -->',
+            '<!-- Member Modal (compact) -->',
             '<div id="member-modal" class="modal hidden">',
                 '<div class="modal-content">',
                     '<div class="modal-header">',
@@ -1073,17 +1090,6 @@
                             '<p class="empty-state">No members in this team</p>',
                         '</div>',
                     '</div>',
-                '</div>',
-            '</div>',
-
-            '<!-- Edit Member Modal -->',
-            '<div id="edit-member-modal" class="modal hidden">',
-                '<div class="modal-content small">',
-                    '<div class="modal-header">',
-                        '<h3>Edit Member</h3>',
-                        '<button class="close-modal">&times;</button>',
-                    '</div>',
-                    '<div class="modal-body" id="edit-member-body"></div>',
                 '</div>',
             '</div>',
 
