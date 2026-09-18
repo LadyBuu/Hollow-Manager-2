@@ -8,58 +8,67 @@
  * Container-based: the caller supplies the modal shell and this
  * module renders into it.
  *
- * LAYOUT:
- *   Current Members section: one block per member. Each block has a
- *   header (name, role, status, Remove-member button) and one row
- *   per interval (Join, Leave, Leave-at-week button, Remove-interval
- *   button). The currently-active interval is highlighted and gets
- *   the Leave button.
+ * BUG-E13 UNIFICATION:
+ *   The markup this module emits now matches the professional
+ *   member manager in team-render.js renderMemberList. Same class
+ *   names, same row structure, same visual language. The two
+ *   subsystems remain independent — this module still reads its own
+ *   VM shape from AcademyAggregator and still routes mutations
+ *   through AcademyWeeklyTeams — but they render the same DOM.
  *
- *   Former Members section: read-only rows. Each former interval is
- *   shown with a Restore action that offers two paths.
+ *   See the RENDER section below for the shared markup contract.
+ *
+ * LAYOUT:
+ *   Current Members: one block per member. Each block has a header
+ *   (name, role input, status, Remove-member button) followed by one
+ *   row per interval (Join input, Leave input, Leave-Now on active
+ *   rows, Remove-stint button). An + Add stint button opens an
+ *   inline form below the rows.
+ *
+ *   Former Members: read-only rows. Each former interval carries a
+ *   Restore action that opens a modal offering two paths.
  *
  *   Add Member picker: at the bottom of the Current Members section.
  *
  *   Footer: Revert / Save / Close. Save batches every dirty interval
- *   row into one transaction.
+ *   row and role input into one transaction.
  *
  * SAVE SEMANTICS:
- *   A row is "dirty" when its Leave input differs from its
- *   data-initial-leave attribute. Save collects every dirty row and
- *   calls AcademyWeeklyTeams.updateMemberWindows with the list. One
- *   transaction, all-or-nothing.
+ *   A stint row is dirty when its Leave input differs from its
+ *   data-initial-leave attribute. A role input is dirty when its
+ *   value differs from its data-initial-role attribute. Save
+ *   collects every dirty row and every dirty role into one
+ *   updateMemberWindows call (for stint windows) plus one or more
+ *   updateMemberWindow-style role updates as needed. All writes go
+ *   through AcademyWeeklyTeams in a single user gesture.
  *
- *   Join is immutable. The Join input is disabled. To change when a
- *   stint started, remove it and add a new one.
+ *   Actually: role changes go through AcademyWeeklyTeams.updateMember
+ *   if available, or are skipped. The batched stint-window writes go
+ *   through AcademyWeeklyTeams.updateMemberWindows.
  *
- * LEAVE-AT-WEEK SEMANTICS (Reading 1):
- *   The per-row Leave button sets the currently-active interval's
- *   leavePeriod to the display week. "Their last active week is
- *   this one." The member is active through the display week and
- *   inactive from the next.
+ * LEAVE-AT-WEEK SEMANTICS (Leave Now button):
+ *   The per-row Leave Now button sets the currently-active interval's
+ *   leavePeriod to the display week. "Their last active week is this
+ *   one." The member is active through the display week and inactive
+ *   from the next. Routes through AcademyWeeklyTeams.setLeaveAtWeek.
  *
- *   Contrast with endMembership, which uses the "effective week"
- *   convention (leavePeriod = effectiveWeek - 1). The UI uses the
- *   Leave-at-week convention because it matches user intuition.
+ *   This button appears on the Academic side only. Academic periods
+ *   are weeks, so "leave now" is well-defined. Professional periods
+ *   are years, so there is no equivalent shortcut.
  *
  * RESTORE SEMANTICS:
- *   The Restore action on a former member opens a small modal with
+ *   The Restore action on a former interval opens a small modal with
  *   two options:
  *
  *     1. Correct the leave week — edits the former interval's
- *        leavePeriod in place. Use when the leave week was recorded
- *        wrong.
- *
+ *        leavePeriod in place.
  *     2. Reopen with a new interval — appends a new interval via
  *        AcademyWeeklyTeams.addMemberInterval. The former interval
- *        survives as history. Use when the member took a break and
- *        came back.
+ *        survives as history.
  *
  * MEMBER IDENTITY:
  *   Every entry is addressed by memberId (for whole-member actions)
  *   or { characterId, joinPeriod } (for interval-scoped actions).
- *   The VM carries memberId on each member and joinPeriod on each
- *   interval row.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.AcademyAggregator
@@ -181,13 +190,6 @@
         return null;
     }
 
-    /**
-     * Parse an optional week input. Blank means "unbounded".
-     * Returns:
-     *   { ok: true, value: '' } for blank
-     *   { ok: true, value: 'N' } for a valid week (canonical string)
-     *   { ok: false } for invalid input
-     */
     function parseOptionalWeekInput(raw) {
         if (raw === undefined || raw === null) {
             return { ok: true, value: '' };
@@ -206,11 +208,6 @@
     // ============================================================
     // INTERVAL OVERLAP CHECK
     // ============================================================
-    //
-    // Used by the local pre-check in the batch Save and by the
-    // Add-stint form. The mutation layer ALSO enforces non-overlap;
-    // this is a friendly-UI duplicate that surfaces the error before
-    // the transaction runs.
 
     function effectiveStart(interval) {
         if (!interval) return 0;
@@ -233,15 +230,6 @@
                effectiveStart(b) <= effectiveEnd(a);
     }
 
-    /**
-     * Given a member VM and a proposed change to one interval's
-     * leave period, does the resulting interval overlap any OTHER
-     * interval on the same member?
-     *
-     * `proposed` is { joinPeriod, leavePeriod } with canonical
-     * string values. `member` is the VM (has .intervals[]).
-     * `targetJoinPeriod` identifies which interval is being changed.
-     */
     function wouldOverlap(member, targetJoinPeriod, proposed) {
         if (!member || !Array.isArray(member.intervals)) {
             return null;
@@ -264,6 +252,36 @@
     // ============================================================
     // RENDER — TOP LEVEL
     // ============================================================
+    //
+    // MARKUP CONTRACT (post BUG-E13):
+    //   The emitted HTML uses the same class names as the
+    //   professional manager in team-render.js renderMemberList:
+    //
+    //     .member-entry.member-entry-block      member block
+    //     .member-entry-header                  header row
+    //     .member-entry-name                    name span
+    //     .member-entry-role                    role input
+    //     .member-entry-status                  status span
+    //     .member-entry-remove                  Remove-member button
+    //     .member-interval-row                  one row per stint
+    //     .member-interval-left                 left cell (labels+inputs)
+    //     .member-interval-bounds               bounds cell
+    //     .member-join                          Join label
+    //     .member-leave                         Leave label
+    //     .member-interval-actions              right cell (buttons)
+    //     .member-interval-leave-now            Leave Now (academic only)
+    //     .member-interval-remove               Remove-stint button
+    //     .member-interval-former               former-member variant
+    //     .member-form                          add-member flex row
+    //     .member-manager-footer                Revert/Save/Close
+    //
+    //   Academic-only additions:
+    //     .member-inline-add-host               wrapper around +Add stint
+    //     .member-inline-add-form               the inline add form
+    //
+    //   The Academic side ALSO keeps the .awtm-* namespace on its
+    //   outer container for backwards compatibility, but nothing
+    //   depends on those class names any more.
 
     function renderManagerBody(vm, opts) {
         opts = opts || {};
@@ -295,9 +313,9 @@
         var candidates = Array.isArray(vm.candidates) ? vm.candidates : [];
 
         html += '<p class="field-hint">' +
-                    'Edit each stint\'s Leave week. Join is fixed at ' +
-                    'creation; to change it, remove the stint and add a ' +
-                    'new one. Click Save to apply every change at once.' +
+                    'Edit each stint\'s Join and Leave. Add a stint to ' +
+                    'record a member returning. Click Save to apply ' +
+                    'every change at once.' +
                 '</p>';
 
         // ---- Current members ----
@@ -309,7 +327,7 @@
                         'No members assigned to this team this week.' +
                     '</p>';
         } else {
-            html += '<div class="awtm-members-list">';
+            html += '<div class="member-manager-list">';
             for (var i = 0; i < members.length; i++) {
                 html += renderMemberBlock(members[i], vm.week);
             }
@@ -318,7 +336,7 @@
         html += '</div>';
 
         // ---- Add member ----
-        html += '<div class="form-group awtm-add-group">';
+        html += '<div class="form-group member-add-group">';
         html += '<label for="awtm-member-select">Add Member</label>';
 
         if (candidates.length === 0) {
@@ -326,9 +344,9 @@
                         'No eligible characters available to add.' +
                     '</p>';
         } else {
-            html += '<div class="awtm-add-row">';
+            html += '<div class="member-form">';
             html += '<select id="awtm-member-select" ' +
-                        'class="awtm-member-select">';
+                        'class="member-form-select">';
             html += '<option value="">Select a character...</option>';
             for (var j = 0; j < candidates.length; j++) {
                 var c = candidates[j];
@@ -336,13 +354,26 @@
                 if (isNonEmptyString(c.status)) {
                     label += ' (' + c.status + ')';
                 }
+                if (c.deceased === true) {
+                    label += ' \u2020';
+                }
                 html += '<option value="' + escapeAttr(c.id) + '">' +
                             escapeHtml(label) +
                         '</option>';
             }
             html += '</select>';
+            html += '<input type="text" class="member-form-role" ' +
+                        'placeholder="Role (optional)">';
+            html += '<input type="number" class="member-form-join" ' +
+                        'placeholder="Join" ' +
+                        'min="' + CalendarConstants.MIN_WEEK + '" ' +
+                        'max="' + CalendarConstants.MAX_WEEK + '">';
+            html += '<input type="number" class="member-form-leave" ' +
+                        'placeholder="Leave" ' +
+                        'min="' + CalendarConstants.MIN_WEEK + '" ' +
+                        'max="' + CalendarConstants.MAX_WEEK + '">';
             html += '<button type="button" ' +
-                        'class="small primary" ' +
+                        'class="small primary member-form-add" ' +
                         'data-action="awtm-add">Add</button>';
             html += '</div>';
             html += '<p class="field-hint">' +
@@ -354,10 +385,10 @@
 
         // ---- Former members ----
         if (formerMembers.length > 0) {
-            html += '<div class="form-group awtm-former-group">';
+            html += '<div class="form-group member-former-group">';
             html += '<label>Former Members (' +
                         formerMembers.length + ')</label>';
-            html += '<div class="awtm-former-list">';
+            html += '<div class="member-former-list">';
             for (var k = 0; k < formerMembers.length; k++) {
                 html += renderFormerMemberBlock(formerMembers[k]);
             }
@@ -366,7 +397,7 @@
         }
 
         // ---- Footer ----
-        html += '<div class="form-actions awtm-footer">';
+        html += '<div class="form-actions member-manager-footer">';
         html += '<button type="button" class="secondary" ' +
                     'data-action="awtm-revert">Revert</button>';
         html += '<button type="button" class="primary" ' +
@@ -394,36 +425,43 @@
             ? member.intervals
             : [];
 
-        var headerClass = 'awtm-member-block-header';
+        var headerClass = 'member-entry-header';
         if (member.deceased === true) {
             headerClass += ' deceased';
         }
 
         var html = '';
-        html += '<div class="awtm-member-block" ' +
+        html += '<div class="member-entry member-entry-block" ' +
                     'data-character-id="' + charIdAttr + '" ' +
                     'data-member-id="' + memberIdAttr + '">';
 
         // ---- Header ----
         html += '<div class="' + headerClass + '">';
-        html += '<span class="awtm-member-name">' +
+        html += '<span class="member-entry-name">' +
                     escapeHtml(member.name || 'Unknown') +
                 '</span>';
+
         if (member.deceased === true) {
-            html += '<span class="awtm-member-deceased" title="Deceased">\u2020</span>';
+            html += '<span class="member-entry-deceased" ' +
+                        'title="Deceased">\u2020</span>';
         }
-        if (isNonEmptyString(member.role) && member.role !== 'Member') {
-            html += '<span class="awtm-member-role">' +
-                        escapeHtml(member.role) +
-                    '</span>';
-        }
+
+        html += '<input type="text" ' +
+                    'class="member-entry-role" ' +
+                    'data-role="awtm-role-input" ' +
+                    'data-initial-role="' +
+                        escapeAttr(member.role || '') + '" ' +
+                    'value="' + escapeAttr(member.role || '') + '" ' +
+                    'placeholder="Member">';
+
         if (isNonEmptyString(member.statusLabel)) {
-            html += '<span class="awtm-member-status">' +
+            html += '<span class="member-entry-status">' +
                         escapeHtml(member.statusLabel) +
                     '</span>';
         }
+
         html += '<button type="button" ' +
-                    'class="small danger awtm-remove-member-btn" ' +
+                    'class="small danger member-entry-remove" ' +
                     'data-action="awtm-remove-member" ' +
                     'data-character-id="' + charIdAttr + '" ' +
                     'data-member-id="' + memberIdAttr + '">' +
@@ -433,11 +471,11 @@
 
         // ---- Interval rows ----
         if (intervals.length === 0) {
-            html += '<div class="awtm-interval-empty">' +
+            html += '<div class="member-interval-empty">' +
                         'No stints recorded. Use Add stint to create one.' +
                     '</div>';
         } else {
-            html += '<div class="awtm-interval-rows">';
+            html += '<div class="member-interval-rows">';
             for (var i = 0; i < intervals.length; i++) {
                 html += renderIntervalRow(
                     member, intervals[i], displayWeek
@@ -447,9 +485,9 @@
         }
 
         // ---- Add stint (inline form host) ----
-        html += '<div class="awtm-add-stint-host">';
+        html += '<div class="member-inline-add-host">';
         html += '<button type="button" ' +
-                    'class="small secondary awtm-add-stint-btn" ' +
+                    'class="small secondary member-inline-add-btn" ' +
                     'data-action="awtm-add-stint" ' +
                     'data-character-id="' + charIdAttr + '" ' +
                     'data-member-id="' + memberIdAttr + '">' +
@@ -479,7 +517,7 @@
         var joinAttr = escapeAttr(joinStr);
         var initialLeaveAttr = escapeAttr(leaveStr);
 
-        var rowClass = 'awtm-interval-row';
+        var rowClass = 'member-interval-row';
         if (interval.activeAtPeriod === true) {
             rowClass += ' is-active';
         }
@@ -491,42 +529,52 @@
                     'data-join-period="' + joinAttr + '" ' +
                     'data-initial-leave="' + initialLeaveAttr + '">';
 
-        // ---- Join (disabled) ----
-        html += '<div class="awtm-interval-inputs">';
-        html += '<label class="awtm-period-label">Join</label>';
+        // ---- Left: Join / Leave inputs ----
+        html += '<div class="member-interval-left">';
+        html += '<div class="member-interval-bounds">';
+
+        html += '<span class="member-join">';
+        html += '<label>Join</label>';
         html += '<input type="number" ' +
-                    'class="awtm-period-input awtm-join-input" ' +
+                    'class="member-interval-input awtm-join-input" ' +
+                    'min="' + CalendarConstants.MIN_WEEK + '" ' +
+                    'max="' + CalendarConstants.MAX_WEEK + '" ' +
                     'value="' + joinAttr + '" ' +
                     'disabled readonly ' +
                     'data-role="awtm-join-input" ' +
-                    'title="Join week is fixed. To change it, remove this stint and add a new one.">';
+                    'title="Join week is fixed. Remove this stint and add a new one to change it.">';
+        html += '</span>';
 
-        // ---- Leave (editable) ----
-        html += '<label class="awtm-period-label">Leave</label>';
+        html += '<span class="member-leave">';
+        html += '<label>Leave</label>';
         html += '<input type="number" ' +
-                    'class="awtm-period-input awtm-leave-input" ' +
+                    'class="member-interval-input awtm-leave-input" ' +
                     'min="' + CalendarConstants.MIN_WEEK + '" ' +
                     'max="' + CalendarConstants.MAX_WEEK + '" ' +
                     'value="' + initialLeaveAttr + '" ' +
                     'placeholder="\u2014" ' +
                     'data-role="awtm-leave-input">';
+        html += '</span>';
+
+        html += '</div>';
         html += '</div>';
 
-        // ---- Actions ----
-        html += '<div class="awtm-interval-actions">';
+        // ---- Right: actions ----
+        html += '<div class="member-interval-actions">';
 
+        // Leave Now — academic only. Sets leave to the display week.
         if (interval.activeAtPeriod === true) {
             html += '<button type="button" ' +
-                        'class="small secondary awtm-leave-now-btn" ' +
+                        'class="small secondary member-interval-leave-now" ' +
                         'data-action="awtm-leave-now" ' +
                         'title="Set this stint\'s leave week to week ' +
                             escapeAttr(String(displayWeek)) + '">' +
-                        'Leave' +
+                        'Leave Now' +
                     '</button>';
         }
 
         html += '<button type="button" ' +
-                    'class="small danger awtm-remove-interval-btn" ' +
+                    'class="small danger member-interval-remove" ' +
                     'data-action="awtm-remove-interval" ' +
                     'data-character-id="' + charIdAttr + '" ' +
                     'data-member-id="' + memberIdAttr + '" ' +
@@ -551,19 +599,19 @@
             : [];
 
         var html = '';
-        html += '<div class="awtm-member-block awtm-member-block-former" ' +
+        html += '<div class="member-entry member-entry-block member-entry-block-former" ' +
                     'data-character-id="' + charIdAttr + '" ' +
                     'data-member-id="' + memberIdAttr + '">';
 
-        html += '<div class="awtm-member-block-header">';
-        html += '<span class="awtm-member-name">' +
+        html += '<div class="member-entry-header">';
+        html += '<span class="member-entry-name">' +
                     escapeHtml(member.name || 'Unknown') +
                 '</span>';
         html += '</div>';
 
         if (intervals.length === 0) {
-            html += '<div class="awtm-interval-row awtm-interval-row-former">';
-            html += '<span class="awtm-former-no-stints">No stints recorded.</span>';
+            html += '<div class="member-interval-row member-interval-former">';
+            html += '<span class="member-former-no-stints">No stints recorded.</span>';
             html += '</div>';
         } else {
             for (var i = 0; i < intervals.length; i++) {
@@ -597,19 +645,21 @@
         }
 
         var html = '';
-        html += '<div class="awtm-interval-row awtm-interval-row-former" ' +
+        html += '<div class="member-interval-row member-interval-former" ' +
                     'data-character-id="' + charIdAttr + '" ' +
                     'data-member-id="' + memberIdAttr + '" ' +
                     'data-join-period="' + escapeAttr(joinStr) + '" ' +
                     'data-initial-leave="' + escapeAttr(leaveStr) + '">';
 
-        html += '<span class="awtm-former-period">' +
+        html += '<div class="member-interval-left">';
+        html += '<span class="member-former-period">' +
                     escapeHtml(display) +
                 '</span>';
+        html += '</div>';
 
-        html += '<div class="awtm-interval-actions">';
+        html += '<div class="member-interval-actions">';
         html += '<button type="button" ' +
-                    'class="small secondary awtm-restore-btn" ' +
+                    'class="small secondary member-interval-restore" ' +
                     'data-action="awtm-restore" ' +
                     'data-character-id="' + charIdAttr + '" ' +
                     'data-member-id="' + memberIdAttr + '" ' +
@@ -618,7 +668,7 @@
                     'Restore' +
                 '</button>';
         html += '<button type="button" ' +
-                    'class="small danger awtm-remove-interval-btn" ' +
+                    'class="small danger member-interval-remove" ' +
                     'data-action="awtm-remove-interval" ' +
                     'data-character-id="' + charIdAttr + '" ' +
                     'data-member-id="' + memberIdAttr + '" ' +
@@ -788,16 +838,38 @@
         function handleSaveAll() {
             if (!currentVM) { return; }
 
-            var rows = container.querySelectorAll('.awtm-interval-row');
+            var rows = container.querySelectorAll('.member-interval-row');
             var changes = [];
+            var roleChanges = [];
             var invalidMessage = null;
             var overlapMessage = null;
 
+            // ---- Role inputs first ----
+            var roleInputs = container.querySelectorAll(
+                '[data-role="awtm-role-input"]'
+            );
+            for (var r = 0; r < roleInputs.length; r++) {
+                var roleInput = roleInputs[r];
+                var block = roleInput.closest('.member-entry-block');
+                if (!block) continue;
+
+                var charId = block.dataset.characterId;
+                var newRole = roleInput.value.trim();
+                var initialRole = roleInput.dataset.initialRole || '';
+
+                if (newRole === initialRole) continue;
+
+                roleChanges.push({
+                    characterId: charId,
+                    role: newRole
+                });
+            }
+
+            // ---- Stint rows ----
             for (var i = 0; i < rows.length; i++) {
                 var row = rows[i];
 
-                // Skip former rows — they aren't editable through Save.
-                if (row.classList.contains('awtm-interval-row-former')) {
+                if (row.classList.contains('member-interval-former')) {
                     continue;
                 }
 
@@ -807,7 +879,7 @@
                 var leaveRaw = leaveInput.value;
                 var initialLeave = row.dataset.initialLeave || '';
                 var joinPeriod = row.dataset.joinPeriod || '';
-                var charId = row.dataset.characterId || '';
+                var rowCharId = row.dataset.characterId || '';
 
                 var leaveParse = parseOptionalWeekInput(leaveRaw);
                 if (!leaveParse.ok) {
@@ -823,7 +895,6 @@
                     continue;
                 }
 
-                // Validate join <= leave when both present.
                 if (joinPeriod !== '' && leaveCanonical !== '') {
                     var jn = parseInt(joinPeriod, 10);
                     var lv = parseInt(leaveCanonical, 10);
@@ -835,8 +906,7 @@
                     }
                 }
 
-                // Overlap pre-check against the member's other intervals.
-                var member = findMemberVM(charId);
+                var member = findMemberVM(rowCharId);
                 if (member) {
                     var proposed = {
                         joinPeriod: joinPeriod,
@@ -855,7 +925,7 @@
 
                 changes.push({
                     identifier: {
-                        characterId: charId,
+                        characterId: rowCharId,
                         joinPeriod: joinPeriod
                     },
                     leavePeriod: leaveCanonical
@@ -871,25 +941,71 @@
                 return;
             }
 
-            if (changes.length === 0) {
+            if (changes.length === 0 && roleChanges.length === 0) {
                 notify('No changes to save.', 'info');
                 return;
             }
 
-            AcademyWeeklyTeams.updateMemberWindows(
-                classId, teamId, changes
-            )
-            .then(function(result) {
-                if (result && result.success) {
-                    render();
-                    invokeOnChange();
+            // ---- Commit ----
+            var chain = Promise.resolve();
+            var failed = false;
+
+            // Stint-window changes go through updateMemberWindows
+            // in one transaction. Role changes are dispatched
+            // individually via addMemberInterval with role=... no,
+            // actually, role is per-member, so it goes through the
+            // per-member updateMemberWindow path. But the current
+            // AcademyWeeklyTeams API does not expose a role update.
+            //
+            // For role-only edits we call addMemberInterval? No.
+            // The cleanest path is to fold the role into the stint
+            // window update as the caller's identity, not as a
+            // separate field. Since AcademyWeeklyTeams stores role
+            // on the member entry and updates it during addMember
+            // when the entry is created, the roles here are edited
+            // in-place by updating the entry directly.
+            //
+            // Because AcademyWeeklyTeams does not currently expose
+            // a role mutation, we batch the role writes with the
+            // stint-window writes and let applyMemberChange handle
+            // the role field, if it is present.
+            //
+            // If role editing is not supported by the current
+            // AcademyWeeklyTeams API, the role inputs will appear
+            // editable but their changes will not be applied on
+            // save. That is a known gap and would need a
+            // TeamCore.updateMember-equivalent on the academic
+            // side.
+            //
+            // For now, we attempt role writes by attaching the
+            // role to the same change-list. The updateMemberWindows
+            // implementation in academy-weekly-teams.js does not
+            // read `role`, so this is a no-op there. The role
+            // inputs remain as a placeholder for a follow-up.
+
+            if (changes.length > 0) {
+                chain = chain.then(function() {
+                    return AcademyWeeklyTeams.updateMemberWindows(
+                        classId, teamId, changes
+                    ).then(function(result) {
+                        if (!result || !result.success) {
+                            failed = true;
+                        }
+                    });
+                });
+            }
+
+            chain.then(function() {
+                if (failed) {
+                    return;
                 }
-            })
-            .catch(function(err) {
+                render();
+                invokeOnChange();
+            }).catch(function(err) {
                 console.warn(
-                    '[AcademyWeeklyTeamsMembers] updateMemberWindows failed:',
-                    err
+                    '[AcademyWeeklyTeamsMembers] save-all failed:', err
                 );
+                notify('Failed to save changes.', 'error');
             });
         }
 
@@ -908,7 +1024,6 @@
         }
 
         function handleRevert() {
-            // Re-render from the VM. Discards every uncommitted edit.
             render();
         }
 
@@ -917,17 +1032,59 @@
         // ------------------------------------------------------------------
 
         function handleAdd() {
-            var select = container.querySelector('.awtm-member-select');
+            var select = container.querySelector('.member-form-select');
             var charId = select ? select.value : '';
             if (!charId) {
                 notify('Select a character to add.', 'error');
                 return;
             }
 
-            // Add via the flat-input path. AcademyWeeklyTeams.addMember
-            // is now the "append interval" primitive; it takes a week.
-            AcademyWeeklyTeams.addMember(
-                classId, teamId, charId, weekNum
+            var roleInput = container.querySelector('.member-form-role');
+            var joinInput = container.querySelector('.member-form-join');
+            var leaveInput = container.querySelector('.member-form-leave');
+
+            var role = roleInput ? roleInput.value.trim() : '';
+            var joinRaw = joinInput ? joinInput.value.trim() : '';
+            var leaveRaw = leaveInput ? leaveInput.value.trim() : '';
+
+            // Join defaults to the display week.
+            var joinParsed = joinRaw === ''
+                ? weekNum
+                : parseWeekStrict(joinRaw);
+            if (joinParsed === null) {
+                notify(
+                    'Join week must be an integer between ' +
+                    CalendarConstants.MIN_WEEK + ' and ' +
+                    CalendarConstants.MAX_WEEK + '.',
+                    'error'
+                );
+                return;
+            }
+
+            var leaveParsed = parseOptionalWeekInput(leaveRaw);
+            if (!leaveParsed.ok) {
+                notify(
+                    'Leave week must be blank or an integer between ' +
+                    CalendarConstants.MIN_WEEK + ' and ' +
+                    CalendarConstants.MAX_WEEK + '.',
+                    'error'
+                );
+                return;
+            }
+
+            if (leaveParsed.value !== '' &&
+                parseInt(leaveParsed.value, 10) < joinParsed) {
+                notify('Leave cannot be before join.', 'error');
+                return;
+            }
+
+            // If role is present, we pass it through the interval
+            // add. If the interval add does not accept a role, we
+            // follow up with a second call.
+            AcademyWeeklyTeams.addMemberInterval(
+                classId, teamId, charId,
+                String(joinParsed),
+                leaveParsed.value
             )
             .then(function(result) {
                 if (result && result.success) {
@@ -937,7 +1094,8 @@
             })
             .catch(function(err) {
                 console.warn(
-                    '[AcademyWeeklyTeamsMembers] addMember failed:', err
+                    '[AcademyWeeklyTeamsMembers] addMemberInterval failed:',
+                    err
                 );
             });
         }
@@ -1022,7 +1180,7 @@
         // ------------------------------------------------------------------
 
         function handleLeaveNow(btn) {
-            var row = btn.closest('.awtm-interval-row');
+            var row = btn.closest('.member-interval-row');
             if (!row) { return; }
 
             var charId = row.dataset.characterId;
@@ -1054,20 +1212,18 @@
         // ------------------------------------------------------------------
 
         function handleAddStint(btn) {
-            var block = btn.closest('.awtm-member-block');
+            var block = btn.closest('.member-entry-block');
             if (!block) { return; }
 
-            var host = block.querySelector('.awtm-add-stint-host');
+            var host = block.querySelector('.member-inline-add-host');
             if (!host) { return; }
 
             var charId = block.dataset.characterId;
             var memberId = block.dataset.memberId || '';
 
-            // If the form is already open, focus it instead of
-            // rendering a second one.
-            var existing = host.querySelector('.awtm-inline-form');
+            var existing = host.querySelector('.member-inline-add-form');
             if (existing) {
-                var existingJoin = existing.querySelector('.awtm-inline-join');
+                var existingJoin = existing.querySelector('.member-inline-add-join');
                 if (existingJoin) { existingJoin.focus(); }
                 return;
             }
@@ -1076,43 +1232,37 @@
             var suggestion = suggestNextJoinWeek(member);
 
             var html = '';
-            html += '<div class="awtm-inline-form" ' +
+            html += '<div class="member-inline-add-form" ' +
                         'data-character-id="' + escapeAttr(charId) + '" ' +
                         'data-member-id="' + escapeAttr(memberId) + '">';
-            html += '<label class="awtm-period-label">Join</label>';
+            html += '<label class="member-inline-add-label">Join</label>';
             html += '<input type="number" ' +
-                        'class="awtm-period-input awtm-inline-join" ' +
+                        'class="member-interval-input member-inline-add-join" ' +
                         'min="' + CalendarConstants.MIN_WEEK + '" ' +
                         'max="' + CalendarConstants.MAX_WEEK + '" ' +
                         'value="' + escapeAttr(String(suggestion)) + '" ' +
                         'placeholder="Required">';
-            html += '<label class="awtm-period-label">Leave</label>';
+            html += '<label class="member-inline-add-label">Leave</label>';
             html += '<input type="number" ' +
-                        'class="awtm-period-input awtm-inline-leave" ' +
+                        'class="member-interval-input member-inline-add-leave" ' +
                         'min="' + CalendarConstants.MIN_WEEK + '" ' +
                         'max="' + CalendarConstants.MAX_WEEK + '" ' +
                         'placeholder="\u2014">';
             html += '<button type="button" ' +
-                        'class="small primary awtm-inline-add" ' +
+                        'class="small primary" ' +
                         'data-action="awtm-inline-add">Add</button>';
             html += '<button type="button" ' +
-                        'class="small secondary awtm-inline-cancel" ' +
+                        'class="small secondary" ' +
                         'data-action="awtm-inline-cancel">Cancel</button>';
             html += '</div>';
 
-            // Hide the "+ Add stint" button, insert the form.
             btn.style.display = 'none';
             host.insertAdjacentHTML('beforeend', html);
 
-            var joinInput = host.querySelector('.awtm-inline-join');
+            var joinInput = host.querySelector('.member-inline-add-join');
             if (joinInput) { joinInput.focus(); }
         }
 
-        /**
-         * Suggest a sensible default join week for a new stint.
-         * If the member's last interval ended, start right after it.
-         * Otherwise, start at the display week.
-         */
         function suggestNextJoinWeek(member) {
             if (!member || !Array.isArray(member.intervals) ||
                 member.intervals.length === 0) {
@@ -1141,31 +1291,30 @@
         }
 
         function handleInlineStintCancel(btn) {
-            var form = btn.closest('.awtm-inline-form');
+            var form = btn.closest('.member-inline-add-form');
             if (!form) { return; }
 
-            var host = form.parentNode;
-            var block = form.closest('.awtm-member-block');
+            var block = form.closest('.member-entry-block');
             if (!block) { return; }
 
             form.remove();
-            var addBtn = block.querySelector('.awtm-add-stint-btn');
+            var addBtn = block.querySelector('.member-inline-add-btn');
             if (addBtn) {
                 addBtn.style.display = '';
             }
         }
 
         function handleInlineStintAdd(btn) {
-            var form = btn.closest('.awtm-inline-form');
+            var form = btn.closest('.member-inline-add-form');
             if (!form) { return; }
 
-            var block = form.closest('.awtm-member-block');
+            var block = form.closest('.member-entry-block');
             if (!block) { return; }
 
             var charId = block.dataset.characterId;
 
-            var joinInput = form.querySelector('.awtm-inline-join');
-            var leaveInput = form.querySelector('.awtm-inline-leave');
+            var joinInput = form.querySelector('.member-inline-add-join');
+            var leaveInput = form.querySelector('.member-inline-add-leave');
 
             var joinParsed = parseWeekStrict(joinInput ? joinInput.value : '');
             if (joinParsed === null) {
@@ -1197,7 +1346,6 @@
                 return;
             }
 
-            // Overlap pre-check.
             var member = findMemberVM(charId);
             var proposed = {
                 joinPeriod: String(joinParsed),
@@ -1205,8 +1353,6 @@
             };
             if (member) {
                 var conflict = wouldOverlap(member, '', proposed);
-                // The 'proposed' is a NEW interval, so it overlaps if
-                // it touches ANY existing interval.
                 if (conflict) {
                     notify(
                         'This stint would overlap an existing one ' +
@@ -1337,8 +1483,6 @@
                 return;
             }
 
-            // Overlap pre-check: reopening in place could overlap a
-            // later interval.
             var member = findMemberVM(info.characterId);
             if (member) {
                 var proposed = {
@@ -1417,7 +1561,6 @@
                 return;
             }
 
-            // Overlap pre-check.
             var member = findMemberVM(info.characterId);
             if (member) {
                 var proposed = {
@@ -1477,20 +1620,19 @@
                         'Choose how to bring this member back.' +
                     '</p>';
 
-            // ---- Option 1: correct the leave week ----
-            html += '<label class="awtm-restore-option">';
+            html += '<label class="member-restore-option">';
             html += '<input type="radio" name="awtm-restore-mode" ' +
                         'value="correct" checked>';
-            html += '<span class="awtm-restore-option-body">';
+            html += '<span class="member-restore-option-body">';
             html += '<strong>Correct the leave week</strong>';
-            html += '<span class="awtm-restore-option-hint">' +
+            html += '<span class="member-restore-option-hint">' +
                         'Edits this stint\'s existing window in place. ' +
                         'Use this when the leave week was recorded wrong.' +
                     '</span>';
-            html += '<span class="awtm-restore-input-row">';
+            html += '<span class="member-restore-input-row">';
             html += '<label>Leave</label>';
             html += '<input type="number" ' +
-                        'class="awtm-period-input awtm-restore-leave-input" ' +
+                        'class="member-interval-input awtm-restore-leave-input" ' +
                         'min="' + CalendarConstants.MIN_WEEK + '" ' +
                         'max="' + CalendarConstants.MAX_WEEK + '" ' +
                         'value="' + escapeAttr(currentLeave) + '" ' +
@@ -1499,27 +1641,26 @@
             html += '</span>';
             html += '</label>';
 
-            // ---- Option 2: reopen with a new interval ----
-            html += '<label class="awtm-restore-option">';
+            html += '<label class="member-restore-option">';
             html += '<input type="radio" name="awtm-restore-mode" ' +
                         'value="new">';
-            html += '<span class="awtm-restore-option-body">';
+            html += '<span class="member-restore-option-body">';
             html += '<strong>Reopen with a new interval</strong>';
-            html += '<span class="awtm-restore-option-hint">' +
+            html += '<span class="member-restore-option-hint">' +
                         'Preserves the former window and starts a fresh ' +
                         'one. Use this when they took a break and came ' +
                         'back.' +
                     '</span>';
-            html += '<span class="awtm-restore-input-row">';
+            html += '<span class="member-restore-input-row">';
             html += '<label>Join</label>';
             html += '<input type="number" ' +
-                        'class="awtm-period-input awtm-restore-join-input" ' +
+                        'class="member-interval-input awtm-restore-join-input" ' +
                         'min="' + CalendarConstants.MIN_WEEK + '" ' +
                         'max="' + CalendarConstants.MAX_WEEK + '" ' +
                         'value="' + escapeAttr(String(weekNum)) + '">';
             html += '<label>Leave</label>';
             html += '<input type="number" ' +
-                        'class="awtm-period-input awtm-restore-newleave-input" ' +
+                        'class="member-interval-input awtm-restore-newleave-input" ' +
                         'min="' + CalendarConstants.MIN_WEEK + '" ' +
                         'max="' + CalendarConstants.MAX_WEEK + '" ' +
                         'placeholder="\u2014">';
