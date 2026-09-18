@@ -52,6 +52,16 @@
  *   (immutable); role and leavePeriod are editable. Role applies to
  *   the whole member entry, not the single stint.
  *
+ * TEAM LIST MARKUP (mobile contract):
+ *   renderList emits each team as a five-cell row. The first cell is
+ *   wrapped in .team-name-cell so the mobile card layout can flow it
+ *   as a flex row (name + type badge + inactive marker). The other
+ *   four cells carry their existing classes (.team-period,
+ *   .team-rank, .team-member-count, .actions).
+ *
+ *   The desktop grid reads --team-columns from #team-list-container,
+ *   which renderContainer emits.
+ *
  * FILTER BAR:
  *   The filter bar is rendered here from a filter VM supplied by
  *   TeamAggregator.getFilterBarViewModel(tab).
@@ -198,7 +208,7 @@
             html += '<div class="' + rowClass + '" ' +
                         'data-id="' + escapeAttribute(team.id) + '">';
 
-            html += '<span>';
+            html += '<span class="team-name-cell">';
             html += '<strong>' + escapeHtml(team.name || 'Unnamed Team') + '</strong>';
             if (isNonEmptyString(team.classDisplay)) {
                 html += ' <span class="team-class">[' +
