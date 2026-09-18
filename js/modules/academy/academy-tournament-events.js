@@ -13,6 +13,8 @@
  *   - Read the collected form payload from the view's collector
  *   - Notify the caller's onChange callback when a mutation succeeds
  *   - Surface rejected mutations as console warnings + toasts
+ *   - Handle round collapse toggles (C4; UI-only, no mutation)
+ *   - Enrich picker entries with prior-round outcomes (C8)
  *
  * NOT RESPONSIBILITIES:
  *   - HTML construction. The view module builds all modal HTML.
@@ -21,6 +23,8 @@
  *   - Identity computation. Queries and Schema own it.
  *   - Eligibility computation for the pool panel. The aggregator
  *     owns the pool VM.
+ *   - Collapse-state persistence. AcademyUI owns it; this layer
+ *     only reads and writes through its typed API.
  *
  * ACTION NAMING:
  *   Every action element carries data-action with an 'exam-' prefix.
@@ -29,7 +33,8 @@
  *
  *   Every action element also carries the identity it needs:
  *     data-exam-id      on every exam-scoped action
- *     data-round-id     on every round- and match-scoped action
+ *     data-round-id     on every round- and match-scoped action,
+ *                       including the collapse toggle
  *     data-match-id     on every match-scoped action
  *     data-pool-id      on pool toggle actions
  *     data-character-id on elimination restore actions
@@ -50,6 +55,41 @@
  *   Every mutation's .then handler checks `result.success`. On
  *   success, the modal closes and the caller's onChange runs. On
  *   failure, the result's message is logged and toasted.
+ *
+ * ROUND COLLAPSE (C4):
+ *   The collapse toggle is a UI-ONLY action. It does not enter the
+ *   mutation pipeline, does not touch domain data, and does not
+ *   open a modal. The handler:
+ *
+ *     1. Reads the current expanded state via
+ *        AcademyUI.isRoundExpanded(examId, roundId, true).
+ *     2. Writes the opposite state via
+ *        AcademyUI.setRoundExpanded(examId, roundId, !current).
+ *     3. Calls notifyChange() to trigger a re-render.
+ *
+ *   The default is EXPANDED. That default lives in the call to
+ *   isRoundExpanded — this module passes `true` explicitly so the
+ *   policy is visible at the call site, not hidden in AcademyUI.
+ *
+ *   This is the ONLY place in this module that writes UI state. If
+ *   that ever changes, the pattern to preserve is: the events layer
+ *   owns the *intent* (user clicked collapse), AcademyUI owns the
+ *   *storage*, and the aggregator owns the *read for render*.
+ *
+ * PRIOR-ROUND OUTCOMES (C8):
+ *   buildEligibleForNewMatch is called by addMatchManual and
+ *   editMatch to produce the checkbox list the picker renders. Both
+ *   callers pass through (examId, roundId); this function uses them
+ *   to derive the outcome map for the round IMMEDIATELY BEFORE
+ *   roundId, and stamps each entry.
+ *
+ *   The map is { [participantId]: 'pass' | 'retry' }. Participants
+ *   whose outcome is absent get `priorRoundOutcome: null`, and the
+ *   view renders no badge for them.
+ *
+ *   This is a read, not a mutation. It is called at modal-open time,
+ *   not at render time, so the eligible list is always fresh with
+ *   respect to the target round.
  *
  * RESTORE ELIMINATED PARTICIPANT:
  *   The Restore button in the Eliminated section routes to
@@ -109,11 +149,12 @@
  *   - window.DomUtils
  *   - window.Modal
  *   - window.NotificationSystem
+ *   - window.AcademyUI                    (C4)
  *   - window.AcademyTournamentView
  *   - window.AcademyClasses
  *   - window.TournamentCore
  *   - window.TournamentMatches
- *   - window.TournamentQueries
+ *   - window.TournamentQueries            (C8 added getPriorRoundOutcomes)
  *   - window.TournamentEliminationCascade
  *   - window.TournamentSchema
  *   - window.CharacterQueries
@@ -136,6 +177,7 @@
     var DomUtils = window.DomUtils;
     var Modal = window.Modal;
     var NotificationSystem = window.NotificationSystem;
+    var AcademyUI = window.AcademyUI;
     var View = window.AcademyTournamentView;
     var AcademyClasses = window.AcademyClasses;
     var TournamentCore = window.TournamentCore;
@@ -165,6 +207,13 @@
     }
     if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
         _missing.push('NotificationSystem.notify');
+    }
+
+    // C4 — collapse toggle needs AcademyUI for state read/write.
+    if (!AcademyUI ||
+        typeof AcademyUI.isRoundExpanded !== 'function' ||
+        typeof AcademyUI.setRoundExpanded !== 'function') {
+        _missing.push('AcademyUI round collapse API');
     }
 
     // View layer
@@ -288,6 +337,11 @@
     }
     if (!TournamentQueries || typeof TournamentQueries.isParticipantInTournament !== 'function') {
         _missing.push('TournamentQueries.isParticipantInTournament');
+    }
+    // C8 — prior-round derivation.
+    if (!TournamentQueries ||
+        typeof TournamentQueries.getPriorRoundOutcomes !== 'function') {
+        _missing.push('TournamentQueries.getPriorRoundOutcomes');
     }
     if (!EliminationCascade ||
         typeof EliminationCascade.restoreCharacterElimination !== 'function') {
@@ -532,6 +586,17 @@
     /**
      * Build the eligible-participant list for the Add-Match /
      * Edit-Match modal.
+     *
+     * Each entry is { id, name, priorRoundOutcome }.
+     *
+     * priorRoundOutcome is derived from the round IMMEDIATELY BEFORE
+     * `roundId` (C8). When there is no previous round, or the
+     * previous round has no completed matches for this participant,
+     * the field is null and the view renders no badge.
+     *
+     * The prior-outcome derivation is a READ. It is not part of the
+     * mutation pipeline. It is called at modal-open time, so the
+     * eligible list is always fresh with respect to the target round.
      */
     function buildEligibleForNewMatch(examId, roundId) {
         var rawIds = TournamentMatches.getEligibleParticipants(examId)
@@ -556,16 +621,41 @@
             }
         }
 
+        // C8 — prior-round outcomes. One derivation, one map, reused
+        // for every entry. When there is no previous round or the
+        // query throws, the map is empty and every entry carries
+        // null.
+        var priorOutcomes = {};
+        try {
+            priorOutcomes = TournamentQueries.getPriorRoundOutcomes(
+                examId,
+                roundId
+            ) || {};
+        } catch (e) {
+            console.warn(
+                '[AcademyTournamentEvents] getPriorRoundOutcomes ' +
+                'failed:', e
+            );
+            priorOutcomes = {};
+        }
+
         var result = [];
         for (var i = 0; i < rawIds.length; i++) {
             var id = String(rawIds[i]);
             if (alreadyAssigned[id]) { continue; }
+
+            var outcome = priorOutcomes[id];
+            if (outcome !== 'pass' && outcome !== 'retry') {
+                outcome = null;
+            }
+
             result.push({
                 id: id,
                 name: resolveParticipantName(
                     id,
                     mode === 'teams' ? 'team' : 'character'
-                )
+                ),
+                priorRoundOutcome: outcome
             });
         }
         return result;
@@ -609,6 +699,53 @@
         }
 
         return result;
+    }
+
+    // ============================================================
+    // ROUND COLLAPSE TOGGLE (C4)
+    // ============================================================
+    //
+    // UI-ONLY. No mutation, no modal, no domain read. The handler:
+    //
+    //   1. Reads the current expanded state from AcademyUI. The
+    //      default passed in is `true`, matching the C4 policy:
+    //      "all rounds expanded on first view." If the default ever
+    //      changes, this call site is where the change goes.
+    //
+    //   2. Writes the opposite state back. AcademyUI stores
+    //      collapsed-only (absence means expanded), so passing
+    //      `true` here removes any stored record.
+    //
+    //   3. Calls notifyChange() to trigger a re-render of the
+    //      Exams view. The aggregator reads the new state on the
+    //      next buildExamViewModel call and stamps each round's
+    //      VM accordingly.
+    //
+    // The examId and roundId come from the button's data-*
+    // attributes. Both are required; missing either is a no-op
+    // (with a console warning, so a broken caller surfaces).
+
+    function toggleRoundCollapse(examId, roundId) {
+        if (!isNonEmptyString(examId) || !isNonEmptyString(roundId)) {
+            console.warn(
+                '[AcademyTournamentEvents] toggleRoundCollapse: ' +
+                'missing examId or roundId',
+                { examId: examId, roundId: roundId }
+            );
+            return;
+        }
+
+        // The default is "expanded". Passing it explicitly here keeps
+        // the policy at the call site.
+        var currentExpanded = AcademyUI.isRoundExpanded(
+            examId,
+            roundId,
+            true
+        );
+
+        AcademyUI.setRoundExpanded(examId, roundId, !currentExpanded);
+
+        notifyChange();
     }
 
     // ============================================================
@@ -1473,6 +1610,7 @@
         addRound: addRound,
         removeRound: removeRound,
         reopenRound: reopenRound,
+        toggleRoundCollapse: toggleRoundCollapse,
         autoGenerateRound: autoGenerateRound,
         addMatchManual: addMatchManual,
         editMatch: editMatch,
@@ -1502,6 +1640,7 @@
             'addRound',
             'removeRound',
             'reopenRound',
+            'toggleRoundCollapse',
             'autoGenerateRound',
             'addMatchManual',
             'editMatch',
