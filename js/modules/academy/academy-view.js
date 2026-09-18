@@ -16,6 +16,9 @@
  *     refreshes (C6).
  *   - Call the outgoing controller's unmount() when the active view
  *     changes and on shell teardown.
+ *   - Own the Weekly Teams view's team selection. It is scoped to
+ *     that view (not shared across views), so it lives here rather
+ *     than in AcademyUI.
  *
  * NOT RESPONSIBILITIES:
  *   - Feature rendering. That is the controllers'.
@@ -243,21 +246,29 @@
     // MODULE STATE
     // ============================================================
     //
-    // Three pieces of module state, all coordinator bookkeeping:
+    // Module state is coordinator bookkeeping. Two kinds:
     //
-    //   _boundContainer, _boundHandlers
-    //     The single delegated listener set for the tab.
+    //   Delegated listener bookkeeping:
+    //     _boundContainer, _boundHandlers
     //
-    //   _lastRenderedControllerView
-    //     The view whose controller was rendered on the previous
-    //     pass. Used to invoke that controller's unmount() when the
-    //     active view changes, and on shell teardown.
+    //   Cross-render view state that is NOT shared across views:
+    //     _lastRenderedControllerView  — for unmount dispatch
+    //     _selectedWeeklyTeamId        — Weekly Teams team selection
+    //
+    // Class selection is NOT held here; it lives in AcademyUI and
+    // is read fresh on every render.
     //
     // No feature state. No timers. No sub-editor references.
 
     var _boundContainer = null;
     var _boundHandlers = null;
     var _lastRenderedControllerView = null;
+
+    // Weekly Teams view state. Team selection is scoped to that
+    // view; it is not a cross-view concept, so it lives here rather
+    // than in AcademyUI. Cleared whenever the class changes, because
+    // a team belongs to a class.
+    var _selectedWeeklyTeamId = null;
 
     // ============================================================
     // ENTRY POINT
@@ -309,6 +320,7 @@
         unbindEvents();
         _boundContainer = null;
         _lastRenderedControllerView = null;
+        _selectedWeeklyTeamId = null;
     }
 
     // ============================================================
@@ -452,10 +464,16 @@
                     {
                         week: AcademyUI.getDisplayWeek(),
                         selectedClassId: AcademyUI.getSelectedClassId(),
-                        selectedTeamId: null,
+                        selectedTeamId: _selectedWeeklyTeamId,
                         onChange: function() { refreshView(); },
-                        onSelectTeam: function() { refreshView(); },
+                        onSelectTeam: function(teamId) {
+                            _selectedWeeklyTeamId = teamId || null;
+                            refreshView();
+                        },
                         onSelectClass: function(classId) {
+                            // Changing class invalidates the selected
+                            // team. A team belongs to a class.
+                            _selectedWeeklyTeamId = null;
                             AcademyUI.selectClass(classId || null);
                             refreshView();
                         },
