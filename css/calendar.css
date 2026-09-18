@@ -1,0 +1,435 @@
+/**
+ * css/calendar.css - Calendar Renderer Styles
+ *
+ * Path: css/calendar.css
+ *
+ * Styles for the pure calendar renderer in
+ * modules/calendar/calendar-renderer.js.
+ *
+ * WHAT THIS FILE COVERS:
+ *   - The schedule grid (.schedule-grid and its cells)
+ *   - Header row (day names, time column)
+ *   - Occupied slots (with discipline name, label, group, instructor,
+ *     duration, continuation marker)
+ *   - Empty slots (the "+" hint)
+ *   - Rest-day columns (muted, non-interactive)
+ *   - Blocked slots (danger-tinted)
+ *   - The legend (.calendar-legend)
+ *   - The loading state (.loading-state)
+ *
+ * WHAT THIS FILE DOES NOT COVER:
+ *   - The outer wrapper provided by the host view. The Academy
+ *     character detail panel provides .academy-schedule-host. That
+ *     styling lives in css/academy/character-detail.css.
+ *   - Modal chrome. Modals live in shared.css.
+ *   - Any view chrome (sidebars, top bars, detail panels). Those
+ *     are the host's concern.
+ *
+ * TOKEN DISCIPLINE:
+ *   Every colour, radius, and shadow references a custom property
+ *   from css/shared.css. No literal hex values. When shared.css
+ *   changes its palette, this file follows automatically.
+ *
+ * GRID MODEL:
+ *   The renderer emits cells in row-major order: the time cell of a
+ *   row, then the seven day cells of that row. The CSS grid is
+ *   declared with `grid-template-columns: <time-width> repeat(7,
+ *   minmax(0, 1fr))` and lets auto-placement do the rest.
+ *
+ *   Multi-hour slots are rendered as multiple cells, one per hour.
+ *   The first cell carries .schedule-occupied; subsequent cells
+ *   carry .schedule-occupied plus the isContinuation marker (the
+ *   renderer emits `.schedule-continuation` inside those cells).
+ *   The CSS does not attempt to merge these into a spanning cell;
+ *   the renderer does not emit the data needed for that (it emits
+ *   per-cell blocks, not per-span blocks).
+ *
+ * LOAD ORDER:
+ *   Loads after shared.css and academy.css. It depends on both
+ *   (academy.css for the .academy-schedule-host frame; shared.css
+ *   for tokens).
+ */
+
+/* ============================================================
+   WRAPPER
+   ============================================================ */
+
+.calendar-grid-container {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.calendar-grid-wrapper {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+}
+
+.calendar-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.calendar-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--accent);
+    margin: 0;
+    font-family: 'Fraunces', serif;
+}
+
+@media (min-width: 768px) {
+    .calendar-title {
+        font-size: 1rem;
+    }
+}
+
+/* ============================================================
+   SCHEDULE GRID
+   ============================================================ */
+
+.schedule-grid {
+    display: grid;
+    grid-template-columns: 64px repeat(7, minmax(0, 1fr));
+    gap: 1px;
+    background: var(--border-soft);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    width: 100%;
+}
+
+/* Narrow viewports: shrink the time column, allow horizontal scroll
+   on the wrapper. 64px is comfortable for "12:00 PM"; below 600px
+   the label wraps to two lines, so we shrink the column and let the
+   text wrap. */
+@media (max-width: 600px) {
+    .schedule-grid {
+        grid-template-columns: 44px repeat(7, minmax(64px, 1fr));
+    }
+}
+
+/* ============================================================
+   CELLS - SHARED
+   ============================================================ */
+
+.schedule-cell {
+    background: var(--panel);
+    padding: 4px 6px;
+    font-size: 0.68rem;
+    line-height: 1.2;
+    color: var(--text);
+    min-height: 32px;
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+@media (min-width: 768px) {
+    .schedule-cell {
+        padding: 6px 8px;
+        font-size: 0.72rem;
+        min-height: 40px;
+    }
+}
+
+/* ============================================================
+   HEADER ROW
+   ============================================================ */
+
+.schedule-header {
+    background: var(--panel-alt);
+    font-weight: 600;
+    color: var(--text-dim);
+    text-align: center;
+    align-items: center;
+    justify-content: center;
+    border-bottom: 1px solid var(--border);
+    min-height: 28px;
+}
+
+.schedule-day {
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 0.62rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+@media (min-width: 768px) {
+    .schedule-day {
+        font-size: 0.68rem;
+    }
+}
+
+.schedule-time {
+    background: var(--panel-alt);
+    color: var(--text-dim);
+    font-weight: 500;
+    text-align: right;
+    padding-right: 8px;
+    align-items: flex-end;
+    justify-content: center;
+    font-size: 0.62rem;
+    white-space: nowrap;
+}
+
+@media (min-width: 768px) {
+    .schedule-time {
+        font-size: 0.68rem;
+        padding-right: 10px;
+    }
+}
+
+/* The first cell of the grid is both .schedule-time and
+   .schedule-header; make sure it sits on the header background. */
+.schedule-time.schedule-header {
+    background: var(--panel-alt);
+    border-bottom: 1px solid var(--border);
+}
+
+/* ============================================================
+   OCCUPIED SLOT
+   ============================================================ */
+
+.schedule-slot {
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.schedule-occupied {
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    cursor: default;
+}
+
+.schedule-occupied:hover {
+    background: var(--accent-hover);
+}
+
+/* ============================================================
+   EMPTY SLOT
+   ============================================================ */
+
+.schedule-empty {
+    background: var(--panel);
+    color: var(--text-dim);
+    cursor: default;
+}
+
+.schedule-empty-label {
+    color: var(--text-dim);
+    opacity: 0;
+    font-size: 0.85rem;
+    transition: opacity 0.15s ease;
+    text-align: center;
+    margin: auto;
+}
+
+/* Show the "+" hint on hover/focus. */
+.schedule-slot.schedule-empty:hover .schedule-empty-label {
+    opacity: 0.5;
+}
+
+/* ============================================================
+   REST DAY COLUMN
+   ============================================================ */
+
+.schedule-rest-day {
+    background: var(--panel-alt);
+    color: var(--text-dim);
+    opacity: 0.65;
+}
+
+.schedule-rest-day.schedule-header {
+    background: var(--panel-alt);
+    font-style: italic;
+}
+
+/* The renderer suppresses content inside rest-day slots, so the
+   hover hint should not appear either. */
+.schedule-rest-day .schedule-empty-label {
+    display: none;
+}
+
+/* ============================================================
+   BLOCKED SLOT
+   ============================================================ */
+
+.schedule-blocked {
+    background: var(--danger-soft);
+    border-left: 3px solid var(--danger);
+    color: var(--danger);
+    cursor: default;
+}
+
+.schedule-blocked-label {
+    font-weight: 600;
+    font-size: 0.65rem;
+    text-align: center;
+    color: var(--danger);
+}
+
+/* ============================================================
+   OCCUPIED SLOT - INNER ELEMENTS
+   ============================================================ */
+
+.schedule-discipline-name {
+    font-weight: 600;
+    font-size: 0.68rem;
+    color: var(--text);
+    line-height: 1.15;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+@media (min-width: 768px) {
+    .schedule-discipline-name {
+        font-size: 0.72rem;
+    }
+}
+
+.schedule-label {
+    font-size: 0.6rem;
+    color: var(--accent);
+    font-style: italic;
+    line-height: 1.1;
+}
+
+.schedule-group-label {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    line-height: 1.1;
+}
+
+.schedule-instructor {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    line-height: 1.1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.schedule-duration {
+    font-size: 0.58rem;
+    color: var(--text-dim);
+    font-weight: 500;
+    position: absolute;
+    top: 3px;
+    right: 5px;
+    background: var(--panel-alt);
+    padding: 0 3px;
+    border-radius: 3px;
+}
+
+/* Continuation marker on the second and subsequent cells of a
+   multi-hour slot. Small, muted, does not compete with the
+   discipline name. */
+.schedule-continuation {
+    position: absolute;
+    bottom: 2px;
+    right: 4px;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    opacity: 0.7;
+    line-height: 1;
+}
+
+/* ============================================================
+   LEGEND
+   ============================================================ */
+
+.calendar-legend,
+.schedule-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 8px 4px 4px;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+}
+
+.legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.legend-color {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+}
+
+/* Legend colour modifiers. Callers pass a className string to
+   renderLegend; these are the class names the aggregator or the
+   host view can pass. They match the occupied / blocked / rest-day
+   semantics of the grid. */
+.legend-color.schedule-occupied {
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+}
+
+.legend-color.schedule-blocked {
+    background: var(--danger-soft);
+    border-left: 3px solid var(--danger);
+}
+
+.legend-color.schedule-rest-day {
+    background: var(--panel-alt);
+    opacity: 0.65;
+}
+
+.legend-color.schedule-empty {
+    background: var(--panel);
+    border: 1px dashed var(--border);
+}
+
+.legend-label {
+    color: var(--text-dim);
+}
+
+/* ============================================================
+   LOADING / EMPTY STATES
+   ============================================================ */
+
+/* .empty-state is defined in shared.css. We do not redeclare it. */
+
+.loading-state {
+    padding: 12px;
+    text-align: center;
+    color: var(--text-dim);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 0.75rem;
+    font-style: italic;
+}
+
+@media (min-width: 768px) {
+    .loading-state {
+        padding: 20px;
+    }
+}
+
+/* ============================================================
+   REDUCED MOTION
+   ============================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+    .schedule-slot,
+    .schedule-empty-label {
+        transition: none;
+    }
+}
