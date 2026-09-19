@@ -2,152 +2,31 @@
  * js/core/database.js - IndexedDB Operations
  * Path: js/core/database.js
  *
- * Data Version History (updated):
- *   - Version 23: Repairs legacy tournaments (assigns round/match IDs,
- *                strips retired fields, backfills elimination tournamentId)
- *                and backfills academy.weeklyTeams windows for classed
- *                academic teams. Orphan teams (classId: null) are left
- *                alone; the Weekly Teams view surfaces them for manual
- *                assignment.
- *   - Version 24: Member intervals refactor. Every team member entry
- *                is reshaped from flat joinPeriod / leavePeriod fields
- *                to a single-element `intervals` array. Every entry
- *                also receives a stable `memberId` if it lacks one.
- *                The flat fields are removed. Entries that already
- *                carry `intervals` are left alone. Entries that carry
- *                neither flat fields nor intervals get an empty
- *                intervals array (the member exists but has no stints;
- *                the UI surfaces this).
- *   - Version 25: Year-scoped eliminations. Every elimination record
- *                on every character receives a required integer `year`.
- *                An elimination at year Y means eliminated from year Y
- *                onward. The character list filters by year, not week.
- *   - Version 26: Discipline record-shape canonicalisation. Every
- *                record in data.curriculum.disciplines[] is reshaped to
- *                the canonical shape written by AcademyDisciplines.create:
- *                  * startWeek and endWeek coerced from string to
- *                    integer via CalendarValidation.parseWeek.
- *                    Unparseable weeks are left untouched and logged
- *                    (strict mode — no clamping, no record deletion).
- *                  * Retired fields deleted: curriculum, maxStudents,
- *                    gradingSystem, instructorId (singular).
- *                  * instructorIds ensured to be an array of strings.
- *                    A lone instructorId (singular) is promoted.
- *                  * type ensured to be 'mandatory' or 'optional'.
- *                    Absent type defaults to 'mandatory'. Unknown type
- *                    is preserved and logged.
- *                  * weeklyHours and weight ensured to be numbers.
- *                  * gradeScheme and assessmentWeights left alone;
- *                    read-time normalisation covers absence.
- *   - Version 27: Class-discipline marker-only store, character mode,
- *                and global instructor retirement.
+ * DATA_VERSION: 29
  *
- *                (a) CLASS-DISCIPLINE MARKER REWRITE.
- *                    Every record in academy.classDisciplines[classId]
- *                    [disciplineId] is rewritten to the marker shape:
+ * Version history (one line per version; the full narrative for each
+ * lives on its migration function, or has been dropped once stable):
+ *   23 — Repair legacy tournaments; backfill weekly-team windows.
+ *   24 — Member intervals refactor (flat fields → intervals array).
+ *   25 — Year-scoped eliminations.
+ *   26 — Discipline record-shape canonicalisation.
+ *   27 — Class-discipline marker-only store; character mode;
+ *        instructor retirement (discipline- and class-discipline-level).
+ *   28 — Stats-config icon normalisation (emoji → monochrome).
+ *   29 — Class-level instructorId retirement.
  *
- *                      { classId, disciplineId, mandatory,
- *                        createdAt, updatedAt }
- *
- *                    Every other field is dropped: startWeek, endWeek,
- *                    weeklyHours, weight, gradeSchemeId,
- *                    assessmentWeights, instructorIds. The discipline
- *                    entity owns its config; the class-discipline
- *                    record only marks availability.
- *
- *                    `mandatory` is derived from the discipline's
- *                    `type` field ('mandatory' → true, else false).
- *                    When the discipline no longer exists, the old
- *                    record's `mandatory` field is used as a fallback.
- *
- *                (b) INSTRUCTOR-OF-DISCIPLINE-FOR-CLASS MIGRATION.
- *                    Under the new model, "instructor X teaches
- *                    discipline D for class C" is expressed as an
- *                    enrolment, not as a field on the class-discipline
- *                    record. Any legacy `instructorIds[]` array on a
- *                    class-discipline record is converted:
- *
- *                      For each instructorId in the array, ensure
- *                      academy.enrolments[classId][instructorId]
- *                      contains an interval for `disciplineId` spanning
- *                      the class-discipline's startWeek..endWeek.
- *
- *                    Overlapping intervals for the same
- *                    (classId, charId, disciplineId) are NOT created;
- *                    if the charId is already enrolled in that
- *                    discipline for that class during the span, the
- *                    existing interval is kept. After conversion, the
- *                    `instructorIds` field is dropped.
- *
- *                    The class-discipline's startWeek / endWeek are
- *                    read from the legacy record before the marker
- *                    rewrite drops them. The migration processes
- *                    instructor conversion BEFORE the marker rewrite
- *                    so the week bounds are still available.
- *
- *                (c) CHARACTER MODE BACKFILL.
- *                    Every character that lacks a `mode` field gets
- *                    `mode: 'student'`. This is the correct default:
- *                    every existing character is a student unless the
- *                    user explicitly toggles instructor mode.
- *
- *                (d) GLOBAL DISCIPLINE INSTRUCTOR RETIREMENT.
- *                    The `instructorIds` field on every discipline in
- *                    data.curriculum.disciplines[] is dropped. The
- *                    field's semantics are now expressed through
- *                    enrolments, and AcademyDisciplines no longer
- *                    exports getDisciplinesByInstructor.
- *
- *                The v27 shape guard in normaliseDataStructure is
- *                symmetric with v24/v25/v26: it enforces the marker
- *                shape on any class-discipline record that survives
- *                the migration (e.g. imported envelopes, direct
- *                writes), and enforces the mode field on any character
- *                that lacks one.
- *   - Version 28: Stats-config icon normalisation. Every record in
- *                data.statsConfig.classes[] that carries a legacy
- *                emoji icon (⚔ 🏹 🛡 📚 🗡 ⚡ ⚙ ✦) is rewritten to a
- *                monochrome Unicode glyph. Custom icons that are not
- *                one of the recognised legacy emoji are left alone.
- *                The default stats config emitted by this file now
- *                produces the monochrome glyphs directly, so a fresh
- *                load never needs this migration.
- *
- * ACADEMY STORES (v20+):
- *   ...
- *
- * RETIRED STORES (removed in v23):
- *   tournament.winner
- *   tournament.currentRound
- *   tournament.teams
- *   tournament.matches
- *   tournament.winners
- *   match.winner
- *   match.loser
- *   match.advancing
- *
- * RETIRED DISCIPLINE FIELDS (removed in v26):
- *   discipline.curriculum
- *   discipline.maxStudents
- *   discipline.gradingSystem
- *   discipline.instructorId (singular)
- *
- * RETIRED CLASS-DISCIPLINE FIELDS (removed in v27):
- *   classDiscipline.startWeek
- *   classDiscipline.endWeek
- *   classDiscipline.weeklyHours
- *   classDiscipline.weight
- *   classDiscipline.gradeSchemeId
- *   classDiscipline.assessmentWeights
- *   classDiscipline.instructorIds
- *
- * RETIRED DISCIPLINE FIELDS (removed in v27):
- *   discipline.instructorIds
- *
- * RETIRED STATS-CONFIG ICONS (removed in v28):
- *   The emoji icons used by the pre-v28 default stats config:
- *     ⚔ 🏹 🛡 📚 🗡 ⚡ ⚙ ✦
- *   Replaced by monochrome Unicode glyphs. See v28 migration.
+ * RETIRED FIELDS (one line each):
+ *   v23  tournament.winner, tournament.currentRound, tournament.teams,
+ *        tournament.matches, tournament.winners, match.winner,
+ *        match.loser, match.advancing
+ *   v26  discipline.curriculum, discipline.maxStudents,
+ *        discipline.gradingSystem, discipline.instructorId
+ *   v27  discipline.instructorIds, classDiscipline.startWeek,
+ *        classDiscipline.endWeek, classDiscipline.weeklyHours,
+ *        classDiscipline.weight, classDiscipline.gradeSchemeId,
+ *        classDiscipline.assessmentWeights, classDiscipline.instructorIds
+ *   v28  legacy stats-config emoji icons (⚔ 🏹 🛡 📚 🗡 ⚡ ⚙ ✦)
+ *   v29  class.instructorId
  */
 
 (function() {
@@ -155,7 +34,7 @@
 
     var DB_NAME = 'HollowBladesDB';
     var DB_VERSION = 1;
-    var DATA_VERSION = 28;
+    var DATA_VERSION = 29;
     var STORE_NAME = 'appData';
 
     var _indexedDB = null;
@@ -624,6 +503,7 @@
                 case 25: migrateToVersion26(data); break;
                 case 26: migrateToVersion27(data); break;
                 case 27: migrateToVersion28(data); break;
+                case 28: migrateToVersion29(data); break;
                 default: data._dataVersion = DATA_VERSION; break;
             }
         }
@@ -1872,8 +1752,7 @@
      *   The consequence is that the discipline editor's type
      *   checks — which test `typeof draft.startWeek === 'number'` —
      *   fail for string-typed weeks, and the editor falls back to
-     *   its default (1). The canonical value is on disk but the
-     *   editor never sees it.
+     *   its default (1). The canonical value is on disk but the     *   editor never sees it.
      *
      * STRICT MODE:
      *   Unparseable weeks are LEFT UNTOUCHED, LOGGED, and counted
@@ -2636,29 +2515,6 @@
      *   guess at meaning; it replaces a known string with a known
      *   replacement.
      *
-     * THE LOOKUP TABLE:
-     *   Legacy emoji → monochrome glyph:
-     *     U+2694 (crossed swords)  → U+2020 (dagger)
-     *     U+1F3F9 (bow and arrow)  → U+27B6 (heavy triangle-headed arrow)
-     *     U+1F6E1 (shield)         → U+25C8 (diamond with centre dot)
-     *     U+1F4DA (books)          → U+25A4 (square with horizontal fill)
-     *     U+1F5E1 (dagger)         → U+2020 (dagger)
-     *     U+26A1 (high voltage)    → U+2301 (electric arrow)
-     *     U+2699 (gear)            → U+2731 (heavy asterisk)
-     *     U+2726 (black four-pointed star) → U+2727 (white four-pointed star)
-     *
-     *   Several legacy emoji map to the same replacement glyph
-     *   because the classes they represent share a theme. That is
-     *   intentional. The `id` field is the unique key; the icon is a
-     *   category hint.
-     *
-     * SAFETY:
-     *   - If `data.statsConfig` is missing, malformed, or has no
-     *     `classes` array, the migration is a no-op.
-     *   - Individual class entries that are not objects are skipped.
-     *   - Individual entries whose icon is not a recognised legacy
-     *     emoji are left alone.
-     *
      * @param {object} data
      */
     function migrateToVersion28(data) {
@@ -2752,6 +2608,83 @@
         );
 
         data._dataVersion = 28;
+    }
+
+    /**
+     * Version 29 migration — Class-level instructorId retirement.
+     *
+     * WHY:
+     *   Prior to this revision, a class record carried `instructorId`
+     *   — a single instructor per class. The relationship it expressed
+     *   is discipline-scoped: an instructor teaches a discipline FOR a
+     *   class, not the class as a whole. Two instructors may teach a
+     *   class different disciplines; the same instructor may teach one
+     *   class several disciplines.
+     *
+     *   The relationship is now expressed as an enrolment (v27):
+     *
+     *     academy.enrolments[classId][charId] = [
+     *       { disciplineId, startWeek, endWeek }, ...
+     *     ]
+     *
+     *   with the character's mode set to 'instructor'. The class's
+     *   instructors are derived from those enrolments via
+     *   AcademyClasses.getClassInstructorIds(classId, week).
+     *
+     * WHAT THIS MIGRATION DOES:
+     *   For every class record in academy.graduatingClasses:
+     *     - delete `instructorId` if present.
+     *
+     * WHAT THIS MIGRATION DOES NOT DO:
+     *   - It does NOT convert the retired field into an enrolment.
+     *     There is nothing to convert: the field was never writable
+     *     through the UI (the class form does not render an instructor
+     *     input), so any surviving value is either null or a
+     *     programmatic write from a caller that no longer exists.
+     *   - It does NOT touch any other class field.
+     *   - It does NOT create or modify enrolments.
+     *
+     * @param {object} data
+     */
+    function migrateToVersion29(data) {
+        var academy = data.academy;
+
+        if (!academy ||
+            typeof academy !== 'object' ||
+            Array.isArray(academy) ||
+            !academy.graduatingClasses ||
+            typeof academy.graduatingClasses !== 'object' ||
+            Array.isArray(academy.graduatingClasses)) {
+            data._dataVersion = 29;
+            return;
+        }
+
+        var recordsSeen = 0;
+        var fieldsDropped = 0;
+
+        var classIds = Object.keys(academy.graduatingClasses);
+        for (var i = 0; i < classIds.length; i++) {
+            var record = academy.graduatingClasses[classIds[i]];
+            if (!record || typeof record !== 'object' || Array.isArray(record)) {
+                continue;
+            }
+            recordsSeen++;
+
+            if (Object.prototype.hasOwnProperty.call(record, 'instructorId')) {
+                delete record.instructorId;
+                fieldsDropped++;
+            }
+        }
+
+        console.log(
+            '[Database] v29: class-level instructorId retirement. ' +
+            'Records seen: ' + recordsSeen + '. ' +
+            'instructorId fields dropped: ' + fieldsDropped + '. ' +
+            'Class instructors are now derived from per-discipline ' +
+            'enrolments via AcademyClasses.getClassInstructorIds.'
+        );
+
+        data._dataVersion = 29;
     }
 
     // ============================================================
@@ -3296,6 +3229,32 @@
                 }
                 if (ICON_REPLACEMENTS[record.icon] !== undefined) {
                     record.icon = ICON_REPLACEMENTS[record.icon];
+                    repaired = true;
+                }
+            }
+        })();
+
+        // ---- v29 shape guard: class records carry no instructorId ----
+        //
+        // Symmetric with the v29 migration. Any class record that
+        // still carries the retired field is cleaned, so imported
+        // envelopes or direct writes never reintroduce it.
+        (function ensureClassNoInstructorField() {
+            if (!data.academy ||
+                !data.academy.graduatingClasses ||
+                typeof data.academy.graduatingClasses !== 'object' ||
+                Array.isArray(data.academy.graduatingClasses)) {
+                return;
+            }
+
+            var classIds = Object.keys(data.academy.graduatingClasses);
+            for (var i = 0; i < classIds.length; i++) {
+                var record = data.academy.graduatingClasses[classIds[i]];
+                if (!record || typeof record !== 'object' || Array.isArray(record)) {
+                    continue;
+                }
+                if (Object.prototype.hasOwnProperty.call(record, 'instructorId')) {
+                    delete record.instructorId;
                     repaired = true;
                 }
             }

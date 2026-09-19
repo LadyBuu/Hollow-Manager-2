@@ -11,6 +11,8 @@
  *   - Class entity mutations
  *   - Character ↔ class membership mutations (addToClass,
  *     removeClassById, addClassByName, removeFromAllClasses)
+ *   - Instructor-of-class derivation (getClassInstructorIds),
+ *     sourced from per-discipline instructor enrolments
  *
  * This module is NOT responsible for:
  *   - Class membership STORAGE. Membership lives on
@@ -20,6 +22,10 @@
  *   - Class roster DERIVATION. AcademyQueries derives rosters from
  *     character.classIds.
  *   - Cross-domain cascade cleanup. That is owned by AcademyCascade.
+ *   - Per-discipline instructor assignment. That is an ENROLMENT,
+ *     written by the instructor-side Disciplines tab in the character
+ *     detail panel, through AcademyEnrolments.enrol. This module
+ *     only READS those enrolments, via getClassInstructorIds.
  *
  * IMPORTANT (v15+):
  *   - This module OWNS class ENTITIES and now OWNS the mutations
@@ -30,21 +36,42 @@
  *   - The academy roster is DERIVED: characters whose classIds
  *     include classId. AcademyQueries owns that derivation.
  *
+ * NO CLASS-LEVEL INSTRUCTOR (v27+):
+ *   Prior to this revision, a class record carried `instructorId` —
+ *   a single instructor per class. That field was retired because
+ *   the relationship it expressed is discipline-scoped: an instructor
+ *   teaches a discipline for a class, not the class as a whole. Two
+ *   instructors may teach the same class different disciplines; the
+ *   same instructor may teach one class several disciplines.
+ *
+ *   The relationship is expressed as an ENROLMENT:
+ *
+ *     academy.enrolments[classId][instructorCharId] = [
+ *       { disciplineId, startWeek, endWeek }, ...
+ *     ]
+ *
+ *   with the character's mode set to 'instructor'. The character's
+ *   Disciplines tab (instructor mode) is where this is edited.
+ *
+ *   This module no longer:
+ *     - writes `instructorId` on class records,
+ *     - accepts `instructorId` in create or update payloads,
+ *     - returns `instructorId` in any shape.
+ *
+ *   A caller that passes `instructorId` gets a structured rejection,
+ *   not a silent no-op. Silently accepting a retired field is how a
+ *   dead API stays alive in three files wearing a fake moustache.
+ *
+ *   getClassInstructorIds is the canonical way to ask "which
+ *   instructors teach something in this class at this week?". It
+ *   reads enrolments, not the class record.
+ *
  * S10.1 MIGRATION:
  *   The four membership mutations (addToClass, removeClassById,
  *   addClassByName, removeFromAllClasses) and the two
  *   classIds-normalisation helpers (normaliseClassIds,
  *   getNormalisedClassIds) were moved here from
  *   character-classes.js. That file has been deleted.
- *
- *   The membership mutations previously delegated their class reads
- *   through the retired AcademyQueries facade. They now go directly
- *   to AcademyClasses's own internal accessors (getClassInternal,
- *   getClassByNameInternal). This is the same class entity data,
- *   read from the same store; the intermediate facade is gone.
- *
- *   The legacy addStudent / removeStudent shims that delegate back to
- *   character-classes.js were deleted. Nothing calls them.
  *
  * READ SAFETY (Phase 2):
  *   - getAcademyStore() returns null (does NOT create academy.{...})
@@ -73,17 +100,24 @@
  *   - Any integer >= 1 is a valid year for a class.
  *   - A null year is also valid (represents "year not specified").
  *
- * DEPENDENCIES:
+ * DEPENDENCIES (MANDATORY):
  *   - window.ObjectUtils (from object-utils.js) - MANDATORY
  *   - window.IdUtils (from id-utils.js) - MANDATORY
  *   - window.ValidationUtils (from validation-utils.js) - MANDATORY
  *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
- *   - window.AcademyCascade (from academy-cascade.js) - LAZY
+ *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
+ *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
+ *   - window.RangeUtils (from range-utils.js) - MANDATORY
+ *
+ * DEPENDENCIES (LAZY):
+ *   - window.AcademyCascade (from academy-cascade.js)
  *     When present, cross-domain cleanup on delete routes through it.
- *     When absent, cross-domain cleanup is skipped (the cascade
- *     coordinator is the single owner of the "what needs cleanup"
- *     list; the alternative is inline duplication, which is what the
- *     coordinator exists to eliminate).
+ *   - window.CharacterQueries (from character-queries.js)
+ *     Read by the membership mutations and by getClassInstructorIds.
+ *   - window.AcademyClassDisciplinesQueries
+ *     (from academy-class-disciplines-queries.js)
+ *     Read by getClassInstructorIds to resolve the class's active
+ *     offerings.
  *
  * USAGE:
  *   var classes = window.AcademyClasses;
@@ -101,6 +135,12 @@
  *   classes.removeClassById('char_456', 'class_123').then(...);
  *   classes.addClassByName('char_456', 'New Class').then(...);
  *   classes.removeFromAllClasses('char_456').then(...);
+ *
+ *   // Instructor-of-class derivation
+ *   var instructorIds = classes.getClassInstructorIds('class_123', 5);
+ *   var englishOnly = classes.getClassInstructorIds(
+ *       'class_123', 5, { disciplineId: 'disc_en' }
+ *   );
  */
 
 (function() {
@@ -132,6 +172,22 @@
         missing.push('MutationPipeline.performMutation');
     }
 
+    if (!window.CalendarConstants ||
+        typeof window.CalendarConstants.MIN_WEEK !== 'number' ||
+        typeof window.CalendarConstants.MAX_WEEK !== 'number') {
+        missing.push('CalendarConstants.MIN_WEEK/MAX_WEEK');
+    }
+
+    if (!window.CalendarValidation ||
+        typeof window.CalendarValidation.parseWeek !== 'function') {
+        missing.push('CalendarValidation.parseWeek');
+    }
+
+    if (!window.RangeUtils ||
+        typeof window.RangeUtils.containsWeek !== 'function') {
+        missing.push('RangeUtils.containsWeek');
+    }
+
     if (missing.length > 0) {
         throw new Error('[AcademyClasses] Missing dependencies: ' + missing.join(', '));
     }
@@ -146,6 +202,9 @@
     var IdUtils = window.IdUtils;
     var ValidationUtils = window.ValidationUtils;
     var MutationPipeline = window.MutationPipeline;
+    var CalendarConstants = window.CalendarConstants;
+    var CalendarValidation = window.CalendarValidation;
+    var RangeUtils = window.RangeUtils;
 
     // ============================================================
     // LAZY LOADING HELPERS
@@ -155,12 +214,23 @@
         return window.AcademyCascade || null;
     }
 
+    function getCharacterQueries() {
+        return window.CharacterQueries || null;
+    }
+
+    function getAcademyClassDisciplinesQueries() {
+        return window.AcademyClassDisciplinesQueries || null;
+    }
+
     // ============================================================
     // CONSTANTS
     // ============================================================
 
     var VALID_STATUSES = ['active', 'archived', 'graduated'];
     var DEFAULT_STATUS = 'active';
+
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
 
     // ============================================================
     // HELPERS
@@ -195,6 +265,17 @@
 
     function success(data) {
         return { success: true, data: data };
+    }
+
+    function parseWeekStrict(week) {
+        var parsed = CalendarValidation.parseWeek(week);
+        if (parsed === null) {
+            return null;
+        }
+        if (parsed < MIN_WEEK || parsed > MAX_WEEK) {
+            return null;
+        }
+        return parsed;
     }
 
     // ============================================================
@@ -367,6 +448,189 @@
     }
 
     // ============================================================
+    // INSTRUCTOR-OF-CLASS DERIVATION
+    // ============================================================
+    //
+    // A class does not carry an instructor field. The instructors of
+    // a class are whoever has an instructor-mode enrolment in one of
+    // the class's offerings, during the requested week.
+    //
+    // The relationship is expressed as an enrolment, the same store
+    // as student enrolment:
+    //
+    //   academy.enrolments[classId][charId] = [
+    //     { disciplineId, startWeek, endWeek }, ...
+    //   ]
+    //
+    // A character is treated as an instructor for this purpose when
+    // character.mode === 'instructor'. The enrolment itself is
+    // mode-neutral; mode is a fact on the character, not on the
+    // enrolment.
+    //
+    // The helper is WEEK-AWARE. An instructor who taught a discipline
+    // during weeks 1-8 and stopped is not returned for week 9. Range
+    // containment delegates to RangeUtils.containsWeek.
+    //
+    // DEPENDENCY ORDERING:
+    //   This helper reads offerings through
+    //   AcademyClassDisciplinesQueries and enrolments through
+    //   academy.enrolments directly. Both reads are lazy; neither
+    //   module loads before this one, and neither is imported at
+    //   load time.
+    //
+    // NOT A MUTATION-CONTEXT HELPER:
+    //   This is a live/preflight read against window.data. It is
+    //   NOT authoritative inside a MutationPipeline transaction.
+    //   Callers that need the authoritative answer (assignStudentToSlot,
+    //   for example) must re-resolve against the pipeline snapshot,
+    //   using the same rule this helper expresses.
+
+    /**
+     * Return the character IDs of every instructor who teaches
+     * something in this class during the given week.
+     *
+     * When options.disciplineId is supplied, only instructors whose
+     * enrolment covers that discipline are returned.
+     *
+     * @param {string} classId
+     * @param {number|string} week
+     * @param {object} [options] { disciplineId?: string }
+     * @returns {array} Deduplicated, sorted array of character IDs
+     */
+    function getClassInstructorIds(classId, week, options) {
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
+
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return [];
+        }
+
+        var academy = getAcademyStore();
+        if (!academy) {
+            return [];
+        }
+
+        var enrolments = academy.enrolments;
+        if (!isObject(enrolments)) {
+            return [];
+        }
+
+        var byClass = enrolments[String(classId)];
+        if (!isObject(byClass)) {
+            return [];
+        }
+
+        // Resolve the class's active offerings for the week. When
+        // the queries module is unavailable, fall back to the raw
+        // disciplines referenced by enrolment intervals — the
+        // week-and-mode filter still applies, but the offering-set
+        // check does not. This mirrors the fail-soft behaviour of
+        // other optional reads in the module.
+        var offeringSet = Object.create(null);
+        var offeringFilterAvailable = false;
+
+        var Queries = getAcademyClassDisciplinesQueries();
+        if (Queries &&
+            typeof Queries.getClassDisciplinesForClass === 'function' &&
+            typeof Queries.isActiveInWeek === 'function') {
+            var offerings = [];
+            try {
+                offerings = Queries.getClassDisciplinesForClass(classId) || [];
+            } catch (e) {
+                offerings = [];
+            }
+            for (var oi = 0; oi < offerings.length; oi++) {
+                var rec = offerings[oi];
+                if (!rec || !rec.disciplineId) { continue; }
+                var active = false;
+                try {
+                    active = Queries.isActiveInWeek(
+                        classId, rec.disciplineId, weekNum
+                    ) === true;
+                } catch (e) {
+                    active = false;
+                }
+                if (active) {
+                    offeringSet[String(rec.disciplineId)] = true;
+                }
+            }
+            offeringFilterAvailable = true;
+        }
+
+        // Optional discipline filter.
+        var disciplineFilter = null;
+        if (options && isNonEmptyString(options.disciplineId)) {
+            disciplineFilter = String(options.disciplineId);
+        }
+
+        var CQ = getCharacterQueries();
+        if (!CQ || typeof CQ.getCharacterById !== 'function') {
+            return [];
+        }
+
+        var result = Object.create(null);
+        var charIds = Object.keys(byClass);
+
+        for (var ci = 0; ci < charIds.length; ci++) {
+            var charId = charIds[ci];
+            var intervals = byClass[charId];
+            if (!Array.isArray(intervals)) { continue; }
+
+            // Does this character have at least one interval that
+            // covers the week, matches the optional discipline
+            // filter, and (when the offering filter is available)
+            // corresponds to an active offering?
+            var matchedDiscipline = false;
+            for (var ii = 0; ii < intervals.length; ii++) {
+                var iv = intervals[ii];
+                if (!iv || typeof iv !== 'object') { continue; }
+
+                var discId = isNonEmptyString(iv.disciplineId)
+                    ? String(iv.disciplineId)
+                    : null;
+                if (discId === null) { continue; }
+
+                if (disciplineFilter !== null &&
+                    discId !== disciplineFilter) {
+                    continue;
+                }
+
+                if (offeringFilterAvailable &&
+                    offeringSet[discId] !== true) {
+                    continue;
+                }
+
+                if (!RangeUtils.containsWeek(
+                    weekNum, iv.startWeek, iv.endWeek
+                )) {
+                    continue;
+                }
+
+                matchedDiscipline = true;
+                break;
+            }
+
+            if (!matchedDiscipline) { continue; }
+
+            // Mode check. The character must currently be an
+            // instructor. A character who was an instructor at one
+            // point and has since flipped mode is not an instructor
+            // now, and is not returned.
+            var char = CQ.getCharacterById(charId);
+            if (!char || typeof char !== 'object') { continue; }
+            if (char.mode !== 'instructor') { continue; }
+
+            result[String(charId)] = true;
+        }
+
+        var out = Object.keys(result);
+        out.sort();
+        return out;
+    }
+
+    // ============================================================
     // YEAR VALIDATION
     // ============================================================
 
@@ -385,6 +649,27 @@
         }
 
         return { valid: true, value: num };
+    }
+
+    // ============================================================
+    // CLASS-LEVEL INSTRUCTOR PAYLOAD GUARD
+    // ============================================================
+    //
+    // The retired `instructorId` field is rejected explicitly. A
+    // caller that passes it gets a structured failure, not a silent
+    // no-op. The message names the replacement so the caller can
+    // migrate without a search.
+
+    var RETIRED_INSTRUCTOR_MESSAGE =
+        'instructorId is not a class field. Instructor assignment is ' +
+        'per-discipline: open the character in instructor mode and ' +
+        'use the Disciplines tab to assign a discipline to teach.';
+
+    function rejectInstructorField(payload) {
+        if (payload && Object.prototype.hasOwnProperty.call(payload, 'instructorId')) {
+            return RETIRED_INSTRUCTOR_MESSAGE;
+        }
+        return null;
     }
 
     // ============================================================
@@ -408,6 +693,11 @@
 
         options = options || {};
 
+        var retiredInstructor = rejectInstructorField(options);
+        if (retiredInstructor !== null) {
+            return Promise.resolve(failure(retiredInstructor));
+        }
+
         var status = options.status || DEFAULT_STATUS;
         if (VALID_STATUSES.indexOf(status) === -1) {
             return Promise.resolve(failure('Invalid status. Must be one of: ' + VALID_STATUSES.join(', ')));
@@ -427,7 +717,6 @@
             status: status,
             year: yearResult.value,
             description: options.description || '',
-            instructorId: options.instructorId || null,
             createdAt: now,
             updatedAt: now
         };
@@ -483,6 +772,11 @@
             return Promise.resolve(failure('Updates are required.'));
         }
 
+        var retiredInstructor = rejectInstructorField(updates);
+        if (retiredInstructor !== null) {
+            return Promise.resolve(failure(retiredInstructor));
+        }
+
         var target = String(classId);
         var existing = getClassInternal(target);
 
@@ -526,10 +820,6 @@
 
         if (updates.description !== undefined) {
             candidate.description = updates.description || '';
-        }
-
-        if (updates.instructorId !== undefined) {
-            candidate.instructorId = updates.instructorId || null;
         }
 
         candidate.updatedAt = new Date().toISOString();
@@ -793,7 +1083,7 @@
 
         // Character read goes through CharacterQueries lazily; the
         // character store is not owned here.
-        var CharacterQueries = window.CharacterQueries;
+        var CharacterQueries = getCharacterQueries();
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
             return Promise.resolve(failure('CharacterQueries is not available.'));
         }
@@ -884,7 +1174,7 @@
             return Promise.resolve(failure('Class ID is required.'));
         }
 
-        var CharacterQueries = window.CharacterQueries;
+        var CharacterQueries = getCharacterQueries();
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
             return Promise.resolve(failure('CharacterQueries is not available.'));
         }
@@ -975,7 +1265,10 @@
      * ENTITY SHAPE CONTRACT:
      *   The created class entity matches AcademyClasses.create's
      *   shape exactly: { id, name, status, year, description,
-     *   instructorId, createdAt, updatedAt }.
+     *   createdAt, updatedAt }.
+     *
+     *   There is no instructorId. The field was retired; instructors
+     *   are per-discipline enrolments.
      *
      * @param {string} charId
      * @param {string} className
@@ -992,7 +1285,7 @@
 
         var trimmedName = className.trim();
 
-        var CharacterQueries = window.CharacterQueries;
+        var CharacterQueries = getCharacterQueries();
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
             return Promise.resolve(failure('CharacterQueries is not available.'));
         }
@@ -1071,7 +1364,6 @@
                         status: 'active',
                         year: null,
                         description: '',
-                        instructorId: null,
                         createdAt: now,
                         updatedAt: now
                     };
@@ -1132,7 +1424,7 @@
             return Promise.resolve(failure('Character ID is required.'));
         }
 
-        var CharacterQueries = window.CharacterQueries;
+        var CharacterQueries = getCharacterQueries();
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
             return Promise.resolve(failure('CharacterQueries is not available.'));
         }
@@ -1211,6 +1503,9 @@
         getDisplayName: getDisplayName,
         getCharacterClassNames: getCharacterClassNames,
         getCharacterClasses: getCharacterClassesFor,
+
+        // ---- Instructor-of-class derivation ----
+        getClassInstructorIds: getClassInstructorIds,
 
         // ---- Internal (LIVE REFERENCES) ----
         getClassInternal: getClassInternal,
