@@ -31,211 +31,11 @@
  *   - Exam update. The events layer routes the collected form
  *     through TournamentCore.updateTournament.
  *
- * VM CONTRACT:
- *   The main page VM (from AcademyTournamentAggregator.getExamViewModel):
- *   {
- *     classList: [ { id, name } ],
- *     classId: string | null,
- *     className: string | null,
- *     week: number | null,
- *     exam: ExamVM | null,
- *     pool: [ PoolItemVM ]
- *   }
- *
- *   ExamVM:
- *   {
- *     id, name,
- *     status, statusLabel,
- *     mode, modeLabel,
- *     startWeek, endWeek,
- *     archivedAt,
- *     participantCount,
- *     roundCount, totalRounds,
- *     participants: [ { id, name, type, typeLabel } ],
- *     eliminations: [ EliminationVM ],
- *     eliminationCount,
- *     finalPassers: [ { id, name, type, typeLabel } ],
- *     finalPasserCount,
- *     rounds: [ RoundVM ]
- *   }
- *
- *   RoundVM:
- *   {
- *     id, index, roundNumber,
- *     status, statusLabel,
- *     matchSize,
- *     matchType, matchTypeLabel,
- *     isPairExam,
- *     isCollapsed,           // C4 — read-only; written by AcademyUI
- *     matches: [ MatchVM ],
- *     matchCount
- *   }
- *
- *   MatchVM:
- *   {
- *     id, index,
- *     type, typeLabel,
- *     status, statusLabel,
- *     isPairExam, isGroupExam, isTeamMatch,
- *     isComplete,
- *     participantCount,
- *     participants?: [ ParticipantVM ],   // group_exam
- *     pairings?: [ [ ParticipantVM ] ],   // group_exam + isPairExam
- *     teams?: [ TeamVM ]                  // team_vs_team
- *   }
- *
- *   ParticipantVM:
- *   {
- *     id, name, type, typeLabel,
- *     result, resultCategory, outcomeDisplay,
- *     isPassing, isRetrying, isFailing
- *   }
- *
- *   TeamVM:
- *   {
- *     teamId, name,
- *     result, resultCategory, outcomeDisplay,
- *     isPassing, isRetrying, isFailing,
- *     members: [ {
- *       characterId, name, role,
- *       result, resultCategory, outcomeDisplay,
- *       isPassing, isRetrying, isFailing
- *     } ],
- *     memberCount
- *   }
- *
- *   EliminationVM:
- *   {
- *     participantId, participantType, participantName,
- *     week, reason, standalone,
- *     fromRoundId, fromMatchId, hasProvenance
- *   }
- *
- *   PoolItemVM:
- *   {
- *     id, name, subtitle,
- *     inExam, eliminated,
- *     priorRoundOutcome: 'pass' | 'retry' | null    // C8
- *   }
- *
- * MODAL VM CONTRACT:
- *   The modal builders receive everything they need on the options
- *   object. They do NOT query the domain.
- *
- *   buildEditExamModalHTML({
- *     examId,
- *     name,                  // string
- *     week                   // number (single week)
- *   })
- *
- *   buildAddMatchModalHTML({
- *     examId, roundId,
- *     mode,                  // 'individuals' | 'teams'
- *     isPairExam,            // boolean
- *     eligibleParticipants   // [ { id, name, priorRoundOutcome } ]
- *   })
- *
- *   buildEditMatchModalHTML({
- *     examId, roundId, matchId,
- *     mode, isPairExam,
- *     eligibleParticipants,  // [ { id, name, priorRoundOutcome } ]
- *     currentParticipants    // [ id, ... ]
- *   })
- *
- *   buildCompleteMatchModalHTML({
- *     examId, roundId, matchId,
- *     matchType,             // 'group_exam' | 'team_vs_team'
- *     mode,
- *     participants,          // [ { id, name } ]  (group_exam)
- *     existingResults,       // { [id]: 'pass'|'fail'|'retry' }
- *     teams,                 // [ { id, name, members: [ { id, name } ] } ]
- *     existingTeamResults,   // { [teamId]: result }
- *     existingIndividualResults // { [charId]: result }
- *   })
- *
- * ACTION NAMING:
- *   Every action carries the 'exam-' prefix so AcademyView's
- *   prefix-based dispatcher routes them deterministically.
- *
- *   Action strings emitted by this module:
- *     exam-create
- *     exam-delete
- *     exam-edit                (C5)
- *     exam-toggle-pool-member
- *     exam-add-round
- *     exam-remove-round
- *     exam-reopen-round
- *     exam-toggle-round-collapse        (C4)
- *     exam-auto-generate-round
- *     exam-add-match
- *     exam-edit-match
- *     exam-complete-match
- *     exam-reopen-match
- *     exam-remove-match
- *     exam-restore-eliminated
- *     exam-complete
- *     exam-reopen-exam
- *     exam-pair-add
- *     exam-pair-remove
- *
- * ID SEMANTICS:
- *   data-exam-id      on every exam-scoped action
- *   data-round-id     on every round- and match-scoped action,
- *                     including the collapse toggle
- *   data-match-id     on every match-scoped action
- *   data-pool-id      on pool toggle actions
- *   data-character-id on elimination restore actions
- *
- * MODAL CONTENT CONTRACT:
- *   Modal.createModal returns a bare .modal shell. The events module
- *   appends a .modal-content wrapper. Every builder here returns the
- *   inner content of that wrapper, not a full modal shell.
- *
- * PAIR-PICKER CONTRACT:
- *   The pair picker emits a "+ Add" button with
- *   data-action="exam-pair-add". AcademyView handles the click: it
- *   reads the three selects, validates distinctness, and appends a
- *   .at-pair-row to .at-pair-list with data-pair set to a
- *   JSON-stringified array of participant IDs. Each row carries a
- *   .at-pair-remove button emitting data-action="exam-pair-remove".
- *   The collector reads the rows.
- *
- *   C8 does NOT render prior-outcome badges in the pair picker. The
- *   pair picker's selection model is different (three selects plus an
- *   Add button), and the C8 addendum is about the participant
- *   checkbox picker. Pair-picker badges are a follow-up if wanted.
- *
- * ROUND COLLAPSE (C4):
- *   Each round header carries a toggle button. The button's label
- *   and icon reflect the current `round.isCollapsed`. The body of the
- *   round (matches) is wrapped in a container that is hidden when the
- *   round is collapsed.
- *
- *   The view does NOT decide the default. `round.isCollapsed` is
- *   computed by the aggregator, which reads it from AcademyUI. If the
- *   VM carries `isCollapsed: false`, the round is expanded. If it
- *   carries `isCollapsed: true`, the round is collapsed.
- *
- *   Collapse does NOT affect eliminations or any other section. Only
- *   the round's own matches are hidden.
- *
- * EDIT EXAM (C5):
- *   The exam header carries an "Edit Exam" button next to the other
- *   actions. Clicking it opens a modal built by
- *   buildEditExamModalHTML. The modal exposes:
- *
- *     - Exam Name        (text input)
- *     - Week             (single integer input)
- *
- *   A single week is used because this UI scopes exams to one week:
- *   the create modal takes a single week and the aggregator renders
- *   a single week. The events layer sets both `startWeek` and
- *   `endWeek` to that value on submit.
- *
- *   No other fields are editable through this modal. Participants,
- *   rounds, and matches are edited through their own affordances.
- *   Mode cannot be changed after creation because the domain rejects
- *   mode changes once participants exist.
+ * OUTCOME DISPLAY:
+ *   This module does NOT own an outcome-display map. It consumes
+ *   the `vm.outcomeDisplay` tuple (`text`, `class`, `label`) that
+ *   AcademyTournamentAggregator produces. The glyph choice — and
+ *   the PV-2 monochrome decision — lives on the aggregator.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -2301,7 +2101,7 @@
     // EXPOSE
     // ============================================================
 
-    window.AcademyTournamentView = {
+    window.AcademyTournamentView = Object.freeze({
         renderHTML: renderHTML,
 
         buildCreateExamModalHTML: buildCreateExamModalHTML,
@@ -2325,7 +2125,7 @@
         collectAddMatchForm: collectAddMatchForm,
         collectEditMatchForm: collectEditMatchForm,
         collectCompleteMatchForm: collectCompleteMatchForm
-    };
+    });
 
     // ============================================================
     // VERIFICATION
