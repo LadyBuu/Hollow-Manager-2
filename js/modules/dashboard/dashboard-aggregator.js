@@ -1,12 +1,12 @@
 /**
  * js/modules/dashboard/dashboard-aggregator.js - Dashboard Aggregator
  * Composes canonical domain queries into dashboard view models
- * 
+ *
  * Path: js/modules/dashboard/dashboard-aggregator.js
- * 
+ *
  * This module provides:
  *   - getDashboardViewModel() - Complete dashboard view model
- * 
+ *
  * IMPORTANT:
  *   - READ-ONLY - no mutations
  *   - PURE - no side effects, no DOM, no persistence
@@ -15,37 +15,34 @@
  *   - No safeCall() - if a required query is missing or fails, that is
  *     an application wiring error and should be visible
  *   - Statistics calculated ONCE and shared across derived views
- *   - Recent activity sourced from ActivityLog, not createdAt fields
- * 
+ *
  * SEMANTIC DEFINITIONS:
  *   The Dashboard is an aggregation surface, not a domain definition
  *   surface. Where a "count" requires interpretation, we either use
  *   the domain's canonical query, or we do not display the concept
  *   at all. Specifically:
- * 
- *   - "Total characters"   = all characters
+ *
+ *   - "Total characters"    = all characters
  *   - "Deceased characters" = characters where `deceased === true`
- *   - "Students"           = CharacterQueries.getStudents() (status-based)
- *   - "Instructors"        = CharacterQueries.getInstructors() (status-based)
- *   - "Active characters"  is NOT displayed because "active" has no
+ *   - "Students"            = CharacterQueries.getStudents()
+ *                             (status-based)
+ *   - "Instructors"         = CharacterQueries.getInstructors()
+ *                             (status-based)
+ *   - "Active characters"   is NOT displayed because "active" has no
  *     canonical definition (deceased vs eliminated vs career status
  *     are all possible interpretations)
- * 
- *   - "Active teams"       = teams where `status === 'active'`
- *   - "Active tournaments" = tournaments where `status === 'active'`
- *   - "Active missions"    = missions where `status === 'active'`
+ *
+ *   - "Active teams"        = teams where `status === 'active'`
+ *   - "Active tournaments"  = tournaments where `status === 'active'`
+ *   - "Active missions"     = missions where `status === 'active'`
  *     (canonical statuses from each domain's constants)
- * 
- *   - "Total classes"      = AcademyQueries.getClasses().length
- *   - "Enrolled students"  is NOT displayed because there is no canonical
- *     aggregate and the semantics (unique students vs sum of class sizes)
- *     are ambiguous. Academy must decide before Dashboard displays it.
- * 
- *   - "Recent activity" is read directly from ActivityLog.getHistory().
- *     ActivityLog entries are rendered as-is: { message, type, timestamp }.
- *     The Dashboard does NOT reconstruct meaning from createdAt fields,
- *     and does NOT resolve characters from metadata.
- * 
+ *
+ *   - "Total classes"       = AcademyQueries.getClasses().length
+ *   - "Enrolled students"   is NOT displayed because there is no
+ *     canonical aggregate and the semantics (unique students vs sum
+ *     of class sizes) are ambiguous. Academy must decide before
+ *     Dashboard displays it.
+ *
  * DEPENDENCIES (all required):
  *   - window.ApplicationSettingsQueries
  *   - window.CharacterQueries
@@ -53,8 +50,7 @@
  *   - window.TournamentQueries
  *   - window.MissionQueries
  *   - window.AcademyQueries
- *   - window.ActivityLog
- * 
+ *
  * USAGE:
  *   var agg = window.DashboardAggregator;
  *   var viewModel = agg.getDashboardViewModel();
@@ -110,11 +106,6 @@
         missing.push('AcademyQueries.getClasses');
     }
 
-    // ---- Activity log ----
-    if (!window.ActivityLog || typeof window.ActivityLog.getHistory !== 'function') {
-        missing.push('ActivityLog.getHistory');
-    }
-
     if (missing.length > 0) {
         throw new Error('[DashboardAggregator] Missing dependencies: ' + missing.join(', '));
     }
@@ -131,13 +122,6 @@
     var TournamentQueries = window.TournamentQueries;
     var MissionQueries = window.MissionQueries;
     var AcademyQueries = window.AcademyQueries;
-    var ActivityLog = window.ActivityLog;
-
-    // ============================================================
-    // CONSTANTS
-    // ============================================================
-
-    var RECENT_ACTIVITY_LIMIT = 10;
 
     // ============================================================
     // HELPERS
@@ -145,7 +129,7 @@
 
     /**
      * Count items in an array matching a predicate.
-     * 
+     *
      * @param {array} items - Array of items
      * @param {function} predicate - Predicate function
      * @returns {number} Count of matching items
@@ -168,7 +152,7 @@
      * Calculate all dashboard statistics.
      * This function is called exactly once per getDashboardViewModel() call.
      * All derived views (quickStats, domainCounts) use its return value.
-     * 
+     *
      * @returns {object} Statistics object
      */
     function calculateStatistics() {
@@ -245,7 +229,7 @@
 
     /**
      * Build a compact quick-stats projection from the full statistics.
-     * 
+     *
      * @param {object} stats - Statistics from calculateStatistics()
      * @returns {object} Quick stats
      */
@@ -264,7 +248,7 @@
 
     /**
      * Build a grouped domain-counts projection from the full statistics.
-     * 
+     *
      * @param {object} stats - Statistics from calculateStatistics()
      * @returns {object} Domain-grouped counts
      */
@@ -303,45 +287,15 @@
     }
 
     // ============================================================
-    // RECENT ACTIVITY
-    // ============================================================
-
-    /**
-     * Get recent activity from ActivityLog.
-     * 
-     * ActivityLog.getHistory() returns entries newest-first (via unshift).
-     * Entries are rendered as-is. The Dashboard does NOT:
-     *   - invent activity from createdAt fields
-     *   - resolve characters from metadata
-     *   - reshape entries into a presentation model
-     * 
-     * The renderer decides how to display each entry.
-     * 
-     * @param {number} limit - Maximum entries to return
-     * @returns {array} Array of activity log entries
-     */
-    function getRecentActivity(limit) {
-        limit = limit || RECENT_ACTIVITY_LIMIT;
-
-        var history = ActivityLog.getHistory();
-
-        if (!Array.isArray(history)) {
-            return [];
-        }
-
-        return history.slice(0, limit);
-    }
-
-    // ============================================================
     // DASHBOARD VIEW MODEL
     // ============================================================
 
     /**
      * Get the complete dashboard view model.
-     * 
+     *
      * This is the single entry point for the Dashboard renderer.
      * Everything the Dashboard needs is returned from here.
-     * 
+     *
      * @returns {object} Dashboard view model
      */
     function getDashboardViewModel() {
@@ -355,10 +309,7 @@
             // Statistics (full + derived)
             statistics: statistics,
             quickStats: buildQuickStats(statistics),
-            domainCounts: buildDomainCounts(statistics),
-
-            // Recent activity (raw ActivityLog entries)
-            recentActivity: getRecentActivity(RECENT_ACTIVITY_LIMIT)
+            domainCounts: buildDomainCounts(statistics)
         };
     }
 

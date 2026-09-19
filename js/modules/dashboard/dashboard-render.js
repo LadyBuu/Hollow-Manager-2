@@ -1,17 +1,16 @@
 /**
  * js/modules/dashboard/dashboard-render.js - Dashboard Render
  * Pure rendering functions for the dashboard
- * 
+ *
  * Path: js/modules/dashboard/dashboard-render.js
- * 
+ *
  * This module provides:
  *   - renderDashboard(viewModel) - Complete dashboard HTML
  *   - renderHeader(currentYear) - Year selector
  *   - renderStatistics(statistics) - Statistics cards
- *   - renderRecentActivity(activities) - Activity feed
  *   - renderQuickLinks() - Navigation quick links
  *   - renderEmptyState(message) - Empty state
- * 
+ *
  * IMPORTANT:
  *   - RENDER ONLY - no event binding
  *   - No data mutations
@@ -19,30 +18,20 @@
  *   - No queries called from here - the renderer receives a view model
  *   - All user-controlled data is escaped using DomUtils.escapeHtml()
  *   - The renderer returns HTML strings; it does not touch the DOM
- * 
+ *
  * WHAT BELONGS HERE:
  *   - HTML generation from the view model
  *   - Presentational decisions (card layout, labels, icons)
- *   - Relative time formatting (via FormatUtils)
- * 
+ *
  * WHAT DOES NOT BELONG HERE:
  *   - Reading window.data
  *   - Calling domain queries
  *   - Computing statistics
  *   - Resolving character names or domain references
- * 
- * RECENT ACTIVITY:
- *   Activity entries are rendered as-is from ActivityLog:
- *     { id, message, type, timestamp, metadata }
- *   The renderer uses `message`, `type`, and `timestamp` only.
- *   It does NOT reconstruct meaning from `metadata` and does NOT
- *   resolve referenced entities.
- * 
+ *
  * DEPENDENCIES:
  *   - window.DomUtils (from dom-utils.js) - MANDATORY
- *   - window.FormatUtils (from format-utils.js) - MANDATORY
- *     (requires FormatUtils.formatRelativeTime)
- * 
+ *
  * USAGE:
  *   var html = DashboardRender.renderDashboard(viewModel);
  */
@@ -63,9 +52,6 @@
     if (!window.DomUtils || typeof window.DomUtils.escapeHtml !== 'function') {
         missing.push('DomUtils.escapeHtml');
     }
-    if (!window.FormatUtils || typeof window.FormatUtils.formatRelativeTime !== 'function') {
-        missing.push('FormatUtils.formatRelativeTime');
-    }
 
     if (missing.length > 0) {
         throw new Error('[DashboardRender] Missing dependencies: ' + missing.join(', '));
@@ -78,7 +64,6 @@
     // ============================================================
 
     var DomUtils = window.DomUtils;
-    var FormatUtils = window.FormatUtils;
 
     // ============================================================
     // HELPERS
@@ -87,42 +72,12 @@
     /**
      * Escape a value for safe insertion into HTML.
      * Delegates to DomUtils.escapeHtml for consistency across the app.
-     * 
+     *
      * @param {*} value - Value to escape
      * @returns {string} Escaped string
      */
     function escapeHtml(value) {
         return DomUtils.escapeHtml(value);
-    }
-
-    /**
-     * Format an ISO timestamp as a relative time string.
-     * Delegates to FormatUtils.formatRelativeTime.
-     * 
-     * @param {string} timestamp - ISO timestamp
-     * @returns {string} Relative time string
-     */
-    function formatTime(timestamp) {
-        return FormatUtils.formatRelativeTime(timestamp);
-    }
-
-    /**
-     * Get an icon for an activity log entry type.
-     * 
-     * ActivityLog types are the standard notification types:
-     *   'info', 'success', 'warning', 'error'
-     * 
-     * @param {string} type - Activity type
-     * @returns {string} Icon character
-     */
-    function getActivityIcon(type) {
-        var icons = {
-            'success': '✓',
-            'error': '✕',
-            'warning': '⚠',
-            'info': 'ℹ'
-        };
-        return icons[type] || '📌';
     }
 
     // ============================================================
@@ -131,7 +86,7 @@
 
     /**
      * Render the complete dashboard.
-     * 
+     *
      * @param {object} viewModel - Dashboard view model from DashboardAggregator
      * @returns {string} HTML string
      */
@@ -144,7 +99,6 @@
         html += '<div class="dashboard">';
         html += renderHeader(viewModel.currentYear);
         html += renderStatistics(viewModel.statistics);
-        html += renderRecentActivity(viewModel.recentActivity);
         html += renderQuickLinks();
         html += '</div>';
         return html;
@@ -156,7 +110,7 @@
 
     /**
      * Render the dashboard header with year selector.
-     * 
+     *
      * @param {number} currentYear - Current application year
      * @returns {string} HTML string
      */
@@ -183,10 +137,10 @@
 
     /**
      * Render statistics cards.
-     * 
+     *
      * Cards reflect the view model's statistics object. If a value is
      * missing, the card shows '--' rather than a fabricated zero.
-     * 
+     *
      * @param {object} stats - Statistics object from the aggregator
      * @returns {string} HTML string
      */
@@ -261,7 +215,7 @@
     /**
      * Format a statistic value for display.
      * Handles undefined/null by returning '--'.
-     * 
+     *
      * @param {*} value - Statistic value
      * @returns {string} Formatted value
      */
@@ -276,75 +230,16 @@
     }
 
     // ============================================================
-    // RECENT ACTIVITY
-    // ============================================================
-
-    /**
-     * Render the recent activity feed.
-     * 
-     * Activity entries are rendered as-is from ActivityLog:
-     *   - `message` is the human-readable text
-     *   - `type` drives the icon
-     *   - `timestamp` is formatted via FormatUtils.formatRelativeTime
-     * 
-     * The renderer does NOT:
-     *   - Reconstruct titles from metadata
-     *   - Resolve referenced characters/teams/tournaments
-     *   - Interpret activity beyond its message and type
-     * 
-     * @param {array} activities - Array of ActivityLog entries
-     * @returns {string} HTML string
-     */
-    function renderRecentActivity(activities) {
-        var html = '';
-        html += '<div class="dashboard-recent-activity">';
-        html += '<h3 class="section-title">Recent Activity</h3>';
-
-        if (!activities || activities.length === 0) {
-            html += '<p class="empty-state">No recent activity</p>';
-        } else {
-            html += '<div class="activity-feed">';
-
-            for (var i = 0; i < activities.length; i++) {
-                var activity = activities[i];
-                if (!activity || typeof activity !== 'object') {
-                    continue;
-                }
-
-                var type = activity.type || 'info';
-                var message = activity.message || '';
-                var timestamp = activity.timestamp ? formatTime(activity.timestamp) : '';
-                var icon = getActivityIcon(type);
-
-                html += '<div class="activity-item activity-type-' + escapeHtml(type) + '">';
-                html += '<div class="activity-icon" aria-hidden="true">' + icon + '</div>';
-                html += '<div class="activity-content">';
-                html += '<div class="activity-message">' + escapeHtml(message) + '</div>';
-                if (timestamp) {
-                    html += '<div class="activity-timestamp">' + escapeHtml(timestamp) + '</div>';
-                }
-                html += '</div>';
-                html += '</div>';
-            }
-
-            html += '</div>';
-        }
-
-        html += '</div>';
-        return html;
-    }
-
-    // ============================================================
     // QUICK LINKS
     // ============================================================
 
     /**
      * Render quick navigation links.
-     * 
+     *
      * The link list is Dashboard presentation configuration.
      * It is not derived from data, so it lives here rather than
      * in the aggregator.
-     * 
+     *
      * @returns {string} HTML string
      */
     function renderQuickLinks() {
@@ -383,7 +278,7 @@
 
     /**
      * Render an empty state message.
-     * 
+     *
      * @param {string} message - Empty state message
      * @returns {string} HTML string
      */
@@ -399,11 +294,9 @@
         renderDashboard: renderDashboard,
         renderHeader: renderHeader,
         renderStatistics: renderStatistics,
-        renderRecentActivity: renderRecentActivity,
         renderQuickLinks: renderQuickLinks,
         renderEmptyState: renderEmptyState,
-        formatStatValue: formatStatValue,
-        getActivityIcon: getActivityIcon
+        formatStatValue: formatStatValue
     };
 
 })();

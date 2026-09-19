@@ -23,14 +23,31 @@
  *     className:      string|null,
  *     filters:         { search, role, status },
  *     people:          [{
- *       id, name, status, role, deceased, isSelected
+ *       id, name, status, role, deceased, eliminated,
+ *       eliminationWeek, eliminationReason, isSelected
  *     }],
  *     totalCount:      number,
  *     filteredCount:   number
  *   }
  *
+ * ROW DECORATION:
+ *   A character row can carry three visual states, in addition to
+ *   the default:
+ *
+ *     .deceased     the character is dead
+ *     .eliminated   the character is eliminated as of the displayed
+ *                   week; also renders a red warning line beneath
+ *                   the status
+ *
+ *   A character can be both. The CSS applies the two states
+ *   independently, so a deceased character who was also eliminated
+ *   shows both the muted row tone and the elimination border and
+ *   warning.
+ *
  * EVENTS EMITTED:
- *   - .academy-character-row [data-character-id]
+ *   - .academy-character-row [data-character-id]  (click; the row
+ *     carries optional .deceased / .eliminated state classes and
+ *     may contain an .academy-character-row-warning child)
  *   - #academy-people-search (input)
  *   - #academy-people-role (change)
  *   - #academy-people-status (change)
@@ -68,6 +85,14 @@
 
     function escapeAttribute(value) {
         return DomUtils.escapeAttribute(value);
+    }
+
+    // ============================================================
+    // SMALL HELPERS
+    // ============================================================
+
+    function isFiniteNumber(value) {
+        return typeof value === 'number' && isFinite(value);
     }
 
     // ============================================================
@@ -163,6 +188,7 @@
         var classes = 'academy-character-row';
         if (person.isSelected) { classes += ' selected'; }
         if (person.deceased) { classes += ' deceased'; }
+        if (person.eliminated) { classes += ' eliminated'; }
 
         var html = '';
         html += '<div class="' + classes + '" ' +
@@ -181,6 +207,15 @@
         if (person.status) {
             html += '<div class="academy-character-row-status">' +
                         escapeHtml(person.status) +
+                    '</div>';
+        }
+
+        if (person.eliminated) {
+            html += '<div class="academy-character-row-warning">' +
+                        (isFiniteNumber(person.eliminationWeek)
+                            ? 'Eliminated \u2014 Week ' +
+                                escapeHtml(String(person.eliminationWeek))
+                            : 'Eliminated') +
                     '</div>';
         }
 

@@ -2,14 +2,14 @@
  * modules/characters/character-generator.js - Character Generator
  * Dedicated module for random character generation
  * Path: js/modules/characters/character-generator.js
- * 
+ *
  * This module is responsible for:
  *   - Generating random physical appearance data
  *   - Generating random personality traits
  *   - Generating random stats
  *   - Generating random magic proficiencies
  *   - Generating complete random characters (for testing/quick creation)
- * 
+ *
  * IMPORTANT:
  *   - This module GENERATES DATA only - it does NOT save or mutate state
  *   - All functions are PURE (return data, no side effects)
@@ -19,10 +19,24 @@
  *   - USES CharacterConstants for domain constants
  *   - No ID generation here - that belongs to IdUtils at creation time
  *   - No display name formatting here - that belongs to CharacterQueries
- * 
+ *
+ * POOLS:
+ *   The pools are plain flat arrays of strings. The generators pick one
+ *   entry at random from each applicable pool, with no coherence logic
+ *   between fields. The comments inside each pool group entries by theme
+ *   so a reader can see how the vocabulary is organised; the grouping
+ *   has no runtime effect. The picker draws from the whole array.
+ *
+ *   This design is deliberate. The primary consumer is a "fill fields
+ *   randomly" button: the user clicks, the form populates, the user
+ *   edits whatever they don't like. Coherence between fields would get
+ *   in the way of a per-field fill, because coherence is a
+ *   whole-character property and the button operates one field at a
+ *   time.
+ *
  * DEPENDENCIES:
  *   - window.CharacterConstants (from character-constants.js) - MANDATORY
- * 
+ *
  * USAGE:
  *   var generator = window.CharacterGenerator;
  *   var stats = generator.generateStats3d6();
@@ -76,103 +90,609 @@
     // ============================================================
 
     var PHYSICAL_POOLS = {
-        genders: ['Male', 'Female', 'Non-binary', 'Genderfluid', 'Agender', 'Other'],
+        genders: [
+            // Traditional binary
+            'Male',
+            'Female',
+            // Non-binary umbrella
+            'Non-binary',
+            'Genderfluid',
+            'Genderqueer',
+            'Agender',
+            'Bigender',
+            // Specific identities
+            'Demiboy',
+            'Demigirl',
+            'Two-Spirit',
+            // Neutral / open
+            'Questioning',
+            'Prefer not to say',
+            'Other'
+        ],
+
         eyeColours: [
-            'Blue', 'Brown', 'Green', 'Grey', 'Hazel', 'Amber', 'Violet', 
-            'Black', 'Honey', 'Silver', 'Gold', 'Heterochromia'
+            // Common
+            'Brown',
+            'Blue',
+            'Green',
+            'Grey',
+            'Hazel',
+            // Warm / amber family
+            'Amber',
+            'Honey',
+            'Gold',
+            'Copper',
+            'Bronze',
+            // Cool / unusual
+            'Ice Blue',
+            'Storm Grey',
+            'Steel',
+            'Silver',
+            // Rare / extraordinary
+            'Violet',
+            'Rose',
+            'Wine',
+            'Tea-coloured',
+            // Dark
+            'Black',
+            'Jet',
+            // Special states
+            'Heterochromia'
         ],
+
         hairColours: [
-            'Blonde', 'Brown', 'Black', 'Red', 'Auburn', 'Chestnut', 
-            'Silver', 'White', 'Platinum', 'Honey', 'Strawberry Blonde', 
-            'Raven', 'Salt and Pepper', 'Ginger'
+            // Brown family
+            'Brown',
+            'Chestnut',
+            'Auburn',
+            'Chocolate',
+            'Mahogany',
+            'Walnut',
+            // Blonde family
+            'Blonde',
+            'Platinum Blonde',
+            'Ash Blonde',
+            'Strawberry Blonde',
+            'Honey Blonde',
+            'Golden',
+            // Red family
+            'Red',
+            'Ginger',
+            'Copper',
+            'Oxblood',
+            // Dark family
+            'Black',
+            'Raven',
+            'Jet Black',
+            'Blue-Black',
+            // Grey / white family
+            'Grey',
+            'Silver',
+            'Iron Grey',
+            'White',
+            'Milk White',
+            'Salt and Pepper',
+            // Mixed
+            'Two-tone',
+            'Streaked'
         ],
+
         skinTones: [
-            'Fair', 'Olive', 'Light Brown', 'Dark Brown', 'Pale', 'Tan', 
-            'Ebony', 'Porcelain', 'Warm Beige', 'Cool Beige', 'Golden'
+            // Fair / pale
+            'Porcelain',
+            'Pale',
+            'Fair',
+            'Ivory',
+            // Light neutral
+            'Cool Beige',
+            'Warm Beige',
+            'Neutral Beige',
+            // Olive
+            'Olive',
+            'Warm Olive',
+            'Cool Olive',
+            // Tan
+            'Tan',
+            'Golden',
+            'Warm Sand',
+            // Medium browns
+            'Light Brown',
+            'Sienna',
+            'Amber',
+            'Bronze',
+            // Deeper browns
+            'Dark Brown',
+            'Cocoa',
+            'Umber',
+            'Chestnut',
+            // Deepest
+            'Espresso',
+            'Ebony',
+            'Mahogany',
+            // Neutral / unusual
+            'Neutral',
+            'Cool Grey',
+            'Warm Rose'
         ],
+
         builds: [
-            'Slim', 'Athletic', 'Broad', 'Stocky', 'Lithe', 'Muscular', 
-            'Willowy', 'Compact', 'Heavy', 'Lean', 'Hourglass', 'Pear-shaped',
-            'Apple-shaped', 'Rugged'
+            // Thin
+            'Slim',
+            'Slight',
+            'Willowy',
+            'Wispy',
+            'Lean',
+            'Lithe',
+            // Athletic
+            'Athletic',
+            'Wiry',
+            'Muscular',
+            'Broad-Shouldered',
+            'Statuesque',
+            'Well-Built',
+            // Soft / rounded
+            'Soft',
+            'Plush',
+            'Full-figured',
+            'Round',
+            // Angular
+            'Angular',
+            'Sharp',
+            'Compact',
+            // Heavy
+            'Stocky',
+            'Heavy',
+            'Burly',
+            'Rugged',
+            // Specific shapes
+            'Hourglass',
+            'Pear-shaped',
+            'Apple-shaped',
+            'Inverted Triangle',
+            // Neutral
+            'Average'
         ],
+
         heights: [
-            '152cm', '155cm', '158cm', '160cm', '163cm', '165cm', '168cm', 
-            '170cm', '173cm', '175cm', '178cm', '180cm', '183cm', '185cm', 
-            '188cm', '190cm', '193cm', '195cm', '198cm'
+            // Short
+            '145cm', '148cm', '150cm', '152cm', '155cm', '158cm',
+            // Below average
+            '160cm', '162cm', '163cm', '165cm', '167cm', '168cm',
+            // Average
+            '170cm', '172cm', '173cm', '175cm', '177cm', '178cm',
+            // Above average
+            '180cm', '182cm', '183cm', '185cm', '187cm', '188cm',
+            // Tall
+            '190cm', '193cm', '195cm', '198cm', '200cm',
+            // Very tall
+            '203cm', '205cm', '208cm', '210cm'
         ],
+
         weights: [
-            '52kg', '55kg', '58kg', '60kg', '63kg', '65kg', '68kg', '70kg', 
-            '73kg', '75kg', '78kg', '80kg', '83kg', '85kg', '88kg', '90kg', 
-            '93kg', '95kg', '98kg', '100kg'
+            // Very light
+            '45kg', '48kg', '50kg', '52kg',
+            // Light
+            '55kg', '57kg', '58kg', '60kg', '62kg',
+            // Below average
+            '65kg', '67kg', '68kg', '70kg', '72kg',
+            // Average
+            '75kg', '77kg', '78kg', '80kg', '82kg',
+            // Above average
+            '85kg', '87kg', '88kg', '90kg', '92kg',
+            // Heavy
+            '95kg', '98kg', '100kg', '105kg', '110kg',
+            // Very heavy
+            '115kg', '120kg', '125kg', '130kg'
         ]
     };
 
     var PERSONALITY_POOLS = {
         traits: [
-            'Brave, Honest, Loyal', 'Cunning, Ambitious, Charming', 
-            'Wise, Patient, Kind', 'Fierce, Proud, Determined', 
-            'Quiet, Observant, Clever', 'Bold, Reckless, Passionate',
-            'Calm, Collected, Strategic', 'Playful, Curious, Optimistic', 
-            'Gruff, Loyal, Protective', 'Elegant, Diplomatic, Calculating',
-            'Wild, Free-spirited, Intuitive', 'Stoic, Disciplined, Focused',
-            'Warm, Empathetic, Nurturing', 'Sharp, Witty, Sarcastic',
-            'Brooding, Intense, Mysterious', 'Cheerful, Bubbly, Energetic'
+            // Steady / grounded
+            'Brave, Honest, Loyal',
+            'Reliable, Patient, Grounded',
+            'Calm, Collected, Strategic',
+            'Stoic, Disciplined, Focused',
+            'Dependable, Steady, Kind',
+            // Passionate / driven
+            'Fierce, Proud, Determined',
+            'Bold, Reckless, Passionate',
+            'Driven, Ambitious, Intense',
+            'Passionate, Loyal, Bold',
+            'Ferocious, Protective, Devoted',
+            // Analytical / clever
+            'Wise, Patient, Kind',
+            'Quiet, Observant, Clever',
+            'Sharp, Witty, Sarcastic',
+            'Calculating, Elegant, Diplomatic',
+            'Cerebral, Curious, Precise',
+            // Wild / free
+            'Wild, Free-spirited, Intuitive',
+            'Playful, Curious, Optimistic',
+            'Cheerful, Bubbly, Energetic',
+            'Impish, Mischievous, Bold',
+            'Adventurous, Restless, Bright',
+            // Warm / nurturing
+            'Warm, Empathetic, Nurturing',
+            'Gentle, Thoughtful, Steady',
+            'Affectionate, Protective, Warm',
+            'Compassionate, Honest, Generous',
+            // Dark / brooding
+            'Brooding, Intense, Mysterious',
+            'Cynical, Wary, Sharp',
+            'Acerbic, Brilliant, Guarded',
+            'Melancholic, Deep, Introspective',
+            // Cunning / ambiguous
+            'Cunning, Ambitious, Charming',
+            'Sly, Charmingly, Deceptive',
+            'Smooth, Silver-tongued, Watchful',
+            'Manipulative, Clever, Cold',
+            // Principled
+            'Honorable, Stubborn, Just',
+            'Righteous, Stern, Unyielding',
+            'Dutiful, Formal, Loyal',
+            'Principled, Reserved, Steadfast'
         ],
+
         ideals: [
-            'Honor and Duty', 'Freedom and Choice', 'Knowledge and Truth',
-            'Justice and Fairness', 'Power and Ambition', 'Peace and Harmony',
-            'Tradition and Order', 'Change and Progress', 'Loyalty and Family',
-            'Individuality and Expression', 'Balance and Moderation',
-            'Courage and Sacrifice', 'Wisdom and Understanding'
+            // Virtue
+            'Honor and Duty',
+            'Justice and Fairness',
+            'Courage and Sacrifice',
+            'Wisdom and Understanding',
+            'Compassion and Mercy',
+            // Freedom
+            'Freedom and Choice',
+            'Individuality and Expression',
+            'Change and Progress',
+            'Self-determination and Autonomy',
+            // Order
+            'Tradition and Order',
+            'Structure and Hierarchy',
+            'Law and Stability',
+            // Knowledge
+            'Knowledge and Truth',
+            'Discovery and Inquiry',
+            'Learning and Mastery',
+            // Ambition
+            'Power and Ambition',
+            'Greatness and Legacy',
+            'Excellence and Renown',
+            // Belonging
+            'Loyalty and Family',
+            'Community and Belonging',
+            'Friendship and Trust',
+            // Harmony
+            'Peace and Harmony',
+            'Balance and Moderation',
+            'Coexistence and Tolerance',
+            // Craft
+            'Craftsmanship and Art',
+            'Beauty and Expression',
+            'Precision and Excellence',
+            // Faith
+            'Faith and Devotion',
+            'Tradition and Ritual',
+            'Connection to the Divine',
+            // Survival
+            'Survival and Endurance',
+            'Strength and Resilience'
         ],
+
         bonds: [
-            'Protecting their family', 'A childhood friend', 'Their homeland',
-            'A mentor who saved them', 'A sacred oath', 'Their closest ally',
-            'A lost loved one', 'Their honor', 'A promise made',
-            'Their community', 'A beloved pet', 'A treasured artifact',
-            'A secret they must protect', 'A rival they respect'
+            // Family
+            'Protecting their family',
+            'A parent they lost',
+            'A sibling they protect',
+            'A child they left behind',
+            'A family name to restore',
+            // Friendship
+            'A childhood friend',
+            'Their closest ally',
+            'A friendship they broke',
+            'A companion through dark times',
+            // Romance
+            'A lost love',
+            'A promise to a partner',
+            'A beloved they cannot return to',
+            // Mentorship
+            'A mentor who saved them',
+            'A student they failed',
+            'A teacher\'s legacy to honor',
+            // Duty
+            'A sacred oath',
+            'Their honor',
+            'A promise made',
+            'A duty to their homeland',
+            // Place
+            'Their homeland',
+            'Their community',
+            'A village they abandoned',
+            'A place they can never return to',
+            // Objects
+            'A treasured artifact',
+            'A keepsake from a loved one',
+            'A weapon with a story',
+            'A journal they carry',
+            // Secrets
+            'A secret they must protect',
+            'A truth they cannot speak',
+            // Rivals
+            'A rival they respect',
+            'A rival they must surpass'
         ],
+
         flaws: [
-            'Too trusting', 'Quick to anger', 'Afraid of failure',
-            'Reckless in pursuit of goals', 'Too proud to ask for help',
-            'Haunted by a past mistake', 'Perfectionist', 'Distrustful of others',
-            'Impulsive', 'Overly cautious', 'Self-doubting', 'Stubborn',
-            'Vengeful', 'Secretive', 'Overconfident', 'Indecisive'
+            // Trust
+            'Too trusting',
+            'Distrustful of others',
+            'Too proud to ask for help',
+            // Anger
+            'Quick to anger',
+            'Vengeful',
+            'Holds grudges',
+            // Fear
+            'Afraid of failure',
+            'Self-doubting',
+            'Fearful of being forgotten',
+            // Impulse
+            'Reckless in pursuit of goals',
+            'Impulsive',
+            'Overconfident',
+            // Hesitation
+            'Overly cautious',
+            'Indecisive',
+            'Slow to act',
+            // Pride
+            'Stubborn',
+            'Perfectionist',
+            'Cannot admit fault',
+            // Secrecy
+            'Secretive',
+            'Cannot ask for help',
+            'Hides their true self',
+            // Guilt
+            'Haunted by a past mistake',
+            'Carries guilt from a failure',
+            'Cannot forgive themselves',
+            // Intensity
+            'Obsessive',
+            'Unhealthily devoted',
+            'All-consuming focus',
+            // Detachment
+            'Cold',
+            'Emotionally distant',
+            'Struggles to connect'
         ],
+
         alignments: [
             'Lawful Good', 'Neutral Good', 'Chaotic Good',
             'Lawful Neutral', 'True Neutral', 'Chaotic Neutral',
             'Lawful Evil', 'Neutral Evil', 'Chaotic Evil'
         ],
+
         likes: [
-            'Music', 'Books', 'Nature', 'Art', 'Animals', 'Good Food', 
-            'Stories', 'Games', 'Dancing', 'Travel', 'History', 'Science',
-            'Crafting', 'Gardening', 'Cooking', 'Meditation', 'Training'
+            // Arts
+            'Music',
+            'Art',
+            'Poetry',
+            'Dance',
+            'Theatre',
+            'Sculpture',
+            'Stories',
+            // Nature
+            'Nature',
+            'Animals',
+            'Flowers',
+            'Stargazing',
+            'The Sea',
+            'Forests',
+            'Mountains',
+            // Intellectual
+            'Books',
+            'History',
+            'Science',
+            'Languages',
+            'Riddles',
+            'Debate',
+            'Philosophy',
+            // Domestic
+            'Good Food',
+            'Cooking',
+            'Gardening',
+            'Crafting',
+            'Baking',
+            'Tea',
+            'Wine',
+            // Physical
+            'Training',
+            'Running',
+            'Swimming',
+            'Climbing',
+            'Sparring',
+            // Social
+            'Games',
+            'Gossip',
+            'Feasts',
+            'Travel',
+            'Festivals',
+            'Company',
+            // Quiet
+            'Meditation',
+            'Solitude',
+            'Journaling',
+            'Long walks',
+            'Rainy days'
         ],
+
         dislikes: [
-            'Lies', 'Cruelty', 'Arrogance', 'Crowds', 'Loud Noises', 
-            'Injustice', 'Boredom', 'Betrayal', 'Ignorance', 'Greed',
-            'Dishonesty', 'Haste', 'Chaos', 'Complacency'
+            // Ethical
+            'Lies',
+            'Cruelty',
+            'Injustice',
+            'Betrayal',
+            'Greed',
+            'Dishonesty',
+            'Hypocrisy',
+            'Bullying',
+            // Social
+            'Arrogance',
+            'Crowds',
+            'Small talk',
+            'Fawning',
+            'Rudeness',
+            'Pretension',
+            // Sensory
+            'Loud Noises',
+            'Strong smells',
+            'Bright lights',
+            'Bad Weather',
+            'Cold',
+            'Heat',
+            'Damp',
+            // Intellectual
+            'Ignorance',
+            'Stupidity',
+            'Wasted potential',
+            'Rigid thinking',
+            // Temperamental
+            'Boredom',
+            'Haste',
+            'Chaos',
+            'Complacency',
+            'Indecision',
+            // Physical
+            'Idleness',
+            'Weakness',
+            'Slovenliness'
         ],
+
         habits: [
-            'Hums while working', 'Taps fingers when thinking', 
-            'Collects small trinkets', 'Talks to themselves', 
-            'Fidgets with a lucky charm', 'Paces while thinking',
-            'Cracks knuckles', 'Twirls hair', 'Adjusts glasses',
-            'Chews lip', 'Drumming fingers', 'Whistles tunelessly'
+            // Verbal
+            'Hums while working',
+            'Talks to themselves',
+            'Whistles tunelessly',
+            'Repeats words back',
+            'Mutters when reading',
+            // Manual
+            'Taps fingers when thinking',
+            'Fidgets with a lucky charm',
+            'Cracks knuckles',
+            'Twirls hair',
+            'Adjusts glasses',
+            'Chews lip',
+            'Drumming fingers',
+            'Paces while thinking',
+            'Rubs their chin',
+            'Taps foot when impatient',
+            // Collections
+            'Collects small trinkets',
+            'Keeps every receipt',
+            'Picks up smooth stones',
+            'Pockets interesting leaves',
+            // Ritual
+            'Touches a talisman before danger',
+            'Counts steps on stairs',
+            'Checks locks twice',
+            'Sleeps with a weapon nearby',
+            'Wakes before dawn',
+            // Social
+            'Laughs at their own jokes',
+            'Apologizes unnecessarily',
+            'Says goodbye three times',
+            'Remembers small favors',
+            // Idiosyncratic
+            'Speaks to animals',
+            'Names their weapons',
+            'Writes in the margins',
+            'Keeps a dream journal'
         ],
+
         fears: [
-            'Heights', 'Spiders', 'Claustrophobia', 'Being forgotten', 
-            'Failure', 'Loss of control', 'Drowning', 'Fire', 'Darkness',
-            'Rejection', 'Betrayal', 'Being trapped', 'The unknown',
-            'Losing loved ones', 'Becoming a monster', 'Madness'
+            // Physical
+            'Heights',
+            'Spiders',
+            'Claustrophobia',
+            'Drowning',
+            'Fire',
+            'Darkness',
+            'Deep water',
+            'Enclosed spaces',
+            'Open spaces',
+            // Existential
+            'Being forgotten',
+            'Failure',
+            'Loss of control',
+            'The unknown',
+            'Madness',
+            'Meaninglessness',
+            'Outliving their purpose',
+            // Relational
+            'Rejection',
+            'Betrayal',
+            'Losing loved ones',
+            'Disappointing their family',
+            'Being a burden',
+            'Being alone',
+            // Identity
+            'Becoming a monster',
+            'Losing themselves',
+            'Losing their memories',
+            'Being seen as they truly are',
+            // Moral
+            'Committing an unforgivable act',
+            'Becoming the villain',
+            'Hurting those they love',
+            // Practical
+            'Poverty',
+            'Poverty in old age',
+            'Failing their dependents',
+            // Supernatural
+            'The dead',
+            'Magic itself',
+            'Becoming a vessel',
+            'Prophetic dreams'
         ],
+
         goals: [
-            'To protect the innocent', 'To achieve greatness', 
-            'To find purpose', 'To restore honor', 'To discover truth', 
-            'To build something lasting', 'To master a craft',
-            'To find redemption', 'To explore the unknown',
-            'To create a better world', 'To prove themselves worthy'
+            // Virtuous
+            'To protect the innocent',
+            'To achieve greatness',
+            'To find purpose',
+            'To restore honor',
+            'To discover truth',
+            'To build something lasting',
+            'To master a craft',
+            'To find redemption',
+            'To explore the unknown',
+            'To create a better world',
+            'To prove themselves worthy',
+            // Ambitious
+            'To become a legend',
+            'To surpass their mentor',
+            'To lead their people',
+            'To found a school',
+            'To write the definitive account',
+            // Personal
+            'To reconcile with their family',
+            'To find a lost sibling',
+            'To avenge a wrong',
+            'To repay a debt',
+            'To keep a promise',
+            // Knowledge
+            'To master forbidden knowledge',
+            'To catalogue every species',
+            'To translate an ancient text',
+            'To find a lost city',
+            // Restorative
+            'To undo an old mistake',
+            'To heal a wound they caused',
+            'To rebuild what was destroyed',
+            // Simple
+            'To live quietly',
+            'To raise a family',
+            'To die well',
+            'To see one more sunrise'
         ]
     };
 
@@ -285,7 +805,7 @@
     /**
      * Generate random magic proficiencies.
      * Uses CharacterConstants for magic type keys and categories.
-     * 
+     *
      * @param {string} category - Optional category to favour ('elemental', 'body', 'aether')
      * @returns {object} Magic proficiencies object
      */
@@ -346,7 +866,7 @@
 
     /**
      * Generate random magic for a specific category only.
-     * 
+     *
      * @param {string} category - Category to generate ('elemental', 'body', 'aether')
      * @returns {object} Magic proficiencies for that category
      */
@@ -358,7 +878,7 @@
      * Generate a complete random character.
      * Returns a character DTO with generated values.
      * Does NOT include application-specific fields (id, classIds, etc.)
-     * 
+     *
      * @param {object} options - Generation options
      * @param {number} options.currentYear - Application current year (required)
      * @param {boolean} options.includeStats - Generate stats (default: true)
@@ -466,8 +986,8 @@
 
         // Stats
         if (includeStats) {
-            character.stats = statsMethod === '4d6' 
-                ? generateStats4d6() 
+            character.stats = statsMethod === '4d6'
+                ? generateStats4d6()
                 : generateStats3d6();
         }
 
