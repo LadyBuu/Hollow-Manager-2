@@ -29,8 +29,9 @@
  *     The write routes through CharacterCRUD.setMode.
  *   - The Drop Out flow (AcademyEliminations.addStandalone).
  *   - The Remove from Class flow (AcademyClasses.removeClassById).
- *   - The Enroll / Leave Discipline flows
- *     (AcademyEnrolments.enrol / leave).
+ *   - The Enroll Discipline flow
+ *     (AcademyEnrollmentModal.openModal).
+ *   - The Leave Discipline flow (AcademyEnrolments.leave).
  *   - The instructor auto-group Add Student / Remove Student flows
  *     (AcademyGroups.addStudentToGroup / removeStudentFromGroup).
  *   - The Edit Social Score modal (via AcademyCRUDModals).
@@ -50,6 +51,9 @@
  *   - Domain reads and writes. The aggregators produce VMs; the
  *     domain modules perform mutations.
  *   - The class-disciplines picker's modal shell.
+ *   - The enrollment modal's modal shell and its candidate
+ *     derivation. The modal owns those; this controller just opens
+ *     it with the right context.
  *   - Cross-view navigation.
  *
  * CHARACTER MODE (v27):
@@ -67,19 +71,34 @@
  *   controller opens the picker modal, passing the current display
  *   week and an onClose callback that calls context.onChange().
  *
- * ENROLMENT (BUG-E1):
- *   The "Enroll Discipline" flow sources its candidate list from
- *   AcademyClassDisciplines.getClassDisciplinesForClass(classId),
- *   filtered to offerings active in the display week. It uses
- *   AcademyEnrolments.getStudentDisciplineIds — NOT
- *   getStudentDisciplines — to determine which disciplines the
- *   student is already enrolled in. The two functions have similar
- *   names but different shapes: getStudentDisciplineIds returns
- *   distinct ID strings, getStudentDisciplines returns interval
- *   records.
+ * ENROLMENT (v27 + Wave 2c):
+ *   The "Enroll Discipline" button on the character detail panel
+ *   emits data-action="enroll-discipline" with data-character-id.
+ *   The controller opens AcademyEnrollmentModal, a multi-select
+ *   modal that:
+ *     - lists the class's active offerings,
+ *     - lets the user check several disciplines and enrol in all
+ *       in one action,
+ *     - provides an "Enrol in All Mandatory" bulk button that
+ *       uses the per-class marker's `mandatory` flag,
+ *     - reports partial success honestly (per-row failures are
+ *       logged; successes are not rolled back) and refreshes in
+ *       place.
  *
- *   The picker is still a prompt(). Replacing it with a proper modal
- *   is logged as follow-up E1-ui.
+ *   The retired prompt()-based flow lived in this controller until
+ *   the Wave 2c Academy-wide pass. The modal owns the candidate
+ *   derivation now (see academy-enrollment-modal.js). This
+ *   controller is responsible only for routing the click to the
+ *   modal with the right context: the character ID from the
+ *   button's dataset, the class ID from AcademyUI, and the display
+ *   week from AcademyUI.
+ *
+ *   Instructor-of-record for a student in a discipline (which
+ *   instructor the student studies under when a discipline has
+ *   more than one instructor for the class) is NOT captured here.
+ *   That relationship is a TEACHING-GROUP assignment, edited from
+ *   the scheduling UI, not from the enrollment modal. See the
+ *   DEFERRED-SCHEDULING section of the pinboard.
  *
  * DEPENDENCY DIRECTION:
  *   Shell → registry → this controller.
@@ -97,12 +116,13 @@
  *   - window.AcademyCharacterDetailAggregator
  *   - window.AcademyClassDetail
  *   - window.AcademyCharacterDetail
- *   - window.AcademyClassDisciplines         (BUG-E1 — for offerings)
+ *   - window.AcademyClassDisciplines         (via picker)
  *   - window.CharacterCRUD                   (v27 — for setMode)
  *   - window.AcademyGradesEditor             (lazy)
  *   - window.CalendarRenderer                (lazy)
  *   - window.AcademyCRUDModals               (lazy)
  *   - window.AcademyClassDisciplinesPicker   (lazy)
+ *   - window.AcademyEnrollmentModal          (lazy)
  *   - window.AcademyDisciplines              (lazy)
  *   - window.AcademyEnrolments               (lazy)
  *   - window.AcademyEliminations             (lazy)
@@ -225,6 +245,10 @@
 
     function getClassDisciplinesPicker() {
         return window.AcademyClassDisciplinesPicker || null;
+    }
+
+    function getEnrollmentModal() {
+        return window.AcademyEnrollmentModal || null;
     }
 
     // ============================================================
@@ -1094,22 +1118,29 @@
     }
 
     // ============================================================
-    // DISCIPLINE ENROLMENT FLOWS (BUG-E1)
+    // DISCIPLINE ENROLMENT FLOWS
     // ============================================================
-    //
-    // The candidate list is sourced from the CLASS'S OFFERINGS, not
-    // the global discipline list.
-    //
-    // The exclusion of already-enrolled disciplines uses
-    // AcademyEnrolments.getStudentDisciplineIds, which returns
-    // DISTINCT discipline ID strings. It does NOT use
-    // getStudentDisciplines, which returns interval records
-    // ({ disciplineId, startWeek, endWeek }[]). The two functions
-    // have similar names but different shapes; the ID list is what
-    // the exclusion check wants.
 
+    /**
+     * Open the enrollment modal for a character.
+     *
+     * The character ID comes from the button's dataset. The class
+     * ID and the display week come from AcademyUI. The modal itself
+     * derives its candidate list (the class's active offerings,
+     * filtered against the character's existing enrolments) and
+     * writes its own enrolments via AcademyEnrolments.enrol.
+     *
+     * The controller's only job is routing: resolve the context,
+     * call the modal, and wire the onClose callback to re-render
+     * the shell so the character detail panel reflects any new
+     * enrolments.
+     *
+     * @param {string} charId
+     */
     function handleEnrollDiscipline(charId) {
-        if (!charId) { return; }
+        if (!isNonEmptyString(charId)) {
+            return;
+        }
 
         var classId = AcademyUI.getSelectedClassId();
         if (!classId) {
@@ -1120,130 +1151,33 @@
             return;
         }
 
-        var AE = getEnrolments();
-        if (!AE || typeof AE.enrol !== 'function') {
-            notify('Enrollment module not available.', 'error');
-            return;
-        }
-
-        var ACD = getClassDisciplines();
-        if (!ACD ||
-            typeof ACD.getClassDisciplinesForClass !== 'function' ||
-            typeof ACD.isActiveInWeek !== 'function') {
+        var Modal = getEnrollmentModal();
+        if (!Modal || typeof Modal.openModal !== 'function') {
             notify(
-                'Class-discipline module not available.', 'error'
+                'Enrollment modal is not available.',
+                'error'
             );
-            return;
-        }
-
-        var AD = getDisciplines();
-        if (!AD || typeof AD.getDiscipline !== 'function') {
-            notify('Discipline module not available.', 'error');
             return;
         }
 
         var week = AcademyUI.getDisplayWeek();
 
-        // ---- Offerings active in the display week ----
-        var offerings = ACD.getClassDisciplinesForClass(classId) || [];
-        var activeOfferings = [];
-        for (var o = 0; o < offerings.length; o++) {
-            var rec = offerings[o];
-            if (!rec || !rec.disciplineId) { continue; }
-            if (!ACD.isActiveInWeek(classId, rec.disciplineId, week)) {
-                continue;
-            }
-            activeOfferings.push(rec);
-        }
-
-        if (activeOfferings.length === 0) {
-            notify(
-                'This class has no discipline offerings active in ' +
-                'week ' + week + '.',
-                'info'
-            );
-            return;
-        }
-
-        // ---- Exclude already-enrolled ----
-        // getStudentDisciplineIds returns an array of distinct
-        // discipline ID strings. If the module is older and does not
-        // expose it, fall back to no exclusion rather than crashing.
-        var currentIds = [];
-        if (typeof AE.getStudentDisciplineIds === 'function') {
-            try {
-                currentIds = AE.getStudentDisciplineIds(charId, classId) || [];
-            } catch (e) {
-                currentIds = [];
-            }
-        }
-        var enrolledSet = {};
-        for (var i = 0; i < currentIds.length; i++) {
-            enrolledSet[String(currentIds[i])] = true;
-        }
-
-        // ---- Build candidates ----
-        var candidates = [];
-        for (var c = 0; c < activeOfferings.length; c++) {
-            var did = String(activeOfferings[c].disciplineId);
-            if (enrolledSet[did]) { continue; }
-
-            var disc = AD.getDiscipline(did);
-            if (!disc) { continue; }
-
-            candidates.push({
-                id: did,
-                name: disc.name || 'Unnamed Discipline'
+        try {
+            Modal.openModal(charId, {
+                classId: classId,
+                week: week,
+                onClose: function() {
+                    var ctx = getContext();
+                    ctx.onChange();
+                }
             });
-        }
-
-        candidates.sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
-        });
-
-        if (candidates.length === 0) {
-            notify(
-                'Character is already enrolled in every active ' +
-                'discipline for this class.',
-                'info'
-            );
-            return;
-        }
-
-        // ---- Prompt for the choice ----
-        var names = candidates.map(function(d, idx) {
-            return (idx + 1) + '. ' + d.name;
-        }).join('\n');
-
-        var input = prompt(
-            'Enroll in which discipline?\n\n' + names +
-            '\n\nEnter the number:',
-            '1'
-        );
-
-        if (input === null) { return; }
-
-        var choice = parseInt(input, 10);
-        if (isNaN(choice) || choice < 1 || choice > candidates.length) {
-            notify('Invalid selection.', 'error');
-            return;
-        }
-
-        var picked = candidates[choice - 1];
-
-        AE.enrol(charId, classId, picked.id, week).then(function(result) {
-            if (result && result.success) {
-                var ctx = getContext();
-                ctx.onChange();
-            } else if (result && result.message) {
-                notify(result.message, 'error');
-            }
-        }).catch(function(err) {
+        } catch (e) {
             console.warn(
-                '[AcademyPeopleController] Enroll failed:', err
+                '[AcademyPeopleController] enrollment modal ' +
+                'openModal threw:', e
             );
-            notify('Failed to enroll in discipline.', 'error');
-        });
+            notify('Failed to open the enrollment modal.', 'error');
+        }
     }
 
     function handleLeaveDiscipline(charId, disciplineId) {
