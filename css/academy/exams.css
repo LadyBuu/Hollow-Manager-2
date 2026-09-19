@@ -429,16 +429,18 @@
 /* ============================================================
    ROUND COLLAPSE (C4)
    ============================================================ */
-   //
-   // The collapse toggle lives at the leftmost position of the
-   // round header. It is a plain square button that carries a
-   // small glyph (▾ when expanded, ▸ when collapsed). The icon
-   // is the only visual state indicator; the toggle is otherwise
-   // styled like the header row's neutral controls.
-   //
-   // The round body is always in the DOM. Collapse hides it via
-   // `display: none` on the parent modifier class. This keeps
-   // delegated listeners and scroll anchors stable across toggles.
+
+/*
+ * The collapse toggle lives at the leftmost position of the
+ * round header. It is a plain square button that carries a
+ * small glyph (▾ when expanded, ▸ when collapsed). The icon
+ * is the only visual state indicator; the toggle is otherwise
+ * styled like the header row's neutral controls.
+ *
+ * The round body is always in the DOM. Collapse hides it via
+ * `display: none` on the parent modifier class. This keeps
+ * delegated listeners and scroll anchors stable across toggles.
+ */
 
 .at-round-collapse-toggle {
     display: inline-flex;
@@ -653,14 +655,16 @@
 /* ============================================================
    PRIOR-ROUND PICKER BADGES (C8)
    ============================================================ */
-   //
-   // Rendered next to a picker candidate's name when the candidate
-   // has a known outcome in the round immediately before the target
-   // round. Display-only; no action, no selection effect.
-   //
-   // Three states are possible in the VM: 'pass', 'retry', and null.
-   // The view renders nothing for null, so only the two badge
-   // classes below ever appear in the DOM.
+
+/*
+ * Rendered next to a picker candidate's name when the candidate
+ * has a known outcome in the round immediately before the target
+ * round. Display-only; no action, no selection effect.
+ *
+ * Three states are possible in the VM: 'pass', 'retry', and null.
+ * The view renders nothing for null, so only the two badge
+ * classes below ever appear in the DOM.
+ */
 
 .at-prior-outcome {
     display: inline-block;
@@ -1374,10 +1378,12 @@
 /* ============================================================
    MODAL - EDIT EXAM (C5)
    ============================================================ */
-   //
-   // The Edit Exam modal exposes two inputs: name and week. The
-   // styling matches the create-exam form fields so the two modals
-   // read as the same surface.
+
+/*
+ * The Edit Exam modal exposes two inputs: name and week. The
+ * styling matches the create-exam form fields so the two modals
+ * read as the same surface.
+ */
 
 .at-edit-exam-name,
 .at-edit-exam-week {

@@ -11,10 +11,11 @@
  *   - Tab bar
  *   - Main tab: class chips, performance scores, drop-out section
  *   - Disciplines tab: student disciplines, instructor disciplines
- *   - Grades tab: host element
+ *   - Grades tab: host element + inline grades editor
  *   - Schedule tab: host element
  *   - Teams tab: student team list
  *   - Auto-Groups tab: instructor group blocks
+ *   - Enrollment modal (opened from the Disciplines tab)
  *
  * Load order: shared.css → academy.css → academy/character-detail.css
  */
@@ -206,13 +207,6 @@
 
 .academy-character-tab-body {
     min-height: 100px;
-}
-
-@media (max-width: 600px) {
-    .academy-character-tab-btn {
-        font-size: 0.65rem;
-        padding: 4px 8px;
-    }
 }
 
 /* ============================================================
@@ -514,6 +508,154 @@
     display: block;
 }
 
+/* ---------- Inline grades editor ---------- */
+
+.academy-grades-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.academy-grades-editor-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-grades-editor-title {
+    font-size: 0.85rem;
+    color: var(--accent);
+    margin: 0;
+}
+
+.academy-add-grade-btn {
+    font-size: 0.65rem;
+    padding: 3px 10px;
+    white-space: nowrap;
+}
+
+.academy-grades-editor-table-wrapper {
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.academy-grades-editor-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.72rem;
+    background: var(--bg);
+}
+
+.academy-grades-editor-table thead th {
+    text-align: left;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    color: var(--text-dim);
+    font-size: 0.62rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+}
+
+.academy-grades-editor-table tbody td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border-soft);
+    vertical-align: middle;
+    color: var(--text);
+}
+
+.academy-grades-editor-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.academy-grades-editor-row:hover {
+    background: var(--panel-alt);
+}
+
+/* ---------- Columns ---------- */
+
+.academy-grades-editor-table .week-col {
+    width: 60px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.academy-grades-editor-table .discipline-col {
+    /* Flexible */
+}
+
+.academy-grades-editor-table .type-col {
+    width: 100px;
+    color: var(--text-dim);
+    text-transform: capitalize;
+    white-space: nowrap;
+}
+
+.academy-grades-editor-table .score-col {
+    width: 110px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.academy-grades-editor-table .actions-col {
+    width: 130px;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.academy-grades-editor-table .actions-col button {
+    font-size: 0.6rem;
+    padding: 2px 8px;
+    margin-left: 4px;
+}
+
+/* ---------- Score colour bands (match ranking-view palette) ---------- */
+
+.academy-grade-score {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.academy-grade-score-excellent {
+    color: var(--accent);
+}
+
+.academy-grade-score-good {
+    color: var(--info);
+}
+
+.academy-grade-score-passing {
+    color: var(--warning);
+}
+
+.academy-grade-score-failing {
+    color: var(--danger);
+}
+
+.academy-grade-score-unknown {
+    color: var(--text-dim);
+    font-weight: 400;
+}
+
+/* ---------- Summary line ---------- */
+
+.academy-grades-summary {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    margin: 0;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
 /* ============================================================
    SCHEDULE TAB
    ============================================================ */
@@ -672,6 +814,148 @@
 }
 
 /* ============================================================
+   MODAL - ENROLLMENT
+   ============================================================
+   The enrollment modal is opened from the Disciplines tab via
+   data-action="enroll-discipline". It lists the class's active
+   offerings and lets the user select one or more to enrol the
+   character into. Rendered by academy-enrollment-modal.js.
+ */
+
+.academy-enroll-summary {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin: 0 0 10px 0;
+}
+
+.academy-enroll-summary strong {
+    color: var(--text);
+}
+
+/* ---------- Discipline list ---------- */
+
+.academy-enroll-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    max-height: 360px;
+    overflow-y: auto;
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    padding: 4px;
+    background: var(--bg);
+}
+
+.academy-enroll-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border-left: 3px solid transparent;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    transition: background 0.15s;
+}
+
+.academy-enroll-row:hover {
+    background: var(--accent-soft);
+}
+
+.academy-enroll-row-enrolled {
+    opacity: 0.7;
+    background: var(--panel);
+    border-left-color: var(--accent);
+}
+
+.academy-enroll-row-mandatory {
+    border-left-color: var(--warning);
+}
+
+.academy-enroll-row-mandatory.academy-enroll-row-enrolled {
+    border-left-color: var(--accent);
+}
+
+/* ---------- Row checkbox / state badge ---------- */
+
+.academy-enroll-checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+    cursor: pointer;
+    user-select: none;
+}
+
+.academy-enroll-row-enrolled .academy-enroll-checkbox-label {
+    cursor: default;
+}
+
+.academy-enroll-checkbox {
+    width: auto;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+
+.academy-enroll-enrolled-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: 50%;
+    font-size: 0.6rem;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.academy-enroll-discipline-name {
+    flex: 1;
+    min-width: 0;
+    font-weight: 500;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ---------- Mandatory badge ---------- */
+
+.academy-enroll-badge-mandatory {
+    display: inline-block;
+    font-size: 0.55rem;
+    font-weight: 600;
+    color: var(--warning);
+    background: var(--warning-soft);
+    border: 1px solid var(--warning);
+    padding: 1px 6px;
+    border-radius: 8px;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+/* ---------- Footer ---------- */
+
+.academy-enroll-footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.academy-enroll-footer-spacer {
+    flex: 1;
+    min-width: 0;
+}
+
+/* ============================================================
    MOBILE
    ============================================================ */
 
@@ -724,5 +1008,62 @@
 
     .academy-instructor-group-roster-row button.small {
         margin-left: auto;
+    }
+
+    /* ---------- Grades editor (mobile) ---------- */
+
+    .academy-grades-editor-table {
+        font-size: 0.68rem;
+    }
+
+    .academy-grades-editor-table thead th,
+    .academy-grades-editor-table tbody td {
+        padding: 4px 6px;
+    }
+
+    .academy-grades-editor-table .week-col {
+        width: 45px;
+    }
+
+    .academy-grades-editor-table .type-col {
+        width: 70px;
+    }
+
+    .academy-grades-editor-table .score-col {
+        width: 80px;
+    }
+
+    .academy-grades-editor-table .actions-col {
+        width: 90px;
+    }
+
+    .academy-grades-editor-table .actions-col button {
+        font-size: 0.55rem;
+        padding: 1px 6px;
+        margin-left: 2px;
+    }
+
+    /* ---------- Enrollment modal (mobile) ---------- */
+
+    .academy-enroll-list {
+        max-height: 260px;
+    }
+
+    .academy-enroll-row {
+        font-size: 0.72rem;
+        padding: 5px 8px;
+    }
+
+    .academy-enroll-footer {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .academy-enroll-footer button {
+        width: 100%;
+    }
+
+    .academy-enroll-footer-spacer {
+        display: none;
     }
 }

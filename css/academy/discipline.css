@@ -13,11 +13,12 @@
  *   - Sidebar row type badges and meta
  *   - Editor header and meta
  *   - Editor field grid and inputs
- *   - Instructor multi-select
  *   - Grade scheme section (preset picker, band table, preview)
  *   - Assessment weights section (per-type grid)
  *   - Editor actions (save / cancel / delete)
  *   - Field error state
+ *   - Class-disciplines picker modal (opened from the class
+ *     detail panel)
  *
  * Load order: shared.css → academy.css → academy/discipline.css
  */
@@ -172,13 +173,6 @@
 .academy-discipline-input:disabled {
     opacity: 0.6;
     cursor: not-allowed;
-}
-
-/* ---------- Instructor multi-select ---------- */
-
-select.academy-discipline-instructors {
-    min-height: 120px;
-    resize: vertical;
 }
 
 /* ============================================================
@@ -434,6 +428,197 @@ select.academy-discipline-instructors {
 }
 
 /* ============================================================
+   MODAL - CLASS-DISCIPLINES PICKER
+   ============================================================
+   The picker is opened from the class detail panel via
+   data-action="edit-class-disciplines". It lists every global
+   discipline with a checkbox and, for offered disciplines, a
+   per-class "mandatory" flag. Rendered by
+   academy-class-disciplines-picker.js.
+
+   Colour vocabulary reuses the discipline-type palette:
+     - offered rows        --accent (mandatory) / --info (optional)
+     - window badges       --text-dim / --panel-alt
+     - mandatory flag      --warning
+ */
+
+/* ---------- Summary row ---------- */
+
+.academy-picker-summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    padding: 6px 10px;
+    margin-bottom: 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+}
+
+.academy-picker-summary-label {
+    color: var(--text-dim);
+}
+
+.academy-picker-summary-count {
+    color: var(--accent);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.academy-picker-summary-total {
+    color: var(--text);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.academy-picker-bulk-actions {
+    display: flex;
+    gap: 4px;
+    margin-left: auto;
+    flex-wrap: wrap;
+}
+
+.academy-picker-bulk-actions button {
+    font-size: 0.62rem;
+    padding: 2px 8px;
+    white-space: nowrap;
+}
+
+/* ---------- Discipline list ---------- */
+
+.academy-picker-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    max-height: 420px;
+    overflow-y: auto;
+    padding: 4px;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+}
+
+.academy-picker-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border-left: 3px solid transparent;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    transition: background 0.15s;
+}
+
+.academy-picker-row:hover {
+    background: var(--accent-soft);
+}
+
+.academy-picker-row-offered {
+    border-left-color: var(--accent);
+    background: var(--accent-soft);
+}
+
+/* ---------- Row checkbox + name ---------- */
+
+.academy-picker-checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+    cursor: pointer;
+    user-select: none;
+}
+
+.academy-picker-checkbox {
+    width: auto;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+
+.academy-picker-discipline-name {
+    flex: 1;
+    min-width: 0;
+    font-weight: 500;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ---------- Week-window badge ---------- */
+
+.academy-picker-window-badge {
+    display: inline-block;
+    font-size: 0.55rem;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 8px;
+    border: 1px solid;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+.academy-picker-window-active {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.academy-picker-window-inactive {
+    color: var(--text-dim);
+    background: var(--panel);
+    border-color: var(--border-soft);
+}
+
+/* ---------- Mandatory flag (offered rows only) ---------- */
+
+.academy-picker-mandatory-inline {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding-left: 8px;
+    border-left: 1px solid var(--border-soft);
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    cursor: pointer;
+    user-select: none;
+    flex: 0 0 auto;
+}
+
+.academy-picker-mandatory-inline:hover {
+    color: var(--text);
+}
+
+.academy-picker-mandatory-checkbox {
+    width: auto;
+    margin: 0;
+    accent-color: var(--warning);
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+
+.academy-picker-mandatory-label {
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+/* ---------- Footer ---------- */
+
+.academy-picker-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+/* ============================================================
    MOBILE
    ============================================================ */
 
@@ -474,5 +659,44 @@ select.academy-discipline-instructors {
 
     .academy-discipline-weights-grid {
         grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+    }
+
+    /* ---------- Class-disciplines picker (mobile) ---------- */
+
+    .academy-picker-list {
+        max-height: 260px;
+    }
+
+    .academy-picker-row {
+        flex-wrap: wrap;
+        font-size: 0.72rem;
+        padding: 5px 8px;
+    }
+
+    .academy-picker-mandatory-inline {
+        padding-left: 0;
+        border-left: none;
+    }
+
+    .academy-picker-summary {
+        font-size: 0.68rem;
+    }
+
+    .academy-picker-bulk-actions {
+        margin-left: 0;
+        width: 100%;
+    }
+
+    .academy-picker-bulk-actions button {
+        flex: 1;
+    }
+
+    .academy-picker-footer {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .academy-picker-footer button {
+        width: 100%;
     }
 }

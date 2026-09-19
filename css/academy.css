@@ -19,6 +19,28 @@
  * sub-view needs a more specific version, it narrows the selector
  * (.academy-ranking-panel .academy-something) rather than
  * redeclaring the shared rule.
+ *
+ * CONSOLIDATION TARGETS:
+ *   Three rule blocks in this file — the shared detail header, the
+ *   shared detail section, and the detail placeholder — are
+ *   currently NOT emitted by any renderer. Each of the four detail
+ *   panels (character, class, location, discipline) declares its
+ *   own prefixed copy of the same shape in its sub-file. The blocks
+ *   here are the intended canonical shape for a future pass that
+ *   collapses the four copies into these base rules. Until that
+ *   pass, they are documentation, not active CSS.
+ *
+ *   The duplication is marked at each block so a future reader does
+ *   not mistake it for dead code to delete.
+ *
+ * ROLE BADGES:
+ *   .academy-role-badge and its variants are declared here AND in
+ *   academy/character-detail.css. The character-detail copy loads
+ *   later and wins the cascade for every shared property. The copy
+ *   here is retained as the base shape; the character-detail copy
+ *   is authoritative for the character detail panel. When the base
+ *   shape and the character-detail shape are eventually reconciled,
+ *   keep the more specific values and delete the other copy.
  */
 
 /* ============================================================
@@ -149,6 +171,15 @@
     min-width: 0;
 }
 
+/*
+ * .academy-body-placeholder IS emitted: academy-view.js's
+ * renderPlaceholder wraps its empty state in it.
+ *
+ * .academy-body-empty is not currently emitted. It is retained
+ * alongside the placeholder rule because the two describe the same
+ * empty-body shape and a caller may reasonably reach for either
+ * name. If one is ever removed, remove both.
+ */
 .academy-body-empty,
 .academy-body-placeholder {
     padding: 20px;
@@ -306,6 +337,15 @@
     opacity: 0.5;
 }
 
+/*
+ * NOTE: .academy-character-row.eliminated is styled here but the
+ * People view renderer (academy-people-view.js) does not currently
+ * apply the class. The VM carries `person.eliminated`, and the
+ * roster projection sets it, so the flag is present; the renderer
+ * just doesn't read it. Fixing that is a renderer change, not a
+ * CSS change. The rule stays here so the fix is a one-line change
+ * on the renderer side.
+ */
 .academy-character-row.eliminated {
     border-left: 3px solid var(--danger);
     padding-left: 6px;
@@ -344,6 +384,12 @@
     font-weight: 600;
 }
 
+/*
+ * .academy-character-role-badge is emitted by the People view
+ * list. It is a DIFFERENT class from .academy-role-badge (used
+ * inside the character detail panel), which lives further down.
+ * Do not merge them.
+ */
 .academy-character-role-badge {
     font-size: 0.5rem;
     color: var(--accent);
@@ -379,6 +425,13 @@
     }
 }
 
+/*
+ * .academy-detail-empty IS emitted: by academy-class-detail.js
+ * and academy-character-detail.js when no panel is selected. The
+ * class wraps a nested .empty-state paragraph; this rule provides
+ * the padding and centring; shared.css's .empty-state provides
+ * the type treatment.
+ */
 .academy-detail-empty {
     padding: 30px 12px;
     text-align: center;
@@ -386,18 +439,26 @@
     font-size: 0.75rem;
 }
 
-.academy-detail-placeholder {
-    padding: 20px;
-}
-
 /* ============================================================
-   SHARED DETAIL HEADER
+   SHARED DETAIL HEADER (CONSOLIDATION TARGET)
    ============================================================
-   Class, Character, Discipline, and Location detail panels all
-   start with a header that has a title row and a meta row. The
-   shape is shared; the specific class names live in the sub-
-   files. This block defines the shared container so sub-files
-   can narrow it.
+   NOT CURRENTLY EMITTED. The four detail panels (character,
+   class, location, discipline) each declare their own prefixed
+   copy of this shape in their sub-file:
+
+     .academy-character-detail-header    (character-detail.css)
+     .academy-class-detail-header        (class-detail.css)
+     .academy-location-detail-header     (location.css)
+     .academy-discipline-editor-header   (discipline.css)
+
+   Each of those copies is a near-duplicate of the rules below.
+   The intent of this block is to become the canonical shape so
+   the four copies can be narrowed to only their differences.
+
+   Until that consolidation happens, these rules do nothing.
+   Do not delete them without also deciding whether to keep the
+   consolidation intent. If the intent is dropped, delete the
+   whole block in the same pass.
  */
 
 .academy-detail-header {
@@ -448,9 +509,30 @@
     margin-top: 6px;
 }
 
+/*
+ * NOTE on .academy-meta-muted and .academy-meta-danger:
+ * Unlike the rest of this block, these two ARE emitted —
+ * academy-class-detail.js applies both. They live here because
+ * they are vocabulary shared by every detail panel's meta row,
+ * not because they belong to the consolidation target. If this
+ * block is ever deleted, these two must be preserved elsewhere.
+ */
+
 /* ============================================================
-   SHARED SECTION (inside detail panels)
-   ============================================================ */
+   SHARED SECTION (CONSOLIDATION TARGET)
+   ============================================================
+   NOT CURRENTLY EMITTED. Each detail panel declares its own
+   prefixed copy:
+
+     .academy-character-detail-section-*  (character-detail.css)
+     .academy-location-detail-section-*   (location.css)
+
+   The discipline and class panels do not use this shape (the
+   discipline editor uses .academy-discipline-editor-section-*,
+   which is a different structure entirely).
+
+   Same consolidation intent as the block above.
+ */
 
 .academy-detail-section {
     margin-bottom: 14px;
@@ -517,7 +599,27 @@
     border-color: var(--border);
 }
 
-/* Role badges */
+/* ============================================================
+   ROLE BADGES
+   ============================================================
+   These are emitted by academy-character-detail.js (mode badge in
+   the panel header). The same three selectors are ALSO declared
+   in academy/character-detail.css, which loads after this file
+   and wins the cascade for every shared property.
+
+   The copy here is retained as the base shape. The
+   character-detail copy is authoritative for the character detail
+   panel. When the two are eventually reconciled, keep the more
+   specific values from character-detail.css and delete this
+   block, OR keep the base here and delete the character-detail
+   copy. Do not leave both indefinitely.
+
+   .academy-role-trainee is dead vocabulary. 'trainee' has not
+   been a valid role since v27; nothing emits it. It is retained
+   alongside the two live variants so the selector group stays
+   whole if the role ever returns.
+ */
+
 .academy-role-badge {
     display: inline-block;
     font-size: 0.5rem;

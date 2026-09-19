@@ -45,10 +45,12 @@
     color: var(--text);
 }
 
-/* The filter-section is defined in shared? No. It's in style.css.
-   Since we're retiring style.css, we redeclare it here scoped to
-   this tab. If the missions tab is the only user of .filter-section,
-   this is fine. If other tabs use it, move to shared.css instead. */
+/*
+ * .filter-section is declared here rather than in shared.css.
+ * The missions tab is its only emitter — no other tab's renderer
+ * produces this class. If a second tab ever starts using it,
+ * move the block to shared.css and delete it here.
+ */
 .filter-section {
     display: flex;
     align-items: center;
@@ -832,19 +834,57 @@
     margin-top: 2px;
 }
 
-/* ---------- Mission ID preview (read-only) ---------- */
+/* ---------- Mission ID display (read-only) ----------
+ *
+ * The form does not preview the label. On edit, the currently
+ * derived label is shown as static text; on create, a muted
+ * "Assigned on save" placeholder is shown. Neither is a form
+ * field; neither is submitted.
+ *
+ * The .mission-id-preview class from the previous design (a
+ * readonly input) is gone. If a future change reintroduces an
+ * editable preview, do not reuse these classes; give it a
+ * distinct name so its "this is a form field" nature is legible.
+ */
 
-.mission-form .mission-id-preview {
+.mission-form-id-display {
+    padding: 6px 10px;
     background: var(--bg);
-    color: var(--accent);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
     font-family: monospace;
+    font-size: 0.8rem;
     font-weight: 600;
-    cursor: default;
+    color: var(--accent);
+    letter-spacing: 0.02em;
+    user-select: text;
+}
+
+.mission-form-id-pending {
+    color: var(--text-dim);
+    font-weight: 400;
+    font-style: italic;
+    font-family: 'Inter', sans-serif;
+    font-size: 0.72rem;
+    letter-spacing: 0;
 }
 
 /* ============================================================
    DATE INPUT GROUP
-   ============================================================ */
+   ============================================================
+   The three date inputs (year, month, day) carry data-* markers
+   so the UI controller can detect "the user has explicitly
+   edited this field" and reset untouched month/day to 1 when
+   the year changes:
+
+     data-mission-year-field="true"
+     data-mission-month-field="true"
+     data-mission-day-field="true"
+
+   Those attributes are BEHAVIORAL, not stylistic. Do not remove
+   them, and do not add CSS targeting them — the fields are
+   styled identically on purpose.
+ */
 
 .date-input-group {
     display: flex;

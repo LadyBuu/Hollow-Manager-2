@@ -254,12 +254,17 @@
     white-space: nowrap;
 }
 
-.academy-add-team-btn {
-    flex: 1 1 auto;
-}
-
+/*
+ * The three list-action buttons share the row width proportionally.
+ *   + Create Team        — primary action, widest
+ *   Auto-Distribute      — bulk action
+ *   Clear Rosters        — removes the display week's members
+ *                          across every academic team of the class;
+ *                          past and future stints survive.
+ */
+.academy-add-team-btn,
 .academy-auto-distribute-btn,
-.academy-empty-teams-btn {
+.academy-clear-rosters-btn {
     flex: 1 1 auto;
 }
 
