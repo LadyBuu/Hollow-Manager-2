@@ -34,19 +34,43 @@
  *
  * The aggregator composes the following domain reads:
  *
- *   CharacterQueries          identity, display name, status, age, death
- *   AcademyClasses            class entity, character↔class membership
- *   AcademyClassDisciplines   class-discipline markers (v27)
- *   AcademyEnrolments         student↔discipline enrolment (class-scoped)
- *   AcademyGrades             grade records (class-scoped)
- *   AcademyDisciplines        discipline entities
- *   AcademyPerformance        academic average, overall score
- *   AcademySocialScore        social score
- *   AcademyGroups             auto-group reads (delegates to AcademyAutoGroupsRead)
- *   TeamQueries               persistent Team entities
- *   EliminationQueries        elimination week, reason, state
- *   CalendarConstants         week bounds for current-week resolution
- *   AcademyCalendarAggregator schedule grid reads (projector-backed)
+ *   CharacterQueries              identity, display name, status, age, death
+ *   AcademyClasses                class entity, character↔class membership
+ *   AcademyClassDisciplinesQueries
+ *                                 class-discipline marker reads (v27)
+ *   AcademyEnrolments             student↔discipline enrolment (class-scoped)
+ *   AcademyGrades                 grade records (class-scoped)
+ *   AcademyDisciplines            discipline entities
+ *   AcademyPerformance            academic average, overall score
+ *   AcademySocialScore            social score
+ *   AcademyGroups                 auto-group reads (delegates to
+ *                                 AcademyAutoGroupsRead)
+ *   TeamQueries                   persistent Team entities
+ *   EliminationQueries            elimination week, reason, state
+ *   CalendarConstants             week bounds for current-week resolution
+ *   AcademyCalendarAggregator     schedule grid reads (projector-backed)
+ *
+ * CLASS-DISCIPLINE MARKER READS:
+ *   The class-discipline marker store has two modules: a mutation
+ *   module (AcademyClassDisciplines) and a read module
+ *   (AcademyClassDisciplinesQueries). This aggregator reads through
+ *   the read module. It has no reason to reach for the mutation
+ *   module; a projection builder that reads through a writer is
+ *   reading through a surface that has no business existing on the
+ *   read path.
+ *
+ *   Before this revision, the import named AcademyClassDisciplines
+ *   and the dependency check tested that module for
+ *   getClassDisciplinesForClass. That function has NEVER lived on
+ *   AcademyClassDisciplines — it lives on the queries module. The
+ *   check threw at load time, which meant this aggregator never
+ *   published itself, which meant the people controller then threw
+ *   on its own dependency check. The Academy tab was unusable.
+ *
+ *   The fix is a one-name change: import and check
+ *   AcademyClassDisciplinesQueries, and call
+ *   AcademyClassDisciplinesQueries.getClassDisciplinesForClass at
+ *   the call site.
  *
  * STUDENT DISCIPLINE LIST (v27):
  *   The student's enrolled disciplines come from
@@ -136,7 +160,7 @@
  *     }
  *   }
  *
- *   Each instructor discipline entry now carries `classIds` and
+ *   Each instructor discipline entry carries `classIds` and
  *   `classNames` — the classes the instructor teaches the discipline
  *   for. The renderer is free to display them or ignore them.
  *
@@ -185,7 +209,7 @@
  * DEPENDENCIES (mandatory):
  *   - window.CharacterQueries
  *   - window.AcademyClasses
- *   - window.AcademyClassDisciplines
+ *   - window.AcademyClassDisciplinesQueries
  *   - window.AcademyDisciplines
  *   - window.AcademyEnrolments
  *   - window.AcademyGrades
@@ -218,7 +242,8 @@
 
     var CharacterQueries = window.CharacterQueries;
     var AcademyClasses = window.AcademyClasses;
-    var AcademyClassDisciplines = window.AcademyClassDisciplines;
+    var AcademyClassDisciplinesQueries =
+        window.AcademyClassDisciplinesQueries;
     var AcademyDisciplines = window.AcademyDisciplines;
     var AcademyEnrolments = window.AcademyEnrolments;
     var AcademyGrades = window.AcademyGrades;
@@ -250,9 +275,11 @@
         missing.push('AcademyClasses.getClass');
     }
 
-    if (!AcademyClassDisciplines ||
-        typeof AcademyClassDisciplines.getClassDisciplinesForClass !== 'function') {
-        missing.push('AcademyClassDisciplines.getClassDisciplinesForClass');
+    if (!AcademyClassDisciplinesQueries ||
+        typeof AcademyClassDisciplinesQueries.getClassDisciplinesForClass !== 'function') {
+        missing.push(
+            'AcademyClassDisciplinesQueries.getClassDisciplinesForClass'
+        );
     }
 
     if (!AcademyDisciplines || typeof AcademyDisciplines.getDiscipline !== 'function') {
@@ -678,7 +705,7 @@
 
             var markers = [];
             try {
-                markers = AcademyClassDisciplines
+                markers = AcademyClassDisciplinesQueries
                     .getClassDisciplinesForClass(classId) || [];
             } catch (e) {
                 markers = [];

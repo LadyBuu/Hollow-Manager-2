@@ -25,6 +25,11 @@
  *   - Rendering. MissionRender owns it. This module never builds
  *     HTML by string concatenation.
  *   - Storage. Nothing here touches window.data.
+ *   - TabManager registration. The entry point
+ *     (modules/missions/index.js) owns it. This module is a
+ *     controller, not an entry point; registering from here as
+ *     well would double-register the tab and can produce a
+ *     controller bound to a container the user is not clicking.
  *
  * EVENT DELEGATION:
  *   One click listener on the container. One change listener. One
@@ -40,6 +45,15 @@
  *   array. removeAllListeners walks that array and removes each
  *   entry. Calling renderMissions() removes the previous batch
  *   before installing a new one.
+ *
+ * DETACHED CONTAINER GUARD:
+ *   openFormModal and openDetailModal check that
+ *   state.container is still attached to the document before
+ *   querying for modal shells. If the container has been
+ *   detached, the query would silently fail and the click would
+ *   produce no visible feedback. Both functions notify instead,
+ *   so a lifecycle bug surfaces as a toast rather than as a
+ *   dead button.
  *
  * MODAL LIFECYCLE:
  *   The shells are rendered once by MissionRender.renderContainer.
@@ -57,7 +71,6 @@
  *   renderMissions.
  *
  * DEPENDENCIES (MANDATORY):
- *   - window.TabManager
  *   - window.NotificationSystem
  *   - window.MissionCore
  *   - window.MissionQueries
@@ -76,7 +89,6 @@
     // MANDATORY DEPENDENCIES
     // ============================================================
 
-    var TabManager = window.TabManager;
     var NotificationSystem = window.NotificationSystem;
     var MissionCore = window.MissionCore;
     var MissionQueries = window.MissionQueries;
@@ -85,9 +97,6 @@
 
     var _missing = [];
 
-    if (!TabManager || typeof TabManager.register !== 'function') {
-        _missing.push('TabManager.register');
-    }
     if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
         _missing.push('NotificationSystem.notify');
     }
@@ -219,6 +228,31 @@
     }
 
     // ============================================================
+    // CONTAINER HEALTH
+    // ============================================================
+    //
+    // Returns true when state.container is present AND still
+    // attached to the document. A detached container means the
+    // tab's DOM was rebuilt without re-running renderMissions, or
+    // the tab was torn down but state was not cleared. Either way,
+    // querySelector on it would silently return null, and every
+    // action would appear to do nothing. Detect it here so the
+    // failure is visible.
+
+    function isContainerAttached() {
+        if (!state.container) { return false; }
+        if (!document.body) { return false; }
+        return document.body.contains(state.container);
+    }
+
+    function notifyContainerLost() {
+        notify(
+            'The mission view is out of sync. Please reload the tab.',
+            'error'
+        );
+    }
+
+    // ============================================================
     // RENDER
     // ============================================================
 
@@ -239,16 +273,39 @@
 
         state.container = container;
 
-        var listVM = MissionAggregator.getMissionListViewModel({
-            filter: state.currentFilter
-        });
+        // Guard the list VM build. A failure here must not prevent
+        // the container's modal shells and the delegated listeners
+        // from being installed; otherwise the tab renders a dead
+        // button with no listener attached.
+        var listVM;
+        try {
+            listVM = MissionAggregator.getMissionListViewModel({
+                filter: state.currentFilter
+            });
+        } catch (e) {
+            console.warn(
+                '[MissionUI] getMissionListViewModel threw during render:',
+                e
+            );
+            listVM = { missions: [], counts: {} };
+        }
 
         container.innerHTML = MissionRender.renderContainer({
             filter: state.currentFilter,
-            counts: listVM.counts
+            counts: listVM.counts || {}
         });
 
-        renderListInto(container);
+        // renderListInto also guards its own work. If it throws,
+        // bindContainerEvents still runs below and the tab remains
+        // interactive.
+        try {
+            renderListInto(container);
+        } catch (e) {
+            console.warn(
+                '[MissionUI] renderListInto threw during render:',
+                e
+            );
+        }
 
         bindContainerEvents(container);
     }
@@ -457,9 +514,27 @@
     // ============================================================
 
     function openDetailModal(missionId) {
-        if (!state.container || !missionId) { return; }
+        if (!missionId) { return; }
 
-        var vm = MissionAggregator.getMissionDetailViewModel(missionId);
+        if (!isContainerAttached()) {
+            console.warn(
+                '[MissionUI] openDetailModal: container is missing or detached.'
+            );
+            notifyContainerLost();
+            return;
+        }
+
+        var vm = null;
+        try {
+            vm = MissionAggregator.getMissionDetailViewModel(missionId);
+        } catch (e) {
+            console.warn(
+                '[MissionUI] getMissionDetailViewModel threw:',
+                e
+            );
+            vm = null;
+        }
+
         if (!vm) {
             notify('Mission not found.', 'error');
             return;
@@ -473,7 +548,13 @@
             '#mission-detail-content'
         );
 
-        if (!modal || !contentEl) { return; }
+        if (!modal || !contentEl) {
+            console.warn(
+                '[MissionUI] openDetailModal: modal shell not found in container.'
+            );
+            notify('Could not open the mission detail panel.', 'error');
+            return;
+        }
 
         if (titleEl) {
             titleEl.textContent = vm.title || 'Mission';
@@ -501,14 +582,29 @@
     // ============================================================
 
     function openFormModal(editId) {
-        if (!state.container) { return; }
+        if (!isContainerAttached()) {
+            console.warn(
+                '[MissionUI] openFormModal: container is missing or detached.'
+            );
+            notifyContainerLost();
+            return;
+        }
 
-        var vm = MissionAggregator.getMissionFormViewModel({
-            editId: editId
-        });
+        var vm = null;
+        try {
+            vm = MissionAggregator.getMissionFormViewModel({
+                editId: editId
+            });
+        } catch (e) {
+            console.warn(
+                '[MissionUI] getMissionFormViewModel threw:',
+                e
+            );
+            vm = null;
+        }
 
         if (!vm) {
-            notify('Mission not found.', 'error');
+            notify('Could not prepare the mission form.', 'error');
             return;
         }
 
@@ -518,7 +614,13 @@
             '#mission-form-content'
         );
 
-        if (!modal || !contentEl) { return; }
+        if (!modal || !contentEl) {
+            console.warn(
+                '[MissionUI] openFormModal: modal shell not found in container.'
+            );
+            notify('Could not open the mission form.', 'error');
+            return;
+        }
 
         if (titleEl) {
             titleEl.textContent = vm.isEdit
@@ -1163,17 +1265,14 @@
     }
 
     // ============================================================
-    // REGISTER
-    // ============================================================
-
-    TabManager.register('missions', renderMissions);
-
-    // ============================================================
     // EXPOSE
     // ============================================================
-
-    window.renderMissions = renderMissions;
-    window.destroyMissions = destroyMissions;
+    //
+    // This module does NOT register with TabManager. Registration
+    // is owned by modules/missions/index.js. Registering here as
+    // well would double-register the tab and can produce a
+    // controller bound to a container the user is not clicking,
+    // which manifests as "the button does nothing" with no error.
 
     window.MissionUI = Object.freeze({
         render: renderMissions,
