@@ -433,3 +433,87 @@
         transition: none;
     }
 }
+
+/* ============================================================
+   SCHEDULE ASSIGN MODAL
+   ============================================================
+   Content of the Academy schedule-assign modal
+   (modules/academy/academy-schedule-assign-modal.js). The modal
+   shell — .modal, .modal-content, .modal-header, .modal-footer,
+   .close-modal — is styled in shared.css. These rules style only
+   the modal BODY's schedule-specific content: the slot summary,
+   the discipline and duration selects, and the collision prompt.
+
+   The modal writes and reads through AcademySchedule; the classes
+   here are presentation only. Do not grow this block into a
+   general form system. Anything that applies to more than one
+   feature's modal belongs in shared.css.
+   ============================================================ */
+
+.academy-schedule-assign-summary {
+    margin: 0 0 12px;
+    padding: 8px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    line-height: 1.3;
+}
+
+.academy-schedule-assign-summary strong {
+    color: var(--text);
+    font-weight: 600;
+}
+
+/* The two form selects inherit .form-group spacing from
+   shared.css; these rules only tighten their width so they do not
+   stretch the full modal width on wide viewports. */
+
+.academy-schedule-assign-discipline,
+.academy-schedule-assign-duration {
+    width: 100%;
+    max-width: 320px;
+}
+
+/* ---- Collision prompt ----
+   Shown when the domain rejects with reason 'student_collision'
+   or 'instructor_collision'. Visual language matches
+   .schedule-blocked: soft-danger background, danger-tinted left
+   border, no button styling (the confirm/cancel buttons are the
+   modal footer's standard .primary / .secondary). */
+
+.academy-schedule-assign-collision {
+    margin: 12px 0 0;
+    padding: 10px 12px;
+    background: var(--danger-soft);
+    border-left: 3px solid var(--danger);
+    border-radius: var(--radius);
+}
+
+.academy-schedule-assign-collision-text {
+    margin: 0;
+    font-size: 0.72rem;
+    color: var(--danger);
+    line-height: 1.3;
+}
+
+.academy-schedule-assign-collision-question {
+    margin: 4px 0 0;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--danger);
+    line-height: 1.3;
+}
+
+/* ---- Footer ----
+   The modal footer is shared chrome; this rule only sets the
+   alignment the assign modal wants (space-between so Cancel sits
+   at the far side from Assign). */
+
+.academy-schedule-assign-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+}

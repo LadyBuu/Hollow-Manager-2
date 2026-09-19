@@ -1,7 +1,7 @@
 /**
  * modules/calendar/calendar-renderer.js - Calendar Renderer
  * PURE rendering for calendar grids - NO event binding, NO modals, NO state
- * 
+ *
  * IMPORTANT:
  *   - PURE - no side effects, no data mutation
  *   - Input: already-prepared calendar view model
@@ -11,12 +11,24 @@
  *   - NO notifications (moved to UI layer)
  *   - NO domain logic - all values already resolved
  *   - USES DomUtils.escapeHtml() - SINGLE SOURCE OF TRUTH
- * 
+ *
  * CONTRACT:
  *   - Renderer does NOT decide colours, labels, durations
  *   - Aggregator provides resolved semantic values
  *   - Renderer takes: view model -> HTML
- * 
+ *
+ * GRID EDITABILITY (slice 1):
+ *   The renderer reads `viewModel.canEdit` to decide whether empty
+ *   cells emit `data-action="schedule-assign"`. The renderer does
+ *   NOT inspect mode, and does NOT decide "student means editable."
+ *   The aggregator owns that mapping; the renderer obeys the flag.
+ *
+ *   The action attaches only to genuinely assignable cells:
+ *   editable grid, empty cell, not a rest day, not a block. The
+ *   renderer knows which cells are which; the controller receives
+ *   a click only from a cell the renderer already determined is
+ *   assignable.
+ *
  * DEPENDENCIES:
  *   - CalendarConstants
  *   - DomUtils
@@ -147,6 +159,10 @@
         var showEmptySlots = viewModel.showEmptySlots !== false;
         var showRestDays = viewModel.showRestDays !== false;
 
+        // The renderer obeys `canEdit`. It does not inspect `mode`.
+        // When false or missing, no cell is editable.
+        var canEdit = viewModel.canEdit === true;
+
         var hours = viewModel.hours || getAvailableHours();
 
         var html = '';
@@ -161,10 +177,10 @@
         // Header row
         html += '<div class="schedule-cell schedule-time schedule-header">Time</div>';
         for (var day = CC.MIN_DAY; day <= CC.MAX_DAY; day++) {
-            var isRestDay = showRestDays && restDays.indexOf(day) !== -1;
+            var isRestDayHeader = showRestDays && restDays.indexOf(day) !== -1;
             var dayName = getDayName(day);
-            var restClass = isRestDay ? ' schedule-rest-day' : '';
-            html += '<div class="schedule-cell schedule-day schedule-header' + restClass + '">' + escapeHtml(dayName) + (isRestDay ? ' [R]' : '') + '</div>';
+            var restClassHeader = isRestDayHeader ? ' schedule-rest-day' : '';
+            html += '<div class="schedule-cell schedule-day schedule-header' + restClassHeader + '">' + escapeHtml(dayName) + (isRestDayHeader ? ' [R]' : '') + '</div>';
         }
 
         // Body rows
@@ -178,13 +194,24 @@
                 var isRestDay = showRestDays && restDays.indexOf(day) !== -1;
                 var slotData = schedule[day] && schedule[day][hour] ? schedule[day][hour] : null;
                 var isOccupied = !!slotData && !slotData.isBlock;
+                var isBlock = !!slotData && slotData.isBlock === true;
 
                 var classes = 'schedule-cell schedule-slot';
                 if (isOccupied) { classes += ' schedule-occupied'; } else { classes += ' schedule-empty'; }
                 if (isRestDay) { classes += ' schedule-rest-day'; }
-                if (slotData && slotData.isBlock) { classes += ' schedule-blocked'; }
+                if (isBlock) { classes += ' schedule-blocked'; }
+
+                // The assign action attaches only to genuinely
+                // assignable cells: editable grid, empty cell, not
+                // a rest day, not a block. The renderer knows which
+                // cells these are; the controller does not have to
+                // figure it out from the click target.
+                var isAssignable = canEdit && !isOccupied && !isBlock && !isRestDay;
 
                 var dataAttrs = 'data-day="' + day + '" data-hour="' + hour + '"';
+                if (isAssignable) {
+                    dataAttrs += ' data-action="schedule-assign"';
+                }
 
                 html += '<div class="' + classes + '" ' + dataAttrs + '>';
 
@@ -204,7 +231,7 @@
                         html += '<div class="schedule-continuation">↕</div>';
                     }
 
-                } else if (slotData && slotData.isBlock && !isRestDay) {
+                } else if (isBlock && !isRestDay) {
                     html += '<div class="schedule-blocked-label">⛔ ' + escapeHtml(slotData.label || 'Blocked') + '</div>';
 
                 } else if (!isRestDay && showEmptySlots) {

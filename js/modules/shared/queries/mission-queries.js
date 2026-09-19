@@ -9,15 +9,14 @@
  *   - Reading missions from window.data.missions.
  *   - Filtering, searching, sorting missions.
  *   - Aggregating statistics over missions.
- *   - Providing a preview of the next mission label for a given
- *     (year, difficulty).
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - Mutations. MissionCore owns those.
  *   - Domain rules. MissionRules owns those.
  *   - Structural validation. MissionSchema owns that.
  *   - ID grammar. MissionId owns that. This module composes with
- *     MissionId for the label preview only.
+ *     MissionId only for the derived-label materialisation used
+ *     by searchMissions.
  *   - Cross-domain reads. This module does NOT query teams,
  *     characters, or any other domain. Callers that need mission
  *     data enriched with team or character information use
@@ -50,11 +49,16 @@
  *   attach it to returned records; that composition belongs to
  *   MissionAggregator.
  *
+ *   The only place the label is materialised inside this module is
+ *   searchMissions, which derives it per candidate to include it in
+ *   the free-text index. The materialisation is per-candidate and
+ *   transient; nothing is stored.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.ObjectUtils
  *   - window.IdUtils
  *   - window.MissionConstants
- *   - window.MissionId
+ *   - window.MissionId            (MissionId.derive)
  */
 
 (function() {
@@ -84,8 +88,8 @@
     if (!MissionConstants || !Array.isArray(MissionConstants.VALID_STATUSES)) {
         _missing.push('MissionConstants.VALID_STATUSES');
     }
-    if (!MissionId || typeof MissionId.generate !== 'function') {
-        _missing.push('MissionId.generate');
+    if (!MissionId || typeof MissionId.derive !== 'function') {
+        _missing.push('MissionId.derive');
     }
 
     if (_missing.length > 0) {
@@ -605,40 +609,6 @@
     }
 
     // ============================================================
-    // ID PREVIEW
-    // ============================================================
-
-    /**
-     * Preview the next mission label for a (year, difficulty) pair.
-     *
-     * Reads the current mission list, computes the next sequence
-     * within the scope, and returns the label that would be assigned
-     * to a new mission right now.
-     *
-     * ARCHIVED MISSIONS ARE INCLUDED in the sequence calculation.
-     * Sequence allocation is monotonic and non-reusable, so an
-     * archived mission still consumes its sequence number. This is
-     * deliberate.
-     *
-     * RACE NOTE:
-     *   This is a PREVIEW. Two previews taken before either create
-     *   completes will return the same label. The authoritative
-     *   assignment happens inside MissionCore's pipeline validate
-     *   against the transaction snapshot, which is where uniqueness
-     *   is actually guaranteed.
-     *
-     * @param {number|string|null} year
-     * @param {string} difficulty
-     * @returns {string|null} The previewed label, or null when the
-     *   inputs are invalid
-     */
-    function getNextMissionId(year, difficulty) {
-        var store = getMissionStore() || [];
-        var generated = MissionId.generate(year, difficulty, store);
-        return generated ? generated.label : null;
-    }
-
-    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -670,9 +640,6 @@
         // Tags
         getUniqueTags: getUniqueTags,
 
-        // ID preview
-        getNextMissionId: getNextMissionId,
-
         // Archive-state helper
         isArchived: isArchived
     });
@@ -699,7 +666,6 @@
             'searchMissions',
             'getStatistics',
             'getUniqueTags',
-            'getNextMissionId',
             'isArchived'
         ];
 

@@ -24,7 +24,9 @@
  *
  *     AcademyView / controller
  *         ↓
- *     AcademyCharacterDetailAggregator.getScheduleGridViewModel(charId, week)
+ *     AcademyCharacterDetailAggregator.getScheduleGridViewModel(
+ *         charId, { week, mode }
+ *     )
  *         ↓
  *     Schedule grid VM
  *         ↓
@@ -58,19 +60,6 @@
  *   module; a projection builder that reads through a writer is
  *   reading through a surface that has no business existing on the
  *   read path.
- *
- *   Before this revision, the import named AcademyClassDisciplines
- *   and the dependency check tested that module for
- *   getClassDisciplinesForClass. That function has NEVER lived on
- *   AcademyClassDisciplines — it lives on the queries module. The
- *   check threw at load time, which meant this aggregator never
- *   published itself, which meant the people controller then threw
- *   on its own dependency check. The Academy tab was unusable.
- *
- *   The fix is a one-name change: import and check
- *   AcademyClassDisciplinesQueries, and call
- *   AcademyClassDisciplinesQueries.getClassDisciplinesForClass at
- *   the call site.
  *
  * STUDENT DISCIPLINE LIST (v27):
  *   The student's enrolled disciplines come from
@@ -110,6 +99,21 @@
  *   which is projector-backed. The retired stored-schedule map
  *   (curriculum.schedules) is no longer consulted. The AcademySchedule
  *   calendar-provider bridge has been retired.
+ *
+ * SCHEDULE GRID MODE DISPATCH (slice 1):
+ *   The schedule grid VM is mode-aware. The controller supplies the
+ *   character's mode via the options object; the aggregator does not
+ *   resolve it from state. This keeps the aggregator a pure function
+ *   of its inputs, and matches the mode-explicit shape that
+ *   getViewModel already uses.
+ *
+ *   The VM carries:
+ *     mode      'student' | 'instructor'  — the resolved mode
+ *     canEdit   boolean                   — true only for students
+ *
+ *   The renderer consumes `canEdit` and never inspects `mode`. The
+ *   mapping "student mode means editable" is a product rule; it
+ *   belongs here, at the projection boundary, not in the renderer.
  *
  * VIEW MODEL SHAPE:
  *
@@ -167,17 +171,21 @@
  * SCHEDULE GRID VIEW MODEL SHAPE:
  *
  *   {
- *     schedule: { day: { hour: disciplineId } },
+ *     mode: 'student' | 'instructor',
+ *     canEdit: boolean,
+ *     schedule: { day: { hour: slotDescriptor } },
  *     restDays: [number],
  *     entityName: string,
  *     modeLabel: string,
  *     hours: [number]
  *   }
  *
- *   This shape matches what CalendarRenderer.renderGrid expects. The
- *   Academy view mounts the grid into the character detail panel's
- *   Schedule tab. The renderer treats the grid as read-only; the
- *   Calendar tab owns edits.
+ *   This shape matches what CalendarRenderer.renderGrid expects, plus
+ *   the two envelope fields (`mode`, `canEdit`). The Academy view
+ *   mounts the grid into the character detail panel's Schedule tab.
+ *   The renderer treats the grid as read-only when `canEdit` is false;
+ *   when `canEdit` is true, empty cells emit
+ *   data-action="schedule-assign".
  *
  * NULL SEMANTICS:
  *   - character is always present (aggregator returns null if not found).
@@ -186,14 +194,17 @@
  *   - instructor is null unless mode is 'instructor'.
  *   - elimination is null when there is no elimination record.
  *   - classContext is null when no class is selected.
- *   - schedule grid returns null when the week is invalid or the
- *     calendar aggregator is unavailable.
+ *   - schedule grid returns null when the week is invalid, the mode is
+ *     malformed, or the calendar aggregator is unavailable.
  *   - Display fields use '—' or null rather than invented numeric values.
  *
  * MODE SEMANTICS:
  *   - The mode is read by the caller from AcademyUI.getCharacterMode,
  *     which reads the character record. Both student and instructor
  *     projections are NOT computed unless the mode selects them.
+ *   - For getScheduleGridViewModel, the mode is passed in by the caller
+ *     via options. The aggregator does NOT read AcademyUI. An invalid
+ *     mode returns null.
  *
  * WEEK SEMANTICS:
  *   - Week is required for class-scoped projections (grades, performance,
@@ -889,9 +900,69 @@
     // ============================================================
     // SCHEDULE GRID VIEW MODEL
     // ============================================================
+    //
+    // The controller supplies { week, mode }. The aggregator does NOT
+    // read AcademyUI for the mode; it is a pure function of its
+    // inputs. This matches the mode-explicit shape getViewModel uses.
+    //
+    // The public wrapper `getScheduleGridViewModel(charId, options)`
+    // normalises the two API shapes:
+    //
+    //   getScheduleGridViewModel(charId, 5)                    [legacy]
+    //   getScheduleGridViewModel(charId, { week: 5 })          [legacy]
+    //   getScheduleGridViewModel(charId, { week: 5,
+    //                                      mode: 'student' }) [preferred]
+    //
+    // The numeric and week-only forms default to student mode for
+    // backward compatibility. New callers should pass mode explicitly.
+    //
+    // `buildScheduleGridViewModel(charId, week, mode)` receives
+    // already-normalised arguments. It validates them, dispatches to
+    // the correct AcademyCalendarAggregator method, and constructs
+    // the envelope VM.
+    //
+    // The `canEdit` flag is the presentation policy:
+    //   student      → canEdit: true
+    //   instructor   → canEdit: false
+    //
+    // The renderer consumes `canEdit` and never inspects `mode`. The
+    // mapping "student mode is editable" is a product rule; it
+    // belongs at this projection boundary, not in the renderer.
 
-    function buildScheduleGridViewModel(charId, week) {
+    var VALID_SCHEDULE_MODES = ['student', 'instructor'];
+
+    function getScheduleGridViewModel(charId, options) {
+        var week = null;
+        var mode = 'student';
+
+        if (options !== undefined && options !== null) {
+            if (typeof options === 'object') {
+                week = options.week;
+
+                if (options.mode !== undefined) {
+                    mode = options.mode;
+                }
+            } else {
+                week = options;
+            }
+        }
+
+        return buildScheduleGridViewModel(charId, week, mode);
+    }
+
+    function buildScheduleGridViewModel(charId, week, mode) {
         if (!isNonEmptyString(charId)) {
+            return null;
+        }
+
+        // Validate mode. An unrecognised value is a caller bug; we
+        // return null rather than silently coercing.
+        if (VALID_SCHEDULE_MODES.indexOf(mode) === -1) {
+            console.warn(
+                '[AcademyCharacterDetailAggregator] ' +
+                'getScheduleGridViewModel received an unknown mode:',
+                mode
+            );
             return null;
         }
 
@@ -910,17 +981,34 @@
         }
 
         var ACA = getAcademyCalendarAggregator();
-        if (!ACA || typeof ACA.getStudentScheduleViewModel !== 'function') {
+        if (!ACA) {
             return null;
         }
 
-        var vm;
+        var isInstructor = mode === 'instructor';
+
+        // Dispatch. The two ACA methods have identical shapes; the
+        // only difference is which projector filter they run.
+        var vm = null;
         try {
-            vm = ACA.getStudentScheduleViewModel(charId, weekNum);
+            if (isInstructor) {
+                if (typeof ACA.getInstructorScheduleViewModel !== 'function') {
+                    return null;
+                }
+                vm = ACA.getInstructorScheduleViewModel(charId, weekNum);
+            } else {
+                if (typeof ACA.getStudentScheduleViewModel !== 'function') {
+                    return null;
+                }
+                vm = ACA.getStudentScheduleViewModel(charId, weekNum);
+            }
         } catch (e) {
             console.warn(
                 '[AcademyCharacterDetailAggregator] ' +
-                'getStudentScheduleViewModel failed:', e
+                (isInstructor
+                    ? 'getInstructorScheduleViewModel'
+                    : 'getStudentScheduleViewModel') +
+                ' failed:', e
             );
             return null;
         }
@@ -930,31 +1018,24 @@
         }
 
         return {
+            mode: mode,
+            canEdit: !isInstructor,
+
             schedule: vm.schedule || {},
             restDays: Array.isArray(vm.restDays) ? vm.restDays.slice() : [],
+
             entityName: isNonEmptyString(vm.entityName)
                 ? vm.entityName
-                : 'Character',
+                : (isInstructor ? 'Instructor' : 'Student'),
+
             modeLabel: isNonEmptyString(vm.modeLabel)
                 ? vm.modeLabel
-                : 'Student Schedule',
+                : (isInstructor
+                    ? 'Instructor Schedule'
+                    : 'Student Schedule'),
+
             hours: Array.isArray(vm.hours) ? vm.hours.slice() : []
         };
-    }
-
-    function getScheduleGridViewModel(charId, options) {
-        // Support both `getScheduleGridViewModel(charId, week)` and
-        // `getScheduleGridViewModel(charId, { week })` for caller
-        // convenience. The Academy view uses the object form.
-        var week = null;
-        if (options !== undefined && options !== null) {
-            if (typeof options === 'object') {
-                week = options.week;
-            } else {
-                week = options;
-            }
-        }
-        return buildScheduleGridViewModel(charId, week);
     }
 
     // ============================================================

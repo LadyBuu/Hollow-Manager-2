@@ -21,6 +21,10 @@
  *     dropStudentFromClass      end every enrolment and membership
  *                               for a character in a class, and
  *                               remove the classId from the character
+ *     assignStudentToSlot       resolve-or-create the group and
+ *                               session implied by a single
+ *                               (student, week, day, hour, discipline)
+ *                               assignment, then add the membership
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - Single-store reads             (AcademyClassDisciplinesQueries,
@@ -37,9 +41,17 @@
  *   call. It either fully succeeds or fully rolls back. Partial success
  *   is not a possible outcome.
  *
- *   Reads performed during validation use the pipeline's appData snapshot,
- *   not window.data. Because MutationPipeline serialises mutations, the
- *   snapshot is stable for the duration of the transaction.
+ *   Reads performed during validation and inside the mutate callback
+ *   use the pipeline's appData snapshot, not window.data. Because
+ *   MutationPipeline serialises mutations, the snapshot is stable for
+ *   the duration of the transaction.
+ *
+ *   The coordinator does NOT call other modules' mutation methods.
+ *   Those methods run their own MutationPipeline; nesting pipelines is
+ *   not supported. Instead, the coordinator performs the equivalent
+ *   writes inline on the snapshot, using the canonical record shapes
+ *   and invariant rules of each store. Where a store exposes a pure
+ *   construction helper, the coordinator uses it.
  *
  * WEEK SEMANTICS (INCLUSIVE BOUNDS):
  *   All week ranges are inclusive on both ends.
@@ -80,18 +92,6 @@
  *   (AcademyClassDisciplinesQueries). This coordinator reads through
  *   the read module. It does NOT call the mutation module for reads.
  *
- *   The reads it performs are preflight existence checks:
- *     - addClassDiscipline: "does the marker already exist?"
- *     - removeClassDiscipline: "does the marker still exist?"
- *
- *   The writes (creating and removing markers) are performed inline
- *   on the appData snapshot inside the pipeline mutate callback,
- *   because this coordinator owns the compound transaction that also
- *   touches enrolments, groups, and sessions. That inline write is
- *   the whole reason this coordinator exists; delegating the marker
- *   write to AcademyClassDisciplines would nest pipelines, which
- *   MutationPipeline does not support.
- *
  * DISCIPLINE WINDOW (v27):
  *   A class-discipline marker has no window. The discipline entity
  *   owns startWeek / endWeek. When auto-enrolling students in a
@@ -129,6 +129,25 @@
  *
  *   Location collisions are NOT checked.
  *
+ * COLLISION OVERRIDE SEMANTICS:
+ *   `allowCollisions: true` bypasses POLICY conflicts only:
+ *     - student_collision
+ *     - instructor_collision
+ *
+ *   It does NOT bypass STRUCTURAL invariants:
+ *     - invalid week / day / hour / duration
+ *     - missing class / discipline / character
+ *     - offering inactive in the requested week
+ *     - student not enrolled in the offering
+ *     - missing instructor (no explicit, no class default)
+ *     - group_session_overlap (same group, overlapping session)
+ *     - malformed references
+ *
+ *   The split matters. "Two sessions for the same group overlap" is
+ *   a structural violation of the group's own schedule, not a policy
+ *   preference about which resources may share a time slot. It is
+ *   never overridable.
+ *
  * STORE SHAPES (v27):
  *   academy.classDisciplines[classId][disciplineId] = {
  *     classId, disciplineId, mandatory, createdAt, updatedAt
@@ -144,6 +163,8 @@
  *     members: [{ characterId, startWeek, endWeek }],
  *     startWeek, endWeek, createdAt, updatedAt
  *   }
+ *
+ *   academy.teachingGroupSequences["classId|disciplineId|instructorId"] = N
  *
  *   academy.teachingSessions[sessionId] = {
  *     id, groupId, day, startTime, duration, locationId,
@@ -171,6 +192,12 @@
  *   - window.AcademyAggregator  — resolved at call time by
  *                                 getClassRoster(). Not required at
  *                                 load time.
+ *   - window.AcademyTeachingProjector — resolved at call time by the
+ *                                 student-collision check in
+ *                                 assignStudentToSlot. When absent,
+ *                                 the student-collision check is
+ *                                 skipped with a warning; the rest
+ *                                 of the operation runs.
  *
  * USAGE:
  *   AcademySchedule.addClassDiscipline('class_1', 'disc_en', {
@@ -184,6 +211,16 @@
  *           // Show the confirmation modal using result.data.collision
  *       }
  *   });
+ *
+ *   AcademySchedule.assignStudentToSlot({
+ *       charId: 'char_1',
+ *       classId: 'class_1',
+ *       disciplineId: 'disc_en',
+ *       week: 5,
+ *       day: 1,
+ *       startHour: 9,
+ *       duration: 2
+ *   }).then(function(result) { ... });
  */
 
 (function() {
@@ -220,6 +257,10 @@
 
     function getAcademyAggregator() {
         return window.AcademyAggregator || null;
+    }
+
+    function getAcademyTeachingProjector() {
+        return window.AcademyTeachingProjector || null;
     }
 
     // ============================================================
@@ -1649,6 +1690,1017 @@
     }
 
     // ============================================================
+    // assignStudentToSlot
+    // ============================================================
+    //
+    // The sixth compound mutation. Given a (student, class,
+    // discipline, week, day, hour, duration) intent, resolve or
+    // create the teaching group and teaching session that make the
+    // intent true, then add the student's group membership.
+    //
+    // All five writes happen in ONE MutationPipeline transaction.
+    // The coordinator does NOT call AcademyTeachingGroups.createGroup,
+    // AcademyTeachingSessions.createSession, or
+    // AcademyWeeklyTeams.addMember; those methods run their own
+    // pipelines. Instead, the equivalent records are written
+    // inline on the snapshot, using the canonical record shapes
+    // those modules produce.
+    //
+    // RESOLUTION POLICY:
+    //
+    //   1. Validate payload shape and numeric bounds.
+    //   2. Preflight: class exists, discipline exists, character
+    //      exists, character is a member of the class, class-
+    //      discipline marker exists, offering active in `week`,
+    //      student enrolled in the offering during `week`.
+    //   3. Resolve instructor: explicit override, else the
+    //      class's instructorId, else reject `missing_instructor`.
+    //   4. Inside the pipeline: re-resolve all of the above
+    //      against the snapshot.
+    //   5. Find or create the teaching group:
+    //        - candidates: groups for (class, discipline,
+    //          instructor) that are active at `week`.
+    //        - for each, look at its sessions active at `week`.
+    //        - if a session matches (day, startTime, duration)
+    //          EXACTLY, reuse that group and session.
+    //        - else if a session on that group OVERLAPS the
+    //          requested slot, reject `group_session_overlap`.
+    //        - else if a group exists with no overlapping
+    //          session, create a session on that group.
+    //        - else create a new group and a session on it.
+    //   6. Compute the membership window:
+    //        startWeek = week
+    //        endWeek   = min(enrolmentInterval.endWeek,
+    //                        discipline.endWeek)  // null = ongoing
+    //   7. Collision checks (skipped when allowCollisions is true):
+    //        - student collision: does the student already have an
+    //          occurrence in `week` at an overlapping slot?
+    //        - instructor collision: only when a session is being
+    //          created; does the instructor already teach at an
+    //          overlapping slot in `week`?
+    //   8. Write the new group (if any), new session (if any),
+    //      and the membership.
+    //
+    // STRUCTURAL INVARIANTS ARE NEVER OVERRIDABLE.
+    //   `allowCollisions: true` bypasses only the POLICY checks
+    //   (student_collision, instructor_collision). It does NOT
+    //   bypass validation errors, missing prerequisites, or
+    //   group_session_overlap.
+    //
+    // INPUT SHAPE:
+    //   {
+    //     charId,                  required
+    //     classId,                 required
+    //     disciplineId,            required
+    //     week,                    required, in [MIN_WEEK, MAX_WEEK]
+    //     day,                     required, in [MIN_DAY, MAX_DAY]
+    //     startHour,               required, in [MIN_HOUR, MAX_HOUR]
+    //     duration,                required, in [MIN_CLASS_DURATION,
+    //                                                 MAX_CLASS_DURATION]
+    //     instructorId,            optional; defaults to class's
+    //                              instructorId
+    //     allowCollisions,         optional; default false
+    //   }
+    //
+    // RETURN SHAPE (success):
+    //   {
+    //     success: true,
+    //     data: {
+    //       groupId, sessionId, disciplineId, instructorId,
+    //       week, day, startHour, duration,
+    //       createdGroup: boolean,
+    //       createdSession: boolean,
+    //       addedMembership: boolean
+    //     }
+    //   }
+    //
+    // RETURN SHAPE (rejection):
+    //   {
+    //     success: false,
+    //     reason: 'invalid_input'
+    //            | 'class_not_found'
+    //            | 'discipline_not_found'
+    //            | 'character_not_found'
+    //            | 'not_in_class'
+    //            | 'no_class_discipline'
+    //            | 'offering_inactive'
+    //            | 'not_enrolled'
+    //            | 'missing_instructor'
+    //            | 'group_session_overlap'
+    //            | 'student_collision'
+    //            | 'instructor_collision',
+    //     message: string,
+    //     data?: object
+    //   }
+
+    /**
+     * Reject helper. Structurally the same shape as failure(),
+     * plus a reason code the caller can branch on.
+     */
+    function rejection(reason, message, data) {
+        var result = {
+            success: false,
+            reason: reason,
+            message: message
+        };
+        if (data !== undefined) {
+            result.data = data;
+        }
+        return result;
+    }
+
+    /**
+     * Find the enrolment interval for (charId, classId,
+     * disciplineId) that contains `week`. Returns null when there
+     * is no such interval.
+     *
+     * Reads from the appData snapshot, not window.data, so it can
+     * be used inside pipeline callbacks.
+     */
+    function findEnrolmentIntervalForWeek(
+        academy,
+        charId,
+        classId,
+        disciplineId,
+        week
+    ) {
+        if (!isPlainObject(academy)) { return null; }
+        var enrBucket = academy.enrolments &&
+            academy.enrolments[classId];
+        if (!isPlainObject(enrBucket)) { return null; }
+        var intervals = enrBucket[charId];
+        if (!Array.isArray(intervals)) { return null; }
+
+        var targetDisc = String(disciplineId);
+        for (var i = 0; i < intervals.length; i++) {
+            var entry = intervals[i];
+            if (!entry) { continue; }
+            if (String(entry.disciplineId) !== targetDisc) {
+                continue;
+            }
+            if (weekInRange(week, entry.startWeek, entry.endWeek)) {
+                return entry;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Does the character's classIds array contain classId?
+     * Reads from the appData snapshot.
+     */
+    function characterInClassInSnapshot(appData, charId, classId) {
+        if (!appData || !Array.isArray(appData.characters)) {
+            return false;
+        }
+        var targetChar = String(charId);
+        var targetClass = String(classId);
+        for (var i = 0; i < appData.characters.length; i++) {
+            var c = appData.characters[i];
+            if (!c || String(c.id) !== targetChar) { continue; }
+            if (!Array.isArray(c.classIds)) { return false; }
+            for (var j = 0; j < c.classIds.length; j++) {
+                if (String(c.classIds[j]) === targetClass) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return false;
+    }
+
+    /**
+     * Does the class-discipline marker exist for (classId,
+     * disciplineId) in the snapshot?
+     */
+    function classDisciplineExistsInSnapshot(
+        academy,
+        classId,
+        disciplineId
+    ) {
+        if (!isPlainObject(academy)) { return false; }
+        var cdStore = academy.classDisciplines;
+        if (!isPlainObject(cdStore)) { return false; }
+        var byClass = cdStore[classId];
+        if (!isPlainObject(byClass)) { return false; }
+        return byClass[disciplineId] !== undefined;
+    }
+
+    /**
+     * Collect the candidate teaching groups for (classId,
+     * disciplineId, instructorId) from the snapshot. Returns an
+     * array of raw group records (live references).
+     */
+    function collectCandidateGroups(
+        academy,
+        classId,
+        disciplineId,
+        instructorId
+    ) {
+        var result = [];
+        if (!isPlainObject(academy)) { return result; }
+        var store = academy.teachingGroups;
+        if (!isPlainObject(store)) { return result; }
+
+        var tc = String(classId);
+        var td = String(disciplineId);
+        var ti = String(instructorId);
+
+        var keys = Object.keys(store);
+        for (var i = 0; i < keys.length; i++) {
+            var g = store[keys[i]];
+            if (!isPlainObject(g)) { continue; }
+            if (String(g.classId) !== tc) { continue; }
+            if (String(g.disciplineId) !== td) { continue; }
+            if (String(g.instructorId) !== ti) { continue; }
+            result.push(g);
+        }
+        return result;
+    }
+
+    /**
+     * Collect the sessions for a group from the snapshot.
+     */
+    function collectSessionsForGroup(academy, groupId) {
+        var result = [];
+        if (!isPlainObject(academy)) { return result; }
+        var store = academy.teachingSessions;
+        if (!isPlainObject(store)) { return result; }
+        var tg = String(groupId);
+        var keys = Object.keys(store);
+        for (var i = 0; i < keys.length; i++) {
+            var s = store[keys[i]];
+            if (!isPlainObject(s)) { continue; }
+            if (String(s.groupId) !== tg) { continue; }
+            result.push(s);
+        }
+        return result;
+    }
+
+    /**
+     * Does a session record cover the given (day, startTime,
+     * duration) EXACTLY? Used to decide reuse.
+     */
+    function sessionMatchesExactly(session, day, startTime, duration) {
+        return session.day === day &&
+               session.startTime === startTime &&
+               session.duration === duration;
+    }
+
+    /**
+     * Do the requested (day, startTime, duration) and the given
+     * session overlap in time, ignoring week ranges? Used to
+     * reject `group_session_overlap`.
+     */
+    function timeSlotsOverlap(day, startTime, duration, session) {
+        if (day !== session.day) { return false; }
+        var aEnd = startTime + duration;
+        var bEnd = session.startTime + session.duration;
+        return startTime < bEnd && session.startTime < aEnd;
+    }
+
+    /**
+     * Compute the membership window for a new member added by
+     * assignStudentToSlot.
+     *
+     *   startWeek = week
+     *   endWeek   = min(enrolmentInterval.endWeek,
+     *                   discipline.endWeek)   // null = unbounded
+     *
+     * Both inputs may be null (ongoing). The minimum of two
+     * "ongoing" values is "ongoing".
+     */
+    function computeMembershipEndWeek(enrolmentInterval, discipline) {
+        var enrolEnd = (enrolmentInterval &&
+                        enrolmentInterval.endWeek !== undefined &&
+                        enrolmentInterval.endWeek !== null)
+            ? enrolmentInterval.endWeek
+            : null;
+
+        var discEnd = (discipline &&
+                       discipline.endWeek !== undefined &&
+                       discipline.endWeek !== null &&
+                       discipline.endWeek !== '')
+            ? discipline.endWeek
+            : null;
+
+        if (enrolEnd === null) { return discEnd; }
+        if (discEnd === null) { return enrolEnd; }
+        return Math.min(enrolEnd, discEnd);
+    }
+
+    /**
+     * Generate a group id for a newly created group inside
+     * assignStudentToSlot. Uses IdUtils so ids are consistent with
+     * the rest of the app.
+     */
+    function generateGroupId() {
+        return IdUtils.generateId('tgroup');
+    }
+
+    /**
+     * Generate a session id for a newly created session inside
+     * assignStudentToSlot.
+     */
+    function generateSessionId() {
+        return IdUtils.generateId('tsession');
+    }
+
+    /**
+     * Allocate the next group number for a (class, discipline,
+     * instructor) triple from the snapshot's sequence store.
+     * Mirrors AcademyTeachingGroups.createGroup's allocation.
+     */
+    function allocateGroupNumber(
+        academy,
+        classId,
+        disciplineId,
+        instructorId
+    ) {
+        if (!isPlainObject(academy.teachingGroupSequences)) {
+            academy.teachingGroupSequences = {};
+        }
+        var seqStore = academy.teachingGroupSequences;
+        var seqKey = String(classId) + '|' +
+                     String(disciplineId) + '|' +
+                     String(instructorId);
+
+        var nextNumber = 1;
+        if (typeof seqStore[seqKey] === 'number' &&
+            seqStore[seqKey] >= 0) {
+            nextNumber = seqStore[seqKey] + 1;
+        }
+        seqStore[seqKey] = nextNumber;
+        return nextNumber;
+    }
+
+    /**
+     * Check the student's existing occurrences in `week` for a
+     * time overlap with the requested slot, excluding any
+     * occurrence that belongs to `excludeGroupId`.
+     *
+     * Uses AcademyTeachingProjector when available. When the
+     * projector is absent, returns null with a warning; the
+     * caller proceeds without the check (fail-open for this
+     * diagnostic, not for a structural invariant).
+     *
+     * @returns {object|null} { occurrence } on collision, else null
+     */
+    function findStudentSlotCollision(
+        charId,
+        week,
+        day,
+        startHour,
+        duration,
+        excludeGroupId
+    ) {
+        var Projector = getAcademyTeachingProjector();
+        if (!Projector ||
+            typeof Projector.projectForStudent !== 'function') {
+            console.warn(
+                '[AcademySchedule] AcademyTeachingProjector is not ' +
+                'available. The student-collision check in ' +
+                'assignStudentToSlot will be skipped.'
+            );
+            return null;
+        }
+
+        var occurrences;
+        try {
+            occurrences = Projector.projectForStudent(charId, week) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademySchedule] projectForStudent threw:', e
+            );
+            return null;
+        }
+
+        var exclude = excludeGroupId
+            ? String(excludeGroupId)
+            : null;
+
+        var newStart = startHour;
+        var newEnd = startHour + duration;
+
+        for (var i = 0; i < occurrences.length; i++) {
+            var occ = occurrences[i];
+            if (!occ) { continue; }
+            if (occ.day !== day) { continue; }
+            if (exclude !== null &&
+                String(occ.groupId) === exclude) {
+                continue;
+            }
+            var occEnd = occ.startTime + occ.duration;
+            var overlaps = newStart < occEnd &&
+                           occ.startTime < newEnd;
+            if (overlaps) {
+                return { occurrence: occ };
+            }
+        }
+        return null;
+    }
+
+    function assignStudentToSlot(payload) {
+        if (!isPlainObject(payload)) {
+            return Promise.resolve(rejection(
+                'invalid_input',
+                'Payload must be an object.'
+            ));
+        }
+
+        // ---- Payload validation ----
+        if (!isNonEmptyString(payload.charId)) {
+            return Promise.resolve(rejection(
+                'invalid_input',
+                'Character ID is required.'
+            ));
+        }
+        if (!isNonEmptyString(payload.classId)) {
+            return Promise.resolve(rejection(
+                'invalid_input',
+                'Class ID is required.'
+            ));
+        }
+        if (!isNonEmptyString(payload.disciplineId)) {
+            return Promise.resolve(rejection(
+                'invalid_input',
+                'Discipline ID is required.'
+            ));
+        }
+
+        var week = parseWeekStrict(payload.week);
+        if (week === null) {
+            return Promise.resolve(rejection(
+                'invalid_input',
+                'Valid week is required (' +
+                MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
+        }
+
+        var day = CalendarValidation.parseDay(payload.day);
+        if (day === null) {
+            return Promise.resolve(rejection(
+                'invalid_input',
+                'Valid day is required (' +
+                CalendarConstants.MIN_DAY + '-' +
+                CalendarConstants.MAX_DAY + ').'
+            ));
+        }
+
+        var startHour = CalendarValidation.parseHour(payload.startHour);
+        if (startHour === null) {
+            return Promise.resolve(rejection(
+                'invalid_input',
+                'Valid start hour is required (' +
+                CalendarConstants.MIN_HOUR + '-' +
+                CalendarConstants.MAX_HOUR + ').'
+            ));
+        }
+
+        var duration = CalendarValidation.parseDuration(payload.duration);
+        if (duration === null) {
+            return Promise.resolve(rejection(
+                'invalid_input',
+                'Duration must be between ' +
+                CalendarConstants.MIN_CLASS_DURATION + ' and ' +
+                CalendarConstants.MAX_CLASS_DURATION + ' hours.'
+            ));
+        }
+
+        if (startHour + duration > CalendarConstants.MAX_HOUR + 1) {
+            return Promise.resolve(rejection(
+                'invalid_input',
+                'Session extends beyond the end of the day.'
+            ));
+        }
+
+        var allowCollisions = payload.allowCollisions === true;
+
+        var targetChar = String(payload.charId);
+        var targetClass = String(payload.classId);
+        var targetDiscipline = String(payload.disciplineId);
+
+        var explicitInstructor = isNonEmptyString(payload.instructorId)
+            ? String(payload.instructorId)
+            : null;
+
+        // ---- Preflight (live reads for early UX feedback) ----
+        var cls = AcademyClasses.getClass(targetClass);
+        if (!cls) {
+            return Promise.resolve(rejection(
+                'class_not_found',
+                'Class not found.'
+            ));
+        }
+
+        var discipline = AcademyDisciplines.getDiscipline(targetDiscipline);
+        if (!discipline) {
+            return Promise.resolve(rejection(
+                'discipline_not_found',
+                'Discipline not found.'
+            ));
+        }
+
+        var char = CharacterQueries.getCharacterById(targetChar);
+        if (!char) {
+            return Promise.resolve(rejection(
+                'character_not_found',
+                'Character not found.'
+            ));
+        }
+
+        var classIds = Array.isArray(char.classIds) ? char.classIds : [];
+        var inClass = false;
+        for (var ci = 0; ci < classIds.length; ci++) {
+            if (String(classIds[ci]) === targetClass) {
+                inClass = true;
+                break;
+            }
+        }
+        if (!inClass) {
+            return Promise.resolve(rejection(
+                'not_in_class',
+                'This character is not a member of this class.'
+            ));
+        }
+
+        var marker = AcademyClassDisciplinesQueries.getClassDiscipline(
+            targetClass, targetDiscipline
+        );
+        if (!marker) {
+            return Promise.resolve(rejection(
+                'no_class_discipline',
+                'This class does not offer this discipline.'
+            ));
+        }
+
+        if (!AcademyClassDisciplinesQueries.isActiveInWeek(
+            targetClass, targetDiscipline, week
+        )) {
+            return Promise.resolve(rejection(
+                'offering_inactive',
+                'This discipline is not active during the requested week.'
+            ));
+        }
+
+        if (!AcademyEnrolments.isEnrolledInWeek(
+            targetChar, targetClass, targetDiscipline, week
+        )) {
+            return Promise.resolve(rejection(
+                'not_enrolled',
+                'The character is not enrolled in this discipline ' +
+                'during the requested week.'
+            ));
+        }
+
+        // Resolve instructor for the preflight eligibility check.
+        var resolvedInstructor = explicitInstructor;
+        if (resolvedInstructor === null) {
+            resolvedInstructor = isNonEmptyString(cls.instructorId)
+                ? String(cls.instructorId)
+                : null;
+        }
+        if (resolvedInstructor === null) {
+            return Promise.resolve(rejection(
+                'missing_instructor',
+                'This class has no instructor assigned. Assign an ' +
+                'instructor before scheduling the student.'
+            ));
+        }
+
+        // Snapshot this for the closure; the pipeline re-resolves
+        // everything against its own snapshot.
+        var targetInstructor = resolvedInstructor;
+
+        // ---- Pipeline ----
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+                var academy = getAcademySnapshot(appData);
+                if (!academy) {
+                    return {
+                        valid: false,
+                        message: 'Academy store is not available.'
+                    };
+                }
+
+                // Structural re-checks against the snapshot.
+                if (!characterInClassInSnapshot(
+                    appData, targetChar, targetClass
+                )) {
+                    return {
+                        valid: false,
+                        message: 'Character is no longer a member of this class.'
+                    };
+                }
+
+                if (!classDisciplineExistsInSnapshot(
+                    academy, targetClass, targetDiscipline
+                )) {
+                    return {
+                        valid: false,
+                        message: 'Class-discipline no longer exists.'
+                    };
+                }
+
+                if (!findEnrolmentIntervalForWeek(
+                    academy,
+                    targetChar,
+                    targetClass,
+                    targetDiscipline,
+                    week
+                )) {
+                    return {
+                        valid: false,
+                        message: 'Enrolment no longer covers the requested week.'
+                    };
+                }
+
+                return { valid: true };
+            },
+
+            mutate: function(appData) {
+                var academy = getAcademySnapshot(appData);
+                if (!academy) {
+                    throw new Error('Academy store is not available.');
+                }
+
+                // Re-resolve against the snapshot.
+                var snapshotEnrolment = findEnrolmentIntervalForWeek(
+                    academy,
+                    targetChar,
+                    targetClass,
+                    targetDiscipline,
+                    week
+                );
+                if (!snapshotEnrolment) {
+                    throw new Error(
+                        'Enrolment no longer covers the requested week.'
+                    );
+                }
+
+                var snapshotDiscipline = AcademyDisciplines.getDiscipline(
+                    targetDiscipline
+                );
+                if (!snapshotDiscipline) {
+                    throw new Error('Discipline not found.');
+                }
+
+                // ---- Resolve group and session ----
+                var candidates = collectCandidateGroups(
+                    academy,
+                    targetClass,
+                    targetDiscipline,
+                    targetInstructor
+                );
+
+                var resolvedGroup = null;
+                var resolvedSession = null;
+                var createdGroup = false;
+                var createdSession = false;
+
+                // Sort candidates by startWeek so the first active
+                // one wins. Deterministic.
+                candidates.sort(function(a, b) {
+                    var as = typeof a.startWeek === 'number'
+                        ? a.startWeek : 0;
+                    var bs = typeof b.startWeek === 'number'
+                        ? b.startWeek : 0;
+                    if (as !== bs) { return as - bs; }
+                    return String(a.id).localeCompare(String(b.id));
+                });
+
+                for (var ci = 0; ci < candidates.length; ci++) {
+                    var candidateGroup = candidates[ci];
+
+                    // Group active at week?
+                    if (!weekInRange(
+                        week,
+                        candidateGroup.startWeek,
+                        candidateGroup.endWeek
+                    )) {
+                        continue;
+                    }
+
+                    var sessions = collectSessionsForGroup(
+                        academy, candidateGroup.id
+                    );
+
+                    var exactMatch = null;
+                    var overlapping = null;
+
+                    for (var si = 0; si < sessions.length; si++) {
+                        var s = sessions[si];
+                        if (!weekInRange(
+                            week,
+                            s.startWeek,
+                            s.endWeek
+                        )) {
+                            continue;
+                        }
+                        if (sessionMatchesExactly(
+                            s, day, startHour, duration
+                        )) {
+                            exactMatch = s;
+                            break;
+                        }
+                        if (timeSlotsOverlap(
+                            day, startHour, duration, s
+                        )) {
+                            overlapping = s;
+                        }
+                    }
+
+                    if (exactMatch) {
+                        resolvedGroup = candidateGroup;
+                        resolvedSession = exactMatch;
+                        break;
+                    }
+                    if (overlapping) {
+                        // Structural invariant. Never overridable.
+                        throw new Error(
+                            '__group_session_overlap__:' +
+                            String(overlapping.id)
+                        );
+                    }
+
+                    // Group has no overlapping session. Create a
+                    // session on this group.
+                    resolvedGroup = candidateGroup;
+                    break;
+                }
+
+                // No group with an exact match. Create the group and
+                // the session we need.
+                if (!resolvedGroup) {
+                    var newGroupId = generateGroupId();
+                    var groupNumber = allocateGroupNumber(
+                        academy,
+                        targetClass,
+                        targetDiscipline,
+                        targetInstructor
+                    );
+                    var now = new Date().toISOString();
+
+                    resolvedGroup = {
+                        id: newGroupId,
+                        classId: targetClass,
+                        disciplineId: targetDiscipline,
+                        instructorId: targetInstructor,
+                        groupNumber: groupNumber,
+                        customName: null,
+                        members: [],
+                        startWeek: week,
+                        endWeek: null,
+                        createdAt: now,
+                        updatedAt: now
+                    };
+
+                    if (!isPlainObject(academy.teachingGroups)) {
+                        academy.teachingGroups = {};
+                    }
+                    academy.teachingGroups[newGroupId] = resolvedGroup;
+                    createdGroup = true;
+                }
+
+                if (!resolvedSession) {
+                    // Compute the session window: starts at `week`,
+                    // ends when the discipline ends.
+                    var sessionStart = week;
+                    var sessionEnd = null;
+                    if (snapshotDiscipline.endWeek !== undefined &&
+                        snapshotDiscipline.endWeek !== null &&
+                        snapshotDiscipline.endWeek !== '') {
+                        var parsedDiscEnd = parseWeekStrict(
+                            snapshotDiscipline.endWeek
+                        );
+                        if (parsedDiscEnd !== null) {
+                            sessionEnd = parsedDiscEnd;
+                        }
+                    }
+
+                    var newSessionId = generateSessionId();
+                    var sessionNow = new Date().toISOString();
+                    resolvedSession = {
+                        id: newSessionId,
+                        groupId: resolvedGroup.id,
+                        day: day,
+                        startTime: startHour,
+                        duration: duration,
+                        locationId: null,
+                        startWeek: sessionStart,
+                        endWeek: sessionEnd,
+                        createdAt: sessionNow,
+                        updatedAt: sessionNow
+                    };
+
+                    if (!isPlainObject(academy.teachingSessions)) {
+                        academy.teachingSessions = {};
+                    }
+                    academy.teachingSessions[newSessionId] = resolvedSession;
+                    createdSession = true;
+                }
+
+                // ---- Collision checks ----
+                if (!allowCollisions) {
+                    // Student collision: does the student already
+                    // have an occurrence at this slot in `week`?
+                    var studentCollision = findStudentSlotCollision(
+                        targetChar,
+                        week,
+                        day,
+                        startHour,
+                        duration,
+                        resolvedGroup.id
+                    );
+                    if (studentCollision) {
+                        throw new Error(
+                            '__student_collision__:' +
+                            JSON.stringify(studentCollision)
+                        );
+                    }
+
+                    // Instructor collision: only when we created a
+                    // session. Reuse of an existing session is
+                    // already known to be collision-free from the
+                    // session's own creation.
+                    if (createdSession) {
+                        var candidateSession = {
+                            day: day,
+                            startTime: startHour,
+                            duration: duration,
+                            startWeek: resolvedSession.startWeek,
+                            endWeek: resolvedSession.endWeek
+                        };
+                        var instructorCollision = findInstructorCollision(
+                            targetInstructor,
+                            candidateSession,
+                            resolvedGroup.id
+                        );
+                        if (instructorCollision) {
+                            throw new Error(
+                                '__instructor_collision__:' +
+                                JSON.stringify({
+                                    session: instructorCollision.session,
+                                    group: {
+                                        id: instructorCollision.group.id,
+                                        name: instructorCollision.group.name
+                                    }
+                                })
+                            );
+                        }
+                    }
+                }
+
+                // ---- Membership ----
+                if (!Array.isArray(resolvedGroup.members)) {
+                    resolvedGroup.members = [];
+                }
+
+                // Idempotency: if the student already has an active
+                // membership at `week`, don't create a duplicate.
+                for (var mi = 0; mi < resolvedGroup.members.length; mi++) {
+                    var existing = resolvedGroup.members[mi];
+                    if (!existing) { continue; }
+                    if (String(existing.characterId) !== targetChar) {
+                        continue;
+                    }
+                    if (weekInRange(
+                        week, existing.startWeek, existing.endWeek
+                    )) {
+                        // Already a member this week. Idempotent
+                        // no-op.
+                        return {
+                            groupId: String(resolvedGroup.id),
+                            sessionId: String(resolvedSession.id),
+                            disciplineId: targetDiscipline,
+                            instructorId: targetInstructor,
+                            week: week,
+                            day: day,
+                            startHour: startHour,
+                            duration: duration,
+                            createdGroup: createdGroup,
+                            createdSession: createdSession,
+                            addedMembership: false
+                        };
+                    }
+                }
+
+                var membershipEnd = computeMembershipEndWeek(
+                    snapshotEnrolment,
+                    snapshotDiscipline
+                );
+
+                resolvedGroup.members.push({
+                    characterId: targetChar,
+                    startWeek: week,
+                    endWeek: membershipEnd
+                });
+                resolvedGroup.updatedAt = new Date().toISOString();
+
+                return {
+                    groupId: String(resolvedGroup.id),
+                    sessionId: String(resolvedSession.id),
+                    disciplineId: targetDiscipline,
+                    instructorId: targetInstructor,
+                    week: week,
+                    day: day,
+                    startHour: startHour,
+                    duration: duration,
+                    createdGroup: createdGroup,
+                    createdSession: createdSession,
+                    addedMembership: true
+                };
+            },
+
+            logMessage: function(result) {
+                var parts = ['Assigned ' + targetChar +
+                    ' to ' + targetDiscipline];
+                parts.push('week ' + week + ', day ' + day +
+                    ' at ' + startHour + 'h for ' + duration + 'h');
+                if (result && result.createdGroup) {
+                    parts.push('created group');
+                }
+                if (result && result.createdSession) {
+                    parts.push('created session');
+                }
+                return parts.join(' — ');
+            },
+
+            successMessage: 'Student assigned to slot.',
+
+            failureMessage: 'Failed to assign student to slot.'
+        }).then(function(result) {
+            // The pipeline catches thrown errors and turns them
+            // into { success: false, message }. Our sentinel
+            // messages need to be re-shaped back into structured
+            // rejections.
+            if (result && result.success === false &&
+                typeof result.message === 'string') {
+                if (result.message.indexOf(
+                    '__group_session_overlap__:'
+                ) === 0) {
+                    return rejection(
+                        'group_session_overlap',
+                        'This group already meets during that time. ' +
+                        'Pick a different slot or a different duration.'
+                    );
+                }
+                if (result.message.indexOf(
+                    '__student_collision__:'
+                ) === 0) {
+                    return rejection(
+                        'student_collision',
+                        'This student is already scheduled at an ' +
+                        'overlapping time.',
+                        {
+                            collision: parseSentinelJson(
+                                result.message,
+                                '__student_collision__:'
+                            )
+                        }
+                    );
+                }
+                if (result.message.indexOf(
+                    '__instructor_collision__:'
+                ) === 0) {
+                    return rejection(
+                        'instructor_collision',
+                        'The instructor is already teaching at an ' +
+                        'overlapping time.',
+                        {
+                            collision: parseSentinelJson(
+                                result.message,
+                                '__instructor_collision__:'
+                            )
+                        }
+                    );
+                }
+            }
+            return result;
+        });
+    }
+
+    /**
+     * Parse a JSON payload out of a sentinel-prefixed message.
+     * Returns null on any failure. Used only for the three
+     * collision sentinels above.
+     */
+    function parseSentinelJson(message, prefix) {
+        try {
+            var json = message.substring(prefix.length);
+            return JSON.parse(json);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -1658,6 +2710,7 @@
         scheduleGroupMeeting: scheduleGroupMeeting,
         addStudentToTeachingGroup: addStudentToTeachingGroup,
         dropStudentFromClass: dropStudentFromClass,
+        assignStudentToSlot: assignStudentToSlot,
 
         MIN_WEEK: MIN_WEEK,
         MAX_WEEK: MAX_WEEK
@@ -1676,7 +2729,8 @@
             'removeClassDiscipline',
             'scheduleGroupMeeting',
             'addStudentToTeachingGroup',
-            'dropStudentFromClass'
+            'dropStudentFromClass',
+            'assignStudentToSlot'
         ];
 
         for (var i = 0; i < required.length; i++) {
