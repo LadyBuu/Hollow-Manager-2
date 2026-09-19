@@ -58,13 +58,27 @@
  *   teaching-model modules (AcademyTeachingGroups.endGroup,
  *   AcademyTeachingSessions.endSession, AcademyEnrolments.leave).
  *
+ * RANGE PREDICATES (v27):
+ *   Week-in-range and range-overlap questions delegate to
+ *   `RangeUtils`. That module is the canonical implementation for
+ *   the whole application; this module does not reimplement range
+ *   math.
+ *
+ *     weekInRange(week, start, end)
+ *       -> RangeUtils.containsWeek(week, start, end)
+ *
+ *     weekRangesOverlap(startA, endA, startB, endB)
+ *       -> RangeUtils.weeksOverlap(startA, endA, startB, endB)
+ *
+ *   Both wrappers exist because the names read better in this
+ *   module's context, and because a local wrapper centralises the
+ *   delegation. They carry no logic beyond the call.
+ *
  * DISCIPLINE WINDOW (v27):
  *   A class-discipline marker has no window. The discipline entity
  *   owns startWeek / endWeek. When auto-enrolling students in a
  *   newly-offered class-discipline, the enrolment window is the
- *   discipline's window. This is a change from pre-v27, where the
- *   class-discipline carried its own startWeek / endWeek and the
- *   auto-enrolment used those.
+ *   discipline's window.
  *
  * ROSTER SEMANTICS:
  *   "Active students in a class" is defined as:
@@ -77,22 +91,12 @@
  *   The coordinator uses that function so the roster in the auto-
  *   enrolment path and the roster in the UI always agree.
  *
- *   AcademyAggregator is accessed LAZILY. The load order in
- *   index.html does not need to place the aggregator before this
- *   module; the roster lookup resolves the aggregator at call time.
- *   See getAcademyAggregator() below.
+ *   AcademyAggregator is accessed LAZILY.
  *
  * ELIMINATION SEMANTICS:
  *   A student eliminated in week N is available during week N and
  *   unavailable from week N+1 onward. This is the same boundary rule
  *   used everywhere else in the codebase (EliminationQueries owns it).
- *
- *   An auto-enrolment skips a student when:
- *
- *     isCharacterEliminatedByWeek(charId, classDisciplineStartWeek)
- *
- *   is true. Elimination at exactly the start week does not skip the
- *   student; they are still available during that week.
  *
  * COLLISION POLICY:
  *   When scheduling a group meeting, the coordinator checks for:
@@ -103,11 +107,9 @@
  *   Both are BLOCKING by default. When one is detected, the mutation
  *   is rejected without writing. The caller receives a structured
  *   result with `reason: 'instructor_collision'` or `'student_collision'`,
- *   plus the details needed to show a confirmation modal. If the user
- *   confirms, the caller re-invokes with `allowCollisions: true`.
+ *   plus the details needed to show a confirmation modal.
  *
- *   Location collisions are NOT checked. Rooms may be double-booked
- *   without warning, error, or constraint.
+ *   Location collisions are NOT checked.
  *
  * STORE SHAPES (v27):
  *   academy.classDisciplines[classId][disciplineId] = {
@@ -135,6 +137,7 @@
  *   - window.ValidationUtils
  *   - window.CalendarValidation
  *   - window.CalendarConstants
+ *   - window.RangeUtils
  *   - window.MutationPipeline
  *   - window.IdUtils
  *   - window.AcademyClasses
@@ -180,6 +183,7 @@
     var ValidationUtils = window.ValidationUtils;
     var CalendarValidation = window.CalendarValidation;
     var CalendarConstants = window.CalendarConstants;
+    var RangeUtils = window.RangeUtils;
     var MutationPipeline = window.MutationPipeline;
     var IdUtils = window.IdUtils;
     var AcademyClasses = window.AcademyClasses;
@@ -194,10 +198,6 @@
     // ============================================================
     // LAZY DEPENDENCIES
     // ============================================================
-    //
-    // AcademyAggregator is not captured at load time. The load
-    // order in index.html does not need to place it before this
-    // module. getAcademyAggregator() resolves it on first use.
 
     function getAcademyAggregator() {
         return window.AcademyAggregator || null;
@@ -222,6 +222,11 @@
         typeof CalendarConstants.MIN_WEEK !== 'number' ||
         typeof CalendarConstants.MAX_WEEK !== 'number') {
         _missing.push('CalendarConstants.MIN_WEEK/MAX_WEEK');
+    }
+    if (!RangeUtils ||
+        typeof RangeUtils.containsWeek !== 'function' ||
+        typeof RangeUtils.weeksOverlap !== 'function') {
+        _missing.push('RangeUtils.containsWeek / weeksOverlap');
     }
     if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
         _missing.push('MutationPipeline.performMutation');
@@ -320,33 +325,26 @@
 
     /**
      * Does the given week fall inside [startWeek, endWeek]?
-     * endWeek === null means "ongoing".
+     *
+     * Delegates to RangeUtils.containsWeek, which is the canonical
+     * "is this week in this range" predicate. Wrapper exists so
+     * call sites read naturally and so a future change to the
+     * canonical predicate lands in one place.
      */
     function weekInRange(week, startWeek, endWeek) {
-        if (startWeek === null || startWeek === undefined) {
-            return false;
-        }
-        if (week < startWeek) {
-            return false;
-        }
-        if (endWeek !== null && endWeek !== undefined && week > endWeek) {
-            return false;
-        }
-        return true;
+        return RangeUtils.containsWeek(week, startWeek, endWeek);
     }
 
     /**
-     * Do two week ranges overlap? null endWeek means "ongoing",
-     * treated as MAX_WEEK.
+     * Do two week ranges overlap?
+     *
+     * Delegates to RangeUtils.weeksOverlap, which is the canonical
+     * range-overlap predicate. Wrapper exists so call sites read
+     * naturally and so a future change to the canonical predicate
+     * lands in one place.
      */
     function weekRangesOverlap(startA, endA, startB, endB) {
-        if (startA === null || startA === undefined) { return false; }
-        if (startB === null || startB === undefined) { return false; }
-
-        var effEndA = (endA === null || endA === undefined) ? MAX_WEEK : endA;
-        var effEndB = (endB === null || endB === undefined) ? MAX_WEEK : endB;
-
-        return startA <= effEndB && startB <= effEndA;
+        return RangeUtils.weeksOverlap(startA, endA, startB, endB);
     }
 
     /**
@@ -364,7 +362,6 @@
 
     /**
      * Ensure a class-scoped bucket exists in an academy snapshot.
-     * Caller passes the store name ('enrolments', 'classDisciplines').
      */
     function ensureClassBucket(academy, storeName, classId) {
         var store = academy[storeName];
@@ -382,12 +379,6 @@
      * Get the class's active roster (students only, instructor
      * excluded). Uses AcademyAggregator so the roster is always
      * consistent with the UI.
-     *
-     * LAZY: AcademyAggregator is resolved at call time. If it's
-     * not yet loaded, this returns an empty roster and warns. The
-     * caller (addClassDiscipline) will then enrol nobody. That is
-     * a safe degradation: a class-discipline is created without
-     * auto-enrolment rather than the mutation failing outright.
      */
     function getClassRoster(classId) {
         if (!isNonEmptyString(classId)) {
@@ -424,8 +415,7 @@
      * at 9am for 2 hours runs [9, 11). A session at 11am for 1 hour
      * runs [11, 12). They do not overlap.
      *
-     * Week ranges must also overlap. A Monday 9am session in weeks
-     * 1-4 and a Monday 9am session in weeks 5-8 do not collide.
+     * Week ranges must also overlap.
      */
     function sessionsOverlap(a, b) {
         if (!a || !b) { return false; }
@@ -446,9 +436,7 @@
     }
 
     /**
-     * Get the group's active member IDs at a given week. Used to
-     * check whether a conflicting session shares a student with the
-     * candidate session.
+     * Get the group's active member IDs at a given week.
      */
     function getGroupActiveMembersAtWeek(groupId, week) {
         if (!isNonEmptyString(groupId)) {
@@ -463,11 +451,6 @@
 
     /**
      * Find the first conflicting session for an instructor.
-     *
-     * Walks every session in the store. For each session whose
-     * group has the given instructorId, checks whether it overlaps
-     * the candidate. Returns the conflicting session plus its group
-     * context, or null if none.
      */
     function findInstructorCollision(instructorId, candidate, excludeGroupId) {
         if (!isNonEmptyString(instructorId)) {
@@ -480,14 +463,11 @@
             var session = allSessions[i];
             if (!isPlainObject(session)) { continue; }
 
-            // Skip sessions that belong to the group we're adding to.
-            // A group cannot collide with itself.
             if (excludeGroupId &&
                 String(session.groupId) === String(excludeGroupId)) {
                 continue;
             }
 
-            // Resolve the session's group to check the instructor.
             var group = null;
             try {
                 group = AcademyTeachingGroups.getGroup(session.groupId);
@@ -513,31 +493,17 @@
     /**
      * Find the first conflicting session that shares a student with
      * the candidate group.
-     *
-     * Strategy:
-     *   1. Get the candidate group's active members at each week in
-     *      the candidate session's range. That's the set of students
-     *      who'd be in the meeting.
-     *   2. Walk every session. For each session whose week range
-     *      overlaps the candidate's, check time overlap, then check
-     *      whether that session's group shares any active member
-     *      with the candidate group.
      */
     function findStudentCollision(candidateGroupId, candidate) {
         if (!isNonEmptyString(candidateGroupId)) {
             return null;
         }
 
-        // Which weeks do we need to check? The candidate's range,
-        // clamped to the calendar's bounds.
         var startWeek = candidate.startWeek;
         var endWeek = (candidate.endWeek === null || candidate.endWeek === undefined)
             ? MAX_WEEK
             : candidate.endWeek;
 
-        // Build the candidate group's active-student set at every
-        // week in the range. This is O(weeks * members) which is
-        // fine for realistic sizes.
         var candidateStudentsByWeek = {};
         for (var w = startWeek; w <= endWeek; w++) {
             candidateStudentsByWeek[w] = getGroupActiveMembersAtWeek(
@@ -559,7 +525,6 @@
                 continue;
             }
 
-            // Determine the overlap window of weeks.
             var sStart = session.startWeek;
             var sEnd = (session.endWeek === null || session.endWeek === undefined)
                 ? MAX_WEEK
@@ -581,7 +546,6 @@
                     candidateStudents, otherStudents
                 );
                 if (shared !== null) {
-                    // Resolve the conflicting group for context.
                     var conflictingGroup = null;
                     try {
                         conflictingGroup = AcademyTeachingGroups.getGroup(
@@ -604,9 +568,6 @@
         return null;
     }
 
-    /**
-     * Return the first shared string in two arrays, or null.
-     */
     function findSharedStudent(a, b) {
         for (var i = 0; i < a.length; i++) {
             var target = String(a[i]);
@@ -622,14 +583,6 @@
     /**
      * Run the collision check and return a structured rejection
      * object if a collision exists, or null if clean.
-     *
-     * The rejection shape is:
-     *   {
-     *     success: false,
-     *     reason: 'instructor_collision' | 'student_collision',
-     *     message: <human-readable>,
-     *     data: { collision: { ... } }
-     *   }
      */
     function buildCollisionRejection(candidateGroupId, group, candidate) {
         var instructorId = group.instructorId;
@@ -710,32 +663,15 @@
      * Create a class-discipline marker. If the marker is mandatory,
      * auto-enrol every active student in the class.
      *
-     * "Active student" means:
-     *   - In the class roster (character.classIds includes classId)
-     *   - Not the class instructor
-     *   - Not eliminated as of the discipline's startWeek
-     *
      * THE ENROLMENT WINDOW (v27):
      *   The marker has no window. The window comes from the
      *   DISCIPLINE. A discipline with startWeek 1 and endWeek 24
      *   produces enrolments spanning weeks 1–24.
      *
-     *   When the discipline has no valid startWeek, the mutation
-     *   fails. A class-discipline without a discipline window
-     *   cannot be auto-enrolled sensibly, and silently picking
-     *   MIN_WEEK would hide the data problem.
-     *
      * CONFIG SHAPE (v27):
      *   config = { mandatory?: boolean }
      *
-     *   This is a change from pre-v27, where config also carried
-     *   startWeek, endWeek, weeklyHours, weight, gradeSchemeId,
-     *   assessmentWeights, and instructorIds. None of those belong
-     *   on a marker. Passing any of them is rejected with a clear
-     *   message rather than silently ignored — a caller still on
-     *   the old shape needs to know.
-     *
-     * One transaction. All-or-nothing.
+     *   Retired config fields are rejected with a message.
      *
      * @param {string} classId
      * @param {string} disciplineId
@@ -752,9 +688,6 @@
 
         config = isPlainObject(config) ? config : {};
 
-        // Reject retired config fields explicitly. A caller still
-        // on the pre-v27 shape gets a message that names the field,
-        // rather than a silent drop.
         var retiredFields = [
             'startWeek', 'endWeek', 'weeklyHours', 'weight',
             'gradeSchemeId', 'assessmentWeights', 'instructorIds'
@@ -785,7 +718,6 @@
             return Promise.resolve(failure('Discipline not found.'));
         }
 
-        // The enrolment window comes from the discipline.
         var startWeek = parseWeekStrict(discipline.startWeek);
         if (startWeek === null) {
             return Promise.resolve(failure(
@@ -823,7 +755,6 @@
         var targetClass = String(classId);
         var targetDiscipline = String(disciplineId);
 
-        // Mandatory default: fall back to the discipline's type.
         var isMandatory;
         if (typeof config.mandatory === 'boolean') {
             isMandatory = config.mandatory;
@@ -831,8 +762,6 @@
             isMandatory = (discipline.type === 'mandatory');
         }
 
-        // Compute the enrolment list during validate. Everything
-        // that can fail is checked here, before any writes.
         var plan = null;
 
         return MutationPipeline.performMutation({
@@ -889,13 +818,11 @@
                     throw new Error('Academy store is not available.');
                 }
 
-                // 1. Write the marker record.
                 var cdBucket = ensureClassBucket(
                     academy, 'classDisciplines', targetClass
                 );
                 cdBucket[targetDiscipline] = deepClone(plan.marker);
 
-                // 2. Write enrolments for mandatory offerings.
                 if (plan.isMandatory && plan.enrolledCharIds.length > 0) {
                     var enrBucket = ensureClassBucket(
                         academy, 'enrolments', targetClass
@@ -946,9 +873,6 @@
 
     /**
      * Build the plan for addClassDiscipline. Pure — no writes.
-     *
-     * Returns { marker, isMandatory, enrolledCharIds, skippedCharIds }
-     * or null on malformed input.
      */
     function buildAddClassDisciplinePlan(
         classId,
@@ -977,19 +901,12 @@
                 if (!student || !student.id) { continue; }
                 var studentId = String(student.id);
 
-                // Skip eliminated students. Elimination at exactly
-                // the start week does NOT skip them; they are still
-                // available during that week.
                 var eliminated = false;
                 try {
                     eliminated = EliminationQueries.isCharacterEliminatedByWeek(
                         studentId, startWeek
                     ) === true;
                 } catch (e) {
-                    // If the check fails, we default to NOT skipping.
-                    // An unexplained elimination query failure
-                    // shouldn't silently drop students from their own
-                    // class.
                     eliminated = false;
                 }
 
@@ -1016,14 +933,8 @@
     /**
      * Remove a class-discipline marker and end everything downstream.
      *
-     * Under v27 there is no per-class window to end — the marker
-     * simply goes away. But every student enrolment, every teaching
-     * group, and every teaching session for that class-discipline
-     * is truncated at effectiveWeek so that history survives.
-     *
      * effectiveWeek is the first week that is NOT covered by the
-     * offering. A group with startWeek 1 and endWeek null ends up
-     * with endWeek = effectiveWeek - 1.
+     * offering.
      *
      * In one transaction it:
      *   - Removes the class-discipline marker.
@@ -1031,13 +942,6 @@
      *   - Ends every session for those groups.
      *   - Ends every student's enrolment interval in the class-
      *     discipline.
-     *
-     * Note on ordering: the marker is removed first because the
-     * downstream steps read the groups via classId+disciplineId
-     * rather than through the marker. Removing the marker first
-     * does not break them.
-     *
-     * One transaction. All-or-nothing.
      *
      * @param {string} classId
      * @param {string} disciplineId
@@ -1069,9 +973,6 @@
             ));
         }
 
-        // Sanity: the caller cannot end the offering before the
-        // discipline begins. The discipline's window is the source
-        // of truth.
         var discipline = AcademyDisciplines.getDiscipline(disciplineId);
         if (discipline) {
             var discStartWeek = parseWeekStrict(discipline.startWeek);
@@ -1243,31 +1144,8 @@
      * Create a teaching session for a group, with a blocking
      * collision check.
      *
-     * COLLISION BEHAVIOUR:
-     *   By default (collisionMode: 'block'), the coordinator runs
-     *   an instructor collision check and a student collision check.
-     *   If either fires, the mutation is rejected WITHOUT writing.
-     *   The resolved result carries:
-     *     success: false
-     *     reason: 'instructor_collision' | 'student_collision'
-     *     data.collision: { ... details ... }
-     *
-     *   The caller is expected to show a confirmation modal and
-     *   re-invoke with allowCollisions: true on confirmation.
-     *
-     *   Set collisionMode: 'ignore' to skip the check entirely.
-     *   Set allowCollisions: true to bypass a would-be block.
-     *
-     * LOCATION COLLISIONS ARE NEVER CHECKED.
-     *   Rooms may be double-booked silently. If a location is
-     *   provided, it's stored on the session as-is.
-     *
-     * One transaction. All-or-nothing.
-     *
      * @param {string} groupId
      * @param {object} config
-     *   { day, startTime, duration, locationId, startWeek, endWeek,
-     *     collisionMode, allowCollisions }
      * @returns {Promise<{success, data?, message?, reason?}>}
      */
     function scheduleGroupMeeting(groupId, config) {
@@ -1342,7 +1220,6 @@
             }
         }
 
-        // Collision mode resolution.
         var collisionMode = 'block';
         if (config.collisionMode === 'ignore') {
             collisionMode = 'ignore';
@@ -1357,7 +1234,6 @@
 
         var targetGroup = String(groupId);
 
-        // ---- Collision check runs BEFORE the transaction ----
         if (collisionMode === 'block') {
             var candidate = {
                 day: day,
@@ -1450,16 +1326,6 @@
     /**
      * Add a student to a teaching group.
      *
-     * Validation:
-     *   - The group exists.
-     *   - The character exists.
-     *   - The character is enrolled in the group's class-discipline
-     *     during the requested week.
-     *   - The character is not already an active member of the group.
-     *   - The character is not eliminated as of the requested week.
-     *
-     * One transaction. All-or-nothing.
-     *
      * @param {string} groupId
      * @param {string} charId
      * @param {number|string} startWeek
@@ -1491,14 +1357,12 @@
             return Promise.resolve(failure('Character not found.'));
         }
 
-        // Elimination check.
         if (EliminationQueries.isCharacterEliminatedByWeek(charId, week)) {
             return Promise.resolve(failure(
                 'This character is eliminated and cannot join new groups.'
             ));
         }
 
-        // Enrolment check.
         var classId = String(group.classId);
         var disciplineId = String(group.disciplineId);
 
@@ -1511,7 +1375,6 @@
             ));
         }
 
-        // Existing membership check.
         var alreadyMember = AcademyTeachingGroups.isMemberOfGroup(
             groupId, charId, week
         );
@@ -1548,7 +1411,6 @@
                     };
                 }
                 if (!Array.isArray(g.members)) {
-                    // Will be repaired in mutate.
                     return { valid: true };
                 }
                 for (var i = 0; i < g.members.length; i++) {
@@ -1603,18 +1465,6 @@
 
     /**
      * Drop a student from a class.
-     *
-     * effectiveWeek is the first week the student is no longer in
-     * the class. Every window truncates at effectiveWeek - 1.
-     *
-     * In one transaction:
-     *   - Truncate every active enrolment interval for the student
-     *     in this class.
-     *   - Truncate every active group membership for the student in
-     *     groups of this class.
-     *   - Remove the classId from the character's classIds array.
-     *
-     * One transaction. All-or-nothing.
      *
      * @param {string} classId
      * @param {string} charId
@@ -1688,7 +1538,6 @@
                     removedFromClass: false
                 };
 
-                // 1. Truncate enrolments in this class.
                 var academy = getAcademySnapshot(appData);
                 if (academy) {
                     var enrBucket = academy.enrolments &&
@@ -1710,7 +1559,6 @@
                         }
                     }
 
-                    // 2. Truncate memberships in groups of this class.
                     if (isPlainObject(academy.teachingGroups)) {
                         Object.keys(academy.teachingGroups).forEach(function(gid) {
                             var g = academy.teachingGroups[gid];
@@ -1737,7 +1585,6 @@
                     }
                 }
 
-                // 3. Remove classId from the character.
                 for (var ci = 0; ci < appData.characters.length; ci++) {
                     var c = appData.characters[ci];
                     if (!c || String(c.id) !== targetChar) { continue; }
@@ -1781,14 +1628,12 @@
     // ============================================================
 
     window.AcademySchedule = Object.freeze({
-        // Mutations
         addClassDiscipline: addClassDiscipline,
         removeClassDiscipline: removeClassDiscipline,
         scheduleGroupMeeting: scheduleGroupMeeting,
         addStudentToTeachingGroup: addStudentToTeachingGroup,
         dropStudentFromClass: dropStudentFromClass,
 
-        // Constants (re-exported for callers)
         MIN_WEEK: MIN_WEEK,
         MAX_WEEK: MAX_WEEK
     });

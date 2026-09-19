@@ -42,6 +42,13 @@
  *     absent, the projection returns null or an empty collection.
  *   - The class VM is deliberately small (header fields only).
  *
+ * RANGE PREDICATES:
+ *   The "does this range contain this week" question is owned by
+ *   window.RangeUtils, which is the canonical range-predicate module
+ *   for the whole application. This aggregator delegates to
+ *   RangeUtils.containsWeek. Do not reimplement the range math here;
+ *   it lives in one place, on purpose.
+ *
  * MEMBER INTERVALS MODEL (v24):
  *   Each team member entry on a persistent Team entity is:
  *
@@ -143,11 +150,12 @@
  *   - AcademyClasses       (class entities)
  *   - AcademyDisciplines   (discipline entities)
  *   - AcademyClassDisciplines (class-discipline markers, v27)
- *   - AcademyEnrolments    (class-scoped enrolments)
  *   - CharacterQueries     (character identity)
+ *   - AcademyLocations     (location entities for the Locations view)
  *   - TeamQueries          (persistent Team entities)
  *   - TeamConstants        (team type/period labels)
  *   - CalendarConstants    (week bounds for week resolution)
+ *   - RangeUtils           (containsWeek, for the partition split)
  *
  * DEPENDENCIES (LAZY):
  *   - TeamAggregator             (period-display strings)
@@ -158,6 +166,12 @@
  *   - EliminationQueries         (elimination reads; REQUIRED by
  *                                 getWeeklyTeamMemberManagerViewModel
  *                                 and by the People 'eliminated' filter)
+ *
+ *   Note: AcademyEnrolments is NOT a dependency of this module.
+ *   After the v27 picker VM trim, this file no longer reads
+ *   enrolments directly. Enrolment reads are performed by the
+ *   character-detail aggregator and the performance layer; the
+ *   aggregator's picker VM was reduced to markers only.
  */
 
 (function() {
@@ -174,11 +188,12 @@
     var AcademyClasses = window.AcademyClasses;
     var AcademyDisciplines = window.AcademyDisciplines;
     var AcademyClassDisciplines = window.AcademyClassDisciplines;
-    var AcademyEnrolments = window.AcademyEnrolments;
     var CharacterQueries = window.CharacterQueries;
+    var AcademyLocations = window.AcademyLocations;
     var TeamQueries = window.TeamQueries;
     var TeamConstants = window.TeamConstants;
     var CalendarConstants = window.CalendarConstants;
+    var RangeUtils = window.RangeUtils;
 
     // ============================================================
     // MANDATORY DEPENDENCY CHECK
@@ -206,9 +221,6 @@
         typeof AcademyClassDisciplines.hasClassDiscipline !== 'function') {
         _missing.push('AcademyClassDisciplines.hasClassDiscipline');
     }
-    if (!AcademyEnrolments || typeof AcademyEnrolments.getStudentDisciplineIds !== 'function') {
-        _missing.push('AcademyEnrolments.getStudentDisciplineIds');
-    }
     if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
         _missing.push('CharacterQueries.getCharacterById');
     }
@@ -223,6 +235,9 @@
     }
     if (!CharacterQueries || typeof CharacterQueries.getCharacters !== 'function') {
         _missing.push('CharacterQueries.getCharacters');
+    }
+    if (!AcademyLocations || typeof AcademyLocations.getLocations !== 'function') {
+        _missing.push('AcademyLocations.getLocations');
     }
     if (!TeamQueries || typeof TeamQueries.getTeamsByClass !== 'function') {
         _missing.push('TeamQueries.getTeamsByClass');
@@ -246,6 +261,9 @@
         typeof CalendarConstants.MIN_WEEK !== 'number' ||
         typeof CalendarConstants.MAX_WEEK !== 'number') {
         _missing.push('CalendarConstants.MIN_WEEK/MAX_WEEK');
+    }
+    if (!RangeUtils || typeof RangeUtils.containsWeek !== 'function') {
+        _missing.push('RangeUtils.containsWeek');
     }
 
     if (_missing.length > 0) {
@@ -1006,15 +1024,18 @@
     // ============================================================
     // LOCATION VIEW MODEL
     // ============================================================
+    //
+    // AcademyLocations is a MANDATORY dependency. Its absence is a
+    // load-time failure of the whole module, not a runtime degrade
+    // here. The previous inline `window.AcademyLocations` lookup was
+    // a fallback for a dependency that is guaranteed present by
+    // index.html's load order; the fallback was dead code that lied
+    // about the module's dependency surface.
 
     function getLocationViewModel(filters, week, selectedLocationId) {
         filters = filters || {};
 
-        var AcademyLocations = window.AcademyLocations;
-        var allLocations =
-            AcademyLocations && typeof AcademyLocations.getLocations === 'function'
-                ? (AcademyLocations.getLocations() || [])
-                : [];
+        var allLocations = AcademyLocations.getLocations() || [];
 
         var type = filters.type || 'all';
         var search = (filters.search || '').toLowerCase().trim();
@@ -1459,6 +1480,13 @@
     // ============================================================
     // MEMBER PARTITION (active / former)
     // ============================================================
+    //
+    // The week-containment question is delegated to
+    // RangeUtils.containsWeek. The partition itself — which entries
+    // belong in `formerRecords` — is decided here: an entry is
+    // "former" when none of its intervals contains the week but at
+    // least one interval has a leavePeriod strictly less than the
+    // week.
 
     function partitionTeamMembers(team, weekNum) {
         var activeRecords = TeamQueries.getActiveTeamMembers(team, weekNum) || [];
@@ -1769,6 +1797,27 @@
             if (typeof exports[required[i]] !== 'function') {
                 missing.push(required[i]);
             }
+        }
+
+        // Smoke test the delegating range check via a shape-compatible
+        // call. `partitionTeamMembers` is not exported; this exercises
+        // RangeUtils directly against the same semantics the aggregator
+        // depends on. A failure here means the delegation is broken.
+        try {
+            if (RangeUtils.containsWeek(5, 1, 10) !== true) {
+                missing.push('RangeUtils.containsWeek active-in-range failed');
+            }
+            if (RangeUtils.containsWeek(10, 1, 10) !== true) {
+                missing.push('RangeUtils.containsWeek inclusive end failed');
+            }
+            if (RangeUtils.containsWeek(11, 1, 10) !== false) {
+                missing.push('RangeUtils.containsWeek past-end failed');
+            }
+            if (RangeUtils.containsWeek(52, 1, null) !== true) {
+                missing.push('RangeUtils.containsWeek open end failed');
+            }
+        } catch (e) {
+            missing.push('range-delegation smoke test threw: ' + e.message);
         }
 
         if (missing.length > 0) {

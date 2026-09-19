@@ -54,6 +54,17 @@
  *   - duration is an integer 1..MAX_CLASS_DURATION.
  *   - startTime + duration must not exceed the calendar's end hour + 1.
  *
+ * RANGE PREDICATES:
+ *   - `sessionActiveInWeek` is a delegating wrapper around
+ *     RangeUtils.containsWeek. The session-shape null check lives
+ *     here; the week-containment question does not.
+ *   - `sessionsOverlap` has two parts: a TIME overlap (day, hour,
+ *     duration) and a WEEK-RANGE overlap. The time overlap is local
+ *     — it has no analogue in RangeUtils, which is week-typed. The
+ *     week-range overlap delegates to RangeUtils.weeksOverlap,
+ *     which is the canonical "do two week ranges intersect"
+ *     predicate.
+ *
  * OVERLAP SEMANTICS:
  *   - A teaching GROUP may not have two sessions that overlap in
  *     time on the same day with overlapping week ranges. That rule
@@ -70,8 +81,13 @@
  *   - window.CalendarConstants    (MIN_WEEK, MAX_WEEK, MIN_DAY, MAX_DAY,
  *                                  MIN_HOUR, MAX_HOUR, CALENDAR_END_HOUR,
  *                                  MIN_CLASS_DURATION, MAX_CLASS_DURATION)
+ *   - window.RangeUtils           (containsWeek, weeksOverlap)
  *   - window.MutationPipeline     (performMutation)
  *   - window.AcademyTeachingGroups (group existence check)
+ *
+ * DEPENDENCIES (LAZY):
+ *   - window.IdUtils              (session id generation; falls back
+ *                                  to a local generator when absent)
  */
 
 (function() {
@@ -79,21 +95,6 @@
 
     if (window.__academyTeachingSessionsLoaded) {
         return;
-    }
-
-    var _DIAGNOSTIC = true;
-
-    function diag() {
-        if (!_DIAGNOSTIC) return;
-        var args = Array.prototype.slice.call(arguments);
-        args.unshift('[ATS]');
-        console.log.apply(console, args);
-    }
-
-    function diagWarn() {
-        var args = Array.prototype.slice.call(arguments);
-        args.unshift('[ATS]');
-        console.warn.apply(console, args);
     }
 
     // ============================================================
@@ -104,6 +105,7 @@
     var ValidationUtils = window.ValidationUtils;
     var CalendarValidation = window.CalendarValidation;
     var CalendarConstants = window.CalendarConstants;
+    var RangeUtils = window.RangeUtils;
     var MutationPipeline = window.MutationPipeline;
     var AcademyTeachingGroups = window.AcademyTeachingGroups;
 
@@ -132,6 +134,12 @@
         typeof CalendarConstants.MAX_WEEK !== 'number') {
         _missing.push('CalendarConstants.MIN_WEEK/MAX_WEEK');
     }
+    if (!RangeUtils || typeof RangeUtils.containsWeek !== 'function') {
+        _missing.push('RangeUtils.containsWeek');
+    }
+    if (!RangeUtils || typeof RangeUtils.weeksOverlap !== 'function') {
+        _missing.push('RangeUtils.weeksOverlap');
+    }
     if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
         _missing.push('MutationPipeline.performMutation');
     }
@@ -148,8 +156,6 @@
     }
 
     window.__academyTeachingSessionsLoaded = true;
-
-    diag('Module loaded.');
 
     // ============================================================
     // CONSTANTS
@@ -225,20 +231,58 @@
         return parsed;
     }
 
+    function generateSessionId() {
+        if (window.IdUtils && typeof window.IdUtils.generateId === 'function') {
+            return window.IdUtils.generateId('tsession');
+        }
+        return 'tsession_' + Date.now() + '_' +
+            Math.random().toString(36).slice(2, 8);
+    }
+
+    // ============================================================
+    // RANGE PREDICATES — DELEGATE TO RangeUtils
+    // ============================================================
+    //
+    // The week-containment and week-overlap questions are owned by
+    // RangeUtils. Both helpers below do shape checks only, then
+    // delegate. Do not reimplement range math here.
+    //
+    // sessionsOverlap also has a TIME dimension (day, hour,
+    // duration). That part is local because RangeUtils is week-typed
+    // and has no opinion about hours. The two dimensions are
+    // ANDed: sessions overlap when their weeks overlap AND their
+    // time windows overlap on the same day.
+
+    /**
+     * Is a session active during the given week?
+     *
+     * Shape check (session must be an object with a numeric
+     * startWeek) belongs here. The week-containment question
+     * belongs to RangeUtils.
+     */
     function sessionActiveInWeek(session, week) {
         if (!session) return false;
-        var start = session.startWeek;
-        if (start === null || start === undefined) return false;
-        if (week < start) return false;
-        if (session.endWeek !== null && session.endWeek !== undefined &&
-            week > session.endWeek) {
+        if (session.startWeek === null || session.startWeek === undefined) {
             return false;
         }
-        return true;
+        return RangeUtils.containsWeek(
+            week,
+            session.startWeek,
+            session.endWeek
+        );
     }
 
     /**
      * Do two sessions overlap in both time and weeks?
+     *
+     * Time overlap: same day, and their [startTime, startTime +
+     * duration) intervals intersect. This is local — RangeUtils is
+     * week-typed and has no hour concept.
+     *
+     * Week overlap: delegates to RangeUtils.weeksOverlap, which is
+     * the canonical "do two week ranges intersect" predicate.
+     * Inclusive bounds on both ends; null end means unbounded.
+     *
      * Two sessions on different days never overlap.
      */
     function sessionsOverlap(a, b) {
@@ -253,20 +297,10 @@
         var timeOverlap = aStart < bEnd && bStart < aEnd;
         if (!timeOverlap) return false;
 
-        var aWeekStart = (a.startWeek !== undefined && a.startWeek !== null)
-            ? a.startWeek
-            : MIN_WEEK;
-        var aWeekEnd = (a.endWeek !== undefined && a.endWeek !== null)
-            ? a.endWeek
-            : MAX_WEEK;
-        var bWeekStart = (b.startWeek !== undefined && b.startWeek !== null)
-            ? b.startWeek
-            : MIN_WEEK;
-        var bWeekEnd = (b.endWeek !== undefined && b.endWeek !== null)
-            ? b.endWeek
-            : MAX_WEEK;
-
-        return aWeekStart <= bWeekEnd && bWeekStart <= aWeekEnd;
+        return RangeUtils.weeksOverlap(
+            a.startWeek, a.endWeek,
+            b.startWeek, b.endWeek
+        );
     }
 
     // ============================================================
@@ -537,8 +571,6 @@
     // ============================================================
 
     function createSession(data) {
-        diag('createSession CALLED', data);
-
         if (!isPlainObject(data)) {
             return Promise.resolve(failure('Session data must be an object.'));
         }
@@ -592,13 +624,7 @@
             ));
         }
 
-        var generatedId = null;
-        if (window.IdUtils && typeof window.IdUtils.generateId === 'function') {
-            generatedId = window.IdUtils.generateId('tsession');
-        } else {
-            generatedId = 'tsession_' + Date.now() + '_' +
-                Math.random().toString(36).slice(2, 8);
-        }
+        var generatedId = generateSessionId();
         candidate.id = generatedId;
 
         var now = new Date().toISOString();
@@ -878,7 +904,7 @@
     // EXPOSE
     // ============================================================
 
-    window.AcademyTeachingSessions = {
+    window.AcademyTeachingSessions = Object.freeze({
         // Reads
         getSession: getSession,
         getAllSessions: getAllSessions,
@@ -911,7 +937,11 @@
         MAX_HOUR: MAX_HOUR,
         MIN_CLASS_DURATION: MIN_CLASS_DURATION,
         MAX_CLASS_DURATION: MAX_CLASS_DURATION
-    };
+    });
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
 
     (function verify() {
         var exports = window.AcademyTeachingSessions;
@@ -930,10 +960,92 @@
                 missing.push(required[i]);
             }
         }
+
+        // Smoke tests on the two delegating predicates. These do not
+        // touch any store; they only exercise the delegation and the
+        // shape checks. A failure here means the RangeUtils
+        // delegation or the time-overlap logic is broken.
+        try {
+            // sessionActiveInWeek delegates to RangeUtils.containsWeek.
+            var activeSession = { startWeek: 1, endWeek: 10 };
+            var ongoingSession = { startWeek: 5, endWeek: null };
+            var noStartSession = { startWeek: null, endWeek: 20 };
+
+            if (sessionActiveInWeek(activeSession, 5) !== true) {
+                missing.push('sessionActiveInWeek missed an active week');
+            }
+            if (sessionActiveInWeek(activeSession, 10) !== true) {
+                missing.push('sessionActiveInWeek failed on inclusive end');
+            }
+            if (sessionActiveInWeek(activeSession, 11) !== false) {
+                missing.push('sessionActiveInWeek found a week past the end');
+            }
+            if (sessionActiveInWeek(ongoingSession, 52) !== true) {
+                missing.push('sessionActiveInWeek missed an ongoing week');
+            }
+            if (sessionActiveInWeek(noStartSession, 5) !== false) {
+                missing.push('sessionActiveInWeek accepted a null startWeek');
+            }
+            if (sessionActiveInWeek(null, 5) !== false) {
+                missing.push('sessionActiveInWeek accepted a null session');
+            }
+
+            // sessionsOverlap: time part is local; week part delegates.
+            // No overlap: back-to-back hours, same day, same weeks.
+            if (sessionsOverlap(
+                { day: 1, startTime: 9, duration: 1, startWeek: 1, endWeek: 10 },
+                { day: 1, startTime: 10, duration: 1, startWeek: 1, endWeek: 10 }
+            ) !== false) {
+                missing.push('sessionsOverlap flagged back-to-back hours');
+            }
+            // Overlap: same hour, same day, same weeks.
+            if (sessionsOverlap(
+                { day: 1, startTime: 9, duration: 1, startWeek: 1, endWeek: 10 },
+                { day: 1, startTime: 9, duration: 1, startWeek: 1, endWeek: 10 }
+            ) !== true) {
+                missing.push('sessionsOverlap missed identical slots');
+            }
+            // Overlap: partial hour, same day, same weeks.
+            if (sessionsOverlap(
+                { day: 1, startTime: 9, duration: 2, startWeek: 1, endWeek: 10 },
+                { day: 1, startTime: 10, duration: 2, startWeek: 1, endWeek: 10 }
+            ) !== true) {
+                missing.push('sessionsOverlap missed partial hour overlap');
+            }
+            // No overlap: different days, same hour, same weeks.
+            if (sessionsOverlap(
+                { day: 1, startTime: 9, duration: 2, startWeek: 1, endWeek: 10 },
+                { day: 2, startTime: 9, duration: 2, startWeek: 1, endWeek: 10 }
+            ) !== false) {
+                missing.push('sessionsOverlap flagged different days');
+            }
+            // No overlap: same hour, same day, DISJOINT weeks.
+            if (sessionsOverlap(
+                { day: 1, startTime: 9, duration: 1, startWeek: 1, endWeek: 5 },
+                { day: 1, startTime: 9, duration: 1, startWeek: 6, endWeek: 10 }
+            ) !== false) {
+                missing.push('sessionsOverlap ignored week disjointness');
+            }
+            // Overlap: same hour, same day, weeks touch at endpoint.
+            if (sessionsOverlap(
+                { day: 1, startTime: 9, duration: 1, startWeek: 1, endWeek: 5 },
+                { day: 1, startTime: 9, duration: 1, startWeek: 5, endWeek: 10 }
+            ) !== true) {
+                missing.push('sessionsOverlap missed inclusive week endpoint');
+            }
+            // Overlap: same hour, same day, one side ongoing.
+            if (sessionsOverlap(
+                { day: 1, startTime: 9, duration: 1, startWeek: 1, endWeek: null },
+                { day: 1, startTime: 9, duration: 1, startWeek: 30, endWeek: 40 }
+            ) !== true) {
+                missing.push('sessionsOverlap missed an ongoing week range');
+            }
+        } catch (e) {
+            missing.push('predicate smoke test threw: ' + e.message);
+        }
+
         if (missing.length > 0) {
-            console.warn('[AcademyTeachingSessions] Verification missing:', missing.join(', '));
-        } else {
-            diag('Verification OK.');
+            console.warn('[AcademyTeachingSessions] Verification failed:', missing.join(', '));
         }
     })();
 

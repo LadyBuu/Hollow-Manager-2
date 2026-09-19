@@ -67,9 +67,21 @@
  *
  * RANGE SEMANTICS:
  *   - All ranges are inclusive on both ends.
- *   - endWeek === null means "ongoing" (treated as MAX_WEEK for
- *     intersection purposes).
+ *   - endWeek === null means "ongoing" (unbounded on the right).
  *   - Weeks are integers in [MIN_WEEK, MAX_WEEK].
+ *
+ * RANGE PREDICATES:
+ *   The range question — "does this range contain this week" and
+ *   "do these two ranges overlap" — is owned by window.RangeUtils,
+ *   which is the canonical range-predicate module for the whole
+ *   application. This projector delegates to RangeUtils.
+ *
+ *   `rangeContainsWeek` and `rangesOverlap` remain exported because
+ *   external callers depend on them. They are thin wrappers over
+ *   RangeUtils.containsWeek and RangeUtils.weeksOverlap
+ *   respectively. The docstrings on each wrapper name RangeUtils
+ *   as the owner of the semantics. Do not reimplement the range
+ *   math here; it lives in one place, on purpose.
  *
  * OCCURRENCE SHAPE:
  *
@@ -101,15 +113,10 @@
  *   (day, startTime, sessionId). This is the canonical order used
  *   by every consumer. Sorting is not left to callers.
  *
- * RANGE INCLUSIVITY HELPER:
- *   `rangeContains(week, start, end)` treats `end === null` as
- *   MAX_WEEK. It is the single source of truth for the
- *   "is-this-week-inside-this-window" question. No consumer
- *   should reimplement it.
- *
  * DEPENDENCIES (MANDATORY):
  *   - window.CalendarConstants
  *   - window.CalendarValidation
+ *   - window.RangeUtils
  *   - window.AcademyClassDisciplines
  *   - window.AcademyEnrolments
  *   - window.AcademyTeachingGroups
@@ -129,6 +136,7 @@
 
     var CalendarConstants = window.CalendarConstants;
     var CalendarValidation = window.CalendarValidation;
+    var RangeUtils = window.RangeUtils;
     var AcademyClassDisciplines = window.AcademyClassDisciplines;
     var AcademyEnrolments = window.AcademyEnrolments;
     var AcademyTeachingGroups = window.AcademyTeachingGroups;
@@ -144,6 +152,14 @@
     if (!CalendarValidation ||
         typeof CalendarValidation.parseWeek !== 'function') {
         _missing.push('CalendarValidation.parseWeek');
+    }
+    if (!RangeUtils ||
+        typeof RangeUtils.containsWeek !== 'function') {
+        _missing.push('RangeUtils.containsWeek');
+    }
+    if (!RangeUtils ||
+        typeof RangeUtils.weeksOverlap !== 'function') {
+        _missing.push('RangeUtils.weeksOverlap');
     }
     if (!AcademyClassDisciplines ||
         typeof AcademyClassDisciplines.isActiveInWeek !== 'function') {
@@ -212,36 +228,34 @@
         return parsed;
     }
 
+    // ============================================================
+    // RANGE PREDICATES — DELEGATE TO RangeUtils
+    // ============================================================
+    //
+    // The range question is owned by RangeUtils. The two functions
+    // below are delegating wrappers:
+    //
+    //   rangeContains(week, start, end)
+    //     → RangeUtils.contains(week, start, end)
+    //
+    //   rangeContainsWeek(start, end, week)  [exported]
+    //     → RangeUtils.containsWeek(week, start, end)
+    //
+    // The wrappers exist because the projector's internal call sites
+    // read more naturally as `rangeContains(week, start, end)`, and
+    // because `rangeContainsWeek` and `rangesOverlap` are part of
+    // this module's public surface, consumed by collision detection
+    // and validation. Delegation keeps the semantics identical
+    // across the whole application.
+
     /**
      * Does [start, end] contain the given week?
      *
-     * This is the canonical range check. `end === null` means
-     * ongoing. Both bounds are inclusive.
-     *
-     * THIS IS THE SINGLE SOURCE OF TRUTH. Any other module that
-     * needs the check should call this one, or replicate the
-     * semantic exactly (inclusive both ends, null means open).
-     * Reimplementing it with different semantics is a bug.
+     * Delegates to RangeUtils.contains. end === null means ongoing.
+     * Both bounds are inclusive.
      */
     function rangeContains(week, start, end) {
-        if (typeof week !== 'number' ||
-            !isFinite(week) ||
-            week < MIN_WEEK ||
-            week > MAX_WEEK) {
-            return false;
-        }
-        if (typeof start !== 'number' || !isFinite(start)) {
-            return false;
-        }
-        if (week < start) {
-            return false;
-        }
-        if (end !== null && end !== undefined) {
-            if (week > end) {
-                return false;
-            }
-        }
-        return true;
+        return RangeUtils.contains(week, start, end);
     }
 
     // ============================================================
@@ -541,34 +555,37 @@
     // RANGE HELPERS - PUBLIC
     // ============================================================
     //
-    // Exposed so that consumers do not reimplement the range
-    // containment logic. Two consumers asking "does this range
-    // cover this week?" must give the same answer.
+    // These two functions are part of the projector's public
+    // surface. They exist so that consumers of the projector do
+    // not reimplement the range containment or overlap logic; they
+    // delegate to RangeUtils, which owns the semantics.
+    //
+    // Do not add logic here. The bodies are the delegate calls and
+    // nothing else. If a caller needs a different predicate, add it
+    // to RangeUtils and delegate from there, or open-code the
+    // caller's own check — but do not grow these wrappers.
 
     /**
      * Does [start, end] contain the given week?
      * end === null means ongoing.
      *
-     * Exposed because collision detection, validation, and the
-     * calendar aggregator all need this check and it must be
-     * consistent across them.
+     * Delegates to RangeUtils.containsWeek. Exposed so that
+     * collision detection, validation, and the calendar
+     * aggregator all get the same answer from the same owner.
      */
     function rangeContainsWeek(start, end, week) {
-        return rangeContains(week, start, end);
+        return RangeUtils.containsWeek(week, start, end);
     }
 
     /**
      * Do two ranges overlap? end === null means ongoing.
      *
-     * Overlap here means "there exists a week contained by both."
-     * Both ends inclusive.
+     * Delegates to RangeUtils.weeksOverlap. Overlap here means
+     * "there exists a week contained by both." Both ends
+     * inclusive.
      */
     function rangesOverlap(startA, endA, startB, endB) {
-        var effEndA = (endA === null || endA === undefined) ? MAX_WEEK : endA;
-        var effEndB = (endB === null || endB === undefined) ? MAX_WEEK : endB;
-        if (startA === null || startA === undefined) { return false; }
-        if (startB === null || startB === undefined) { return false; }
-        return startA <= effEndB && startB <= effEndA;
+        return RangeUtils.weeksOverlap(startA, endA, startB, endB);
     }
 
     // ============================================================
@@ -587,7 +604,7 @@
         projectForGroup: projectForGroup,
         projectForClassDiscipline: projectForClassDiscipline,
 
-        // Range helpers (single source of truth for range checks)
+        // Range helpers (delegating wrappers over RangeUtils)
         rangeContainsWeek: rangeContainsWeek,
         rangesOverlap: rangesOverlap
     });
@@ -618,21 +635,25 @@
             }
         }
 
-        // Smoke tests on the range helpers, which are the pure parts
-        // of this module.
+        // Smoke tests on the two exported delegating wrappers.
+        // These exercise the delegation and confirm the RangeUtils
+        // semantics are what the projector's consumers expect.
         try {
+            // rangeContainsWeek — inclusive bounds, null end means ongoing.
             if (rangeContainsWeek(1, 10, 5) !== true) {
                 missing.push('rangeContainsWeek(1,10,5) !== true');
             }
             if (rangeContainsWeek(1, 10, 10) !== true) {
-                missing.push('inclusive endWeek not honoured');
+                missing.push('rangeContainsWeek inclusive endWeek not honoured');
             }
             if (rangeContainsWeek(1, 10, 11) !== false) {
                 missing.push('rangeContainsWeek(1,10,11) !== false');
             }
             if (rangeContainsWeek(1, null, 52) !== true) {
-                missing.push('null endWeek not treated as ongoing');
+                missing.push('rangeContainsWeek null endWeek not treated as ongoing');
             }
+
+            // rangesOverlap — inclusive endpoints, null end means ongoing.
             if (rangesOverlap(1, 10, 5, 15) !== true) {
                 missing.push('rangesOverlap missed a simple overlap');
             }
@@ -646,7 +667,7 @@
                 missing.push('rangesOverlap missed open-ended overlap');
             }
         } catch (e) {
-            missing.push('smoke test threw: ' + e.message);
+            missing.push('range-wrapper smoke test threw: ' + e.message);
         }
 
         if (missing.length > 0) {

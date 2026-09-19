@@ -40,18 +40,6 @@
  *   that offers English does not get to redefine what English is;
  *   it only says "we teach this."
  *
- *   Before this model, the class-discipline record carried a full
- *   config blob that duplicated discipline data and made "who owns
- *   this value" ambiguous. Every read had to merge the two, and every
- *   editor had to know which fields overrode which. The audit
- *   confirmed the blob was legacy.
- *
- *   Instructor assignment used to live on this record too
- *   (instructorIds[]). It moved to enrolments because "instructor X
- *   teaches discipline D for class C" is a class-scoped participation
- *   fact, the same shape as a student's enrolment, and it belongs in
- *   the same store.
- *
  * WEEK SEMANTICS (v27):
  *   The marker has no window. `isActiveInWeek(classId, disciplineId,
  *   week)` reads the DISCIPLINE's startWeek / endWeek. A discipline
@@ -60,6 +48,12 @@
  *
  *   `getActiveClassDisciplinesForWeek(classId, week)` filters the
  *   class's offered disciplines by the same rule.
+ *
+ * RANGE PREDICATES (v27):
+ *   The window-containment check delegates to
+ *   `RangeUtils.containsWeek`, which is the canonical
+ *   "does this range contain this week" predicate for the whole
+ *   application. This module does not reimplement range math.
  *
  * EFFECTIVE CONFIG (v27):
  *   `getEffectiveConfig(classId, disciplineId)` returns the
@@ -107,6 +101,7 @@
  *   - window.ValidationUtils      (isNonEmptyString)
  *   - window.CalendarValidation   (parseWeek)
  *   - window.CalendarConstants    (MIN_WEEK, MAX_WEEK)
+ *   - window.RangeUtils           (containsWeek)
  *   - window.MutationPipeline     (performMutation)
  *   - window.AcademyClasses       (getClass)
  *   - window.AcademyDisciplines   (getDiscipline)
@@ -147,6 +142,7 @@
     var ValidationUtils = window.ValidationUtils;
     var CalendarValidation = window.CalendarValidation;
     var CalendarConstants = window.CalendarConstants;
+    var RangeUtils = window.RangeUtils;
     var MutationPipeline = window.MutationPipeline;
     var AcademyClasses = window.AcademyClasses;
     var AcademyDisciplines = window.AcademyDisciplines;
@@ -166,6 +162,10 @@
         typeof CalendarConstants.MIN_WEEK !== 'number' ||
         typeof CalendarConstants.MAX_WEEK !== 'number') {
         _missing.push('CalendarConstants.MIN_WEEK/MAX_WEEK');
+    }
+    if (!RangeUtils ||
+        typeof RangeUtils.containsWeek !== 'function') {
+        _missing.push('RangeUtils.containsWeek');
     }
     if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
         _missing.push('MutationPipeline.performMutation');
@@ -358,12 +358,14 @@
     // DISCIPLINE WINDOW HELPERS
     // ============================================================
     //
-    // The marker has no window. The discipline does. These helpers
-    // read the discipline's startWeek / endWeek and answer the
-    // active-week question from the caller's perspective. A caller
-    // that asks "is this class-discipline active in week 5?" gets
-    // the same answer it always did, as long as the discipline is
-    // configured.
+    // The marker has no window. The discipline does. This helper
+    // reads the discipline's startWeek / endWeek and returns a
+    // { startWeek, endWeek } pair, or null when the discipline
+    // cannot supply one.
+    //
+    // The containment check itself is not performed here; callers
+    // pass the returned window to RangeUtils.containsWeek. That
+    // keeps the range math in one place.
 
     function getDisciplineWindow(disciplineId) {
         if (!isNonEmptyString(disciplineId)) {
@@ -387,19 +389,6 @@
         }
 
         return { startWeek: startWeek, endWeek: endWeek };
-    }
-
-    function weekInDisciplineWindow(week, window) {
-        if (!window) {
-            return false;
-        }
-        if (week < window.startWeek) {
-            return false;
-        }
-        if (window.endWeek !== null && week > window.endWeek) {
-            return false;
-        }
-        return true;
     }
 
     // ============================================================
@@ -535,15 +524,14 @@
      * marker. A marker with no discipline behind it is inactive, and
      * a marker whose discipline has no valid startWeek is inactive.
      *
+     * The containment check itself delegates to
+     * RangeUtils.containsWeek, which is the canonical
+     * "is this week in this range" predicate.
+     *
      * @returns {boolean}
      */
     function isActiveInWeek(classId, disciplineId, week) {
         if (!getRecordInternal(classId, disciplineId)) {
-            return false;
-        }
-
-        var weekNum = parseWeekStrict(week);
-        if (weekNum === null) {
             return false;
         }
 
@@ -552,7 +540,11 @@
             return false;
         }
 
-        return weekInDisciplineWindow(weekNum, window);
+        return RangeUtils.containsWeek(
+            week,
+            window.startWeek,
+            window.endWeek
+        );
     }
 
     /**
@@ -562,23 +554,25 @@
      * @returns {array} Array of marker records (clones)
      */
     function getActiveClassDisciplinesForWeek(classId, week) {
-        var weekNum = parseWeekStrict(week);
-        if (weekNum === null) {
-            return [];
-        }
         var records = getRecordsForClassInternal(classId);
         var result = [];
+
         for (var i = 0; i < records.length; i++) {
             var record = records[i];
             var window = getDisciplineWindow(record.disciplineId);
             if (!window) {
                 continue;
             }
-            if (!weekInDisciplineWindow(weekNum, window)) {
+            if (!RangeUtils.containsWeek(
+                week,
+                window.startWeek,
+                window.endWeek
+            )) {
                 continue;
             }
             result.push(deepClone(record));
         }
+
         return result;
     }
 
@@ -848,7 +842,9 @@
                 result.enrolmentsCascade = AE.stripClassRefs(appData, classId);
             } catch (e) {
                 // Never propagate from a cascade helper.
-                result.enrolmentsCascade = { error: String(e && e.message || e) };
+                result.enrolmentsCascade = {
+                    error: String(e && e.message || e)
+                };
             }
         }
 
@@ -897,7 +893,9 @@
                 result.enrolmentsCascade =
                     AE.stripDisciplineRefs(appData, disciplineId);
             } catch (e) {
-                result.enrolmentsCascade = { error: String(e && e.message || e) };
+                result.enrolmentsCascade = {
+                    error: String(e && e.message || e)
+                };
             }
         }
 

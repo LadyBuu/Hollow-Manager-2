@@ -47,6 +47,16 @@
  *   - No silent coercion. Invalid weeks are rejected with a
  *     message; they are never defaulted to 1 or MAX_WEEK.
  *
+ * RANGE PREDICATES:
+ *   The week-containment question ("does [start, end] contain this
+ *   week") is owned by window.RangeUtils, which is the canonical
+ *   range-predicate module for the whole application. The
+ *   interval-overlap question ("do these two intervals intersect")
+ *   is also owned by RangeUtils. The two local helpers
+ *   `intervalContainsWeek` and `intervalsOverlap` are delegating
+ *   wrappers; they do the interval-shape null checks and then call
+ *   RangeUtils. Do not reimplement the range math here.
+ *
  * MUTATION CONTRACT:
  *   - enrol / leave / replaceEnrolments return
  *     Promise<{ success, data?, message? }>.
@@ -71,6 +81,7 @@
  *   - window.ValidationUtils       (isNonEmptyString)
  *   - window.CalendarValidation    (parseWeek)
  *   - window.CalendarConstants     (MIN_WEEK, MAX_WEEK)
+ *   - window.RangeUtils            (containsWeek, weeksOverlap)
  *   - window.MutationPipeline      (performMutation)
  *
  * USAGE:
@@ -109,6 +120,7 @@
     var ValidationUtils = window.ValidationUtils;
     var CalendarValidation = window.CalendarValidation;
     var CalendarConstants = window.CalendarConstants;
+    var RangeUtils = window.RangeUtils;
     var MutationPipeline = window.MutationPipeline;
 
     var _missing = [];
@@ -128,6 +140,14 @@
         typeof CalendarConstants.MIN_WEEK !== 'number' ||
         typeof CalendarConstants.MAX_WEEK !== 'number') {
         _missing.push('CalendarConstants.MIN_WEEK / MAX_WEEK');
+    }
+    if (!RangeUtils ||
+        typeof RangeUtils.containsWeek !== 'function') {
+        _missing.push('RangeUtils.containsWeek');
+    }
+    if (!RangeUtils ||
+        typeof RangeUtils.weeksOverlap !== 'function') {
+        _missing.push('RangeUtils.weeksOverlap');
     }
     if (!MutationPipeline ||
         typeof MutationPipeline.performMutation !== 'function') {
@@ -199,33 +219,42 @@
         return parsed;
     }
 
+    // ============================================================
+    // RANGE PREDICATES — DELEGATE TO RangeUtils
+    // ============================================================
+    //
+    // RangeUtils owns the "does this range contain this week" and
+    // "do these two ranges overlap" questions. The two helpers
+    // below add the interval-shape null checks that RangeUtils
+    // cannot know about (an interval here is
+    // { startWeek, endWeek }, not a bare pair), and then delegate.
+    //
+    // Do not reimplement the range math here. It lives in one
+    // place, on purpose.
+
     /**
-     * Does an interval [start, end] contain the given week?
-     * end === null means "ongoing".
+     * Does the interval [startWeek, endWeek] contain the given
+     * week? endWeek === null means "ongoing".
+     *
+     * The interval-array callers pass plain numbers; the caller
+     * has already validated them. This wrapper's only job is the
+     * RangeUtils delegation.
      */
     function intervalContainsWeek(startWeek, endWeek, week) {
-        if (startWeek === null || startWeek === undefined) {
-            return false;
-        }
-        if (week < startWeek) {
-            return false;
-        }
-        if (endWeek !== null && endWeek !== undefined && week > endWeek) {
-            return false;
-        }
-        return true;
+        return RangeUtils.containsWeek(week, startWeek, endWeek);
     }
 
     /**
      * Do two intervals overlap?
      * end === null is treated as +infinity.
+     *
+     * Delegates to RangeUtils.weeksOverlap. The wrapper exists
+     * because the call sites read more naturally as
+     * `intervalsOverlap(a, b)` than as an argument-flipped call to
+     * a four-argument function.
      */
     function intervalsOverlap(startA, endA, startB, endB) {
-        var effEndA = (endA === null || endA === undefined) ? MAX_WEEK : endA;
-        var effEndB = (endB === null || endB === undefined) ? MAX_WEEK : endB;
-
-        // Use inclusive comparison because endWeek is inclusive.
-        return startA <= effEndB && startB <= effEndA;
+        return RangeUtils.weeksOverlap(startA, endA, startB, endB);
     }
 
     // ============================================================
@@ -787,19 +816,23 @@
                 var affected = false;
                 for (var i = 0; i < sameDiscipline.length; i++) {
                     var entry = sameDiscipline[i];
+
+                    // An ongoing interval starting at or before the
+                    // effective week is always affected. Any bounded
+                    // interval that contains the effective week is
+                    // affected. An interval that starts at or after
+                    // the effective week is affected (it gets
+                    // dropped).
+                    if (entry.startWeek >= effectiveNum) {
+                        affected = true;
+                        break;
+                    }
                     if (intervalContainsWeek(
                         entry.startWeek, entry.endWeek, effectiveNum
                     )) {
                         affected = true;
                         break;
                     }
-                    if (entry.startWeek >= effectiveNum &&
-                        entry.startWeek <= effectiveNum) {
-                        affected = true;
-                        break;
-                    }
-                    // An ongoing interval always contains any future
-                    // week.
                     if (entry.endWeek === null && entry.startWeek <= effectiveNum) {
                         affected = true;
                         break;
@@ -1231,6 +1264,45 @@
             if (typeof exports[required[i]] !== 'function') {
                 missing.push(required[i]);
             }
+        }
+
+        // Smoke tests on the two delegating range helpers. These
+        // exercise the RangeUtils delegation directly; a failure
+        // here means the semantics the rest of the module depends
+        // on are broken.
+        try {
+            // intervalContainsWeek — inclusive bounds, null end ongoing.
+            if (intervalContainsWeek(1, 10, 5) !== true) {
+                missing.push('intervalContainsWeek(1,10,5) !== true');
+            }
+            if (intervalContainsWeek(1, 10, 10) !== true) {
+                missing.push('intervalContainsWeek inclusive end not honoured');
+            }
+            if (intervalContainsWeek(1, 10, 11) !== false) {
+                missing.push('intervalContainsWeek(1,10,11) !== false');
+            }
+            if (intervalContainsWeek(1, null, 52) !== true) {
+                missing.push('intervalContainsWeek null end not ongoing');
+            }
+
+            // intervalsOverlap — inclusive endpoints, null end ongoing.
+            if (intervalsOverlap(1, 10, 5, 15) !== true) {
+                missing.push('intervalsOverlap missed a simple overlap');
+            }
+            if (intervalsOverlap(1, 10, 11, 20) !== false) {
+                missing.push('intervalsOverlap found a false overlap');
+            }
+            if (intervalsOverlap(1, 10, 10, 20) !== true) {
+                missing.push('intervalsOverlap missed inclusive endpoint');
+            }
+            if (intervalsOverlap(1, null, 30, 40) !== true) {
+                missing.push('intervalsOverlap missed open-ended overlap');
+            }
+            if (intervalsOverlap(1, 5, 6, 10) !== false) {
+                missing.push('intervalsOverlap flagged disjoint ranges');
+            }
+        } catch (e) {
+            missing.push('range-helper smoke test threw: ' + e.message);
         }
 
         if (missing.length > 0) {

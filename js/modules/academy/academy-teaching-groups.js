@@ -47,6 +47,15 @@
  *   - endWeek === null means "ongoing".
  *   - endWeek is INCLUSIVE.
  *
+ * RANGE PREDICATES:
+ *   The "does this range contain this week" question is owned by
+ *   window.RangeUtils, which is the canonical range-predicate module
+ *   for the whole application. The two local helpers
+ *   `memberActiveInWeek` and `groupActiveInWeek` are delegating
+ *   wrappers: they do the member-shape / group-shape null checks and
+ *   then call RangeUtils.containsWeek. Do not reimplement the range
+ *   math here; it lives in one place, on purpose.
+ *
  * DISPLAY NAME:
  *   A group's display name is:
  *     customName if set
@@ -63,10 +72,18 @@
  *   - window.ValidationUtils      (isNonEmptyString)
  *   - window.CalendarValidation   (parseWeek)
  *   - window.CalendarConstants    (MIN_WEEK, MAX_WEEK)
+ *   - window.RangeUtils           (containsWeek)
  *   - window.MutationPipeline     (performMutation)
  *   - window.AcademyClasses       (class existence check)
  *   - window.AcademyDisciplines   (discipline existence check)
  *   - window.CharacterQueries     (instructor existence check)
+ *
+ * DEPENDENCIES (LAZY):
+ *   - window.IdUtils              (group id generation; falls back
+ *                                  to a local generator when absent,
+ *                                  because the fallback is load-order
+ *                                  neutral and deterministic enough
+ *                                  for a persisted id)
  */
 
 (function() {
@@ -74,21 +91,6 @@
 
     if (window.__academyTeachingGroupsLoaded) {
         return;
-    }
-
-    var _DIAGNOSTIC = true;
-
-    function diag() {
-        if (!_DIAGNOSTIC) return;
-        var args = Array.prototype.slice.call(arguments);
-        args.unshift('[ATG]');
-        console.log.apply(console, args);
-    }
-
-    function diagWarn() {
-        var args = Array.prototype.slice.call(arguments);
-        args.unshift('[ATG]');
-        console.warn.apply(console, args);
     }
 
     // ============================================================
@@ -99,6 +101,7 @@
     var ValidationUtils = window.ValidationUtils;
     var CalendarValidation = window.CalendarValidation;
     var CalendarConstants = window.CalendarConstants;
+    var RangeUtils = window.RangeUtils;
     var MutationPipeline = window.MutationPipeline;
     var AcademyClasses = window.AcademyClasses;
     var AcademyDisciplines = window.AcademyDisciplines;
@@ -119,6 +122,9 @@
         typeof CalendarConstants.MIN_WEEK !== 'number' ||
         typeof CalendarConstants.MAX_WEEK !== 'number') {
         _missing.push('CalendarConstants.MIN_WEEK/MAX_WEEK');
+    }
+    if (!RangeUtils || typeof RangeUtils.containsWeek !== 'function') {
+        _missing.push('RangeUtils.containsWeek');
     }
     if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
         _missing.push('MutationPipeline.performMutation');
@@ -141,8 +147,6 @@
     }
 
     window.__academyTeachingGroupsLoaded = true;
-
-    diag('Module loaded.');
 
     // ============================================================
     // CONSTANTS
@@ -200,40 +204,67 @@
                String(instructorId);
     }
 
+    function generateGroupId() {
+        if (window.IdUtils && typeof window.IdUtils.generateId === 'function') {
+            return window.IdUtils.generateId('tgroup');
+        }
+        return 'tgroup_' + Date.now() + '_' +
+            Math.random().toString(36).slice(2, 8);
+    }
+
+    // ============================================================
+    // RANGE PREDICATES — DELEGATE TO RangeUtils
+    // ============================================================
+    //
+    // RangeUtils.containsWeek(week, start, end) is the canonical
+    // "does this range contain this week" predicate for the whole
+    // application. It treats end === null as unbounded, uses
+    // inclusive bounds on both ends, and rejects weeks outside
+    // [MIN_WEEK, MAX_WEEK].
+    //
+    // The two helpers below add only the member-shape and
+    // group-shape null checks that RangeUtils cannot know about.
+    // Everything else is delegation. Do not put range math here.
+
+    /**
+     * Is a member entry active during the given week?
+     *
+     * Shape checks (member must be an object with a numeric
+     * startWeek) belong here. The week-containment question
+     * belongs to RangeUtils.
+     */
     function memberActiveInWeek(member, week) {
         if (!member || typeof member !== 'object') {
             return false;
         }
-        var start = member.startWeek;
-        if (start === null || start === undefined) {
+        if (member.startWeek === null || member.startWeek === undefined) {
             return false;
         }
-        if (week < start) {
-            return false;
-        }
-        if (member.endWeek !== null && member.endWeek !== undefined &&
-            week > member.endWeek) {
-            return false;
-        }
-        return true;
+        return RangeUtils.containsWeek(
+            week,
+            member.startWeek,
+            member.endWeek
+        );
     }
 
+    /**
+     * Is a group active during the given week?
+     *
+     * Shape checks belong here. The week-containment question
+     * belongs to RangeUtils.
+     */
     function groupActiveInWeek(group, week) {
         if (!group) {
             return false;
         }
-        var start = group.startWeek;
-        if (start === null || start === undefined) {
+        if (group.startWeek === null || group.startWeek === undefined) {
             return false;
         }
-        if (week < start) {
-            return false;
-        }
-        if (group.endWeek !== null && group.endWeek !== undefined &&
-            week > group.endWeek) {
-            return false;
-        }
-        return true;
+        return RangeUtils.containsWeek(
+            week,
+            group.startWeek,
+            group.endWeek
+        );
     }
 
     // ============================================================
@@ -276,20 +307,6 @@
             return null;
         }
         var store = appData.academy.teachingGroups;
-        if (!store || typeof store !== 'object' || Array.isArray(store)) {
-            return null;
-        }
-        return store;
-    }
-
-    function getSequenceStoreFromSnapshot(appData) {
-        if (!appData || typeof appData !== 'object') {
-            return null;
-        }
-        if (!appData.academy || typeof appData.academy !== 'object') {
-            return null;
-        }
-        var store = appData.academy.teachingGroupSequences;
         if (!store || typeof store !== 'object' || Array.isArray(store)) {
             return null;
         }
@@ -635,8 +652,6 @@
      * and pick one, or add members via addMemberToGroup.
      */
     function createGroup(classId, disciplineId, instructorId, week) {
-        diag('createGroup CALLED', { classId, disciplineId, instructorId, week });
-
         var cdCheck = validateClassAndDiscipline(classId, disciplineId);
         if (!cdCheck.valid) {
             return Promise.resolve(failure(cdCheck.message));
@@ -686,13 +701,7 @@
                     weekNum
                 );
 
-                var generatedId = null;
-                if (window.IdUtils && typeof window.IdUtils.generateId === 'function') {
-                    generatedId = window.IdUtils.generateId('tgroup');
-                } else {
-                    generatedId = 'tgroup_' + Date.now() + '_' +
-                        Math.random().toString(36).slice(2, 8);
-                }
+                var generatedId = generateGroupId();
                 group.id = generatedId;
                 newGroupId = generatedId;
 
@@ -715,8 +724,6 @@
      * this is a no-op.
      */
     function addMemberToGroup(groupId, charId, week) {
-        diag('addMemberToGroup CALLED', { groupId, charId, week });
-
         if (!isNonEmptyString(groupId)) {
             return Promise.resolve(failure('Group ID is required.'));
         }
@@ -789,8 +796,6 @@
      * History survives.
      */
     function endMembership(groupId, charId, effectiveWeek) {
-        diag('endMembership CALLED', { groupId, charId, effectiveWeek });
-
         if (!isNonEmptyString(groupId) || !isNonEmptyString(charId)) {
             return Promise.resolve(failure('Group and character IDs are required.'));
         }
@@ -1184,7 +1189,7 @@
     // EXPOSE
     // ============================================================
 
-    window.AcademyTeachingGroups = {
+    window.AcademyTeachingGroups = Object.freeze({
         // Reads
         getGroup: getGroup,
         getAllGroups: getAllGroups,
@@ -1215,7 +1220,11 @@
         // Constants
         MIN_WEEK: MIN_WEEK,
         MAX_WEEK: MAX_WEEK
-    };
+    });
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
 
     (function verify() {
         var exports = window.AcademyTeachingGroups;
@@ -1239,8 +1248,64 @@
         }
         if (missing.length > 0) {
             console.warn('[AcademyTeachingGroups] Verification missing:', missing.join(', '));
-        } else {
-            diag('Verification OK.');
+        }
+
+        // Smoke test the delegating range wrappers. These exercise
+        // the delegation and the shape checks, without touching any
+        // store. A failure here means the RangeUtils delegation or
+        // the shape guards are broken.
+        try {
+            var activeMember = { characterId: 'c1', startWeek: 1, endWeek: 10 };
+            var ongoingMember = { characterId: 'c2', startWeek: 5, endWeek: null };
+            var noStartMember = { characterId: 'c3', startWeek: null, endWeek: 20 };
+
+            if (memberActiveInWeek(activeMember, 5) !== true) {
+                missing.push('memberActiveInWeek missed an active week');
+            }
+            if (memberActiveInWeek(activeMember, 10) !== true) {
+                missing.push('memberActiveInWeek failed on inclusive end');
+            }
+            if (memberActiveInWeek(activeMember, 11) !== false) {
+                missing.push('memberActiveInWeek found a week past the end');
+            }
+            if (memberActiveInWeek(ongoingMember, 52) !== true) {
+                missing.push('memberActiveInWeek missed an ongoing week');
+            }
+            if (memberActiveInWeek(noStartMember, 5) !== false) {
+                missing.push('memberActiveInWeek accepted a null startWeek');
+            }
+            if (memberActiveInWeek(null, 5) !== false) {
+                missing.push('memberActiveInWeek accepted a null member');
+            }
+
+            var activeGroup = { startWeek: 1, endWeek: 10 };
+            var ongoingGroup = { startWeek: 5, endWeek: null };
+            var noStartGroup = { startWeek: null, endWeek: 20 };
+
+            if (groupActiveInWeek(activeGroup, 5) !== true) {
+                missing.push('groupActiveInWeek missed an active week');
+            }
+            if (groupActiveInWeek(activeGroup, 11) !== false) {
+                missing.push('groupActiveInWeek found a week past the end');
+            }
+            if (groupActiveInWeek(ongoingGroup, 52) !== true) {
+                missing.push('groupActiveInWeek missed an ongoing week');
+            }
+            if (groupActiveInWeek(noStartGroup, 5) !== false) {
+                missing.push('groupActiveInWeek accepted a null startWeek');
+            }
+            if (groupActiveInWeek(null, 5) !== false) {
+                missing.push('groupActiveInWeek accepted a null group');
+            }
+        } catch (e) {
+            missing.push('range-wrapper smoke test threw: ' + e.message);
+        }
+
+        if (missing.length > 0) {
+            console.warn(
+                '[AcademyTeachingGroups] Verification failed:',
+                missing.join(', ')
+            );
         }
     })();
 
