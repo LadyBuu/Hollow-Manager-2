@@ -138,6 +138,29 @@
     <script src="js/utils/calendar-validation.js"></script>
 
     <!-- ============================================================
+         TOURNAMENT RULES
+         ============================================================
+         TournamentRules must load BEFORE tournament-queries.js.
+
+         TournamentQueries captures TournamentRules at IIFE time
+         and throws if it is absent. Its dependency check is
+         fail-closed; a missing TournamentRules means the whole
+         TournamentQueries export is never assigned, and every
+         downstream consumer (AcademyTournamentAggregator,
+         AcademyTournamentEvents, AcademyExamController,
+         DashboardAggregator) then throws its own dependency
+         check.
+
+         TournamentRules depends only on:
+           - TournamentConstants  (SHARED CONSTANTS block, above)
+           - TournamentSchema     (SHARED CONSTANTS block, above)
+           - CalendarValidation   (loaded just above)
+
+         All three are available at this point.
+         ============================================================ -->
+    <script src="js/modules/tournaments/tournament-rules.js"></script>
+
+    <!-- ============================================================
          SHARED QUERIES
          ============================================================ -->
     <script src="js/modules/shared/queries/character-queries.js"></script>
@@ -304,9 +327,12 @@
 
     <!-- ============================================================
          TOURNAMENT DOMAIN
+         ============================================================
+         tournament-rules.js has been moved up to just after
+         calendar-validation.js, before tournament-queries.js.
+         It is NOT loaded here anymore.
          ============================================================ -->
     <script src="js/modules/tournaments/tournament-elimination-cascade.js"></script>
-    <script src="js/modules/tournaments/tournament-rules.js"></script>
     <script src="js/modules/tournaments/tournament-matches.js"></script>
     <script src="js/modules/tournaments/tournament-core.js"></script>
 
