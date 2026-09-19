@@ -8,19 +8,45 @@
  *   - Which view is selected
  *   - Which class and character are selected
  *   - Which week is displayed
- *   - Per-character display mode (student / instructor)
+ *   - Per-character display mode (student / instructor) — READ ONLY,
+ *     the value is a domain fact owned by CharacterCRUD.setMode
  *   - People filter state
  *   - Expanded element ids
  *   - Tournament round collapse state (C4)
  *
  * IMPORTANT:
- *   - UI STATE ONLY. No domain data. No mutations. No domain reads.
+ *   - UI STATE ONLY. No domain data. No mutations.
  *   - Persistence is sessionStorage only (not IndexedDB).
  *   - Every setter validates its own input. There are no generic
  *     escape hatches for setting arbitrary state keys.
  *   - The public API describes user intent, not internal shape:
  *       selectClass(), selectCharacter(), setDisplayWeek(),
- *       setCharacterMode(), setPeopleFilter(), ...
+ *       setPeopleFilter(), ...
+ *
+ * CHARACTER MODE (v27+):
+ *   The character's mode is a DOMAIN FACT. It lives on the character
+ *   record as `character.mode`, and it is written by
+ *   CharacterCRUD.setMode. This module is a READ-ONLY window onto
+ *   that fact:
+ *
+ *     AcademyUI.getCharacterMode(charId)
+ *       → reads CharacterQueries.getCharacterById(charId).mode
+ *       → falls back to 'student' when the character is missing
+ *         or the field is malformed
+ *
+ *   The write-side API (setCharacterMode, toggleCharacterMode,
+ *   clearCharacterMode, isValidCharacterMode, getValidCharacterModes,
+ *   VALID_CHARACTER_MODES, DEFAULT_CHARACTER_MODE) is GONE. Callers
+ *   that want to change the mode call CharacterCRUD.setMode and
+ *   trigger a re-render on success.
+ *
+ *   The sessionStorage `characterModes` map is GONE. Previously this
+ *   module kept a per-character mode map in session state; the mode
+ *   reset to 'student' on every page reload. That made the instructor
+ *   relationship non-persistent, which is wrong for a domain fact.
+ *   `loadState`'s strict merge already drops unknown fields, so the
+ *   old `characterModes` key is discarded silently when a stale
+ *   session state is loaded.
  *
  * REMOVED FROM PRIOR VERSIONS:
  *   - setState(key, value) and updateState(updates) — generic escape
@@ -32,6 +58,8 @@
  *   - Role derivation helpers — UI state does not resolve domain roles.
  *   - 'trainee' role filter value — canonical role vocabulary is
  *     'student' | 'instructor'.
+ *   - Character mode write API (v27) — the mode is a domain fact.
+ *   - Character mode sessionStorage map (v27) — same reason.
  *
  * ROLE VOCABULARY (CANONICAL):
  *   The People view filter uses three values:
@@ -80,7 +108,10 @@
  *   future without leaving stale entries behind.
  *
  * DEPENDENCIES:
- *   - window.CalendarConstants (MIN_WEEK, MAX_WEEK) — MANDATORY
+ *   - window.CalendarConstants  (MIN_WEEK, MAX_WEEK) — MANDATORY
+ *   - window.CharacterQueries   (getCharacterById) — MANDATORY
+ *     for getCharacterMode. The module reads the character record
+ *     through the query module, not through window.data directly.
  *
  * USAGE:
  *   AcademyUI.getSelectedView();
@@ -88,7 +119,7 @@
  *   AcademyUI.selectClass('class_123');
  *   AcademyUI.selectCharacter('char_456');
  *   AcademyUI.setDisplayWeek(5);
- *   AcademyUI.setCharacterMode('char_456', 'instructor');
+ *   AcademyUI.getCharacterMode('char_456');  // read-only; use CharacterCRUD.setMode to write
  *   AcademyUI.getPeopleFilter();
  *   AcademyUI.setPeopleFilter({ role: 'student' });
  *
@@ -106,10 +137,11 @@
     }
 
     // ============================================================
-    // MANDATORY DEPENDENCY
+    // MANDATORY DEPENDENCIES
     // ============================================================
 
     var CalendarConstants = window.CalendarConstants;
+    var CharacterQueries = window.CharacterQueries;
 
     if (!CalendarConstants ||
         typeof CalendarConstants.MIN_WEEK !== 'number' ||
@@ -117,6 +149,14 @@
         throw new Error(
             '[AcademyUI] Missing mandatory dependency: ' +
             'CalendarConstants.MIN_WEEK / MAX_WEEK'
+        );
+    }
+
+    if (!CharacterQueries ||
+        typeof CharacterQueries.getCharacterById !== 'function') {
+        throw new Error(
+            '[AcademyUI] Missing mandatory dependency: ' +
+            'CharacterQueries.getCharacterById'
         );
     }
 
@@ -146,9 +186,6 @@
     var VALID_STATUS_FILTERS = Object.freeze(['active', 'eliminated', 'deceased', 'all']);
     var DEFAULT_STATUS_FILTER = 'active';
 
-    var VALID_CHARACTER_MODES = Object.freeze(['student', 'instructor']);
-    var DEFAULT_CHARACTER_MODE = 'student';
-
     // ============================================================
     // DEFAULT STATE
     // ============================================================
@@ -159,6 +196,9 @@
     // The public DEFAULT_STATE export is a frozen clone of the same
     // template, so a caller cannot corrupt the template by mutating
     // the published copy.
+    //
+    // NOTE (v27): `characterModes` is gone. The mode is a domain
+    // fact and does not belong in session state.
 
     function createDefaultState() {
         return {
@@ -174,7 +214,6 @@
                 }
             },
             expandedIds: {},
-            characterModes: {},
             // C4 — tournament round collapse state.
             // { [compositeKey]: true } for collapsed rounds.
             // Absence means "expanded".
@@ -196,10 +235,6 @@
 
     function isValidStatusFilter(value) {
         return VALID_STATUS_FILTERS.indexOf(value) !== -1;
-    }
-
-    function isValidCharacterMode(mode) {
-        return VALID_CHARACTER_MODES.indexOf(mode) !== -1;
     }
 
     /**
@@ -296,6 +331,10 @@
      * migration from 'trainee' to 'student' clean: session state
      * carrying role: 'trainee' is rejected and replaced with the
      * default.
+     *
+     * The same mechanism silently drops the old `characterModes` map
+     * from pre-v27 state. It is not a known field anymore, so it is
+     * not carried forward.
      */
     function mergeWithDefaults(parsed, defaults) {
         var merged = defaults;
@@ -341,19 +380,6 @@
             for (var i = 0; i < keys.length; i++) {
                 if (parsed.expandedIds[keys[i]]) {
                     merged.expandedIds[keys[i]] = true;
-                }
-            }
-        }
-
-        if (parsed.characterModes &&
-            typeof parsed.characterModes === 'object' &&
-            !Array.isArray(parsed.characterModes)) {
-            var modeKeys = Object.keys(parsed.characterModes);
-            for (var j = 0; j < modeKeys.length; j++) {
-                var id = modeKeys[j];
-                var mode = parsed.characterModes[id];
-                if (typeof id === 'string' && id !== '' && isValidCharacterMode(mode)) {
-                    merged.characterModes[id] = mode;
                 }
             }
         }
@@ -435,7 +461,6 @@
                 }
             },
             expandedIds: Object.assign({}, _state.expandedIds),
-            characterModes: Object.assign({}, _state.characterModes),
             expandedRoundIds: Object.assign({}, _state.expandedRoundIds)
         };
     }
@@ -542,56 +567,51 @@
     }
 
     // ============================================================
-    // CHARACTER MODE
+    // CHARACTER MODE — READ ONLY
     // ============================================================
+    //
+    // The mode is a domain fact. It lives on the character record
+    // and is written by CharacterCRUD.setMode. This module is a
+    // read-only window onto that fact.
+    //
+    // READ SEMANTICS:
+    //   - The character exists and carries a valid mode → return it.
+    //   - The character exists but the mode is missing or malformed
+    //     → return 'student' (the canonical default).
+    //   - The character does not exist → return 'student' (the
+    //     caller is asking about a character that isn't there; a
+    //     neutral default is the safest answer).
+    //   - charId is null/malformed → return 'student'.
+    //
+    // WRITE SEMANTICS:
+    //   There are none. The write API has been retired. Callers that
+    //   want to change the mode call CharacterCRUD.setMode and
+    //   trigger a re-render on success.
 
+    var DEFAULT_CHARACTER_MODE = 'student';
+
+    /**
+     * Read the mode of a character.
+     *
+     * @param {string} charId
+     * @returns {'student'|'instructor'}
+     */
     function getCharacterMode(charId) {
         var id = normaliseId(charId);
         if (id === null) {
             return DEFAULT_CHARACTER_MODE;
         }
-        var stored = _state.characterModes[id];
-        if (isValidCharacterMode(stored)) {
-            return stored;
+
+        var char = CharacterQueries.getCharacterById(id);
+        if (!char || typeof char !== 'object') {
+            return DEFAULT_CHARACTER_MODE;
         }
+
+        if (char.mode === 'student' || char.mode === 'instructor') {
+            return char.mode;
+        }
+
         return DEFAULT_CHARACTER_MODE;
-    }
-
-    function setCharacterMode(charId, mode) {
-        var id = normaliseId(charId);
-        if (id === null) { return false; }
-        if (!isValidCharacterMode(mode)) { return false; }
-        if (_state.characterModes[id] === mode) {
-            return true;
-        }
-        _state.characterModes[id] = mode;
-        saveState();
-        return true;
-    }
-
-    /**
-     * Toggle the character's mode between 'student' and 'instructor'.
-     * Returns the mode the character is in AFTER the toggle.
-     */
-    function toggleCharacterMode(charId) {
-        var current = getCharacterMode(charId);
-        var next = current === 'student' ? 'instructor' : 'student';
-        var ok = setCharacterMode(charId, next);
-        return ok ? next : current;
-    }
-
-    function clearCharacterMode(charId) {
-        var id = normaliseId(charId);
-        if (id === null) { return; }
-        if (!Object.prototype.hasOwnProperty.call(_state.characterModes, id)) {
-            return;
-        }
-        delete _state.characterModes[id];
-        saveState();
-    }
-
-    function getValidCharacterModes() {
-        return VALID_CHARACTER_MODES.slice();
     }
 
     // ============================================================
@@ -935,10 +955,6 @@
         return isValidRoleFilter(value);
     }
 
-    function isValidCharacterModePublic(mode) {
-        return isValidCharacterMode(mode);
-    }
-
     function getValidRoleFilters() {
         return VALID_ROLE_FILTERS.slice();
     }
@@ -950,7 +966,7 @@
     // Public DEFAULT_STATE is a frozen clone of the template.
     var DEFAULT_STATE_PUBLIC = Object.freeze(createDefaultState());
 
-    window.AcademyUI = {
+    window.AcademyUI = Object.freeze({
         // Lifecycle
         resetState: resetState,
         getState: getState,
@@ -973,13 +989,11 @@
         getDisplayWeek: getDisplayWeek,
         setDisplayWeek: setDisplayWeek,
 
-        // Character mode
+        // Character mode — READ ONLY
+        // The mode is a domain fact. Use CharacterCRUD.setMode to
+        // write it. This module reflects whatever the character
+        // record carries.
         getCharacterMode: getCharacterMode,
-        setCharacterMode: setCharacterMode,
-        toggleCharacterMode: toggleCharacterMode,
-        clearCharacterMode: clearCharacterMode,
-        getValidCharacterModes: getValidCharacterModes,
-        isValidCharacterMode: isValidCharacterModePublic,
 
         // People filter
         getPeopleFilter: getPeopleFilter,
@@ -1015,9 +1029,7 @@
         VALID_VIEWS: VALID_VIEWS,
         VALID_ROLE_FILTERS: VALID_ROLE_FILTERS,
         VALID_STATUS_FILTERS: VALID_STATUS_FILTERS,
-        VALID_CHARACTER_MODES: VALID_CHARACTER_MODES,
-        DEFAULT_CHARACTER_MODE: DEFAULT_CHARACTER_MODE,
         DEFAULT_STATE: DEFAULT_STATE_PUBLIC
-    };
+    });
 
 })();

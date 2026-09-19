@@ -13,7 +13,7 @@
  *   - Handling clicks, changes, inputs, and keydowns routed by the
  *     shell for events that occur inside the host.
  *   - The discipline editor draft (name, type, weeks, weight,
- *     instructors, grade scheme, assessment weights) and its mode
+ *     grade scheme, assessment weights) and its mode
  *     ('empty' | 'create' | 'edit').
  *   - Per-field and per-band validation errors on the draft.
  *   - The list filter (type, search) as feature state.
@@ -22,6 +22,7 @@
  *     scheme preset row).
  *   - The editor's save, cancel, apply-preset, add-band, remove-band,
  *     and reset-weights actions.
+ *   - The "+ Add Discipline" flow (B4-1).
  *   - The discipline delete confirm modal, via AcademyCRUDModals.
  *
  * WHAT THIS DOES NOT OWN:
@@ -34,6 +35,10 @@
  *     re-render, the controller calls context.onChange().
  *   - Discipline domain reads and writes. AcademyDisciplines owns
  *     them; AcademyAggregator produces the VMs.
+ *   - Instructor assignment for a discipline. That relationship is
+ *     class-scoped and is owned by the class-disciplines picker.
+ *     The discipline editor does not offer an instructor picker
+ *     (v27).
  *   - The delete-confirm modal's onChange wiring. The shell keeps
  *     that wiring (via AcademyCRUDModals.setOnChangeCallback), and
  *     the controller simply opens the modal. This is the same
@@ -49,6 +54,23 @@
  *   - The list filter is NOT cleared by unmount. This also matches
  *     pre-S1.3: the filter survives a view switch.
  *   - The search debounce timer IS cleared by unmount.
+ *
+ * B4-1 — "+ ADD DISCIPLINE" BUTTON FIX:
+ *   The button used to be id-addressed (#academy-add-discipline-btn)
+ *   and had no data-action. The shell routes clicks through
+ *   [data-action] elements to this controller's dispatch switch.
+ *   Without a data-action, the button never reached the controller.
+ *   B4-1 changes the button to data-action="discipline-add" and
+ *   adds a matching case here. The handler calls initializeNewDraft
+ *   and fires context.onChange() to render the create form.
+ *
+ * INSTRUCTOR PICKER REMOVAL (v27):
+ *   The editor no longer carries an instructor picker. The retired
+ *   `draft.instructorIds` field is gone. The switch case that used
+ *   to handle instructor selection has been removed. The
+ *   availableInstructors list on the editor VM is now unused by
+ *   this view; it remains on the VM for one more pass until the
+ *   discipline-editor-draft retirement lands.
  *
  * DEPENDENCY DIRECTION:
  *   Shell → registry → this controller.
@@ -68,9 +90,10 @@
  * EVENT ROUTING:
  *   The controller's handle* methods receive the raw DOM event. The
  *   action names and data attributes emitted by the discipline
- *   renderer are unchanged from pre-S1.3, and the controller handles
- *   the same strings the shell's dispatcher did. No renderer changes
- *   are needed.
+ *   renderer are unchanged from pre-S1.3 (with the B4-1 addition of
+ *   discipline-add), and the controller handles the same strings
+ *   the shell's dispatcher did. No renderer changes are needed
+ *   beyond the B4-1 button markup.
  *
  * DEPENDENCIES:
  *   - window.AcademyUI             (for getDisplayWeek, if needed)
@@ -293,6 +316,10 @@
             ? AcademyDisciplines.getAssessmentWeights(record.id)
             : {};
 
+        // NOTE (v27): `instructorIds` is NOT part of the draft.
+        // The retired global instructor list has no UI here.
+        // Instructor-of-a-discipline-for-a-class is edited through
+        // the class-disciplines picker.
         _disciplineDraft = {
             id: record.id,
             name: record.name || '',
@@ -307,9 +334,6 @@
                 ? record.weeklyHours
                 : 1,
             weight: typeof record.weight === 'number' ? record.weight : 1,
-            instructorIds: Array.isArray(record.instructorIds)
-                ? record.instructorIds.slice()
-                : [],
             gradeScheme: GradeSchemes.normalizeScheme(record.gradeScheme),
             assessmentWeights: weights || {}
         };
@@ -333,7 +357,6 @@
             endWeek: MAX_WEEK,
             weeklyHours: 1,
             weight: 1,
-            instructorIds: [],
             gradeScheme: GradeSchemes.getDefaultScheme(),
             assessmentWeights: (AcademyDisciplines &&
                 typeof AcademyDisciplines.getDefaultAssessmentWeights === 'function')
@@ -377,6 +400,12 @@
         if (!isNonEmptyString(action)) { return; }
 
         switch (action) {
+            case 'discipline-add':
+                e.preventDefault();
+                initializeNewDraft();
+                var addCtx = getContext();
+                addCtx.onChange();
+                return;
             case 'discipline-apply-scheme-preset':
                 e.preventDefault();
                 handleApplySchemePreset(actionEl);
@@ -501,17 +530,6 @@
             case 'weight':
                 _disciplineDraft.weight = inputEl.value;
                 return;
-            case 'instructors': {
-                var selected = [];
-                for (var i = 0; i < inputEl.options.length; i++) {
-                    if (inputEl.options[i].selected &&
-                        inputEl.options[i].value) {
-                        selected.push(inputEl.options[i].value);
-                    }
-                }
-                _disciplineDraft.instructorIds = selected;
-                return;
-            }
             case 'schemeLabel':
                 _disciplineDraft.gradeScheme.label = inputEl.value;
                 return;
@@ -710,6 +728,10 @@
             scheme = GradeSchemes.normalizeScheme(scheme);
         }
 
+        // NOTE (v27): `instructorIds` is NOT part of the payload.
+        // The retired global instructor list is not editable here.
+        // AcademyDisciplines.create/update silently ignore the field
+        // if a caller passes it; this controller does not pass it.
         return {
             name: (draft.name || '').trim(),
             type: draft.type,
@@ -717,9 +739,6 @@
             endWeek: draft.endWeek,
             weeklyHours: draft.weeklyHours,
             weight: draft.weight,
-            instructorIds: Array.isArray(draft.instructorIds)
-                ? draft.instructorIds.slice()
-                : [],
             gradeScheme: scheme,
             assessmentWeights: draft.assessmentWeights || {}
         };

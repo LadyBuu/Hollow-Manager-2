@@ -1,85 +1,106 @@
 /**
- * modules/academy/academy-class-disciplines.js - Academy Class-Disciplines
- * SINGLE SOURCE OF TRUTH for a class's offering of a discipline.
+ * modules/academy/academy-class-disciplines.js
+ * Academy Class-Disciplines — MARKER-ONLY STORE
  *
  * Path: js/modules/academy/academy-class-disciplines.js
  *
  * WHAT THIS MODULE OWNS:
  *   The relationship between a Graduating Class and a Discipline.
- *   A class "offers" a discipline for a bounded week range, with
- *   per-class configuration that may override the discipline's
- *   global defaults.
+ *   A class "offers" a discipline. That is the whole fact. There is
+ *   no per-class config, no per-class window, no per-class instructor
+ *   list. The class either offers the discipline or it does not.
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - Discipline global definitions       (AcademyDisciplines)
- *   - Student enrolment                   (AcademyEnrolments)
+ *   - Student OR instructor enrolment     (AcademyEnrolments)
  *   - Teaching relationships              (AcademyTeachingGroups)
  *   - Recurring meetings                  (AcademyTeachingSessions)
  *   - Compound operations across stores   (AcademySchedule)
  *
- * HISTORICAL-RECORD PRINCIPLE:
- *   A class-discipline is a historical fact: "Class 2026 offered
- *   English from week 1 to week 24." Ending an offering sets its
- *   endWeek; it does NOT delete the record. Deletion is reserved
- *   for administrative cleanup and for the hard delete of a class.
- *   See the "MUTATION CONTRACT" section below.
+ * THE MARKER RECORD:
  *
- * STORAGE:
- *   window.data.academy.classDisciplines = {
- *     [classId]: {
- *       [disciplineId]: {
- *         classId,
- *         disciplineId,
- *         startWeek,
- *         endWeek,          // null = ongoing
- *         weeklyHours,
- *         weight,
- *         gradeSchemeId,
- *         assessmentWeights,
- *         mandatory,
- *         createdAt,
- *         updatedAt
- *       }
- *     }
+ *   data.academy.classDisciplines[classId][disciplineId] = {
+ *     classId,
+ *     disciplineId,
+ *     mandatory,        // per-class: is this offering mandatory?
+ *     createdAt,
+ *     updatedAt
  *   }
  *
- * EFFECTIVE CONFIG:
- *   A caller that wants "the effective weeklyHours for English in
- *   Class 2026" gets the class-discipline's value, or falls back to
- *   the discipline's default. This module owns that resolution; the
- *   discipline module owns the defaults themselves.
+ *   Every other field that used to live on this record is gone:
+ *   startWeek, endWeek, weeklyHours, weight, gradeSchemeId,
+ *   assessmentWeights, instructorIds. The discipline entity carries
+ *   startWeek, endWeek, weeklyHours, weight, gradeScheme, and
+ *   assessmentWeights. Instructor assignment is expressed through
+ *   AcademyEnrolments, not through this record.
  *
- * WEEK SEMANTICS:
- *   - startWeek is an integer in [MIN_WEEK, MAX_WEEK].
- *   - endWeek is null (ongoing) or an integer in [MIN_WEEK, MAX_WEEK]
- *     with endWeek >= startWeek.
- *   - endWeek is INCLUSIVE: a class-discipline with endWeek = 14 is
- *     active in weeks 1-14 and inactive from week 15 onward.
- *   - No `|| 1` defaults. Invalid weeks are rejected.
+ * WHY MARKER-ONLY:
+ *   Disciplines are GLOBAL. One "English", one grade scheme, one set
+ *   of assessment weights. Config lives on the discipline. A class
+ *   that offers English does not get to redefine what English is;
+ *   it only says "we teach this."
+ *
+ *   Before this model, the class-discipline record carried a full
+ *   config blob that duplicated discipline data and made "who owns
+ *   this value" ambiguous. Every read had to merge the two, and every
+ *   editor had to know which fields overrode which. The audit
+ *   confirmed the blob was legacy.
+ *
+ *   Instructor assignment used to live on this record too
+ *   (instructorIds[]). It moved to enrolments because "instructor X
+ *   teaches discipline D for class C" is a class-scoped participation
+ *   fact, the same shape as a student's enrolment, and it belongs in
+ *   the same store.
+ *
+ * WEEK SEMANTICS (v27):
+ *   The marker has no window. `isActiveInWeek(classId, disciplineId,
+ *   week)` reads the DISCIPLINE's startWeek / endWeek. A discipline
+ *   with startWeek 1 and endWeek 24 is active in weeks 1–24 for every
+ *   class that offers it.
+ *
+ *   `getActiveClassDisciplinesForWeek(classId, week)` filters the
+ *   class's offered disciplines by the same rule.
+ *
+ * EFFECTIVE CONFIG (v27):
+ *   `getEffectiveConfig(classId, disciplineId)` returns the
+ *   discipline's config. There is no per-class override. Callers
+ *   that used to read `weeklyHours` off the merged config still read
+ *   `weeklyHours` — only the source changed, from "merge" to "read
+ *   the discipline."
  *
  * MUTATION CONTRACT:
- *   - setClassDiscipline        create or replace.
- *                               Does NOT touch enrolments.
- *   - updateClassDiscipline     partial update.
- *   - endClassDiscipline        set endWeek. Historical.
- *   - removeClassDiscipline     hard delete, single record.
- *                               Used by cascade, not by the ordinary
- *                               "drop discipline" UI.
+ *   - setClassDiscipline        create or replace the marker.
+ *   - removeClassDiscipline     hard delete the marker.
  *
- * All mutations return Promise<{ success, data?, message? }>.
- * All mutations go through MutationPipeline.
+ *   Both return Promise<{ success, data?, message? }>.
+ *   Both go through MutationPipeline.
+ *
+ *   Update and end are gone. A marker has nothing to update beyond
+ *   `mandatory`, and there is no window to end. Changing `mandatory`
+ *   is a setClassDiscipline call with the new value. "Stopping the
+ *   offering" is a removeClassDiscipline call, optionally preceded
+ *   by ending every downstream enrolment, teaching group, and
+ *   session — which is what AcademySchedule.removeClassDiscipline
+ *   does.
+ *
+ * CASCADE SEMANTICS:
+ *   stripClassRefs and stripDisciplineRefs are PURE with respect to
+ *   appData: they mutate the snapshot, never touch window.data, and
+ *   never throw. They run inside another module's pipeline
+ *   transaction (AcademyCascade).
+ *
+ *   Both helpers now also cascade into AcademyEnrolments'
+ *   corresponding strip functions. An offering that is removed
+ *   should not leave orphan enrolment intervals behind, and a
+ *   discipline that is deleted should not leave orphan enrolment
+ *   intervals behind. The delegations are guarded so that a missing
+ *   AcademyEnrolments module is a no-op rather than a crash.
  *
  * READ SAFETY:
  *   - Reads never create the store.
  *   - Public reads return DEEP CLONES.
  *   - Internal accessors used inside pipeline callbacks return live
  *     references from the appData snapshot.
- *
- * CASCADE SEMANTICS:
- *   stripClassRefs and stripDisciplineRefs are PURE with respect to
- *   appData: they mutate the snapshot, never touch window.data, and
- *   never throw. They run inside another module's pipeline
- *   transaction.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.ObjectUtils          (deepClone)
@@ -88,18 +109,27 @@
  *   - window.CalendarConstants    (MIN_WEEK, MAX_WEEK)
  *   - window.MutationPipeline     (performMutation)
  *   - window.AcademyClasses       (getClass)
- *   - window.AcademyDisciplines   (getDiscipline, defaults, bounds)
- *   - window.AcademyGradeSchemes  (isValidPresetId)
+ *   - window.AcademyDisciplines   (getDiscipline)
+ *
+ * DEPENDENCIES (LAZY, used only by the cascade helpers):
+ *   - window.AcademyEnrolments    (stripClassRefs, stripDisciplineRefs)
+ *     When absent, the corresponding cascade step is skipped.
  *
  * USAGE:
  *   var ACD = window.AcademyClassDisciplines;
  *
- *   ACD.getClassDiscipline('class_1', 'disc_english'); // record or null
- *   ACD.getEffectiveConfig('class_1', 'disc_english');
+ *   ACD.getClassDiscipline('class_1', 'disc_english');  // marker or null
+ *   ACD.getAllOfferedDisciplineIds('class_1');          // ['disc_english', ...]
+ *   ACD.isClassOffering('class_1', 'disc_english');     // boolean
+ *   ACD.isActiveInWeek('class_1', 'disc_english', 5);   // discipline window check
+ *   ACD.getEffectiveConfig('class_1', 'disc_english');  // discipline config
  *
  *   ACD.setClassDiscipline('class_1', 'disc_english', {
- *       startWeek: 1, endWeek: 24, weeklyHours: 3
+ *       mandatory: true
  *   }).then(function(r) { ... });
+ *
+ *   ACD.removeClassDiscipline('class_1', 'disc_english')
+ *       .then(function(r) { ... });
  */
 
 (function() {
@@ -107,24 +137,6 @@
 
     if (window.__academyClassDisciplinesLoaded) {
         return;
-    }
-
-    // ============================================================
-    // DIAGNOSTIC FLAG
-    // ============================================================
-    var _DIAGNOSTIC = true;
-
-    function diag() {
-        if (!_DIAGNOSTIC) return;
-        var args = Array.prototype.slice.call(arguments);
-        args.unshift('[ACD]');
-        console.log.apply(console, args);
-    }
-
-    function diagWarn() {
-        var args = Array.prototype.slice.call(arguments);
-        args.unshift('[ACD]');
-        console.warn.apply(console, args);
     }
 
     // ============================================================
@@ -138,7 +150,6 @@
     var MutationPipeline = window.MutationPipeline;
     var AcademyClasses = window.AcademyClasses;
     var AcademyDisciplines = window.AcademyDisciplines;
-    var AcademyGradeSchemes = window.AcademyGradeSchemes;
 
     var _missing = [];
 
@@ -165,9 +176,6 @@
     if (!AcademyDisciplines || typeof AcademyDisciplines.getDiscipline !== 'function') {
         _missing.push('AcademyDisciplines.getDiscipline');
     }
-    if (!AcademyGradeSchemes || typeof AcademyGradeSchemes.isValidPresetId !== 'function') {
-        _missing.push('AcademyGradeSchemes.isValidPresetId');
-    }
 
     if (_missing.length > 0) {
         throw new Error(
@@ -178,11 +186,17 @@
 
     window.__academyClassDisciplinesLoaded = true;
 
-    diag('Module loaded.');
-    diag('  AcademyClasses:', !!AcademyClasses);
-    diag('  AcademyDisciplines:', !!AcademyDisciplines);
-    diag('  AcademyGradeSchemes:', !!AcademyGradeSchemes);
-    diag('  MutationPipeline:', !!MutationPipeline);
+    // ============================================================
+    // LAZY DEPENDENCY ACCESSOR
+    // ============================================================
+    //
+    // AcademyEnrolments is used only by the cascade helpers. It is
+    // resolved at call time so that load order does not require the
+    // enrolments module to be present before this one.
+
+    function getAcademyEnrolments() {
+        return window.AcademyEnrolments || null;
+    }
 
     // ============================================================
     // CONSTANTS
@@ -190,14 +204,6 @@
 
     var MIN_WEEK = CalendarConstants.MIN_WEEK;
     var MAX_WEEK = CalendarConstants.MAX_WEEK;
-
-    // Fallbacks for bounds; the discipline module owns the canonical
-    // values, but we need something to validate against if the module
-    // exposes them differently.
-    var FALLBACK_MIN_WEEKLY_HOURS = 0.5;
-    var FALLBACK_MAX_WEEKLY_HOURS = 40;
-    var FALLBACK_MIN_WEIGHT = 0.1;
-    var FALLBACK_MAX_WEIGHT = 10;
 
     // ============================================================
     // HELPERS
@@ -211,10 +217,6 @@
         return value !== null &&
                typeof value === 'object' &&
                !Array.isArray(value);
-    }
-
-    function isFiniteNumber(value) {
-        return typeof value === 'number' && isFinite(value);
     }
 
     function deepClone(value) {
@@ -236,7 +238,9 @@
     }
 
     /**
-     * Parse a week. Returns an integer in [MIN_WEEK, MAX_WEEK] or null.
+     * Parse a week strictly. Returns an integer in [MIN_WEEK, MAX_WEEK]
+     * or null. Used only by isActiveInWeek and the active-filter
+     * helper; the marker itself has no window.
      */
     function parseWeekStrict(week) {
         var parsed = CalendarValidation.parseWeek(week);
@@ -247,38 +251,6 @@
             return null;
         }
         return parsed;
-    }
-
-    function getMinWeeklyHours() {
-        if (AcademyDisciplines &&
-            typeof AcademyDisciplines.MIN_WEEKLY_HOURS === 'number') {
-            return AcademyDisciplines.MIN_WEEKLY_HOURS;
-        }
-        return FALLBACK_MIN_WEEKLY_HOURS;
-    }
-
-    function getMaxWeeklyHours() {
-        if (AcademyDisciplines &&
-            typeof AcademyDisciplines.MAX_WEEKLY_HOURS === 'number') {
-            return AcademyDisciplines.MAX_WEEKLY_HOURS;
-        }
-        return FALLBACK_MAX_WEEKLY_HOURS;
-    }
-
-    function getMinWeight() {
-        if (AcademyDisciplines &&
-            typeof AcademyDisciplines.MIN_WEIGHT === 'number') {
-            return AcademyDisciplines.MIN_WEIGHT;
-        }
-        return FALLBACK_MIN_WEIGHT;
-    }
-
-    function getMaxWeight() {
-        if (AcademyDisciplines &&
-            typeof AcademyDisciplines.MAX_WEIGHT === 'number') {
-            return AcademyDisciplines.MAX_WEIGHT;
-        }
-        return FALLBACK_MAX_WEIGHT;
     }
 
     // ============================================================
@@ -321,8 +293,8 @@
     }
 
     /**
-     * Ensure the classDisciplines store exists on an appData snapshot.
-     * Only call from inside a pipeline mutate() callback.
+     * Ensure the classDisciplines store exists on an appData
+     * snapshot. Only call from inside a pipeline mutate() callback.
      */
     function ensureStore(appData) {
         if (!appData.academy || typeof appData.academy !== 'object') {
@@ -383,6 +355,54 @@
     }
 
     // ============================================================
+    // DISCIPLINE WINDOW HELPERS
+    // ============================================================
+    //
+    // The marker has no window. The discipline does. These helpers
+    // read the discipline's startWeek / endWeek and answer the
+    // active-week question from the caller's perspective. A caller
+    // that asks "is this class-discipline active in week 5?" gets
+    // the same answer it always did, as long as the discipline is
+    // configured.
+
+    function getDisciplineWindow(disciplineId) {
+        if (!isNonEmptyString(disciplineId)) {
+            return null;
+        }
+        var discipline = AcademyDisciplines.getDiscipline(disciplineId);
+        if (!discipline) {
+            return null;
+        }
+
+        var startWeek = parseWeekStrict(discipline.startWeek);
+        var endWeek = null;
+        if (discipline.endWeek !== undefined &&
+            discipline.endWeek !== null &&
+            discipline.endWeek !== '') {
+            endWeek = parseWeekStrict(discipline.endWeek);
+        }
+
+        if (startWeek === null) {
+            return null;
+        }
+
+        return { startWeek: startWeek, endWeek: endWeek };
+    }
+
+    function weekInDisciplineWindow(week, window) {
+        if (!window) {
+            return false;
+        }
+        if (week < window.startWeek) {
+            return false;
+        }
+        if (window.endWeek !== null && week > window.endWeek) {
+            return false;
+        }
+        return true;
+    }
+
+    // ============================================================
     // VALIDATION
     // ============================================================
 
@@ -407,234 +427,28 @@
         return { valid: true, class: cls, discipline: discipline };
     }
 
-    function validateWeekRange(startWeek, endWeek) {
-        if (startWeek === undefined || startWeek === null) {
-            return { valid: false, message: 'Start week is required.' };
-        }
-
-        var startNum = parseWeekStrict(startWeek);
-        if (startNum === null) {
-            return {
-                valid: false,
-                message: 'Start week must be between ' + MIN_WEEK + ' and ' + MAX_WEEK + '.'
-            };
-        }
-
-        if (endWeek === undefined || endWeek === null) {
-            return { valid: true, startWeek: startNum, endWeek: null };
-        }
-
-        var endNum = parseWeekStrict(endWeek);
-        if (endNum === null) {
-            return {
-                valid: false,
-                message: 'End week must be null or between ' + MIN_WEEK + ' and ' + MAX_WEEK + '.'
-            };
-        }
-
-        if (endNum < startNum) {
-            return { valid: false, message: 'End week cannot be before start week.' };
-        }
-
-        return { valid: true, startWeek: startNum, endWeek: endNum };
-    }
-
-    function validateWeeklyHours(value) {
-        if (!isFiniteNumber(value)) {
-            return { valid: false, message: 'Weekly hours must be a number.' };
-        }
-        var min = getMinWeeklyHours();
-        var max = getMaxWeeklyHours();
-        if (value < min || value > max) {
-            return {
-                valid: false,
-                message: 'Weekly hours must be between ' + min + ' and ' + max + '.'
-            };
-        }
-        return { valid: true };
-    }
-
-    function validateWeight(value) {
-        if (!isFiniteNumber(value)) {
-            return { valid: false, message: 'Weight must be a number.' };
-        }
-        var min = getMinWeight();
-        var max = getMaxWeight();
-        if (value < min || value > max) {
-            return {
-                valid: false,
-                message: 'Weight must be between ' + min + ' and ' + max + '.'
-            };
-        }
-        return { valid: true };
-    }
-
-    function validateGradeSchemeId(value) {
-        if (value === null || value === undefined) {
-            return { valid: true };
-        }
-        if (!isNonEmptyString(value)) {
-            return { valid: false, message: 'Grade scheme ID must be a non-empty string.' };
-        }
-        if (!AcademyGradeSchemes.isValidPresetId(value)) {
-            return {
-                valid: false,
-                message: 'Unknown grade scheme preset: "' + value + '".'
-            };
-        }
-        return { valid: true };
-    }
-
-    function validateAssessmentWeights(value) {
-        if (value === undefined || value === null) {
-            return { valid: true };
-        }
-        if (!isPlainObject(value)) {
-            return { valid: false, message: 'Assessment weights must be an object.' };
-        }
-
-        var validTypes = null;
-        if (AcademyDisciplines &&
-            typeof AcademyDisciplines.getValidAssessmentTypes === 'function') {
-            validTypes = AcademyDisciplines.getValidAssessmentTypes();
-        }
-
-        var keys = Object.keys(value);
-        for (var i = 0; i < keys.length; i++) {
-            var key = keys[i];
-            if (validTypes && validTypes.indexOf(key) === -1) {
-                return {
-                    valid: false,
-                    message: 'Unknown assessment type: "' + key + '".'
-                };
-            }
-            var w = value[key];
-            if (!isFiniteNumber(w) || w <= 0) {
-                return {
-                    valid: false,
-                    message: 'Weight for "' + key + '" must be a positive number.'
-                };
-            }
-        }
-        return { valid: true };
-    }
-
-    /**
-     * Validate a full config object. Used on create.
-     */
-    function validateFullConfig(config) {
-        if (!isPlainObject(config)) {
-            return { valid: false, message: 'Class-discipline config must be an object.' };
-        }
-
-        var weekCheck = validateWeekRange(config.startWeek, config.endWeek);
-        if (!weekCheck.valid) {
-            return weekCheck;
-        }
-
-        if (config.weeklyHours !== undefined) {
-            var whCheck = validateWeeklyHours(config.weeklyHours);
-            if (!whCheck.valid) return whCheck;
-        }
-
-        if (config.weight !== undefined) {
-            var wCheck = validateWeight(config.weight);
-            if (!wCheck.valid) return wCheck;
-        }
-
-        if (config.gradeSchemeId !== undefined) {
-            var gsCheck = validateGradeSchemeId(config.gradeSchemeId);
-            if (!gsCheck.valid) return gsCheck;
-        }
-
-        if (config.assessmentWeights !== undefined) {
-            var awCheck = validateAssessmentWeights(config.assessmentWeights);
-            if (!awCheck.valid) return awCheck;
-        }
-
-        if (config.mandatory !== undefined && typeof config.mandatory !== 'boolean') {
-            return { valid: false, message: 'Mandatory must be a boolean.' };
-        }
-
-        return {
-            valid: true,
-            startWeek: weekCheck.startWeek,
-            endWeek: weekCheck.endWeek
-        };
-    }
-
-    // ============================================================
-    // EFFECTIVE CONFIG RESOLUTION
-    // ============================================================
-
-    /**
-     * Resolve the effective configuration for a class-discipline.
-     *
-     * Order of precedence:
-     *   1. The class-discipline record's field (if set and valid).
-     *   2. The discipline's default* field (if set and valid).
-     *   3. The module's hardcoded fallback.
-     *
-     * @param {string} classId
-     * @param {string} disciplineId
-     * @returns {object|null} config, or null when either is missing
-     */
-    function getEffectiveConfig(classId, disciplineId) {
-        var record = getRecordInternal(classId, disciplineId);
-        if (!record) {
-            diag('getEffectiveConfig: no record for',
-                classId, disciplineId, '- returning null');
-            return null;
-        }
-
-        var discipline = AcademyDisciplines.getDiscipline(disciplineId);
-        if (!discipline) {
-            diagWarn('getEffectiveConfig: discipline missing for', disciplineId);
-            return null;
-        }
-
-        function pick(field, disciplineDefaultField, fallback) {
-            if (record[field] !== undefined && record[field] !== null) {
-                return record[field];
-            }
-            if (discipline[disciplineDefaultField] !== undefined &&
-                discipline[disciplineDefaultField] !== null) {
-                return discipline[disciplineDefaultField];
-            }
-            return fallback;
-        }
-
-        var effective = {
-            classId: String(classId),
-            disciplineId: String(disciplineId),
-            startWeek: record.startWeek,
-            endWeek: record.endWeek,
-            weeklyHours: pick('weeklyHours', 'defaultWeeklyHours', 1),
-            weight: pick('weight', 'defaultWeight', 1),
-            gradeSchemeId: pick('gradeSchemeId', 'defaultGradeSchemeId', 'numeric'),
-            assessmentWeights:
-                (record.assessmentWeights !== undefined && record.assessmentWeights !== null)
-                    ? deepClone(record.assessmentWeights)
-                    : (discipline.defaultAssessmentWeights !== undefined &&
-                       discipline.defaultAssessmentWeights !== null
-                        ? deepClone(discipline.defaultAssessmentWeights)
-                        : null),
-            mandatory: record.mandatory === true
-        };
-
-        diag('getEffectiveConfig:', classId, disciplineId, '=', effective);
-        return effective;
-    }
-
     // ============================================================
     // PUBLIC READS
     // ============================================================
 
+    /**
+     * Get the marker record for a (classId, disciplineId) pair, or
+     * null if the class does not offer the discipline.
+     *
+     * @returns {object|null} { classId, disciplineId, mandatory,
+     *   createdAt, updatedAt } or null
+     */
     function getClassDiscipline(classId, disciplineId) {
         var record = getRecordInternal(classId, disciplineId);
         return record ? deepClone(record) : null;
     }
 
+    /**
+     * Get every marker the class owns.
+     *
+     * @returns {array} Array of marker records (clones). Empty when
+     *   the class offers nothing or does not exist.
+     */
     function getClassDisciplinesForClass(classId) {
         var records = getRecordsForClassInternal(classId);
         var result = [];
@@ -644,6 +458,13 @@
         return result;
     }
 
+    /**
+     * Get every marker across every class for a given discipline.
+     * Useful for "which classes offer English?"
+     *
+     * @returns {array} Array of marker records (clones). Empty when
+     *   no class offers the discipline.
+     */
     function getClassDisciplinesForDiscipline(disciplineId) {
         if (!isNonEmptyString(disciplineId)) {
             return [];
@@ -668,38 +489,77 @@
         return result;
     }
 
+    /**
+     * Does the class offer the discipline?
+     */
     function hasClassDiscipline(classId, disciplineId) {
         return getRecordInternal(classId, disciplineId) !== null;
     }
 
     /**
-     * Is the class-discipline active in the given week?
+     * Alias of hasClassDiscipline with a name that reads better at
+     * the picker's call sites. "Is this class offering English?" is
+     * clearer than "does this class-discipline exist?"
+     */
+    function isClassOffering(classId, disciplineId) {
+        return getRecordInternal(classId, disciplineId) !== null;
+    }
+
+    /**
+     * Get the discipline IDs this class offers. Deduplicated, but the
+     * store is keyed by disciplineId so there is nothing to
+     * deduplicate. Returned in insertion order (the order keys were
+     * added to the class bucket).
+     *
+     * @returns {array} Array of discipline ID strings
+     */
+    function getAllOfferedDisciplineIds(classId) {
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
+        var byClass = null;
+        var store = getStore();
+        if (store) {
+            byClass = store[String(classId)];
+        }
+        if (!isPlainObject(byClass)) {
+            return [];
+        }
+        return Object.keys(byClass);
+    }
+
+    /**
+     * Is this class-discipline active in the given week?
+     *
+     * Under v27 the window comes from the DISCIPLINE, not from the
+     * marker. A marker with no discipline behind it is inactive, and
+     * a marker whose discipline has no valid startWeek is inactive.
+     *
+     * @returns {boolean}
      */
     function isActiveInWeek(classId, disciplineId, week) {
-        var record = getRecordInternal(classId, disciplineId);
-        if (!record) {
+        if (!getRecordInternal(classId, disciplineId)) {
             return false;
         }
+
         var weekNum = parseWeekStrict(week);
         if (weekNum === null) {
             return false;
         }
-        if (record.startWeek === undefined || record.startWeek === null) {
+
+        var window = getDisciplineWindow(disciplineId);
+        if (!window) {
             return false;
         }
-        if (weekNum < record.startWeek) {
-            return false;
-        }
-        if (record.endWeek !== undefined && record.endWeek !== null &&
-            weekNum > record.endWeek) {
-            return false;
-        }
-        return true;
+
+        return weekInDisciplineWindow(weekNum, window);
     }
 
     /**
-     * Return every class-discipline for a class that is active in the
-     * given week.
+     * Return every class-discipline for a class that is active in
+     * the given week.
+     *
+     * @returns {array} Array of marker records (clones)
      */
     function getActiveClassDisciplinesForWeek(classId, week) {
         var weekNum = parseWeekStrict(week);
@@ -710,14 +570,11 @@
         var result = [];
         for (var i = 0; i < records.length; i++) {
             var record = records[i];
-            if (record.startWeek === undefined || record.startWeek === null) {
+            var window = getDisciplineWindow(record.disciplineId);
+            if (!window) {
                 continue;
             }
-            if (weekNum < record.startWeek) {
-                continue;
-            }
-            if (record.endWeek !== undefined && record.endWeek !== null &&
-                weekNum > record.endWeek) {
+            if (!weekInDisciplineWindow(weekNum, window)) {
                 continue;
             }
             result.push(deepClone(record));
@@ -725,146 +582,149 @@
         return result;
     }
 
-    // ============================================================
-    // CANDIDATE BUILDER
-    // ============================================================
-
-    function buildCandidate(classId, disciplineId, config, existingRecord) {
-        var now = new Date().toISOString();
-        var weekCheck = validateWeekRange(config.startWeek, config.endWeek);
-
-        // weekCheck is validated by the caller; this is a defensive
-        // re-run so the candidate builder is safe to call directly.
-        if (!weekCheck.valid) {
+    /**
+     * Resolve the effective configuration for a class-discipline.
+     *
+     * Under v27 there is no per-class override. The effective config
+     * IS the discipline's config. This function exists so that
+     * callers which previously relied on the merge still work
+     * unchanged; the return shape is preserved for the fields those
+     * callers read.
+     *
+     * The returned object carries the discipline's startWeek,
+     * endWeek, weeklyHours, weight, gradeSchemeId, and
+     * assessmentWeights, plus the marker's classId, disciplineId,
+     * and mandatory flag.
+     *
+     * @returns {object|null} config, or null when the marker or the
+     *   discipline is missing
+     */
+    function getEffectiveConfig(classId, disciplineId) {
+        var record = getRecordInternal(classId, disciplineId);
+        if (!record) {
             return null;
         }
 
         var discipline = AcademyDisciplines.getDiscipline(disciplineId);
-
-        // Resolve each field: explicit config value, else previous
-        // record's value if updating, else discipline default.
-        function resolve(field, disciplineDefaultField, fallback) {
-            if (config[field] !== undefined && config[field] !== null) {
-                return config[field];
-            }
-            if (existingRecord &&
-                existingRecord[field] !== undefined &&
-                existingRecord[field] !== null) {
-                return existingRecord[field];
-            }
-            if (discipline &&
-                discipline[disciplineDefaultField] !== undefined &&
-                discipline[disciplineDefaultField] !== null) {
-                return discipline[disciplineDefaultField];
-            }
-            return fallback;
+        if (!discipline) {
+            return null;
         }
 
-        var record = {
+        // Normalised read path. AcademyDisciplines.getDiscipline
+        // already normalises gradeScheme and assessmentWeights on
+        // read, so we pass them through. The other fields are read
+        // directly.
+
+        return {
             classId: String(classId),
             disciplineId: String(disciplineId),
-            startWeek: weekCheck.startWeek,
-            endWeek: weekCheck.endWeek,
-            weeklyHours: resolve('weeklyHours', 'defaultWeeklyHours', 1),
-            weight: resolve('weight', 'defaultWeight', 1),
-            gradeSchemeId: resolve('gradeSchemeId', 'defaultGradeSchemeId', 'numeric'),
-            assessmentWeights: (function() {
-                if (config.assessmentWeights !== undefined &&
-                    config.assessmentWeights !== null) {
-                    return deepClone(config.assessmentWeights);
-                }
-                if (existingRecord &&
-                    existingRecord.assessmentWeights !== undefined &&
-                    existingRecord.assessmentWeights !== null) {
-                    return deepClone(existingRecord.assessmentWeights);
-                }
-                if (discipline &&
-                    discipline.defaultAssessmentWeights !== undefined &&
-                    discipline.defaultAssessmentWeights !== null) {
-                    return deepClone(discipline.defaultAssessmentWeights);
-                }
-                return null;
-            })(),
-            mandatory: config.mandatory === true
-                ? true
-                : (existingRecord && existingRecord.mandatory === true),
-            createdAt: existingRecord && existingRecord.createdAt
+            mandatory: record.mandatory === true,
+
+            // From the discipline:
+            startWeek: discipline.startWeek,
+            endWeek: discipline.endWeek,
+            weeklyHours: discipline.weeklyHours,
+            weight: discipline.weight,
+            gradeSchemeId: isNonEmptyString(discipline.gradeSchemeId)
+                ? discipline.gradeSchemeId
+                : (discipline.gradeScheme && isNonEmptyString(discipline.gradeScheme.id)
+                    ? discipline.gradeScheme.id
+                    : 'numeric'),
+            assessmentWeights: discipline.assessmentWeights
+                ? deepClone(discipline.assessmentWeights)
+                : null,
+            gradeScheme: discipline.gradeScheme
+                ? deepClone(discipline.gradeScheme)
+                : null
+        };
+    }
+
+    // ============================================================
+    // MARKER CANDIDATE BUILDER
+    // ============================================================
+
+    function buildMarker(classId, disciplineId, config, existingRecord) {
+        var now = new Date().toISOString();
+        var discipline = AcademyDisciplines.getDiscipline(disciplineId);
+
+        var mandatory;
+        if (config && typeof config.mandatory === 'boolean') {
+            mandatory = config.mandatory;
+        } else if (existingRecord && typeof existingRecord.mandatory === 'boolean') {
+            mandatory = existingRecord.mandatory;
+        } else if (discipline && discipline.type === 'mandatory') {
+            mandatory = true;
+        } else {
+            mandatory = false;
+        }
+
+        return {
+            classId: String(classId),
+            disciplineId: String(disciplineId),
+            mandatory: mandatory,
+            createdAt: (existingRecord && isNonEmptyString(existingRecord.createdAt))
                 ? existingRecord.createdAt
                 : now,
             updatedAt: now
         };
-
-        return record;
     }
 
     // ============================================================
     // MUTATIONS
     // ============================================================
 
+    /**
+     * Create or replace the marker for a (classId, disciplineId)
+     * pair.
+     *
+     * The marker has two meaningful fields: `mandatory` and the
+     * identity pair. Calling setClassDiscipline on an existing
+     * marker updates its `mandatory` flag and its `updatedAt`. It
+     * does NOT touch enrolments, teaching groups, or teaching
+     * sessions. Those are separate concerns.
+     *
+     * @param {string} classId
+     * @param {string} disciplineId
+     * @param {object} [config] { mandatory?: boolean }
+     * @returns {Promise<{success, data?, message?}>}
+     */
     function setClassDiscipline(classId, disciplineId, config) {
-        diag('setClassDiscipline CALLED',
-            { classId: classId, disciplineId: disciplineId, config: config });
-
         var refCheck = validateReference(classId, disciplineId);
         if (!refCheck.valid) {
-            diagWarn('setClassDiscipline: reference invalid:', refCheck.message);
             return Promise.resolve(failure(refCheck.message));
         }
 
-        if (!isPlainObject(config)) {
-            return Promise.resolve(failure('Config must be an object.'));
-        }
+        config = isPlainObject(config) ? config : {};
 
-        // Caller MUST supply startWeek. No silent MIN_WEEK default.
-        if (config.startWeek === undefined || config.startWeek === null) {
-            return Promise.resolve(failure('startWeek is required.'));
-        }
-
-        var configCheck = validateFullConfig(config);
-        if (!configCheck.valid) {
-            diagWarn('setClassDiscipline: config invalid:', configCheck.message);
-            return Promise.resolve(failure(configCheck.message));
+        if (config.mandatory !== undefined &&
+            typeof config.mandatory !== 'boolean') {
+            return Promise.resolve(failure('Mandatory must be a boolean.'));
         }
 
         var existing = getRecordInternal(classId, disciplineId);
-        var candidate = buildCandidate(classId, disciplineId, config, existing);
-
-        if (!candidate) {
-            return Promise.resolve(failure('Failed to build candidate record.'));
-        }
-
-        diag('setClassDiscipline: candidate =', candidate);
+        var candidate = buildMarker(
+            classId, disciplineId, config, existing
+        );
 
         var targetClass = String(classId);
         var targetDiscipline = String(disciplineId);
 
         return MutationPipeline.performMutation({
             validate: function(appData) {
-                diag('  [VALIDATE] appData === window.data?',
-                    appData === window.data);
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
                 return { valid: true };
             },
             mutate: function(appData) {
-                diag('  [MUTATE] appData === window.data?',
-                    appData === window.data);
                 var store = ensureStore(appData);
-                diag('  [MUTATE] store BEFORE:',
-                    JSON.stringify(store[targetClass] || null));
-
                 if (!isPlainObject(store[targetClass])) {
                     store[targetClass] = {};
                 }
                 store[targetClass][targetDiscipline] = deepClone(candidate);
-
-                diag('  [MUTATE] store AFTER:',
-                    JSON.stringify(store[targetClass]));
-                diag('  [MUTATE] window.data...classDisciplines AFTER:',
-                    JSON.stringify(window.data && window.data.academy &&
-                                 window.data.academy.classDisciplines));
-
                 return { record: candidate };
             },
             logMessage: 'Set class-discipline: ' +
@@ -875,114 +735,28 @@
         });
     }
 
-    function updateClassDiscipline(classId, disciplineId, updates) {
-        var existing = getRecordInternal(classId, disciplineId);
-        if (!existing) {
-            return Promise.resolve(failure('Class-discipline not found.'));
-        }
-
-        if (!isPlainObject(updates)) {
-            return Promise.resolve(failure('Updates must be an object.'));
-        }
-
-        // Merge existing into updates, then run as a full set.
-        var merged = deepClone(existing);
-        var keys = Object.keys(updates);
-        for (var i = 0; i < keys.length; i++) {
-            merged[keys[i]] = updates[keys[i]];
-        }
-
-        // Preserve startWeek and endWeek from the existing record
-        // unless updates explicitly change them.
-        if (updates.startWeek === undefined) {
-            merged.startWeek = existing.startWeek;
-        }
-        if (updates.endWeek === undefined) {
-            merged.endWeek = existing.endWeek;
-        }
-
-        return setClassDiscipline(classId, disciplineId, merged);
-    }
-
-    function endClassDiscipline(classId, disciplineId, effectiveWeek) {
-        if (!isNonEmptyString(classId) || !isNonEmptyString(disciplineId)) {
-            return Promise.resolve(failure('Class ID and discipline ID are required.'));
-        }
-
-        var weekNum = parseWeekStrict(effectiveWeek);
-        if (weekNum === null) {
-            return Promise.resolve(
-                failure('Valid effective week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').')
-            );
-        }
-
-        var existing = getRecordInternal(classId, disciplineId);
-        if (!existing) {
-            return Promise.resolve(failure('Class-discipline not found.'));
-        }
-
-        if (weekNum < existing.startWeek) {
-            return Promise.resolve(
-                failure('Effective week cannot be before the start week.')
-            );
-        }
-
-        // endWeek is INCLUSIVE. If the caller says "effective in week
-        // 15", the offering ran through week 14.
-        var newEndWeek = weekNum - 1;
-        if (newEndWeek < existing.startWeek) {
-            return Promise.resolve(
-                failure('Effective week would end the offering before it begins.')
-            );
-        }
-
-        diag('endClassDiscipline:', classId, disciplineId,
-            'effectiveWeek =', weekNum, '→ endWeek =', newEndWeek);
-
-        var targetClass = String(classId);
-        var targetDiscipline = String(disciplineId);
-
-        return MutationPipeline.performMutation({
-            validate: function(appData) {
-                if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
-                }
-                return { valid: true };
-            },
-            mutate: function(appData) {
-                var store = getStoreFromSnapshot(appData);
-                if (!store) {
-                    throw new Error('Class-disciplines store is not available.');
-                }
-                var record = getRecordInternalFromStore(
-                    store, targetClass, targetDiscipline
-                );
-                if (!record) {
-                    throw new Error('Class-discipline not found in snapshot.');
-                }
-                record.endWeek = newEndWeek;
-                record.updatedAt = new Date().toISOString();
-                return { record: deepClone(record) };
-            },
-            logMessage: 'Ended class-discipline: ' + targetClass + ' / ' + targetDiscipline,
-            successMessage: 'Discipline offering ended.',
-            failureMessage: 'Failed to end discipline offering.'
-        });
-    }
-
     /**
-     * Hard delete a single class-discipline record. Use this only for
-     * administrative cleanup. For the ordinary "drop this discipline"
-     * action, use endClassDiscipline.
+     * Hard delete the marker for a (classId, disciplineId) pair.
+     *
+     * Does not touch enrolments, teaching groups, or teaching
+     * sessions. Callers that want a compound teardown use
+     * AcademySchedule.removeClassDiscipline, which does all of the
+     * above in one transaction.
+     *
+     * @returns {Promise<{success, data?, message?}>}
      */
     function removeClassDiscipline(classId, disciplineId) {
         if (!isNonEmptyString(classId) || !isNonEmptyString(disciplineId)) {
-            return Promise.resolve(failure('Class ID and discipline ID are required.'));
+            return Promise.resolve(failure(
+                'Class ID and discipline ID are required.'
+            ));
         }
 
         var existing = getRecordInternal(classId, disciplineId);
         if (!existing) {
-            return Promise.resolve(failure('Class-discipline not found.'));
+            return Promise.resolve(failure(
+                'Class-discipline not found.'
+            ));
         }
 
         var targetClass = String(classId);
@@ -991,7 +765,10 @@
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
                 return { valid: true };
             },
@@ -1004,7 +781,9 @@
                 if (!isPlainObject(byClass)) {
                     return { removed: false };
                 }
-                if (!Object.prototype.hasOwnProperty.call(byClass, targetDiscipline)) {
+                if (!Object.prototype.hasOwnProperty.call(
+                    byClass, targetDiscipline
+                )) {
                     return { removed: false };
                 }
                 delete byClass[targetDiscipline];
@@ -1013,7 +792,8 @@
                 }
                 return { removed: true };
             },
-            logMessage: 'Removed class-discipline: ' + targetClass + ' / ' + targetDiscipline,
+            logMessage: 'Removed class-discipline: ' +
+                targetClass + ' / ' + targetDiscipline,
             successMessage: 'Class-discipline removed.',
             failureMessage: 'Failed to remove class-discipline.'
         });
@@ -1022,73 +802,102 @@
     // ============================================================
     // CASCADE HELPERS
     // ============================================================
+    //
+    // Pure with respect to appData. Mutate the snapshot. Never touch
+    // window.data. Never throw. Run inside another module's pipeline
+    // transaction (AcademyCascade).
 
     /**
-     * Remove every class-discipline belonging to a class.
+     * Remove every class-discipline belonging to a class, and
+     * cascade into enrolments for that class.
      *
-     * PURE with respect to appData. Mutates the snapshot; never
-     * touches window.data. Never throws.
+     * The enrolment cascade is delegated to
+     * AcademyEnrolments.stripClassRefs. When AcademyEnrolments is
+     * not loaded, the enrolment step is skipped and only the marker
+     * store is cleaned.
      *
-     * @returns {object} { recordsRemoved }
+     * @returns {object} { recordsRemoved, enrolmentsCascade }
      */
     function stripClassRefs(appData, classId) {
-        var result = { recordsRemoved: 0 };
+        var result = {
+            recordsRemoved: 0,
+            enrolmentsCascade: null
+        };
 
         if (!appData || !isNonEmptyString(classId)) {
             return result;
         }
 
         var store = getStoreFromSnapshot(appData);
-        if (!store) {
-            return result;
+        if (store) {
+            var target = String(classId);
+            if (Object.prototype.hasOwnProperty.call(store, target)) {
+                var byClass = store[target];
+                if (isPlainObject(byClass)) {
+                    result.recordsRemoved = Object.keys(byClass).length;
+                }
+                delete store[target];
+            }
         }
 
-        var target = String(classId);
-        if (!Object.prototype.hasOwnProperty.call(store, target)) {
-            return result;
+        // Cascade into enrolments. The enrolments module owns its
+        // own strip helper; we delegate rather than reimplement.
+        var AE = getAcademyEnrolments();
+        if (AE && typeof AE.stripClassRefs === 'function') {
+            try {
+                result.enrolmentsCascade = AE.stripClassRefs(appData, classId);
+            } catch (e) {
+                // Never propagate from a cascade helper.
+                result.enrolmentsCascade = { error: String(e && e.message || e) };
+            }
         }
 
-        var byClass = store[target];
-        if (isPlainObject(byClass)) {
-            result.recordsRemoved = Object.keys(byClass).length;
-        }
-
-        delete store[target];
         return result;
     }
 
     /**
-     * Remove every class-discipline for a given discipline ID.
+     * Remove every class-discipline for a given discipline ID, and
+     * cascade into enrolments for that discipline.
      *
-     * @returns {object} { recordsRemoved }
+     * @returns {object} { recordsRemoved, enrolmentsCascade }
      */
     function stripDisciplineRefs(appData, disciplineId) {
-        var result = { recordsRemoved: 0 };
+        var result = {
+            recordsRemoved: 0,
+            enrolmentsCascade: null
+        };
 
         if (!appData || !isNonEmptyString(disciplineId)) {
             return result;
         }
 
         var store = getStoreFromSnapshot(appData);
-        if (!store) {
-            return result;
+        if (store) {
+            var target = String(disciplineId);
+            var classIds = Object.keys(store);
+            for (var i = 0; i < classIds.length; i++) {
+                var classId = classIds[i];
+                var byClass = store[classId];
+                if (!isPlainObject(byClass)) {
+                    continue;
+                }
+                if (Object.prototype.hasOwnProperty.call(byClass, target)) {
+                    delete byClass[target];
+                    result.recordsRemoved++;
+                }
+                if (Object.keys(byClass).length === 0) {
+                    delete store[classId];
+                }
+            }
         }
 
-        var target = String(disciplineId);
-        var classIds = Object.keys(store);
-
-        for (var i = 0; i < classIds.length; i++) {
-            var classId = classIds[i];
-            var byClass = store[classId];
-            if (!isPlainObject(byClass)) {
-                continue;
-            }
-            if (Object.prototype.hasOwnProperty.call(byClass, target)) {
-                delete byClass[target];
-                result.recordsRemoved++;
-            }
-            if (Object.keys(byClass).length === 0) {
-                delete store[classId];
+        var AE = getAcademyEnrolments();
+        if (AE && typeof AE.stripDisciplineRefs === 'function') {
+            try {
+                result.enrolmentsCascade =
+                    AE.stripDisciplineRefs(appData, disciplineId);
+            } catch (e) {
+                result.enrolmentsCascade = { error: String(e && e.message || e) };
             }
         }
 
@@ -1099,20 +908,20 @@
     // EXPOSE
     // ============================================================
 
-    window.AcademyClassDisciplines = {
+    window.AcademyClassDisciplines = Object.freeze({
         // Reads
         getClassDiscipline: getClassDiscipline,
         getClassDisciplinesForClass: getClassDisciplinesForClass,
         getClassDisciplinesForDiscipline: getClassDisciplinesForDiscipline,
         hasClassDiscipline: hasClassDiscipline,
+        isClassOffering: isClassOffering,
+        getAllOfferedDisciplineIds: getAllOfferedDisciplineIds,
         getEffectiveConfig: getEffectiveConfig,
         isActiveInWeek: isActiveInWeek,
         getActiveClassDisciplinesForWeek: getActiveClassDisciplinesForWeek,
 
         // Mutations
         setClassDiscipline: setClassDiscipline,
-        updateClassDiscipline: updateClassDiscipline,
-        endClassDiscipline: endClassDiscipline,
         removeClassDiscipline: removeClassDiscipline,
 
         // Cascade helpers
@@ -1122,7 +931,7 @@
         // Constants (read-only)
         MIN_WEEK: MIN_WEEK,
         MAX_WEEK: MAX_WEEK
-    };
+    });
 
     // ============================================================
     // VERIFICATION
@@ -1135,12 +944,12 @@
             'getClassDisciplinesForClass',
             'getClassDisciplinesForDiscipline',
             'hasClassDiscipline',
+            'isClassOffering',
+            'getAllOfferedDisciplineIds',
             'getEffectiveConfig',
             'isActiveInWeek',
             'getActiveClassDisciplinesForWeek',
             'setClassDiscipline',
-            'updateClassDiscipline',
-            'endClassDiscipline',
             'removeClassDiscipline',
             'stripClassRefs',
             'stripDisciplineRefs'
@@ -1152,9 +961,10 @@
             }
         }
         if (missing.length > 0) {
-            console.warn('[AcademyClassDisciplines] Verification - missing exports:', missing.join(', '));
-        } else {
-            diag('Verification OK.');
+            console.warn(
+                '[AcademyClassDisciplines] Verification - missing exports:',
+                missing.join(', ')
+            );
         }
     })();
 

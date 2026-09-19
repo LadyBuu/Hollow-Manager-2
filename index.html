@@ -353,6 +353,39 @@
     <script src="js/modules/academy/academy-tournament-events.js"></script>
     <script src="js/modules/academy/academy-tournament-aggregator.js"></script>
     <script src="js/modules/academy/academy-crud-modals.js"></script>
+
+    <!-- ============================================================
+         ACADEMY CLASS-DISCIPLINES PICKER
+         ============================================================
+         The modal that lets the user say which disciplines a
+         class offers, mark each as mandatory, and assign
+         instructors per offered discipline.
+
+         Load order:
+           - AcademyAggregator.getClassDisciplinesPickerViewModel
+             (ACADEMY DOMAIN block, above)
+           - AcademyClassDisciplines.setClassDiscipline /
+             .removeClassDiscipline (ACADEMY TEACHING MODEL block,
+             above)
+           - AcademyEnrolments.enrol / .leave (ACADEMY DOMAIN
+             block, above)
+           - AcademyDisciplines.getDiscipline (ACADEMY DOMAIN
+             block, above)
+           - Modal, DomUtils, NotificationSystem (UTILITIES block,
+             above)
+
+         All dependencies are loaded before this point.
+
+         The picker is opened from the People view's class detail
+         panel via data-action="edit-class-disciplines". The
+         People controller (in the CONTROLLERS block below) reads
+         it lazily at click time, so this script tag must load
+         BEFORE academy-people-controller.js, or the picker module
+         must be present by the time the user clicks. Loading it
+         here, before the controller, guarantees both.
+         ============================================================ -->
+    <script src="js/modules/academy/academy-class-disciplines-picker.js"></script>
+
     <script src="js/modules/academy/academy-view.js"></script>
 
     <!-- ============================================================
@@ -395,6 +428,14 @@
            - AcademyEliminations (from ACADEMY DOMAIN above)
            - MemberManager, MemberAdapterAcademy (from SHARED
              COMPONENTS and ACADEMY MEMBER ADAPTER above)
+           - CharacterCRUD (from CHARACTER DOMAIN above) — v27,
+             used by the People controller's mode checkbox handler.
+           - AcademyClassDisciplinesPicker (from ACADEMY VIEW SHELL
+             above) — v27, used by the People controller's
+             edit-class-disciplines dispatch. The People controller
+             reads it lazily at click time, so strict load order is
+             not required, but it is guaranteed by loading the
+             picker before this block.
 
          Registration happens in modules/academy/index.js below.
          ============================================================ -->

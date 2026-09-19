@@ -8,7 +8,6 @@
  *   - Discipline CRUD operations (create, update, delete)
  *   - Discipline queries (get by ID, get all, get available)
  *   - Discipline validation
- *   - Instructor assignment for disciplines
  *   - Grade scheme ownership (stored on the discipline record)
  *   - Assessment weight ownership (stored on the discipline record)
  *
@@ -19,6 +18,28 @@
  *   - Invalid inputs are REJECTED (mutation resolves with { success: false }).
  *   - Mutations are ATOMIC: if persistence fails, window.data is restored.
  *   - This module does NOT call saveData() directly - the pipeline does.
+ *
+ * INSTRUCTORS ARE NOT OWNED HERE (v27):
+ *   Prior to v27, a discipline carried `instructorIds: [charId, ...]`
+ *   — a global "who teaches this discipline" list. That field was
+ *   removed because the underlying relationship it was trying to
+ *   express is class-scoped: an instructor teaches a discipline FOR
+ *   A CLASS, not in the abstract. The class-scoped relationship is
+ *   expressed through AcademyEnrolments (class-scoped enrolment
+ *   records). AcademyDisciplines no longer:
+ *
+ *     - stores `instructorIds` on any discipline record,
+ *     - validates `instructorIds` on create or update,
+ *     - exposes a getDisciplinesByInstructor query,
+ *     - accepts `instructorIds` in the create or update payload.
+ *
+ *   Callers that want "which disciplines does this instructor teach"
+ *   walk the class-discipline markers and enrolment records:
+ *   enrolments carry the (class, char, discipline) tuple; a discipline
+ *   is taught by an instructor if at least one enrolment exists for
+ *   that instructor in a class that offers the discipline. This is
+ *   the derived read that AcademyCharacterDetailAggregator performs
+ *   in buildInstructorDisciplines.
  *
  * READ SAFETY (Phase 2):
  *   - getCurriculum() returns null when the store is missing. Reads
@@ -77,8 +98,7 @@
  *   - create / update / delete / saveDisciplines all return
  *     Promise<{ success, data?, message? }>
  *   - getDiscipline / getDisciplines / getDisciplinesByType /
- *     getDisciplinesByInstructor / getAvailableDisciplines /
- *     getActiveDisciplines stay synchronous
+ *     getAvailableDisciplines / getActiveDisciplines stay synchronous
  *
  * YEAR SEMANTICS:
  *   - Disciplines are scoped to WEEKS (bounded 1-52), not years.
@@ -492,6 +512,9 @@
      * Internal normalization for reads.
      * Ensures `gradeScheme` and `assessmentWeights` are present and
      * canonical on the returned copy. The live record is not modified.
+     *
+     * `instructorIds` is not touched. The field no longer exists on
+     * discipline records (v27).
      */
     function attachNormalizedConfig(record) {
         if (!record || typeof record !== 'object') {
@@ -507,6 +530,13 @@
     // DISCIPLINE VALIDATION
     // ============================================================
 
+    /**
+     * Validate discipline data.
+     *
+     * NOTE: `instructorIds` is deliberately NOT validated here. The
+     * field was retired in v27. A caller that passes it is ignored;
+     * see buildDisciplineRecord for the reason.
+     */
     function validateDisciplineData(data, isPartial) {
         if (!isObject(data)) {
             return { valid: false, message: 'Discipline data must be an object.' };
@@ -521,17 +551,6 @@
         if (data.type !== undefined) {
             if (VALID_DISCIPLINE_TYPES.indexOf(data.type) === -1) {
                 return { valid: false, message: 'Invalid type. Must be one of: ' + VALID_DISCIPLINE_TYPES.join(', ') };
-            }
-        }
-
-        if (data.instructorIds !== undefined) {
-            if (!Array.isArray(data.instructorIds)) {
-                return { valid: false, message: 'Instructor IDs must be an array.' };
-            }
-            for (var i = 0; i < data.instructorIds.length; i++) {
-                if (!isNonEmptyString(data.instructorIds[i])) {
-                    return { valid: false, message: 'Invalid instructor ID at index ' + i + '.' };
-                }
             }
         }
 
@@ -584,6 +603,16 @@
     // INTERNAL CANDIDATE BUILDER
     // ============================================================
 
+    /**
+     * Build a discipline record from raw data.
+     *
+     * `instructorIds` is NOT part of the record shape (v27). If a
+     * caller passes it, it is silently ignored. This is intentional
+     * rather than an error: a caller migrating from the pre-v27 API
+     * would otherwise fail with a confusing message. The relationship
+     * the field was trying to express is now class-scoped and lives
+     * in AcademyEnrolments.
+     */
     function buildDisciplineRecord(data, existingId, existingCreatedAt, existingScheme, existingWeights) {
         var now = new Date().toISOString();
 
@@ -600,10 +629,6 @@
         var weight = data.weight !== undefined
             ? Number(data.weight)
             : DEFAULT_WEIGHT;
-
-        var instructorIds = Array.isArray(data.instructorIds)
-            ? data.instructorIds.map(function(id) { return String(id).trim(); })
-            : [];
 
         var scheme;
         if (data.gradeScheme !== undefined && data.gradeScheme !== null) {
@@ -627,7 +652,6 @@
             id: existingId || generateId(),
             name: String(data.name).trim(),
             type: data.type || DEFAULT_TYPE,
-            instructorIds: instructorIds,
             startWeek: startWeek,
             endWeek: endWeek,
             weeklyHours: weeklyHours,
@@ -700,6 +724,9 @@
 
     /**
      * Create a new discipline.
+     *
+     * `instructorIds` is NOT part of the payload and is silently
+     * ignored if present. See buildDisciplineRecord.
      */
     function create(data) {
         var validation = validateDisciplineData(data, false);
@@ -755,6 +782,9 @@
 
     /**
      * Update an existing discipline.
+     *
+     * `instructorIds` is NOT part of the update surface and is
+     * silently ignored if present. See buildDisciplineRecord.
      */
     function update(id, updates) {
         if (!isNonEmptyString(id)) {
@@ -805,27 +835,6 @@
             }
             if (candidate.type !== updates.type) {
                 candidate.type = updates.type;
-                hasChanges = true;
-            }
-        }
-
-        // Instructors
-        if (updates.instructorIds !== undefined) {
-            if (!Array.isArray(updates.instructorIds)) {
-                return Promise.resolve(failure('Instructor IDs must be an array.'));
-            }
-            var newInstructors = [];
-            for (var j = 0; j < updates.instructorIds.length; j++) {
-                if (isNonEmptyString(updates.instructorIds[j])) {
-                    newInstructors.push(String(updates.instructorIds[j]).trim());
-                }
-            }
-            var currentSorted = (candidate.instructorIds || []).slice().sort();
-            var newSorted = newInstructors.slice().sort();
-            var changed = currentSorted.length !== newSorted.length ||
-                currentSorted.some(function(v, idx) { return v !== newSorted[idx]; });
-            if (changed) {
-                candidate.instructorIds = newInstructors;
                 hasChanges = true;
             }
         }
@@ -1111,30 +1120,6 @@
         return result;
     }
 
-    function getDisciplinesByInstructor(instructorId) {
-        if (!isNonEmptyString(instructorId)) {
-            return [];
-        }
-
-        var all = getDisciplineRecords();
-        var result = [];
-        var target = String(instructorId);
-
-        for (var i = 0; i < all.length; i++) {
-            var d = all[i];
-            if (d.instructorIds && Array.isArray(d.instructorIds)) {
-                for (var j = 0; j < d.instructorIds.length; j++) {
-                    if (String(d.instructorIds[j]) === target) {
-                        result.push(attachNormalizedConfig(d));
-                        break;
-                    }
-                }
-            }
-        }
-
-        return result;
-    }
-
     function getAvailableDisciplines(week) {
         var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
@@ -1337,7 +1322,7 @@
     // EXPOSE
     // ============================================================
 
-    window.AcademyDisciplines = {
+    window.AcademyDisciplines = Object.freeze({
         // ---- Mutations ----
         create: create,
         update: update,
@@ -1348,7 +1333,6 @@
         getDiscipline: getDiscipline,
         getDisciplines: getDisciplines,
         getDisciplinesByType: getDisciplinesByType,
-        getDisciplinesByInstructor: getDisciplinesByInstructor,
         getAvailableDisciplines: getAvailableDisciplines,
         getActiveDisciplines: getActiveDisciplines,
 
@@ -1380,7 +1364,7 @@
         DEFAULT_ASSESSMENT_WEIGHTS: DEFAULT_ASSESSMENT_WEIGHTS,
         MIN_ASSESSMENT_WEIGHT: MIN_ASSESSMENT_WEIGHT,
         MAX_ASSESSMENT_WEIGHT: MAX_ASSESSMENT_WEIGHT
-    };
+    });
 
     // ============================================================
     // VERIFICATION
@@ -1393,7 +1377,7 @@
         var required = [
             'create', 'update', 'delete', 'saveDisciplines',
             'getDiscipline', 'getDisciplines', 'getDisciplinesByType',
-            'getDisciplinesByInstructor', 'getAvailableDisciplines',
+            'getAvailableDisciplines',
             'getActiveDisciplines',
             'getGradeScheme',
             'getAssessmentWeights', 'getDefaultAssessmentWeights',

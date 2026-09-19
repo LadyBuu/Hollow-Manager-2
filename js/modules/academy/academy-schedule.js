@@ -9,11 +9,11 @@
  *   Operations that touch two or more of the teaching-model stores
  *   in a single transaction:
  *
- *     addClassDiscipline        create a class-discipline and enrol
- *                               every active student
- *     removeClassDiscipline     end a class-discipline and every
- *                               downstream window (groups, sessions,
- *                               enrolments)
+ *     addClassDiscipline        create a class-discipline marker and
+ *                               auto-enrol every active student
+ *     removeClassDiscipline     remove a class-discipline marker and
+ *                               end every downstream window (groups,
+ *                               sessions, enrolments)
  *     scheduleGroupMeeting      create a teaching session with a
  *                               blocking collision check
  *     addStudentToTeachingGroup add a member to a group, validating
@@ -44,10 +44,6 @@
  * WEEK SEMANTICS (INCLUSIVE BOUNDS):
  *   All week ranges are inclusive on both ends.
  *
- *   A class-discipline with startWeek: 1 and endWeek: 10 runs weeks 1-10.
- *   An enrolment with startWeek: 1 and endWeek: 10 covers weeks 1-10.
- *   A membership with startWeek: 1 and endWeek: 10 is active weeks 1-10.
- *
  *   `endWeek === null` means "ongoing" (no bound).
  *
  *   The "end this effective week N" convention is:
@@ -59,9 +55,16 @@
  *   finished at the end of week 10", you pass effectiveWeek = 11.
  *
  *   This is the same convention used by every end* helper in the
- *   teaching-model modules (AcademyClassDisciplines.endClassDiscipline,
- *   AcademyTeachingGroups.endGroup, AcademyTeachingSessions.endSession,
- *   AcademyEnrolments.leave).
+ *   teaching-model modules (AcademyTeachingGroups.endGroup,
+ *   AcademyTeachingSessions.endSession, AcademyEnrolments.leave).
+ *
+ * DISCIPLINE WINDOW (v27):
+ *   A class-discipline marker has no window. The discipline entity
+ *   owns startWeek / endWeek. When auto-enrolling students in a
+ *   newly-offered class-discipline, the enrolment window is the
+ *   discipline's window. This is a change from pre-v27, where the
+ *   class-discipline carried its own startWeek / endWeek and the
+ *   auto-enrolment used those.
  *
  * ROSTER SEMANTICS:
  *   "Active students in a class" is defined as:
@@ -106,19 +109,9 @@
  *   Location collisions are NOT checked. Rooms may be double-booked
  *   without warning, error, or constraint.
  *
- *   Two collision modes are supported:
- *
- *     collisionMode: 'block'   (default) — check and reject on collision
- *     collisionMode: 'ignore'            — skip the check entirely
- *
- *   'ignore' exists for tests and for scripted setup paths.
- *   Production UI code uses the default 'block'.
- *
- * STORE SHAPES (for reference):
+ * STORE SHAPES (v27):
  *   academy.classDisciplines[classId][disciplineId] = {
- *     classId, disciplineId, startWeek, endWeek,
- *     weeklyHours, weight, gradeSchemeId, assessmentWeights,
- *     mandatory, createdAt, updatedAt
+ *     classId, disciplineId, mandatory, createdAt, updatedAt
  *   }
  *
  *   academy.enrolments[classId][charId] = [
@@ -160,7 +153,7 @@
  *
  * USAGE:
  *   AcademySchedule.addClassDiscipline('class_1', 'disc_en', {
- *       startWeek: 1, endWeek: 24, weeklyHours: 3, mandatory: true
+ *       mandatory: true
  *   }).then(function(result) { ... });
  *
  *   AcademySchedule.scheduleGroupMeeting('tgroup_1', {
@@ -276,7 +269,7 @@
     window.__academyScheduleLoaded = true;
 
     // ============================================================
-    // SECTION 2 — HELPERS
+    // HELPERS
     // ============================================================
 
     var MIN_WEEK = CalendarConstants.MIN_WEEK;
@@ -310,10 +303,6 @@
         return { success: false, message: message };
     }
 
-    function success(data) {
-        return { success: true, data: data };
-    }
-
     /**
      * Parse a week strictly. Integer or integer-string, in
      * [MIN_WEEK, MAX_WEEK]. No coercion, no fallback.
@@ -327,31 +316,6 @@
             return null;
         }
         return parsed;
-    }
-
-    /**
-     * Parse a week range. Returns { startWeek, endWeek } where
-     * endWeek may be null. Rejects if start is invalid, end is
-     * invalid, or end < start.
-     */
-    function parseWeekRange(startWeek, endWeek) {
-        var start = parseWeekStrict(startWeek);
-        if (start === null) {
-            return null;
-        }
-
-        if (endWeek === undefined || endWeek === null) {
-            return { startWeek: start, endWeek: null };
-        }
-
-        var end = parseWeekStrict(endWeek);
-        if (end === null) {
-            return null;
-        }
-        if (end < start) {
-            return null;
-        }
-        return { startWeek: start, endWeek: end };
     }
 
     /**
@@ -424,11 +388,6 @@
      * caller (addClassDiscipline) will then enrol nobody. That is
      * a safe degradation: a class-discipline is created without
      * auto-enrolment rather than the mutation failing outright.
-     *
-     * Note: this reads live data via the aggregator, not the
-     * pipeline snapshot. It's called during validate, where the
-     * pipeline has not yet taken a snapshot. Since mutations are
-     * serialised, no other mutation can be interleaving.
      */
     function getClassRoster(classId) {
         if (!isNonEmptyString(classId)) {
@@ -454,7 +413,7 @@
     }
 
     // ============================================================
-    // SECTION 3 — COLLISION DETECTION
+    // COLLISION DETECTION
     // ============================================================
 
     /**
@@ -484,19 +443,6 @@
             a.startWeek, a.endWeek,
             b.startWeek, b.endWeek
         );
-    }
-
-    /**
-     * Build a collision candidate from raw config.
-     */
-    function buildCandidateSession(config) {
-        return {
-            day: config.day,
-            startTime: config.startTime,
-            duration: config.duration,
-            startWeek: config.startWeek,
-            endWeek: config.endWeek
-        };
     }
 
     /**
@@ -757,25 +703,43 @@
     }
 
     // ============================================================
-    // SECTION 4 — addClassDiscipline
+    // addClassDiscipline
     // ============================================================
 
     /**
-     * Create a class-discipline. If the config marks it mandatory,
+     * Create a class-discipline marker. If the marker is mandatory,
      * auto-enrol every active student in the class.
      *
      * "Active student" means:
      *   - In the class roster (character.classIds includes classId)
      *   - Not the class instructor
-     *   - Not eliminated as of the class-discipline's startWeek
+     *   - Not eliminated as of the discipline's startWeek
+     *
+     * THE ENROLMENT WINDOW (v27):
+     *   The marker has no window. The window comes from the
+     *   DISCIPLINE. A discipline with startWeek 1 and endWeek 24
+     *   produces enrolments spanning weeks 1–24.
+     *
+     *   When the discipline has no valid startWeek, the mutation
+     *   fails. A class-discipline without a discipline window
+     *   cannot be auto-enrolled sensibly, and silently picking
+     *   MIN_WEEK would hide the data problem.
+     *
+     * CONFIG SHAPE (v27):
+     *   config = { mandatory?: boolean }
+     *
+     *   This is a change from pre-v27, where config also carried
+     *   startWeek, endWeek, weeklyHours, weight, gradeSchemeId,
+     *   assessmentWeights, and instructorIds. None of those belong
+     *   on a marker. Passing any of them is rejected with a clear
+     *   message rather than silently ignored — a caller still on
+     *   the old shape needs to know.
      *
      * One transaction. All-or-nothing.
      *
      * @param {string} classId
      * @param {string} disciplineId
-     * @param {object} config
-     *   { startWeek, endWeek, weeklyHours, weight, gradeScheme,
-     *     assessmentWeights, mandatory }
+     * @param {object} [config] { mandatory?: boolean }
      * @returns {Promise<{success, data?, message?}>}
      */
     function addClassDiscipline(classId, disciplineId, config) {
@@ -785,8 +749,30 @@
         if (!isNonEmptyString(disciplineId)) {
             return Promise.resolve(failure('Discipline ID is required.'));
         }
-        if (!isPlainObject(config)) {
-            return Promise.resolve(failure('Config must be an object.'));
+
+        config = isPlainObject(config) ? config : {};
+
+        // Reject retired config fields explicitly. A caller still
+        // on the pre-v27 shape gets a message that names the field,
+        // rather than a silent drop.
+        var retiredFields = [
+            'startWeek', 'endWeek', 'weeklyHours', 'weight',
+            'gradeSchemeId', 'assessmentWeights', 'instructorIds'
+        ];
+        for (var rf = 0; rf < retiredFields.length; rf++) {
+            if (Object.prototype.hasOwnProperty.call(config, retiredFields[rf])) {
+                return Promise.resolve(failure(
+                    'Config field "' + retiredFields[rf] +
+                    '" is no longer supported on addClassDiscipline. ' +
+                    'Discipline config lives on the discipline. ' +
+                    'Instructor assignment is expressed through enrolments.'
+                ));
+            }
+        }
+
+        if (config.mandatory !== undefined &&
+            typeof config.mandatory !== 'boolean') {
+            return Promise.resolve(failure('Mandatory must be a boolean.'));
         }
 
         var cls = AcademyClasses.getClass(classId);
@@ -799,12 +785,30 @@
             return Promise.resolve(failure('Discipline not found.'));
         }
 
-        var range = parseWeekRange(config.startWeek, config.endWeek);
-        if (!range) {
+        // The enrolment window comes from the discipline.
+        var startWeek = parseWeekStrict(discipline.startWeek);
+        if (startWeek === null) {
             return Promise.resolve(failure(
-                'Valid week range is required (' +
-                MIN_WEEK + '-' + MAX_WEEK + ').'
+                'Discipline has no valid startWeek. Set the discipline\'s ' +
+                'start week before adding it to a class.'
             ));
+        }
+
+        var endWeek = null;
+        if (discipline.endWeek !== undefined &&
+            discipline.endWeek !== null &&
+            discipline.endWeek !== '') {
+            endWeek = parseWeekStrict(discipline.endWeek);
+            if (endWeek === null) {
+                return Promise.resolve(failure(
+                    'Discipline has an invalid endWeek.'
+                ));
+            }
+            if (endWeek < startWeek) {
+                return Promise.resolve(failure(
+                    'Discipline endWeek cannot be before its startWeek.'
+                ));
+            }
         }
 
         var existing = AcademyClassDisciplines.getClassDiscipline(
@@ -816,11 +820,16 @@
             ));
         }
 
-        var isMandatory = config.mandatory === true;
         var targetClass = String(classId);
         var targetDiscipline = String(disciplineId);
-        var startWeek = range.startWeek;
-        var endWeek = range.endWeek;
+
+        // Mandatory default: fall back to the discipline's type.
+        var isMandatory;
+        if (typeof config.mandatory === 'boolean') {
+            isMandatory = config.mandatory;
+        } else {
+            isMandatory = (discipline.type === 'mandatory');
+        }
 
         // Compute the enrolment list during validate. Everything
         // that can fail is checked here, before any writes.
@@ -835,10 +844,6 @@
                     };
                 }
 
-                // Re-check that the class-discipline doesn't exist
-                // in the snapshot. Between the pre-check and now,
-                // nothing should have changed, but the validate step
-                // runs against the authoritative snapshot.
                 var academy = getAcademySnapshot(appData);
                 if (!academy) {
                     return {
@@ -857,13 +862,12 @@
                     };
                 }
 
-                // Build the plan.
                 plan = buildAddClassDisciplinePlan(
                     targetClass,
                     targetDiscipline,
-                    config,
-                    range,
-                    isMandatory
+                    isMandatory,
+                    startWeek,
+                    endWeek
                 );
 
                 if (!plan) {
@@ -885,11 +889,11 @@
                     throw new Error('Academy store is not available.');
                 }
 
-                // 1. Write the class-discipline record.
+                // 1. Write the marker record.
                 var cdBucket = ensureClassBucket(
                     academy, 'classDisciplines', targetClass
                 );
-                cdBucket[targetDiscipline] = deepClone(plan.classDiscipline);
+                cdBucket[targetDiscipline] = deepClone(plan.marker);
 
                 // 2. Write enrolments for mandatory offerings.
                 if (plan.isMandatory && plan.enrolledCharIds.length > 0) {
@@ -910,7 +914,7 @@
                 }
 
                 return {
-                    classDiscipline: plan.classDiscipline,
+                    marker: plan.marker,
                     isMandatory: plan.isMandatory,
                     studentsEnrolled: plan.enrolledCharIds.length,
                     studentsSkipped: plan.skippedCharIds.length
@@ -943,25 +947,21 @@
     /**
      * Build the plan for addClassDiscipline. Pure — no writes.
      *
-     * Returns { classDiscipline, isMandatory, enrolledCharIds, skippedCharIds }
+     * Returns { marker, isMandatory, enrolledCharIds, skippedCharIds }
      * or null on malformed input.
      */
-    function buildAddClassDisciplinePlan(classId, disciplineId, config, range, isMandatory) {
+    function buildAddClassDisciplinePlan(
+        classId,
+        disciplineId,
+        isMandatory,
+        startWeek,
+        endWeek
+    ) {
         var now = new Date().toISOString();
 
-        var classDiscipline = {
+        var marker = {
             classId: classId,
             disciplineId: disciplineId,
-            startWeek: range.startWeek,
-            endWeek: range.endWeek,
-            weeklyHours: isFiniteNumber(config.weeklyHours) ? config.weeklyHours : 1,
-            weight: isFiniteNumber(config.weight) ? config.weight : 1,
-            gradeSchemeId: isNonEmptyString(config.gradeSchemeId)
-                ? config.gradeSchemeId
-                : 'numeric',
-            assessmentWeights: isPlainObject(config.assessmentWeights)
-                ? deepClone(config.assessmentWeights)
-                : null,
             mandatory: isMandatory,
             createdAt: now,
             updatedAt: now
@@ -977,17 +977,19 @@
                 if (!student || !student.id) { continue; }
                 var studentId = String(student.id);
 
-                // Skip eliminated students.
+                // Skip eliminated students. Elimination at exactly
+                // the start week does NOT skip them; they are still
+                // available during that week.
                 var eliminated = false;
                 try {
                     eliminated = EliminationQueries.isCharacterEliminatedByWeek(
-                        studentId, range.startWeek
+                        studentId, startWeek
                     ) === true;
                 } catch (e) {
                     // If the check fails, we default to NOT skipping.
-                    // This is the safer default: an unexplained
-                    // elimination query failure shouldn't silently
-                    // drop students from their own class.
+                    // An unexplained elimination query failure
+                    // shouldn't silently drop students from their own
+                    // class.
                     eliminated = false;
                 }
 
@@ -1000,7 +1002,7 @@
         }
 
         return {
-            classDiscipline: classDiscipline,
+            marker: marker,
             isMandatory: isMandatory,
             enrolledCharIds: enrolledCharIds,
             skippedCharIds: skippedCharIds
@@ -1008,21 +1010,32 @@
     }
 
     // ============================================================
-    // SECTION 5 — removeClassDiscipline
+    // removeClassDiscipline
     // ============================================================
 
     /**
-     * End a class-discipline and everything downstream.
+     * Remove a class-discipline marker and end everything downstream.
+     *
+     * Under v27 there is no per-class window to end — the marker
+     * simply goes away. But every student enrolment, every teaching
+     * group, and every teaching session for that class-discipline
+     * is truncated at effectiveWeek so that history survives.
      *
      * effectiveWeek is the first week that is NOT covered by the
-     * offering. The class-discipline's endWeek is set to
-     * effectiveWeek - 1 (inclusive bounds).
+     * offering. A group with startWeek 1 and endWeek null ends up
+     * with endWeek = effectiveWeek - 1.
      *
-     * Ends in one transaction:
-     *   - The class-discipline window
-     *   - Every teaching group for the class-discipline
-     *   - Every session for those groups
-     *   - Every student's enrolment window in the class-discipline
+     * In one transaction it:
+     *   - Removes the class-discipline marker.
+     *   - Ends every teaching group for the class-discipline.
+     *   - Ends every session for those groups.
+     *   - Ends every student's enrolment interval in the class-
+     *     discipline.
+     *
+     * Note on ordering: the marker is removed first because the
+     * downstream steps read the groups via classId+disciplineId
+     * rather than through the marker. Removing the marker first
+     * does not break them.
      *
      * One transaction. All-or-nothing.
      *
@@ -1056,16 +1069,23 @@
             ));
         }
 
+        // Sanity: the caller cannot end the offering before the
+        // discipline begins. The discipline's window is the source
+        // of truth.
+        var discipline = AcademyDisciplines.getDiscipline(disciplineId);
+        if (discipline) {
+            var discStartWeek = parseWeekStrict(discipline.startWeek);
+            if (discStartWeek !== null && (week - 1) < discStartWeek) {
+                return Promise.resolve(failure(
+                    'Effective week would end the offering before the ' +
+                    'discipline begins.'
+                ));
+            }
+        }
+
         var targetClass = String(classId);
         var targetDiscipline = String(disciplineId);
         var endWeek = week - 1;
-
-        // Sanity: the caller cannot end the offering before it starts.
-        if (endWeek < existing.startWeek) {
-            return Promise.resolve(failure(
-                'Effective week would end the offering before it begins.'
-            ));
-        }
 
         return MutationPipeline.performMutation({
             validate: function(appData) {
@@ -1082,7 +1102,6 @@
                         message: 'Academy store is not available.'
                     };
                 }
-                // Re-verify the class-discipline still exists.
                 var cdBucket = academy.classDisciplines &&
                     academy.classDisciplines[targetClass];
                 if (!isPlainObject(cdBucket) ||
@@ -1101,22 +1120,21 @@
                 }
 
                 var stats = {
-                    classDisciplineEnded: false,
+                    markerRemoved: false,
                     groupsEnded: 0,
                     sessionsEnded: 0,
                     enrolmentsEnded: 0
                 };
 
-                // 1. Truncate the class-discipline window.
-                var cdRecord = academy.classDisciplines[targetClass][targetDiscipline];
-                if (cdRecord && isPlainObject(cdRecord)) {
-                    if (cdRecord.endWeek === null ||
-                        cdRecord.endWeek === undefined ||
-                        cdRecord.endWeek >= week) {
-                        cdRecord.endWeek = endWeek;
-                        cdRecord.updatedAt = new Date().toISOString();
-                        stats.classDisciplineEnded = true;
+                // 1. Remove the marker.
+                var cdBucket = academy.classDisciplines[targetClass];
+                if (isPlainObject(cdBucket) &&
+                    cdBucket[targetDiscipline]) {
+                    delete cdBucket[targetDiscipline];
+                    if (Object.keys(cdBucket).length === 0) {
+                        delete academy.classDisciplines[targetClass];
                     }
+                    stats.markerRemoved = true;
                 }
 
                 // 2. Truncate every teaching group for this class-discipline.
@@ -1209,16 +1227,16 @@
                 var suffix = parts.length > 0
                     ? ' (' + parts.join(', ') + ')'
                     : '';
-                return 'Ended class-discipline: ' + targetClass +
+                return 'Removed class-discipline: ' + targetClass +
                     ' / ' + targetDiscipline + suffix;
             },
-            successMessage: 'Class-discipline ended.',
-            failureMessage: 'Failed to end class-discipline.'
+            successMessage: 'Class-discipline removed.',
+            failureMessage: 'Failed to remove class-discipline.'
         });
     }
 
     // ============================================================
-    // SECTION 6 — scheduleGroupMeeting
+    // scheduleGroupMeeting
     // ============================================================
 
     /**
@@ -1298,12 +1316,30 @@
             ));
         }
 
-        var range = parseWeekRange(config.startWeek, config.endWeek);
-        if (!range) {
+        var rangeStart = parseWeekStrict(config.startWeek);
+        if (rangeStart === null) {
             return Promise.resolve(failure(
                 'Valid week range is required (' +
                 MIN_WEEK + '-' + MAX_WEEK + ').'
             ));
+        }
+
+        var rangeEnd = null;
+        if (config.endWeek !== undefined &&
+            config.endWeek !== null &&
+            config.endWeek !== '') {
+            rangeEnd = parseWeekStrict(config.endWeek);
+            if (rangeEnd === null) {
+                return Promise.resolve(failure(
+                    'Valid week range is required (' +
+                    MIN_WEEK + '-' + MAX_WEEK + ').'
+                ));
+            }
+            if (rangeEnd < rangeStart) {
+                return Promise.resolve(failure(
+                    'End week cannot be before start week.'
+                ));
+            }
         }
 
         // Collision mode resolution.
@@ -1327,8 +1363,8 @@
                 day: day,
                 startTime: startTime,
                 duration: duration,
-                startWeek: range.startWeek,
-                endWeek: range.endWeek
+                startWeek: rangeStart,
+                endWeek: rangeEnd
             };
 
             var rejection = buildCollisionRejection(
@@ -1349,8 +1385,8 @@
             startTime: startTime,
             duration: duration,
             locationId: locationId,
-            startWeek: range.startWeek,
-            endWeek: range.endWeek,
+            startWeek: rangeStart,
+            endWeek: rangeEnd,
             createdAt: now,
             updatedAt: now
         };
@@ -1408,7 +1444,7 @@
     }
 
     // ============================================================
-    // SECTION 7 — addStudentToTeachingGroup
+    // addStudentToTeachingGroup
     // ============================================================
 
     /**
@@ -1562,7 +1598,7 @@
     }
 
     // ============================================================
-    // SECTION 8 — dropStudentFromClass
+    // dropStudentFromClass
     // ============================================================
 
     /**
@@ -1741,7 +1777,7 @@
     }
 
     // ============================================================
-    // SECTION 9 — EXPOSE
+    // EXPOSE
     // ============================================================
 
     window.AcademySchedule = Object.freeze({

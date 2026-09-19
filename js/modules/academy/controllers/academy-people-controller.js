@@ -26,9 +26,12 @@
  *   - The character detail panel (when a character is selected), and
  *     the tabs within it.
  *   - The character-mode checkbox (student / instructor toggle).
+ *     The write routes through CharacterCRUD.setMode. The read
+ *     routes through AcademyUI.getCharacterMode (which reads the
+ *     character record via CharacterQueries).
  *   - The Drop Out flow (AcademyEliminations.addStandalone).
  *   - The Remove from Class flow
- *     (CharacterClasses.removeClassById).
+ *     (AcademyClasses.removeClassById).
  *   - The Enroll / Leave Discipline flows
  *     (AcademyEnrolments.enrol / leave).
  *   - The instructor auto-group Add Student / Remove Student flows
@@ -36,6 +39,11 @@
  *   - The Edit Social Score modal (via AcademyCRUDModals).
  *   - The class CRUD modals (add character to class, edit class,
  *     delete class) via AcademyCRUDModals.
+ *   - The class-disciplines picker modal
+ *     (AcademyClassDisciplinesPicker.openModal). The picker owns
+ *     its own modal shell and lifecycle; this controller only
+ *     opens it and passes an onClose callback that refreshes the
+ *     People view.
  *   - The inline grades editor sub-editor lifecycle: mount when the
  *     Grades tab is active, unmount otherwise, unmount on controller
  *     unmount.
@@ -46,17 +54,49 @@
  * WHAT THIS DOES NOT OWN:
  *   - The content host. The shell provides it.
  *   - The class selection, character selection, display week, people
- *     filter, and character mode. Those live in AcademyUI.
+ *     filter, and character mode. The first four live in AcademyUI;
+ *     the mode is a domain fact on the character record.
  *   - Re-rendering the shell. When state changes, the controller
  *     calls context.onChange().
  *   - Domain reads and writes. The aggregators produce VMs; the
  *     domain modules perform mutations.
+ *   - The class-disciplines picker's modal shell. That modal is
+ *     created on demand by AcademyClassDisciplinesPicker and
+ *     appended to document.body, so it survives re-renders of this
+ *     controller's host.
  *   - Cross-view navigation. The People view does not navigate
  *     elsewhere; other views navigate here via their own
  *     onOpenCharacterInPeople callbacks.
  *
+ * CHARACTER MODE (v27):
+ *   The mode is a DOMAIN FACT. It lives on the character record as
+ *   `character.mode`. The controller:
+ *     - Reads it via AcademyUI.getCharacterMode(charId), which reads
+ *       the character record through CharacterQueries.
+ *     - Writes it via CharacterCRUD.setMode(charId, mode), which
+ *       routes through MutationPipeline.
+ *
+ *   The write is a Promise. On success, the controller re-renders
+ *   the shell by calling context.onChange(). On failure, the
+ *   MutationPipeline has already notified; the controller leaves
+ *   the checkbox as it was and lets the re-render correct it.
+ *
+ *   There is no local mode cache. The checkbox is checked when the
+ *   VM's mode is 'instructor', and unchecked otherwise. The VM's
+ *   mode comes from AcademyUI.getCharacterMode, which reads the
+ *   character.
+ *
+ * CLASS-DISCIPLINES PICKER (v27):
+ *   The "+ Disciplines" button on the class detail panel emits
+ *   data-action="edit-class-disciplines" with data-class-id. The
+ *   controller opens the picker modal, passing the current display
+ *   week and an onClose callback that calls context.onChange().
+ *   The onClose fires when the picker closes for any reason
+ *   (save, cancel, backdrop, Escape), so the class detail panel
+ *   reflects any changes the user made.
+ *
  * ENROLMENT (BUG-E1):
- *   The "Enroll Discipline" flow now sources its candidate list from
+ *   The "Enroll Discipline" flow sources its candidate list from
  *   AcademyClassDisciplines.getClassDisciplinesForClass(classId),
  *   filtered to offerings active in the display week. Previously it
  *   sourced from AcademyDisciplines.getDisciplines() — the GLOBAL
@@ -89,15 +129,17 @@
  *   - window.AcademyClassDetail
  *   - window.AcademyCharacterDetail
  *   - window.AcademyClassDisciplines         (BUG-E1 — for offerings)
+ *   - window.CharacterCRUD                   (v27 — for setMode)
  *   - window.AcademyGradesEditor             (lazy)
  *   - window.CalendarRenderer                (lazy)
  *   - window.AcademyCRUDModals               (lazy)
+ *   - window.AcademyClassDisciplinesPicker   (lazy)
  *   - window.AcademyDisciplines              (lazy)
  *   - window.AcademyEnrolments               (lazy)
  *   - window.AcademyEliminations             (lazy)
  *   - window.AcademyGroups                   (lazy)
- *   - window.CharacterQueries                 (lazy)
- *   - window.CharacterClasses                 (lazy)
+ *   - window.CharacterQueries                (lazy)
+ *   - window.AcademyClasses                  (lazy)
  *   - window.NotificationSystem
  */
 
@@ -115,6 +157,7 @@
     var AcademyUI = window.AcademyUI;
     var AcademyAggregator = window.AcademyAggregator;
     var AcademyCharacterDetailAggregator = window.AcademyCharacterDetailAggregator;
+    var CharacterCRUD = window.CharacterCRUD;
     var NotificationSystem = window.NotificationSystem;
 
     var _missing = [];
@@ -126,7 +169,6 @@
         typeof AcademyUI.selectClass !== 'function' ||
         typeof AcademyUI.selectCharacter !== 'function' ||
         typeof AcademyUI.getCharacterMode !== 'function' ||
-        typeof AcademyUI.setCharacterMode !== 'function' ||
         typeof AcademyUI.getPeopleFilter !== 'function' ||
         typeof AcademyUI.setPeopleFilter !== 'function' ||
         typeof AcademyUI.setPeopleSearch !== 'function') {
@@ -142,6 +184,10 @@
     if (!AcademyCharacterDetailAggregator ||
         typeof AcademyCharacterDetailAggregator.getViewModel !== 'function') {
         _missing.push('AcademyCharacterDetailAggregator.getViewModel');
+    }
+    if (!CharacterCRUD ||
+        typeof CharacterCRUD.setMode !== 'function') {
+        _missing.push('CharacterCRUD.setMode');
     }
     if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
         _missing.push('NotificationSystem.notify');
@@ -205,7 +251,11 @@
     }
 
     function getCharacterClasses() {
-        return window.CharacterClasses || null;
+        return window.AcademyClasses || null;
+    }
+
+    function getClassDisciplinesPicker() {
+        return window.AcademyClassDisciplinesPicker || null;
     }
 
     // ============================================================
@@ -773,6 +823,9 @@
             case 'edit-class-add-character':
                 handleClassAction('add-character', el.dataset.classId);
                 return;
+            case 'edit-class-disciplines':
+                handleClassAction('disciplines', el.dataset.classId);
+                return;
             case 'edit-class':
                 handleClassAction('edit-class', el.dataset.classId);
                 return;
@@ -858,6 +911,14 @@
     }
 
     function handleClassAction(action, classId) {
+        switch (action) {
+            case 'disciplines':
+                handleOpenDisciplinesPicker(classId);
+                return;
+            default:
+                break;
+        }
+
         var CRUD = getCRUDModals();
         if (!CRUD) {
             notify('CRUD module not available.', 'error');
@@ -884,6 +945,53 @@
         }
     }
 
+    /**
+     * Open the class-disciplines picker modal.
+     *
+     * The picker owns its own modal shell and lifecycle. This
+     * controller passes:
+     *   - classId: the class whose disciplines are being edited
+     *   - week:    the current display week, for `activeInWeek`
+     *              badges
+     *   - onClose: a callback that refreshes the People view when
+     *              the picker closes for any reason
+     *
+     * When the picker module is not loaded, the controller notifies
+     * and does nothing else.
+     */
+    function handleOpenDisciplinesPicker(classId) {
+        if (!isNonEmptyString(classId)) {
+            notify('Class ID is required.', 'error');
+            return;
+        }
+
+        var Picker = getClassDisciplinesPicker();
+        if (!Picker || typeof Picker.openModal !== 'function') {
+            notify(
+                'Class-disciplines picker is not available.',
+                'error'
+            );
+            return;
+        }
+
+        var week = AcademyUI.getDisplayWeek();
+
+        try {
+            Picker.openModal(classId, {
+                week: week,
+                onClose: function() {
+                    var ctx = getContext();
+                    ctx.onChange();
+                }
+            });
+        } catch (e) {
+            console.warn(
+                '[AcademyPeopleController] picker openModal threw:', e
+            );
+            notify('Failed to open the disciplines picker.', 'error');
+        }
+    }
+
     // ============================================================
     // WEEK COMMIT
     // ============================================================
@@ -897,24 +1005,83 @@
     }
 
     // ============================================================
-    // CHARACTER MODE
+    // CHARACTER MODE (v27)
     // ============================================================
+    //
+    // The checkbox toggles the character's mode between 'student'
+    // and 'instructor'.
+    //
+    // WRITE PATH:
+    //   The write goes through CharacterCRUD.setMode, which routes
+    //   through MutationPipeline. On success, the shell is asked to
+    //   re-render so the detail panel updates to the new mode.
+    //
+    //   The checkbox's own checked state is not manually corrected
+    //   here. If the write fails, the pipeline has already
+    //   notified; the re-render (which the failure path does NOT
+    //   trigger) leaves the checkbox visually inconsistent with the
+    //   character until the next render, at which point the VM
+    //   reads the character's actual mode and the checkbox
+    //   corrects itself. This is deliberate: a silent UI correction
+    //   on failure would hide the failure.
+    //
+    //   On success, we also reset the active tab if the new mode
+    //   does not include the current tab. 'grades' and 'teams' are
+    //   student-only tabs; 'autoGroups' is instructor-only. When
+    //   the mode changes, the current tab may no longer be valid
+    //   for the new mode. The tab reset goes through the same
+    //   path the tab bar uses.
+    //
+    // READ PATH:
+    //   The VM's mode comes from AcademyUI.getCharacterMode, which
+    //   reads the character record via CharacterQueries. This
+    //   controller does not cache the mode anywhere.
 
     function handleCharacterModeToggle(checked) {
         var charId = AcademyUI.getSelectedCharacterId();
         if (!charId) { return; }
 
         var newMode = checked ? 'instructor' : 'student';
-        AcademyUI.setCharacterMode(charId, newMode);
 
+        // Adjust the active tab BEFORE the write resolves, so that
+        // if the write succeeds the re-render immediately shows a
+        // valid tab for the new mode. If the write fails, the tab
+        // adjustment is harmless — the current mode is unchanged,
+        // so the tab may briefly show a mode-invalid panel, which
+        // the next render corrects when it reads the actual mode.
+        //
+        // The alternative is to wait for the write to resolve and
+        // adjust the tab then. But the write is asynchronous, and
+        // the checkbox is the primary user-visible signal of the
+        // mode change. Getting the tab adjustment wrong for a
+        // moment is less visible than a half-second freeze on the
+        // checkbox. Pre-adjustment wins.
         if (newMode === 'instructor' &&
             (_activeCharacterTab === 'grades' ||
                 _activeCharacterTab === 'teams')) {
             _activeCharacterTab = 'main';
         }
+        if (newMode === 'student' &&
+            _activeCharacterTab === 'autoGroups') {
+            _activeCharacterTab = 'main';
+        }
 
-        var ctx = getContext();
-        ctx.onChange();
+        CharacterCRUD.setMode(charId, newMode)
+            .then(function(result) {
+                if (result && result.success) {
+                    var ctx = getContext();
+                    ctx.onChange();
+                }
+                // On failure, the pipeline has already notified.
+                // No re-render is triggered; the checkbox will be
+                // corrected on the next render.
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[AcademyPeopleController] setMode failed:', err
+                );
+                notify('Failed to change character mode.', 'error');
+            });
     }
 
     // ============================================================
@@ -1026,6 +1193,9 @@
     // afterwards. The tab reads enrolments class-scoped. An
     // enrolment in a discipline the class doesn't offer is stored
     // but never displayed.
+    //
+    // The picker is still a prompt(). Replacing it with a proper modal
+    // is logged as follow-up E1-ui.
 
     function handleEnrollDiscipline(charId) {
         if (!charId) { return; }

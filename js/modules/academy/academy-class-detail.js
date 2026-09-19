@@ -7,13 +7,17 @@
  * RESPONSIBILITIES:
  *   - Render the class summary header
  *   - Render the class description (when present)
- *   - Render the class action buttons (Add Character, Edit, Delete)
+ *   - Render the class action buttons (Add Character, Disciplines,
+ *     Edit, Delete)
  *   - Render an empty state when no class is selected
  *
  * NOT RESPONSIBLE FOR:
  *   - The class roster. That is the People sidebar's concern.
  *   - The class's academic teams. That is the Weekly Teams view.
  *   - The class's rankings. That is the Rankings view.
+ *   - The class-disciplines picker. The button on the header emits
+ *     data-action="edit-class-disciplines"; the People controller
+ *     routes it to AcademyClassDisciplinesPicker.
  *
  * ROLE VOCABULARY:
  *   'student' | 'instructor'. There is no 'trainee'.
@@ -22,6 +26,7 @@
  *   Every action element uses a prefix that the AcademyView dispatcher
  *   routes deterministically:
  *     edit-class-add-character   → handleEditDispatcher → openAddCharacterToClass
+ *     edit-class-disciplines     → handleEditDispatcher → openDisciplinesPicker
  *     edit-class                 → handleEditDispatcher → openClassForm
  *     delete-class               → handleDeleteDispatcher → openClassDelete
  *
@@ -223,6 +228,11 @@
                     '+ Add Character' +
                 '</button>';
         html += '<button type="button" class="small secondary" ' +
+                    'data-action="edit-class-disciplines" ' +
+                    'data-class-id="' + escapeAttribute(classVM.id) + '">' +
+                    'Disciplines' +
+                '</button>';
+        html += '<button type="button" class="small secondary" ' +
                     'data-action="edit-class" ' +
                     'data-class-id="' + escapeAttribute(classVM.id) + '">' +
                     'Edit Class' +
@@ -259,8 +269,8 @@
     // EXPOSE
     // ============================================================
 
-    window.AcademyClassDetail = {
+    window.AcademyClassDetail = Object.freeze({
         renderHTML: renderHTML
-    };
+    });
 
 })();

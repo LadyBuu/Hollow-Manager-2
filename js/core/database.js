@@ -39,6 +39,71 @@
  *                  * weeklyHours and weight ensured to be numbers.
  *                  * gradeScheme and assessmentWeights left alone;
  *                    read-time normalisation covers absence.
+ *   - Version 27: Class-discipline marker-only store, character mode,
+ *                and global instructor retirement.
+ *
+ *                (a) CLASS-DISCIPLINE MARKER REWRITE.
+ *                    Every record in academy.classDisciplines[classId]
+ *                    [disciplineId] is rewritten to the marker shape:
+ *
+ *                      { classId, disciplineId, mandatory,
+ *                        createdAt, updatedAt }
+ *
+ *                    Every other field is dropped: startWeek, endWeek,
+ *                    weeklyHours, weight, gradeSchemeId,
+ *                    assessmentWeights, instructorIds. The discipline
+ *                    entity owns its config; the class-discipline
+ *                    record only marks availability.
+ *
+ *                    `mandatory` is derived from the discipline's
+ *                    `type` field ('mandatory' → true, else false).
+ *                    When the discipline no longer exists, the old
+ *                    record's `mandatory` field is used as a fallback.
+ *
+ *                (b) INSTRUCTOR-OF-DISCIPLINE-FOR-CLASS MIGRATION.
+ *                    Under the new model, "instructor X teaches
+ *                    discipline D for class C" is expressed as an
+ *                    enrolment, not as a field on the class-discipline
+ *                    record. Any legacy `instructorIds[]` array on a
+ *                    class-discipline record is converted:
+ *
+ *                      For each instructorId in the array, ensure
+ *                      academy.enrolments[classId][instructorId]
+ *                      contains an interval for `disciplineId` spanning
+ *                      the class-discipline's startWeek..endWeek.
+ *
+ *                    Overlapping intervals for the same
+ *                    (classId, charId, disciplineId) are NOT created;
+ *                    if the charId is already enrolled in that
+ *                    discipline for that class during the span, the
+ *                    existing interval is kept. After conversion, the
+ *                    `instructorIds` field is dropped.
+ *
+ *                    The class-discipline's startWeek / endWeek are
+ *                    read from the legacy record before the marker
+ *                    rewrite drops them. The migration processes
+ *                    instructor conversion BEFORE the marker rewrite
+ *                    so the week bounds are still available.
+ *
+ *                (c) CHARACTER MODE BACKFILL.
+ *                    Every character that lacks a `mode` field gets
+ *                    `mode: 'student'`. This is the correct default:
+ *                    every existing character is a student unless the
+ *                    user explicitly toggles instructor mode.
+ *
+ *                (d) GLOBAL DISCIPLINE INSTRUCTOR RETIREMENT.
+ *                    The `instructorIds` field on every discipline in
+ *                    data.curriculum.disciplines[] is dropped. The
+ *                    field's semantics are now expressed through
+ *                    enrolments, and AcademyDisciplines no longer
+ *                    exports getDisciplinesByInstructor.
+ *
+ *                The v27 shape guard in normaliseDataStructure is
+ *                symmetric with v24/v25/v26: it enforces the marker
+ *                shape on any class-discipline record that survives
+ *                the migration (e.g. imported envelopes, direct
+ *                writes), and enforces the mode field on any character
+ *                that lacks one.
  *
  * ACADEMY STORES (v20+):
  *   ...
@@ -58,6 +123,18 @@
  *   discipline.maxStudents
  *   discipline.gradingSystem
  *   discipline.instructorId (singular)
+ *
+ * RETIRED CLASS-DISCIPLINE FIELDS (removed in v27):
+ *   classDiscipline.startWeek
+ *   classDiscipline.endWeek
+ *   classDiscipline.weeklyHours
+ *   classDiscipline.weight
+ *   classDiscipline.gradeSchemeId
+ *   classDiscipline.assessmentWeights
+ *   classDiscipline.instructorIds
+ *
+ * RETIRED DISCIPLINE FIELDS (removed in v27):
+ *   discipline.instructorIds
  */
 
 (function() {
@@ -65,7 +142,7 @@
 
     var DB_NAME = 'HollowBladesDB';
     var DB_VERSION = 1;
-    var DATA_VERSION = 26;
+    var DATA_VERSION = 27;
     var STORE_NAME = 'appData';
 
     var _indexedDB = null;
@@ -501,6 +578,7 @@
                 case 23: migrateToVersion24(data); break;
                 case 24: migrateToVersion25(data); break;
                 case 25: migrateToVersion26(data); break;
+                case 26: migrateToVersion27(data); break;
                 default: data._dataVersion = DATA_VERSION; break;
             }
         }
@@ -2065,6 +2143,435 @@
         data._dataVersion = 26;
     }
 
+    /**
+     * Version 27 migration — Class-discipline marker-only store,
+     * character mode, and global instructor retirement.
+     *
+     * WHY:
+     *   Three concerns, all in one version because they land together
+     *   and none of them is coherent without the others.
+     *
+     *   (a) CLASS-DISCIPLINE MARKER REWRITE.
+     *       Before v27, a class-discipline record carried a full
+     *       config blob: startWeek, endWeek, weeklyHours, weight,
+     *       gradeSchemeId, assessmentWeights, instructorIds. The
+     *       audit confirmed that disciplines are global and that
+     *       classes only track availability. The config blob is
+     *       legacy. It duplicated discipline data and made the
+     *       "who owns this value" question ambiguous.
+     *
+     *       v27 rewrites every class-discipline record to a marker
+     *       shape:
+     *
+     *         { classId, disciplineId, mandatory,
+     *           createdAt, updatedAt }
+     *
+     *       Every config field is dropped. The discipline entity is
+     *       the sole source of startWeek, endWeek, weeklyHours,
+     *       weight, gradeSchemeId, and assessmentWeights.
+     *
+     *       `mandatory` is per-class. It is derived from the
+     *       discipline's `type` field: 'mandatory' → true, anything
+     *       else → false. When the discipline no longer exists, the
+     *       legacy record's `mandatory` field is used as a fallback;
+     *       when that is also absent, the default is false.
+     *
+     *   (b) INSTRUCTOR-OF-DISCIPLINE-FOR-CLASS MIGRATION.
+     *       Under the new model, "instructor X teaches discipline D
+     *       for class C" is an ENROLMENT, not a field on the
+     *       class-discipline record. The enrolment store is the
+     *       same one students use:
+     *
+     *         academy.enrolments[classId][charId]
+     *           = [{ disciplineId, startWeek, endWeek }, ...]
+     *
+     *       Any legacy `instructorIds` array on a class-discipline
+     *       record is converted:
+     *
+     *         For each instructorId in the array, ensure the
+     *         instructor has an interval for `disciplineId` in that
+     *         class, spanning the class-discipline's
+     *         startWeek..endWeek.
+     *
+     *       If the instructor is already enrolled in that discipline
+     *       for that class during the span, the existing interval is
+     *       kept. No duplicate intervals are created. After
+     *       conversion, the `instructorIds` field is dropped.
+     *
+     *       The conversion runs BEFORE the marker rewrite, because
+     *       the marker rewrite drops startWeek and endWeek — the
+     *       weeks the conversion needs.
+     *
+     *   (c) CHARACTER MODE BACKFILL.
+     *       Characters gain a persisted `mode` field:
+     *
+     *         mode: 'student' | 'instructor'   (default 'student')
+     *
+     *       The mode is a domain fact. It drives which tabs the
+     *       Academy character detail panel renders and how enrolments
+     *       for the character are interpreted. Existing characters
+     *       default to 'student'.
+     *
+     *   (d) GLOBAL DISCIPLINE INSTRUCTOR RETIREMENT.
+     *       The `instructorIds` field on every discipline in
+     *       data.curriculum.disciplines[] is dropped. Its semantics
+     *       are now expressed through enrolments, and
+     *       AcademyDisciplines no longer exports
+     *       getDisciplinesByInstructor. Removing the field without
+     *       conversion is safe because the new read path (the
+     *       character detail aggregator's buildInstructorDisciplines)
+     *       walks enrolments directly and does not consult the
+     *       field.
+     *
+     * WHAT THIS MIGRATION DOES NOT DO:
+     *   - It does NOT touch teachingGroups or teachingSessions.
+     *   - It does NOT create enrolment records for instructors who
+     *     were assigned via the global discipline field only. That
+     *     assignment was never class-scoped, so there is nothing to
+     *     convert to a class-scoped enrolment. If a user wants a
+     *     former global-instructor assignment to survive, they
+     *     re-assign the instructor via the class-discipline picker.
+     *     This is a real data-loss boundary and is logged.
+     *   - It does NOT delete any class-discipline record. Only its
+     *     retired fields are dropped.
+     *   - It does NOT re-derive `mandatory` from anything other than
+     *     the discipline's `type` field.
+     *
+     * @param {object} data
+     */
+    function migrateToVersion27(data) {
+        var disciplineTypeById = Object.create(null);
+
+        // ---- Collect discipline types for mandatory derivation ----
+        if (data.curriculum &&
+            typeof data.curriculum === 'object' &&
+            !Array.isArray(data.curriculum) &&
+            Array.isArray(data.curriculum.disciplines)) {
+            for (var di = 0; di < data.curriculum.disciplines.length; di++) {
+                var disc = data.curriculum.disciplines[di];
+                if (!disc || typeof disc !== 'object' || !disc.id) {
+                    continue;
+                }
+                var type = (typeof disc.type === 'string' && disc.type !== '')
+                    ? disc.type
+                    : 'mandatory';
+                disciplineTypeById[String(disc.id)] = type;
+            }
+        }
+
+        // ============================================================
+        // Part A+B: Class-discipline marker rewrite with instructor
+        // conversion
+        // ============================================================
+
+        var recordsSeen = 0;
+        var recordsRewritten = 0;
+        var recordsMalformedSkipped = 0;
+        var instructorEntriesConverted = 0;
+        var instructorEntriesAlreadyPresent = 0;
+        var instructorEntriesWithoutWeeks = 0;
+        var emptyBucketsPruned = 0;
+
+        var academy = (data.academy && typeof data.academy === 'object' && !Array.isArray(data.academy))
+            ? data.academy
+            : null;
+
+        if (academy &&
+            academy.classDisciplines &&
+            typeof academy.classDisciplines === 'object' &&
+            !Array.isArray(academy.classDisciplines)) {
+
+            if (!academy.enrolments ||
+                typeof academy.enrolments !== 'object' ||
+                Array.isArray(academy.enrolments)) {
+                academy.enrolments = {};
+            }
+
+            var classIds = Object.keys(academy.classDisciplines);
+
+            for (var ci = 0; ci < classIds.length; ci++) {
+                var classId = classIds[ci];
+                var byClass = academy.classDisciplines[classId];
+                if (!byClass || typeof byClass !== 'object' || Array.isArray(byClass)) {
+                    recordsMalformedSkipped++;
+                    continue;
+                }
+
+                var disciplineIds = Object.keys(byClass);
+                var keptRecords = 0;
+
+                for (var di2 = 0; di2 < disciplineIds.length; di2++) {
+                    var disciplineId = disciplineIds[di2];
+                    var legacy = byClass[disciplineId];
+
+                    if (!legacy || typeof legacy !== 'object' || Array.isArray(legacy)) {
+                        recordsMalformedSkipped++;
+                        delete byClass[disciplineId];
+                        continue;
+                    }
+
+                    recordsSeen++;
+
+                    // ---- Step 1: convert instructorIds[] to enrolments ----
+                    var legacyInstructors = Array.isArray(legacy.instructorIds)
+                        ? legacy.instructorIds
+                        : [];
+
+                    var legacyStartWeek = legacy.startWeek;
+                    var legacyEndWeek = legacy.endWeek;
+
+                    var hasWeeks =
+                        typeof legacyStartWeek === 'number' &&
+                        isFinite(legacyStartWeek);
+
+                    if (legacyInstructors.length > 0) {
+                        if (!hasWeeks) {
+                            // We cannot convert without a start week.
+                            // Count and skip; the assignment is lost.
+                            // Logged in the summary.
+                            instructorEntriesWithoutWeeks += legacyInstructors.length;
+                        } else {
+                            for (var ii = 0; ii < legacyInstructors.length; ii++) {
+                                var instructorId = legacyInstructors[ii];
+                                if (instructorId === undefined ||
+                                    instructorId === null ||
+                                    String(instructorId).trim() === '') {
+                                    continue;
+                                }
+                                var instructorIdStr = String(instructorId).trim();
+
+                                var result = convertInstructorAssignment(
+                                    academy,
+                                    classId,
+                                    instructorIdStr,
+                                    disciplineId,
+                                    legacyStartWeek,
+                                    legacyEndWeek
+                                );
+
+                                if (result === 'converted') {
+                                    instructorEntriesConverted++;
+                                } else if (result === 'already-present') {
+                                    instructorEntriesAlreadyPresent++;
+                                }
+                            }
+                        }
+                    }
+
+                    // ---- Step 2: derive mandatory ----
+                    var derivedMandatory;
+                    var knownType = disciplineTypeById[String(disciplineId)];
+                    if (knownType !== undefined) {
+                        derivedMandatory = (knownType === 'mandatory');
+                    } else if (typeof legacy.mandatory === 'boolean') {
+                        derivedMandatory = legacy.mandatory;
+                    } else {
+                        derivedMandatory = false;
+                    }
+
+                    // ---- Step 3: build the marker ----
+                    var now = new Date().toISOString();
+                    var createdAt = (typeof legacy.createdAt === 'string' && legacy.createdAt)
+                        ? legacy.createdAt
+                        : now;
+                    var updatedAt = (typeof legacy.updatedAt === 'string' && legacy.updatedAt)
+                        ? legacy.updatedAt
+                        : now;
+
+                    byClass[disciplineId] = {
+                        classId: String(classId),
+                        disciplineId: String(disciplineId),
+                        mandatory: derivedMandatory,
+                        createdAt: createdAt,
+                        updatedAt: updatedAt
+                    };
+
+                    keptRecords++;
+                    recordsRewritten++;
+                }
+
+                if (keptRecords === 0) {
+                    delete academy.classDisciplines[classId];
+                    emptyBucketsPruned++;
+                }
+            }
+        }
+
+        // ============================================================
+        // Part C: Character mode backfill
+        // ============================================================
+
+        var charactersSeen = 0;
+        var modesAdded = 0;
+
+        if (Array.isArray(data.characters)) {
+            for (var cc = 0; cc < data.characters.length; cc++) {
+                var char = data.characters[cc];
+                if (!char || typeof char !== 'object') { continue; }
+                charactersSeen++;
+
+                if (char.mode !== 'student' && char.mode !== 'instructor') {
+                    char.mode = 'student';
+                    modesAdded++;
+                }
+            }
+        }
+
+        // ============================================================
+        // Part D: Global discipline instructorIds retirement
+        // ============================================================
+
+        var disciplinesSeen = 0;
+        var disciplineInstructorFieldsDropped = 0;
+        var disciplineInstructorEntriesDropped = 0;
+
+        if (data.curriculum &&
+            typeof data.curriculum === 'object' &&
+            !Array.isArray(data.curriculum) &&
+            Array.isArray(data.curriculum.disciplines)) {
+
+            for (var d = 0; d < data.curriculum.disciplines.length; d++) {
+                var record = data.curriculum.disciplines[d];
+                if (!record || typeof record !== 'object') { continue; }
+                disciplinesSeen++;
+
+                if (Object.prototype.hasOwnProperty.call(record, 'instructorIds')) {
+                    if (Array.isArray(record.instructorIds)) {
+                        disciplineInstructorEntriesDropped += record.instructorIds.length;
+                    }
+                    delete record.instructorIds;
+                    disciplineInstructorFieldsDropped++;
+                }
+            }
+        }
+
+        // ============================================================
+        // Summary log
+        // ============================================================
+
+        console.log(
+            '[Database] v27: class-discipline marker rewrite, character ' +
+            'mode backfill, and global instructor retirement. ' +
+            'Class-discipline records seen: ' + recordsSeen + '. ' +
+            'Rewritten: ' + recordsRewritten + '. ' +
+            'Malformed skipped: ' + recordsMalformedSkipped + '. ' +
+            'Empty buckets pruned: ' + emptyBucketsPruned + '. ' +
+            'Instructor assignments converted to enrolments: ' +
+            instructorEntriesConverted + '. ' +
+            'Instructor assignments already present as enrolments: ' +
+            instructorEntriesAlreadyPresent + '. ' +
+            'Instructor assignments lost (no week bounds): ' +
+            instructorEntriesWithoutWeeks + '. ' +
+            'Characters seen: ' + charactersSeen + '. ' +
+            'Modes added: ' + modesAdded + '. ' +
+            'Disciplines seen: ' + disciplinesSeen + '. ' +
+            'Discipline instructorIds fields dropped: ' +
+            disciplineInstructorFieldsDropped + '. ' +
+            'Discipline instructor entries dropped: ' +
+            disciplineInstructorEntriesDropped + '.'
+        );
+
+        if (instructorEntriesWithoutWeeks > 0) {
+            console.warn(
+                '[Database] v27: ' + instructorEntriesWithoutWeeks +
+                ' instructor assignment(s) could not be converted to ' +
+                'enrolments because the class-discipline record they ' +
+                'belonged to had no valid startWeek. These assignments ' +
+                'are lost. To restore them, re-assign the instructors ' +
+                'via the class-discipline picker.'
+            );
+        }
+
+        if (disciplineInstructorEntriesDropped > 0) {
+            console.warn(
+                '[Database] v27: ' + disciplineInstructorEntriesDropped +
+                ' entry(ies) in the global discipline.instructorIds field(s) ' +
+                'were dropped. This field expressed an instructor-of-a-' +
+                'discipline relationship that was never class-scoped, so ' +
+                'there is no enrolment to convert it to. If any of these ' +
+                'assignments matter, re-assign the instructors via the ' +
+                'class-discipline picker.'
+            );
+        }
+
+        data._dataVersion = 27;
+    }
+
+    /**
+     * Ensure the instructor has an enrolment interval for the given
+     * (classId, disciplineId) spanning [startWeek, endWeek].
+     *
+     * Returns:
+     *   'converted'      — a new interval was added
+     *   'already-present'— an existing interval already covers the span
+     *   'invalid'        — inputs were malformed (should not happen,
+     *                      defended for safety)
+     *
+     * If the instructor has an interval for the discipline that does
+     * not cover the span, it is left alone. The migration does NOT
+     * merge or extend existing intervals; that would be a semantic
+     * change, and this migration is about preserving what was there.
+     */
+    function convertInstructorAssignment(
+        academy,
+        classId,
+        instructorId,
+        disciplineId,
+        startWeek,
+        endWeek
+    ) {
+        if (!academy || !academy.enrolments) {
+            return 'invalid';
+        }
+        if (!classId || !instructorId || !disciplineId) {
+            return 'invalid';
+        }
+
+        var classKey = String(classId);
+        var charKey = String(instructorId);
+        var discKey = String(disciplineId);
+
+        var byClass = academy.enrolments[classKey];
+        if (!byClass || typeof byClass !== 'object' || Array.isArray(byClass)) {
+            byClass = {};
+            academy.enrolments[classKey] = byClass;
+        }
+
+        var intervals = byClass[charKey];
+        if (!Array.isArray(intervals)) {
+            intervals = [];
+            byClass[charKey] = intervals;
+        }
+
+        // Search for an existing interval for this discipline that
+        // already covers [startWeek, endWeek].
+        for (var i = 0; i < intervals.length; i++) {
+            var iv = intervals[i];
+            if (!iv || typeof iv !== 'object') { continue; }
+            if (String(iv.disciplineId) !== discKey) { continue; }
+
+            var ivStart = (typeof iv.startWeek === 'number') ? iv.startWeek : null;
+            var ivEnd = (iv.endWeek === null || iv.endWeek === undefined)
+                ? Infinity
+                : (typeof iv.endWeek === 'number' ? iv.endWeek : null);
+
+            if (ivStart === null || ivEnd === null) { continue; }
+
+            if (ivStart <= startWeek && ivEnd >= endWeek) {
+                return 'already-present';
+            }
+        }
+
+        // No covering interval. Append a new one.
+        intervals.push({
+            disciplineId: discKey,
+            startWeek: startWeek,
+            endWeek: (endWeek === null || endWeek === undefined) ? null : endWeek
+        });
+
+        return 'converted';
+    }
+
     // ============================================================
     // NORMALISE DATA STRUCTURE
     // ============================================================
@@ -2153,6 +2660,12 @@
                     });
                     repaired = true;
                 }
+            }
+
+            // v27 shape guard: every character must carry a valid mode.
+            if (char.mode !== 'student' && char.mode !== 'instructor') {
+                char.mode = 'student';
+                repaired = true;
             }
         });
 
@@ -2440,6 +2953,110 @@
 
                 if (coerceNumeric(record, 'weeklyHours')) { repaired = true; }
                 if (coerceNumeric(record, 'weight')) { repaired = true; }
+
+                // v27: drop the global discipline instructorIds field.
+                if (Object.prototype.hasOwnProperty.call(record, 'instructorIds')) {
+                    delete record.instructorIds;
+                    repaired = true;
+                }
+            }
+        })();
+
+        // v27 shape guard: every class-discipline record must be a
+        // marker. Any record that still carries a config field, an
+        // instructorIds array, or an incorrect shape is coerced to
+        // the marker shape. `mandatory` is preserved if boolean;
+        // otherwise derived from the discipline's type field.
+        (function ensureClassDisciplineMarkerShape() {
+            if (!data.academy ||
+                !data.academy.classDisciplines ||
+                typeof data.academy.classDisciplines !== 'object' ||
+                Array.isArray(data.academy.classDisciplines)) {
+                return;
+            }
+
+            var disciplineTypeById = Object.create(null);
+            if (data.curriculum &&
+                Array.isArray(data.curriculum.disciplines)) {
+                for (var di = 0; di < data.curriculum.disciplines.length; di++) {
+                    var d = data.curriculum.disciplines[di];
+                    if (!d || typeof d !== 'object' || !d.id) { continue; }
+                    var t = (typeof d.type === 'string' && d.type !== '')
+                        ? d.type
+                        : 'mandatory';
+                    disciplineTypeById[String(d.id)] = t;
+                }
+            }
+
+            var classIds = Object.keys(data.academy.classDisciplines);
+            for (var ci = 0; ci < classIds.length; ci++) {
+                var classId = classIds[ci];
+                var byClass = data.academy.classDisciplines[classId];
+                if (!byClass || typeof byClass !== 'object' || Array.isArray(byClass)) {
+                    delete data.academy.classDisciplines[classId];
+                    repaired = true;
+                    continue;
+                }
+
+                var disciplineIds = Object.keys(byClass);
+                var kept = 0;
+                for (var di2 = 0; di2 < disciplineIds.length; di2++) {
+                    var disciplineId = disciplineIds[di2];
+                    var record = byClass[disciplineId];
+                    if (!record || typeof record !== 'object' || Array.isArray(record)) {
+                        delete byClass[disciplineId];
+                        repaired = true;
+                        continue;
+                    }
+
+                    var needsRewrite = false;
+
+                    // Retired config fields.
+                    var retired = [
+                        'startWeek', 'endWeek', 'weeklyHours', 'weight',
+                        'gradeSchemeId', 'assessmentWeights', 'instructorIds'
+                    ];
+                    for (var rf = 0; rf < retired.length; rf++) {
+                        if (Object.prototype.hasOwnProperty.call(record, retired[rf])) {
+                            delete record[retired[rf]];
+                            needsRewrite = true;
+                        }
+                    }
+
+                    if (record.classId === undefined ||
+                        String(record.classId) !== String(classId)) {
+                        record.classId = String(classId);
+                        needsRewrite = true;
+                    }
+                    if (record.disciplineId === undefined ||
+                        String(record.disciplineId) !== String(disciplineId)) {
+                        record.disciplineId = String(disciplineId);
+                        needsRewrite = true;
+                    }
+                    if (typeof record.mandatory !== 'boolean') {
+                        var knownType = disciplineTypeById[String(disciplineId)];
+                        record.mandatory = (knownType === 'mandatory');
+                        needsRewrite = true;
+                    }
+                    if (typeof record.createdAt !== 'string' || record.createdAt === '') {
+                        record.createdAt = new Date().toISOString();
+                        needsRewrite = true;
+                    }
+                    if (typeof record.updatedAt !== 'string' || record.updatedAt === '') {
+                        record.updatedAt = new Date().toISOString();
+                        needsRewrite = true;
+                    }
+
+                    if (needsRewrite) {
+                        repaired = true;
+                    }
+                    kept++;
+                }
+
+                if (kept === 0) {
+                    delete data.academy.classDisciplines[classId];
+                    repaired = true;
+                }
             }
         })();
 

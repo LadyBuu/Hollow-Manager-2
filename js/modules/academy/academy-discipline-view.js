@@ -15,7 +15,7 @@
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no domain logic.
  *   - Does NOT fetch data. Does NOT call AcademyDisciplines.
- *   - Receives a view model from AcademyView.
+ *   - Receives a view model from AcademyDisciplineController.
  *   - The VM's editor section comes from
  *     AcademyAggregator.getDisciplineEditorViewModel.
  *   - Does NOT bind events. Rows, buttons, inputs, and selects emit
@@ -40,7 +40,7 @@
  *
  * EVENTS EMITTED (data-* attributes, for AcademyView to bind):
  *   Sidebar:
- *     #academy-add-discipline-btn                    (click)
+ *     [data-action="discipline-add"]                 (click) — v27
  *     #academy-discipline-search                     (input)
  *     #academy-discipline-type-filter                (change)
  *     .academy-discipline-row [data-discipline-id]   (click)
@@ -52,7 +52,6 @@
  *     [data-discipline-field="endWeek"]
  *     [data-discipline-field="weeklyHours"]
  *     [data-discipline-field="weight"]
- *     [data-discipline-field="instructors"]
  *
  *   Editor — grade scheme:
  *     [data-discipline-field="schemeLabel"]
@@ -71,6 +70,19 @@
  *     [data-action="discipline-save"]                           (click)
  *     [data-action="discipline-cancel"]                         (click)
  *     [data-action="discipline-delete"] [data-discipline-id]    (click)
+ *
+ * v27 CHANGES:
+ *   - The "+ Add Discipline" button was previously id-addressed
+ *     (#academy-add-discipline-btn) and did not route through the
+ *     controller's dispatch. It is now emitted with
+ *     data-action="discipline-add", matching every other action in
+ *     this view. The controller's dispatch switch has a matching
+ *     case.
+ *   - The instructor selector was REMOVED from the discipline editor.
+ *     The relationship it expressed ("who teaches this discipline")
+ *     is class-scoped and lives on the class-disciplines picker.
+ *     AcademyDisciplines no longer carries an instructorIds field,
+ *     and this editor no longer renders or emits one.
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
@@ -212,8 +224,9 @@
 
     function renderAddButton() {
         return (
-            '<button type="button" id="academy-add-discipline-btn" ' +
-                'class="primary small academy-add-discipline-btn">' +
+            '<button type="button" ' +
+                'class="primary small academy-add-discipline-btn" ' +
+                'data-action="discipline-add">' +
                 '+ Add Discipline' +
             '</button>'
         );
@@ -464,22 +477,6 @@
         html += '</div>'; // grid
         html += '</div>'; // section
 
-        // ---- Instructors ----
-        html += '<div class="academy-discipline-editor-section">';
-        html += '<div class="academy-discipline-editor-field ' +
-                    'academy-discipline-editor-field-wide">';
-        html += '<label for="academy-discipline-instructors">Instructors</label>';
-        html += '<select id="academy-discipline-instructors" ' +
-                    'class="' + withErrorClass('academy-discipline-input academy-discipline-instructors', errors, 'instructors') + '" ' +
-                    'data-discipline-field="instructors" ' +
-                    'multiple size="6">';
-        html += renderInstructorOptions(d);
-        html += '</select>';
-        html += '<p class="field-hint">Ctrl/Cmd-click to select multiple.</p>';
-        html += renderFieldError(errors, 'instructors');
-        html += '</div>';
-        html += '</div>';
-
         // ---- Grade scheme ----
         html += renderGradeSchemeSection(d, errors, bandPercentBounds);
 
@@ -490,62 +487,6 @@
         html += renderEditorActions(d);
 
         return html;
-    }
-
-    function renderInstructorOptions(d) {
-        var available = Array.isArray(d.availableInstructors)
-            ? d.availableInstructors
-            : null;
-
-        var selectedIds = Array.isArray(d.instructorIds) ? d.instructorIds : [];
-        var selectedNames = Array.isArray(d.instructorNames) ? d.instructorNames : [];
-
-        if (available && available.length > 0) {
-            var html = '';
-            var seen = {};
-            for (var i = 0; i < available.length; i++) {
-                var inst = available[i];
-                if (!inst || !inst.id) { continue; }
-                var isSelected = false;
-                for (var j = 0; j < selectedIds.length; j++) {
-                    if (String(selectedIds[j]) === String(inst.id)) {
-                        isSelected = true;
-                        break;
-                    }
-                }
-                seen[String(inst.id)] = true;
-                html += '<option value="' + escapeAttribute(inst.id) + '"' +
-                            (isSelected ? ' selected' : '') + '>' +
-                            escapeHtml(inst.name || inst.id) +
-                        '</option>';
-            }
-            // Any selected ID not present in the available list is
-            // rendered as a selected option so it is not silently
-            // dropped.
-            for (var k = 0; k < selectedIds.length; k++) {
-                var sid = String(selectedIds[k]);
-                if (seen[sid]) { continue; }
-                var sname = selectedNames[k] || sid;
-                html += '<option value="' + escapeAttribute(sid) + '" selected>' +
-                            escapeHtml(sname) +
-                        '</option>';
-            }
-            return html;
-        }
-
-        if (selectedIds.length === 0) {
-            return '<option value="" disabled>No instructors available</option>';
-        }
-
-        var out = '';
-        for (var m = 0; m < selectedIds.length; m++) {
-            var id = selectedIds[m];
-            var name = selectedNames[m] || id;
-            out += '<option value="' + escapeAttribute(id) + '" selected>' +
-                        escapeHtml(name) +
-                    '</option>';
-        }
-        return out;
     }
 
     // ============================================================
@@ -837,8 +778,8 @@
     // EXPOSE
     // ============================================================
 
-    window.AcademyDisciplineView = {
+    window.AcademyDisciplineView = Object.freeze({
         renderHTML: renderHTML
-    };
+    });
 
 })();

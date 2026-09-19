@@ -36,6 +36,7 @@
  *
  *   CharacterQueries          identity, display name, status, age, death
  *   AcademyClasses            class entity, character↔class membership
+ *   AcademyClassDisciplines   class-discipline markers (v27)
  *   AcademyEnrolments         student↔discipline enrolment (class-scoped)
  *   AcademyGrades             grade records (class-scoped)
  *   AcademyDisciplines        discipline entities
@@ -46,6 +47,27 @@
  *   EliminationQueries        elimination week, reason, state
  *   CalendarConstants         week bounds for current-week resolution
  *   AcademyCalendarAggregator schedule grid reads (projector-backed)
+ *
+ * INSTRUCTOR DISCIPLINES (v27):
+ *   Before v27, an instructor's "disciplines I teach" list was read
+ *   from `discipline.instructorIds` — a global list on each
+ *   discipline. That field was retired. The relationship it
+ *   expressed is class-scoped: an instructor teaches a discipline
+ *   FOR A CLASS.
+ *
+ *   The class-scoped relationship is expressed through enrolments.
+ *   An enrolment record at academy.enrolments[classId][charId]
+ *   carries { disciplineId, startWeek, endWeek }. When the charId
+ *   belongs to an instructor, that enrolment means "this instructor
+ *   teaches this discipline for this class."
+ *
+ *   buildInstructorDisciplines performs the derived read: it walks
+ *   the class-discipline markers, checks each for an enrolment of
+ *   the given character in that discipline, and produces a
+ *   deduplicated list of disciplines with the classes they're taught
+ *   in. The list is presented by discipline, not by (discipline,
+ *   class) pair, so an instructor teaching the same discipline for
+ *   two classes sees it once.
  *
  * SCHEDULE SOURCE (v21):
  *   buildScheduleGridViewModel reads from AcademyCalendarAggregator,
@@ -91,7 +113,7 @@
  *     },
  *
  *     instructor: null | {
- *       disciplines: [{ id, name, type }],
+ *       disciplines: [{ id, name, type, classIds, classNames }],
  *       autoGroups: [{
  *         key,
  *         disciplineId,
@@ -101,6 +123,12 @@
  *       }]
  *     }
  *   }
+ *
+ *   Each instructor discipline entry now carries `classIds` and
+ *   `classNames` — the classes the instructor teaches the discipline
+ *   for. The renderer is free to display them or ignore them; the
+ *   VM includes them because the data is already resolved at this
+ *   layer.
  *
  * SCHEDULE GRID VIEW MODEL SHAPE:
  *
@@ -129,10 +157,11 @@
  *   - Display fields use '—' or null rather than invented numeric values.
  *
  * MODE SEMANTICS:
- *   - The mode is a display toggle from the caller (AcademyUI state).
- *   - Both student and instructor projections are NOT computed unless
- *     the mode selects them. This avoids unnecessary cross-domain reads
- *     when the user is only viewing one side.
+ *   - The mode is read by the caller from AcademyUI.getCharacterMode,
+ *     which reads the character record. Both student and instructor
+ *     projections are NOT computed unless the mode selects them.
+ *     This avoids unnecessary cross-domain reads when the user is
+ *     only viewing one side.
  *
  * WEEK SEMANTICS:
  *   - Week is required for class-scoped projections (grades, performance,
@@ -148,12 +177,13 @@
  * DEPENDENCIES (mandatory):
  *   - window.CharacterQueries
  *   - window.AcademyClasses
+ *   - window.AcademyClassDisciplines
  *   - window.AcademyDisciplines
+ *   - window.AcademyEnrolments
  *   - window.AcademyGrades
  *   - window.CalendarConstants
  *
  * DEPENDENCIES (optional, feature-scoped):
- *   - window.AcademyEnrolments           (student disciplines)
  *   - window.AcademyPerformance          (academic average, overall score)
  *   - window.AcademySocialScore          (social score)
  *   - window.AcademyGroups               (instructor auto-groups)
@@ -180,7 +210,9 @@
 
     var CharacterQueries = window.CharacterQueries;
     var AcademyClasses = window.AcademyClasses;
+    var AcademyClassDisciplines = window.AcademyClassDisciplines;
     var AcademyDisciplines = window.AcademyDisciplines;
+    var AcademyEnrolments = window.AcademyEnrolments;
     var AcademyGrades = window.AcademyGrades;
     var CalendarConstants = window.CalendarConstants;
 
@@ -206,12 +238,26 @@
     if (!AcademyClasses || typeof AcademyClasses.getCharacterClasses !== 'function') {
         missing.push('AcademyClasses.getCharacterClasses');
     }
+    if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function') {
+        missing.push('AcademyClasses.getClass');
+    }
+
+    if (!AcademyClassDisciplines ||
+        typeof AcademyClassDisciplines.getClassDisciplinesForClass !== 'function') {
+        missing.push('AcademyClassDisciplines.getClassDisciplinesForClass');
+    }
 
     if (!AcademyDisciplines || typeof AcademyDisciplines.getDiscipline !== 'function') {
         missing.push('AcademyDisciplines.getDiscipline');
     }
-    if (!AcademyDisciplines || typeof AcademyDisciplines.getDisciplinesByInstructor !== 'function') {
-        missing.push('AcademyDisciplines.getDisciplinesByInstructor');
+
+    if (!AcademyEnrolments ||
+        typeof AcademyEnrolments.getStudentDisciplines !== 'function') {
+        missing.push('AcademyEnrolments.getStudentDisciplines');
+    }
+    if (!AcademyEnrolments ||
+        typeof AcademyEnrolments.isEnrolled !== 'function') {
+        missing.push('AcademyEnrolments.isEnrolled');
     }
 
     if (!AcademyGrades || typeof AcademyGrades.getStudentClassGrades !== 'function') {
@@ -240,7 +286,6 @@
     // OPTIONAL DEPENDENCY ACCESSORS
     // ============================================================
 
-    function getAcademyEnrolments() { return window.AcademyEnrolments || null; }
     function getAcademyPerformance() { return window.AcademyPerformance || null; }
     function getAcademySocialScore() { return window.AcademySocialScore || null; }
     function getAcademyGroups() { return window.AcademyGroups || null; }
@@ -310,8 +355,10 @@
     /**
      * Resolve the effective mode.
      *
-     * The mode is a UI toggle. It is either 'student' or 'instructor'.
-     * Anything else falls back to 'student'.
+     * The mode is provided by the caller (the controller reads it from
+     * AcademyUI.getCharacterMode, which reads the character record).
+     * It is either 'student' or 'instructor'. Anything else falls back
+     * to 'student'.
      */
     function resolveMode(options) {
         if (options && options.mode === 'instructor') {
@@ -514,14 +561,9 @@
     // ============================================================
 
     function buildStudentDisciplines(char, classId) {
-        var AE = getAcademyEnrolments();
-        if (!AE || typeof AE.getStudentDisciplines !== 'function') {
-            return null;
-        }
-
         var ids = [];
         try {
-            ids = AE.getStudentDisciplines(char.id, classId) || [];
+            ids = AcademyEnrolments.getStudentDisciplines(char.id, classId) || [];
         } catch (e) {
             ids = [];
         }
@@ -607,24 +649,105 @@
     }
 
     // ============================================================
-    // INSTRUCTOR PROJECTION
+    // INSTRUCTOR PROJECTION (v27)
     // ============================================================
+    //
+    // An instructor's disciplines are DERIVED from enrolments. There
+    // is no instructor list on the discipline entity anymore.
+    //
+    // Walk:
+    //   For each class the character is a member of:
+    //     For each class-discipline marker:
+    //       If the character has an enrolment in that discipline
+    //       for that class, add (disciplineId, classId).
+    //
+    // Collect distinct disciplineIds. For each, capture the set of
+    // classIds the instructor teaches it for. The result is a list
+    // of disciplines, each with the classes it's taught in.
+    //
+    // The instructor's member-of-class check is done via
+    // AcademyClasses.getCharacterClasses(char), which reads
+    // character.classIds. There is no separate "which classes does
+    // this instructor belong to" store; membership is classIds.
 
     function buildInstructorDisciplines(char) {
-        var list = AcademyDisciplines.getDisciplinesByInstructor(char.id) || [];
-        var result = [];
-        for (var i = 0; i < list.length; i++) {
-            var d = list[i];
-            if (!d || !d.id) { continue; }
-            result.push({
-                id: d.id,
-                name: isNonEmptyString(d.name) ? d.name : 'Unnamed Discipline',
-                type: isNonEmptyString(d.type) ? d.type : ''
-            });
+        var charClasses = AcademyClasses.getCharacterClasses(char) || [];
+        if (!Array.isArray(charClasses) || charClasses.length === 0) {
+            return [];
         }
+
+        var classById = Object.create(null);
+        for (var c = 0; c < charClasses.length; c++) {
+            var cls = charClasses[c];
+            if (!cls || !cls.id) { continue; }
+            classById[String(cls.id)] = {
+                id: cls.id,
+                name: isNonEmptyString(cls.name) ? cls.name : 'Unnamed Class'
+            };
+        }
+
+        var classIds = Object.keys(classById);
+        var disciplinesById = Object.create(null);
+
+        for (var ci = 0; ci < classIds.length; ci++) {
+            var classId = classIds[ci];
+
+            var markers = [];
+            try {
+                markers = AcademyClassDisciplines
+                    .getClassDisciplinesForClass(classId) || [];
+            } catch (e) {
+                markers = [];
+            }
+
+            for (var m = 0; m < markers.length; m++) {
+                var marker = markers[m];
+                if (!marker || !marker.disciplineId) { continue; }
+
+                var disciplineId = String(marker.disciplineId);
+
+                var enrolled = false;
+                try {
+                    enrolled = AcademyEnrolments.isEnrolled(
+                        char.id, classId, disciplineId
+                    ) === true;
+                } catch (e) {
+                    enrolled = false;
+                }
+
+                if (!enrolled) { continue; }
+
+                if (!disciplinesById[disciplineId]) {
+                    disciplinesById[disciplineId] = {
+                        id: disciplineId,
+                        name: getDisciplineName(disciplineId),
+                        type: getDisciplineType(disciplineId),
+                        classIds: [],
+                        classNames: []
+                    };
+                }
+
+                var entry = disciplinesById[disciplineId];
+                if (entry.classIds.indexOf(classId) === -1) {
+                    entry.classIds.push(classId);
+                    entry.classNames.push(classById[classId].name);
+                }
+            }
+        }
+
+        var result = [];
+        var keys = Object.keys(disciplinesById);
+        for (var k = 0; k < keys.length; k++) {
+            var d = disciplinesById[keys[k]];
+            d.classIds.sort();
+            d.classNames.sort();
+            result.push(d);
+        }
+
         result.sort(function(a, b) {
             return a.name.localeCompare(b.name);
         });
+
         return result;
     }
 
@@ -872,9 +995,9 @@
     // EXPOSE
     // ============================================================
 
-    window.AcademyCharacterDetailAggregator = {
+    window.AcademyCharacterDetailAggregator = Object.freeze({
         getViewModel: getViewModel,
         getScheduleGridViewModel: getScheduleGridViewModel
-    };
+    });
 
 })();

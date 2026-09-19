@@ -35,7 +35,7 @@
  *     generic save path.
  *   - createNewCharacter() initialises classIds to [] so new characters
  *     satisfy the invariant "every character has a classIds array".
- *   - Membership mutations live in CharacterClasses.
+ *   - Membership mutations live in AcademyClasses.
  *   - Academy roster queries derive from character.classIds; there is
  *     no separate academy.classStudents store after v15.
  *
@@ -54,6 +54,23 @@
  *     `current` carries it and `normalised` does not overwrite it),
  *     but nothing reads it. It will disappear naturally as records
  *     are edited, or it can be pruned by a future migration.
+ *
+ * CHARACTER MODE (v27+):
+ *   - Every character record carries a persisted `mode` field:
+ *       mode: 'student' | 'instructor'   (default 'student')
+ *   - The mode is a DOMAIN FACT. It drives which tabs the Academy
+ *     character detail panel renders and how the character's
+ *     enrolments are interpreted. It is NOT session state.
+ *   - It is set through setMode(charId, mode), a dedicated mutation
+ *     that routes through MutationPipeline.
+ *   - It is NOT settable through save(). normaliseCharacterData()
+ *     does not read `mode` from the DTO, and updateExistingCharacter
+ *     preserves whatever is currently on the record. This mirrors the
+ *     classIds and disciplineIds rule: fields owned by a dedicated
+ *     mutation are not touched by the generic save path.
+ *   - createNewCharacter() initialises mode to 'student' so new
+ *     characters satisfy the invariant "every character has a valid
+ *     mode".
  *
  * DEATH MODEL:
  *   - deathYear is the source of truth for "when does this character die"
@@ -165,6 +182,13 @@
     var MAX_WEAPON_NOTES_LENGTH = CharacterConstants.MAX_WEAPON_NOTES_LENGTH;
     var DEFAULT_WEAPON_TYPE = CharacterConstants.DEFAULT_WEAPON_TYPE;
 
+    // Character mode is a v27 domain fact. The canonical values live
+    // here, not in a separate constants module, because no other
+    // module owns this vocabulary and no other module needs it beyond
+    // reading `char.mode`.
+    var VALID_MODES = ['student', 'instructor'];
+    var DEFAULT_MODE = 'student';
+
     // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
@@ -221,6 +245,10 @@
 
     function getAcademyCascade() {
         return window.AcademyCascade || null;
+    }
+
+    function isValidMode(mode) {
+        return mode === 'student' || mode === 'instructor';
     }
 
     // ============================================================
@@ -437,15 +465,12 @@
      *   - Does NOT touch fields it doesn't know about (those are
      *     preserved on edit via Object.assign in updateExistingCharacter)
      *
-     * CLASS MEMBERSHIP (v15+):
-     *   - `classIds` is NOT included in the normalised output.
-     *     CharacterCRUD does not own membership. See the docstring above.
-     *
-     * DISCIPLINE ENROLLMENT (v16+):
-     *   - `disciplineIds` is NOT included in the normalised output.
-     *     Enrollment is class-scoped and lives at
-     *     academy.enrolments[classId][charId]. CharacterCRUD does not
-     *     own it. See the docstring above.
+     * NOT NORMALISED HERE (owned by dedicated mutations):
+     *   - classIds        (AcademyClasses)
+     *   - disciplineIds   (AcademyEnrolments) — legacy field, dead
+     *   - mode            (CharacterCRUD.setMode)
+     *   - eliminations    (AcademyEliminations / TournamentEliminationCascade)
+     *   - eliminatedWeeks (EliminationQueries.rebuildEliminatedWeeks)
      */
     function normaliseCharacterData(charData) {
         var data = {};
@@ -505,8 +530,8 @@
             data.graduatingClassInstructor = charData.graduatingClassInstructor === true;
         }
 
-        // NOTE: disciplineIds is deliberately NOT normalised here.
-        // Enrollment is owned by AcademyEnrolments.
+        // NOTE: disciplineIds, classIds, and mode are deliberately NOT
+        // normalised here. They are owned by dedicated mutations.
 
         // ---- Stats ----
         data.stats = {};
@@ -580,8 +605,6 @@
                 ? charData.careerStatus.slice()
                 : [];
         }
-
-        // ---- CLASS MEMBERSHIP - DELIBERATELY NOT HANDLED HERE ----
 
         // ---- Personality ----
         if (charData.personality !== undefined) {
@@ -723,15 +746,19 @@
         var current = data.characters[index];
 
         // Preserve system-managed fields.
-        //   - classIds: owned by CharacterClasses.
-        //   - eliminations / eliminatedWeeks: owned by CharacterEliminations.
+        //   - classIds:      owned by AcademyClasses.
+        //   - mode:          owned by CharacterCRUD.setMode.
+        //   - eliminations / eliminatedWeeks: owned by AcademyEliminations
+        //                    and TournamentEliminationCascade.
         //   - disciplineIds: legacy field. If present on the record, it
-        //     is preserved verbatim, but nothing reads it. See the
-        //     DISCIPLINE ENROLLMENT block in the docstring.
+        //                    is preserved verbatim, but nothing reads it.
         var preserved = {
             id: current.id,
             createdAt: current.createdAt,
             classIds: Array.isArray(current.classIds) ? current.classIds.slice() : [],
+            mode: (current.mode === 'student' || current.mode === 'instructor')
+                ? current.mode
+                : DEFAULT_MODE,
             eliminations: Array.isArray(current.eliminations) ? current.eliminations.slice() : [],
             eliminatedWeeks: Array.isArray(current.eliminatedWeeks) ? current.eliminatedWeeks.slice() : []
         };
@@ -760,6 +787,10 @@
             // Class membership: initialised empty.
             classIds: [],
 
+            // Character mode: initialised to the default. It is set
+            // through CharacterCRUD.setMode, not through save.
+            mode: DEFAULT_MODE,
+
             hp: normalised.hp || 0,
             mp: normalised.mp || 0,
             weapons: Array.isArray(normalised.weapons) ? normalised.weapons : [],
@@ -776,6 +807,135 @@
             id: id,
             character: newChar
         };
+    }
+
+    // ============================================================
+    // SET MODE - Uses MutationPipeline
+    // ============================================================
+    //
+    // The character mode is a DOMAIN FACT: 'student' or 'instructor'.
+    // It drives which tabs the Academy character detail panel renders
+    // and how the character's enrolments are interpreted.
+    //
+    // It is deliberately NOT settable through save(). The generic
+    // save path preserves whatever mode is on the record. This
+    // mirrors the classIds and disciplineIds rule: fields owned by a
+    // dedicated mutation are not touched by generic save.
+    //
+    // NO SIDE EFFECTS. Flipping mode does not:
+    //   - Clear or reassign enrolments.
+    //   - Touch teaching groups.
+    //   - Touch exam sequences.
+    //   - Cascade into any other store.
+    //
+    // If the mode ever needs to trigger side effects, they are added
+    // here, in one place, rather than scattered across call sites.
+
+    /**
+     * Set a character's mode.
+     *
+     * @param {string} charId
+     * @param {string} mode - 'student' | 'instructor'
+     * @returns {Promise<{success, data?, message?}>}
+     */
+    function setMode(charId, mode) {
+        if (!checkDependencies()) {
+            return Promise.resolve({
+                success: false,
+                message: 'Dependencies not loaded. Please refresh the page.'
+            });
+        }
+
+        if (!charId) {
+            return Promise.resolve({
+                success: false,
+                message: 'Character ID is required.'
+            });
+        }
+
+        if (!isValidMode(mode)) {
+            return Promise.resolve({
+                success: false,
+                message: 'Invalid mode. Must be one of: ' + VALID_MODES.join(', ') + '.'
+            });
+        }
+
+        var targetId = String(charId);
+
+        var char = CharacterQueries.getCharacterById(targetId);
+        if (!char) {
+            return Promise.resolve({
+                success: false,
+                message: 'Character not found.'
+            });
+        }
+
+        // No-op when the mode is already the requested value.
+        // Returning success without a transaction avoids an activity
+        // log entry for a no-change action, which is what the
+        // discipline editor does for its own no-op saves.
+        var currentMode = (char.mode === 'student' || char.mode === 'instructor')
+            ? char.mode
+            : DEFAULT_MODE;
+
+        if (currentMode === mode) {
+            return Promise.resolve({
+                success: true,
+                data: {
+                    characterId: targetId,
+                    mode: mode,
+                    changed: false
+                }
+            });
+        }
+
+        var name = CharacterQueries.getDisplayName(char);
+
+        return MutationPipeline.performMutation({
+            validate: function() {
+                var currentChar = CharacterQueries.getCharacterById(targetId);
+                if (!currentChar) {
+                    return { valid: false, message: 'Character no longer exists.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(data) {
+                if (!Array.isArray(data.characters)) {
+                    throw new Error('Character store is not available.');
+                }
+
+                var found = null;
+                for (var i = 0; i < data.characters.length; i++) {
+                    var c = data.characters[i];
+                    if (c && String(c.id) === targetId) {
+                        found = c;
+                        break;
+                    }
+                }
+
+                if (!found) {
+                    throw new Error('Character not found in data store.');
+                }
+
+                found.mode = mode;
+                found.updatedAt = new Date().toISOString();
+
+                return {
+                    characterId: targetId,
+                    mode: mode,
+                    changed: true
+                };
+            },
+            logMessage: function(result) {
+                var label = mode === 'instructor' ? 'instructor' : 'student';
+                return 'Set ' + name + ' to ' + label + ' mode';
+            },
+            successMessage: function(result) {
+                var label = mode === 'instructor' ? 'Instructor' : 'Student';
+                return label + ' mode enabled.';
+            },
+            failureMessage: 'Failed to set character mode.'
+        });
     }
 
     // ============================================================
@@ -1029,13 +1189,23 @@
     // EXPOSE
     // ============================================================
 
-    window.CharacterCRUD = {
+    window.CharacterCRUD = Object.freeze({
         save: save,
         delete: deleteCharacter,
         deleteAll: deleteAllCharacters,
 
+        // v27: dedicated mutation for the character mode. Routes
+        // through MutationPipeline. No side effects.
+        setMode: setMode,
+
         validateCharacter: validateCharacter,
-        normaliseCharacterData: normaliseCharacterData
-    };
+        normaliseCharacterData: normaliseCharacterData,
+
+        // Mode vocabulary, exposed read-only so callers (the Academy
+        // controller's checkbox handler, aggregators, tests) do not
+        // hard-code the strings.
+        VALID_MODES: Object.freeze(VALID_MODES.slice()),
+        DEFAULT_MODE: DEFAULT_MODE
+    });
 
 })();
