@@ -36,14 +36,13 @@
  *   - The People controller              (AcademyPeopleController)
  *   - Rendering the People view
  *
- * WRITE SEMANTICS (why this module has two modes):
+ * WRITE SEMANTICS:
  *
  *   A class-discipline marker carries exactly two fields: identity
  *   and `mandatory`. It does NOT carry an instructor list. That
  *   relationship lives in the enrolment store.
  *
- *   The picker therefore writes to TWO stores, and the two writes
- *   are decoupled:
+ *   The picker writes to TWO stores:
  *
  *     1. Checkbox toggle and mandatory toggle
  *          -> AcademyClassDisciplines.setClassDiscipline /
@@ -53,15 +52,35 @@
  *
  *     2. Instructor assignment
  *          -> AcademyEnrolments.enrol / .leave
- *          Deferred until the Save button is pressed. Instructor
- *          edits are held in memory as a pending change set, and
- *          flushed in one sequence when Save is pressed.
+ *          Deferred until Save is pressed. Instructor edits are
+ *          held in memory as a pending change set.
  *
  *   The asymmetry is deliberate. A checkbox toggle is a single
  *   decision and there is no partial state to lose. Instructor
- *   assignment is a set of decisions (who, which discipline, enrol
- *   or leave) and bouncing the modal per toggle would fight the
- *   user's flow.
+ *   assignment is a set of decisions and bouncing the modal per
+ *   toggle would fight the user's flow.
+ *
+ * SAVE SEMANTICS (v2):
+ *   Save is SYNCHRONOUS from the modal's perspective:
+ *
+ *     1. Snapshot the pending changes.
+ *     2. Clear the pending set.
+ *     3. Close the modal.
+ *     4. Flush the changes to the enrolment store in the background.
+ *     5. If any fail, notify with an error toast.
+ *
+ *   The modal does NOT wait for the mutations to complete before
+ *   closing. This is the same pattern the checkbox toggles use: the
+ *   user's intent is captured, the UI reflects it immediately, and
+ *   persistence happens behind the scenes. A failure is surfaced as
+ *   an error notification; the user reopens the picker and sees the
+ *   current state (with the failed change un-applied) and can retry.
+ *
+ *   The alternative — keeping the modal open until the mutations
+ *   complete, then closing only on success — has the modal fight the
+ *   user on every save, and requires the picker to hold UI state
+ *   across async boundaries that can be interrupted by the user
+ *   clicking elsewhere.
  *
  * INSTRUCTOR ENROLMENT WINDOW:
  *   Instructor enrolments use the DISCIPLINE's window, matching
@@ -78,6 +97,20 @@
  *   to enrol instructors and shows an inline hint on that row. The
  *   user is expected to fix the discipline's start week in the
  *   Disciplines view before assigning instructors to it.
+ *
+ * LISTENER DISCIPLINE:
+ *   Content listeners (delegated change + click) are bound ONCE, on
+ *   the modal's content element, when the modal is created. Every
+ *   render replaces the content's innerHTML but does not rebind.
+ *   Rebinding on every render accumulated listeners and caused a
+ *   single click to dispatch N handlers, where N grew with the
+ *   number of renders.
+ *
+ *   Modal-level listeners (Escape and click-outside) are installed
+ *   by Modal.modalSetup, which is idempotent per modal. The picker
+ *   does not install its own Escape or backdrop handlers; it passes
+ *   its closeModal as the setup callback so that Modal's handlers
+ *   route through the picker's cleanup path.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -171,10 +204,15 @@
     // a time. The state below describes that instance.
 
     var _modal = null;
+    var _contentEl = null;
     var _classId = null;
     var _week = null;
     var _onClose = null;
-    var _boundHandlers = null;
+
+    // Content-level listener functions, captured so we can remove
+    // them on close. These are bound ONCE per modal.
+    var _contentChangeHandler = null;
+    var _contentClickHandler = null;
 
     // Pending instructor changes.
     //
@@ -187,13 +225,11 @@
     // class.
     //
     // When a discipline is unchecked, all its pending instructor
-    // changes are dropped (the discipline is no longer offered, so
-    // instructor assignment is meaningless).
+    // changes are dropped.
     //
     // When an instructor is toggled twice back to their original
     // state, the pending entry is removed rather than left as a
-    // no-op. This keeps the Save button's "there are unsaved
-    // changes" state accurate.
+    // no-op.
     var _pendingInstructorChanges = Object.create(null);
 
     // ============================================================
@@ -230,11 +266,11 @@
      * @param {string} classId
      * @param {object} [options]
      * @param {number} [options.week]     - Display week for
-     *   `activeInWeek` badges. Optional; when absent, no row shows
-     *   as active.
+     *   `activeInWeek` badges. Optional.
      * @param {function} [options.onClose] - Called once, when the
-     *   modal closes for any reason (save, cancel, backdrop, Escape).
-     *   The caller uses this to re-render the class detail panel.
+     *   modal closes for any reason (save, cancel, backdrop,
+     *   Escape). The caller uses this to re-render the class detail
+     *   panel.
      * @returns {object|null} The modal element, or null on failure
      */
     function openModal(classId, options) {
@@ -292,27 +328,60 @@
         modal.appendChild(contentEl);
 
         _modal = modal;
+        _contentEl = contentEl;
 
-        renderIntoContent(contentEl, vm);
+        // Bind content-level listeners ONCE. Every render replaces
+        // contentEl.innerHTML but the listeners survive because they
+        // are attached to contentEl itself, not to its children.
+        _contentChangeHandler = handleContentChange;
+        _contentClickHandler = handleContentClick;
+        contentEl.addEventListener('change', _contentChangeHandler);
+        contentEl.addEventListener('click', _contentClickHandler);
 
-        Modal.modalSetup(modal);
+        // Initial render.
+        renderContent(vm);
+
+        // Modal-level setup. Modal.modalSetup is idempotent per modal
+        // and installs Escape + click-outside. Pass closeModal so
+        // those events route through the picker's cleanup.
+        Modal.modalSetup(modal, function() {
+            closeModal();
+        });
         Modal.showModal(modal);
-
-        bindModalHandlers(modal, contentEl);
 
         return modal;
     }
 
     function closeModal() {
         var modal = _modal;
+        var contentEl = _contentEl;
         var onClose = _onClose;
 
+        // Detach content listeners before nulling references so we
+        // don't leak handlers tied to a stale contentEl.
+        if (contentEl && _contentChangeHandler) {
+            try {
+                contentEl.removeEventListener(
+                    'change', _contentChangeHandler
+                );
+            } catch (e) { /* ignore */ }
+        }
+        if (contentEl && _contentClickHandler) {
+            try {
+                contentEl.removeEventListener(
+                    'click', _contentClickHandler
+                );
+            } catch (e) { /* ignore */ }
+        }
+
         _modal = null;
+        _contentEl = null;
         _classId = null;
         _week = null;
         _onClose = null;
+        _contentChangeHandler = null;
+        _contentClickHandler = null;
 
-        unbindModalHandlers();
         clearPendingInstructorChanges();
 
         if (modal) {
@@ -336,34 +405,26 @@
 
     function resetState() {
         _modal = null;
+        _contentEl = null;
         _classId = null;
         _week = null;
         _onClose = null;
-        unbindModalHandlers();
+        _contentChangeHandler = null;
+        _contentClickHandler = null;
         clearPendingInstructorChanges();
     }
 
     // ============================================================
     // RENDER
     // ============================================================
-    //
-    // The render is a full re-render of the modal's content. Every
-    // mutation that succeeds triggers a VM refetch and a re-render.
-    // The picker holds no DOM state across mutations; it re-reads
-    // everything.
 
-    function renderIntoContent(contentEl, vm) {
-        if (!contentEl || !vm) { return; }
-
-        contentEl.innerHTML = buildModalHTML(vm);
-        bindContentHandlers(contentEl);
+    function renderContent(vm) {
+        if (!_contentEl || !vm) { return; }
+        _contentEl.innerHTML = buildModalHTML(vm);
     }
 
     function refetchAndRender() {
-        if (!_modal || !_classId) { return; }
-
-        var contentEl = _modal.querySelector('.modal-content');
-        if (!contentEl) { return; }
+        if (!_contentEl || !_classId) { return; }
 
         var vm = null;
         try {
@@ -384,7 +445,7 @@
             return;
         }
 
-        renderIntoContent(contentEl, vm);
+        renderContent(vm);
     }
 
     // ============================================================
@@ -429,7 +490,7 @@
                         '</span> of ' +
                         '<span class="academy-picker-summary-total">' +
                             disciplines.length +
-                        '</span>';
+                        '</span>' +
                     '</div>';
 
             html += '<div class="academy-picker-list">';
@@ -644,72 +705,12 @@
     }
 
     // ============================================================
-    // EVENT BINDING
-    // ============================================================
-    //
-    // Content handlers are rebound on every render, because the
-    // content is replaced wholesale. The modal-level handler (for
-    // Escape and backdrop click) is bound once, on open, and stays.
-
-    function bindContentHandlers(contentEl) {
-        if (!contentEl) { return; }
-
-        // Delegated change handler for all checkboxes.
-        contentEl.addEventListener('change', handleContentChange);
-
-        // Delegated click handler for footer buttons.
-        contentEl.addEventListener('click', handleContentClick);
-    }
-
-    function bindModalHandlers(modal, contentEl) {
-        unbindModalHandlers();
-
-        var onKeydown = function(e) {
-            if (e.key === 'Escape') {
-                e.preventDefault();
-                closeModal();
-            }
-        };
-
-        var onBackdropClick = function(e) {
-            if (e.target === modal) {
-                closeModal();
-            }
-        };
-
-        document.addEventListener('keydown', onKeydown);
-        modal.addEventListener('click', onBackdropClick);
-
-        _boundHandlers = {
-            onKeydown: onKeydown,
-            onBackdropClick: onBackdropClick,
-            modal: modal
-        };
-    }
-
-    function unbindModalHandlers() {
-        if (!_boundHandlers) { return; }
-
-        try {
-            document.removeEventListener(
-                'keydown', _boundHandlers.onKeydown
-            );
-        } catch (e) { /* ignore */ }
-
-        try {
-            if (_boundHandlers.modal) {
-                _boundHandlers.modal.removeEventListener(
-                    'click', _boundHandlers.onBackdropClick
-                );
-            }
-        } catch (e) { /* ignore */ }
-
-        _boundHandlers = null;
-    }
-
-    // ============================================================
     // CONTENT EVENT HANDLERS
     // ============================================================
+    //
+    // Both handlers are bound ONCE to the modal's content element
+    // and never rebound. They use event delegation so the fact that
+    // innerHTML is replaced on every render is invisible to them.
 
     function handleContentClick(e) {
         var target = e.target;
@@ -779,18 +780,12 @@
         var promise;
 
         if (checked) {
-            // Create the marker. `mandatory` defaults from the
-            // discipline's type on creation (AcademyClassDisciplines
-            // handles the default when we do not supply one).
             promise = AcademyClassDisciplines.setClassDiscipline(
                 _classId,
                 disciplineId,
                 {}
             );
         } else {
-            // Remove the marker. Any pending instructor changes for
-            // this discipline are dropped, because an unoffered
-            // discipline has no instructor assignment.
             dropPendingChangesForDiscipline(disciplineId);
             promise = AcademyClassDisciplines.removeClassDiscipline(
                 _classId,
@@ -802,8 +797,6 @@
             if (result && result.success) {
                 refetchAndRender();
             }
-            // On failure, the pipeline already notified. The
-            // checkbox will correct itself on the next refetch.
         }).catch(function(err) {
             console.warn(
                 '[AcademyClassDisciplinesPicker] ' +
@@ -855,8 +848,6 @@
                 : 'leave';
         }
 
-        // Re-render to update the visual state of the row and the
-        // Save button.
         refetchAndRender();
     }
 
@@ -874,13 +865,20 @@
     // SAVE
     // ============================================================
     //
-    // Flushes every pending instructor change in one sequence. The
-    // mutations are individually atomic (each goes through
+    // Save is synchronous from the modal's perspective:
+    //
+    //   1. Snapshot the pending changes.
+    //   2. Clear the pending set.
+    //   3. Close the modal.
+    //   4. Flush the changes to the enrolment store in the
+    //      background.
+    //   5. On failure, notify with an error toast.
+    //
+    // The mutations are individually atomic (each goes through
     // MutationPipeline) but the sequence is not transactional as a
-    // whole. That is acceptable for this flow: the user's edits are
-    // independent decisions, and a partial success with clear
-    // failure feedback is better than a hard rollback that discards
-    // successful enrolments.
+    // whole. The user's edits are independent decisions, and a
+    // partial success with clear failure feedback is better than a
+    // hard rollback that discards successful enrolments.
 
     function handleSave() {
         if (!_classId) { return; }
@@ -888,16 +886,17 @@
         var pending = collectPendingChanges();
 
         if (pending.length === 0) {
-            // Nothing to save. Close as if the user pressed Cancel
-            // — no persistence work to do.
+            // No pending changes. Close as if the user pressed
+            // Cancel. There is no persistence work to do.
             closeModal();
             return;
         }
 
         // Resolve each pending change's discipline window. When a
-        // discipline has no valid startWeek, its pending changes are
-        // dropped with a warning. The picker's UI already prevents
-        // this at the row level; the guard here is defence in depth.
+        // discipline has no valid startWeek, its pending changes
+        // are dropped with a warning. The picker's UI already
+        // prevents this at the row level; the guard here is
+        // defence in depth.
         var runnable = [];
         var skipped = 0;
 
@@ -907,7 +906,8 @@
                 change.disciplineId
             );
 
-            var startWeek = discipline && typeof discipline.startWeek === 'number'
+            var startWeek = discipline &&
+                typeof discipline.startWeek === 'number'
                 ? discipline.startWeek
                 : null;
 
@@ -935,6 +935,17 @@
             });
         }
 
+        // Snapshot the state we need for the background flush BEFORE
+        // calling closeModal, because closeModal nulls _classId.
+        var classId = _classId;
+
+        // Clear the pending set and close the modal immediately. From
+        // this point, the modal is gone and the mutations run in the
+        // background. The user sees the picker disappear the moment
+        // they click Save.
+        clearPendingInstructorChanges();
+        closeModal();
+
         if (skipped > 0) {
             notify(
                 'Skipped ' + skipped + ' instructor change(s) for ' +
@@ -944,21 +955,19 @@
         }
 
         if (runnable.length === 0) {
-            clearPendingInstructorChanges();
-            refetchAndRender();
+            // Nothing left to write. The close above already
+            // happened and onClose already fired.
             return;
         }
 
-        // Sequential execution. Each call returns a Promise; we
-        // chain them so that a failure in one does not cascade into
-        // a broken sequence. Every result is inspected; failures are
-        // collected for the final notification.
+        // Background flush. Sequential execution. Failures are
+        // collected and reported as a single notification.
         var failures = [];
         var chain = Promise.resolve();
 
         runnable.forEach(function(item) {
             chain = chain.then(function() {
-                return runOneInstructorChange(item);
+                return runOneInstructorChange(item, classId);
             }).then(function(result) {
                 if (!result || !result.success) {
                     failures.push({
@@ -981,14 +990,9 @@
 
         chain.then(function() {
             if (failures.length === 0) {
-                clearPendingInstructorChanges();
-                closeModal();
                 return;
             }
 
-            // Partial failure. Keep the modal open so the user can
-            // see the state and retry. Successful changes are
-            // already persisted; failed ones remain pending.
             notify(
                 'Failed to save ' + failures.length +
                 ' instructor change(s). See console for details.',
@@ -1000,19 +1004,6 @@
                     failures[k]
                 );
             }
-
-            // Rebuild the pending set to only the failures.
-            var failedKeys = Object.create(null);
-            for (var f = 0; f < failures.length; f++) {
-                var fail = failures[f];
-                failedKeys[makePendingKey(
-                    fail.disciplineId,
-                    fail.instructorId
-                )] = fail.action;
-            }
-            _pendingInstructorChanges = failedKeys;
-
-            refetchAndRender();
         });
     }
 
@@ -1038,11 +1029,11 @@
         return result;
     }
 
-    function runOneInstructorChange(item) {
+    function runOneInstructorChange(item, classId) {
         if (item.action === 'enrol') {
             return AcademyEnrolments.enrol(
                 item.instructorId,
-                _classId,
+                classId,
                 item.disciplineId,
                 item.startWeek
             );
@@ -1050,22 +1041,17 @@
 
         if (item.action === 'leave') {
             // Leaving effective week N means the previous week is
-            // the last enrolled week. Use startWeek + 1 as the
-            // effective week when the discipline starts at the same
-            // week as the enrolment; otherwise use the week after
-            // the discipline starts.
-            //
-            // The simplest correct semantics: effectiveWeek =
-            // item.startWeek. Under AcademyEnrolments.leave's rules,
-            // an interval that starts on or after the effective week
-            // is removed entirely. Since we only ever create
+            // the last enrolled week. Because we only ever create
             // instructor enrolments starting at the discipline's
-            // startWeek, the interval starts exactly at effective
-            // week, and the remove is clean.
+            // startWeek, the interval being left starts exactly at
+            // the effective week. Under AcademyEnrolments.leave's
+            // rules, an interval that starts on or after the
+            // effective week is removed entirely. So effectiveWeek
+            // = item.startWeek is a clean remove.
             var effectiveWeek = item.startWeek;
             return AcademyEnrolments.leave(
                 item.instructorId,
-                _classId,
+                classId,
                 item.disciplineId,
                 effectiveWeek
             );

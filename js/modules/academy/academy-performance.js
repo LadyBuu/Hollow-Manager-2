@@ -20,6 +20,19 @@
  *   - Does NOT write to window.data. Ever.
  *   - Returns plain data structures. No class instances, no DOM nodes.
  *
+ * ENROLLED DISCIPLINES SOURCE (v27):
+ *   The list of disciplines a student is enrolled in for a class
+ *   comes from AcademyEnrolments.getStudentDisciplineIds(charId,
+ *   classId), which returns an array of DISTINCT discipline ID
+ *   strings.
+ *
+ *   This is deliberately NOT getStudentDisciplines, which returns an
+ *   array of interval records — one entry per enrolment interval,
+ *   each carrying { disciplineId, startWeek, endWeek }. The two
+ *   functions have similar names but different shapes, and this
+ *   module wants IDs so it can look up each discipline's config
+ *   directly.
+ *
  * DESIGN:
  *   - Performance is a SEPARATE layer from grades and ranking.
  *     Grades store scores. Performance computes aggregates. Ranking
@@ -69,12 +82,6 @@
  *   consulted when AcademySettings is absent or returns malformed
  *   data. The old name is recorded in MIGRATION.md.
  *
- *   Callers that were importing DEFAULT_RANKING_WEIGHTS must switch to
- *   FALLBACK_RANKING_WEIGHTS. If they wanted the CURRENT weights,
- *   they should be calling AcademySettings.getRankingWeights() or
- *   this module's getRankingWeights(), both of which return the live
- *   values.
- *
  * NULL vs ZERO:
  *   - A discipline average is `null` when there is nothing to average.
  *     It is `0` when grades exist and the weighted percentage sums
@@ -98,6 +105,9 @@
  *   - window.AcademyGrades (from academy-grades.js) - MANDATORY
  *   - window.AcademyDisciplines (from academy-disciplines.js) - MANDATORY
  *   - window.AcademyGradeSchemes (from academy-grade-schemes.js) - MANDATORY
+ *   - window.AcademyEnrolments (from academy-enrolments.js) - MANDATORY
+ *     Used by getEnrolledDisciplineIds to resolve the student's
+ *     enrolled disciplines for a class.
  *   - window.AcademySocialScore (from academy-social-score.js) - OPTIONAL
  *   - window.AcademySettings (from academy-settings.js) - OPTIONAL
  *
@@ -156,6 +166,11 @@
         missing.push('AcademyGradeSchemes.isPassing');
     }
 
+    if (!window.AcademyEnrolments ||
+        typeof window.AcademyEnrolments.getStudentDisciplineIds !== 'function') {
+        missing.push('AcademyEnrolments.getStudentDisciplineIds');
+    }
+
     if (missing.length > 0) {
         throw new Error('[AcademyPerformance] Missing dependencies: ' + missing.join(', '));
     }
@@ -169,6 +184,7 @@
     var AcademyGrades = window.AcademyGrades;
     var AcademyDisciplines = window.AcademyDisciplines;
     var GradeSchemes = window.AcademyGradeSchemes;
+    var AcademyEnrolments = window.AcademyEnrolments;
 
     // ============================================================
     // LAZY OPTIONAL DEPENDENCIES
@@ -266,18 +282,6 @@
         return weight;
     }
 
-    /**
-     * Get the ranking weights.
-     *
-     * Reads from AcademySettings.getRankingWeights() when available.
-     * Falls back to FALLBACK_RANKING_WEIGHTS when:
-     *   - AcademySettings is absent
-     *   - the returned object is malformed
-     *   - the weights do not sum to a positive value
-     *
-     * The returned object is always a fresh copy. Callers can mutate
-     * it without affecting the default.
-     */
     function getRankingWeights() {
         var Settings = getAcademySettings();
         if (Settings && typeof Settings.getRankingWeights === 'function') {
@@ -392,17 +396,41 @@
     }
 
     // ============================================================
+    // INTERNAL - Enrollment lookup (v27)
+    // ============================================================
+    //
+    // Resolves the list of discipline IDs the student is enrolled in
+    // for a class. AcademyEnrolments is the source of truth.
+    //
+    // The function is deliberately narrow: it returns an array of
+    // ID strings, or an empty array on any failure. The caller
+    // decides what to do with an empty list.
+
+    function getEnrolledDisciplineIds(studentId, classId) {
+        if (!isNonEmptyString(studentId) || !isNonEmptyString(classId)) {
+            return [];
+        }
+
+        var result = [];
+        try {
+            result = AcademyEnrolments.getStudentDisciplineIds(
+                studentId, classId
+            ) || [];
+        } catch (e) {
+            return [];
+        }
+
+        if (!Array.isArray(result)) {
+            return [];
+        }
+
+        return result;
+    }
+
+    // ============================================================
     // PUBLIC API - Discipline Average
     // ============================================================
 
-    /**
-     * Calculate a student's average within a single discipline.
-     *
-     * @param {string} studentId
-     * @param {string} disciplineId
-     * @param {number|string} [week]
-     * @returns {object|null} Detailed average, or null
-     */
     function calculateDisciplineAverage(studentId, disciplineId, week) {
         if (!isNonEmptyString(studentId) || !isNonEmptyString(disciplineId)) {
             return null;
@@ -455,21 +483,14 @@
     // PUBLIC API - Academic Average
     // ============================================================
 
-    /**
-     * Calculate a student's academic average across all disciplines
-     * they are enrolled in for a class.
-     *
-     * @param {string} studentId
-     * @param {string} classId
-     * @param {number|string} [week]
-     * @returns {object|null} Detailed academic average, or null
-     */
     function calculateAcademicAverage(studentId, classId, week) {
         if (!isNonEmptyString(studentId) || !isNonEmptyString(classId)) {
             return null;
         }
 
-        // Determine the set of disciplines to consider.
+        // Determine the set of disciplines to consider. The list
+        // is DISTINCT discipline ID strings, one per discipline the
+        // student is enrolled in for the class.
         var disciplineIds = getEnrolledDisciplineIds(studentId, classId);
         if (disciplineIds.length === 0) {
             return null;
@@ -523,23 +544,9 @@
     }
 
     // ============================================================
-    // PUBLIC API - Overall Score (Phase 5)
+    // PUBLIC API - Overall Score
     // ============================================================
-    //
-    // The overall score blends the academic average and the social
-    // score using the configured ranking weights.
-    //
-    // When only one component is available, the other is NOT treated
-    // as zero. The available component becomes the overall score.
 
-    /**
-     * Calculate a student's overall score for a class + week.
-     *
-     * @param {string} studentId
-     * @param {string} classId
-     * @param {number|string} [week]
-     * @returns {number|null} Overall score (0-100) or null
-     */
     function calculateOverallScore(studentId, classId, week) {
         if (!isNonEmptyString(studentId) || !isNonEmptyString(classId)) {
             return null;
@@ -548,12 +555,10 @@
         var academic = getAcademicValue(studentId, classId, week);
         var social = getSocialValue(studentId, classId, week);
 
-        // Neither available: no score.
         if (academic === null && social === null) {
             return null;
         }
 
-        // Only one available: use it directly.
         if (academic === null) {
             return round1(social);
         }
@@ -561,14 +566,9 @@
             return round1(academic);
         }
 
-        // Both available: weighted blend.
         var weights = getRankingWeights();
         var total = weights.academic + weights.social;
         if (total <= 0) {
-            // Defensive: weights that sum to zero. Fall back to the
-            // fallback weights. This shouldn't be reachable given the
-            // guard in getRankingWeights, but we don't want to divide
-            // by zero.
             weights = {
                 academic: FALLBACK_RANKING_WEIGHTS.academic,
                 social: FALLBACK_RANKING_WEIGHTS.social
@@ -615,14 +615,6 @@
     // PUBLIC API - Full Performance Breakdown
     // ============================================================
 
-    /**
-     * Calculate a full performance breakdown for a student in a class.
-     *
-     * @param {string} studentId
-     * @param {string} classId
-     * @param {number|string} [week]
-     * @returns {object|null}
-     */
     function calculateStudentPerformance(studentId, classId, week) {
         if (!isNonEmptyString(studentId) || !isNonEmptyString(classId)) {
             return null;
@@ -670,14 +662,6 @@
     // PUBLIC API - Class-Wide Performance
     // ============================================================
 
-    /**
-     * Calculate the academic average for every student in a class.
-     *
-     * @param {array} studentIds
-     * @param {string} classId
-     * @param {number|string} [week]
-     * @returns {array}
-     */
     function calculateClassPerformance(studentIds, classId, week) {
         if (!Array.isArray(studentIds) || !isNonEmptyString(classId)) {
             return [];
@@ -732,18 +716,6 @@
     // PUBLIC API - Ranking-Ready Output
     // ============================================================
 
-    /**
-     * Calculate a ranking-ready list for a class.
-     *
-     * Ranks by the overall score. Falls back to academic average
-     * when overall is not available for any student.
-     *
-     * @param {array} studentIds
-     * @param {string} classId
-     * @param {number|string} [week]
-     * @param {function} [getCharacterById]
-     * @returns {array}
-     */
     function calculateRanking(studentIds, classId, week, getCharacterById) {
         if (!Array.isArray(studentIds) || !isNonEmptyString(classId)) {
             return [];
@@ -789,8 +761,6 @@
             });
         }
 
-        // Rank by overall, falling back to academic when overall is
-        // missing.
         entries.sort(function(a, b) {
             var aVal = a.overallScore !== null ? a.overallScore : a.academicAverage;
             var bVal = b.overallScore !== null ? b.overallScore : b.academicAverage;
@@ -804,7 +774,6 @@
             return a.studentId.localeCompare(b.studentId);
         });
 
-        // Assign ranks. Students with no score are unranked (rank: null).
         var rankCounter = 0;
         for (var j = 0; j < entries.length; j++) {
             var e = entries[j];
@@ -821,27 +790,6 @@
     }
 
     // ============================================================
-    // INTERNAL - Enrollment lookup
-    // ============================================================
-
-    function getEnrolledDisciplineIds(studentId, classId) {
-        if (!isNonEmptyString(studentId) || !isNonEmptyString(classId)) {
-            return [];
-        }
-
-        var AE = window.AcademyEnrolments;
-        if (AE && typeof AE.getStudentDisciplines === 'function') {
-            var result = AE.getStudentDisciplines(studentId, classId);
-            if (Array.isArray(result)) {
-                return result;
-            }
-            return [];
-        }
-
-        return [];
-    }
-
-    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -853,7 +801,7 @@
         calculateAcademicAverage: calculateAcademicAverage,
         calculateStudentPerformance: calculateStudentPerformance,
 
-        // Overall score (Phase 5)
+        // Overall score
         calculateOverallScore: calculateOverallScore,
 
         // Class-wide

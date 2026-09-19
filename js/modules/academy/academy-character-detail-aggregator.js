@@ -48,6 +48,18 @@
  *   CalendarConstants         week bounds for current-week resolution
  *   AcademyCalendarAggregator schedule grid reads (projector-backed)
  *
+ * STUDENT DISCIPLINE LIST (v27):
+ *   The student's enrolled disciplines come from
+ *   AcademyEnrolments.getStudentDisciplineIds(charId, classId), which
+ *   returns an array of DISTINCT discipline ID strings for the given
+ *   (character, class) pair.
+ *
+ *   This is deliberately NOT getStudentDisciplines, which returns an
+ *   array of interval records — one entry per enrolment interval, each
+ *   carrying { disciplineId, startWeek, endWeek }. The two functions
+ *   have similar names but different shapes; the discipline list panel
+ *   wants IDs, so it calls the ID-returning function.
+ *
  * INSTRUCTOR DISCIPLINES (v27):
  *   Before v27, an instructor's "disciplines I teach" list was read
  *   from `discipline.instructorIds` — a global list on each
@@ -126,9 +138,7 @@
  *
  *   Each instructor discipline entry now carries `classIds` and
  *   `classNames` — the classes the instructor teaches the discipline
- *   for. The renderer is free to display them or ignore them; the
- *   VM includes them because the data is already resolved at this
- *   layer.
+ *   for. The renderer is free to display them or ignore them.
  *
  * SCHEDULE GRID VIEW MODEL SHAPE:
  *
@@ -160,8 +170,6 @@
  *   - The mode is read by the caller from AcademyUI.getCharacterMode,
  *     which reads the character record. Both student and instructor
  *     projections are NOT computed unless the mode selects them.
- *     This avoids unnecessary cross-domain reads when the user is
- *     only viewing one side.
  *
  * WEEK SEMANTICS:
  *   - Week is required for class-scoped projections (grades, performance,
@@ -252,8 +260,8 @@
     }
 
     if (!AcademyEnrolments ||
-        typeof AcademyEnrolments.getStudentDisciplines !== 'function') {
-        missing.push('AcademyEnrolments.getStudentDisciplines');
+        typeof AcademyEnrolments.getStudentDisciplineIds !== 'function') {
+        missing.push('AcademyEnrolments.getStudentDisciplineIds');
     }
     if (!AcademyEnrolments ||
         typeof AcademyEnrolments.isEnrolled !== 'function') {
@@ -292,8 +300,6 @@
     function getTeamQueries() { return window.TeamQueries || null; }
     function getEliminationQueries() { return window.EliminationQueries || null; }
 
-    // v21: schedule reads go through the projector-backed aggregator.
-    // The old AcademySchedule calendar-provider bridge is retired.
     function getAcademyCalendarAggregator() {
         return window.AcademyCalendarAggregator || null;
     }
@@ -326,18 +332,6 @@
         return d && isNonEmptyString(d.type) ? d.type : '';
     }
 
-    /**
-     * Resolve the effective week.
-     *
-     * PRECEDENCE:
-     *   1. options.week if it's a valid integer in [MIN_WEEK, MAX_WEEK]
-     *   2. null otherwise
-     *
-     * No fallback to window.data.currentWeek. No fallback to MIN_WEEK.
-     * The caller (AcademyView) is expected to pass AcademyUI.getDisplayWeek()
-     * which already canonicalizes to a valid week. When the caller passes
-     * nothing valid, we return null and the caller decides what to render.
-     */
     function resolveWeek(options) {
         if (!options || options.week === undefined || options.week === null) {
             return null;
@@ -352,14 +346,6 @@
         return n;
     }
 
-    /**
-     * Resolve the effective mode.
-     *
-     * The mode is provided by the caller (the controller reads it from
-     * AcademyUI.getCharacterMode, which reads the character record).
-     * It is either 'student' or 'instructor'. Anything else falls back
-     * to 'student'.
-     */
     function resolveMode(options) {
         if (options && options.mode === 'instructor') {
             return 'instructor';
@@ -367,13 +353,6 @@
         return 'student';
     }
 
-    /**
-     * Resolve the active tab for the mode.
-     *
-     * If the requested tab is not valid for the mode, fall back to 'main'.
-     * This mirrors the renderer's own validation but keeps the VM
-     * self-consistent.
-     */
     function resolveActiveTab(options, mode) {
         var requested = options && options.tab ? String(options.tab) : 'main';
 
@@ -472,7 +451,6 @@
             return null;
         }
 
-        // Not yet eliminated by the displayed week: no banner.
         if (week < eliminationWeek) {
             return null;
         }
@@ -559,11 +537,17 @@
     // ============================================================
     // STUDENT PROJECTION
     // ============================================================
+    //
+    // The discipline list reads getStudentDisciplineIds, which
+    // returns DISTINCT discipline ID strings. It does NOT read
+    // getStudentDisciplines, which returns interval records.
 
     function buildStudentDisciplines(char, classId) {
         var ids = [];
         try {
-            ids = AcademyEnrolments.getStudentDisciplines(char.id, classId) || [];
+            ids = AcademyEnrolments.getStudentDisciplineIds(
+                char.id, classId
+            ) || [];
         } catch (e) {
             ids = [];
         }
@@ -824,17 +808,6 @@
     // PUBLIC ENTRY POINT
     // ============================================================
 
-    /**
-     * Build the complete view model for the character detail panel.
-     *
-     * @param {string} charId
-     * @param {object} [options]
-     * @param {string} [options.classId]  - Currently selected class, or null
-     * @param {number} [options.week]     - Currently displayed week
-     * @param {string} [options.mode]     - 'student' | 'instructor'
-     * @param {string} [options.tab]      - Active tab id
-     * @returns {object|null}
-     */
     function getViewModel(charId, options) {
         if (!isNonEmptyString(charId)) {
             return null;
@@ -860,8 +833,6 @@
         var elimination = buildElimination(char, week);
         var performance = buildPerformance(char, classId, week);
 
-        // Only the projection for the current mode is built. The other
-        // side stays null to avoid unnecessary cross-domain reads.
         var student = mode === 'student'
             ? buildStudentProjection(char, classId, week)
             : null;
@@ -891,29 +862,7 @@
     // ============================================================
     // SCHEDULE GRID VIEW MODEL
     // ============================================================
-    //
-    // Produces a VM shaped for CalendarRenderer.renderGrid. The Academy
-    // view mounts the grid read-only into the character detail panel's
-    // Schedule tab.
-    //
-    // v21 SOURCE:
-    //   AcademyCalendarAggregator.getStudentScheduleViewModel(charId, week)
-    //   which reads the teaching projector. The old AcademySchedule
-    //   calendar-provider bridge is retired.
-    //
-    // NULL SEMANTICS:
-    //   Returns null when the week is invalid or the calendar aggregator
-    //   is unavailable. Returns an empty-grid VM (schedule: {}) when the
-    //   student has no scheduled classes for the week — the renderer
-    //   displays that as an empty week, which is truthful.
 
-    /**
-     * Build the schedule grid VM for a (charId, week) pair.
-     *
-     * @param {string} charId
-     * @param {number|string} week
-     * @returns {object|null}
-     */
     function buildScheduleGridViewModel(charId, week) {
         if (!isNonEmptyString(charId)) {
             return null;
@@ -966,16 +915,6 @@
         };
     }
 
-    /**
-     * Convenience wrapper: build the schedule grid VM for a (charId, week)
-     * pair with a single options object. Matches the argument shape
-     * used by getViewModel.
-     *
-     * @param {string} charId
-     * @param {object} [options]
-     * @param {number} [options.week]
-     * @returns {object|null}
-     */
     function getScheduleGridViewModel(charId, options) {
         // Support both `getScheduleGridViewModel(charId, week)` and
         // `getScheduleGridViewModel(charId, { week })` for caller

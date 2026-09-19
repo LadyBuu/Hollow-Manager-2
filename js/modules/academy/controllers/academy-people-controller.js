@@ -26,12 +26,9 @@
  *   - The character detail panel (when a character is selected), and
  *     the tabs within it.
  *   - The character-mode checkbox (student / instructor toggle).
- *     The write routes through CharacterCRUD.setMode. The read
- *     routes through AcademyUI.getCharacterMode (which reads the
- *     character record via CharacterQueries).
+ *     The write routes through CharacterCRUD.setMode.
  *   - The Drop Out flow (AcademyEliminations.addStandalone).
- *   - The Remove from Class flow
- *     (AcademyClasses.removeClassById).
+ *   - The Remove from Class flow (AcademyClasses.removeClassById).
  *   - The Enroll / Leave Discipline flows
  *     (AcademyEnrolments.enrol / leave).
  *   - The instructor auto-group Add Student / Remove Student flows
@@ -40,70 +37,46 @@
  *   - The class CRUD modals (add character to class, edit class,
  *     delete class) via AcademyCRUDModals.
  *   - The class-disciplines picker modal
- *     (AcademyClassDisciplinesPicker.openModal). The picker owns
- *     its own modal shell and lifecycle; this controller only
- *     opens it and passes an onClose callback that refreshes the
- *     People view.
- *   - The inline grades editor sub-editor lifecycle: mount when the
- *     Grades tab is active, unmount otherwise, unmount on controller
- *     unmount.
- *   - The schedule grid sub-editor lifecycle: render when the
- *     Schedule tab is active, clear otherwise, clear on controller
- *     unmount.
+ *     (AcademyClassDisciplinesPicker.openModal).
+ *   - The inline grades editor and schedule grid sub-editor
+ *     lifecycles.
  *
  * WHAT THIS DOES NOT OWN:
  *   - The content host. The shell provides it.
  *   - The class selection, character selection, display week, people
- *     filter, and character mode. The first four live in AcademyUI;
- *     the mode is a domain fact on the character record.
+ *     filter, and character mode.
  *   - Re-rendering the shell. When state changes, the controller
  *     calls context.onChange().
  *   - Domain reads and writes. The aggregators produce VMs; the
  *     domain modules perform mutations.
- *   - The class-disciplines picker's modal shell. That modal is
- *     created on demand by AcademyClassDisciplinesPicker and
- *     appended to document.body, so it survives re-renders of this
- *     controller's host.
- *   - Cross-view navigation. The People view does not navigate
- *     elsewhere; other views navigate here via their own
- *     onOpenCharacterInPeople callbacks.
+ *   - The class-disciplines picker's modal shell.
+ *   - Cross-view navigation.
  *
  * CHARACTER MODE (v27):
  *   The mode is a DOMAIN FACT. It lives on the character record as
  *   `character.mode`. The controller:
- *     - Reads it via AcademyUI.getCharacterMode(charId), which reads
- *       the character record through CharacterQueries.
- *     - Writes it via CharacterCRUD.setMode(charId, mode), which
- *       routes through MutationPipeline.
+ *     - Reads it via AcademyUI.getCharacterMode(charId).
+ *     - Writes it via CharacterCRUD.setMode(charId, mode).
  *
  *   The write is a Promise. On success, the controller re-renders
- *   the shell by calling context.onChange(). On failure, the
- *   MutationPipeline has already notified; the controller leaves
- *   the checkbox as it was and lets the re-render correct it.
- *
- *   There is no local mode cache. The checkbox is checked when the
- *   VM's mode is 'instructor', and unchecked otherwise. The VM's
- *   mode comes from AcademyUI.getCharacterMode, which reads the
- *   character.
+ *   the shell by calling context.onChange().
  *
  * CLASS-DISCIPLINES PICKER (v27):
  *   The "+ Disciplines" button on the class detail panel emits
  *   data-action="edit-class-disciplines" with data-class-id. The
  *   controller opens the picker modal, passing the current display
  *   week and an onClose callback that calls context.onChange().
- *   The onClose fires when the picker closes for any reason
- *   (save, cancel, backdrop, Escape), so the class detail panel
- *   reflects any changes the user made.
  *
  * ENROLMENT (BUG-E1):
  *   The "Enroll Discipline" flow sources its candidate list from
  *   AcademyClassDisciplines.getClassDisciplinesForClass(classId),
- *   filtered to offerings active in the display week. Previously it
- *   sourced from AcademyDisciplines.getDisciplines() — the GLOBAL
- *   discipline list — which offered disciplines the class did not
- *   teach. Enrolling in one of those succeeded at the storage layer
- *   but never appeared on the character's Academic tab, because the
- *   tab reads enrolments class-scoped.
+ *   filtered to offerings active in the display week. It uses
+ *   AcademyEnrolments.getStudentDisciplineIds — NOT
+ *   getStudentDisciplines — to determine which disciplines the
+ *   student is already enrolled in. The two functions have similar
+ *   names but different shapes: getStudentDisciplineIds returns
+ *   distinct ID strings, getStudentDisciplines returns interval
+ *   records.
  *
  *   The picker is still a prompt(). Replacing it with a proper modal
  *   is logged as follow-up E1-ui.
@@ -117,10 +90,6 @@
  *
  *   host    — the HTMLElement the shell allocates.
  *   context — { onChange: function() }
- *
- * SUB-EDITOR MOUNTING:
- *   The grades editor and schedule grid are mounted synchronously,
- *   immediately after the controller writes the host's HTML.
  *
  * DEPENDENCIES:
  *   - window.AcademyUI
@@ -945,20 +914,6 @@
         }
     }
 
-    /**
-     * Open the class-disciplines picker modal.
-     *
-     * The picker owns its own modal shell and lifecycle. This
-     * controller passes:
-     *   - classId: the class whose disciplines are being edited
-     *   - week:    the current display week, for `activeInWeek`
-     *              badges
-     *   - onClose: a callback that refreshes the People view when
-     *              the picker closes for any reason
-     *
-     * When the picker module is not loaded, the controller notifies
-     * and does nothing else.
-     */
     function handleOpenDisciplinesPicker(classId) {
         if (!isNonEmptyString(classId)) {
             notify('Class ID is required.', 'error');
@@ -1007,35 +962,6 @@
     // ============================================================
     // CHARACTER MODE (v27)
     // ============================================================
-    //
-    // The checkbox toggles the character's mode between 'student'
-    // and 'instructor'.
-    //
-    // WRITE PATH:
-    //   The write goes through CharacterCRUD.setMode, which routes
-    //   through MutationPipeline. On success, the shell is asked to
-    //   re-render so the detail panel updates to the new mode.
-    //
-    //   The checkbox's own checked state is not manually corrected
-    //   here. If the write fails, the pipeline has already
-    //   notified; the re-render (which the failure path does NOT
-    //   trigger) leaves the checkbox visually inconsistent with the
-    //   character until the next render, at which point the VM
-    //   reads the character's actual mode and the checkbox
-    //   corrects itself. This is deliberate: a silent UI correction
-    //   on failure would hide the failure.
-    //
-    //   On success, we also reset the active tab if the new mode
-    //   does not include the current tab. 'grades' and 'teams' are
-    //   student-only tabs; 'autoGroups' is instructor-only. When
-    //   the mode changes, the current tab may no longer be valid
-    //   for the new mode. The tab reset goes through the same
-    //   path the tab bar uses.
-    //
-    // READ PATH:
-    //   The VM's mode comes from AcademyUI.getCharacterMode, which
-    //   reads the character record via CharacterQueries. This
-    //   controller does not cache the mode anywhere.
 
     function handleCharacterModeToggle(checked) {
         var charId = AcademyUI.getSelectedCharacterId();
@@ -1045,17 +971,7 @@
 
         // Adjust the active tab BEFORE the write resolves, so that
         // if the write succeeds the re-render immediately shows a
-        // valid tab for the new mode. If the write fails, the tab
-        // adjustment is harmless — the current mode is unchanged,
-        // so the tab may briefly show a mode-invalid panel, which
-        // the next render corrects when it reads the actual mode.
-        //
-        // The alternative is to wait for the write to resolve and
-        // adjust the tab then. But the write is asynchronous, and
-        // the checkbox is the primary user-visible signal of the
-        // mode change. Getting the tab adjustment wrong for a
-        // moment is less visible than a half-second freeze on the
-        // checkbox. Pre-adjustment wins.
+        // valid tab for the new mode.
         if (newMode === 'instructor' &&
             (_activeCharacterTab === 'grades' ||
                 _activeCharacterTab === 'teams')) {
@@ -1073,8 +989,6 @@
                     ctx.onChange();
                 }
                 // On failure, the pipeline has already notified.
-                // No re-render is triggered; the checkbox will be
-                // corrected on the next render.
             })
             .catch(function(err) {
                 console.warn(
@@ -1184,18 +1098,15 @@
     // ============================================================
     //
     // The candidate list is sourced from the CLASS'S OFFERINGS, not
-    // the global discipline list. Each candidate is filtered to
-    // offerings active in the display week, and further filtered to
-    // exclude what the student is already enrolled in for this
-    // class.
+    // the global discipline list.
     //
-    // This is what makes the enrolment appear on the Academic tab
-    // afterwards. The tab reads enrolments class-scoped. An
-    // enrolment in a discipline the class doesn't offer is stored
-    // but never displayed.
-    //
-    // The picker is still a prompt(). Replacing it with a proper modal
-    // is logged as follow-up E1-ui.
+    // The exclusion of already-enrolled disciplines uses
+    // AcademyEnrolments.getStudentDisciplineIds, which returns
+    // DISTINCT discipline ID strings. It does NOT use
+    // getStudentDisciplines, which returns interval records
+    // ({ disciplineId, startWeek, endWeek }[]). The two functions
+    // have similar names but different shapes; the ID list is what
+    // the exclusion check wants.
 
     function handleEnrollDiscipline(charId) {
         if (!charId) { return; }
@@ -1255,7 +1166,17 @@
         }
 
         // ---- Exclude already-enrolled ----
-        var currentIds = AE.getStudentDisciplines(charId, classId) || [];
+        // getStudentDisciplineIds returns an array of distinct
+        // discipline ID strings. If the module is older and does not
+        // expose it, fall back to no exclusion rather than crashing.
+        var currentIds = [];
+        if (typeof AE.getStudentDisciplineIds === 'function') {
+            try {
+                currentIds = AE.getStudentDisciplineIds(charId, classId) || [];
+            } catch (e) {
+                currentIds = [];
+            }
+        }
         var enrolledSet = {};
         for (var i = 0; i < currentIds.length; i++) {
             enrolledSet[String(currentIds[i])] = true;
