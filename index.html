@@ -224,7 +224,32 @@
 
     <!-- ============================================================
          ACADEMY TEACHING MODEL
+         ============================================================
+         The class-discipline store is split into two modules:
+
+           academy-class-disciplines-queries.js
+             Read-only surface for the marker store. Loads first;
+             the mutation module captures it at IIFE time.
+
+           academy-class-disciplines.js
+             Mutations (setClassDiscipline, removeClassDiscipline)
+             and cascade helpers (stripClassRefs,
+             stripDisciplineRefs). Captures the queries module and
+             throws if it is absent.
+
+         The read/write split is one-way: queries has no dependency
+         on mutations; mutations depends on queries for preflight
+         reads (validateReference, getRecordInternal), for snapshot
+         store access (getStoreFromSnapshot), and for the shared
+         reference validator.
+
+         Every other module in this block reads through the queries
+         module and writes through the mutation module (or, where
+         a compound transaction requires it, through the mutation
+         module's cascade helpers or through the schedule
+         coordinator).
          ============================================================ -->
+    <script src="js/modules/academy/academy-class-disciplines-queries.js"></script>
     <script src="js/modules/academy/academy-class-disciplines.js"></script>
     <script src="js/modules/academy/academy-teaching-groups.js"></script>
     <script src="js/modules/academy/academy-teaching-sessions.js"></script>
@@ -359,8 +384,7 @@
          ACADEMY CLASS-DISCIPLINES PICKER
          ============================================================
          The modal that lets the user say which disciplines a
-         class offers, mark each as mandatory, and assign
-         instructors per offered discipline.
+         class offers and mark each as mandatory.
 
          Load order:
            - AcademyAggregator.getClassDisciplinesPickerViewModel
@@ -368,6 +392,9 @@
            - AcademyClassDisciplines.setClassDiscipline /
              .removeClassDiscipline (ACADEMY TEACHING MODEL block,
              above)
+           - AcademyClassDisciplinesQueries reads are consumed
+             through AcademyAggregator, so the picker does not
+             import the queries module directly.
            - AcademyEnrolments.enrol / .leave (ACADEMY DOMAIN
              block, above)
            - AcademyDisciplines.getDiscipline (ACADEMY DOMAIN

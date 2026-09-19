@@ -30,6 +30,12 @@
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - The class-discipline marker store   (AcademyClassDisciplines)
+ *   - The class-discipline marker reads   (AcademyClassDisciplinesQueries)
+ *     The picker receives its read data pre-assembled on the VM
+ *     from AcademyAggregator. It does not import the queries module
+ *     directly; if the VM ever needs a field this modal reads, the
+ *     aggregator adds it. The modal stays a pure renderer over the
+ *     VM.
  *   - The enrolment store                 (AcademyEnrolments)
  *   - Instructor-of-a-discipline-for-a-class. That relationship is
  *     expressed through enrolments and edited from the character's

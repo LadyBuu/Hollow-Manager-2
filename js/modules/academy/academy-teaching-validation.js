@@ -67,6 +67,17 @@
  *   class-discipline with no target but with scheduled sessions is
  *   unusual and worth surfacing.
  *
+ * CLASS-DISCIPLINE READS:
+ *   The class-discipline marker store has two modules: a mutation
+ *   module (AcademyClassDisciplines) and a read module
+ *   (AcademyClassDisciplinesQueries). This validator reads through
+ *   the read module.
+ *
+ *   The single read it performs is `getEffectiveConfig`, which
+ *   resolves the discipline's weeklyHours (the marker has no
+ *   per-class override). That read is a query, and it lives on the
+ *   queries module.
+ *
  * RANGE PREDICATES:
  *   The range question — "does this range contain this week" and
  *   "is this range contained inside this other range" — is owned
@@ -113,7 +124,7 @@
  *   - window.AcademyTeachingProjector
  *   - window.AcademyTeachingGroups
  *   - window.AcademyTeachingSessions
- *   - window.AcademyClassDisciplines
+ *   - window.AcademyClassDisciplinesQueries
  *   - window.AcademyEnrolments
  */
 
@@ -134,7 +145,8 @@
     var Projector = window.AcademyTeachingProjector;
     var AcademyTeachingGroups = window.AcademyTeachingGroups;
     var AcademyTeachingSessions = window.AcademyTeachingSessions;
-    var AcademyClassDisciplines = window.AcademyClassDisciplines;
+    var AcademyClassDisciplinesQueries =
+        window.AcademyClassDisciplinesQueries;
     var AcademyEnrolments = window.AcademyEnrolments;
 
     var _missing = [];
@@ -176,14 +188,13 @@
             _missing.push('AcademyTeachingSessions.getAllSessions');
         }
     }
-    if (!AcademyClassDisciplines) {
-        _missing.push('AcademyClassDisciplines (module)');
+    if (!AcademyClassDisciplinesQueries) {
+        _missing.push('AcademyClassDisciplinesQueries (module)');
     } else {
-        if (typeof AcademyClassDisciplines.getClassDiscipline !== 'function') {
-            _missing.push('AcademyClassDisciplines.getClassDiscipline');
-        }
-        if (typeof AcademyClassDisciplines.getEffectiveConfig !== 'function') {
-            _missing.push('AcademyClassDisciplines.getEffectiveConfig');
+        if (typeof AcademyClassDisciplinesQueries.getEffectiveConfig !== 'function') {
+            _missing.push(
+                'AcademyClassDisciplinesQueries.getEffectiveConfig'
+            );
         }
     }
     if (!AcademyEnrolments) {
@@ -449,7 +460,7 @@
      * is 0.
      */
     function resolveTargetMinutes(classId, disciplineId) {
-        var config = AcademyClassDisciplines.getEffectiveConfig(
+        var config = AcademyClassDisciplinesQueries.getEffectiveConfig(
             classId, disciplineId
         );
         if (!config) {

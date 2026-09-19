@@ -14,17 +14,22 @@
  *
  *   Modal lifecycle:
  *     - Creates its own .modal shell, appended to document.body.
- *     - Reads its candidate list from AcademyClassDisciplines
- *       (the class's offerings active in the display week) and
- *       AcademyDisciplines (names), filtered against the
- *       character's existing enrolments via
- *       AcademyEnrolments.getStudentDisciplineIds.
+ *     - Reads its candidate list from
+ *       AcademyClassDisciplinesQueries (the class's offerings
+ *       active in the display week) and AcademyDisciplines
+ *       (names), filtered against the character's existing
+ *       enrolments via AcademyEnrolments.getStudentDisciplineIds.
  *     - Writes through AcademyEnrolments.enrol only.
  *     - Closes on Close button, backdrop click, Escape.
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - The enrolment store          (AcademyEnrolments)
- *   - The class-discipline markers (AcademyClassDisciplines)
+ *   - The class-discipline markers (AcademyClassDisciplinesQueries
+ *                                   for reads;
+ *                                   AcademyClassDisciplines is the
+ *                                   mutation module and is NOT a
+ *                                   dependency of this file. This
+ *                                   modal never writes markers.)
  *   - The discipline entities      (AcademyDisciplines)
  *   - The character record         (CharacterQueries)
  *   - The instructor-of-record for a student in a discipline.
@@ -60,12 +65,25 @@
  *   the pre-existing prompt-based flow and the leave() endpoint's
  *   week semantics.
  *
+ * CLASS-DISCIPLINE READS:
+ *   The class-discipline marker store has two modules: a mutation
+ *   module (AcademyClassDisciplines) and a read module
+ *   (AcademyClassDisciplinesQueries). This modal reads through
+ *   the read module. It never calls the mutation module; it does
+ *   not create or remove markers, and it has no business reaching
+ *   for a writer to answer a read question.
+ *
+ *   The three reads the modal performs are:
+ *     - getClassDisciplinesForClass   (offering list)
+ *     - isActiveInWeek                (offering window)
+ *     - getClassDiscipline            (per-class mandatory flag)
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
  *   - window.Modal
  *   - window.NotificationSystem
  *   - window.AcademyUI
- *   - window.AcademyClassDisciplines
+ *   - window.AcademyClassDisciplinesQueries
  *   - window.AcademyEnrolments
  *   - window.AcademyDisciplines
  *   - window.CharacterQueries
@@ -95,7 +113,8 @@
     var Modal = window.Modal;
     var NotificationSystem = window.NotificationSystem;
     var AcademyUI = window.AcademyUI;
-    var AcademyClassDisciplines = window.AcademyClassDisciplines;
+    var AcademyClassDisciplinesQueries =
+        window.AcademyClassDisciplinesQueries;
     var AcademyEnrolments = window.AcademyEnrolments;
     var AcademyDisciplines = window.AcademyDisciplines;
     var CharacterQueries = window.CharacterQueries;
@@ -121,11 +140,11 @@
     if (!AcademyUI || typeof AcademyUI.getDisplayWeek !== 'function') {
         _missing.push('AcademyUI.getDisplayWeek');
     }
-    if (!AcademyClassDisciplines ||
-        typeof AcademyClassDisciplines.getClassDisciplinesForClass !== 'function' ||
-        typeof AcademyClassDisciplines.isActiveInWeek !== 'function' ||
-        typeof AcademyClassDisciplines.getClassDiscipline !== 'function') {
-        _missing.push('AcademyClassDisciplines API');
+    if (!AcademyClassDisciplinesQueries ||
+        typeof AcademyClassDisciplinesQueries.getClassDisciplinesForClass !== 'function' ||
+        typeof AcademyClassDisciplinesQueries.isActiveInWeek !== 'function' ||
+        typeof AcademyClassDisciplinesQueries.getClassDiscipline !== 'function') {
+        _missing.push('AcademyClassDisciplinesQueries API');
     }
     if (!AcademyEnrolments ||
         typeof AcademyEnrolments.enrol !== 'function' ||
@@ -363,7 +382,7 @@
 
         var offerings = [];
         try {
-            offerings = AcademyClassDisciplines
+            offerings = AcademyClassDisciplinesQueries
                 .getClassDisciplinesForClass(_classId) || [];
         } catch (e) {
             offerings = [];
@@ -375,7 +394,7 @@
             var rec = offerings[o];
             if (!rec || !rec.disciplineId) { continue; }
 
-            if (!AcademyClassDisciplines.isActiveInWeek(
+            if (!AcademyClassDisciplinesQueries.isActiveInWeek(
                 _classId, rec.disciplineId, _week
             )) {
                 continue;
@@ -386,7 +405,7 @@
 
             var disciplineId = String(rec.disciplineId);
 
-            var marker = AcademyClassDisciplines.getClassDiscipline(
+            var marker = AcademyClassDisciplinesQueries.getClassDiscipline(
                 _classId, disciplineId
             );
             var mandatory = marker && marker.mandatory === true;

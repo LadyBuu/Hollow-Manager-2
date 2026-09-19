@@ -83,6 +83,19 @@
  *   as the owner of the semantics. Do not reimplement the range
  *   math here; it lives in one place, on purpose.
  *
+ * CLASS-DISCIPLINE READS:
+ *   The class-discipline marker store has two modules: a mutation
+ *   module (AcademyClassDisciplines) and a read module
+ *   (AcademyClassDisciplinesQueries). This projector reads through
+ *   the read module. It has no reason to reach for the mutation
+ *   module; a projection that walked the writer would be reading
+ *   through a surface that has no business existing on the read
+ *   path.
+ *
+ *   The single read the projector performs is `isActiveInWeek`,
+ *   which reads the DISCIPLINE's window (the marker has no window).
+ *   That read is a query, and it lives on the queries module.
+ *
  * OCCURRENCE SHAPE:
  *
  *   {
@@ -117,7 +130,7 @@
  *   - window.CalendarConstants
  *   - window.CalendarValidation
  *   - window.RangeUtils
- *   - window.AcademyClassDisciplines
+ *   - window.AcademyClassDisciplinesQueries
  *   - window.AcademyEnrolments
  *   - window.AcademyTeachingGroups
  *   - window.AcademyTeachingSessions
@@ -137,7 +150,8 @@
     var CalendarConstants = window.CalendarConstants;
     var CalendarValidation = window.CalendarValidation;
     var RangeUtils = window.RangeUtils;
-    var AcademyClassDisciplines = window.AcademyClassDisciplines;
+    var AcademyClassDisciplinesQueries =
+        window.AcademyClassDisciplinesQueries;
     var AcademyEnrolments = window.AcademyEnrolments;
     var AcademyTeachingGroups = window.AcademyTeachingGroups;
     var AcademyTeachingSessions = window.AcademyTeachingSessions;
@@ -154,6 +168,10 @@
         _missing.push('CalendarValidation.parseWeek');
     }
     if (!RangeUtils ||
+        typeof RangeUtils.contains !== 'function') {
+        _missing.push('RangeUtils.contains');
+    }
+    if (!RangeUtils ||
         typeof RangeUtils.containsWeek !== 'function') {
         _missing.push('RangeUtils.containsWeek');
     }
@@ -161,9 +179,9 @@
         typeof RangeUtils.weeksOverlap !== 'function') {
         _missing.push('RangeUtils.weeksOverlap');
     }
-    if (!AcademyClassDisciplines ||
-        typeof AcademyClassDisciplines.isActiveInWeek !== 'function') {
-        _missing.push('AcademyClassDisciplines.isActiveInWeek');
+    if (!AcademyClassDisciplinesQueries ||
+        typeof AcademyClassDisciplinesQueries.isActiveInWeek !== 'function') {
+        _missing.push('AcademyClassDisciplinesQueries.isActiveInWeek');
     }
     if (!AcademyEnrolments ||
         typeof AcademyEnrolments.isEnrolledInWeek !== 'function') {
@@ -339,7 +357,7 @@
             !isNonEmptyString(disciplineId)) {
             return false;
         }
-        return AcademyClassDisciplines.isActiveInWeek(
+        return AcademyClassDisciplinesQueries.isActiveInWeek(
             classId, disciplineId, week
         );
     }

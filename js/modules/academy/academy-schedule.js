@@ -23,7 +23,7 @@
  *                               remove the classId from the character
  *
  * WHAT THIS MODULE DOES NOT OWN:
- *   - Single-store reads             (AcademyClassDisciplines,
+ *   - Single-store reads             (AcademyClassDisciplinesQueries,
  *                                     AcademyEnrolments, etc.)
  *   - Single-store writes            (the same modules)
  *   - Projection                     (AcademyTeachingProjector)
@@ -73,6 +73,24 @@
  *   Both wrappers exist because the names read better in this
  *   module's context, and because a local wrapper centralises the
  *   delegation. They carry no logic beyond the call.
+ *
+ * CLASS-DISCIPLINE READS:
+ *   The class-discipline marker store has two modules: a mutation
+ *   module (AcademyClassDisciplines) and a read module
+ *   (AcademyClassDisciplinesQueries). This coordinator reads through
+ *   the read module. It does NOT call the mutation module for reads.
+ *
+ *   The reads it performs are preflight existence checks:
+ *     - addClassDiscipline: "does the marker already exist?"
+ *     - removeClassDiscipline: "does the marker still exist?"
+ *
+ *   The writes (creating and removing markers) are performed inline
+ *   on the appData snapshot inside the pipeline mutate callback,
+ *   because this coordinator owns the compound transaction that also
+ *   touches enrolments, groups, and sessions. That inline write is
+ *   the whole reason this coordinator exists; delegating the marker
+ *   write to AcademyClassDisciplines would nest pipelines, which
+ *   MutationPipeline does not support.
  *
  * DISCIPLINE WINDOW (v27):
  *   A class-discipline marker has no window. The discipline entity
@@ -142,7 +160,7 @@
  *   - window.IdUtils
  *   - window.AcademyClasses
  *   - window.AcademyDisciplines
- *   - window.AcademyClassDisciplines
+ *   - window.AcademyClassDisciplinesQueries
  *   - window.AcademyEnrolments
  *   - window.AcademyTeachingGroups
  *   - window.AcademyTeachingSessions
@@ -188,7 +206,8 @@
     var IdUtils = window.IdUtils;
     var AcademyClasses = window.AcademyClasses;
     var AcademyDisciplines = window.AcademyDisciplines;
-    var AcademyClassDisciplines = window.AcademyClassDisciplines;
+    var AcademyClassDisciplinesQueries =
+        window.AcademyClassDisciplinesQueries;
     var AcademyEnrolments = window.AcademyEnrolments;
     var AcademyTeachingGroups = window.AcademyTeachingGroups;
     var AcademyTeachingSessions = window.AcademyTeachingSessions;
@@ -240,9 +259,9 @@
     if (!AcademyDisciplines || typeof AcademyDisciplines.getDiscipline !== 'function') {
         _missing.push('AcademyDisciplines.getDiscipline');
     }
-    if (!AcademyClassDisciplines ||
-        typeof AcademyClassDisciplines.getClassDiscipline !== 'function') {
-        _missing.push('AcademyClassDisciplines.getClassDiscipline');
+    if (!AcademyClassDisciplinesQueries ||
+        typeof AcademyClassDisciplinesQueries.getClassDiscipline !== 'function') {
+        _missing.push('AcademyClassDisciplinesQueries.getClassDiscipline');
     }
     if (!AcademyEnrolments ||
         typeof AcademyEnrolments.getStudentDisciplines !== 'function') {
@@ -251,6 +270,10 @@
     if (!AcademyTeachingGroups ||
         typeof AcademyTeachingGroups.getGroup !== 'function') {
         _missing.push('AcademyTeachingGroups.getGroup');
+    }
+    if (!AcademyTeachingGroups ||
+        typeof AcademyTeachingGroups.getActiveMembers !== 'function') {
+        _missing.push('AcademyTeachingGroups.getActiveMembers');
     }
     if (!AcademyTeachingSessions ||
         typeof AcademyTeachingSessions.getAllSessions !== 'function') {
@@ -666,7 +689,7 @@
      * THE ENROLMENT WINDOW (v27):
      *   The marker has no window. The window comes from the
      *   DISCIPLINE. A discipline with startWeek 1 and endWeek 24
-     *   produces enrolments spanning weeks 1–24.
+     *   produces enrolments spanning weeks 1-24.
      *
      * CONFIG SHAPE (v27):
      *   config = { mandatory?: boolean }
@@ -743,9 +766,10 @@
             }
         }
 
-        var existing = AcademyClassDisciplines.getClassDiscipline(
-            classId, disciplineId
-        );
+        var existing =
+            AcademyClassDisciplinesQueries.getClassDiscipline(
+                classId, disciplineId
+            );
         if (existing) {
             return Promise.resolve(failure(
                 'This class already offers this discipline.'
@@ -964,9 +988,10 @@
             ));
         }
 
-        var existing = AcademyClassDisciplines.getClassDiscipline(
-            classId, disciplineId
-        );
+        var existing =
+            AcademyClassDisciplinesQueries.getClassDiscipline(
+                classId, disciplineId
+            );
         if (!existing) {
             return Promise.resolve(failure(
                 'This class does not offer this discipline.'

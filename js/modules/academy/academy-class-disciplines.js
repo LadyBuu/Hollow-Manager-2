@@ -5,10 +5,11 @@
  * Path: js/modules/academy/academy-class-disciplines.js
  *
  * WHAT THIS MODULE OWNS:
- *   The relationship between a Graduating Class and a Discipline.
- *   A class "offers" a discipline. That is the whole fact. There is
- *   no per-class config, no per-class window, no per-class instructor
- *   list. The class either offers the discipline or it does not.
+ *   Mutations and cascade cleanup for the class-discipline marker
+ *   store. A class "offers" a discipline. That is the whole fact.
+ *   There is no per-class config, no per-class window, no per-class
+ *   instructor list. The class either offers the discipline or it
+ *   does not.
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - Discipline global definitions       (AcademyDisciplines)
@@ -16,6 +17,27 @@
  *   - Teaching relationships              (AcademyTeachingGroups)
  *   - Recurring meetings                  (AcademyTeachingSessions)
  *   - Compound operations across stores   (AcademySchedule)
+ *
+ * READS LIVE ELSEWHERE:
+ *   All reads of the marker store live in AcademyClassDisciplinesQueries.
+ *   This module does not export read functions. Callers that want to
+ *   ask "does this class offer English?" or "is this marker active
+ *   in week W?" call the queries module directly.
+ *
+ *   The dependency direction is one-way:
+ *
+ *     callers → AcademyClassDisciplinesQueries   (reads)
+ *     callers → AcademyClassDisciplines          (writes + cascades)
+ *     AcademyClassDisciplines → AcademyClassDisciplinesQueries
+ *                                                (preflight reads,
+ *                                                 snapshot access,
+ *                                                 reference validation)
+ *
+ *   This module never re-exports read functions and never wraps them.
+ *   A delegating read wrapper would be the "public + internal variant"
+ *   anti-pattern from the Teams refactor process doc §7: a thin
+ *   surface that hides the real owner and drifts over time. Callers
+ *   reach for the queries module by name.
  *
  * THE MARKER RECORD:
  *
@@ -41,26 +63,15 @@
  *   it only says "we teach this."
  *
  * WEEK SEMANTICS (v27):
- *   The marker has no window. `isActiveInWeek(classId, disciplineId,
- *   week)` reads the DISCIPLINE's startWeek / endWeek. A discipline
- *   with startWeek 1 and endWeek 24 is active in weeks 1–24 for every
- *   class that offers it.
- *
- *   `getActiveClassDisciplinesForWeek(classId, week)` filters the
- *   class's offered disciplines by the same rule.
+ *   The marker has no window. The window comes from the discipline.
+ *   That question — "is this offering active in week W?" — is
+ *   answered by AcademyClassDisciplinesQueries.isActiveInWeek.
  *
  * RANGE PREDICATES (v27):
- *   The window-containment check delegates to
- *   `RangeUtils.containsWeek`, which is the canonical
- *   "does this range contain this week" predicate for the whole
- *   application. This module does not reimplement range math.
- *
- * EFFECTIVE CONFIG (v27):
- *   `getEffectiveConfig(classId, disciplineId)` returns the
- *   discipline's config. There is no per-class override. Callers
- *   that used to read `weeklyHours` off the merged config still read
- *   `weeklyHours` — only the source changed, from "merge" to "read
- *   the discipline."
+ *   Range containment and range overlap are owned by RangeUtils,
+ *   the canonical range-predicate module. This mutation module does
+ *   not perform range math; the preflight window check delegates to
+ *   the queries module, which delegates to RangeUtils.
  *
  * MUTATION CONTRACT:
  *   - setClassDiscipline        create or replace the marker.
@@ -83,41 +94,37 @@
  *   never throw. They run inside another module's pipeline
  *   transaction (AcademyCascade).
  *
- *   Both helpers now also cascade into AcademyEnrolments'
- *   corresponding strip functions. An offering that is removed
- *   should not leave orphan enrolment intervals behind, and a
- *   discipline that is deleted should not leave orphan enrolment
- *   intervals behind. The delegations are guarded so that a missing
- *   AcademyEnrolments module is a no-op rather than a crash.
- *
- * READ SAFETY:
- *   - Reads never create the store.
- *   - Public reads return DEEP CLONES.
- *   - Internal accessors used inside pipeline callbacks return live
- *     references from the appData snapshot.
+ *   Both helpers cascade into AcademyEnrolments' corresponding strip
+ *   functions. An offering that is removed should not leave orphan
+ *   enrolment intervals behind, and a discipline that is deleted
+ *   should not leave orphan enrolment intervals behind. The
+ *   delegations are guarded so that a missing AcademyEnrolments
+ *   module is a no-op rather than a crash.
  *
  * DEPENDENCIES (MANDATORY):
- *   - window.ObjectUtils          (deepClone)
- *   - window.ValidationUtils      (isNonEmptyString)
- *   - window.CalendarValidation   (parseWeek)
- *   - window.CalendarConstants    (MIN_WEEK, MAX_WEEK)
- *   - window.RangeUtils           (containsWeek)
- *   - window.MutationPipeline     (performMutation)
- *   - window.AcademyClasses       (getClass)
- *   - window.AcademyDisciplines   (getDiscipline)
+ *   - window.ObjectUtils                 (deepClone)
+ *   - window.ValidationUtils             (isNonEmptyString)
+ *   - window.CalendarValidation          (parseWeek)
+ *   - window.CalendarConstants           (MIN_WEEK, MAX_WEEK)
+ *   - window.RangeUtils                  (containsWeek — for the
+ *                                         preflight window check)
+ *   - window.MutationPipeline            (performMutation)
+ *   - window.AcademyClasses              (class existence at mutation
+ *                                         entry)
+ *   - window.AcademyDisciplines          (discipline existence at
+ *                                         mutation entry)
+ *   - window.AcademyClassDisciplinesQueries
+ *                                        (preflight reads, snapshot
+ *                                         store access, reference
+ *                                         validator, MIN_WEEK/MAX_WEEK)
  *
  * DEPENDENCIES (LAZY, used only by the cascade helpers):
- *   - window.AcademyEnrolments    (stripClassRefs, stripDisciplineRefs)
+ *   - window.AcademyEnrolments           (stripClassRefs,
+ *                                         stripDisciplineRefs)
  *     When absent, the corresponding cascade step is skipped.
  *
  * USAGE:
  *   var ACD = window.AcademyClassDisciplines;
- *
- *   ACD.getClassDiscipline('class_1', 'disc_english');  // marker or null
- *   ACD.getAllOfferedDisciplineIds('class_1');          // ['disc_english', ...]
- *   ACD.isClassOffering('class_1', 'disc_english');     // boolean
- *   ACD.isActiveInWeek('class_1', 'disc_english', 5);   // discipline window check
- *   ACD.getEffectiveConfig('class_1', 'disc_english');  // discipline config
  *
  *   ACD.setClassDiscipline('class_1', 'disc_english', {
  *       mandatory: true
@@ -146,16 +153,19 @@
     var MutationPipeline = window.MutationPipeline;
     var AcademyClasses = window.AcademyClasses;
     var AcademyDisciplines = window.AcademyDisciplines;
+    var Queries = window.AcademyClassDisciplinesQueries;
 
     var _missing = [];
 
     if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
         _missing.push('ObjectUtils.deepClone');
     }
-    if (!ValidationUtils || typeof ValidationUtils.isNonEmptyString !== 'function') {
+    if (!ValidationUtils ||
+        typeof ValidationUtils.isNonEmptyString !== 'function') {
         _missing.push('ValidationUtils.isNonEmptyString');
     }
-    if (!CalendarValidation || typeof CalendarValidation.parseWeek !== 'function') {
+    if (!CalendarValidation ||
+        typeof CalendarValidation.parseWeek !== 'function') {
         _missing.push('CalendarValidation.parseWeek');
     }
     if (!CalendarConstants ||
@@ -167,14 +177,29 @@
         typeof RangeUtils.containsWeek !== 'function') {
         _missing.push('RangeUtils.containsWeek');
     }
-    if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
+    if (!MutationPipeline ||
+        typeof MutationPipeline.performMutation !== 'function') {
         _missing.push('MutationPipeline.performMutation');
     }
-    if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function') {
+    if (!AcademyClasses ||
+        typeof AcademyClasses.getClass !== 'function') {
         _missing.push('AcademyClasses.getClass');
     }
-    if (!AcademyDisciplines || typeof AcademyDisciplines.getDiscipline !== 'function') {
+    if (!AcademyDisciplines ||
+        typeof AcademyDisciplines.getDiscipline !== 'function') {
         _missing.push('AcademyDisciplines.getDiscipline');
+    }
+    if (!Queries ||
+        typeof Queries.validateReference !== 'function') {
+        _missing.push('AcademyClassDisciplinesQueries.validateReference');
+    }
+    if (!Queries ||
+        typeof Queries.getRecordInternal !== 'function') {
+        _missing.push('AcademyClassDisciplinesQueries.getRecordInternal');
+    }
+    if (!Queries ||
+        typeof Queries.getStoreFromSnapshot !== 'function') {
+        _missing.push('AcademyClassDisciplinesQueries.getStoreFromSnapshot');
     }
 
     if (_missing.length > 0) {
@@ -238,63 +263,12 @@
     }
 
     /**
-     * Parse a week strictly. Returns an integer in [MIN_WEEK, MAX_WEEK]
-     * or null. Used only by isActiveInWeek and the active-filter
-     * helper; the marker itself has no window.
-     */
-    function parseWeekStrict(week) {
-        var parsed = CalendarValidation.parseWeek(week);
-        if (parsed === null) {
-            return null;
-        }
-        if (parsed < MIN_WEEK || parsed > MAX_WEEK) {
-            return null;
-        }
-        return parsed;
-    }
-
-    // ============================================================
-    // STORE ACCESS
-    // ============================================================
-
-    /**
-     * Return the live classDisciplines store from window.data, or
-     * null when absent. Never creates it.
-     */
-    function getStore() {
-        if (!window.data || typeof window.data !== 'object') {
-            return null;
-        }
-        if (!window.data.academy || typeof window.data.academy !== 'object') {
-            return null;
-        }
-        var store = window.data.academy.classDisciplines;
-        if (!store || typeof store !== 'object' || Array.isArray(store)) {
-            return null;
-        }
-        return store;
-    }
-
-    /**
-     * Same as getStore, but reads from an appData snapshot.
-     */
-    function getStoreFromSnapshot(appData) {
-        if (!appData || typeof appData !== 'object') {
-            return null;
-        }
-        if (!appData.academy || typeof appData.academy !== 'object') {
-            return null;
-        }
-        var store = appData.academy.classDisciplines;
-        if (!store || typeof store !== 'object' || Array.isArray(store)) {
-            return null;
-        }
-        return store;
-    }
-
-    /**
      * Ensure the classDisciplines store exists on an appData
      * snapshot. Only call from inside a pipeline mutate() callback.
+     *
+     * This is the ONLY place in the module that creates structure on
+     * the snapshot. Reads route through the queries module, which
+     * never creates.
      */
     function ensureStore(appData) {
         if (!appData.academy || typeof appData.academy !== 'object') {
@@ -309,328 +283,15 @@
     }
 
     // ============================================================
-    // INTERNAL READS - LIVE REFERENCES
-    // ============================================================
-
-    function getRecordInternalFromStore(store, classId, disciplineId) {
-        if (!store || !isNonEmptyString(classId) || !isNonEmptyString(disciplineId)) {
-            return null;
-        }
-        var byClass = store[String(classId)];
-        if (!isPlainObject(byClass)) {
-            return null;
-        }
-        var record = byClass[String(disciplineId)];
-        if (!isPlainObject(record)) {
-            return null;
-        }
-        return record;
-    }
-
-    function getRecordInternal(classId, disciplineId) {
-        return getRecordInternalFromStore(getStore(), classId, disciplineId);
-    }
-
-    function getRecordsForClassInternalFromStore(store, classId) {
-        var result = [];
-        if (!store || !isNonEmptyString(classId)) {
-            return result;
-        }
-        var byClass = store[String(classId)];
-        if (!isPlainObject(byClass)) {
-            return result;
-        }
-        var keys = Object.keys(byClass);
-        for (var i = 0; i < keys.length; i++) {
-            var record = byClass[keys[i]];
-            if (isPlainObject(record)) {
-                result.push(record);
-            }
-        }
-        return result;
-    }
-
-    function getRecordsForClassInternal(classId) {
-        return getRecordsForClassInternalFromStore(getStore(), classId);
-    }
-
-    // ============================================================
-    // DISCIPLINE WINDOW HELPERS
+    // PREFLIGHT VALIDATION
     // ============================================================
     //
-    // The marker has no window. The discipline does. This helper
-    // reads the discipline's startWeek / endWeek and returns a
-    // { startWeek, endWeek } pair, or null when the discipline
-    // cannot supply one.
-    //
-    // The containment check itself is not performed here; callers
-    // pass the returned window to RangeUtils.containsWeek. That
-    // keeps the range math in one place.
-
-    function getDisciplineWindow(disciplineId) {
-        if (!isNonEmptyString(disciplineId)) {
-            return null;
-        }
-        var discipline = AcademyDisciplines.getDiscipline(disciplineId);
-        if (!discipline) {
-            return null;
-        }
-
-        var startWeek = parseWeekStrict(discipline.startWeek);
-        var endWeek = null;
-        if (discipline.endWeek !== undefined &&
-            discipline.endWeek !== null &&
-            discipline.endWeek !== '') {
-            endWeek = parseWeekStrict(discipline.endWeek);
-        }
-
-        if (startWeek === null) {
-            return null;
-        }
-
-        return { startWeek: startWeek, endWeek: endWeek };
-    }
-
-    // ============================================================
-    // VALIDATION
-    // ============================================================
+    // Delegates to the queries module so that the mutation module
+    // and any future caller share one implementation of "does this
+    // (class, discipline) pair reference live entities?"
 
     function validateReference(classId, disciplineId) {
-        if (!isNonEmptyString(classId)) {
-            return { valid: false, message: 'Class ID is required.' };
-        }
-        if (!isNonEmptyString(disciplineId)) {
-            return { valid: false, message: 'Discipline ID is required.' };
-        }
-
-        var cls = AcademyClasses.getClass(classId);
-        if (!cls) {
-            return { valid: false, message: 'Class not found.' };
-        }
-
-        var discipline = AcademyDisciplines.getDiscipline(disciplineId);
-        if (!discipline) {
-            return { valid: false, message: 'Discipline not found.' };
-        }
-
-        return { valid: true, class: cls, discipline: discipline };
-    }
-
-    // ============================================================
-    // PUBLIC READS
-    // ============================================================
-
-    /**
-     * Get the marker record for a (classId, disciplineId) pair, or
-     * null if the class does not offer the discipline.
-     *
-     * @returns {object|null} { classId, disciplineId, mandatory,
-     *   createdAt, updatedAt } or null
-     */
-    function getClassDiscipline(classId, disciplineId) {
-        var record = getRecordInternal(classId, disciplineId);
-        return record ? deepClone(record) : null;
-    }
-
-    /**
-     * Get every marker the class owns.
-     *
-     * @returns {array} Array of marker records (clones). Empty when
-     *   the class offers nothing or does not exist.
-     */
-    function getClassDisciplinesForClass(classId) {
-        var records = getRecordsForClassInternal(classId);
-        var result = [];
-        for (var i = 0; i < records.length; i++) {
-            result.push(deepClone(records[i]));
-        }
-        return result;
-    }
-
-    /**
-     * Get every marker across every class for a given discipline.
-     * Useful for "which classes offer English?"
-     *
-     * @returns {array} Array of marker records (clones). Empty when
-     *   no class offers the discipline.
-     */
-    function getClassDisciplinesForDiscipline(disciplineId) {
-        if (!isNonEmptyString(disciplineId)) {
-            return [];
-        }
-        var store = getStore();
-        if (!store) {
-            return [];
-        }
-        var result = [];
-        var target = String(disciplineId);
-        var classIds = Object.keys(store);
-        for (var i = 0; i < classIds.length; i++) {
-            var byClass = store[classIds[i]];
-            if (!isPlainObject(byClass)) {
-                continue;
-            }
-            var record = byClass[target];
-            if (isPlainObject(record)) {
-                result.push(deepClone(record));
-            }
-        }
-        return result;
-    }
-
-    /**
-     * Does the class offer the discipline?
-     */
-    function hasClassDiscipline(classId, disciplineId) {
-        return getRecordInternal(classId, disciplineId) !== null;
-    }
-
-    /**
-     * Alias of hasClassDiscipline with a name that reads better at
-     * the picker's call sites. "Is this class offering English?" is
-     * clearer than "does this class-discipline exist?"
-     */
-    function isClassOffering(classId, disciplineId) {
-        return getRecordInternal(classId, disciplineId) !== null;
-    }
-
-    /**
-     * Get the discipline IDs this class offers. Deduplicated, but the
-     * store is keyed by disciplineId so there is nothing to
-     * deduplicate. Returned in insertion order (the order keys were
-     * added to the class bucket).
-     *
-     * @returns {array} Array of discipline ID strings
-     */
-    function getAllOfferedDisciplineIds(classId) {
-        if (!isNonEmptyString(classId)) {
-            return [];
-        }
-        var byClass = null;
-        var store = getStore();
-        if (store) {
-            byClass = store[String(classId)];
-        }
-        if (!isPlainObject(byClass)) {
-            return [];
-        }
-        return Object.keys(byClass);
-    }
-
-    /**
-     * Is this class-discipline active in the given week?
-     *
-     * Under v27 the window comes from the DISCIPLINE, not from the
-     * marker. A marker with no discipline behind it is inactive, and
-     * a marker whose discipline has no valid startWeek is inactive.
-     *
-     * The containment check itself delegates to
-     * RangeUtils.containsWeek, which is the canonical
-     * "is this week in this range" predicate.
-     *
-     * @returns {boolean}
-     */
-    function isActiveInWeek(classId, disciplineId, week) {
-        if (!getRecordInternal(classId, disciplineId)) {
-            return false;
-        }
-
-        var window = getDisciplineWindow(disciplineId);
-        if (!window) {
-            return false;
-        }
-
-        return RangeUtils.containsWeek(
-            week,
-            window.startWeek,
-            window.endWeek
-        );
-    }
-
-    /**
-     * Return every class-discipline for a class that is active in
-     * the given week.
-     *
-     * @returns {array} Array of marker records (clones)
-     */
-    function getActiveClassDisciplinesForWeek(classId, week) {
-        var records = getRecordsForClassInternal(classId);
-        var result = [];
-
-        for (var i = 0; i < records.length; i++) {
-            var record = records[i];
-            var window = getDisciplineWindow(record.disciplineId);
-            if (!window) {
-                continue;
-            }
-            if (!RangeUtils.containsWeek(
-                week,
-                window.startWeek,
-                window.endWeek
-            )) {
-                continue;
-            }
-            result.push(deepClone(record));
-        }
-
-        return result;
-    }
-
-    /**
-     * Resolve the effective configuration for a class-discipline.
-     *
-     * Under v27 there is no per-class override. The effective config
-     * IS the discipline's config. This function exists so that
-     * callers which previously relied on the merge still work
-     * unchanged; the return shape is preserved for the fields those
-     * callers read.
-     *
-     * The returned object carries the discipline's startWeek,
-     * endWeek, weeklyHours, weight, gradeSchemeId, and
-     * assessmentWeights, plus the marker's classId, disciplineId,
-     * and mandatory flag.
-     *
-     * @returns {object|null} config, or null when the marker or the
-     *   discipline is missing
-     */
-    function getEffectiveConfig(classId, disciplineId) {
-        var record = getRecordInternal(classId, disciplineId);
-        if (!record) {
-            return null;
-        }
-
-        var discipline = AcademyDisciplines.getDiscipline(disciplineId);
-        if (!discipline) {
-            return null;
-        }
-
-        // Normalised read path. AcademyDisciplines.getDiscipline
-        // already normalises gradeScheme and assessmentWeights on
-        // read, so we pass them through. The other fields are read
-        // directly.
-
-        return {
-            classId: String(classId),
-            disciplineId: String(disciplineId),
-            mandatory: record.mandatory === true,
-
-            // From the discipline:
-            startWeek: discipline.startWeek,
-            endWeek: discipline.endWeek,
-            weeklyHours: discipline.weeklyHours,
-            weight: discipline.weight,
-            gradeSchemeId: isNonEmptyString(discipline.gradeSchemeId)
-                ? discipline.gradeSchemeId
-                : (discipline.gradeScheme && isNonEmptyString(discipline.gradeScheme.id)
-                    ? discipline.gradeScheme.id
-                    : 'numeric'),
-            assessmentWeights: discipline.assessmentWeights
-                ? deepClone(discipline.assessmentWeights)
-                : null,
-            gradeScheme: discipline.gradeScheme
-                ? deepClone(discipline.gradeScheme)
-                : null
-        };
+        return Queries.validateReference(classId, disciplineId);
     }
 
     // ============================================================
@@ -695,7 +356,7 @@
             return Promise.resolve(failure('Mandatory must be a boolean.'));
         }
 
-        var existing = getRecordInternal(classId, disciplineId);
+        var existing = Queries.getRecordInternal(classId, disciplineId);
         var candidate = buildMarker(
             classId, disciplineId, config, existing
         );
@@ -746,7 +407,7 @@
             ));
         }
 
-        var existing = getRecordInternal(classId, disciplineId);
+        var existing = Queries.getRecordInternal(classId, disciplineId);
         if (!existing) {
             return Promise.resolve(failure(
                 'Class-discipline not found.'
@@ -767,7 +428,7 @@
                 return { valid: true };
             },
             mutate: function(appData) {
-                var store = getStoreFromSnapshot(appData);
+                var store = Queries.getStoreFromSnapshot(appData);
                 if (!store) {
                     return { removed: false };
                 }
@@ -822,7 +483,7 @@
             return result;
         }
 
-        var store = getStoreFromSnapshot(appData);
+        var store = Queries.getStoreFromSnapshot(appData);
         if (store) {
             var target = String(classId);
             if (Object.prototype.hasOwnProperty.call(store, target)) {
@@ -867,7 +528,7 @@
             return result;
         }
 
-        var store = getStoreFromSnapshot(appData);
+        var store = Queries.getStoreFromSnapshot(appData);
         if (store) {
             var target = String(disciplineId);
             var classIds = Object.keys(store);
@@ -907,17 +568,6 @@
     // ============================================================
 
     window.AcademyClassDisciplines = Object.freeze({
-        // Reads
-        getClassDiscipline: getClassDiscipline,
-        getClassDisciplinesForClass: getClassDisciplinesForClass,
-        getClassDisciplinesForDiscipline: getClassDisciplinesForDiscipline,
-        hasClassDiscipline: hasClassDiscipline,
-        isClassOffering: isClassOffering,
-        getAllOfferedDisciplineIds: getAllOfferedDisciplineIds,
-        getEffectiveConfig: getEffectiveConfig,
-        isActiveInWeek: isActiveInWeek,
-        getActiveClassDisciplinesForWeek: getActiveClassDisciplinesForWeek,
-
         // Mutations
         setClassDiscipline: setClassDiscipline,
         removeClassDiscipline: removeClassDiscipline,
@@ -926,7 +576,7 @@
         stripClassRefs: stripClassRefs,
         stripDisciplineRefs: stripDisciplineRefs,
 
-        // Constants (read-only)
+        // Constants (read-only; mirrored on the queries module)
         MIN_WEEK: MIN_WEEK,
         MAX_WEEK: MAX_WEEK
     });
@@ -938,15 +588,6 @@
     (function verify() {
         var exports = window.AcademyClassDisciplines;
         var required = [
-            'getClassDiscipline',
-            'getClassDisciplinesForClass',
-            'getClassDisciplinesForDiscipline',
-            'hasClassDiscipline',
-            'isClassOffering',
-            'getAllOfferedDisciplineIds',
-            'getEffectiveConfig',
-            'isActiveInWeek',
-            'getActiveClassDisciplinesForWeek',
             'setClassDiscipline',
             'removeClassDiscipline',
             'stripClassRefs',

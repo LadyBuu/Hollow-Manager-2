@@ -207,6 +207,10 @@
         typeof TournamentQueries.getPriorRoundOutcomes !== 'function') {
         _missing.push('TournamentQueries.getPriorRoundOutcomes');
     }
+    if (!TournamentQueries ||
+        typeof TournamentQueries.getParticipantTypeFromRecord !== 'function') {
+        _missing.push('TournamentQueries.getParticipantTypeFromRecord');
+    }
 
     if (!Schema ||
         typeof Schema.isParticipantEliminated !== 'function') {
@@ -988,13 +992,24 @@
     /**
      * Result → outcome display tuple for the UI. Presentation only.
      * The `class` field carries CSS class names.
+     *
+     * GLYPHS:
+     *   All glyphs are monochrome text-presentation characters.
+     *   The pending marker was previously U+23F3 (hourglass), a
+     *   pictographic emoji. It is now U+25CB (white circle), which
+     *   reads as "empty state" without carrying colour or platform
+     *   variance. The other markers were already monochrome:
+     *     U+2713 check           (pass)
+     *     U+21BB anticlockwise   (retry)
+     *     U+2717 ballot X        (fail)
+     *     ?                       (unknown)
      */
     function getOutcomeDisplay(outcome) {
         var map = {
             'pass':      { text: '\u2713', class: 'outcome-pass',    label: 'Pass' },
             'retry':     { text: '\u21bb', class: 'outcome-retry',   label: 'Retry' },
             'fail':      { text: '\u2717', class: 'outcome-fail',    label: 'Fail' },
-            'pending':   { text: '\u23f3', class: 'outcome-pending', label: 'Pending' },
+            'pending':   { text: '\u25cb', class: 'outcome-pending', label: 'Pending' },
             'unknown':   { text: '?',      class: 'outcome-unknown', label: 'Unknown' }
         };
         return map[outcome] || {

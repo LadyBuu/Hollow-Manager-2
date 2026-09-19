@@ -104,6 +104,14 @@
  *                the migration (e.g. imported envelopes, direct
  *                writes), and enforces the mode field on any character
  *                that lacks one.
+ *   - Version 28: Stats-config icon normalisation. Every record in
+ *                data.statsConfig.classes[] that carries a legacy
+ *                emoji icon (⚔ 🏹 🛡 📚 🗡 ⚡ ⚙ ✦) is rewritten to a
+ *                monochrome Unicode glyph. Custom icons that are not
+ *                one of the recognised legacy emoji are left alone.
+ *                The default stats config emitted by this file now
+ *                produces the monochrome glyphs directly, so a fresh
+ *                load never needs this migration.
  *
  * ACADEMY STORES (v20+):
  *   ...
@@ -135,6 +143,11 @@
  *
  * RETIRED DISCIPLINE FIELDS (removed in v27):
  *   discipline.instructorIds
+ *
+ * RETIRED STATS-CONFIG ICONS (removed in v28):
+ *   The emoji icons used by the pre-v28 default stats config:
+ *     ⚔ 🏹 🛡 📚 🗡 ⚡ ⚙ ✦
+ *   Replaced by monochrome Unicode glyphs. See v28 migration.
  */
 
 (function() {
@@ -142,7 +155,7 @@
 
     var DB_NAME = 'HollowBladesDB';
     var DB_VERSION = 1;
-    var DATA_VERSION = 27;
+    var DATA_VERSION = 28;
     var STORE_NAME = 'appData';
 
     var _indexedDB = null;
@@ -211,24 +224,32 @@
         };
     }
 
+    /**
+     * Default stats configuration.
+     *
+     * ICONS (v28): the icons are monochrome Unicode glyphs. They were
+     * previously emoji. The v28 migration rewrites any persisted
+     * record still carrying one of the legacy emoji. New configs
+     * emitted by this factory are already monochrome.
+     */
     function getDefaultStatsConfig() {
         return {
             classes: [
-                { id: 'warrior', label: 'Warrior', icon: '⚔', primaryStats: ['str', 'con'], secondaryStats: ['dex'], statWeights: { str: 0.4, con: 0.3, dex: 0.2, wis: 0.1 }, minStats: { str: 13, con: 12 } },
-                { id: 'skirmisher', label: 'Skirmisher', icon: '🏹', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.35, wis: 0.25, con: 0.2, str: 0.15, int: 0.05 }, minStats: { dex: 13, wis: 12 } },
-                { id: 'protector', label: 'Protector', icon: '🛡', primaryStats: ['str', 'con'], secondaryStats: ['wis', 'cha'], statWeights: { str: 0.3, con: 0.3, wis: 0.2, cha: 0.15, dex: 0.05 }, minStats: { str: 13, con: 12 } },
-                { id: 'sage', label: 'Sage', icon: '📚', primaryStats: ['int', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, minStats: { int: 13, wis: 12 } },
-                { id: 'mystic', label: 'Mystic', icon: '✦', primaryStats: ['wis', 'cha'], secondaryStats: ['con', 'int'], statWeights: { wis: 0.35, cha: 0.25, con: 0.2, int: 0.15, dex: 0.05 }, minStats: { wis: 13, cha: 12 } },
-                { id: 'stalker', label: 'Stalker', icon: '🗡', primaryStats: ['dex', 'int'], secondaryStats: ['cha', 'wis'], statWeights: { dex: 0.35, int: 0.25, cha: 0.2, wis: 0.15, str: 0.05 }, minStats: { dex: 13, int: 12 } },
-                { id: 'spellblade', label: 'Spellblade', icon: '⚡', primaryStats: ['str', 'int'], secondaryStats: ['dex', 'con'], statWeights: { str: 0.3, int: 0.3, dex: 0.2, con: 0.15, wis: 0.05 }, minStats: { str: 13, int: 12 } },
-                { id: 'channeler', label: 'Channeler', icon: '✦', primaryStats: ['cha', 'con'], secondaryStats: ['dex', 'int'], statWeights: { cha: 0.35, con: 0.25, dex: 0.2, int: 0.15, wis: 0.05 }, minStats: { cha: 13, con: 12 } },
-                { id: 'warden', label: 'Warden', icon: '⚔', primaryStats: ['str', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { str: 0.3, wis: 0.25, con: 0.2, dex: 0.2, cha: 0.05 }, minStats: { str: 13, wis: 12 } },
-                { id: 'adept', label: 'Adept', icon: '✦', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.3, wis: 0.3, con: 0.2, str: 0.15, int: 0.05 }, minStats: { dex: 13, wis: 13 } },
-                { id: 'artificer', label: 'Artificer', icon: '⚙', primaryStats: ['int', 'dex'], secondaryStats: ['con', 'wis'], statWeights: { int: 0.35, dex: 0.25, con: 0.2, wis: 0.15, cha: 0.05 }, minStats: { int: 13, dex: 12 } },
-                { id: 'occultist', label: 'Occultist', icon: '✦', primaryStats: ['int', 'cha'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.3, cha: 0.3, con: 0.2, dex: 0.15, wis: 0.05 }, minStats: { int: 13, cha: 13 } },
-                { id: 'blade_dancer', label: 'Blade Dancer', icon: '🗡', primaryStats: ['dex', 'cha'], secondaryStats: ['str', 'con'], statWeights: { dex: 0.35, cha: 0.25, str: 0.2, con: 0.15, wis: 0.05 }, minStats: { dex: 13, cha: 12 } },
-                { id: 'elementalist', label: 'Elementalist', icon: '✦', primaryStats: ['int', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, minStats: { int: 13, wis: 12 } },
-                { id: 'sentinel', label: 'Sentinel', icon: '🛡', primaryStats: ['str', 'con'], secondaryStats: ['wis', 'dex'], statWeights: { str: 0.3, con: 0.3, wis: 0.2, dex: 0.15, cha: 0.05 }, minStats: { str: 13, con: 12 } }
+                { id: 'warrior', label: 'Warrior', icon: '\u2020', primaryStats: ['str', 'con'], secondaryStats: ['dex'], statWeights: { str: 0.4, con: 0.3, dex: 0.2, wis: 0.1 }, minStats: { str: 13, con: 12 } },
+                { id: 'skirmisher', label: 'Skirmisher', icon: '\u27b6', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.35, wis: 0.25, con: 0.2, str: 0.15, int: 0.05 }, minStats: { dex: 13, wis: 12 } },
+                { id: 'protector', label: 'Protector', icon: '\u25c8', primaryStats: ['str', 'con'], secondaryStats: ['wis', 'cha'], statWeights: { str: 0.3, con: 0.3, wis: 0.2, cha: 0.15, dex: 0.05 }, minStats: { str: 13, con: 12 } },
+                { id: 'sage', label: 'Sage', icon: '\u25a4', primaryStats: ['int', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, minStats: { int: 13, wis: 12 } },
+                { id: 'mystic', label: 'Mystic', icon: '\u2727', primaryStats: ['wis', 'cha'], secondaryStats: ['con', 'int'], statWeights: { wis: 0.35, cha: 0.25, con: 0.2, int: 0.15, dex: 0.05 }, minStats: { wis: 13, cha: 12 } },
+                { id: 'stalker', label: 'Stalker', icon: '\u2020', primaryStats: ['dex', 'int'], secondaryStats: ['cha', 'wis'], statWeights: { dex: 0.35, int: 0.25, cha: 0.2, wis: 0.15, str: 0.05 }, minStats: { dex: 13, int: 12 } },
+                { id: 'spellblade', label: 'Spellblade', icon: '\u2301', primaryStats: ['str', 'int'], secondaryStats: ['dex', 'con'], statWeights: { str: 0.3, int: 0.3, dex: 0.2, con: 0.15, wis: 0.05 }, minStats: { str: 13, int: 12 } },
+                { id: 'channeler', label: 'Channeler', icon: '\u2727', primaryStats: ['cha', 'con'], secondaryStats: ['dex', 'int'], statWeights: { cha: 0.35, con: 0.25, dex: 0.2, int: 0.15, wis: 0.05 }, minStats: { cha: 13, con: 12 } },
+                { id: 'warden', label: 'Warden', icon: '\u2020', primaryStats: ['str', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { str: 0.3, wis: 0.25, con: 0.2, dex: 0.2, cha: 0.05 }, minStats: { str: 13, wis: 12 } },
+                { id: 'adept', label: 'Adept', icon: '\u2727', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.3, wis: 0.3, con: 0.2, str: 0.15, int: 0.05 }, minStats: { dex: 13, wis: 13 } },
+                { id: 'artificer', label: 'Artificer', icon: '\u2731', primaryStats: ['int', 'dex'], secondaryStats: ['con', 'wis'], statWeights: { int: 0.35, dex: 0.25, con: 0.2, wis: 0.15, cha: 0.05 }, minStats: { int: 13, dex: 12 } },
+                { id: 'occultist', label: 'Occultist', icon: '\u2727', primaryStats: ['int', 'cha'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.3, cha: 0.3, con: 0.2, dex: 0.15, wis: 0.05 }, minStats: { int: 13, cha: 13 } },
+                { id: 'blade_dancer', label: 'Blade Dancer', icon: '\u2020', primaryStats: ['dex', 'cha'], secondaryStats: ['str', 'con'], statWeights: { dex: 0.35, cha: 0.25, str: 0.2, con: 0.15, wis: 0.05 }, minStats: { dex: 13, cha: 12 } },
+                { id: 'elementalist', label: 'Elementalist', icon: '\u2727', primaryStats: ['int', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, minStats: { int: 13, wis: 12 } },
+                { id: 'sentinel', label: 'Sentinel', icon: '\u25c8', primaryStats: ['str', 'con'], secondaryStats: ['wis', 'dex'], statWeights: { str: 0.3, con: 0.3, wis: 0.2, dex: 0.15, cha: 0.05 }, minStats: { str: 13, con: 12 } }
             ]
         };
     }
@@ -271,22 +292,42 @@
     // ============================================================
     // DEEP MERGE HELPERS
     // ============================================================
+    //
+    // deepMergeDefaults returns:
+    //   {
+    //     merged:  the merged value,
+    //     changed: true when any key was added or any nested merge
+    //              reported a change. false when the input already
+    //              contained every key the defaults would have
+    //              contributed, with identical leaf values.
+    //   }
+    //
+    // This shape is what lets normaliseDataStructure decide whether
+    // to set repaired = true. Prior to this change, every whole-store
+    // merge flipped the flag unconditionally, which made every load
+    // persist to IndexedDB regardless of whether anything changed.
 
     function deepMergeDefaults(target, defaults) {
+        // Primitives or arrays: the target wins unchanged.
         if (!target || typeof target !== 'object' || Array.isArray(target)) {
-            return target === undefined ? defaults : target;
+            if (target === undefined) {
+                return { merged: defaults, changed: true };
+            }
+            return { merged: target, changed: false };
         }
 
         if (!defaults || typeof defaults !== 'object' || Array.isArray(defaults)) {
-            return target;
+            return { merged: target, changed: false };
         }
 
         var result = {};
+        var changed = false;
         var keys = Object.keys(defaults);
 
         keys.forEach(function(key) {
             if (target[key] === undefined) {
                 result[key] = deepClone(defaults[key]);
+                changed = true;
             } else if (
                 target[key] &&
                 typeof target[key] === 'object' &&
@@ -295,19 +336,22 @@
                 typeof defaults[key] === 'object' &&
                 !Array.isArray(defaults[key])
             ) {
-                result[key] = deepMergeDefaults(target[key], defaults[key]);
+                var nested = deepMergeDefaults(target[key], defaults[key]);
+                result[key] = nested.merged;
+                if (nested.changed) { changed = true; }
             } else {
                 result[key] = target[key];
             }
         });
 
+        // Preserve target-only keys.
         Object.keys(target).forEach(function(key) {
             if (result[key] === undefined) {
                 result[key] = target[key];
             }
         });
 
-        return result;
+        return { merged: result, changed: changed };
     }
 
     function deepClone(value) {
@@ -579,6 +623,7 @@
                 case 24: migrateToVersion25(data); break;
                 case 25: migrateToVersion26(data); break;
                 case 26: migrateToVersion27(data); break;
+                case 27: migrateToVersion28(data); break;
                 default: data._dataVersion = DATA_VERSION; break;
             }
         }
@@ -2572,13 +2617,162 @@
         return 'converted';
     }
 
+    /**
+     * Version 28 migration — Stats-config icon normalisation.
+     *
+     * WHY:
+     *   The default stats config used pictographic emoji for class
+     *   icons: ⚔ 🏹 🛡 📚 🗡 ⚡ ⚙ ✦. Emoji are inconsistent across
+     *   platforms, do not scale with text weight, and cannot be
+     *   styled with a single color. The whole application has moved
+     *   to monochrome Unicode glyphs for symbolic markers. The stats
+     *   config is a persisted data shape (`statsConfig.classes[].icon`),
+     *   so the change requires a migration.
+     *
+     * SCOPE:
+     *   Rewrites ONLY icon values that match a legacy emoji in the
+     *   known lookup table. Custom icons that a user added to their
+     *   own class entries are left alone. The migration does not
+     *   guess at meaning; it replaces a known string with a known
+     *   replacement.
+     *
+     * THE LOOKUP TABLE:
+     *   Legacy emoji → monochrome glyph:
+     *     U+2694 (crossed swords)  → U+2020 (dagger)
+     *     U+1F3F9 (bow and arrow)  → U+27B6 (heavy triangle-headed arrow)
+     *     U+1F6E1 (shield)         → U+25C8 (diamond with centre dot)
+     *     U+1F4DA (books)          → U+25A4 (square with horizontal fill)
+     *     U+1F5E1 (dagger)         → U+2020 (dagger)
+     *     U+26A1 (high voltage)    → U+2301 (electric arrow)
+     *     U+2699 (gear)            → U+2731 (heavy asterisk)
+     *     U+2726 (black four-pointed star) → U+2727 (white four-pointed star)
+     *
+     *   Several legacy emoji map to the same replacement glyph
+     *   because the classes they represent share a theme. That is
+     *   intentional. The `id` field is the unique key; the icon is a
+     *   category hint.
+     *
+     * SAFETY:
+     *   - If `data.statsConfig` is missing, malformed, or has no
+     *     `classes` array, the migration is a no-op.
+     *   - Individual class entries that are not objects are skipped.
+     *   - Individual entries whose icon is not a recognised legacy
+     *     emoji are left alone.
+     *
+     * @param {object} data
+     */
+    function migrateToVersion28(data) {
+        if (!data.statsConfig ||
+            typeof data.statsConfig !== 'object' ||
+            Array.isArray(data.statsConfig)) {
+            data._dataVersion = 28;
+            return;
+        }
+
+        var classes = data.statsConfig.classes;
+        if (!Array.isArray(classes)) {
+            data._dataVersion = 28;
+            return;
+        }
+
+        // ---- Legacy-emoji lookup table ----
+        //
+        // Key is the legacy string as it appeared in persisted data.
+        // Value is the monochrome replacement. Keys are the raw
+        // surrogate-pair emoji strings, written in \u escapes so the
+        // source file carries no pictographic characters.
+        var ICON_REPLACEMENTS = Object.create(null);
+        ICON_REPLACEMENTS['\u2694'] = '\u2020';        // crossed swords → dagger
+        ICON_REPLACEMENTS['\uD83C\uDFF9'] = '\u27b6';  // bow and arrow → heavy arrow
+        ICON_REPLACEMENTS['\uD83D\uDEE1'] = '\u25c8';  // shield → diamond centre dot
+        ICON_REPLACEMENTS['\uD83D\uDCDA'] = '\u25a4';  // books → square horiz fill
+        ICON_REPLACEMENTS['\uD83D\uDDE1'] = '\u2020';  // dagger → dagger
+        ICON_REPLACEMENTS['\u26A1'] = '\u2301';        // high voltage → electric arrow
+        ICON_REPLACEMENTS['\u2699'] = '\u2731';        // gear → heavy asterisk
+        ICON_REPLACEMENTS['\u2726'] = '\u2727';        // black star → white star
+
+        // Some emoji are written as single \u codepoints in source but
+        // as surrogate pairs on disk. Add the codepoint form as well
+        // so both spellings are caught.
+        ICON_REPLACEMENTS['\u2694\uFE0F'] = '\u2020';  // crossed swords + VS16
+        ICON_REPLACEMENTS['\u26A1\uFE0F'] = '\u2301';  // high voltage + VS16
+        ICON_REPLACEMENTS['\u2699\uFE0F'] = '\u2731';  // gear + VS16
+
+        var recordsSeen = 0;
+        var iconsRewritten = 0;
+        var iconsAlreadyMonochrome = 0;
+        var iconsCustom = 0;
+        var recordsMalformed = 0;
+
+        for (var i = 0; i < classes.length; i++) {
+            var record = classes[i];
+            if (!record || typeof record !== 'object' || Array.isArray(record)) {
+                recordsMalformed++;
+                continue;
+            }
+            recordsSeen++;
+
+            if (typeof record.icon !== 'string' || record.icon === '') {
+                // No icon: nothing to rewrite. The UI will fall back.
+                continue;
+            }
+
+            if (ICON_REPLACEMENTS[record.icon] !== undefined) {
+                record.icon = ICON_REPLACEMENTS[record.icon];
+                iconsRewritten++;
+                continue;
+            }
+
+            // Is the existing value already one of the monochrome
+            // replacements? Then the record has been migrated (or was
+            // created after the change). Leave it alone.
+            var alreadyMono = false;
+            var monoKeys = ['\u2020', '\u27b6', '\u25c8', '\u25a4',
+                            '\u2301', '\u2731', '\u2727'];
+            for (var mk = 0; mk < monoKeys.length; mk++) {
+                if (record.icon === monoKeys[mk]) {
+                    alreadyMono = true;
+                    break;
+                }
+            }
+            if (alreadyMono) {
+                iconsAlreadyMonochrome++;
+            } else {
+                iconsCustom++;
+            }
+        }
+
+        console.log(
+            '[Database] v28: stats-config icon normalisation. ' +
+            'Records seen: ' + recordsSeen + '. ' +
+            'Icons rewritten: ' + iconsRewritten + '. ' +
+            'Already monochrome: ' + iconsAlreadyMonochrome + '. ' +
+            'Custom icons left alone: ' + iconsCustom + '. ' +
+            'Malformed records skipped: ' + recordsMalformed + '.'
+        );
+
+        data._dataVersion = 28;
+    }
+
     // ============================================================
     // NORMALISE DATA STRUCTURE
     // ============================================================
+    //
+    // Every guard below sets `repaired = true` only when it actually
+    // changed something. Prior to this revision, every whole-store
+    // merge set the flag unconditionally, which caused every load to
+    // persist to IndexedDB even when the stored data was already in
+    // canonical shape.
+    //
+    // The deepMergeDefaults helper now returns { merged, changed }.
+    // Every merge call site reads `.changed` to decide whether to flip
+    // the flag. Every leaf-level guard still flips the flag only when
+    // it writes.
 
     function normaliseDataStructure(data) {
         var repaired = false;
 
+        // ---- Top-level arrays ----
         if (!Array.isArray(data.tournaments)) { data.tournaments = []; repaired = true; }
         if (!Array.isArray(data.characters)) { data.characters = []; repaired = true; }
         if (!Array.isArray(data.teams)) { data.teams = []; repaired = true; }
@@ -2601,8 +2795,12 @@
             repaired = true;
         }
 
+        // ---- Characters ----
         data.characters.forEach(function(char) {
-            if (!Array.isArray(char.classIds)) { char.classIds = []; repaired = true; }
+            if (!Array.isArray(char.classIds)) {
+                char.classIds = [];
+                repaired = true;
+            }
             if (!char.personality || typeof char.personality !== 'object' || Array.isArray(char.personality)) {
                 char.personality = {};
                 repaired = true;
@@ -2669,6 +2867,7 @@
             }
         });
 
+        // ---- Teams (top-level shape) ----
         data.teams.forEach(function(team) {
             if (team.type === 'academic' && team.classId === undefined) {
                 team.classId = null;
@@ -2680,6 +2879,7 @@
             }
         });
 
+        // ---- Curriculum ----
         if (!data.curriculum || typeof data.curriculum !== 'object' || Array.isArray(data.curriculum)) {
             data.curriculum = getDefaultCurriculumData();
             repaired = true;
@@ -2687,32 +2887,39 @@
             if (data.curriculum.schedules !== undefined) { delete data.curriculum.schedules; repaired = true; }
             if (data.curriculum.locationSchedules !== undefined) { delete data.curriculum.locationSchedules; repaired = true; }
             if (data.curriculum.metadata !== undefined) { delete data.curriculum.metadata; repaired = true; }
-            data.curriculum = deepMergeDefaults(data.curriculum, getDefaultCurriculumData());
-            repaired = true;
+            var curriculumMerge = deepMergeDefaults(data.curriculum, getDefaultCurriculumData());
+            data.curriculum = curriculumMerge.merged;
+            if (curriculumMerge.changed) { repaired = true; }
         }
 
+        // ---- Social ----
         if (!data.social || typeof data.social !== 'object' || Array.isArray(data.social)) {
             data.social = getDefaultSocialData();
             repaired = true;
         } else {
-            data.social = deepMergeDefaults(data.social, getDefaultSocialData());
-            repaired = true;
+            var socialMerge = deepMergeDefaults(data.social, getDefaultSocialData());
+            data.social = socialMerge.merged;
+            if (socialMerge.changed) { repaired = true; }
         }
 
+        // ---- Stats config ----
         if (!data.statsConfig || typeof data.statsConfig !== 'object' || Array.isArray(data.statsConfig)) {
             data.statsConfig = getDefaultStatsConfig();
             repaired = true;
         } else {
-            data.statsConfig = deepMergeDefaults(data.statsConfig, getDefaultStatsConfig());
-            repaired = true;
+            var statsMerge = deepMergeDefaults(data.statsConfig, getDefaultStatsConfig());
+            data.statsConfig = statsMerge.merged;
+            if (statsMerge.changed) { repaired = true; }
         }
 
+        // ---- Academy ----
         if (!data.academy || typeof data.academy !== 'object' || Array.isArray(data.academy)) {
             data.academy = getDefaultAcademyData();
             repaired = true;
         } else {
-            data.academy = deepMergeDefaults(data.academy, getDefaultAcademyData());
-            repaired = true;
+            var academyMerge = deepMergeDefaults(data.academy, getDefaultAcademyData());
+            data.academy = academyMerge.merged;
+            if (academyMerge.changed) { repaired = true; }
 
             if (data.academy.classStudents !== undefined) {
                 delete data.academy.classStudents;
@@ -2737,7 +2944,7 @@
             repaired = true;
         }
 
-        // v22 shape guard: weekly-team records must not carry members.
+        // ---- v22 shape guard: weekly-team records must not carry members ----
         if (data.academy.weeklyTeams &&
             typeof data.academy.weeklyTeams === 'object' &&
             !Array.isArray(data.academy.weeklyTeams)) {
@@ -2755,8 +2962,7 @@
             });
         }
 
-        // v24 shape guard: every team member entry must have an
-        // intervals array and a memberId.
+        // ---- v24 shape guard: intervals array + memberId on every member entry ----
         data.teams.forEach(function(team) {
             if (!team || typeof team !== 'object') return;
             if (!Array.isArray(team.members)) return;
@@ -2792,8 +2998,7 @@
             }
         });
 
-        // v25 shape guard: every elimination record must carry a
-        // year.
+        // ---- v25 shape guard: every elimination record carries a year ----
         (function ensureEliminationYears() {
             var fallbackYear = (typeof data.currentYear === 'number' &&
                                 isFinite(data.currentYear) &&
@@ -2862,10 +3067,7 @@
             });
         })();
 
-        // v26 shape guard: every discipline must carry the canonical
-        // shape. This catches records written by a pre-v26 build that
-        // somehow bypassed the migration (imported envelopes, direct
-        // injection). Symmetric with v24 and v25 guards.
+        // ---- v26 shape guard: discipline canonical shape ----
         (function ensureDisciplineShape() {
             var CV = window.CalendarValidation;
             var hasParser = CV && typeof CV.parseWeek === 'function';
@@ -2962,11 +3164,7 @@
             }
         })();
 
-        // v27 shape guard: every class-discipline record must be a
-        // marker. Any record that still carries a config field, an
-        // instructorIds array, or an incorrect shape is coerced to
-        // the marker shape. `mandatory` is preserved if boolean;
-        // otherwise derived from the discipline's type field.
+        // ---- v27 shape guard: class-discipline marker shape ----
         (function ensureClassDisciplineMarkerShape() {
             if (!data.academy ||
                 !data.academy.classDisciplines ||
@@ -3060,6 +3258,50 @@
             }
         })();
 
+        // ---- v28 shape guard: stats-config icons are monochrome ----
+        //
+        // Symmetric with the migration. Any record that still carries
+        // a legacy emoji icon is rewritten to its monochrome
+        // replacement. Custom icons are left alone.
+        (function ensureStatsConfigMonochromeIcons() {
+            if (!data.statsConfig ||
+                typeof data.statsConfig !== 'object' ||
+                Array.isArray(data.statsConfig)) {
+                return;
+            }
+
+            var classes = data.statsConfig.classes;
+            if (!Array.isArray(classes)) { return; }
+
+            var ICON_REPLACEMENTS = Object.create(null);
+            ICON_REPLACEMENTS['\u2694'] = '\u2020';
+            ICON_REPLACEMENTS['\uD83C\uDFF9'] = '\u27b6';
+            ICON_REPLACEMENTS['\uD83D\uDEE1'] = '\u25c8';
+            ICON_REPLACEMENTS['\uD83D\uDCDA'] = '\u25a4';
+            ICON_REPLACEMENTS['\uD83D\uDDE1'] = '\u2020';
+            ICON_REPLACEMENTS['\u26A1'] = '\u2301';
+            ICON_REPLACEMENTS['\u2699'] = '\u2731';
+            ICON_REPLACEMENTS['\u2726'] = '\u2727';
+            ICON_REPLACEMENTS['\u2694\uFE0F'] = '\u2020';
+            ICON_REPLACEMENTS['\u26A1\uFE0F'] = '\u2301';
+            ICON_REPLACEMENTS['\u2699\uFE0F'] = '\u2731';
+
+            for (var i = 0; i < classes.length; i++) {
+                var record = classes[i];
+                if (!record || typeof record !== 'object' || Array.isArray(record)) {
+                    continue;
+                }
+                if (typeof record.icon !== 'string' || record.icon === '') {
+                    continue;
+                }
+                if (ICON_REPLACEMENTS[record.icon] !== undefined) {
+                    record.icon = ICON_REPLACEMENTS[record.icon];
+                    repaired = true;
+                }
+            }
+        })();
+
+        // ---- Orphan classId pruning ----
         var validClassIds = Object.create(null);
         Object.keys(data.academy.graduatingClasses).forEach(function(id) {
             validClassIds[id] = true;
@@ -3397,7 +3639,7 @@
     // EXPOSE
     // ============================================================
 
-    window.db = {
+    window.db = Object.freeze({
         openDatabase: openDatabase,
         ensureDatabaseReady: ensureDatabaseReady,
         loadData: loadData,
@@ -3410,12 +3652,44 @@
         isDatabaseReady: isDatabaseReady,
         getLoadError: getLoadError,
         deleteDatabase: deleteDatabase
-    };
+    });
 
     window.loadData = loadData;
     window.saveData = saveData;
     window.getEmptyData = getEmptyData;
     window.getDefaultMagicProficiencies = getDefaultMagicProficiencies;
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var required = [
+            'openDatabase',
+            'ensureDatabaseReady',
+            'loadData',
+            'saveData',
+            'getEmptyData',
+            'autoLoadData',
+            'createSafeCopy',
+            'getDatabaseStatus',
+            'isDatabaseReady',
+            'getLoadError',
+            'deleteDatabase'
+        ];
+        var missing = [];
+        for (var i = 0; i < required.length; i++) {
+            if (typeof window.db[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+        if (missing.length > 0) {
+            console.warn(
+                '[Database] Verification - some exports may be missing:',
+                missing.join(', ')
+            );
+        }
+    })();
 
     // ============================================================
     // INITIALIZE

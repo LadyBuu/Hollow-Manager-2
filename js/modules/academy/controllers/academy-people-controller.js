@@ -50,6 +50,13 @@
  *     calls context.onChange().
  *   - Domain reads and writes. The aggregators produce VMs; the
  *     domain modules perform mutations.
+ *   - The class-disciplines marker store, either side of it.
+ *     The picker modal reads through AcademyAggregator (which reads
+ *     through AcademyClassDisciplinesQueries) and writes through
+ *     AcademyClassDisciplines. This controller does neither. It
+ *     routes a click to the picker and receives a re-render
+ *     callback. It does not import the queries module and it does
+ *     not import the mutation module.
  *   - The class-disciplines picker's modal shell.
  *   - The enrollment modal's modal shell and its candidate
  *     derivation. The modal owns those; this controller just opens
@@ -116,8 +123,9 @@
  *   - window.AcademyCharacterDetailAggregator
  *   - window.AcademyClassDetail
  *   - window.AcademyCharacterDetail
- *   - window.AcademyClassDisciplines         (via picker)
  *   - window.CharacterCRUD                   (v27 — for setMode)
+ *   - window.NotificationSystem
+ *   - window.DomUtils
  *   - window.AcademyGradesEditor             (lazy)
  *   - window.CalendarRenderer                (lazy)
  *   - window.AcademyCRUDModals               (lazy)
@@ -129,7 +137,6 @@
  *   - window.AcademyGroups                   (lazy)
  *   - window.CharacterQueries                (lazy)
  *   - window.AcademyClasses                  (lazy)
- *   - window.NotificationSystem
  */
 
 (function() {
@@ -148,6 +155,7 @@
     var AcademyCharacterDetailAggregator = window.AcademyCharacterDetailAggregator;
     var CharacterCRUD = window.CharacterCRUD;
     var NotificationSystem = window.NotificationSystem;
+    var DomUtils = window.DomUtils;
 
     var _missing = [];
 
@@ -180,6 +188,11 @@
     }
     if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
         _missing.push('NotificationSystem.notify');
+    }
+    if (!DomUtils ||
+        typeof DomUtils.escapeHtml !== 'function' ||
+        typeof DomUtils.escapeAttribute !== 'function') {
+        _missing.push('DomUtils.escapeHtml/escapeAttribute');
     }
 
     if (_missing.length > 0) {
@@ -217,10 +230,6 @@
 
     function getDisciplines() {
         return window.AcademyDisciplines || null;
-    }
-
-    function getClassDisciplines() {
-        return window.AcademyClassDisciplines || null;
     }
 
     function getEnrolments() {
@@ -433,9 +442,9 @@
             var isSelected = selectedClassId &&
                 String(selectedClassId) === String(cls.id);
             html += '<option value="' +
-                        window.DomUtils.escapeAttribute(cls.id) + '"' +
+                        DomUtils.escapeAttribute(cls.id) + '"' +
                         (isSelected ? ' selected' : '') + '>' +
-                        window.DomUtils.escapeHtml(cls.name) +
+                        DomUtils.escapeHtml(cls.name) +
                     '</option>';
         }
         html += '</select>';
@@ -449,7 +458,7 @@
         html += '<input type="number" id="academy-week-input" ' +
                     'class="academy-week-input" ' +
                     'value="' +
-                        window.DomUtils.escapeAttribute(String(week)) +
+                        DomUtils.escapeAttribute(String(week)) +
                     '" ' +
                     'min="1" max="52">';
         html += '</div>';
@@ -477,7 +486,7 @@
                     'class="academy-people-search" ' +
                     'placeholder="Search..." ' +
                     'value="' +
-                        window.DomUtils.escapeAttribute(filters.search || '') +
+                        DomUtils.escapeAttribute(filters.search || '') +
                     '">';
 
         html += '<label class="academy-filter-label" ' +
@@ -546,12 +555,12 @@
         var html = '';
         html += '<div class="' + classes + '" ' +
                     'data-character-id="' +
-                        window.DomUtils.escapeAttribute(person.id) + '" ' +
+                        DomUtils.escapeAttribute(person.id) + '" ' +
                     'role="button" tabindex="0">';
 
         html += '<div class="academy-character-row-main">';
         html += '<span class="academy-character-name">' +
-                    window.DomUtils.escapeHtml(person.name || 'Unknown') +
+                    DomUtils.escapeHtml(person.name || 'Unknown') +
                 '</span>';
         if (person.role === 'instructor') {
             html += '<span class="academy-character-role-badge">' +
@@ -566,13 +575,13 @@
                 : '';
             html += '<div class="academy-character-row-warning">' +
                         '\u26a0 Eliminated' +
-                        window.DomUtils.escapeHtml(weekText) +
+                        DomUtils.escapeHtml(weekText) +
                     '</div>';
         }
 
         if (person.status && !person.eliminated) {
             html += '<div class="academy-character-row-status">' +
-                        window.DomUtils.escapeHtml(person.status) +
+                        DomUtils.escapeHtml(person.status) +
                     '</div>';
         }
 
@@ -599,7 +608,7 @@
         return (
             '<div class="academy-detail-placeholder">' +
                 '<h3>' +
-                    window.DomUtils.escapeHtml(classVM.name || 'Class') +
+                    DomUtils.escapeHtml(classVM.name || 'Class') +
                 '</h3>' +
                 '<p class="empty-state small">' +
                     'Class detail view not available.' +
@@ -648,7 +657,7 @@
         return (
             '<div class="academy-detail-placeholder">' +
                 '<h3>' +
-                    window.DomUtils.escapeHtml(vm.character.name) +
+                    DomUtils.escapeHtml(vm.character.name) +
                 '</h3>' +
                 '<p class="empty-state small">' +
                     'Character detail view not available.' +

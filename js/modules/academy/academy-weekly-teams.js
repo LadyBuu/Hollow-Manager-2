@@ -64,7 +64,18 @@
  *   - window.TeamQueries
  *   - window.TeamConstants
  *   - window.CharacterQueries
- *   - window.AcademyQueries
+ *   - window.AcademyClasses
+ *
+ * WHY AcademyClasses AND NOT AcademyQueries:
+ *   AcademyQueries is a legacy facade over AcademyClasses; its own
+ *   header says so explicitly, and its job is to keep pre-migration
+ *   callers working while they are rewritten. This module was one of
+ *   those callers. Reading classes through the facade added a hop
+ *   with no benefit, and the module header claimed reads routed
+ *   through TeamQueries and CharacterQueries while the code reached
+ *   for a third source. The class reads the module performs now
+ *   route through AcademyClasses, the canonical owner. AcademyQueries
+ *   is no longer a dependency of this module.
  */
 
 (function() {
@@ -72,21 +83,6 @@
 
     if (window.__academyWeeklyTeamsLoaded) {
         return;
-    }
-
-    var _DIAGNOSTIC = false;
-
-    function diag() {
-        if (!_DIAGNOSTIC) return;
-        var args = Array.prototype.slice.call(arguments);
-        args.unshift('[AWT]');
-        console.log.apply(console, args);
-    }
-
-    function diagWarn() {
-        var args = Array.prototype.slice.call(arguments);
-        args.unshift('[AWT]');
-        console.warn.apply(console, args);
     }
 
     // ============================================================
@@ -101,7 +97,7 @@
     var TeamQueries = window.TeamQueries;
     var TeamConstants = window.TeamConstants;
     var CharacterQueries = window.CharacterQueries;
-    var AcademyQueries = window.AcademyQueries;
+    var AcademyClasses = window.AcademyClasses;
 
     var _missing = [];
 
@@ -161,13 +157,9 @@
         typeof CharacterQueries.getCharacterById !== 'function') {
         _missing.push('CharacterQueries.getCharacterById');
     }
-    if (!AcademyQueries ||
-        typeof AcademyQueries.getClasses !== 'function') {
-        _missing.push('AcademyQueries.getClasses');
-    }
-    if (!AcademyQueries ||
-        typeof AcademyQueries.getClass !== 'function') {
-        _missing.push('AcademyQueries.getClass');
+    if (!AcademyClasses ||
+        typeof AcademyClasses.getClasses !== 'function') {
+        _missing.push('AcademyClasses.getClasses');
     }
 
     if (_missing.length > 0) {
@@ -178,8 +170,6 @@
     }
 
     window.__academyWeeklyTeamsLoaded = true;
-
-    diag('Module loaded (v24, interval-aware, delegate predicates).');
 
     // ============================================================
     // CONSTANTS
@@ -970,8 +960,8 @@
      * memberships.
      *
      * The majority class wins; a tie returns null. Reads route
-     * through TeamQueries and CharacterQueries — this module does
-     * not walk raw storage.
+     * through TeamQueries, CharacterQueries, and AcademyClasses —
+     * this module does not walk raw storage.
      */
     function suggestClassForTeam(teamId) {
         if (!isNonEmptyString(teamId)) {
@@ -985,7 +975,7 @@
             return null;
         }
 
-        var classes = AcademyQueries.getClasses() || [];
+        var classes = AcademyClasses.getClasses() || [];
         if (classes.length === 0) {
             return null;
         }

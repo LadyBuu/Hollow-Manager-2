@@ -101,7 +101,8 @@
  * CLASS-DISCIPLINE PICKER (v27):
  *   The picker VM is derived from two sources:
  *     - AcademyDisciplines.getDisciplines()          (global list)
- *     - AcademyClassDisciplines.hasClassDiscipline   (offered?)
+ *     - AcademyClassDisciplinesQueries.hasClassDiscipline
+ *                                                     (offered?)
  *
  *   The picker is a MARKER EDITOR. It shows which disciplines a
  *   class offers, and the per-class `mandatory` flag on each offered
@@ -147,31 +148,43 @@
  *   throws. It does NOT silently treat the candidate as eligible.
  *
  * DEPENDENCIES (MANDATORY):
- *   - AcademyClasses       (class entities)
- *   - AcademyDisciplines   (discipline entities)
- *   - AcademyClassDisciplines (class-discipline markers, v27)
- *   - CharacterQueries     (character identity)
- *   - AcademyLocations     (location entities for the Locations view)
- *   - TeamQueries          (persistent Team entities)
- *   - TeamConstants        (team type/period labels)
- *   - CalendarConstants    (week bounds for week resolution)
- *   - RangeUtils           (containsWeek, for the partition split)
+ *   - AcademyClasses                 (class entities)
+ *   - AcademyDisciplines             (discipline entities)
+ *   - AcademyClassDisciplinesQueries (class-discipline marker reads,
+ *                                     v27)
+ *   - CharacterQueries               (character identity)
+ *   - AcademyLocations               (location entities for the
+ *                                     Locations view)
+ *   - TeamQueries                    (persistent Team entities)
+ *   - TeamConstants                  (team type/period labels)
+ *   - CalendarConstants              (week bounds for week
+ *                                     resolution)
+ *   - RangeUtils                     (containsWeek, for the
+ *                                     partition split)
  *
  * DEPENDENCIES (LAZY):
  *   - TeamAggregator             (period-display strings)
  *   - AcademyWeeklyTeams         (week-window + orphan reads)
  *   - AcademyRanking             (ranking projection)
  *   - AcademyCalendarAggregator  (schedule projections)
- *   - AcademyGrades              (grade read for discipline editor VM)
+ *   - AcademyGrades              (grade read for discipline editor
+ *                                 VM)
  *   - EliminationQueries         (elimination reads; REQUIRED by
  *                                 getWeeklyTeamMemberManagerViewModel
- *                                 and by the People 'eliminated' filter)
+ *                                 and by the People 'eliminated'
+ *                                 filter)
  *
  *   Note: AcademyEnrolments is NOT a dependency of this module.
  *   After the v27 picker VM trim, this file no longer reads
  *   enrolments directly. Enrolment reads are performed by the
  *   character-detail aggregator and the performance layer; the
  *   aggregator's picker VM was reduced to markers only.
+ *
+ *   Note: AcademyClassDisciplines (the mutation module) is NOT a
+ *   dependency of this module. Reads route through
+ *   AcademyClassDisciplinesQueries. The mutation module exists only
+ *   to write markers and to run cascade cleanup; a projection
+ *   builder has no reason to reach for it.
  */
 
 (function() {
@@ -187,7 +200,8 @@
 
     var AcademyClasses = window.AcademyClasses;
     var AcademyDisciplines = window.AcademyDisciplines;
-    var AcademyClassDisciplines = window.AcademyClassDisciplines;
+    var AcademyClassDisciplinesQueries =
+        window.AcademyClassDisciplinesQueries;
     var CharacterQueries = window.CharacterQueries;
     var AcademyLocations = window.AcademyLocations;
     var TeamQueries = window.TeamQueries;
@@ -213,13 +227,17 @@
     if (!AcademyDisciplines || typeof AcademyDisciplines.getDiscipline !== 'function') {
         _missing.push('AcademyDisciplines.getDiscipline');
     }
-    if (!AcademyClassDisciplines ||
-        typeof AcademyClassDisciplines.getClassDisciplinesForClass !== 'function') {
-        _missing.push('AcademyClassDisciplines.getClassDisciplinesForClass');
+    if (!AcademyClassDisciplinesQueries ||
+        typeof AcademyClassDisciplinesQueries.hasClassDiscipline !== 'function') {
+        _missing.push('AcademyClassDisciplinesQueries.hasClassDiscipline');
     }
-    if (!AcademyClassDisciplines ||
-        typeof AcademyClassDisciplines.hasClassDiscipline !== 'function') {
-        _missing.push('AcademyClassDisciplines.hasClassDiscipline');
+    if (!AcademyClassDisciplinesQueries ||
+        typeof AcademyClassDisciplinesQueries.isActiveInWeek !== 'function') {
+        _missing.push('AcademyClassDisciplinesQueries.isActiveInWeek');
+    }
+    if (!AcademyClassDisciplinesQueries ||
+        typeof AcademyClassDisciplinesQueries.getClassDiscipline !== 'function') {
+        _missing.push('AcademyClassDisciplinesQueries.getClassDiscipline');
     }
     if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
         _missing.push('CharacterQueries.getCharacterById');
@@ -862,6 +880,13 @@
     //       ...
     //     ]
     //   }
+    //
+    // READS SOURCE:
+    //   The `offered` flag, the `mandatory` flag, and the
+    //   `activeInWeek` flag all come from
+    //   AcademyClassDisciplinesQueries. The mutation module
+    //   (AcademyClassDisciplines) is not consulted; a projection
+    //   builder never reaches for a writer.
 
     function getClassDisciplinesPickerViewModel(classId, options) {
         options = options || {};
@@ -889,22 +914,24 @@
             var d = allDisciplines[i];
             if (!d || !d.id) { continue; }
 
-            var offered = AcademyClassDisciplines.hasClassDiscipline(
+            var offered = AcademyClassDisciplinesQueries.hasClassDiscipline(
                 classId, d.id
             );
 
             var activeInWeek = false;
             if (weekNum !== null) {
-                activeInWeek = AcademyClassDisciplines.isActiveInWeek(
-                    classId, d.id, weekNum
-                );
+                activeInWeek =
+                    AcademyClassDisciplinesQueries.isActiveInWeek(
+                        classId, d.id, weekNum
+                    );
             }
 
             var mandatory = false;
             if (offered) {
-                var marker = AcademyClassDisciplines.getClassDiscipline(
-                    classId, d.id
-                );
+                var marker =
+                    AcademyClassDisciplinesQueries.getClassDiscipline(
+                        classId, d.id
+                    );
                 mandatory = marker && marker.mandatory === true;
             }
 
