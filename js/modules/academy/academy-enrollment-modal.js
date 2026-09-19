@@ -10,7 +10,9 @@
  * WHAT THIS MODULE OWNS:
  *   The modal that lets a user say which disciplines a character
  *   is enrolled in for a class. The modal is opened from the
- *   character detail panel's "Enroll Discipline" button.
+ *   character detail panel's "Enroll Discipline" button (student
+ *   mode) or the instructor Disciplines tab's "+ Assign to teach"
+ *   button (instructor mode).
  *
  *   Modal lifecycle:
  *     - Creates its own .modal shell, appended to document.body.
@@ -36,6 +38,22 @@
  *     That relationship is a TEACHING-GROUP assignment, edited
  *     from the scheduling UI, not from this modal. See the
  *     DEFERRED-SCHEDULING section of the pinboard.
+ *   - The character's mode. The modal is mode-agnostic. It writes
+ *     an enrolment; whether the character is a student or an
+ *     instructor is expressed by the character record and
+ *     interpreted by the Academy UI. The modal does not branch on
+ *     mode and does not know what mode means.
+ *
+ * PRESENTATION OVERRIDE (title):
+ *   The modal accepts an optional `title` option. When supplied,
+ *   the header reads "<title> — <charName>". When absent, the
+ *   header reads "Enroll <charName> in a Discipline". This lets
+ *   the instructor flow say "Assign to teach a discipline —
+ *   Professor Jane" without teaching the modal what an
+ *   instructor is.
+ *
+ *   The title is purely presentation. It does not affect the
+ *   options list, the write path, or the bulk actions.
  *
  * MULTI-SELECT:
  *   The user can check several disciplines and enrol in all of
@@ -89,9 +107,20 @@
  *   - window.CharacterQueries
  *
  * USAGE:
+ *   // Student enrolment
  *   AcademyEnrollmentModal.openModal(charId, {
  *       classId: 'class_123',
  *       week: 5,
+ *       onClose: function() {
+ *           // re-render the character detail panel
+ *       }
+ *   });
+ *
+ *   // Instructor assignment (presentation-only override)
+ *   AcademyEnrollmentModal.openModal(charId, {
+ *       classId: 'class_123',
+ *       week: 5,
+ *       title: 'Assign to teach a discipline',
  *       onClose: function() {
  *           // re-render the character detail panel
  *       }
@@ -179,6 +208,7 @@
     var _charId = null;
     var _classId = null;
     var _week = null;
+    var _title = null;
     var _onClose = null;
 
     var _contentChangeHandler = null;
@@ -214,6 +244,13 @@
      * @param {number} [options.week]      - display week; defaults
      *                                       to AcademyUI's current
      *                                       display week.
+     * @param {string} [options.title]     - optional header title.
+     *                                       When present, the header
+     *                                       reads "<title> — <name>".
+     *                                       When absent, the header
+     *                                       reads "Enroll <name> in a
+     *                                       Discipline". Purely
+     *                                       presentational.
      * @param {function} [options.onClose] - called once, when the
      *                                       modal closes for any
      *                                       reason.
@@ -247,6 +284,9 @@
         _charId = String(charId);
         _classId = String(options.classId);
         _week = week;
+        _title = isNonEmptyString(options.title)
+            ? String(options.title)
+            : null;
         _onClose = typeof options.onClose === 'function'
             ? options.onClose
             : null;
@@ -314,6 +354,7 @@
         _charId = null;
         _classId = null;
         _week = null;
+        _title = null;
         _onClose = null;
         _contentChangeHandler = null;
         _contentClickHandler = null;
@@ -344,6 +385,7 @@
         _charId = null;
         _classId = null;
         _week = null;
+        _title = null;
         _onClose = null;
         _contentChangeHandler = null;
         _contentClickHandler = null;
@@ -447,6 +489,7 @@
             charName: charName,
             classId: _classId,
             week: _week,
+            title: _title,
             rows: rows,
             eligibleRows: eligibleRows,
             mandatoryCount: mandatoryCount
@@ -484,11 +527,17 @@
         var html = '';
 
         // ---- Header ----
+        var charNameEscaped = DomUtils.escapeHtml(vm.charName);
+        var heading;
+        if (isNonEmptyString(vm.title)) {
+            heading = DomUtils.escapeHtml(vm.title) +
+                ' \u2014 ' + charNameEscaped;
+        } else {
+            heading = 'Enroll ' + charNameEscaped + ' in a Discipline';
+        }
+
         html += '<div class="modal-header">';
-        html += '<h3>' +
-                    'Enroll ' + DomUtils.escapeHtml(vm.charName) +
-                    ' in a Discipline' +
-                '</h3>';
+        html += '<h3>' + heading + '</h3>';
         html += '<button type="button" class="close-modal" ' +
                     'data-enroll-action="close" ' +
                     'aria-label="Close">&times;</button>';

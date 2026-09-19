@@ -481,6 +481,32 @@
 
 /* ============================================================
    DISCIPLINES TAB - INSTRUCTOR
+   ============================================================
+   The instructor Disciplines tab reuses the student row base
+   and adds three things:
+
+     1. A distinct border-left colour (--info, matching the
+        instructor role badge and the Auto-Groups block).
+
+     2. A classes list, shown next to each discipline, listing
+        every class the instructor teaches that discipline for.
+        The list is derived by the aggregator (group-by-discipline
+        across classes) and is display-only.
+
+     3. A per-row "Stop teaching this class" button, rendered
+        only when the instructor teaches the discipline for the
+        currently selected class. The button's data-action is
+        the same "leave-discipline" the student Leave button
+        uses; the domain call is identical.
+
+   Row layout (wide viewports):
+
+       [Discipline name]  [Type]  [Class A, Class B]  [Button]
+
+   The classes list has margin-left: auto, so it and the button
+   are pushed to the right edge of the flex row. On narrow
+   viewports the row wraps and the classes list takes its own
+   line (see the mobile block).
    ============================================================ */
 
 .academy-character-instructor-disciplines {
@@ -494,6 +520,33 @@
 
 .academy-instructor-discipline-row:hover {
     background: var(--info-soft);
+}
+
+/* The classes list rendered next to an instructor's discipline
+   row. Shows every class the instructor teaches that discipline
+   for, comma-separated. Read-only. */
+
+.academy-character-discipline-classes {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-style: italic;
+    margin-left: auto;
+    padding-left: 8px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 40%;
+}
+
+/* The per-row "Stop teaching this class" button. Inherits the
+   .academy-character-discipline-row button.small base rule from
+   the STUDENT DISCIPLINES section above. Named here so the
+   button can be targeted for a distinct hover or spacing if the
+   two modes ever diverge. */
+
+.academy-instructor-stop-teaching-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
 }
 
 /* ============================================================
@@ -820,6 +873,12 @@
    data-action="enroll-discipline". It lists the class's active
    offerings and lets the user select one or more to enrol the
    character into. Rendered by academy-enrollment-modal.js.
+
+   The modal header text is supplied by the caller:
+     - Student mode: "Enroll [Name] in a Discipline" (default)
+     - Instructor mode: "Assign to teach a discipline — [Name]"
+   The modal does not change the header markup based on mode; it
+   renders whatever title string it was given.
  */
 
 .academy-enroll-summary {
@@ -982,6 +1041,28 @@
 
     .academy-character-discipline-row button.small {
         margin-left: auto;
+    }
+
+    /* On narrow viewports the instructor discipline row wraps.
+       The classes list moves to its own line so it does not
+       crowd out the discipline name; the "Stop teaching this
+       class" button stays on the same line as the classes list
+       but is pushed to the right edge. Reading order becomes:
+
+           [Discipline name]  [Type]
+           [Class A, Class B]      [Stop teaching this class] */
+    .academy-character-discipline-classes {
+        margin-left: 0;
+        padding-left: 0;
+        max-width: 100%;
+        white-space: normal;
+        flex-basis: 100%;
+        order: 3;
+    }
+
+    .academy-instructor-stop-teaching-btn {
+        margin-left: auto;
+        order: 4;
     }
 
     .academy-dropout-controls {

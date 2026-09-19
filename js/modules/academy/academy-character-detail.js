@@ -56,6 +56,45 @@
  *   Enrollment section; Remove from class is on each chip. They are
  *   visually separate and semantically orthogonal.
  *
+ * INSTRUCTOR DISCIPLINES (v27 + this slice):
+ *   The Disciplines tab in instructor mode now has two affordances:
+ *
+ *     - "+ Assign to teach" in the section header emits
+ *       data-action="enroll-discipline" with data-character-id. This
+ *       is the SAME action the student Disciplines tab uses. The
+ *       controller routes it to the same enrollment modal, passing a
+ *       presentation-only title override so the modal's header reads
+ *       "Assign to teach a discipline — [Name]" instead of
+ *       "Enroll [Name] in a Discipline". The write is identical:
+ *       AcademyEnrolments.enrol(charId, classId, disciplineId, week).
+ *
+ *       The relationship "instructor X teaches discipline D for class
+ *       C" is expressed as an enrolment, the same store as student
+ *       enrolment. The character's mode determines how the Academy UI
+ *       interprets that fact.
+ *
+ *     - Per-row "Stop teaching this class" emits
+ *       data-action="leave-discipline" with the character ID and
+ *       discipline ID. Same action the student Leave button uses. The
+ *       controller routes it to AcademyEnrolments.leave(charId,
+ *       classId, disciplineId, week) — scoped to the currently
+ *       selected class, so leaving English for Class B does not
+ *       affect the instructor's English relationship with Class A.
+ *
+ *   The button is only rendered when the instructor teaches the
+ *   discipline for the currently selected class. Otherwise the row is
+ *   display-only.
+ *
+ *   The class list rendered next to each discipline name comes from
+ *   the aggregator (d.classNames), grouped by discipline across every
+ *   class the instructor teaches it for. The list is display-only.
+ *
+ *   This module does NOT carry instructor-specific enrolment logic.
+ *   It emits the same data-actions the student side does, and the
+ *   controller routes both modes through the same domain calls. The
+ *   only mode-aware behavior here is which affordances render and
+ *   what their labels say.
+ *
  * INSTRUCTOR GROUP ACTIONS:
  *   The Auto-Groups tab (instructor mode) emits actions for adding
  *   and removing students from instructor-managed auto-groups:
@@ -571,10 +610,22 @@
     // ============================================================
     // DISCIPLINES TAB
     // ============================================================
+    //
+    // The tab dispatches on mode.
+    //
+    //   Student mode  → renderStudentDisciplines
+    //   Instructor    → renderInstructorDisciplines
+    //
+    // Both modes use the same enrolment store. The instructor flow
+    // emits the same data-actions the student flow does
+    // ("enroll-discipline" and "leave-discipline"), and the
+    // controller routes both through AcademyEnrolments. The
+    // distinction is presentation: what the buttons say, and
+    // whether the row shows a per-class removal.
 
     function renderDisciplinesTab(vm, mode) {
         if (mode === 'instructor') {
-            return renderInstructorDisciplines(vm.instructor);
+            return renderInstructorDisciplines(vm);
         }
         return renderStudentDisciplines(
             vm.student,
@@ -650,7 +701,38 @@
         return html;
     }
 
-    function renderInstructorDisciplines(instructor) {
+    /**
+     * Instructor Disciplines tab.
+     *
+     * vm carries:
+     *   - vm.instructor.disciplines: [{ id, name, type, classIds,
+     *                                   classNames }]
+     *   - vm.character: { id, name, status, age, deceased }
+     *   - vm.classContext: null | { id, name }
+     *
+     * The discipline list is grouped by discipline across every
+     * class the instructor teaches it for. Each row shows the
+     * discipline name, the type (if any), the classes it's taught
+     * in, and — when the currently selected class is among them — a
+     * per-row "Stop teaching this class" button.
+     *
+     * The button scope is the currently selected class only. An
+     * instructor who teaches English for Class A and Class B sees
+     * one "English" row with both classes listed. If Class A is
+     * selected, the row shows "Stop teaching this class"; clicking
+     * it ends the enrolment for Class A and leaves the Class B
+     * relationship untouched.
+     *
+     * When classContext is null (no class selected), no per-row
+     * removal renders and no per-row context can be determined.
+     * The "+ Assign to teach" button also does not render, matching
+     * the student side's "select a class first" behavior.
+     */
+    function renderInstructorDisciplines(vm) {
+        var instructor = vm.instructor;
+        var character = vm.character;
+        var classContext = vm.classContext;
+
         var html = '';
         html += '<div class="academy-character-detail-section ' +
                     'academy-character-instructor-disciplines">';
@@ -659,7 +741,25 @@
         html += '<h4 class="academy-character-detail-section-title">' +
                     'Disciplines I Teach' +
                 '</h4>';
+
+        if (classContext && character && character.id) {
+            html += '<button type="button" class="small primary" ' +
+                        'data-action="enroll-discipline" ' +
+                        'data-character-id="' +
+                            escapeAttribute(character.id) + '">' +
+                        '+ Assign to teach' +
+                    '</button>';
+        }
         html += '</div>';
+
+        if (!classContext) {
+            html += '<p class="empty-state small">' +
+                        'Select a class to manage this instructor\'s ' +
+                        'teaching assignments.' +
+                    '</p>';
+            html += '</div>';
+            return html;
+        }
 
         if (!instructor) {
             html += '<p class="empty-state small">' +
@@ -672,31 +772,102 @@
         if (!Array.isArray(instructor.disciplines) ||
             instructor.disciplines.length === 0) {
             html += '<p class="empty-state small">' +
-                        'Not assigned to teach any disciplines.' +
+                        'Not assigned to teach any disciplines. ' +
+                        'Use "+ Assign to teach" to add one.' +
                     '</p>';
             html += '</div>';
             return html;
         }
 
+        var selectedClassId = classContext.id;
+
         html += '<div class="academy-character-discipline-list">';
 
         for (var i = 0; i < instructor.disciplines.length; i++) {
-            var d = instructor.disciplines[i];
-            html += '<div class="academy-character-discipline-row ' +
-                        'academy-instructor-discipline-row" ' +
-                        'data-discipline-id="' + escapeAttribute(d.id) + '">';
-            html += '<span class="academy-character-discipline-name">' +
-                        escapeHtml(d.name) +
-                    '</span>';
-            if (isNonEmptyString(d.type)) {
-                html += '<span class="academy-character-discipline-meta">' +
-                            escapeHtml(d.type) +
-                        '</span>';
-            }
-            html += '</div>';
+            html += renderInstructorDisciplineRow(
+                instructor.disciplines[i],
+                character,
+                selectedClassId
+            );
         }
 
         html += '</div>';
+        html += '</div>';
+        return html;
+    }
+
+    function renderInstructorDisciplineRow(d, character, selectedClassId) {
+        if (!d || !d.id) { return ''; }
+
+        var classIds = Array.isArray(d.classIds) ? d.classIds : [];
+        var classNames = Array.isArray(d.classNames) ? d.classNames : [];
+
+        // Does this instructor teach this discipline for the
+        // currently selected class? The per-row removal only
+        // renders when true. If false, the row is display-only —
+        // the instructor teaches this discipline for some other
+        // class, but not for the one the user is currently
+        // looking at.
+        var teachesSelectedClass = false;
+        if (isNonEmptyString(selectedClassId)) {
+            var target = String(selectedClassId);
+            for (var ci = 0; ci < classIds.length; ci++) {
+                if (String(classIds[ci]) === target) {
+                    teachesSelectedClass = true;
+                    break;
+                }
+            }
+        }
+
+        var html = '';
+        html += '<div class="academy-character-discipline-row ' +
+                    'academy-instructor-discipline-row" ' +
+                    'data-discipline-id="' + escapeAttribute(d.id) + '">';
+
+        // ---- Name ----
+        html += '<span class="academy-character-discipline-name">' +
+                    escapeHtml(d.name) +
+                '</span>';
+
+        // ---- Type badge (optional) ----
+        if (isNonEmptyString(d.type)) {
+            html += '<span class="academy-character-discipline-meta">' +
+                        escapeHtml(d.type) +
+                    '</span>';
+        }
+
+        // ---- Classes list ----
+        // Shows every class this instructor teaches the discipline
+        // for. This is the aggregator's group-by-discipline view;
+        // it is not scoped to the selected class. Read-only.
+        if (classNames.length > 0) {
+            html += '<span class="academy-character-discipline-classes" ' +
+                        'title="Classes this discipline is taught in">' +
+                        escapeHtml(classNames.join(', ')) +
+                    '</span>';
+        }
+
+        // ---- Per-row removal ----
+        // Only when the instructor teaches this discipline for the
+        // selected class. Scoped: the controller reads the selected
+        // class from AcademyUI and passes it to
+        // AcademyEnrolments.leave(charId, classId, disciplineId,
+        // week). Leaving for one class does not affect the other
+        // rows in this instructor's classNames list.
+        if (teachesSelectedClass && character && character.id) {
+            html += '<button type="button" class="small danger ' +
+                        'academy-instructor-stop-teaching-btn" ' +
+                        'data-action="leave-discipline" ' +
+                        'data-character-id="' +
+                            escapeAttribute(character.id) + '" ' +
+                        'data-discipline-id="' +
+                            escapeAttribute(d.id) + '" ' +
+                        'title="Stop teaching this discipline for ' +
+                            'the currently selected class">' +
+                        'Stop teaching this class' +
+                    '</button>';
+        }
+
         html += '</div>';
         return html;
     }

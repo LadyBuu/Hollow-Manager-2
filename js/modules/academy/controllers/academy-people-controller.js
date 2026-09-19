@@ -30,8 +30,14 @@
  *   - The Drop Out flow (AcademyEliminations.addStandalone).
  *   - The Remove from Class flow (AcademyClasses.removeClassById).
  *   - The Enroll Discipline flow
- *     (AcademyEnrollmentModal.openModal).
- *   - The Leave Discipline flow (AcademyEnrolments.leave).
+ *     (AcademyEnrollmentModal.openModal). This flow serves both
+ *     student enrolment and instructor assignment to a discipline;
+ *     the character's mode determines which title the modal shows.
+ *     The write is identical either way.
+ *   - The Leave Discipline flow (AcademyEnrolments.leave). This
+ *     flow serves both student unenrolment and instructor stop-
+ *     teaching-a-class; the same domain call, scoped to the
+ *     currently selected class.
  *   - The instructor auto-group Add Student / Remove Student flows
  *     (AcademyGroups.addStudentToGroup / removeStudentFromGroup).
  *   - The Edit Social Score modal (via AcademyCRUDModals).
@@ -67,7 +73,7 @@
  *   - The class-disciplines picker's modal shell.
  *   - The enrollment modal's modal shell and its candidate
  *     derivation. The modal owns those; this controller just opens
- *     it with the right context.
+ *     it with the right context and title.
  *   - The schedule assign modal's modal shell, its discipline
  *     options derivation, and its write. The modal owns those; this
  *     controller just opens it with the right context. The domain
@@ -83,6 +89,30 @@
  *
  *   The write is a Promise. On success, the controller re-renders
  *   the shell by calling context.onChange().
+ *
+ * ENROLMENT AND LEAVING ARE MODE-AGNOSTIC DOMAIN CALLS:
+ *   The two data-actions the character detail panel emits for
+ *   discipline membership — "enroll-discipline" and
+ *   "leave-discipline" — are the SAME actions in student and
+ *   instructor mode. The domain calls are the same:
+ *
+ *     AcademyEnrolments.enrol(charId, classId, disciplineId, week)
+ *     AcademyEnrolments.leave(charId, classId, disciplineId, week)
+ *
+ *   The character's mode determines how the Academy UI interprets
+ *   the enrolment record:
+ *
+ *     mode = 'student'     → "student is enrolled in Discipline"
+ *     mode = 'instructor'  → "instructor teaches Discipline for Class"
+ *
+ *   The controller's only mode-aware behavior is what title it
+ *   passes to the enrollment modal. The write path is identical.
+ *
+ *   Leave is scoped to the currently selected class. An instructor
+ *   who teaches English for two classes and leaves for one keeps the
+ *   other. This falls out of the domain call signature
+ *   (charId, classId, disciplineId, week) — no special handling is
+ *   needed in the controller.
  *
  * SCHEDULE GRID (slice 1):
  *   The Schedule tab mounts a grid into #academy-schedule-host. The
@@ -1134,9 +1164,40 @@
     // ============================================================
     // DISCIPLINE ENROLMENT FLOWS
     // ============================================================
+    //
+    // The "enroll-discipline" action is emitted by two renderers:
+    //
+    //   - The student Disciplines tab's "+ Enroll" button.
+    //   - The instructor Disciplines tab's "+ Assign to teach" button.
+    //
+    // Both route here. Both write through AcademyEnrolments.enrol
+    // with the same signature. The only difference is the modal's
+    // header title, which the controller computes from the
+    // character's mode.
+    //
+    // The title is PRESENTATION. It does not change what the modal
+    // does, what options it offers, or how the enrolment is written.
+    // The modal is mode-agnostic by design.
+    //
+    // The character's mode is read from AcademyUI, the shared
+    // Academy state. The controller does not cache it and does not
+    // pass it to the modal as anything other than a display string.
 
     /**
      * Open the enrollment modal for a character.
+     *
+     * The character ID comes from the button's dataset. The class
+     * ID and the display week come from AcademyUI. The modal itself
+     * derives its candidate list (the class's active offerings,
+     * filtered against the character's existing enrolments) and
+     * writes its own enrolments via AcademyEnrolments.enrol.
+     *
+     * The controller's only job is routing: resolve the context,
+     * compute the mode-appropriate title, call the modal, and wire
+     * the onClose callback to re-render the shell so the character
+     * detail panel reflects any new enrolments.
+     *
+     * @param {string} charId
      */
     function handleEnrollDiscipline(charId) {
         if (!isNonEmptyString(charId)) {
@@ -1163,10 +1224,20 @@
 
         var week = AcademyUI.getDisplayWeek();
 
+        // Presentation-only title override. Student mode gets the
+        // modal's default heading; instructor mode gets an
+        // instructor-appropriate heading. The write path is the
+        // same either way.
+        var mode = AcademyUI.getCharacterMode(charId);
+        var title = mode === 'instructor'
+            ? 'Assign to teach a discipline'
+            : null;
+
         try {
             Modal.openModal(charId, {
                 classId: classId,
                 week: week,
+                title: title,
                 onClose: function() {
                     var ctx = getContext();
                     ctx.onChange();
@@ -1181,6 +1252,28 @@
         }
     }
 
+    /**
+     * End a character's enrolment in a discipline for the currently
+     * selected class.
+     *
+     * The "leave-discipline" action is emitted by two renderers:
+     *
+     *   - The student Disciplines tab's per-row "Leave" button.
+     *   - The instructor Disciplines tab's per-row "Stop teaching
+     *     this class" button.
+     *
+     * Both route here. Both write through AcademyEnrolments.leave
+     * with the same signature: (charId, classId, disciplineId, week).
+     * The classId is the currently selected class, read from
+     * AcademyUI, not from the button. This is what scopes the
+     * instructor's removal to one class without affecting their
+     * other relationships with the same discipline.
+     *
+     * The confirmation wording is generic ("Leave X?") and works for
+     * both modes. If a mode-specific wording is ever needed, the
+     * controller can branch on AcademyUI.getCharacterMode here; but
+     * the domain call stays identical.
+     */
     function handleLeaveDiscipline(charId, disciplineId) {
         if (!charId || !disciplineId) { return; }
 
