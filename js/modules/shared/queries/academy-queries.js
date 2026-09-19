@@ -24,9 +24,8 @@
  *   - Not a ranking service. Ranking data comes from AcademyRanking.
  *   - Not a grade service. Grade data comes from AcademyGrades.
  *   - Not a performance service. Averages come from AcademyPerformance.
- *   - Not an auto-group service. Groups come from AcademyQueries'
- *     sibling — see note below — or from window.data.curriculum.autoGroups
- *     via the group read module.
+ *   - Not an auto-group service. Groups come from AcademyAutoGroupsRead
+ *     (reads) and AcademyGroups (writes).
  *   - Not a team service. Teams come from TeamQueries.
  *   - Not a discipline service. Disciplines come from AcademyDisciplines.
  *   - Not a location service. Locations come from AcademyLocations.
@@ -34,6 +33,39 @@
  *     AcademyAggregator.getClassViewModel.
  *   - Not a student detail aggregator. That is
  *     AcademyAggregator.getStudentViewModel or CharacterAggregator.
+ *
+ * LIVE CALLERS:
+ *   The module is not dead. As of this revision, one caller still
+ *   routes through the facade:
+ *
+ *     AcademyRanking.autoGenerate → resolveClassStudentIds
+ *       calls AcademyQueries.getClassStudentIds(classId)
+ *
+ *   Every other caller in the corpus has been migrated to call the
+ *   canonical domain modules directly. The ranking caller is the
+ *   last one; it will be migrated in a dedicated pass that also
+ *   converges roster derivation onto a single owner (see below).
+ *
+ * ROSTER DERIVATION:
+ *   The class-scoped roster derivation — "which characters are in
+ *   this class?" — is currently implemented THREE times in the
+ *   codebase:
+ *
+ *     - AcademyQueries.getClassStudentIds
+ *     - AcademyAggregator.deriveClassRoster
+ *     - AcademyRanking.resolveClassStudentIds (via the facade)
+ *
+ *   The three implementations agree in behaviour but differ in
+ *   shape (IDs vs enriched rows). Consolidating them is deferred:
+ *   the intended home is AcademyClasses.getClassStudentIds, which
+ *   sits next to the reverse-direction helper
+ *   AcademyClasses.getCharacterClasses. AcademyClasses already has
+ *   a lazy CharacterQueries dependency for its membership
+ *   mutations, so the new helper introduces no new module edge.
+ *
+ *   Until that consolidation runs, this module's getClassStudentIds
+ *   and getClassStudents remain the canonical roster surface that
+ *   the ranking caller reads through. They are not dead code.
  *
  * REMOVED FUNCTIONS (and their replacements):
  *   - calculateGradeSummary           → AcademyGrades.calculateSummary
@@ -47,24 +79,14 @@
  *   - getClassRankings / getStudentRank /
  *     getRankingsWithDetails / getRankings / calculateRankingSummary
  *                                     → AcademyRanking equivalents
- *   - getAllGroups / getGroup / getGroupsByDiscipline /
- *     getGroupsByInstructor / getGroupStudents / getGroupSlots /
- *     getGroupStudentCount / getGroupSlotCount / isStudentInGroup /
- *     getGroupsForStudent / getGroupsForWeek / getGroupSlotsByWeek /
- *     getGroupSummary / getAllGroupSummaries / getGroupDisplayName
- *                                     → New academy-auto-groups-read.js
- *                                       (auto-group reads are their own
- *                                        concern and are no longer bundled
- *                                        with class queries)
+ *   - getAllGroups / getGroup / ...   → AcademyAutoGroupsRead
  *   - getAvailableStudents            → AcademyAggregator.getClassStudentsViewModel
  *                                       combined with a caller-side diff
  *   - getClassTeams / getAcademicTeamMembers /
  *     getAcademicTeamMemberCount      → TeamQueries equivalents
  *   - getStudentDetails / getClassDetails
- *                                     → AcademyAggregator.getClassViewModel
- *                                       or AcademyAggregator.getStudentViewModel
- *   - getDiscipline / getDisciplines /
- *     getAvailableDisciplines / getDisciplineName
+ *                                     → AcademyAggregator equivalents
+ *   - getDiscipline / getDisciplines / ...
  *                                     → AcademyDisciplines equivalents
  *   - getLocations / getLocation / getLocationName
  *                                     → AcademyLocations equivalents
@@ -73,15 +95,7 @@
  *   - getCurrentWeek                  → CalendarQueries or a direct
  *                                       window.data.currentWeek read
  *   - isClassActive / isClassArchived /
- *     isClassGraduated                → inline on cls.status, or a small
- *                                       helper that consumes AcademyConstants
- *
- *   Note: the removed helpers are gone from this module, but the
- *   replacements exist elsewhere. Callers that used them must be
- *   migrated. The batch that removed these functions ships with the
- *   callers already migrated (character-aggregator.js,
- *   character-class-view.js, academy-character-detail.js,
- *   academy-crud-modals.js).
+ *     isClassGraduated                → inline on cls.status
  *
  * OWNERSHIP:
  *   - Academy domain, class subset.
@@ -97,10 +111,21 @@
  *   roster. getClassStudentIds returns the IDs. Both are thin
  *   projections over AcademyClasses' internal helpers.
  *
+ * READ SAFETY:
+ *   - Reads never create the store.
+ *   - getClass / getClasses / getClassesByStatus / getClassByName
+ *     delegate to AcademyClasses, whose public reads already return
+ *     DEEP CLONES. This module does NOT re-clone; the double-clone
+ *     that lived here was removed. Trusting the canonical module's
+ *     public read contract is the correct posture: if AcademyClasses
+ *     ever changes its read shape, the change lands in one place.
+ *   - getClassStudents returns whatever CharacterQueries.getCharacterById
+ *     returns — a live reference. This matches the historical behaviour.
+ *     Callers that need a clone copy it themselves.
+ *
  * DEPENDENCIES (lazily loaded):
  *   - window.AcademyClasses    (from academy-classes.js)
  *   - window.CharacterQueries  (from character-queries.js)
- *   - window.ObjectUtils       (from object-utils.js)  — for deepClone
  *
  * USAGE:
  *   var AQ = window.AcademyQueries;
@@ -129,57 +154,12 @@
         return window.CharacterQueries || null;
     }
 
-    function getObjectUtils() {
-        return window.ObjectUtils || null;
-    }
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-
-    function checkDependencies() {
-        var missing = [];
-
-        if (!getAcademyClasses()) {
-            missing.push('AcademyClasses');
-        }
-        if (!getCharacterQueries()) {
-            missing.push('CharacterQueries');
-        }
-        if (!getObjectUtils()) {
-            missing.push('ObjectUtils');
-        }
-
-        if (missing.length > 0) {
-            console.warn('[AcademyQueries] Missing dependencies:', missing.join(', '));
-            return false;
-        }
-
-        return true;
-    }
-
-    checkDependencies();
-
     // ============================================================
     // HELPERS
     // ============================================================
 
     function isNonEmptyString(value) {
         return typeof value === 'string' && value.trim() !== '';
-    }
-
-    function deepClone(value) {
-        var ObjectUtils = getObjectUtils();
-        if (ObjectUtils && typeof ObjectUtils.deepClone === 'function') {
-            return ObjectUtils.deepClone(value);
-        }
-        if (value === null || typeof value !== 'object') {
-            return value;
-        }
-        if (typeof structuredClone === 'function') {
-            try { return structuredClone(value); } catch (_) {}
-        }
-        try { return JSON.parse(JSON.stringify(value)); } catch (_) { return value; }
     }
 
     // ============================================================
@@ -216,6 +196,9 @@
     /**
      * Get a class by ID. Returns a defensive copy, or null.
      *
+     * Delegates to AcademyClasses.getClass, which already returns a
+     * deep clone. This module does NOT re-clone.
+     *
      * @param {string} classId
      * @returns {object|null}
      */
@@ -227,13 +210,15 @@
         if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function') {
             return null;
         }
-        var result = AcademyClasses.getClass(classId);
-        return result ? deepClone(result) : null;
+        return AcademyClasses.getClass(classId);
     }
 
     /**
      * Get a class by name (case-insensitive, trimmed). Returns a
      * defensive copy, or null.
+     *
+     * Delegates to AcademyClasses.getClassByName, which already
+     * returns a deep clone. This module does NOT re-clone.
      *
      * @param {string} name
      * @returns {object|null}
@@ -246,8 +231,7 @@
         if (!AcademyClasses || typeof AcademyClasses.getClassByName !== 'function') {
             return null;
         }
-        var result = AcademyClasses.getClassByName(name);
-        return result ? deepClone(result) : null;
+        return AcademyClasses.getClassByName(name);
     }
 
     /**

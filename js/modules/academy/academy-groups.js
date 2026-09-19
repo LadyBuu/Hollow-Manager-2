@@ -43,6 +43,52 @@
  *
  *   AcademyAutoGroupsRead never calls back into this module.
  *
+ * DEPRECATION STATUS OF THE READ ALIASES:
+ *   The read aliases are marked for deletion. The corpus currently
+ *   shows two live callers:
+ *
+ *     - getGroupsByInstructor  (academy-character-detail-aggregator.js)
+ *     - getGroupStudents       (academy-people-controller.js)
+ *
+ *   The other thirteen aliases have no callers in the corpus. They
+ *   cannot be deleted from the corpus alone; a codebase-wide grep is
+ *   needed to confirm they have no callers anywhere. Until that grep
+ *   runs, the aliases stay. Once it runs, the correct end state is:
+ *
+ *     1. Migrate the two live callers to call AcademyAutoGroupsRead
+ *        directly.
+ *     2. Delete all fifteen aliases from this module.
+ *
+ *   See the pinboard's "waiting for grep" item for the exact grep
+ *   command.
+ *
+ * LAZY DEPENDENCIES:
+ *   Every dependency this module reaches for is resolved at call
+ *   time, not at load time. None is mandatory at module load. The
+ *   module's own fallbacks and clean-failure paths handle each
+ *   absent dependency:
+ *
+ *     ObjectUtils          fallback to JSON.parse(JSON.stringify(...))
+ *     IdUtils              fallback to a local ID generator
+ *     MutationPipeline     runCandidate returns { success: false,
+ *                          message: 'MutationPipeline is not
+ *                          available.' }
+ *     CalendarValidation   build{Add,Remove}SlotCandidate returns
+ *     CalendarConstants    { success: false, message: '...' }
+ *     AcademyDisciplines   validateDisciplineId returns invalid
+ *     CharacterQueries     validateInstructorId / validateStudentId
+ *                          return invalid
+ *     CharacterConstants   status classifiers return false
+ *     AcademyAutoGroupsRead read aliases return empty results
+ *
+ *   There is no load-time check. An earlier version of this file
+ *   had a `checkDependencies()` that warned for all nine and
+ *   returned true. It was deleted: every dependency was
+ *   optional-at-load, the warn fired for callers whose code path
+ *   never touched the named dependency, and the module already
+ *   fails cleanly at call time. See the pinboard's auto-groups-read
+ *   entry for the same deletion on the read-side module.
+ *
  * READ SAFETY:
  *   - getAutoGroupsStore() returns null when the store is missing.
  *     It does NOT create curriculum.autoGroups as a side effect of a
@@ -62,9 +108,14 @@
  *     the requested post-state (group absent) is satisfied.
  *
  * STATUS CLASSIFIERS:
- *   - CharacterConstants is MANDATORY. The status classifiers delegate
- *     directly to CharacterConstants.isInstructorStatus /
- *     isStudentStatus. The local fallback lists are gone.
+ *   - CharacterConstants is resolved lazily. The status classifiers
+ *     delegate directly to CharacterConstants.isInstructorStatus /
+ *     isStudentStatus when the module is loaded.
+ *   - When CharacterConstants is absent, the classifiers return false
+ *     and warn once per call. False is the fail-safe answer for
+ *     validation-gating callers: a mutation that depends on "is this
+ *     an instructor?" rejects cleanly. The warn tells the developer
+ *     the classifier cannot answer.
  *   - The status classifiers accept any casing; CharacterConstants
  *     lowercases internally.
  *
@@ -101,17 +152,6 @@
  *         }
  *       }
  *   - groupKey is conventionally `disciplineId + '_' + instructorId`.
- *
- * DEPENDENCIES (lazily loaded):
- *   - window.ObjectUtils - MANDATORY
- *   - window.IdUtils - MANDATORY
- *   - window.CharacterQueries - MANDATORY
- *   - window.AcademyDisciplines - MANDATORY (replaces DisciplineQueries)
- *   - window.CalendarValidation - MANDATORY
- *   - window.CalendarConstants - MANDATORY
- *   - window.MutationPipeline - MANDATORY
- *   - window.CharacterConstants - MANDATORY
- *   - window.AcademyAutoGroupsRead - LAZY (for read aliases only)
  *
  * USAGE:
  *   var groups = window.AcademyGroups;
@@ -178,51 +218,6 @@
     function getMutationPipeline() {
         return window.MutationPipeline || null;
     }
-
-    // ============================================================
-    // DEPENDENCY CHECK - Warns but doesn't fail
-    // ============================================================
-
-    function checkDependencies() {
-        var missing = [];
-
-        if (!getObjectUtils()) {
-            missing.push('ObjectUtils');
-        }
-        if (!getIdUtils()) {
-            missing.push('IdUtils');
-        }
-        if (!getCharacterQueries()) {
-            missing.push('CharacterQueries');
-        }
-        if (!getAcademyDisciplines()) {
-            missing.push('AcademyDisciplines');
-        }
-        if (!getCalendarValidation()) {
-            missing.push('CalendarValidation');
-        }
-        if (!getCalendarConstants()) {
-            missing.push('CalendarConstants');
-        }
-        if (!getMutationPipeline()) {
-            missing.push('MutationPipeline');
-        }
-        if (!getCharacterConstants()) {
-            missing.push('CharacterConstants');
-        }
-
-        if (!getAcademyAutoGroupsRead()) {
-            missing.push('AcademyAutoGroupsRead (lazy)');
-        }
-
-        if (missing.length > 0) {
-            console.warn('[AcademyGroups] Some dependencies not yet loaded:', missing.join(', '));
-        }
-
-        return true;
-    }
-
-    checkDependencies();
 
     // ============================================================
     // HELPERS
@@ -1336,16 +1331,15 @@
     // READ ALIASES - DELEGATE TO AcademyAutoGroupsRead
     // ============================================================
     //
-    // Historically these delegated to AcademyQueries, which created a
-    // recursion risk when AcademyQueries also owned the group reads.
-    // Both problems are gone:
-    //   - Reads live in AcademyAutoGroupsRead.
-    //   - AcademyAutoGroupsRead does not delegate anywhere.
+    // These are DEPRECATED. They exist only for backward
+    // compatibility while callers migrate. Two are confirmed live in
+    // the corpus; thirteen are unconfirmed-orphan pending a
+    // codebase-wide grep. See the module header for the deprecation
+    // plan and the pinboard for the grep command.
     //
     // IMPORTANT: do not add new reads here, and do not make
     // AcademyAutoGroupsRead call these aliases — that would recreate
-    // the recursion loop. AcademyAutoGroupsRead is the single source of
-    // truth for reads; these are thin pass-throughs only.
+    // the recursion loop this module was split to break.
 
     function getAutoGroupsRead() {
         return getAcademyAutoGroupsRead();
@@ -1475,7 +1469,7 @@
     // EXPOSE
     // ============================================================
 
-    window.AcademyGroups = {
+    window.AcademyGroups = Object.freeze({
         // ---- Mutations (Promise-based) ----
         createGroup: createGroup,
         deleteGroup: deleteGroup,
@@ -1523,7 +1517,7 @@
         getGroupSummary: getGroupSummary,
         getAllGroupSummaries: getAllGroupSummaries,
         getGroupDisplayName: getGroupDisplayName
-    };
+    });
 
     // ============================================================
     // VERIFICATION

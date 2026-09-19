@@ -54,6 +54,19 @@
  *   - window.DisciplineQueries  (for group summary discipline names)
  *   - window.ObjectUtils        (for deepClone)
  *
+ *   All three are OPTIONAL. They are resolved at call time via
+ *   accessors, not captured at load time. When absent:
+ *     - CharacterQueries  → getCharacterDisplayName returns 'Unknown'
+ *     - DisciplineQueries → getDisciplineName returns 'Unknown'
+ *     - ObjectUtils       → deepClone falls back to structuredClone
+ *                           or JSON.parse(JSON.stringify(...))
+ *
+ *   No load-time warning is emitted for these. The module's own
+ *   docstring names them as lazy; the previous load-time
+ *   `checkDependencies()` warn was removed because it was noise
+ *   that fired for callers whose code path never touched a
+ *   dependency the warn named.
+ *
  * USAGE:
  *   var AR = window.AcademyAutoGroupsRead;
  *   var all = AR.getAllGroups();
@@ -73,6 +86,9 @@
     // ============================================================
     // LAZY LOADING HELPERS
     // ============================================================
+    //
+    // The three dependencies are optional and resolved at call
+    // time. No load-time check. No warning.
 
     function getCharacterQueries() {
         return window.CharacterQueries || null;
@@ -85,35 +101,6 @@
     function getObjectUtils() {
         return window.ObjectUtils || null;
     }
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-
-    function checkDependencies() {
-        var missing = [];
-
-        // The three lazy dependencies are used by getGroupSummary,
-        // which degrades gracefully without them. They are checked at
-        // call time, not at load time, so no warning is emitted here.
-        if (!getCharacterQueries()) {
-            missing.push('CharacterQueries (for summaries)');
-        }
-        if (!getDisciplineQueries()) {
-            missing.push('DisciplineQueries (for summaries)');
-        }
-        if (!getObjectUtils()) {
-            missing.push('ObjectUtils (for cloning)');
-        }
-
-        if (missing.length > 0) {
-            console.warn('[AcademyAutoGroupsRead] Optional dependencies not yet loaded:', missing.join(', '));
-        }
-
-        return true;
-    }
-
-    checkDependencies();
 
     // ============================================================
     // HELPERS
@@ -527,7 +514,7 @@
     // EXPOSE
     // ============================================================
 
-    window.AcademyAutoGroupsRead = {
+    window.AcademyAutoGroupsRead = Object.freeze({
         // Collection reads
         getAllGroups: getAllGroups,
         getGroupsByDiscipline: getGroupsByDiscipline,
@@ -548,7 +535,7 @@
         // Summaries
         getGroupSummary: getGroupSummary,
         getAllGroupSummaries: getAllGroupSummaries
-    };
+    });
 
     // ============================================================
     // VERIFICATION

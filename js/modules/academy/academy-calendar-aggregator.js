@@ -160,6 +160,7 @@
         typeof CalendarConstants.MAX_WEEK !== 'number' ||
         typeof CalendarConstants.MIN_DAY !== 'number' ||
         typeof CalendarConstants.MAX_DAY !== 'number' ||
+        typeof CalendarConstants.MIN_HOUR !== 'number' ||
         typeof CalendarConstants.MAX_HOUR !== 'number' ||
         typeof CalendarConstants.CALENDAR_START_HOUR !== 'number' ||
         typeof CalendarConstants.CALENDAR_END_HOUR !== 'number') {

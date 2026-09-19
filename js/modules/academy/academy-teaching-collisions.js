@@ -96,6 +96,7 @@
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.AcademyTeachingProjector
+ *   - window.CalendarValidation
  */
 
 (function() {
@@ -110,6 +111,7 @@
     // ============================================================
 
     var Projector = window.AcademyTeachingProjector;
+    var CalendarValidation = window.CalendarValidation;
 
     var _missing = [];
 
@@ -119,6 +121,11 @@
         if (typeof Projector.projectWeek !== 'function') {
             _missing.push('AcademyTeachingProjector.projectWeek');
         }
+    }
+
+    if (!CalendarValidation ||
+        typeof CalendarValidation.parseWeek !== 'function') {
+        _missing.push('CalendarValidation.parseWeek');
     }
 
     if (_missing.length > 0) {
@@ -142,6 +149,16 @@
         return value !== null &&
                typeof value === 'object' &&
                !Array.isArray(value);
+    }
+
+    /**
+     * Parse a week via the canonical parser. The parser is a
+     * mandatory dependency: the module is only reachable after
+     * CalendarValidation is loaded (the projector requires it at
+     * its own load time), so no fallback is needed.
+     */
+    function parseWeek(week) {
+        return CalendarValidation.parseWeek(week);
     }
 
     /**
@@ -465,24 +482,6 @@
             }
         }
         return false;
-    }
-
-    // ============================================================
-    // SMALL INTERNAL HELPER
-    // ============================================================
-
-    /**
-     * Parse a week via the projector's range helper, which itself
-     * delegates to CalendarValidation. We don't reimplement the
-     * parser; we just need a defensively-typed value.
-     */
-    function parseWeek(week) {
-        if (window.CalendarValidation &&
-            typeof window.CalendarValidation.parseWeek === 'function') {
-            return window.CalendarValidation.parseWeek(week);
-        }
-        var n = parseInt(week, 10);
-        return isNaN(n) ? null : n;
     }
 
     // ============================================================

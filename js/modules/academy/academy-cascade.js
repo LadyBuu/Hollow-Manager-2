@@ -114,6 +114,27 @@
  *     - Location deletion nulls a reference, because the location was
  *       a property of the session, not its identity.
  *
+ * WEEKLY-TEAMS CASCADE SEMANTICS:
+ *
+ *   The character-deletion cascade names `AcademyWeeklyTeams.stripCharacterRefs`.
+ *   That helper is the WEEK-AGNOSTIC counterpart to the module's own
+ *   `endCharacterMemberships(appData, charId, effectiveWeek)`.
+ *
+ *   Why two helpers:
+ *     - `endCharacterMemberships` requires an explicit effective week.
+ *       It is used by callers that know the character stopped at a
+ *       particular week (e.g. a future "archive this student" flow).
+ *     - `stripCharacterRefs` takes no week. It ends every open interval
+ *       with `leavePeriod = MAX_WEEK`. It is used by character deletion
+ *       itself, where "the character is gone" is not a week-bound fact
+ *       and no meaningful effective week exists.
+ *
+ *   If the coordinator ever passed only a charId to
+ *   `endCharacterMemberships`, the function would return a zero-count
+ *   result without ending any interval, because its `parseWeekStrict`
+ *   guard rejects an absent effective week. The two helpers are not
+ *   interchangeable; the coordinator calls the week-agnostic one.
+ *
  * RETURN SHAPE:
  *   Each cascade returns a structured summary:
  *     {
@@ -283,7 +304,9 @@
      *   2. Academy grades (records keyed to the student)
      *   3. Academy rankings (records keyed to the student)
      *   4. Academy social scores (entries keyed to the student)
-     *   5. Academy weekly teams (assignments for the student)
+     *   5. Academy weekly teams (membership intervals across every
+     *      persistent Team entity; every open interval is closed
+     *      with leavePeriod = MAX_WEEK)
      *   6. Academy auto-groups (instructor groups removed; student
      *      memberships removed)
      *   7. Academy teaching groups (v20) — membership windows ended;
@@ -733,7 +756,10 @@
             if (s > 0) { parts.push(s + ' social score(s)'); }
         }
         if (details.academyWeeklyTeams) {
-            var w = details.academyWeeklyTeams.assignmentsRemoved || 0;
+            var w = details.academyWeeklyTeams.assignmentsRemoved ||
+                    details.academyWeeklyTeams.membershipsEnded ||
+                    details.academyWeeklyTeams.recordsRemoved ||
+                    0;
             if (w > 0) { parts.push(w + ' team assignment(s)'); }
         }
         if (details.academyGroups) {
@@ -790,14 +816,14 @@
     // EXPOSE
     // ============================================================
 
-    window.AcademyCascade = {
+    window.AcademyCascade = Object.freeze({
         characterDeleted: characterDeleted,
         classDeleted: classDeleted,
         disciplineDeleted: disciplineDeleted,
         locationDeleted: locationDeleted,
         teamDeleted: teamDeleted,
         formatSummary: formatSummary
-    };
+    });
 
     // ============================================================
     // VERIFICATION
