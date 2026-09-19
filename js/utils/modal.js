@@ -31,11 +31,32 @@
  *     the shell's (empty) contents wholesale.
  * 
  * HIDDEN CLASS CONTRACT:
- *   - The CSS class `.hidden` has `display: none !important` in style.css
- *   - Modals are often declared with `<div class="modal hidden">`
- *   - showModal() REMOVES the `hidden` class so the modal can be shown
- *   - hideModal() RE-ADDS the `hidden` class after the animation completes
- *   - This keeps the CSS state and JS state in sync
+ *   - The stylesheet declares `.modal { display: flex }` (visible by
+ *     default) and `.modal.hidden { display: none !important }`.
+ *   - Modals are often declared with `<div class="modal hidden">`.
+ *   - showModal() REMOVES the `hidden` class so the modal can be shown.
+ *   - hideModal() RE-ADDS the `hidden` class after the animation.
+ *   - This keeps the CSS state and JS state in sync.
+ * 
+ * VISIBILITY CONVENTION:
+ *   This module uses the same convention as css/shared.css:
+ *   `.modal` is visible by default; `.hidden` hides it. The
+ *   injected stylesheet below declares `.modal { display: flex }`,
+ *   `.modal.hidden { display: none !important }`, and a redundant
+ *   `.modal.visible { display: flex }` for callers that prefer
+ *   the explicit-visible convention. All three work together, and
+ *   neither convention conflicts with the other.
+ * 
+ *   A previous version of this file declared `.modal { display:
+ *   none }` with `.modal.visible { display: flex }`. That worked
+ *   for callers that went through Modal.showModal (which sets
+ *   inline `display: flex` and adds `.visible`), but it silently
+ *   broke any modal authored as `<div class="modal hidden">` in
+ *   the DOM and toggled by removing `.hidden` — because the
+ *   injected `display: none` overrode shared.css's
+ *   `display: flex`. The missions module's form and detail
+ *   modals are authored that way. This file now uses the
+ *   shared.css convention so both authoring styles work.
  * 
  * IDEMPOTENCY:
  *   - Each setup function (modalClickOutside, modalEscapeKey) tracks its
@@ -291,7 +312,7 @@
      * Create a bare modal shell.
      *
      * The returned element is a `.modal` overlay with ARIA attributes,
-     * `display: none`, and the `hidden` class. It has NO children.
+     * `display: none` inline, and the `hidden` class. It has NO children.
      *
      * The caller is responsible for appending its own `.modal-content`
      * with whatever markup it needs (including a `.close-modal` button).
@@ -625,6 +646,22 @@
     // ============================================================
     // CSS (injected for self-containment)
     // ============================================================
+    //
+    // VISIBILITY CONVENTION:
+    //   This stylesheet declares the same convention as shared.css:
+    //     - `.modal` is visible by default (display: flex).
+    //     - `.modal.hidden` hides it (display: none !important).
+    //     - `.modal.visible` is redundant but retained for callers
+    //       that add it explicitly.
+    //
+    //   Why not `display: none` by default with a `.visible` gate:
+    //     That convention requires every modal to go through
+    //     Modal.showModal (which adds `.visible`). Modals authored
+    //     as `<div class="modal hidden">` in the DOM and toggled
+    //     by removing `.hidden` — the missions module's approach —
+    //     never get `.visible` added, and so never become visible.
+    //     Aligning with shared.css means both authoring styles work
+    //     without a per-caller adaptation.
 
     function injectStyles() {
         var style = document.getElementById('modal-styles');
@@ -640,7 +677,7 @@
                 width: 100%;
                 height: 100%;
                 background: rgba(0, 0, 0, 0.6);
-                display: none;
+                display: flex;
                 justify-content: center;
                 align-items: center;
                 z-index: 9999;
@@ -649,6 +686,10 @@
                 animation: modalFadeIn 0.3s ease;
                 backdrop-filter: blur(4px);
                 -webkit-backdrop-filter: blur(4px);
+            }
+
+            .modal.hidden {
+                display: none !important;
             }
 
             .modal.visible {
