@@ -9,12 +9,14 @@
  *   - Participant management (add, remove)
  *   - Round management (add, remove, reopen) — by stable round ID
  *   - Elimination week shift when endWeek changes (T8)
+ *   - Cascade helper (stripCharacterRefs) for cross-domain cleanup
  *
  * NOT RESPONSIBILITIES:
  *   - Match-level mutations (TournamentMatches)
  *   - Tournament-level reads (TournamentQueries)
- *   - Cross-domain cascades (character deletion strips references
- *     through a dedicated cascade, not from here)
+ *   - Cross-domain cascade logic (TournamentCascade owns the
+ *     algorithm; this module exposes a one-line delegator so the
+ *     cross-domain coordinator can reach the helper by convention)
  *   - Lifecycle state machine (status is a soft label)
  *   - Public read surface (query via TournamentQueries)
  *
@@ -127,6 +129,15 @@
  *   TournamentConstants.parsePositiveInteger, the single strict
  *   parser for the domain. This file has no local parser.
  *
+ * CASCADE HELPER:
+ *   stripCharacterRefs delegates to TournamentCascade, which owns
+ *   the character-deletion cleanup algorithm for this domain. The
+ *   delegation exists so the cross-domain cascade coordinator
+ *   (AcademyCascade) can reach every domain's cascade helper
+ *   through the domain's mutation module by convention, without
+ *   the coordinator having to know each domain's internal module
+ *   layout.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.TournamentConstants
  *   - window.TournamentSchema
@@ -138,6 +149,9 @@
  *   - window.IdUtils
  *   - window.ObjectUtils
  *   - window.MutationPipeline
+ *
+ * DEPENDENCIES (LAZY):
+ *   - window.TournamentCascade   (used only by stripCharacterRefs)
  */
 
 (function() {
@@ -1492,6 +1506,38 @@
     }
 
     // ============================================================
+    // CASCADE HELPER
+    // ============================================================
+    //
+    // Delegates to TournamentCascade.stripCharacterRefs, which owns
+    // the character-deletion cleanup algorithm for this domain
+    // (participants, eliminations, match participant slots, match
+    // result maps, and the character-side elimination mirror).
+    //
+    // The delegation exists so AcademyCascade.characterDeleted can
+    // reach every domain's cascade helper through the domain's
+    // mutation module by convention.
+    //
+    // TournamentCascade is loaded lazily. When absent, the helper
+    // returns a zero-count summary rather than throwing, because
+    // the cascade coordinator's contract is "never throw, always
+    // return a summary."
+
+    function stripCharacterRefs(appData, charId) {
+        var TournamentCascade = window.TournamentCascade;
+        if (!TournamentCascade ||
+            typeof TournamentCascade.stripCharacterRefs !== 'function') {
+            return {
+                participantRecordsRemoved: 0,
+                eliminationRecordsRemoved: 0,
+                matchParticipantSlotsRemoved: 0,
+                matchResultEntriesRemoved: 0
+            };
+        }
+        return TournamentCascade.stripCharacterRefs(appData, charId);
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -1509,7 +1555,10 @@
         // Rounds
         addRound: addRound,
         removeRound: removeRound,
-        reopenRound: reopenRound
+        reopenRound: reopenRound,
+
+        // Cascade helper (delegates to TournamentCascade)
+        stripCharacterRefs: stripCharacterRefs
     });
 
     // ============================================================
@@ -1529,7 +1578,8 @@
             'removeParticipant',
             'addRound',
             'removeRound',
-            'reopenRound'
+            'reopenRound',
+            'stripCharacterRefs'
         ];
 
         for (var i = 0; i < required.length; i++) {

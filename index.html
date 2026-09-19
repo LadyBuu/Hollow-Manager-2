@@ -357,8 +357,20 @@
          tournament-rules.js has been moved up to just after
          calendar-validation.js, before tournament-queries.js.
          It is NOT loaded here anymore.
+
+         tournament-cascade.js is the character-deletion cleanup
+         helper for the tournament domain. It composes with
+         tournament-elimination-cascade.js (calls its
+         reverseTournamentEliminations for the character-side
+         elimination mirror). It loads AFTER
+         tournament-elimination-cascade.js, its mandatory
+         dependency, and BEFORE tournament-core.js, so
+         TournamentCore.stripCharacterRefs's lazy lookup resolves
+         on first call without falling through to its zero-count
+         fallback.
          ============================================================ -->
     <script src="js/modules/tournaments/tournament-elimination-cascade.js"></script>
+    <script src="js/modules/tournaments/tournament-cascade.js"></script>
     <script src="js/modules/tournaments/tournament-matches.js"></script>
     <script src="js/modules/tournaments/tournament-core.js"></script>
 

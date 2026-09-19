@@ -34,8 +34,9 @@
  *   coordinator's job is to run whatever cleanup is available
  *   without failing the enclosing transaction. But a silent skip
  *   is how a missing strip helper goes unnoticed — the
- *   MissionCore.stripCharacterRefs gap went undetected for exactly
- *   this reason. The warn makes the gap visible without making it
+ *   MissionCore.stripCharacterRefs and TournamentCore.
+ *   stripCharacterRefs gaps went undetected for exactly this
+ *   reason. The warn makes the gap visible without making it
  *   fatal.
  *
  *   The warn fires at most once per (module, helper) pair per
@@ -329,9 +330,12 @@
      *      sessions are NOT touched, because the group survives)
      *   8. Social relationships (SocialCore.stripCharacterRefs)
      *   9. Mission support personnel and report authors
-     *      (MissionCore.stripCharacterRefs)
-     *  10. Tournament participants, eliminations, and match slots
-     *      (TournamentCore.stripCharacterRefs)
+     *      (MissionCore.stripCharacterRefs, delegating to
+     *      MissionCascade)
+     *  10. Tournament participants, eliminations, match participant
+     *      slots, and match result maps
+     *      (TournamentCore.stripCharacterRefs, delegating to
+     *      TournamentCascade)
      *
      * @param {object} appData - Pipeline snapshot
      * @param {string} charId - Character ID
@@ -762,9 +766,8 @@
             var t = details.tournamentCore;
             var tTotal = (t.participantRecordsRemoved || 0) +
                          (t.eliminationRecordsRemoved || 0) +
-                         (t.winnerRecordsCleared || 0) +
                          (t.matchParticipantSlotsRemoved || 0) +
-                         (t.matchesPruned || 0);
+                         (t.matchResultEntriesRemoved || 0);
             if (tTotal > 0) {
                 parts.push(tTotal + ' tournament reference(s)');
             }
