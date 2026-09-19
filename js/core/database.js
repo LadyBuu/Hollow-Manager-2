@@ -22,6 +22,23 @@
  *                on every character receives a required integer `year`.
  *                An elimination at year Y means eliminated from year Y
  *                onward. The character list filters by year, not week.
+ *   - Version 26: Discipline record-shape canonicalisation. Every
+ *                record in data.curriculum.disciplines[] is reshaped to
+ *                the canonical shape written by AcademyDisciplines.create:
+ *                  * startWeek and endWeek coerced from string to
+ *                    integer via CalendarValidation.parseWeek.
+ *                    Unparseable weeks are left untouched and logged
+ *                    (strict mode — no clamping, no record deletion).
+ *                  * Retired fields deleted: curriculum, maxStudents,
+ *                    gradingSystem, instructorId (singular).
+ *                  * instructorIds ensured to be an array of strings.
+ *                    A lone instructorId (singular) is promoted.
+ *                  * type ensured to be 'mandatory' or 'optional'.
+ *                    Absent type defaults to 'mandatory'. Unknown type
+ *                    is preserved and logged.
+ *                  * weeklyHours and weight ensured to be numbers.
+ *                  * gradeScheme and assessmentWeights left alone;
+ *                    read-time normalisation covers absence.
  *
  * ACADEMY STORES (v20+):
  *   ...
@@ -35,6 +52,12 @@
  *   match.winner
  *   match.loser
  *   match.advancing
+ *
+ * RETIRED DISCIPLINE FIELDS (removed in v26):
+ *   discipline.curriculum
+ *   discipline.maxStudents
+ *   discipline.gradingSystem
+ *   discipline.instructorId (singular)
  */
 
 (function() {
@@ -42,7 +65,7 @@
 
     var DB_NAME = 'HollowBladesDB';
     var DB_VERSION = 1;
-    var DATA_VERSION = 25;
+    var DATA_VERSION = 26;
     var STORE_NAME = 'appData';
 
     var _indexedDB = null;
@@ -477,6 +500,7 @@
                 case 22: migrateToVersion23(data); break;
                 case 23: migrateToVersion24(data); break;
                 case 24: migrateToVersion25(data); break;
+                case 25: migrateToVersion26(data); break;
                 default: data._dataVersion = DATA_VERSION; break;
             }
         }
@@ -1705,6 +1729,342 @@
         data._dataVersion = 25;
     }
 
+    /**
+     * Version 26 migration — Discipline record-shape canonicalisation.
+     *
+     * WHY:
+     *   Stored disciplines predate the current canonical shape
+     *   written by AcademyDisciplines.create. They carry string-
+     *   typed startWeek / endWeek fields, a set of retired fields
+     *   from an earlier discipline model, and a legacy singular
+     *   instructorId alongside the canonical instructorIds array.
+     *
+     *   The read path (AcademyDisciplines.getDiscipline →
+     *   attachNormalizedConfig) normalises gradeScheme and
+     *   assessmentWeights on read, but it does NOT coerce integer-
+     *   typed fields and it does NOT strip retired fields. That is
+     *   deliberate — the read path is display-facing, not a
+     *   repair path.
+     *
+     *   The consequence is that the discipline editor's type
+     *   checks — which test `typeof draft.startWeek === 'number'` —
+     *   fail for string-typed weeks, and the editor falls back to
+     *   its default (1). The canonical value is on disk but the
+     *   editor never sees it.
+     *
+     * STRICT MODE:
+     *   Unparseable weeks are LEFT UNTOUCHED, LOGGED, and counted
+     *   as malformed. No clamping. No record deletion. This is
+     *   consistent with how migrateToVersion23 treats tournaments
+     *   that cannot be normalised: preserve the record, surface
+     *   the problem, let the caller decide.
+     *
+     *   A discipline with startWeek: "garbage" is a data-quality
+     *   problem. Silently coercing it to MIN_WEEK would hide the
+     *   problem. Silently deleting the record would destroy data.
+     *   Neither is acceptable.
+     *
+     * WHAT THIS MIGRATION DOES:
+     *   For every record in data.curriculum.disciplines[]:
+     *     1. Coerce startWeek and endWeek from string to integer
+     *        via CalendarValidation.parseWeek. Valid strings become
+     *        integers. Invalid values are left in place and the
+     *        record is counted as malformed.
+     *     2. Delete retired fields: `curriculum`, `maxStudents`,
+     *        `gradingSystem`, `instructorId` (singular).
+     *     3. Ensure `instructorIds` is an array of strings. When
+     *        only the singular `instructorId` is present (and the
+     *        array is absent or empty), promote the singular value
+     *        to `instructorIds: [id]`.
+     *     4. Ensure `type` is `'mandatory'` or `'optional'`. If
+     *        absent, default to `'mandatory'`. If present and
+     *        unknown, preserve and log.
+     *     5. Ensure `weeklyHours` and `weight` are numbers. A
+     *        string-typed numeric is coerced. A non-numeric value
+     *        is left in place and the record is counted as
+     *        malformed.
+     *     6. Leave `gradeScheme` and `assessmentWeights` alone.
+     *        Their read-time normalisation already handles absence
+     *        and malformed shapes.
+     *
+     * WHAT THIS MIGRATION DOES NOT DO:
+     *   - It does NOT touch `data.curriculum.disciplines` when the
+     *     store is absent or not an array. The migration is a no-op
+     *     in that case.
+     *   - It does NOT delete a record for any reason.
+     *   - It does NOT clamp an out-of-range week.
+     *   - It does NOT validate `gradeScheme` or
+     *     `assessmentWeights`.
+     *   - It does NOT touch any other curriculum sub-store.
+     *
+     * @param {object} data
+     */
+    function migrateToVersion26(data) {
+        if (!data.curriculum ||
+            typeof data.curriculum !== 'object' ||
+            Array.isArray(data.curriculum)) {
+            data._dataVersion = 26;
+            return;
+        }
+
+        var disciplines = data.curriculum.disciplines;
+        if (!Array.isArray(disciplines)) {
+            data._dataVersion = 26;
+            return;
+        }
+
+        var CalendarValidation = window.CalendarValidation;
+        var hasParser = CalendarValidation &&
+            typeof CalendarValidation.parseWeek === 'function';
+
+        if (!hasParser) {
+            console.warn(
+                '[Database] v26: CalendarValidation.parseWeek is not ' +
+                'available. Week coercion skipped. The migration will ' +
+                'still strip retired fields and canonicalise ' +
+                'instructorIds, type, weeklyHours, and weight.'
+            );
+        }
+
+        var recordsSeen = 0;
+        var startWeeksCoerced = 0;
+        var endWeeksCoerced = 0;
+        var weekMalformed = 0;
+        var instructorIdsPromoted = 0;
+        var instructorIdsNormalised = 0;
+        var retiredFieldRecordsTouched = 0;
+        var retiredFieldsDeleted = 0;
+        var typeDefaulted = 0;
+        var typeUnknown = 0;
+        var weeklyHoursCoerced = 0;
+        var weeklyHoursMalformed = 0;
+        var weightCoerced = 0;
+        var weightMalformed = 0;
+        var recordsUnchanged = 0;
+
+        function coerceWeekField(record, fieldName, counterKey) {
+            var value = record[fieldName];
+            if (value === undefined || value === null) {
+                return false;
+            }
+            if (typeof value === 'number' && Number.isInteger(value)) {
+                return false;
+            }
+            if (!hasParser) {
+                return false;
+            }
+            var parsed = CalendarValidation.parseWeek(value);
+            if (parsed === null) {
+                return false;
+            }
+            record[fieldName] = parsed;
+            return true;
+        }
+
+        function coerceNumericField(record, fieldName) {
+            var value = record[fieldName];
+            if (value === undefined || value === null) {
+                return 'absent';
+            }
+            if (typeof value === 'number' && isFinite(value)) {
+                return 'ok';
+            }
+            var num = Number(value);
+            if (isFinite(num)) {
+                record[fieldName] = num;
+                return 'coerced';
+            }
+            return 'malformed';
+        }
+
+        for (var i = 0; i < disciplines.length; i++) {
+            var record = disciplines[i];
+            if (!record || typeof record !== 'object' || Array.isArray(record)) {
+                continue;
+            }
+
+            recordsSeen++;
+
+            var touched = false;
+
+            // ---- 1. Coerce startWeek / endWeek ----
+            if (coerceWeekField(record, 'startWeek')) {
+                startWeeksCoerced++;
+                touched = true;
+            } else {
+                var sw = record.startWeek;
+                if (sw !== undefined && sw !== null &&
+                    !(typeof sw === 'number' && Number.isInteger(sw))) {
+                    if (hasParser && CalendarValidation.parseWeek(sw) === null) {
+                        weekMalformed++;
+                    } else if (!hasParser) {
+                        weekMalformed++;
+                    }
+                }
+            }
+
+            if (coerceWeekField(record, 'endWeek')) {
+                endWeeksCoerced++;
+                touched = true;
+            } else {
+                var ew = record.endWeek;
+                if (ew !== undefined && ew !== null &&
+                    !(typeof ew === 'number' && Number.isInteger(ew))) {
+                    if (hasParser && CalendarValidation.parseWeek(ew) === null) {
+                        weekMalformed++;
+                    } else if (!hasParser) {
+                        weekMalformed++;
+                    }
+                }
+            }
+
+            // ---- 2. Promote singular instructorId BEFORE deleting ----
+            var singularInstructorId = record.instructorId;
+            var hasSingular =
+                typeof singularInstructorId === 'string' &&
+                singularInstructorId.trim() !== '';
+            var hasArray =
+                Array.isArray(record.instructorIds) &&
+                record.instructorIds.length > 0;
+
+            if (hasSingular && !hasArray) {
+                record.instructorIds = [singularInstructorId.trim()];
+                instructorIdsPromoted++;
+                touched = true;
+            } else if (!Array.isArray(record.instructorIds)) {
+                record.instructorIds = [];
+                touched = true;
+            } else {
+                // Ensure every entry is a trimmed string.
+                var normalisedIds = [];
+                var anyChanged = false;
+                for (var idIdx = 0; idIdx < record.instructorIds.length; idIdx++) {
+                    var raw = record.instructorIds[idIdx];
+                    if (raw === undefined || raw === null) {
+                        anyChanged = true;
+                        continue;
+                    }
+                    var str = String(raw).trim();
+                    if (str === '') {
+                        anyChanged = true;
+                        continue;
+                    }
+                    if (str !== raw) {
+                        anyChanged = true;
+                    }
+                    normalisedIds.push(str);
+                }
+                if (anyChanged) {
+                    record.instructorIds = normalisedIds;
+                    instructorIdsNormalised++;
+                    touched = true;
+                }
+            }
+
+            // ---- 3. Delete retired fields ----
+            var retiredFields = [
+                'curriculum',
+                'maxStudents',
+                'gradingSystem',
+                'instructorId'
+            ];
+            var anyRetiredDeleted = false;
+            for (var rf = 0; rf < retiredFields.length; rf++) {
+                var fieldName = retiredFields[rf];
+                if (Object.prototype.hasOwnProperty.call(record, fieldName)) {
+                    delete record[fieldName];
+                    retiredFieldsDeleted++;
+                    anyRetiredDeleted = true;
+                    touched = true;
+                }
+            }
+            if (anyRetiredDeleted) {
+                retiredFieldRecordsTouched++;
+            }
+
+            // ---- 4. Ensure type ----
+            var t = record.type;
+            if (t === undefined || t === null || t === '') {
+                record.type = 'mandatory';
+                typeDefaulted++;
+                touched = true;
+            } else if (t !== 'mandatory' && t !== 'optional') {
+                typeUnknown++;
+                console.warn(
+                    '[Database] v26: discipline "' +
+                    (record.id || 'at index ' + i) +
+                    '" has unknown type "' + t +
+                    '". Preserved as-is.'
+                );
+            }
+
+            // ---- 5. weeklyHours and weight ----
+            var whResult = coerceNumericField(record, 'weeklyHours');
+            if (whResult === 'coerced') {
+                weeklyHoursCoerced++;
+                touched = true;
+            } else if (whResult === 'malformed') {
+                weeklyHoursMalformed++;
+                console.warn(
+                    '[Database] v26: discipline "' +
+                    (record.id || 'at index ' + i) +
+                    '" has non-numeric weeklyHours "' +
+                    record.weeklyHours + '". Left untouched.'
+                );
+            }
+
+            var wResult = coerceNumericField(record, 'weight');
+            if (wResult === 'coerced') {
+                weightCoerced++;
+                touched = true;
+            } else if (wResult === 'malformed') {
+                weightMalformed++;
+                console.warn(
+                    '[Database] v26: discipline "' +
+                    (record.id || 'at index ' + i) +
+                    '" has non-numeric weight "' +
+                    record.weight + '". Left untouched.'
+                );
+            }
+
+            if (!touched) {
+                recordsUnchanged++;
+            }
+        }
+
+        console.log(
+            '[Database] v26: discipline record-shape canonicalisation. ' +
+            'Records seen: ' + recordsSeen + '. ' +
+            'Unchanged: ' + recordsUnchanged + '. ' +
+            'startWeek coerced: ' + startWeeksCoerced + '. ' +
+            'endWeek coerced: ' + endWeeksCoerced + '. ' +
+            'Weeks malformed (left in place): ' + weekMalformed + '. ' +
+            'instructorIds promoted from singular: ' + instructorIdsPromoted + '. ' +
+            'instructorIds normalised: ' + instructorIdsNormalised + '. ' +
+            'Retired-field records touched: ' + retiredFieldRecordsTouched + '. ' +
+            'Retired fields deleted (total): ' + retiredFieldsDeleted + '. ' +
+            'type defaulted: ' + typeDefaulted + '. ' +
+            'type unknown (preserved): ' + typeUnknown + '. ' +
+            'weeklyHours coerced: ' + weeklyHoursCoerced + '. ' +
+            'weeklyHours malformed (left in place): ' + weeklyHoursMalformed + '. ' +
+            'weight coerced: ' + weightCoerced + '. ' +
+            'weight malformed (left in place): ' + weightMalformed + '.'
+        );
+
+        if (weekMalformed > 0) {
+            console.warn(
+                '[Database] v26: ' + weekMalformed +
+                ' week field(s) could not be parsed and were left ' +
+                'untouched. These records will continue to fail the ' +
+                'discipline editor\'s type checks until manually ' +
+                'corrected. Review the disciplines whose startWeek or ' +
+                'endWeek is not an integer.'
+            );
+        }
+
+        data._dataVersion = 26;
+    }
+
     // ============================================================
     // NORMALISE DATA STRUCTURE
     // ============================================================
@@ -1883,10 +2243,7 @@
         }
 
         // v24 shape guard: every team member entry must have an
-        // intervals array and a memberId. This catches data that
-        // somehow bypassed the migration (e.g. was created by a
-        // pre-v24 build and then loaded with the new code without a
-        // version bump, or was directly injected by an import).
+        // intervals array and a memberId.
         data.teams.forEach(function(team) {
             if (!team || typeof team !== 'object') return;
             if (!Array.isArray(team.members)) return;
@@ -1898,7 +2255,6 @@
                 }
 
                 if (!Array.isArray(member.intervals)) {
-                    // Reshape flat fields if present, else empty array.
                     var joinStr = (member.joinPeriod !== undefined && member.joinPeriod !== null)
                         ? String(member.joinPeriod) : '';
                     var leaveStr = (member.leavePeriod !== undefined && member.leavePeriod !== null)
@@ -1924,9 +2280,7 @@
         });
 
         // v25 shape guard: every elimination record must carry a
-        // year. This catches data that bypassed the v25 migration,
-        // most notably imported envelopes exported from a pre-v25
-        // build. Uses the same resolution order as the migration.
+        // year.
         (function ensureEliminationYears() {
             var fallbackYear = (typeof data.currentYear === 'number' &&
                                 isFinite(data.currentYear) &&
@@ -1993,6 +2347,100 @@
                     repaired = true;
                 });
             });
+        })();
+
+        // v26 shape guard: every discipline must carry the canonical
+        // shape. This catches records written by a pre-v26 build that
+        // somehow bypassed the migration (imported envelopes, direct
+        // injection). Symmetric with v24 and v25 guards.
+        (function ensureDisciplineShape() {
+            var CV = window.CalendarValidation;
+            var hasParser = CV && typeof CV.parseWeek === 'function';
+
+            if (!data.curriculum ||
+                typeof data.curriculum !== 'object' ||
+                Array.isArray(data.curriculum)) {
+                return;
+            }
+
+            var disciplines = data.curriculum.disciplines;
+            if (!Array.isArray(disciplines)) { return; }
+
+            function coerceWeek(record, field) {
+                var v = record[field];
+                if (v === undefined || v === null) { return false; }
+                if (typeof v === 'number' && Number.isInteger(v)) {
+                    return false;
+                }
+                if (!hasParser) { return false; }
+                var parsed = CV.parseWeek(v);
+                if (parsed === null) { return false; }
+                record[field] = parsed;
+                return true;
+            }
+
+            function coerceNumeric(record, field) {
+                var v = record[field];
+                if (v === undefined || v === null) { return false; }
+                if (typeof v === 'number' && isFinite(v)) { return false; }
+                var num = Number(v);
+                if (!isFinite(num)) { return false; }
+                record[field] = num;
+                return true;
+            }
+
+            for (var i = 0; i < disciplines.length; i++) {
+                var record = disciplines[i];
+                if (!record || typeof record !== 'object' || Array.isArray(record)) {
+                    continue;
+                }
+
+                if (coerceWeek(record, 'startWeek')) { repaired = true; }
+                if (coerceWeek(record, 'endWeek')) { repaired = true; }
+
+                // Promote singular instructorId before deletion.
+                var singular = record.instructorId;
+                var hasSingular =
+                    typeof singular === 'string' &&
+                    singular.trim() !== '';
+                var hasArray =
+                    Array.isArray(record.instructorIds) &&
+                    record.instructorIds.length > 0;
+                if (hasSingular && !hasArray) {
+                    record.instructorIds = [singular.trim()];
+                    repaired = true;
+                } else if (!Array.isArray(record.instructorIds)) {
+                    record.instructorIds = [];
+                    repaired = true;
+                }
+
+                if (Object.prototype.hasOwnProperty.call(record, 'curriculum')) {
+                    delete record.curriculum;
+                    repaired = true;
+                }
+                if (Object.prototype.hasOwnProperty.call(record, 'maxStudents')) {
+                    delete record.maxStudents;
+                    repaired = true;
+                }
+                if (Object.prototype.hasOwnProperty.call(record, 'gradingSystem')) {
+                    delete record.gradingSystem;
+                    repaired = true;
+                }
+                if (Object.prototype.hasOwnProperty.call(record, 'instructorId')) {
+                    delete record.instructorId;
+                    repaired = true;
+                }
+
+                if (record.type === undefined ||
+                    record.type === null ||
+                    record.type === '') {
+                    record.type = 'mandatory';
+                    repaired = true;
+                }
+
+                if (coerceNumeric(record, 'weeklyHours')) { repaired = true; }
+                if (coerceNumeric(record, 'weight')) { repaired = true; }
+            }
         })();
 
         var validClassIds = Object.create(null);
