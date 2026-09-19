@@ -1,174 +1,126 @@
 /**
  * js/modules/academy/academy-cascade.js - Academy Cascade Coordinator
- * Single entry point for cross-domain cleanup when Academy entities
- * are deleted.
  *
  * Path: js/modules/academy/academy-cascade.js
  *
- * This module is responsible for:
- *   - Coordinating cleanup after character deletion
- *   - Coordinating cleanup after class deletion
- *   - Coordinating cleanup after discipline deletion
- *   - Coordinating cleanup after location deletion
- *   - Coordinating cleanup after team deletion
+ * Single entry point for cross-domain cleanup when Academy entities
+ * are deleted.
  *
- * IMPORTANT:
- *   - This module does NOT do the cleanup itself. Each domain module
- *     owns its own strip*Refs helpers. This coordinator simply calls
- *     them in a defined order and returns a merged summary.
- *   - All helpers are PURE with respect to appData: they mutate the
- *     snapshot they are given and do not touch window.data. The
- *     coordinator is designed to run INSIDE a pipeline mutate()
- *     callback, so every cascade participates in the same transaction
- *     as the entity removal.
- *   - This module does NOT call MutationPipeline. It has no opinion
- *     about transactions. The caller (AcademyClasses.delete,
- *     AcademyDisciplines.delete, CharacterCRUD.deleteCharacter, etc.)
- *     owns the transaction.
- *   - Domain modules NOT loaded at call time are skipped silently.
- *     The result reports which modules participated.
+ * WHAT THIS MODULE OWNS:
+ *   Coordinating cleanup after character, class, discipline,
+ *   location, and team deletion. Each cascade function calls the
+ *   strip*Refs helpers exposed by the domain modules that need to
+ *   react to the deletion, and returns a merged summary.
  *
- * WHY A COORDINATOR:
- *   Before this module, cascade logic was inlined in each delete path:
- *     - AcademyClasses.delete stripped classIds from characters,
- *       removed weeklyTeams, deleted grades and rankings.
- *     - AcademyDisciplines.delete stripped schedules, groups, metadata,
- *       grades.
- *     - AcademyLocations.delete stripped location schedules,
- *       classLocations, metadata.
- *     - CharacterCRUD.deleteCharacter stripped team memberships,
- *       auto-groups, grades, rankings, social, missions, tournaments,
- *       curriculum.
- *   Each of these was individually correct, but every time a new
- *   domain module was added (enrolments, social score, weekly teams,
- *   teaching groups, teaching sessions), every delete path needed to
- *   be updated. Missing one created orphaned references. The
- *   coordinator centralises the list of "everything that needs to be
- *   cleaned up when X is deleted" so adding a new domain module means
- *   updating ONE file.
+ * WHAT THIS MODULE DOES NOT OWN:
+ *   The cleanup itself. Each domain module owns its own
+ *   strip*Refs helpers. This coordinator calls them in a defined
+ *   order and merges the results. It does not reimplement any
+ *   cascade logic. It does not call MutationPipeline; the caller
+ *   (AcademyClasses.delete, AcademyDisciplines.delete, etc.) owns
+ *   the transaction.
  *
- * CASCADE SEMANTICS BY DELETION TYPE:
+ * TRANSACTION MODEL:
+ *   Every helper this coordinator calls is PURE with respect to
+ *   appData: it mutates the snapshot it is given and never touches
+ *   window.data. The coordinator is designed to run INSIDE a
+ *   pipeline mutate() callback, so every cascade participates in
+ *   the same transaction as the entity removal.
  *
- *   characterDeleted(appData, charId):
- *     Strips every reference to a character across the academy and
- *     curriculum domains. Called from CharacterCRUD.deleteCharacter
- *     inside the pipeline transaction that removes the character
- *     record itself.
+ * OPTIONAL-DEPENDENCY POLICY:
+ *   Domain modules that are not loaded at call time are skipped
+ *   silently, EXCEPT for a single warn the first time a given
+ *   (module, helper) pair is skipped. This is deliberate: the
+ *   coordinator's job is to run whatever cleanup is available
+ *   without failing the enclosing transaction. But a silent skip
+ *   is how a missing strip helper goes unnoticed — the
+ *   MissionCore.stripCharacterRefs gap went undetected for exactly
+ *   this reason. The warn makes the gap visible without making it
+ *   fatal.
  *
- *   classDeleted(appData, classId):
- *     Strips every reference to a class. Called from
- *     AcademyClasses.delete inside the pipeline transaction that
- *     removes the class record itself.
+ *   The warn fires at most once per (module, helper) pair per
+ *   session. A batch delete over fifty characters skips the same
+ *   missing helper fifty times and warns once.
  *
- *   disciplineDeleted(appData, disciplineId):
- *     Strips every reference to a discipline. Called from
- *     AcademyDisciplines.delete inside the pipeline transaction.
+ * ORDERING RULES:
+ *   The cascade functions respect two ordering constraints:
  *
- *   locationDeleted(appData, locationId):
- *     Strips every reference to a location. Called from
- *     AcademyLocations.delete inside the pipeline transaction.
- *
- *   teamDeleted(appData, teamId):
- *     Strips every reference to a persistent Team entity. Called from
- *     TeamCore.deleteTeam inside the pipeline transaction.
- *
- * TEACHING-MODEL CASCADE SEMANTICS (v20):
- *
- *   The teaching model adds three stores to academy:
- *     classDisciplines       a class's offering of a discipline
- *     teachingGroups         students + instructor for a class-discipline
- *     teachingSessions       recurring meetings of a teaching group
- *
- *   Cascade rules:
- *
- *     classDeleted:
- *       - Every teaching group whose classId matches is HARD-DELETED.
- *       - Every teaching session whose group belonged to the class is
- *         HARD-DELETED. Sessions are resolved by walking the group
- *         store, because sessions only carry a groupId, not a classId.
+ *     classDeleted and disciplineDeleted:
+ *       Sessions are stripped BEFORE groups, because
+ *       AcademyTeachingSessions.stripClassRefs and
+ *       AcademyTeachingSessions.stripGroupRefs resolve the class or
+ *       group via the group store. Once the group is gone, the
+ *       session strip finds nothing.
  *
  *     disciplineDeleted:
- *       - Sessions belonging to any group for the discipline are
- *         HARD-DELETED first (they would orphan otherwise).
- *       - Every teaching group whose disciplineId matches is
- *         HARD-DELETED.
+ *       The group IDs matching the discipline are captured BEFORE
+ *       any group is removed, so the session strip has something
+ *       to iterate over.
  *
- *     characterDeleted:
- *       - Every membership window for the character is ENDED
- *         (endWeek set). History survives.
- *       - Every group whose instructorId matches has its own endWeek
- *         set. The group record survives as a historical fact.
- *       - Sessions for those groups are NOT touched. The group still
- *         exists; the instructor has simply stopped.
+ *   Both constraints are documented inline at the point where
+ *   they matter.
  *
- *     locationDeleted:
- *       - Every session whose locationId matches has the locationId
- *         NULLED. The session survives, unassigned. A decommissioned
- *         room does not end the class; it just needs a new room.
+ * SEMANTICS BY DELETION TYPE:
  *
- *   The distinction is deliberate:
- *     - Class and discipline deletion hard-deletes, because the
- *       class/discipline never existed. There is no window to preserve.
- *     - Character deletion ends windows, because the character did
- *       exist; a stop in the timeline is a fact worth recording.
- *     - Location deletion nulls a reference, because the location was
- *       a property of the session, not its identity.
+ *   characterDeleted(appData, charId):
+ *     Strips every reference to a character across academy and
+ *     curriculum. Enrolments and grades are hard-deleted; ranking
+ *     records are hard-deleted; social scores are hard-deleted;
+ *     weekly-team memberships are ended with leavePeriod = MAX_WEEK
+ *     (the character existed; a stop in the timeline is a fact
+ *     worth recording); teaching-group memberships are ended;
+ *     groups instructed by the character have their endWeek set;
+ *     sessions are not touched (the group still exists). Social,
+ *     mission, and tournament references are delegated to their
+ *     respective domains.
  *
- * WEEKLY-TEAMS CASCADE SEMANTICS:
+ *   classDeleted(appData, classId):
+ *     Hard-deletes enrolments, grades, rankings, social scores,
+ *     weekly-team windows, teaching sessions, and teaching groups.
+ *     The class never existed as a historical record from the
+ *     cascade's point of view; hard delete is correct.
  *
- *   The character-deletion cascade names `AcademyWeeklyTeams.stripCharacterRefs`.
- *   That helper is the WEEK-AGNOSTIC counterpart to the module's own
- *   `endCharacterMemberships(appData, charId, effectiveWeek)`.
+ *   disciplineDeleted(appData, disciplineId):
+ *     Hard-deletes enrolments, teaching sessions for the
+ *     discipline's groups, and the groups themselves. Same
+ *     reasoning: the discipline is gone.
  *
- *   Why two helpers:
- *     - `endCharacterMemberships` requires an explicit effective week.
- *       It is used by callers that know the character stopped at a
- *       particular week (e.g. a future "archive this student" flow).
- *     - `stripCharacterRefs` takes no week. It ends every open interval
- *       with `leavePeriod = MAX_WEEK`. It is used by character deletion
- *       itself, where "the character is gone" is not a week-bound fact
- *       and no meaningful effective week exists.
+ *   locationDeleted(appData, locationId):
+ *     Nulls the locationId on every teaching session that
+ *     referenced it. The session survives, unassigned. A
+ *     decommissioned room does not end the class; it needs a new
+ *     room.
  *
- *   If the coordinator ever passed only a charId to
- *   `endCharacterMemberships`, the function would return a zero-count
- *   result without ending any interval, because its `parseWeekStrict`
- *   guard rejects an absent effective week. The two helpers are not
- *   interchangeable; the coordinator calls the week-agnostic one.
+ *   teamDeleted(appData, teamId):
+ *     Removes the teamId from every class-week assignment map.
+ *
+ * WEEKLY-TEAMS CASCADE:
+ *   characterDeleted names AcademyWeeklyTeams.stripCharacterRefs,
+ *   not endCharacterMemberships. The two are not interchangeable:
+ *   stripCharacterRefs takes no effective week and ends every open
+ *   interval with leavePeriod = MAX_WEEK; endCharacterMemberships
+ *   requires an explicit week. Character deletion has no week-bound
+ *   meaning.
  *
  * RETURN SHAPE:
- *   Each cascade returns a structured summary:
- *     {
- *       modules: [ 'academyEnrolments', 'academyGrades', ... ],
- *       details: {
- *         academyEnrolments: { enrolmentsRemoved: 3 },
- *         academyGrades: { gradesRemoved: 5 },
- *         ...
- *       }
+ *   {
+ *     modules: [ 'academyEnrolments', 'academyGrades', ... ],
+ *     details: {
+ *       academyEnrolments: { enrolmentsRemoved: 3 },
+ *       academyGrades: { gradesRemoved: 5 },
+ *       ...
  *     }
- *   The `modules` array lists which strip*Refs helpers actually ran.
- *   Modules that were unavailable (not loaded) are omitted.
+ *   }
+ *
+ *   The `modules` array lists which strip*Refs helpers actually
+ *   ran. Modules that were unavailable are omitted.
  *
  * DEPENDENCIES:
- *   - None at module load. All helpers are read lazily at call time.
- *
- * OPTIONAL DEPENDENCIES (used when available):
- *   - window.AcademyEnrolments
- *   - window.AcademyGrades
- *   - window.AcademyGroups
- *   - window.AcademyRanking
- *   - window.AcademySocialScore
- *   - window.AcademyWeeklyTeams
- *   - window.AcademyTeachingGroups       (v20)
- *   - window.AcademyTeachingSessions     (v20)
- *   - window.CharacterEliminations (not a strip helper, but related)
- *   - window.SocialCore
- *   - window.MissionCore
- *   - window.TournamentCore
+ *   None at module load. All helpers are read lazily at call time.
  *
  * USAGE:
  *   // Inside a pipeline mutate() callback in AcademyClasses.delete:
  *   var cascade = AcademyCascade.classDeleted(appData, classId);
- *   return { deleted: true, classId: classId, cascade: cascade };
  *
  *   // Inside CharacterCRUD.deleteCharacter's pipeline mutate:
  *   var cascade = AcademyCascade.characterDeleted(appData, charId);
@@ -196,37 +148,103 @@
                !Array.isArray(value);
     }
 
+    // ============================================================
+    // SKIP-WARNING BOOKKEEPING
+    // ============================================================
+    //
+    // A silent skip is how a missing strip helper goes unnoticed.
+    // The warn fires at most once per (module, helper) pair per
+    // session so a batch delete does not spam the console.
+
+    var _warnedSkips = Object.create(null);
+
+    function warnSkipOnce(moduleName, helperName, reason) {
+        var key = moduleName + '.' + helperName;
+        if (_warnedSkips[key] === true) { return; }
+        _warnedSkips[key] = true;
+
+        console.warn(
+            '[AcademyCascade] Skipping ' + key + ' during cascade: ' +
+            reason + '. References to the deleted entity will remain ' +
+            'in this domain.'
+        );
+    }
+
+    // ============================================================
+    // STRIP HELPER DISPATCH
+    // ============================================================
+
     /**
-     * Call a strip helper on a module if the module is loaded and the
-     * helper is a function.
+     * Call a strip helper on a module if the module is loaded and
+     * the helper is a function.
+     *
+     * Missing module or missing helper -> warn once, return a
+     * skipped marker. The marker is filtered out of the merged
+     * summary by summarise().
+     *
+     * A throwing helper is a bug and fails the enclosing
+     * transaction: the caller's pipeline rolls back and the error
+     * surfaces.
      *
      * @param {string} moduleName  - Human-readable name for the summary
      * @param {string} modulePath  - Property name on window
      * @param {string} helperName  - Method name on the module
      * @param {object} appData
      * @param {string} entityId
-     * @returns {object|null} The helper's return value, or null if skipped
+     * @returns {object} The helper's return value, or a skipped marker
      */
-    function runStripHelper(moduleName, modulePath, helperName, appData, entityId) {
+    function runStripHelper(
+        moduleName,
+        modulePath,
+        helperName,
+        appData,
+        entityId
+    ) {
         var mod = window[modulePath];
-        if (!mod || typeof mod[helperName] !== 'function') {
-            return null;
+
+        if (!mod) {
+            warnSkipOnce(
+                moduleName,
+                helperName,
+                'module window.' + modulePath + ' is not loaded'
+            );
+            return {
+                skipped: true,
+                reason: 'module-not-loaded'
+            };
         }
+
+        if (typeof mod[helperName] !== 'function') {
+            warnSkipOnce(
+                moduleName,
+                helperName,
+                'module window.' + modulePath +
+                ' does not export ' + helperName + '()'
+            );
+            return {
+                skipped: true,
+                reason: 'helper-not-exported'
+            };
+        }
+
         try {
             var result = mod[helperName](appData, entityId);
             return result || {};
         } catch (e) {
-            // A throwing cascade helper is a bug. Surface it.
-            // The caller's transaction will abort and roll back.
             throw new Error(
                 '[AcademyCascade] ' + moduleName + '.' + helperName +
-                ' threw during cascade: ' + (e && e.message ? e.message : e)
+                ' threw during cascade: ' +
+                (e && e.message ? e.message : e)
             );
         }
     }
 
     /**
      * Build a cascade summary from a set of helper results.
+     *
+     * Skipped markers are dropped. Only helpers that actually ran
+     * (and returned a value, even an empty object) appear in the
+     * summary.
      *
      * @param {array} entries - Array of { module, result } objects
      * @returns {object} { modules: string[], details: object }
@@ -237,7 +255,11 @@
 
         for (var i = 0; i < entries.length; i++) {
             var entry = entries[i];
-            if (!entry || entry.result === null || entry.result === undefined) {
+            if (!entry) { continue; }
+            if (entry.result === null || entry.result === undefined) {
+                continue;
+            }
+            if (entry.result.skipped === true) {
                 continue;
             }
             modules.push(entry.module);
@@ -256,10 +278,6 @@
      *
      * Used by disciplineDeleted to find the groups whose sessions
      * must be stripped before the groups themselves are removed.
-     *
-     * @param {object} appData
-     * @param {function} predicate - receives a group record, returns bool
-     * @returns {array} Array of group IDs
      */
     function findTeachingGroupIds(appData, predicate) {
         var result = [];
@@ -294,30 +312,28 @@
      * Strip all references to a character from the academy and
      * curriculum domains.
      *
-     * Called from CharacterCRUD.deleteCharacter's pipeline mutate
-     * callback, AFTER the character record has been removed from
-     * data.characters (or before; the order within the transaction
-     * does not matter because the character is unreachable either way).
+     * Called from CharacterCRUD.deleteCharacter's pipeline mutate.
      *
-     * Order of operations:
-     *   1. Academy enrolments (class-scoped student entries)
-     *   2. Academy grades (records keyed to the student)
-     *   3. Academy rankings (records keyed to the student)
-     *   4. Academy social scores (entries keyed to the student)
-     *   5. Academy weekly teams (membership intervals across every
-     *      persistent Team entity; every open interval is closed
-     *      with leavePeriod = MAX_WEEK)
+     * Ordering:
+     *   1. Academy enrolments (hard delete)
+     *   2. Academy grades (hard delete)
+     *   3. Academy rankings (hard delete)
+     *   4. Academy social scores (hard delete)
+     *   5. Academy weekly teams (memberships ended, leavePeriod =
+     *      MAX_WEEK; the character existed, and the ending is a
+     *      historical fact)
      *   6. Academy auto-groups (instructor groups removed; student
      *      memberships removed)
-     *   7. Academy teaching groups (v20) — membership windows ended;
-     *      groups instructed by the character have their endWeek set.
-     *      Sessions are NOT touched (the group still exists).
-     *   8. Social relationships (from SocialCore, if present)
-     *   9. Mission support personnel (from MissionCore, if present)
-     *  10. Tournament participants / eliminations / matches (from
-     *      TournamentCore, if present)
+     *   7. Academy teaching groups (membership windows ended; groups
+     *      instructed by the character have their endWeek set;
+     *      sessions are NOT touched, because the group survives)
+     *   8. Social relationships (SocialCore.stripCharacterRefs)
+     *   9. Mission support personnel and report authors
+     *      (MissionCore.stripCharacterRefs)
+     *  10. Tournament participants, eliminations, and match slots
+     *      (TournamentCore.stripCharacterRefs)
      *
-     * @param {object} appData - The pipeline's appData snapshot
+     * @param {object} appData - Pipeline snapshot
      * @param {string} charId - Character ID
      * @returns {object} Cascade summary
      */
@@ -377,13 +393,6 @@
             )
         });
 
-        // v20 — Teaching groups.
-        //
-        // stripCharacterRefs ends membership windows and sets the
-        // endWeek on any group whose instructorId matches. Sessions
-        // are untouched: the group still exists as a historical
-        // fact, and its recurring meetings were a property of the
-        // group, not the character.
         entries.push({
             module: 'academyTeachingGroups',
             result: runStripHelper(
@@ -426,33 +435,17 @@
     /**
      * Strip all references to a class.
      *
-     * Called from AcademyClasses.delete's pipeline mutate callback.
+     * Called from AcademyClasses.delete's pipeline mutate.
      *
-     * Order of operations:
-     *   1. Academy enrolments (entire classId subtree)
-     *   2. Academy grades (records keyed to the class)
-     *   3. Academy rankings (records keyed to the class)
-     *   4. Academy social scores (entire classId subtree)
-     *   5. Academy weekly teams (entire classId subtree)
-     *   6. Academy teaching sessions (v20) — sessions belonging to
-     *      any group of the class. Sessions are resolved via the
-     *      group store, because sessions only carry a groupId.
-     *   7. Academy teaching groups (v20) — every group whose classId
-     *      matches is removed.
+     * ORDERING: sessions are stripped BEFORE groups. The session
+     * strip resolves the class via the group store; if the groups
+     * are gone, the session strip finds nothing.
      *
-     * Note: class membership is stored on character.classIds. The
-     * caller (AcademyClasses.delete) is responsible for stripping the
-     * classId from characters, because AcademyClasses owns that data
-     * relationship. This coordinator does not touch character records.
-     *
-     * Note: sessions must be stripped BEFORE the groups are stripped,
-     * because AcademyTeachingSessions.stripClassRefs resolves the
-     * class via the group store. If the groups are gone, the session
-     * strip finds nothing.
-     *
-     * @param {object} appData - The pipeline's appData snapshot
-     * @param {string} classId - Class ID
-     * @returns {object} Cascade summary
+     * Class membership is stored on character.classIds.
+     * AcademyClasses.delete itself strips the classId from
+     * characters, because AcademyClasses owns that data
+     * relationship. This coordinator does not touch character
+     * records.
      */
     function classDeleted(appData, classId) {
         if (!appData || !isNonEmptyString(classId)) {
@@ -502,10 +495,7 @@
             )
         });
 
-        // v20 — Sessions first. Sessions reference groups, groups
-        // reference classes. The helper walks the group store to
-        // resolve the class. If we stripped groups first, the
-        // session strip would find no matching groups.
+        // Sessions first; see the ordering note above.
         entries.push({
             module: 'academyTeachingSessions',
             result: runStripHelper(
@@ -514,7 +504,7 @@
             )
         });
 
-        // v20 — Then groups.
+        // Then groups.
         entries.push({
             module: 'academyTeachingGroups',
             result: runStripHelper(
@@ -533,36 +523,13 @@
     /**
      * Strip all references to a discipline.
      *
-     * Called from AcademyDisciplines.delete's pipeline mutate callback.
+     * Called from AcademyDisciplines.delete's pipeline mutate.
      *
-     * Order of operations:
-     *   1. Academy enrolments (disciplineId removed from every
-     *      student's enrolment intervals)
-     *   2. Academy teaching sessions (v20) — sessions belonging to
-     *      any group whose disciplineId matches. This is a two-step
-     *      operation: we resolve the group IDs from the snapshot
-     *      first, strip their sessions one by one, then (step 3)
-     *      strip the groups themselves.
-     *   3. Academy teaching groups (v20) — every group whose
-     *      disciplineId matches is removed.
-     *
-     * Note: AcademyDisciplines.delete handles the other discipline
-     * cascades inline (schedules, auto-groups, metadata, grades)
-     * because those are curriculum-internal concerns that its own
-     * private helpers already cover. The coordinator handles the
-     * cross-domain parts only.
-     *
-     * Note on ordering: sessions must be stripped BEFORE their
-     * groups disappear from the snapshot. stripGroupRefs finds
-     * sessions by iterating the session store and matching groupId.
-     * It does not need the group record itself; but if the group
-     * is already removed from academy.teachingGroups, we have no
-     * way to enumerate the group IDs to call stripGroupRefs on.
-     * So we snapshot the IDs first.
-     *
-     * @param {object} appData - The pipeline's appData snapshot
-     * @param {string} disciplineId - Discipline ID
-     * @returns {object} Cascade summary
+     * Two-step session cleanup: the group IDs for the discipline
+     * are captured BEFORE anything is removed, then sessions are
+     * stripped per group, then the groups themselves are stripped.
+     * Reversing the order leaves no way to enumerate the groups to
+     * clean sessions for.
      */
     function disciplineDeleted(appData, disciplineId) {
         if (!appData || !isNonEmptyString(disciplineId)) {
@@ -580,23 +547,22 @@
             )
         });
 
-        // v20 — Sessions and groups.
-        //
-        // We resolve the group IDs BEFORE stripping anything. Then
-        // strip sessions for each group ID. Then strip the groups
-        // themselves. Each step is idempotent and safe to skip if
-        // its helper is missing.
+        // Capture group IDs BEFORE removing any group. See the
+        // ordering note above.
+        var matchingGroupIds = findTeachingGroupIds(
+            appData,
+            function(group) {
+                return String(group.disciplineId) === target;
+            }
+        );
 
-        var matchingGroupIds = findTeachingGroupIds(appData, function(group) {
-            return String(group.disciplineId) === target;
-        });
-
-        var sessionStrips = 0;
         var sessionsRemoved = 0;
+        var sessionsGroupsProcessed = 0;
         var sessionsModuleAvailable = false;
 
         var Sessions = window.AcademyTeachingSessions;
-        if (Sessions && typeof Sessions.stripGroupRefs === 'function' &&
+        if (Sessions &&
+            typeof Sessions.stripGroupRefs === 'function' &&
             matchingGroupIds.length > 0) {
             sessionsModuleAvailable = true;
             for (var i = 0; i < matchingGroupIds.length; i++) {
@@ -609,15 +575,29 @@
                         typeof sessionResult.sessionsRemoved === 'number') {
                         sessionsRemoved += sessionResult.sessionsRemoved;
                     }
-                    sessionStrips++;
+                    sessionsGroupsProcessed++;
                 } catch (e) {
                     throw new Error(
-                        '[AcademyCascade] AcademyTeachingSessions.stripGroupRefs ' +
+                        '[AcademyCascade] ' +
+                        'AcademyTeachingSessions.stripGroupRefs ' +
                         'threw during discipline cascade: ' +
                         (e && e.message ? e.message : e)
                     );
                 }
             }
+        } else if (!Sessions) {
+            warnSkipOnce(
+                'academyTeachingSessions',
+                'stripGroupRefs',
+                'module window.AcademyTeachingSessions is not loaded'
+            );
+        } else if (typeof Sessions.stripGroupRefs !== 'function') {
+            warnSkipOnce(
+                'academyTeachingSessions',
+                'stripGroupRefs',
+                'module window.AcademyTeachingSessions does not ' +
+                'export stripGroupRefs()'
+            );
         }
 
         if (sessionsModuleAvailable) {
@@ -625,7 +605,7 @@
                 module: 'academyTeachingSessions',
                 result: {
                     sessionsRemoved: sessionsRemoved,
-                    groupsProcessed: sessionStrips
+                    groupsProcessed: sessionsGroupsProcessed
                 }
             });
         }
@@ -648,22 +628,11 @@
     /**
      * Strip all references to a location.
      *
-     * Called from AcademyLocations.delete's pipeline mutate callback.
+     * Called from AcademyLocations.delete's pipeline mutate.
      *
-     * Order of operations:
-     *   1. Academy teaching sessions (v20) — every session whose
-     *      locationId matches has the locationId NULLED. The
-     *      session survives, unassigned. A decommissioned room does
-     *      not end the class; it just needs a new room.
-     *
-     * Note: location cleanup is otherwise curriculum-internal
-     * (locationSchedules, classLocations, metadata). AcademyLocations
-     * handles it inline via its own cascade helpers. The v20 teaching
-     * cascade is the one cross-domain part this coordinator owns.
-     *
-     * @param {object} appData - The pipeline's appData snapshot
-     * @param {string} locationId - Location ID
-     * @returns {object} Cascade summary
+     * The location is nulled on every teaching session that
+     * referenced it. Sessions are not deleted; the room was a
+     * property of the session, not its identity.
      */
     function locationDeleted(appData, locationId) {
         if (!appData || !isNonEmptyString(locationId)) {
@@ -691,15 +660,9 @@
     /**
      * Strip all references to a persistent Team entity.
      *
-     * Called from TeamCore.deleteTeam's pipeline mutate callback.
+     * Called from TeamCore.deleteTeam's pipeline mutate.
      *
-     * Order of operations:
-     *   1. Academy weekly teams (the teamId is removed from every
-     *      class-week assignment map)
-     *
-     * @param {object} appData - The pipeline's appData snapshot
-     * @param {string} teamId - Team ID
-     * @returns {object} Cascade summary
+     * The teamId is removed from every class-week assignment map.
      */
     function teamDeleted(appData, teamId) {
         if (!appData || !isNonEmptyString(teamId)) {
@@ -721,14 +684,14 @@
     }
 
     // ============================================================
-    // SUMMARY RENDERING (for activity log messages)
+    // SUMMARY RENDERING
     // ============================================================
 
     /**
      * Build a short human-readable summary of a cascade result, for
      * inclusion in an activity log message.
      *
-     * @param {object} cascade - Result from one of the cascade functions
+     * @param {object} cascade
      * @returns {string} e.g. "(3 enrolments, 5 grades)"
      */
     function formatSummary(cascade) {
@@ -769,7 +732,6 @@
             if (agTotal > 0) { parts.push(agTotal + ' group reference(s)'); }
         }
 
-        // v20 — Teaching groups and sessions.
         if (details.academyTeachingGroups) {
             var tg = details.academyTeachingGroups;
             var tgTotal = (tg.groupsRemoved || 0) +
@@ -803,7 +765,9 @@
                          (t.winnerRecordsCleared || 0) +
                          (t.matchParticipantSlotsRemoved || 0) +
                          (t.matchesPruned || 0);
-            if (tTotal > 0) { parts.push(tTotal + ' tournament reference(s)'); }
+            if (tTotal > 0) {
+                parts.push(tTotal + ' tournament reference(s)');
+            }
         }
 
         if (parts.length === 0) {
@@ -849,7 +813,10 @@
         }
 
         if (missing.length > 0) {
-            console.warn('[AcademyCascade] Verification - some exports may be missing:', missing.join(', '));
+            console.warn(
+                '[AcademyCascade] Verification - some exports may be ' +
+                'missing:', missing.join(', ')
+            );
         }
     })();
 

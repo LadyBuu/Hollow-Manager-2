@@ -11,23 +11,19 @@
  *   - Resolving team names and support personnel names.
  *   - Resolving report author names, including the redacted case.
  *   - Deriving the mission label via MissionId.derive and
- *     attaching it to VMs.
+ *     attaching it to VMs as a read-only field.
  *   - Exposing capability flags (canEdit, canComplete, ...) by
  *     delegating to MissionRules.
  *
  * WHAT THIS MODULE DOES NOT OWN:
- *   - Reads. MissionQueries owns those. This module calls Queries
- *     and composes its results.
- *   - Mutations. MissionCore owns those.
- *   - Structural validation. MissionSchema owns that.
- *   - Domain rules. MissionRules owns those. This module calls
- *     Rules; it does not re-implement rule logic.
- *   - Presentation strings beyond what it must attach to VMs.
- *     MissionViews owns the vocabulary; this module imports it and
- *     attaches the resulting labels and classes to VMs.
- *   - Cross-domain business rules. Whether a team is *eligible* is
- *     a rule (MissionRules). Whether a team *exists* is a query
- *     (TeamQueries). This module consults both.
+ *   - Reads, mutations, structural validation, domain rules, or
+ *     presentation vocabulary. Each of those lives in its own
+ *     module (MissionQueries, MissionCore, MissionSchema,
+ *     MissionRules, MissionViews respectively). This module calls
+ *     them and composes their results.
+ *   - The mission label's grammar. MissionId owns the grammar and
+ *     the derivation. This module attaches the derived label to
+ *     VMs; it does not compute it.
  *
  * VM SHAPE PRINCIPLES:
  *   - Every VM is a plain data structure. No functions, no live
@@ -39,6 +35,22 @@
  *   - Missing or unresolvable references resolve to `null` or an
  *     explicit "Unknown"/"Unassigned" string, not to fabricated
  *     entity IDs.
+ *
+ * LABEL SEMANTICS:
+ *   The mission label (YEAR-SEQ-DIFFICULTY) is a DERIVED value.
+ *   It is never stored, and the form layer does not preview it.
+ *   On an edit VM, the current label is exposed as `currentLabel`
+ *   for display only; the form does not offer it as an input.
+ *   Changing year or difficulty re-derives the label at read time;
+ *   the stored `sequence` is frozen at creation and never changes.
+ *
+ * DATE DEFAULTS:
+ *   The form VM's date defaults are (currentYear, 1, 1). The
+ *   current calendar year is the only "now"-dependent value; month
+ *   and day are the fixed start of the year. The UI layer may
+ *   reset untouched month/day when the year input changes; the
+ *   aggregator does not do that — it just supplies the initial
+ *   defaults.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.MissionQueries
@@ -284,7 +296,6 @@
             result.push(ref || { id: String(id), name: 'Unknown' });
         }
 
-        // Sort by name for deterministic display.
         result.sort(function(a, b) {
             return String(a.name).localeCompare(String(b.name));
         });
@@ -455,7 +466,6 @@
             : 'desc';
         var includeArchived = options.includeArchived === true;
 
-        // Status filter goes through the query layer.
         var statusFilter = filter === 'all' ? null : filter;
 
         var missions = MissionQueries.getMissions(statusFilter, {
@@ -463,8 +473,6 @@
         });
 
         var total = missions.length;
-
-        // Additional filters are screen state and belong here.
         var filtered = missions;
 
         if (teamId !== null) {
@@ -504,18 +512,15 @@
             });
         }
 
-        // Build list item VMs.
         var items = filtered.map(function(m) {
             return buildListItemVM(m);
         });
 
-        // Sort.
         items.sort(buildListComparator(sort, sortDirection));
 
         // Counts are computed against the status-filtered set, before
-        // team/type/search filtering. This gives the "how many are
-        // active" number the sidebar shows, independent of the
-        // current search.
+        // team/type/search filtering, so the sidebar shows "how many
+        // are active" independent of the current search.
         var counts = buildStatusCounts(missions);
 
         return {
@@ -816,9 +821,22 @@
     /**
      * Build the form view model for creating or editing a mission.
      *
+     * The form does NOT preview the mission label. The label is a
+     * derived value computed at read time by MissionId.derive from
+     * (year, sequence, difficulty); sequence is assigned at creation
+     * and never changes. On edit VMs, `currentLabel` carries the
+     * current derived label for display only. On create VMs,
+     * `currentLabel` is null.
+     *
+     * DATE DEFAULTS:
+     *   `defaults` supplies the initial (year, month, day) for a new
+     *   mission: current calendar year, January, 1st. The UI layer
+     *   decides whether to reset month/day when the year changes;
+     *   the aggregator only supplies the starting values.
+     *
      * @param {object} [options]
      * @param {string} [options.editId] - Mission UUID to edit
-     * @returns {object}
+     * @returns {object|null}
      */
     function getMissionFormViewModel(options) {
         options = options || {};
@@ -835,9 +853,9 @@
         var isEdit = mission !== null;
 
         // Teams eligible for assignment.
-        var teams = TeamQueries.getTeams
-            ? MissionRules.filterEligibleTeams(TeamQueries.getTeams())
-            : [];
+        var teams = MissionRules.filterEligibleTeams(
+            TeamQueries.getTeams ? TeamQueries.getTeams() : []
+        );
 
         var teamOptions = teams.map(function(t) {
             return {
@@ -912,24 +930,20 @@
             return missionTypes[key];
         });
 
-        // Preview of the label that would be assigned if the user
-        // submits now with the current year and difficulty.
-        var previewLabel = null;
-        if (!isEdit) {
-            previewLabel = MissionQueries.getNextMissionId(
-                new Date().getFullYear(),
-                MissionConstants.DEFAULT_DIFFICULTY
-            );
-        } else {
-            previewLabel = MissionId.derive(mission);
-        }
+        // currentLabel is a DISPLAY-ONLY field: the derived label for
+        // an existing mission, or null on create. The form does not
+        // offer it as an input, and MissionCore recomputes the label
+        // from stored fields on every read.
+        var currentLabel = isEdit ? MissionId.derive(mission) : null;
+
+        var now = new Date();
 
         return {
             isEdit: isEdit,
             editId: editId,
 
             mission: mission ? buildFormMissionFields(mission) : null,
-            previewLabel: previewLabel,
+            currentLabel: currentLabel,
 
             teams: teamOptions,
             characters: characterOptions,
@@ -942,9 +956,9 @@
             missionTypes: typeList,
 
             defaults: {
-                year: new Date().getFullYear(),
-                month: new Date().getMonth() + 1,
-                day: new Date().getDate()
+                year: now.getFullYear(),
+                month: 1,
+                day: 1
             }
         };
     }

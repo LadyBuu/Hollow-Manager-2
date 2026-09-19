@@ -13,14 +13,7 @@
  *   - Log entry mutations: append.
  *   - Report mutations: add, update, remove.
  *   - MutationPipeline orchestration for all of the above.
- *
- * WHAT THIS MODULE DOES NOT OWN:
- *   - Reads. Callers use MissionQueries directly.
- *   - Structural validation. MissionSchema owns it.
- *   - Domain rules and derivations. MissionRules owns them.
- *   - ID grammar. MissionId owns it.
- *   - Cross-domain cascades. MissionCascade owns them.
- *   - Presentation. MissionAggregator and MissionRender own it.
+ *   - Cascade helper (stripCharacterRefs) for cross-domain cleanup.
  *
  * MUTATION PATTERN:
  *   Every mutation follows the same shape:
@@ -74,8 +67,7 @@
  *   added, edited, and (soft) removed at any time, independent of
  *   mission status. An edited report carries `updatedAt`; a fresh
  *   report leaves `updatedAt` null until first edit. Removed
- *   reports are dropped from the array entirely — see the note in
- *   removeReport below for the trade-off.
+ *   reports are dropped from the array entirely.
  *
  * DERIVED FIELDS:
  *   progress and pay are recomputed from the candidate inside
@@ -83,6 +75,20 @@
  *   values the user supplied for those fields are ignored; they are
  *   always derived. completedAt is set by the transition rule for
  *   status changes that enter or leave 'completed'.
+ *
+ * DATE DEFAULTS:
+ *   When year, month, or day are absent at creation, the fallback
+ *   is: year -> current calendar year, month -> 1, day -> 1. The
+ *   form layer supplies its own defaults for the UI; this fallback
+ *   exists for programmatic callers.
+ *
+ * CASCADE HELPER:
+ *   stripCharacterRefs delegates to MissionCascade.stripCharacterRefs,
+ *   which owns the reference model (supportPersonnel, reports[].authorId).
+ *   The delegation exists so that the cross-domain cascade coordinator
+ *   can reach every domain's cascade helper through the domain's
+ *   mutation module by convention, without the coordinator having to
+ *   know each domain's internal module layout.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.MutationPipeline
@@ -92,6 +98,9 @@
  *   - window.MissionId
  *   - window.MissionSchema
  *   - window.MissionRules
+ *
+ * DEPENDENCIES (LAZY):
+ *   - window.MissionCascade   (used only by stripCharacterRefs)
  */
 
 (function() {
@@ -128,7 +137,6 @@
     if (!IdUtils || typeof IdUtils.normaliseId !== 'function') {
         _missing.push('IdUtils.normaliseId');
     }
-
     if (!MissionConstants) {
         _missing.push('MissionConstants (module)');
     } else {
@@ -139,11 +147,9 @@
             _missing.push('MissionConstants.getDefaults');
         }
     }
-
     if (!MissionId || typeof MissionId.generate !== 'function') {
         _missing.push('MissionId.generate');
     }
-
     if (!MissionSchema) {
         _missing.push('MissionSchema (module)');
     } else {
@@ -154,7 +160,6 @@
             _missing.push('MissionSchema.canonicaliseMissionShape');
         }
     }
-
     if (!MissionRules) {
         _missing.push('MissionRules (module)');
     } else {
@@ -227,8 +232,8 @@
     // SNAPSHOT ACCESS
     // ============================================================
     //
-    // These helpers read from the appData snapshot the pipeline
-    // hands in. They never touch window.data.
+    // Reads from the appData snapshot the pipeline hands in. Never
+    // touches window.data.
 
     function ensureMissionArray(appData) {
         if (!appData || typeof appData !== 'object') {
@@ -273,13 +278,13 @@
     }
 
     // ============================================================
-    // CANDIDATE BUILDING
+    // CANDIDATE FINALISATION
     // ============================================================
 
     /**
      * After applying any updates to a mission candidate, recompute
-     * derived fields from the candidate's own facts and, when a
-     * status transition is requested, update completedAt.
+     * derived fields from the candidate's own facts and preserve the
+     * completedAt the caller computed.
      *
      * Pure with respect to the input: returns a new object.
      */
@@ -296,10 +301,11 @@
     /**
      * Create a new mission.
      *
-     * @param {object} data - Mission fields. Required: title.
-     *   Optional: everything else. Missing fields fall back to
-     *   MissionConstants.getDefaults() for enum fields and to ''
-     *   / [] / null for text, arrays, and IDs.
+     * Required: title. Everything else falls back to
+     * MissionConstants.getDefaults() for enum fields, to '' / [] /
+     * null for text, arrays, and IDs, and to (currentYear, 1, 1)
+     * for absent date components.
+     *
      * @returns {Promise<{success, data?, message?}>}
      */
     function createMission(data) {
@@ -333,10 +339,8 @@
 
                 var defaults = MissionConstants.getDefaults();
                 var nowIso = new Date().toISOString();
+                var now = new Date();
 
-                // ---- Assemble the raw candidate input ----
-                // Defaults are applied here, at creation time, from
-                // MissionConstants. Schema does not fill defaults.
                 var raw = {
                     id: generateId('miss'),
 
@@ -350,15 +354,15 @@
 
                     year: data.year !== undefined && data.year !== null
                         ? data.year
-                        : new Date().getFullYear(),
+                        : now.getFullYear(),
 
                     month: data.month !== undefined && data.month !== null
                         ? data.month
-                        : new Date().getMonth() + 1,
+                        : 1,
 
                     day: data.day !== undefined && data.day !== null
                         ? data.day
-                        : new Date().getDate(),
+                        : 1,
 
                     primaryType: typeof data.primaryType === 'string'
                         ? data.primaryType
@@ -468,10 +472,9 @@
                         data.classFilterEnabled === true
                 };
 
-                // ---- Sequence allocation against the snapshot ----
-                // The sequence is scoped to (year, difficulty).
-                // MissionId.generate walks the snapshot missions and
-                // returns max(sequence) + 1 for that scope.
+                // Sequence is scoped to (year, difficulty). The
+                // generator walks the snapshot missions and returns
+                // max(sequence) + 1 for that scope.
                 var sequenceResult = MissionId.generate(
                     raw.year,
                     raw.difficulty,
@@ -487,7 +490,6 @@
                 }
                 raw.sequence = sequenceResult.sequence;
 
-                // ---- Canonicalise structurally ----
                 var canonical = MissionSchema.canonicaliseMissionShape(raw);
                 if (!canonical.valid || !canonical.value) {
                     return {
@@ -496,13 +498,11 @@
                     };
                 }
 
-                // ---- Recompute derived fields ----
                 var candidate = finaliseCandidate(
                     canonical.value,
                     nowIso
                 );
 
-                // ---- Re-validate the final candidate ----
                 var validated = MissionSchema.validateMission(candidate);
                 if (!validated.valid) {
                     return {
@@ -511,7 +511,6 @@
                     };
                 }
 
-                // Stash for mutate.
                 stagedCandidate = candidate;
 
                 return { valid: true };
@@ -555,12 +554,9 @@
      * Update an existing mission.
      *
      * Updatable fields: every non-derived, non-timestamp field.
-     * id, sequence, createdAt, and missionId (which is not stored)
-     * are never changed by this function. Status changes go through
-     * the status-transition rules.
+     * id, sequence, createdAt are never changed by this function.
+     * Status changes go through the status-transition rules.
      *
-     * @param {string} missionId - Mission UUID
-     * @param {object} updates
      * @returns {Promise<{success, data?, message?}>}
      */
     function updateMission(missionId, updates) {
@@ -594,8 +590,8 @@
                 var nowIso = new Date().toISOString();
                 var candidate = deepClone(current);
 
-                // ---- Apply status change separately so the
-                // transition rule runs against the CURRENT status.
+                // Status change runs against the CURRENT status so
+                // the transition rule sees the real "from".
                 if (updates.status !== undefined &&
                     updates.status !== current.status) {
                     var statusCheck = MissionRules.validateStatusChange(
@@ -614,7 +610,6 @@
                     );
                 }
 
-                // ---- Objectives ----
                 if (updates.objectives !== undefined) {
                     if (!Array.isArray(updates.objectives)) {
                         return {
@@ -640,7 +635,6 @@
                     );
                 }
 
-                // ---- Support personnel ----
                 if (updates.supportPersonnel !== undefined) {
                     if (!Array.isArray(updates.supportPersonnel)) {
                         return {
@@ -652,7 +646,6 @@
                         updates.supportPersonnel.slice();
                 }
 
-                // ---- Text and enum fields (validated by Schema) ----
                 copyIfProvided(
                     candidate, updates, 'title',
                     function(v) {
@@ -682,11 +675,9 @@
                 copyIfProvided(candidate, updates, 'month');
                 copyIfProvided(candidate, updates, 'day');
 
-                // ---- Recompute derived fields ----
                 var final = finaliseCandidate(candidate, nowIso);
                 final.completedAt = candidate.completedAt;
 
-                // ---- Structural validation on the final candidate ----
                 var validated = MissionSchema.validateMission(final);
                 if (!validated.valid) {
                     return {
@@ -734,10 +725,6 @@
     // ARCHIVE / UNARCHIVE / PURGE
     // ============================================================
 
-    /**
-     * Archive a mission. Sets archivedAt and status 'completed'.
-     * History preserved.
-     */
     function archiveMission(missionId) {
         var target = normaliseId(missionId);
         if (target === null) {
@@ -786,10 +773,6 @@
         });
     }
 
-    /**
-     * Unarchive a mission. Clears archivedAt. Status is left as-is;
-     * the caller decides whether to transition status separately.
-     */
     function unarchiveMission(missionId) {
         var target = normaliseId(missionId);
         if (target === null) {
@@ -836,10 +819,6 @@
         });
     }
 
-    /**
-     * Permanently remove a mission from the snapshot. Administrative.
-     * Not wired to any ordinary UI action.
-     */
     function purgeMission(missionId) {
         var target = normaliseId(missionId);
         if (target === null) {
@@ -902,11 +881,8 @@
     /**
      * Set an objective's done flag to a specific value.
      *
-     * Uses "set" semantics rather than "toggle": the caller
-     * expresses the intended state. This avoids lost updates when
-     * the UI is stale — an old checkbox checked against an old
-     * record will set the intended value, not flip whatever the
-     * current value happens to be.
+     * "Set" semantics rather than "toggle": the caller expresses the
+     * intended state. This avoids lost updates when the UI is stale.
      */
     function setObjectiveDone(missionId, index, done) {
         var target = normaliseId(missionId);
@@ -991,9 +967,6 @@
         });
     }
 
-    /**
-     * Add an objective to a mission.
-     */
     function addObjective(missionId, text) {
         var target = normaliseId(missionId);
         if (target === null) {
@@ -1059,9 +1032,6 @@
         });
     }
 
-    /**
-     * Remove an objective by index.
-     */
     function removeObjective(missionId, index) {
         var target = normaliseId(missionId);
         if (target === null) {
@@ -1284,12 +1254,8 @@
     // ============================================================
 
     /**
-     * Append a log entry.
-     *
-     * Logs are historical events. They are appended, never edited
-     * or removed through this API. A caller that wants to redact a
-     * log entry would need a dedicated operation that does not
-     * exist here.
+     * Append a log entry. Logs are append-only; they are never
+     * edited or removed through this API.
      */
     function addLog(missionId, message) {
         var target = normaliseId(missionId);
@@ -1356,9 +1322,6 @@
     // ============================================================
     // REPORT COMMANDS
     // ============================================================
-    //
-    // Reports are historical notes. Author may be null (redacted).
-    // Editing a report updates its text and sets updatedAt.
 
     function addReport(missionId, authorId, text) {
         var target = normaliseId(missionId);
@@ -1534,16 +1497,11 @@
     /**
      * Remove a report.
      *
-     * This is a HARD removal from the reports array. Reports are
-     * the mission's notes, not the mission's history log — the log
-     * is append-only. A user who writes a report in error should be
-     * able to remove it. Historical preservation applies to the
-     * mission itself, not to individual annotations about it.
-     *
-     * If you later decide that report removals should be soft (a
-     * `removedAt` flag), change this function and update
-     * MissionSchema to match. Nothing else depends on the removal
-     * being hard.
+     * Hard removal from the reports array. Reports are the mission's
+     * notes, not the mission's history log — the log is append-only.
+     * A user who writes a report in error should be able to remove
+     * it. Historical preservation applies to the mission itself, not
+     * to individual annotations about it.
      */
     function removeReport(missionId, reportId) {
         var target = normaliseId(missionId);
@@ -1630,8 +1588,8 @@
     // ============================================================
 
     /**
-     * If `updates[field]` is present (not undefined), copy it onto
-     * `candidate`, optionally transforming it first.
+     * If updates[field] is present (not undefined), copy it onto
+     * candidate, optionally transforming it first.
      */
     function copyIfProvided(candidate, updates, field, transform) {
         if (updates[field] === undefined) {
@@ -1655,10 +1613,8 @@
     // once for this module. The slot is cleared at the start of each
     // mutation's validate, and overwritten before mutate runs.
     //
-    // This is deliberately not reentrant. If you ever add a mutation
-    // that calls another mission mutation from inside its own
-    // validate callback, the outer slot will be overwritten. Don't
-    // do that.
+    // Deliberately NOT reentrant. Do not call a mission mutation
+    // from inside another mission mutation's validate callback.
 
     var stagedCandidate = null;
     var stagedReportId = null;
@@ -1668,12 +1624,38 @@
         stagedReportId = null;
     }
 
-    // Wrap each public mutation to clear staging at entry.
     function wrapMutation(fn) {
         return function() {
             beginStaging();
             return fn.apply(null, arguments);
         };
+    }
+
+    // ============================================================
+    // CASCADE HELPER
+    // ============================================================
+    //
+    // Delegates to MissionCascade.stripCharacterRefs, which owns the
+    // reference model for this domain (supportPersonnel and
+    // reports[].authorId). The delegation exists so the cross-domain
+    // cascade coordinator can reach every domain's cascade helper
+    // through the domain's mutation module by convention.
+    //
+    // MissionCascade is loaded lazily. When absent, the helper
+    // returns a zero-count summary rather than throwing, because
+    // the cascade coordinator's contract is "never throw, always
+    // return a summary."
+
+    function stripCharacterRefs(appData, charId) {
+        var MissionCascade = window.MissionCascade;
+        if (!MissionCascade ||
+            typeof MissionCascade.stripCharacterRefs !== 'function') {
+            return {
+                supportEntriesRemoved: 0,
+                reportsRedacted: 0
+            };
+        }
+        return MissionCascade.stripCharacterRefs(appData, charId);
     }
 
     // ============================================================
@@ -1708,7 +1690,10 @@
         // Reports
         addReport: wrapMutation(addReport),
         updateReport: wrapMutation(updateReport),
-        removeReport: wrapMutation(removeReport)
+        removeReport: wrapMutation(removeReport),
+
+        // Cascade helper (delegates to MissionCascade)
+        stripCharacterRefs: stripCharacterRefs
     });
 
     // ============================================================
@@ -1736,7 +1721,8 @@
             'addLog',
             'addReport',
             'updateReport',
-            'removeReport'
+            'removeReport',
+            'stripCharacterRefs'
         ];
 
         for (var i = 0; i < required.length; i++) {

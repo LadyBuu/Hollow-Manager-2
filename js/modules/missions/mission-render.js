@@ -14,9 +14,8 @@
  * WHAT THIS MODULE DOES NOT OWN:
  *   - Data. Every value comes off the VM. No queries, no domain
  *     reads, no team lookups, no character lookups, no date parsing.
- *   - State. This module does not track which mission is selected,
- *     which filter is applied, or which modal is open. The UI
- *     controller owns that.
+ *   - State. The UI controller owns which mission is selected,
+ *     which filter is applied, which modal is open.
  *   - Events. No addEventListener. All interaction is emitted as
  *     data-action attributes.
  *   - Composition. MissionAggregator builds VMs; this module only
@@ -29,38 +28,25 @@
  *   the markup or shows a clearly-marked empty state. It never
  *   invents data.
  *
+ * MISSION LABEL:
+ *   The mission label (YEAR-SEQ-DIFFICULTY) is a derived value. The
+ *   form does not preview it. On the edit form, `vm.currentLabel`
+ *   is displayed as static text; it is not an input and is not
+ *   submitted. On the create form, a muted hint states that the
+ *   label will be assigned on save.
+ *
+ * DATE FIELDS:
+ *   The year / month / day inputs carry `data-mission-year-field`,
+ *   `data-mission-month-field`, and `data-mission-day-field`
+ *   respectively. The UI controller uses these to track whether the
+ *   user has explicitly edited month/day, so that a year change can
+ *   reset untouched values to Jan 1 without clobbering explicit
+ *   ones.
+ *
  * DATA-ACTION CONVENTION:
  *   Every interactive element that the controller should respond to
  *   carries data-action="<verb>". The controller's delegated
  *   listener reads the attribute and dispatches.
- *
- *   Actions emitted here:
- *     mission-list-item          (row click; opens detail)
- *     mission-new                (new mission button)
- *     mission-edit               (edit button on detail panel)
- *     mission-delete             (delete button on detail panel)
- *     mission-archive            (archive button on detail panel)
- *     mission-unarchive          (unarchive button)
- *     mission-complete           (complete button)
- *     mission-cancel             (cancel button)
- *     mission-reactivate         (reactivate button)
- *     mission-objective-toggle   (objective checkbox)
- *     mission-add-objective      (add-objective button)
- *     mission-remove-objective   (remove-objective button)
- *     mission-add-support        (add-support button)
- *     mission-remove-support     (remove-support button)
- *     mission-add-log            (add-log button)
- *     mission-report-add         (add-report button)
- *     mission-report-edit        (edit-report button)
- *     mission-report-delete      (delete-report button)
- *     mission-close-detail       (close button on detail modal)
- *     mission-close-form         (close button on form modal)
- *
- *   Each action carries the identity it needs via data-* attributes:
- *     data-mission-id            mission UUID
- *     data-objective-index       objective index (integer)
- *     data-character-id          character UUID
- *     data-report-id             report UUID
  *
  * MODAL SHELL CONVENTION:
  *   renderContainer() emits the modal shells. Each shell has a
@@ -123,6 +109,10 @@
     function safeString(value) {
         if (value === undefined || value === null) { return ''; }
         return String(value);
+    }
+
+    function isFiniteNumber(value) {
+        return typeof value === 'number' && isFinite(value);
     }
 
     // ============================================================
@@ -808,6 +798,15 @@
     /**
      * Render the mission form.
      *
+     * The Mission ID is NOT an input. In edit mode it is displayed
+     * as read-only text derived from the stored year, sequence, and
+     * difficulty. In create mode a muted hint states that the label
+     * will be assigned on save.
+     *
+     * The date inputs carry data-mission-{year,month,day}-field
+     * markers. The UI controller uses these to track which fields
+     * the user has explicitly edited.
+     *
      * @param {object} vm - Form VM from
      *   MissionAggregator.getMissionFormViewModel
      * @returns {string} HTML string
@@ -841,14 +840,28 @@
                 '</textarea>';
         html += '</div>';
 
-        // ---- Mission ID (read-only preview) ----
+        // ---- Mission ID (display only, never an input) ----
         html += '<div class="form-group">';
         html += '<label>Mission ID</label>';
-        html += '<input type="text" class="mission-id-preview" readonly ' +
-                    'value="' + escapeAttribute(vm.previewLabel || '') + '">';
-        html += '<span class="field-hint">' +
-                    'Derived from Year and Difficulty. Updates as you edit them.' +
-                '</span>';
+        if (isEdit && isNonEmptyString(vm.currentLabel)) {
+            html += '<div class="mission-form-id-display" ' +
+                        'data-mission-id-label="' +
+                            escapeAttribute(vm.currentLabel) + '">' +
+                        escapeHtml(vm.currentLabel) +
+                    '</div>';
+            html += '<span class="field-hint">' +
+                        'Derived from Year and Difficulty. Updates on save.' +
+                    '</span>';
+        } else {
+            html += '<div class="mission-form-id-display ' +
+                        'mission-form-id-pending">' +
+                        'Assigned on save' +
+                    '</div>';
+            html += '<span class="field-hint">' +
+                        'The Mission ID is generated from Year and ' +
+                        'Difficulty when the mission is created.' +
+                    '</span>';
+        }
         html += '</div>';
 
         // ---- Date ----
@@ -859,6 +872,7 @@
         html += '<label class="date-label" ' +
                     'for="mission-year">Year</label>';
         html += '<input type="number" id="mission-year" class="date-year" ' +
+                    'data-mission-year-field="true" ' +
                     'value="' + escapeAttribute(safeString(
                         m.year !== undefined && m.year !== null
                             ? m.year
@@ -869,6 +883,7 @@
         html += '<label class="date-label" ' +
                     'for="mission-month">Month</label>';
         html += '<input type="number" id="mission-month" class="date-month" ' +
+                    'data-mission-month-field="true" ' +
                     'min="1" max="12" value="' + escapeAttribute(safeString(
                         m.month !== undefined && m.month !== null
                             ? m.month
@@ -879,6 +894,7 @@
         html += '<label class="date-label" ' +
                     'for="mission-day">Day</label>';
         html += '<input type="number" id="mission-day" class="date-day" ' +
+                    'data-mission-day-field="true" ' +
                     'min="1" max="31" value="' + escapeAttribute(safeString(
                         m.day !== undefined && m.day !== null
                             ? m.day
@@ -924,12 +940,18 @@
         html += '</div>';
 
         // ---- Subtype ----
+        //
+        // Subtype options are the subtypes of the currently-selected
+        // primary type. The UI controller refreshes this select when
+        // the primary type changes.
+        //
+        // Each entry in vm.missionTypes is expected to carry a
+        // `subtypes` array. If it does not, the select renders one
+        // disabled placeholder so the user sees that subtypes are
+        // unavailable rather than an apparently-empty dropdown.
         html += '<div class="form-group">';
         html += '<label for="mission-subtype">Subtype</label>';
         html += '<select id="mission-subtype">';
-        html += '<option value="">Select...</option>';
-        // The subtype options for the current primary type. The UI
-        // controller refreshes these on primary-type change.
         var currentType = null;
         for (var tt = 0; tt < types.length; tt++) {
             if (types[tt].id === m.primaryType) {
@@ -937,7 +959,9 @@
                 break;
             }
         }
-        if (currentType && isArray(currentType.subtypes)) {
+        if (currentType && isArray(currentType.subtypes) &&
+            currentType.subtypes.length > 0) {
+            html += '<option value="">Select...</option>';
             for (var s = 0; s < currentType.subtypes.length; s++) {
                 var st = currentType.subtypes[s];
                 var stSel = m.subtype === st.id ? ' selected' : '';
@@ -946,6 +970,14 @@
                             escapeHtml(st.label) +
                         '</option>';
             }
+        } else if (currentType) {
+            html += '<option value="" disabled>' +
+                        '(no subtypes for this category)' +
+                    '</option>';
+        } else {
+            html += '<option value="" disabled>' +
+                        '(select a category first)' +
+                    '</option>';
         }
         html += '</select>';
         html += '</div>';
@@ -1046,7 +1078,8 @@
         html += '<div class="form-group">';
         html += '<label for="mission-team">Assign Team</label>';
         html += '<p class="field-hint">' +
-                    'Missions may be assigned to Professional or Temporary teams.' +
+                    'Missions may be assigned to Professional or ' +
+                    'Temporary teams.' +
                 '</p>';
         html += '<select id="mission-team">';
         html += '<option value="">Unassigned</option>';

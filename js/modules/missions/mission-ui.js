@@ -7,7 +7,7 @@
  *
  * RESPONSIBILITIES:
  *   - Own transient UI state (current filter, current mission id,
- *     which modal is open, pending input buffers).
+ *     which modal is open).
  *   - Render via MissionRender from VMs produced by
  *     MissionAggregator.
  *   - Dispatch user actions from data-action attributes.
@@ -16,59 +16,79 @@
  *   - Show notifications on success and failure.
  *   - Manage modal lifecycle (open, close, DOM cleanup).
  *
- * NOT RESPONSIBILITIES:
- *   - Domain rules. MissionRules owns them.
- *   - Domain validation. MissionSchema owns it.
- *   - Mutations. MissionCore owns them.
- *   - Projections. MissionAggregator owns them.
- *   - Reads. MissionQueries owns them.
- *   - Rendering. MissionRender owns it. This module never builds
- *     HTML by string concatenation.
- *   - Storage. Nothing here touches window.data.
- *   - TabManager registration. The entry point
- *     (modules/missions/index.js) owns it. This module is a
- *     controller, not an entry point; registering from here as
- *     well would double-register the tab and can produce a
- *     controller bound to a container the user is not clicking.
+ * WHAT THIS MODULE DOES NOT OWN:
+ *   Domain rules, validation, mutations, projections, reads, and
+ *   rendering. Each of those lives in its own module
+ *   (MissionRules, MissionSchema, MissionCore, MissionAggregator,
+ *   MissionQueries, MissionRender respectively). This module
+ *   orchestrates them.
  *
  * EVENT DELEGATION:
  *   One click listener on the container. One change listener. One
  *   submit listener. Every interactive element carries
  *   data-action, and the delegated handler reads it and dispatches.
  *   No per-element addEventListener for the mission UI itself.
- *   The only exceptions are the report and log modals, which have
- *   their own form submit handlers bound to their own forms.
  *
  * LISTENER LIFECYCLE:
  *   Every listener is registered through addSafeListener, which
  *   records { element, type, handler, options } in a module-level
  *   array. removeAllListeners walks that array and removes each
- *   entry. Calling renderMissions() removes the previous batch
- *   before installing a new one.
+ *   entry. renderMissions removes the previous batch before
+ *   installing a new one.
+ *
+ * CONTEXT DISCRIMINATION:
+ *   Two classes of button share action names between the detail
+ *   modal and the form modal: add/remove support, add/remove
+ *   objective. The discriminator is the presence of a
+ *   `data-mission-id` attribute on the button:
+ *
+ *     data-mission-id present -> the button belongs to the detail
+ *                                modal; the action is a domain
+ *                                mutation on an existing mission.
+ *     data-mission-id absent  -> the button belongs to the form
+ *                                modal; the action adds or removes
+ *                                an unsaved DOM row.
+ *
+ *   The renderer guarantees this: detail-panel buttons always emit
+ *   data-mission-id; form-panel buttons never do. Using the
+ *   attribute rather than `document.activeElement` or
+ *   `.closest('#mission-form-inner')` makes the discriminator
+ *   stable against focus changes and against the form being
+ *   rendered outside its current host id.
  *
  * DETACHED CONTAINER GUARD:
- *   openFormModal and openDetailModal check that
- *   state.container is still attached to the document before
- *   querying for modal shells. If the container has been
- *   detached, the query would silently fail and the click would
- *   produce no visible feedback. Both functions notify instead,
- *   so a lifecycle bug surfaces as a toast rather than as a
- *   dead button.
+ *   openFormModal and openDetailModal check that state.container
+ *   is still attached to the document before querying for modal
+ *   shells. A detached container means the tab's DOM was rebuilt
+ *   without re-running renderMissions, or the tab was torn down
+ *   but state was not cleared. Querying a detached container
+ *   silently returns null, and the click produces no visible
+ *   feedback; the guard turns that into a toast.
  *
  * MODAL LIFECYCLE:
  *   The shells are rendered once by MissionRender.renderContainer.
  *   The controller shows/hides them by toggling the `hidden`
- *   class on the shell element and writing content into the
- *   content host. Content is cleared on close so no stale DOM
- *   hangs around.
- *
- * MODAL CONTENT:
- *   Modal shells live inside the mission container. The mission
- *   container itself is replaced on each renderMissions() call, so
- *   the modal DOM is rebuilt from scratch. Any per-modal listeners
+ *   class and writes content into the content host. Content is
+ *   cleared on close so no stale DOM hangs around. The mission
+ *   container is replaced on each renderMissions() call, so the
+ *   modal DOM is rebuilt from scratch and any per-modal listeners
  *   registered through addSafeListener are cleaned up
  *   automatically by removeAllListeners at the top of
  *   renderMissions.
+ *
+ * MISSION LABEL:
+ *   The form does not preview the mission label. On create, the
+ *   form shows "Assigned on save"; on edit, it shows the current
+ *   derived label. Neither is a form field. The controller has no
+ *   label-preview listener.
+ *
+ * DATE FIELDS:
+ *   The year / month / day inputs carry data-mission-*-field
+ *   markers. When the user edits year, the controller resets
+ *   month and day to 1 unless the user has already explicitly
+ *   edited them. "Explicitly edited" is tracked per-field by a
+ *   data-touched="true" attribute that the controller sets on the
+ *   first input or change event on that field.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.NotificationSystem
@@ -230,14 +250,6 @@
     // ============================================================
     // CONTAINER HEALTH
     // ============================================================
-    //
-    // Returns true when state.container is present AND still
-    // attached to the document. A detached container means the
-    // tab's DOM was rebuilt without re-running renderMissions, or
-    // the tab was torn down but state was not cleared. Either way,
-    // querySelector on it would silently return null, and every
-    // action would appear to do nothing. Detect it here so the
-    // failure is visible.
 
     function isContainerAttached() {
         if (!state.container) { return false; }
@@ -295,9 +307,6 @@
             counts: listVM.counts || {}
         });
 
-        // renderListInto also guards its own work. If it throws,
-        // bindContainerEvents still runs below and the tab remains
-        // interactive.
         try {
             renderListInto(container);
         } catch (e) {
@@ -357,6 +366,7 @@
     function bindContainerEvents(container) {
         addSafeListener(container, 'click', handleContainerClick);
         addSafeListener(container, 'change', handleContainerChange);
+        addSafeListener(container, 'input', handleContainerInput);
     }
 
     function handleContainerChange(event) {
@@ -366,6 +376,66 @@
             state.currentFilter = target.value || 'all';
             renderMissions(state.container);
             return;
+        }
+
+        // The year / month / day inputs are handled on 'input' for
+        // live typing; 'change' covers paste-and-blur and
+        // programmatic set. Both handlers call the same logic.
+        if (isDateField(target)) {
+            handleDateFieldChange(target);
+            return;
+        }
+    }
+
+    function handleContainerInput(event) {
+        var target = event.target;
+        if (isDateField(target)) {
+            handleDateFieldChange(target);
+        }
+    }
+
+    function isDateField(el) {
+        if (!el || !el.dataset) { return false; }
+        return el.dataset.missionYearField === 'true' ||
+               el.dataset.missionMonthField === 'true' ||
+               el.dataset.missionDayField === 'true';
+    }
+
+    /**
+     * Called on every input / change of a date field.
+     *
+     * Two jobs:
+     *   1. Mark month and day as touched the first time the user
+     *      edits them, so a later year change does not overwrite
+     *      their explicit value.
+     *   2. When the year field changes, reset untouched month and
+     *      day to 1.
+     *
+     * Year itself is not marked as touched; there is no scenario
+     * in which resetting year is desirable.
+     */
+    function handleDateFieldChange(el) {
+        if (el.dataset.missionMonthField === 'true' ||
+            el.dataset.missionDayField === 'true') {
+            el.dataset.touched = 'true';
+            return;
+        }
+
+        if (el.dataset.missionYearField !== 'true') {
+            return;
+        }
+
+        var form = el.closest('form');
+        if (!form) { return; }
+
+        var monthEl = form.querySelector('[data-mission-month-field="true"]');
+        var dayEl = form.querySelector('[data-mission-day-field="true"]');
+
+        if (monthEl && monthEl.dataset.touched !== 'true') {
+            monthEl.value = '1';
+        }
+        if (dayEl && dayEl.dataset.touched !== 'true') {
+            dayEl.value = '1';
         }
     }
 
@@ -447,7 +517,8 @@
                 event.preventDefault();
                 handleRemoveObjective(
                     missionId,
-                    actionEl.dataset.objectiveIndex
+                    actionEl.dataset.objectiveIndex,
+                    actionEl
                 );
                 return;
 
@@ -460,7 +531,8 @@
                 event.preventDefault();
                 handleRemoveSupport(
                     missionId,
-                    actionEl.dataset.characterId
+                    actionEl.dataset.characterId,
+                    actionEl
                 );
                 return;
 
@@ -668,9 +740,24 @@
             : {};
         var type = types[primarySelect.value];
 
-        subtypeSelect.innerHTML = '<option value="">Select...</option>';
+        subtypeSelect.innerHTML = '';
 
-        if (!type || !Array.isArray(type.subtypes)) { return; }
+        if (!type || !Array.isArray(type.subtypes) ||
+            type.subtypes.length === 0) {
+            var placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.disabled = true;
+            placeholder.textContent = type
+                ? '(no subtypes for this category)'
+                : '(select a category first)';
+            subtypeSelect.appendChild(placeholder);
+            return;
+        }
+
+        var initial = document.createElement('option');
+        initial.value = '';
+        initial.textContent = 'Select...';
+        subtypeSelect.appendChild(initial);
 
         for (var i = 0; i < type.subtypes.length; i++) {
             var st = type.subtypes[i];
@@ -738,18 +825,13 @@
             notes: readValue(form, '#mission-notes')
         };
 
-        // Tags: comma-separated input becomes an array.
         var tagsRaw = readValue(form, '#mission-tags');
         data.tags = tagsRaw
             ? tagsRaw.split(',').map(function(s) { return s.trim(); })
                 .filter(function(s) { return s !== ''; })
             : [];
 
-        // Support personnel: read from the DOM rows the user built
-        // via the "+ Add" button.
         data.supportPersonnel = readSupportPersonnelFromForm(form);
-
-        // Objectives: read from the DOM rows the user built.
         data.objectives = readObjectivesFromForm(form);
 
         return data;
@@ -805,9 +887,8 @@
     // ============================================================
     //
     // The + Support and + Objective buttons inside the form do not
-    // call the domain. They append DOM rows that
-    // collectFormData reads on submit. This keeps form state in
-    // the DOM rather than duplicating it in module state.
+    // call the domain. They append DOM rows that collectFormData
+    // reads on submit. Form state lives in the DOM.
 
     function appendSupportRowToForm(form) {
         var select = form.querySelector('#mission-support-select');
@@ -820,7 +901,6 @@
             return;
         }
 
-        // Duplicate check.
         var existing = host.querySelectorAll('.support-row');
         for (var i = 0; i < existing.length; i++) {
             if (existing[i].dataset.characterId === id) {
@@ -837,7 +917,6 @@
             }
         }
 
-        // Remove empty-state placeholder if present.
         var empty = host.querySelector('.empty-state');
         if (empty) { empty.remove(); }
 
@@ -891,10 +970,6 @@
         host.appendChild(row);
         input.value = '';
     }
-
-    // ============================================================
-    // DOM-ONLY ROW REMOVAL (inside the form)
-    // ============================================================
 
     function removeSupportRowFromForm(button) {
         var row = button.closest('.support-row');
@@ -1001,93 +1076,99 @@
         });
     }
 
-    function handleRemoveObjective(missionId, indexStr) {
-        if (!missionId) { return; }
+    /**
+     * Handle the remove-objective action.
+     *
+     * The button carries data-mission-id when it belongs to the
+     * detail panel (removes a persisted objective) and omits it
+     * when it belongs to the form's objective list (removes an
+     * unsaved DOM row).
+     */
+    function handleRemoveObjective(missionId, indexStr, actionEl) {
+        if (missionId) {
+            var index = parseInt(indexStr, 10);
+            if (isNaN(index) || index < 0) { return; }
+            if (!window.confirm('Remove this objective?')) { return; }
 
-        // Detail-panel path: missionId is set, index is a number.
-        var index = parseInt(indexStr, 10);
-        if (!isNaN(index) && missionId) {
-            var detailModal = state.container
-                ? state.container.querySelector('#mission-detail-modal')
-                : null;
-            var inDetail = detailModal &&
-                !detailModal.classList.contains('hidden') &&
-                state.currentMissionId === missionId;
-
-            if (inDetail) {
-                if (!window.confirm('Remove this objective?')) { return; }
-                handleMutation(
-                    MissionCore.removeObjective(missionId, index),
-                    {
-                        onSuccess: function() {
-                            openDetailModal(missionId);
-                            refreshAfterMutation();
-                        }
+            handleMutation(
+                MissionCore.removeObjective(missionId, index),
+                {
+                    onSuccess: function() {
+                        openDetailModal(missionId);
+                        refreshAfterMutation();
                     }
-                );
-                return;
-            }
+                }
+            );
+            return;
         }
 
-        // Form path: the button lives inside the form and just
-        // removes the DOM row. The removal is not persisted until
-        // the form is submitted.
-        var btn = document.activeElement;
-        if (btn && btn.classList &&
-            btn.classList.contains('danger')) {
-            removeObjectiveRowFromForm(btn);
+        if (actionEl) {
+            removeObjectiveRowFromForm(actionEl);
         }
     }
 
     /**
-     * Handle the "+ Add Support" action.
+     * Handle the add-objective action.
      *
-     * If the button lives inside the mission form, this appends a
-     * DOM row to the form's support list. If the button lives in
-     * the detail modal, this opens the form in edit mode so the
-     * user can manage support there.
+     * With a mission-id: opens the form in edit mode, where the
+     * user can add an objective and save.
      *
-     * The form-side and detail-side paths are both legitimate: the
-     * form is where support is authored, and the detail modal is
-     * where it's reviewed.
+     * Without a mission-id: appends a DOM row to the form's
+     * objective list.
      */
-    function handleAddSupport(missionId, actionEl) {
-        var form = actionEl.closest('#mission-form-inner');
-        if (form) {
-            appendSupportRowToForm(form);
-            return;
-        }
-
-        if (missionId) {
-            openFormModal(missionId);
-        }
-    }
-
     function handleAddObjective(missionId, actionEl) {
-        var form = actionEl.closest('#mission-form-inner');
-        if (form) {
-            appendObjectiveRowToForm(form);
+        if (!missionId) {
+            var form = actionEl && actionEl.closest
+                ? actionEl.closest('form')
+                : null;
+            if (form) {
+                appendObjectiveRowToForm(form);
+            }
             return;
         }
 
-        if (!missionId) { return; }
         openFormModal(missionId);
     }
 
-    function handleRemoveSupport(missionId, characterId) {
-        if (!characterId) { return; }
-
-        var actionEl = document.activeElement;
-        var form = actionEl ? actionEl.closest('#mission-form-inner') : null;
-
-        // If the button lives inside the form, remove the DOM row.
-        if (form) {
-            removeSupportRowFromForm(actionEl);
+    /**
+     * Handle the add-support action.
+     *
+     * With a mission-id: opens the form in edit mode.
+     * Without a mission-id: appends a DOM row to the form's
+     * support list.
+     */
+    function handleAddSupport(missionId, actionEl) {
+        if (!missionId) {
+            var form = actionEl && actionEl.closest
+                ? actionEl.closest('form')
+                : null;
+            if (form) {
+                appendSupportRowToForm(form);
+            }
             return;
         }
 
-        // Detail-panel path: missionId is required.
-        if (!missionId) { return; }
+        openFormModal(missionId);
+    }
+
+    /**
+     * Handle the remove-support action.
+     *
+     * The button carries data-mission-id in the detail panel and
+     * omits it in the form. That presence is the discriminator:
+     * detail-panel removals go through the domain; form-panel
+     * removals drop the DOM row.
+     */
+    function handleRemoveSupport(missionId, characterId, actionEl) {
+        if (!characterId) { return; }
+
+        if (!missionId) {
+            if (actionEl) {
+                removeSupportRowFromForm(actionEl);
+            }
+            return;
+        }
+
         if (!window.confirm('Remove this support assignment?')) { return; }
 
         handleMutation(
@@ -1164,9 +1245,6 @@
                 text
             );
         } else {
-            // Author is not passed; the domain defaults to a
-            // redacted author for anonymous reports. Replace this
-            // with a proper author picker when the UI is ready.
             promise = MissionCore.addReport(missionId, null, text);
         }
 
@@ -1269,10 +1347,7 @@
     // ============================================================
     //
     // This module does NOT register with TabManager. Registration
-    // is owned by modules/missions/index.js. Registering here as
-    // well would double-register the tab and can produce a
-    // controller bound to a container the user is not clicking,
-    // which manifests as "the button does nothing" with no error.
+    // is owned by modules/missions/index.js.
 
     window.MissionUI = Object.freeze({
         render: renderMissions,
