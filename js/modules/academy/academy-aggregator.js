@@ -22,7 +22,7 @@
  *     getDisciplineEditorViewModel(options)
  *
  *   Class-discipline picker (v27):
- *     getClassDisciplinesPickerViewModel(classId)
+ *     getClassDisciplinesPickerViewModel(classId, options)
  *
  *   Rankings:
  *     getRankingViewModel(classId, week)
@@ -92,42 +92,33 @@
  *   Weekly Teams VM.
  *
  * CLASS-DISCIPLINE PICKER (v27):
- *   The picker VM is derived from three sources:
- *     - AcademyDisciplines.getDisciplines()      (global list)
- *     - AcademyClassDisciplines.hasClassDiscipline (offered?)
- *     - AcademyEnrolments.getEnrolledStudents     (who's enrolled?)
+ *   The picker VM is derived from two sources:
+ *     - AcademyDisciplines.getDisciplines()          (global list)
+ *     - AcademyClassDisciplines.hasClassDiscipline   (offered?)
  *
- *   The picker treats "instructor of a discipline for a class" as an
- *   enrolment, same store as students. Candidate instructors are the
- *   characters whose `mode === 'instructor'`. The VM exposes, per
- *   discipline row:
- *     id, name, typeLabel, mandatory, offered,
- *     activeInWeek, startWeek, endWeek,
- *     instructors: [{ id, name, assigned }]
- *   where `assigned` means the instructor is currently enrolled in
- *   the (classId, disciplineId) pair.
+ *   The picker is a MARKER EDITOR. It shows which disciplines a
+ *   class offers, and the per-class `mandatory` flag on each offered
+ *   discipline. It does NOT show instructors.
  *
- *   The VM does NOT expose an instructor picker for a discipline the
- *   class does not offer. Unchecked rows carry only the minimal
- *   fields needed to render the checkbox.
+ *   Instructor-of-a-discipline-for-a-class is expressed through
+ *   enrolments, and it is edited from the character's own
+ *   Disciplines tab (enrol an instructor-mode character in a
+ *   discipline for the current class). The picker has no business
+ *   with that relationship, so its VM carries no instructor fields.
+ *
+ *   Per-row VM:
+ *     id, name, type, typeLabel,
+ *     startWeek, endWeek, activeInWeek,
+ *     offered, mandatory
+ *
+ *   `mandatory` is only meaningful when `offered` is true. When the
+ *   discipline is not offered, `mandatory` is false.
  *
  * INSTRUCTOR DISCIPLINES (v27):
- *   getDisciplineListViewModel previously carried instructorIds and
- *   instructorNames on each list row, sourced from the retired
- *   discipline.instructorIds field. Those fields are REMOVED. A
- *   discipline no longer has a global instructor list. Callers that
- *   need "which instructors teach this discipline" walk enrolments
- *   and filter by character mode.
- *
- * DISCIPLINE EDITOR VM (v27):
- *   getDisciplineEditorViewModel previously carried instructorIds,
- *   instructorNames, and availableInstructors. Those fields are
- *   REMOVED. The discipline editor's draft no longer carries
- *   instructor data; instructor-of-a-discipline-for-a-class is
- *   edited through the class-disciplines picker. The editor VM
- *   carries only the config fields the editor still renders:
- *   name, type, weeks, weeklyHours, weight, gradeScheme, and
- *   assessmentWeights.
+ *   getDisciplineListViewModel does not carry instructorIds or
+ *   instructorNames. The discipline entity has no global instructor
+ *   list. Callers that need "which instructors teach this
+ *   discipline" walk enrolments and filter by character mode.
  *
  * SCHEDULE SOURCE:
  *   Location schedule projections read from
@@ -167,11 +158,6 @@
  *   - EliminationQueries         (elimination reads; REQUIRED by
  *                                 getWeeklyTeamMemberManagerViewModel
  *                                 and by the People 'eliminated' filter)
- *
- * NOTE (v27):
- *   AcademyEnrolments is promoted to MANDATORY. The picker VM cannot
- *   be built without it, and the student disciplines projection has
- *   always depended on it. Making it mandatory reflects reality.
  */
 
 (function() {
@@ -220,11 +206,8 @@
         typeof AcademyClassDisciplines.hasClassDiscipline !== 'function') {
         _missing.push('AcademyClassDisciplines.hasClassDiscipline');
     }
-    if (!AcademyEnrolments || typeof AcademyEnrolments.getStudentDisciplines !== 'function') {
-        _missing.push('AcademyEnrolments.getStudentDisciplines');
-    }
-    if (!AcademyEnrolments || typeof AcademyEnrolments.getEnrolledStudents !== 'function') {
-        _missing.push('AcademyEnrolments.getEnrolledStudents');
+    if (!AcademyEnrolments || typeof AcademyEnrolments.getStudentDisciplineIds !== 'function') {
+        _missing.push('AcademyEnrolments.getStudentDisciplineIds');
     }
     if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
         _missing.push('CharacterQueries.getCharacterById');
@@ -347,13 +330,6 @@
             return TA.getTeamPeriodDisplay(team);
         }
         return '-';
-    }
-
-    function isInstructorCharacter(char) {
-        if (!char || typeof char !== 'object') {
-            return false;
-        }
-        return char.mode === 'instructor';
     }
 
     // ============================================================
@@ -715,10 +691,8 @@
     // DISCIPLINE LIST
     // ============================================================
     //
-    // v27: the list VM no longer carries instructorIds or
-    // instructorNames. The discipline entity no longer holds a
-    // global instructor list. Callers that need "who teaches this
-    // discipline" walk enrolments and filter by character.mode.
+    // The list VM does not carry instructorIds or instructorNames.
+    // The discipline entity has no global instructor list.
 
     function getDisciplineListViewModel(filters) {
         filters = filters || {};
@@ -765,13 +739,6 @@
     // ============================================================
     // DISCIPLINE EDITOR VIEW MODEL
     // ============================================================
-    //
-    // v27: the editor VM no longer carries instructorIds,
-    // instructorNames, or availableInstructors. The discipline
-    // editor's draft no longer carries instructor data;
-    // instructor-of-a-discipline-for-a-class is edited through the
-    // class-disciplines picker. The editor VM carries only the
-    // config fields the editor still renders.
 
     function getDisciplineEditorViewModel(options) {
         options = options || {};
@@ -851,8 +818,10 @@
     // ============================================================
     //
     // The picker VM lists every global discipline with a checkbox,
-    // plus per-row detail for the disciplines the class already
-    // offers. It does not filter by type and does not paginate.
+    // plus the per-class `mandatory` flag on offered disciplines.
+    // It does not carry instructors. Instructor-of-a-discipline-for-
+    // a-class is expressed through enrolments, edited from the
+    // character's own Disciplines tab.
     //
     // SHAPE:
     //
@@ -870,70 +839,11 @@
     //         activeInWeek,      // whether the discipline window
     //                            // covers the current display week
     //         offered,           // class offers this discipline?
-    //         mandatory,         // only meaningful when offered
-    //         instructors: [     // only populated when offered
-    //           { id, name, assigned }
-    //         ]
+    //         mandatory          // false unless offered
     //       },
     //       ...
     //     ]
     //   }
-    //
-    // INSTRUCTOR LIST:
-    //   Candidate instructors are characters whose mode is
-    //   'instructor'. The `assigned` flag is true when the
-    //   instructor is currently enrolled in (classId, disciplineId).
-    //
-    // WEEK:
-    //   The picker VM's `activeInWeek` uses the current display
-    //   week passed in options.week. When no valid week is passed,
-    //   `activeInWeek` is false on every row. Callers that only
-    //   want the picker for its structural data (offered, mandatory,
-    //   instructors) can pass a valid week and ignore the flag.
-    //
-    // INSTRUCTORS ARE NOT LOADED FOR UNCHECKED ROWS:
-    //   An unoffered discipline's row does not carry the instructors
-    //   array (it is [] ). This keeps the VM small when a class
-    //   offers only a handful of the global disciplines.
-
-    function buildInstructorCandidateList() {
-        var chars = CharacterQueries.getCharacters() || [];
-        var result = [];
-        for (var i = 0; i < chars.length; i++) {
-            var c = chars[i];
-            if (!c || !c.id) { continue; }
-            if (!isInstructorCharacter(c)) { continue; }
-            result.push({
-                id: c.id,
-                name: CharacterQueries.getDisplayName(c)
-            });
-        }
-        result.sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
-        });
-        return result;
-    }
-
-    function buildAssignedInstructorSet(classId, disciplineId) {
-        var result = Object.create(null);
-        var students = [];
-        try {
-            students = AcademyEnrolments.getEnrolledStudents(
-                classId, disciplineId
-            ) || [];
-        } catch (e) {
-            students = [];
-        }
-        for (var i = 0; i < students.length; i++) {
-            var id = students[i];
-            if (!isNonEmptyString(id)) { continue; }
-            var char = CharacterQueries.getCharacterById(id);
-            if (!char) { continue; }
-            if (!isInstructorCharacter(char)) { continue; }
-            result[String(id)] = true;
-        }
-        return result;
-    }
 
     function getClassDisciplinesPickerViewModel(classId, options) {
         options = options || {};
@@ -950,9 +860,7 @@
         var weekNum = resolveWeek(options.week);
 
         var allDisciplines = AcademyDisciplines.getDisciplines() || [];
-        var instructorCandidates = buildInstructorCandidateList();
 
-        // Sort disciplines by name for a stable row order.
         allDisciplines = allDisciplines.slice().sort(function(a, b) {
             return (a.name || '').localeCompare(b.name || '');
         });
@@ -974,7 +882,15 @@
                 );
             }
 
-            var row = {
+            var mandatory = false;
+            if (offered) {
+                var marker = AcademyClassDisciplines.getClassDiscipline(
+                    classId, d.id
+                );
+                mandatory = marker && marker.mandatory === true;
+            }
+
+            rows.push({
                 id: d.id,
                 name: d.name || 'Unnamed Discipline',
                 type: d.type || 'mandatory',
@@ -985,33 +901,8 @@
                     : (isFiniteNumber(d.endWeek) ? d.endWeek : null),
                 activeInWeek: activeInWeek,
                 offered: offered,
-                mandatory: false,
-                instructors: []
-            };
-
-            if (offered) {
-                var marker = AcademyClassDisciplines.getClassDiscipline(
-                    classId, d.id
-                );
-                row.mandatory = marker && marker.mandatory === true;
-
-                var assignedSet = buildAssignedInstructorSet(
-                    classId, d.id
-                );
-
-                var instructors = [];
-                for (var j = 0; j < instructorCandidates.length; j++) {
-                    var cand = instructorCandidates[j];
-                    instructors.push({
-                        id: cand.id,
-                        name: cand.name,
-                        assigned: assignedSet[String(cand.id)] === true
-                    });
-                }
-                row.instructors = instructors;
-            }
-
-            rows.push(row);
+                mandatory: mandatory
+            });
         }
 
         return {
@@ -1474,11 +1365,6 @@
     // ============================================================
     // TEAM MEMBERS VIEW MODEL
     // ============================================================
-    //
-    // Each member VM carries memberId and an intervals array. The
-    // intervals array contains one entry per stint with its own
-    // periodDisplay. A flat periodDisplay on the member summarises
-    // all intervals for list views that don't expand them.
 
     function buildTeamMembersVM(activeMemberRecords, teamType) {
         if (!Array.isArray(activeMemberRecords)) {
@@ -1498,7 +1384,6 @@
                 ? String(record.memberId)
                 : '';
 
-            // Build the intervals array.
             var intervalsVM = [];
             var summaryParts = [];
             if (Array.isArray(record.intervals)) {
@@ -1607,7 +1492,6 @@
             var m = allRecords[j];
             if (!m) { continue; }
 
-            // Skip if active.
             if (isNonEmptyString(m.memberId) &&
                 activeKeys['id:' + String(m.memberId)]) {
                 continue;
@@ -1627,8 +1511,6 @@
                 continue;
             }
 
-            // Must have at least one interval with a leavePeriod
-            // strictly less than the display week to be former.
             if (!Array.isArray(m.intervals)) { continue; }
 
             var isFormer = false;
@@ -1700,22 +1582,6 @@
     // ============================================================
     // WEEKLY TEAM MEMBER MANAGER VIEW MODEL
     // ============================================================
-    //
-    // Consumed by academy-weekly-teams-members.js. Returns:
-    //
-    //   members       — active at the display week (editable rows)
-    //   formerMembers — closed before the display week (read-only
-    //                   rows with a Restore action)
-    //   candidates    — eligible pool for adding new members
-    //
-    // Both member lists use the same VM shape (see
-    // buildTeamMembersVM). Every entry carries memberId and its
-    // intervals array, so the UI can address a specific stint.
-    //
-    // ELIMINATION IS FAIL-CLOSED.
-    //   EliminationQueries is required. If it is absent or does not
-    //   expose isCharacterEliminatedByWeek, this function throws. If
-    //   the query throws, the exception propagates.
 
     function getWeeklyTeamMemberManagerViewModel(options) {
         if (!options || typeof options !== 'object') {
@@ -1734,7 +1600,6 @@
             return null;
         }
 
-        // ---- EliminationQueries: required, not optional ----
         var EQ = getEliminationQueries();
         if (!EQ || typeof EQ.isCharacterEliminatedByWeek !== 'function') {
             throw new Error(
@@ -1757,16 +1622,12 @@
             return null;
         }
 
-        // ---- Members and former members ----
         var partition = partitionTeamMembers(team, weekNum);
 
         var members = buildTeamMembersVM(partition.activeRecords, team.type);
         var formerMembers = buildTeamMembersVM(
             partition.formerRecords, team.type
         );
-
-        // ---- Candidate pool ----
-        var activeMembers = partition.activeRecords;
 
         var allCurrentIds = Object.create(null);
         if (Array.isArray(team.members)) {
@@ -1778,8 +1639,6 @@
             }
         }
 
-        // Assigned elsewhere = active in another academic team of
-        // the same class this week.
         var assignedElsewhere = Object.create(null);
         var classTeams = TeamQueries.getTeamsByClass(classId, 'operational') || [];
         for (var t = 0; t < classTeams.length; t++) {
@@ -1820,7 +1679,6 @@
                 continue;
             }
 
-            // Fail-closed elimination check. No try/catch.
             if (EQ.isCharacterEliminatedByWeek(studentId, weekNum) === true) {
                 continue;
             }
@@ -1867,7 +1725,7 @@
         getDisciplineListViewModel: getDisciplineListViewModel,
         getDisciplineEditorViewModel: getDisciplineEditorViewModel,
 
-        // Class-discipline picker (v27)
+        // Class-discipline picker
         getClassDisciplinesPickerViewModel: getClassDisciplinesPickerViewModel,
 
         // Ranking

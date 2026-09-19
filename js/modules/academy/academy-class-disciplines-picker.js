@@ -6,8 +6,8 @@
  *
  * WHAT THIS MODULE OWNS:
  *   The modal that lets a user say which disciplines a class
- *   offers, mark each as mandatory or optional for this class, and
- *   assign instructors to each offered discipline.
+ *   offers, and mark each offered discipline as mandatory or
+ *   optional for this class.
  *
  *   The modal is opened from the class detail panel
  *   (academy-class-detail.js) via the "+ Disciplines" button, which
@@ -21,96 +21,81 @@
  *     - It reads its VM from
  *       AcademyAggregator.getClassDisciplinesPickerViewModel(classId,
  *       { week }).
- *     - It writes through AcademyClassDisciplines and
- *       AcademyEnrolments. It does not write anywhere else.
- *     - It closes on save, on cancel, on backdrop click, and on
+ *     - It writes through AcademyClassDisciplines only. It does not
+ *       touch any other store.
+ *     - It closes on the Close button, on backdrop click, and on
  *       Escape.
  *     - Only one picker modal is open at a time. Opening a second
  *       closes the first.
  *
  * WHAT THIS MODULE DOES NOT OWN:
- *   - The class-discipline marker store  (AcademyClassDisciplines)
- *   - The enrolment store                (AcademyEnrolments)
- *   - The global discipline list         (AcademyDisciplines)
- *   - The class detail panel             (AcademyClassDetail)
- *   - The People controller              (AcademyPeopleController)
- *   - Rendering the People view
+ *   - The class-discipline marker store   (AcademyClassDisciplines)
+ *   - The enrolment store                 (AcademyEnrolments)
+ *   - Instructor-of-a-discipline-for-a-class. That relationship is
+ *     expressed through enrolments and edited from the character's
+ *     own Disciplines tab, not from this picker. The picker does
+ *     NOT show, edit, or reference instructors.
+ *   - The global discipline list          (AcademyDisciplines)
+ *   - The class detail panel              (AcademyClassDetail)
+ *   - The People controller               (AcademyPeopleController)
  *
  * WRITE SEMANTICS:
+ *   Every toggle writes immediately. There is no Save button, no
+ *   pending state, no deferred flush.
  *
- *   A class-discipline marker carries exactly two fields: identity
- *   and `mandatory`. It does NOT carry an instructor list. That
- *   relationship lives in the enrolment store.
+ *     Checkbox toggle
+ *       -> AcademyClassDisciplines.setClassDiscipline /
+ *          .removeClassDiscipline
  *
- *   The picker writes to TWO stores:
+ *     Mandatory toggle
+ *       -> AcademyClassDisciplines.setClassDiscipline with the
+ *          mandatory flag flipped.
  *
- *     1. Checkbox toggle and mandatory toggle
- *          -> AcademyClassDisciplines.setClassDiscipline /
- *             .removeClassDiscipline
- *          Saved immediately. On success, the VM is refetched so the
- *          row reflects the new state.
+ *   Both go through MutationPipeline. On success, the VM is
+ *   refetched so the row reflects the new state. On failure, the
+ *   pipeline has already notified; the modal does not re-render.
  *
- *     2. Instructor assignment
- *          -> AcademyEnrolments.enrol / .leave
- *          Deferred until Save is pressed. Instructor edits are
- *          held in memory as a pending change set.
+ *   The modal has three close paths (Close button, backdrop click,
+ *   Escape key), all of which route through closeModal.
  *
- *   The asymmetry is deliberate. A checkbox toggle is a single
- *   decision and there is no partial state to lose. Instructor
- *   assignment is a set of decisions and bouncing the modal per
- *   toggle would fight the user's flow.
+ * SELECT ALL / UNSELECT ALL:
+ *   Two buttons in the summary row.
  *
- * SAVE SEMANTICS (v2):
- *   Save is SYNCHRONOUS from the modal's perspective:
+ *     Select all    Enrols every currently-unoffered discipline as
+ *                   optional (mandatory: false). Skips disciplines
+ *                   that are already offered.
  *
- *     1. Snapshot the pending changes.
- *     2. Clear the pending set.
- *     3. Close the modal.
- *     4. Flush the changes to the enrolment store in the background.
- *     5. If any fail, notify with an error toast.
+ *     Unselect all  Removes every offering. Confirmation is required
+ *                   when more than a small threshold of disciplines
+ *                   would be affected.
  *
- *   The modal does NOT wait for the mutations to complete before
- *   closing. This is the same pattern the checkbox toggles use: the
- *   user's intent is captured, the UI reflects it immediately, and
- *   persistence happens behind the scenes. A failure is surfaced as
- *   an error notification; the user reopens the picker and sees the
- *   current state (with the failed change un-applied) and can retry.
+ *   Both are sequential chains of individual mutations. Each
+ *   underlying write is atomic; the bulk operation as a whole is not
+ *   transactional, because a partial success with clear failure
+ *   feedback is better than a hard rollback that discards successful
+ *   writes.
  *
- *   The alternative — keeping the modal open until the mutations
- *   complete, then closing only on success — has the modal fight the
- *   user on every save, and requires the picker to hold UI state
- *   across async boundaries that can be interrupted by the user
- *   clicking elsewhere.
- *
- * INSTRUCTOR ENROLMENT WINDOW:
- *   Instructor enrolments use the DISCIPLINE's window, matching
- *   addClassDiscipline's auto-enrolment window. A discipline with
- *   startWeek 1 and endWeek 24 produces instructor enrolments
- *   spanning weeks 1–24.
- *
- *   The picker therefore does not take or need the display week for
- *   instructor writes. It DOES take the display week for
- *   `activeInWeek` display badges, because "is this offering active
- *   right now?" is a display question, not a write question.
- *
- *   When the discipline has no valid startWeek, the picker refuses
- *   to enrol instructors and shows an inline hint on that row. The
- *   user is expected to fix the discipline's start week in the
- *   Disciplines view before assigning instructors to it.
+ *   While a bulk operation is running, the picker's interactivity is
+ *   suspended (a running flag). Clicks during the run are ignored;
+ *   the "Select all" / "Unselect all" buttons show as disabled.
  *
  * LISTENER DISCIPLINE:
  *   Content listeners (delegated change + click) are bound ONCE, on
  *   the modal's content element, when the modal is created. Every
  *   render replaces the content's innerHTML but does not rebind.
- *   Rebinding on every render accumulated listeners and caused a
- *   single click to dispatch N handlers, where N grew with the
- *   number of renders.
  *
  *   Modal-level listeners (Escape and click-outside) are installed
  *   by Modal.modalSetup, which is idempotent per modal. The picker
- *   does not install its own Escape or backdrop handlers; it passes
- *   its closeModal as the setup callback so that Modal's handlers
- *   route through the picker's cleanup path.
+ *   passes its closeModal as the setup callback so that Modal's
+ *   handlers route through the picker's cleanup path.
+ *
+ * ROW LAYOUT:
+ *   Each discipline row is:
+ *
+ *     [checkbox]  [name]  [week window badge]  [mandatory checkbox]  [Mandatory label]
+ *
+ *   The mandatory checkbox and label only appear when the discipline
+ *   is offered. Unoffered rows carry only the checkbox and the name.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -118,8 +103,6 @@
  *   - window.NotificationSystem
  *   - window.AcademyAggregator
  *   - window.AcademyClassDisciplines
- *   - window.AcademyEnrolments
- *   - window.AcademyDisciplines
  *
  * USAGE:
  *   var Picker = window.AcademyClassDisciplinesPicker;
@@ -148,8 +131,6 @@
     var NotificationSystem = window.NotificationSystem;
     var AcademyAggregator = window.AcademyAggregator;
     var AcademyClassDisciplines = window.AcademyClassDisciplines;
-    var AcademyEnrolments = window.AcademyEnrolments;
-    var AcademyDisciplines = window.AcademyDisciplines;
 
     var _missing = [];
 
@@ -177,15 +158,6 @@
         typeof AcademyClassDisciplines.removeClassDiscipline !== 'function') {
         _missing.push('AcademyClassDisciplines mutations');
     }
-    if (!AcademyEnrolments ||
-        typeof AcademyEnrolments.enrol !== 'function' ||
-        typeof AcademyEnrolments.leave !== 'function') {
-        _missing.push('AcademyEnrolments mutations');
-    }
-    if (!AcademyDisciplines ||
-        typeof AcademyDisciplines.getDiscipline !== 'function') {
-        _missing.push('AcademyDisciplines.getDiscipline');
-    }
 
     if (_missing.length > 0) {
         throw new Error(
@@ -197,11 +169,17 @@
     window.__academyClassDisciplinesPickerLoaded = true;
 
     // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    // Threshold for confirming a bulk operation. Below this, the
+    // bulk happens without a confirm dialog. Above it, the user is
+    // asked first.
+    var BULK_CONFIRM_THRESHOLD = 5;
+
+    // ============================================================
     // MODULE STATE
     // ============================================================
-    //
-    // The picker is modal-singleton: at most one instance is open at
-    // a time. The state below describes that instance.
 
     var _modal = null;
     var _contentEl = null;
@@ -209,28 +187,13 @@
     var _week = null;
     var _onClose = null;
 
-    // Content-level listener functions, captured so we can remove
-    // them on close. These are bound ONCE per modal.
     var _contentChangeHandler = null;
     var _contentClickHandler = null;
 
-    // Pending instructor changes.
-    //
-    // Keyed by composite: `${disciplineId}::${instructorId}`.
-    // Value: 'enrol' | 'leave'
-    //
-    // A pending 'enrol' means: this instructor should be enrolled in
-    // this discipline for this class. A pending 'leave' means: this
-    // instructor should be removed from this discipline for this
-    // class.
-    //
-    // When a discipline is unchecked, all its pending instructor
-    // changes are dropped.
-    //
-    // When an instructor is toggled twice back to their original
-    // state, the pending entry is removed rather than left as a
-    // no-op.
-    var _pendingInstructorChanges = Object.create(null);
+    // True while a bulk operation is running. Clicks that would
+    // issue new mutations are ignored during the run; the Select
+    // all / Unselect all buttons render disabled.
+    var _busy = false;
 
     // ============================================================
     // HELPERS
@@ -244,16 +207,8 @@
         NotificationSystem.notify(message, type || 'info');
     }
 
-    function makePendingKey(disciplineId, instructorId) {
-        return String(disciplineId) + '::' + String(instructorId);
-    }
-
-    function hasPendingInstructorChanges() {
-        return Object.keys(_pendingInstructorChanges).length > 0;
-    }
-
-    function clearPendingInstructorChanges() {
-        _pendingInstructorChanges = Object.create(null);
+    function isOffered(row) {
+        return row && row.offered === true;
     }
 
     // ============================================================
@@ -268,9 +223,8 @@
      * @param {number} [options.week]     - Display week for
      *   `activeInWeek` badges. Optional.
      * @param {function} [options.onClose] - Called once, when the
-     *   modal closes for any reason (save, cancel, backdrop,
-     *   Escape). The caller uses this to re-render the class detail
-     *   panel.
+     *   modal closes for any reason. The caller uses this to
+     *   re-render the class detail panel.
      * @returns {object|null} The modal element, or null on failure
      */
     function openModal(classId, options) {
@@ -279,7 +233,6 @@
             return null;
         }
 
-        // Close any prior instance cleanly.
         closeModal();
 
         options = options || {};
@@ -291,10 +244,8 @@
         _onClose = typeof options.onClose === 'function'
             ? options.onClose
             : null;
+        _busy = false;
 
-        clearPendingInstructorChanges();
-
-        // Fetch the VM. When the class does not exist, bail out.
         var vm = null;
         try {
             vm = AcademyAggregator.getClassDisciplinesPickerViewModel(
@@ -314,8 +265,9 @@
             return null;
         }
 
-        // Create the modal shell.
-        var modal = Modal.createModal('academy-class-disciplines-picker-modal');
+        var modal = Modal.createModal(
+            'academy-class-disciplines-picker-modal'
+        );
         if (!modal) {
             notify('Failed to create modal.', 'error');
             resetState();
@@ -330,20 +282,13 @@
         _modal = modal;
         _contentEl = contentEl;
 
-        // Bind content-level listeners ONCE. Every render replaces
-        // contentEl.innerHTML but the listeners survive because they
-        // are attached to contentEl itself, not to its children.
         _contentChangeHandler = handleContentChange;
         _contentClickHandler = handleContentClick;
         contentEl.addEventListener('change', _contentChangeHandler);
         contentEl.addEventListener('click', _contentClickHandler);
 
-        // Initial render.
         renderContent(vm);
 
-        // Modal-level setup. Modal.modalSetup is idempotent per modal
-        // and installs Escape + click-outside. Pass closeModal so
-        // those events route through the picker's cleanup.
         Modal.modalSetup(modal, function() {
             closeModal();
         });
@@ -357,8 +302,6 @@
         var contentEl = _contentEl;
         var onClose = _onClose;
 
-        // Detach content listeners before nulling references so we
-        // don't leak handlers tied to a stale contentEl.
         if (contentEl && _contentChangeHandler) {
             try {
                 contentEl.removeEventListener(
@@ -381,8 +324,7 @@
         _onClose = null;
         _contentChangeHandler = null;
         _contentClickHandler = null;
-
-        clearPendingInstructorChanges();
+        _busy = false;
 
         if (modal) {
             try {
@@ -411,7 +353,7 @@
         _onClose = null;
         _contentChangeHandler = null;
         _contentClickHandler = null;
-        clearPendingInstructorChanges();
+        _busy = false;
     }
 
     // ============================================================
@@ -457,7 +399,8 @@
             ? vm.disciplines
             : [];
 
-        var unsaved = hasPendingInstructorChanges();
+        var offeredCount = countOffered(disciplines);
+        var totalCount = disciplines.length;
 
         var html = '';
 
@@ -468,45 +411,25 @@
                     DomUtils.escapeHtml(vm.className || 'Class') +
                 '</h3>';
         html += '<button type="button" class="close-modal" ' +
-                    'data-picker-action="cancel" ' +
+                    'data-picker-action="close" ' +
                     'aria-label="Close">&times;</button>';
         html += '</div>';
 
         // ---- Body ----
         html += '<div class="modal-body">';
 
-        if (disciplines.length === 0) {
+        if (totalCount === 0) {
             html += '<p class="empty-state">' +
                         'No disciplines exist yet. Create a discipline ' +
                         'first from the Disciplines view.' +
                     '</p>';
         } else {
-            html += '<div class="academy-picker-summary">' +
-                        '<span class="academy-picker-summary-label">' +
-                            'Offered by this class:' +
-                        '</span> ' +
-                        '<span class="academy-picker-summary-count">' +
-                            countOffered(disciplines) +
-                        '</span> of ' +
-                        '<span class="academy-picker-summary-total">' +
-                            disciplines.length +
-                        '</span>' +
-                    '</div>';
-
+            html += renderSummaryRow(offeredCount, totalCount);
             html += '<div class="academy-picker-list">';
-
             for (var i = 0; i < disciplines.length; i++) {
                 html += renderDisciplineRow(disciplines[i]);
             }
-
             html += '</div>';
-        }
-
-        if (unsaved) {
-            html += '<div class="academy-picker-unsaved">' +
-                        'Instructor changes are pending. ' +
-                        'Press Save to commit them.' +
-                    '</div>';
         }
 
         html += '</div>';
@@ -514,20 +437,46 @@
         // ---- Footer ----
         html += '<div class="modal-footer academy-picker-footer">';
         html += '<button type="button" class="secondary" ' +
-                    'data-picker-action="cancel">Cancel</button>';
-        html += '<button type="button" class="primary" ' +
-                    'data-picker-action="save"' +
-                    (unsaved ? '' : ' disabled') +
-                    '>Save</button>';
+                    'data-picker-action="close">Close</button>';
         html += '</div>';
 
+        return html;
+    }
+
+    function renderSummaryRow(offeredCount, totalCount) {
+        var busyAttr = _busy ? ' disabled' : '';
+
+        var html = '';
+        html += '<div class="academy-picker-summary">';
+        html += '<span class="academy-picker-summary-label">' +
+                    'Offered by this class:' +
+                '</span> ';
+        html += '<span class="academy-picker-summary-count">' +
+                    offeredCount +
+                '</span> of ';
+        html += '<span class="academy-picker-summary-total">' +
+                    totalCount +
+                '</span>';
+
+        html += '<div class="academy-picker-bulk-actions">';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-picker-action="select-all"' + busyAttr + '>' +
+                    'Select all' +
+                '</button>';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-picker-action="unselect-all"' + busyAttr + '>' +
+                    'Unselect all' +
+                '</button>';
+        html += '</div>';
+
+        html += '</div>';
         return html;
     }
 
     function countOffered(disciplines) {
         var n = 0;
         for (var i = 0; i < disciplines.length; i++) {
-            if (disciplines[i] && disciplines[i].offered) { n++; }
+            if (isOffered(disciplines[i])) { n++; }
         }
         return n;
     }
@@ -535,37 +484,32 @@
     function renderDisciplineRow(row) {
         if (!row || !row.id) { return ''; }
 
-        var isOffered = row.offered === true;
+        var offered = isOffered(row);
+        var busyAttr = _busy ? ' disabled' : '';
 
         var rowClasses = 'academy-picker-row';
-        if (isOffered) { rowClasses += ' academy-picker-row-offered'; }
+        if (offered) { rowClasses += ' academy-picker-row-offered'; }
 
         var html = '';
         html += '<div class="' + rowClasses + '" ' +
                     'data-discipline-id="' +
                         DomUtils.escapeAttribute(row.id) + '">';
 
-        // ---- Checkbox + name + type badge ----
-        html += '<div class="academy-picker-row-header">';
-
+        // ---- Discipline checkbox + name ----
         html += '<label class="academy-picker-checkbox-label">';
         html += '<input type="checkbox" ' +
                     'class="academy-picker-checkbox" ' +
                     'data-picker-action="toggle-offered" ' +
                     'data-discipline-id="' +
                         DomUtils.escapeAttribute(row.id) + '"' +
-                    (isOffered ? ' checked' : '') + '>';
+                    (offered ? ' checked' : '') +
+                    busyAttr + '>';
         html += '<span class="academy-picker-discipline-name">' +
                     DomUtils.escapeHtml(row.name) +
                 '</span>';
         html += '</label>';
 
-        html += '<span class="academy-picker-type-badge ' +
-                    getTypeBadgeClass(row.type) + '">' +
-                    DomUtils.escapeHtml(row.typeLabel) +
-                '</span>';
-
-        // ---- Active / ended badge (discipline window) ----
+        // ---- Week window badge ----
         if (row.startWeek !== null && row.startWeek !== undefined) {
             var windowLabel = formatWindowLabel(row);
             var isActive = row.activeInWeek === true;
@@ -576,13 +520,27 @@
                         '">' +
                         DomUtils.escapeHtml(windowLabel) +
                     '</span>';
+        } else {
+            html += '<span class="academy-picker-window-badge ' +
+                        'academy-picker-window-inactive">' +
+                        'No window' +
+                    '</span>';
         }
 
-        html += '</div>';
-
-        // ---- Expanded body, only when offered ----
-        if (isOffered) {
-            html += renderOfferedRowBody(row);
+        // ---- Mandatory checkbox + label. Only on offered rows. ----
+        if (offered) {
+            html += '<label class="academy-picker-mandatory-inline">';
+            html += '<input type="checkbox" ' +
+                        'class="academy-picker-mandatory-checkbox" ' +
+                        'data-picker-action="toggle-mandatory" ' +
+                        'data-discipline-id="' +
+                            DomUtils.escapeAttribute(row.id) + '"' +
+                        (row.mandatory ? ' checked' : '') +
+                        busyAttr + '>';
+            html += '<span class="academy-picker-mandatory-label">' +
+                        'Mandatory' +
+                    '</span>';
+            html += '</label>';
         }
 
         html += '</div>';
@@ -598,121 +556,16 @@
         return 'Wk ' + s + '\u2013' + e;
     }
 
-    function getTypeBadgeClass(type) {
-        if (type === 'mandatory') {
-            return 'academy-picker-type-mandatory';
-        }
-        if (type === 'optional') {
-            return 'academy-picker-type-optional';
-        }
-        return 'academy-picker-type-unknown';
-    }
-
-    function renderOfferedRowBody(row) {
-        var html = '';
-
-        html += '<div class="academy-picker-row-body">';
-
-        // ---- Mandatory toggle ----
-        html += '<div class="academy-picker-row-control">';
-        html += '<label class="academy-picker-mandatory-label">';
-        html += '<input type="checkbox" ' +
-                    'class="academy-picker-mandatory-checkbox" ' +
-                    'data-picker-action="toggle-mandatory" ' +
-                    'data-discipline-id="' +
-                        DomUtils.escapeAttribute(row.id) + '"' +
-                    (row.mandatory ? ' checked' : '') + '>';
-        html += '<span>Mandatory for this class</span>';
-        html += '</label>';
-        html += '</div>';
-
-        // ---- Instructor picker ----
-        html += '<div class="academy-picker-row-control ' +
-                    'academy-picker-instructors">';
-        html += '<div class="academy-picker-instructors-label">' +
-                    'Instructors for this class' +
-                '</div>';
-
-        var instructors = Array.isArray(row.instructors)
-            ? row.instructors
-            : [];
-
-        if (instructors.length === 0) {
-            html += '<p class="empty-state small">' +
-                        'No characters are in instructor mode. Toggle ' +
-                        'the mode checkbox in the character panel to ' +
-                        'promote a character to instructor.' +
-                    '</p>';
-        } else if (row.startWeek === null || row.startWeek === undefined) {
-            html += '<p class="empty-state small">' +
-                        'This discipline has no start week set. ' +
-                        'Set it in the Disciplines view before assigning ' +
-                        'instructors.' +
-                    '</p>';
-        } else {
-            html += '<div class="academy-picker-instructor-grid">';
-            for (var i = 0; i < instructors.length; i++) {
-                html += renderInstructorCheckbox(row.id, instructors[i]);
-            }
-            html += '</div>';
-        }
-
-        html += '</div>';
-
-        html += '</div>';
-        return html;
-    }
-
-    function renderInstructorCheckbox(disciplineId, instructor) {
-        // Compute the effective checked state:
-        //   - Start from the VM's `assigned` flag (what's in the store).
-        //   - Apply any pending change for this (discipline, instructor).
-        //
-        // A pending 'enrol' forces checked, 'leave' forces unchecked,
-        // and the absence of a pending entry means "use the store's
-        // current state."
-        var key = makePendingKey(disciplineId, instructor.id);
-        var pending = _pendingInstructorChanges[key];
-
-        var checked;
-        if (pending === 'enrol') {
-            checked = true;
-        } else if (pending === 'leave') {
-            checked = false;
-        } else {
-            checked = instructor.assigned === true;
-        }
-
-        var html = '';
-        html += '<label class="academy-picker-instructor-item' +
-                    (checked ? ' academy-picker-instructor-checked' : '') +
-                    '">';
-        html += '<input type="checkbox" ' +
-                    'class="academy-picker-instructor-checkbox" ' +
-                    'data-picker-action="toggle-instructor" ' +
-                    'data-discipline-id="' +
-                        DomUtils.escapeAttribute(disciplineId) + '" ' +
-                    'data-instructor-id="' +
-                        DomUtils.escapeAttribute(instructor.id) + '" ' +
-                    'data-was-assigned="' +
-                        (instructor.assigned ? 'true' : 'false') + '"' +
-                    (checked ? ' checked' : '') + '>';
-        html += '<span>' +
-                    DomUtils.escapeHtml(instructor.name) +
-                '</span>';
-        html += '</label>';
-        return html;
-    }
-
     // ============================================================
     // CONTENT EVENT HANDLERS
     // ============================================================
-    //
-    // Both handlers are bound ONCE to the modal's content element
-    // and never rebound. They use event delegation so the fact that
-    // innerHTML is replaced on every render is invisible to them.
 
     function handleContentClick(e) {
+        if (_busy) {
+            e.preventDefault();
+            return;
+        }
+
         var target = e.target;
         if (!target || typeof target.closest !== 'function') { return; }
 
@@ -721,20 +574,31 @@
 
         var action = btn.dataset.pickerAction;
 
-        if (action === 'cancel') {
+        if (action === 'close') {
             e.preventDefault();
             closeModal();
             return;
         }
 
-        if (action === 'save') {
+        if (action === 'select-all') {
             e.preventDefault();
-            handleSave();
+            handleSelectAll();
+            return;
+        }
+
+        if (action === 'unselect-all') {
+            e.preventDefault();
+            handleUnselectAll();
             return;
         }
     }
 
     function handleContentChange(e) {
+        if (_busy) {
+            e.preventDefault();
+            return;
+        }
+
         var target = e.target;
         if (!target || !target.dataset) { return; }
 
@@ -757,17 +621,6 @@
             );
             return;
         }
-
-        if (action === 'toggle-instructor') {
-            e.preventDefault();
-            handleToggleInstructor(
-                target.dataset.disciplineId,
-                target.dataset.instructorId,
-                target.dataset.wasAssigned === 'true',
-                target.checked
-            );
-            return;
-        }
     }
 
     // ============================================================
@@ -786,7 +639,6 @@
                 {}
             );
         } else {
-            dropPendingChangesForDiscipline(disciplineId);
             promise = AcademyClassDisciplines.removeClassDiscipline(
                 _classId,
                 disciplineId
@@ -826,240 +678,206 @@
         });
     }
 
-    function handleToggleInstructor(
-        disciplineId,
-        instructorId,
-        wasAssigned,
-        nowChecked
-    ) {
-        if (!_classId) { return; }
-        if (!isNonEmptyString(disciplineId)) { return; }
-        if (!isNonEmptyString(instructorId)) { return; }
+    // ============================================================
+    // SELECT ALL / UNSELECT ALL
+    // ============================================================
 
-        var key = makePendingKey(disciplineId, instructorId);
+    function handleSelectAll() {
+        if (!_classId || _busy) { return; }
 
-        // If the user toggled back to the original state, drop the
-        // pending entry rather than leaving a no-op.
-        if (wasAssigned === nowChecked) {
-            delete _pendingInstructorChanges[key];
-        } else {
-            _pendingInstructorChanges[key] = nowChecked
-                ? 'enrol'
-                : 'leave';
+        var vm = null;
+        try {
+            vm = AcademyAggregator.getClassDisciplinesPickerViewModel(
+                _classId,
+                { week: _week }
+            );
+        } catch (e) {
+            vm = null;
         }
 
-        refetchAndRender();
-    }
-
-    function dropPendingChangesForDiscipline(disciplineId) {
-        var prefix = String(disciplineId) + '::';
-        var keys = Object.keys(_pendingInstructorChanges);
-        for (var i = 0; i < keys.length; i++) {
-            if (keys[i].indexOf(prefix) === 0) {
-                delete _pendingInstructorChanges[keys[i]];
-            }
-        }
-    }
-
-    // ============================================================
-    // SAVE
-    // ============================================================
-    //
-    // Save is synchronous from the modal's perspective:
-    //
-    //   1. Snapshot the pending changes.
-    //   2. Clear the pending set.
-    //   3. Close the modal.
-    //   4. Flush the changes to the enrolment store in the
-    //      background.
-    //   5. On failure, notify with an error toast.
-    //
-    // The mutations are individually atomic (each goes through
-    // MutationPipeline) but the sequence is not transactional as a
-    // whole. The user's edits are independent decisions, and a
-    // partial success with clear failure feedback is better than a
-    // hard rollback that discards successful enrolments.
-
-    function handleSave() {
-        if (!_classId) { return; }
-
-        var pending = collectPendingChanges();
-
-        if (pending.length === 0) {
-            // No pending changes. Close as if the user pressed
-            // Cancel. There is no persistence work to do.
-            closeModal();
+        if (!vm) {
+            notify('Failed to refresh picker.', 'error');
             return;
         }
 
-        // Resolve each pending change's discipline window. When a
-        // discipline has no valid startWeek, its pending changes
-        // are dropped with a warning. The picker's UI already
-        // prevents this at the row level; the guard here is
-        // defence in depth.
-        var runnable = [];
-        var skipped = 0;
-
-        for (var i = 0; i < pending.length; i++) {
-            var change = pending[i];
-            var discipline = AcademyDisciplines.getDiscipline(
-                change.disciplineId
-            );
-
-            var startWeek = discipline &&
-                typeof discipline.startWeek === 'number'
-                ? discipline.startWeek
-                : null;
-
-            if (startWeek === null) {
-                skipped++;
-                continue;
-            }
-
-            var endWeek = null;
-            if (discipline.endWeek !== undefined &&
-                discipline.endWeek !== null &&
-                discipline.endWeek !== '') {
-                var parsedEnd = Number(discipline.endWeek);
-                if (Number.isInteger(parsedEnd)) {
-                    endWeek = parsedEnd;
-                }
-            }
-
-            runnable.push({
-                disciplineId: change.disciplineId,
-                instructorId: change.instructorId,
-                action: change.action,
-                startWeek: startWeek,
-                endWeek: endWeek
-            });
+        var targets = [];
+        var disciplines = Array.isArray(vm.disciplines)
+            ? vm.disciplines
+            : [];
+        for (var i = 0; i < disciplines.length; i++) {
+            var row = disciplines[i];
+            if (!row || !row.id) { continue; }
+            if (row.offered === true) { continue; }
+            targets.push(row.id);
         }
 
-        // Snapshot the state we need for the background flush BEFORE
-        // calling closeModal, because closeModal nulls _classId.
-        var classId = _classId;
-
-        // Clear the pending set and close the modal immediately. From
-        // this point, the modal is gone and the mutations run in the
-        // background. The user sees the picker disappear the moment
-        // they click Save.
-        clearPendingInstructorChanges();
-        closeModal();
-
-        if (skipped > 0) {
-            notify(
-                'Skipped ' + skipped + ' instructor change(s) for ' +
-                'disciplines with no start week.',
-                'error'
-            );
-        }
-
-        if (runnable.length === 0) {
-            // Nothing left to write. The close above already
-            // happened and onClose already fired.
+        if (targets.length === 0) {
+            notify('Every discipline is already offered.', 'info');
             return;
         }
 
-        // Background flush. Sequential execution. Failures are
-        // collected and reported as a single notification.
+        if (targets.length > BULK_CONFIRM_THRESHOLD) {
+            if (!confirm(
+                'Offer all ' + targets.length +
+                ' remaining disciplines for this class?'
+            )) {
+                return;
+            }
+        }
+
+        runBulk(
+            targets.map(function(id) {
+                return function() {
+                    return AcademyClassDisciplines.setClassDiscipline(
+                        _classId,
+                        id,
+                        {}
+                    );
+                };
+            }),
+            'Added ' + targets.length + ' offering(s).',
+            'Failed to add some offerings.'
+        );
+    }
+
+    function handleUnselectAll() {
+        if (!_classId || _busy) { return; }
+
+        var vm = null;
+        try {
+            vm = AcademyAggregator.getClassDisciplinesPickerViewModel(
+                _classId,
+                { week: _week }
+            );
+        } catch (e) {
+            vm = null;
+        }
+
+        if (!vm) {
+            notify('Failed to refresh picker.', 'error');
+            return;
+        }
+
+        var targets = [];
+        var disciplines = Array.isArray(vm.disciplines)
+            ? vm.disciplines
+            : [];
+        for (var i = 0; i < disciplines.length; i++) {
+            var row = disciplines[i];
+            if (!row || !row.id) { continue; }
+            if (row.offered !== true) { continue; }
+            targets.push(row.id);
+        }
+
+        if (targets.length === 0) {
+            notify('This class offers nothing to remove.', 'info');
+            return;
+        }
+
+        if (targets.length > BULK_CONFIRM_THRESHOLD) {
+            if (!confirm(
+                'Remove all ' + targets.length +
+                ' offerings from this class?'
+            )) {
+                return;
+            }
+        }
+
+        runBulk(
+            targets.map(function(id) {
+                return function() {
+                    return AcademyClassDisciplines.removeClassDiscipline(
+                        _classId,
+                        id
+                    );
+                };
+            }),
+            'Removed ' + targets.length + ' offering(s).',
+            'Failed to remove some offerings.'
+        );
+    }
+
+    /**
+     * Run a list of mutation-thunks sequentially.
+     *
+     * Each thunk returns a Promise<{success, message?}>. Failures
+     * are collected. At the end:
+     *   - If no failures: optionally notify a success message, and
+     *     refetch-and-render.
+     *   - If any failures: notify the failure message with the
+     *     count, log details, and still refetch-and-render so the
+     *     modal reflects whatever succeeded.
+     *
+     * While the chain runs, `_busy` is true. The rendered modal
+     * shows disabled controls. `renderContent` is not called until
+     * the chain completes, so the DOM stays stable during the run.
+     *
+     * @param {array} thunks
+     * @param {string} successMessage
+     * @param {string} failureMessage
+     */
+    function runBulk(thunks, successMessage, failureMessage) {
+        _busy = true;
+
+        // Re-render immediately so the buttons show disabled state.
+        // This does not refetch the VM; it reuses the last-rendered
+        // state, which is safe because only `_busy` changed.
+        var currentVM = null;
+        try {
+            currentVM = AcademyAggregator.getClassDisciplinesPickerViewModel(
+                _classId,
+                { week: _week }
+            );
+        } catch (e) {
+            currentVM = null;
+        }
+        if (currentVM) {
+            renderContent(currentVM);
+        }
+
         var failures = [];
         var chain = Promise.resolve();
 
-        runnable.forEach(function(item) {
+        thunks.forEach(function(thunk) {
             chain = chain.then(function() {
-                return runOneInstructorChange(item, classId);
+                return thunk();
             }).then(function(result) {
                 if (!result || !result.success) {
                     failures.push({
-                        disciplineId: item.disciplineId,
-                        instructorId: item.instructorId,
-                        action: item.action,
                         message: (result && result.message) ||
                             'Unknown error'
                     });
                 }
             }).catch(function(err) {
                 failures.push({
-                    disciplineId: item.disciplineId,
-                    instructorId: item.instructorId,
-                    action: item.action,
                     message: String(err && err.message || err)
                 });
             });
         });
 
         chain.then(function() {
+            _busy = false;
+
             if (failures.length === 0) {
-                return;
-            }
-
-            notify(
-                'Failed to save ' + failures.length +
-                ' instructor change(s). See console for details.',
-                'error'
-            );
-            for (var k = 0; k < failures.length; k++) {
-                console.warn(
-                    '[AcademyClassDisciplinesPicker] save failure:',
-                    failures[k]
+                notify(successMessage, 'success');
+            } else {
+                notify(
+                    failureMessage + ' (' + failures.length +
+                    ' failed). See console for details.',
+                    'error'
                 );
+                for (var i = 0; i < failures.length; i++) {
+                    console.warn(
+                        '[AcademyClassDisciplinesPicker] bulk failure:',
+                        failures[i]
+                    );
+                }
             }
-        });
-    }
 
-    function collectPendingChanges() {
-        var result = [];
-        var keys = Object.keys(_pendingInstructorChanges);
-        for (var i = 0; i < keys.length; i++) {
-            var key = keys[i];
-            var action = _pendingInstructorChanges[key];
-            if (action !== 'enrol' && action !== 'leave') {
-                continue;
-            }
-            var sep = key.indexOf('::');
-            if (sep === -1) { continue; }
-            var disciplineId = key.substring(0, sep);
-            var instructorId = key.substring(sep + 2);
-            result.push({
-                disciplineId: disciplineId,
-                instructorId: instructorId,
-                action: action
-            });
-        }
-        return result;
-    }
-
-    function runOneInstructorChange(item, classId) {
-        if (item.action === 'enrol') {
-            return AcademyEnrolments.enrol(
-                item.instructorId,
-                classId,
-                item.disciplineId,
-                item.startWeek
-            );
-        }
-
-        if (item.action === 'leave') {
-            // Leaving effective week N means the previous week is
-            // the last enrolled week. Because we only ever create
-            // instructor enrolments starting at the discipline's
-            // startWeek, the interval being left starts exactly at
-            // the effective week. Under AcademyEnrolments.leave's
-            // rules, an interval that starts on or after the
-            // effective week is removed entirely. So effectiveWeek
-            // = item.startWeek is a clean remove.
-            var effectiveWeek = item.startWeek;
-            return AcademyEnrolments.leave(
-                item.instructorId,
-                classId,
-                item.disciplineId,
-                effectiveWeek
-            );
-        }
-
-        return Promise.resolve({
-            success: false,
-            message: 'Unknown action: ' + item.action
+            // Refetch the VM and re-render. This reflects every
+            // write that succeeded and clears the disabled state
+            // on every control.
+            refetchAndRender();
         });
     }
 
