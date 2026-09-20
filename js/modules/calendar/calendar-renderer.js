@@ -17,17 +17,42 @@
  *   - Aggregator provides resolved semantic values
  *   - Renderer takes: view model -> HTML
  *
- * GRID EDITABILITY (slice 1):
- *   The renderer reads `viewModel.canEdit` to decide whether empty
- *   cells emit `data-action="schedule-assign"`. The renderer does
- *   NOT inspect mode, and does NOT decide "student means editable."
- *   The aggregator owns that mapping; the renderer obeys the flag.
+ * GRID EDITABILITY:
+ *   The renderer reads `viewModel.canEdit` to decide whether grid
+ *   cells emit action attributes. The renderer does NOT infer
+ *   "student means editable" or "instructor means read-only"; the
+ *   aggregator owns that mapping and the renderer obeys the flag.
  *
- *   The action attaches only to genuinely assignable cells:
- *   editable grid, empty cell, not a rest day, not a block. The
- *   renderer knows which cells are which; the controller receives
- *   a click only from a cell the renderer already determined is
- *   assignable.
+ *   Empty cells in an editable grid emit:
+ *     data-action="schedule-assign"
+ *   Occupied cells in an editable grid emit:
+ *     data-action="schedule-slot-open"
+ *     data-group-id="..."
+ *     data-session-id="..."
+ *     data-mode="remove-student" | "remove-group"
+ *
+ *   The two actions are distinct and route to different controller
+ *   flows. An empty cell is assigned into; an occupied cell is
+ *   opened to edit or remove what is already there.
+ *
+ *   When `canEdit` is false or missing, no cell emits an action.
+ *   The grid renders as a read-only projection. The `data-day` and
+ *   `data-hour` attributes still emit on every cell; those are
+ *   structural, not behavioural.
+ *
+ * MODE DISPATCH:
+ *   The renderer emits `data-mode` on occupied editable cells so
+ *   the controller can route directly to the correct removal mode
+ *   without re-deriving it from UI state. The value comes from
+ *   `viewModel.mode`:
+ *     'student'     -> 'remove-student'
+ *     'instructor'  -> 'remove-group'
+ *
+ *   This is a lookup, not a policy decision. The aggregator sets
+ *   `mode` on the VM; the renderer maps it to the shape the
+ *   controller's dispatcher expects. The controller may still
+ *   override the mode for edge cases, but the renderer's emission
+ *   is the canonical route for the common case.
  *
  * DEPENDENCIES:
  *   - CalendarConstants
@@ -65,6 +90,25 @@
             hours.push(h);
         }
         return hours;
+    }
+
+    // ============================================================
+    // MODE -> ACTION MODE
+    // ============================================================
+    //
+    // The VM carries `mode` ('student' | 'instructor'). The
+    // controller's dispatcher expects a data-mode value it can
+    // branch on directly: 'remove-student' or 'remove-group'.
+    //
+    // This mapping is a lookup. The renderer does not decide which
+    // removal is correct for a given grid; it reads the mode that
+    // the aggregator already resolved.
+
+    function getOccupiedCellMode(gridMode) {
+        if (gridMode === 'instructor') {
+            return 'remove-group';
+        }
+        return 'remove-student';
     }
 
     // ============================================================
@@ -159,9 +203,11 @@
         var showEmptySlots = viewModel.showEmptySlots !== false;
         var showRestDays = viewModel.showRestDays !== false;
 
-        // The renderer obeys `canEdit`. It does not inspect `mode`.
-        // When false or missing, no cell is editable.
+        // The renderer obeys `canEdit`. It does not inspect `mode`
+        // to decide editability. It reads `mode` only to choose
+        // the removal-mode attribute on occupied cells.
         var canEdit = viewModel.canEdit === true;
+        var occupiedCellMode = getOccupiedCellMode(viewModel.mode);
 
         var hours = viewModel.hours || getAvailableHours();
 
@@ -201,16 +247,39 @@
                 if (isRestDay) { classes += ' schedule-rest-day'; }
                 if (isBlock) { classes += ' schedule-blocked'; }
 
-                // The assign action attaches only to genuinely
-                // assignable cells: editable grid, empty cell, not
-                // a rest day, not a block. The renderer knows which
-                // cells these are; the controller does not have to
-                // figure it out from the click target.
-                var isAssignable = canEdit && !isOccupied && !isBlock && !isRestDay;
+                // Which action, if any, attaches to this cell?
+                //
+                //   empty + editable   -> schedule-assign
+                //   occupied + editable -> schedule-slot-open
+                //   anything else       -> no action
+                //
+                // The renderer knows which cell is which; the
+                // controller does not have to figure it out from the
+                // click target.
+                var cellAction = null;
+                if (canEdit && !isRestDay) {
+                    if (isOccupied) {
+                        cellAction = 'schedule-slot-open';
+                    } else if (!isBlock) {
+                        cellAction = 'schedule-assign';
+                    }
+                }
 
                 var dataAttrs = 'data-day="' + day + '" data-hour="' + hour + '"';
-                if (isAssignable) {
+                if (cellAction === 'schedule-assign') {
                     dataAttrs += ' data-action="schedule-assign"';
+                } else if (cellAction === 'schedule-slot-open') {
+                    dataAttrs += ' data-action="schedule-slot-open"';
+                    if (slotData && slotData.groupId) {
+                        dataAttrs += ' data-group-id="' +
+                            escapeAttribute(slotData.groupId) + '"';
+                    }
+                    if (slotData && slotData.sessionId) {
+                        dataAttrs += ' data-session-id="' +
+                            escapeAttribute(slotData.sessionId) + '"';
+                    }
+                    dataAttrs += ' data-mode="' +
+                        escapeAttribute(occupiedCellMode) + '"';
                 }
 
                 html += '<div class="' + classes + '" ' + dataAttrs + '>';

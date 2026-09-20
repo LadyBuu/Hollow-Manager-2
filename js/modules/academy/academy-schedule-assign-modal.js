@@ -5,22 +5,30 @@
  * Path: js/modules/academy/academy-schedule-assign-modal.js
  *
  * The modal that lets a user assign a single student to a single
- * slot in the schedule grid: pick a discipline, pick a duration,
- * submit. The write is one call to
- * AcademySchedule.assignStudentToSlot, which resolves-or-creates the
- * teaching group and teaching session implied by the assignment and
- * adds the group membership in one transaction.
+ * slot, remove a single student from a slot they're already in, or
+ * delete an entire teaching group from the schedule.
+ *
+ * MODES:
+ *   'assign'          (default) pick a discipline + duration, submit
+ *                     → AcademySchedule.assignStudentToSlot
+ *   'remove-student'  confirm removal of one student from one group
+ *                     → AcademyTeachingGroups.removeMemberRecord
+ *   'remove-group'    confirm deletion of the entire group and every
+ *                     session and student membership it owns
+ *                     → AcademySchedule.removeTeachingGroup
  *
  * WHAT THIS MODULE OWNS:
  *   The modal shell, its content, its listeners, its view model, and
- *   its submission handler. The modal is opened from the character
- *   detail panel's Schedule tab, via the People controller, when the
- *   user clicks an empty editable cell in the student-mode grid.
+ *   its submission handlers for all three modes. The modal is opened
+ *   from the character detail panel's Schedule tab, via the People
+ *   controller, when the user clicks a grid cell.
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - The schedule grid. CalendarRenderer produces it.
  *   - The click dispatch. AcademyPeopleController routes
- *     data-action="schedule-assign" to this module's openModal.
+ *     data-action="schedule-assign" (empty cells) and
+ *     data-action="schedule-slot-open" (occupied cells) to this
+ *     module's openModal.
  *   - Group and session resolution. AcademySchedule.assignStudentToSlot
  *     owns it. This modal does not decide which group a student joins,
  *     whether a session should be created, or which instructor
@@ -32,7 +40,7 @@
  *   - Collision policy. The domain detects collisions; this modal
  *     surfaces the rejection and offers a retry with allowCollisions.
  *
- * MODAL SHAPE:
+ * MODAL SHAPE — ASSIGN MODE:
  *   Header: "Assign discipline"
  *   Body:
  *     - Slot summary line: "Monday, 9:00 AM, Week 5"
@@ -42,45 +50,47 @@
  *     - Cancel
  *     - Assign (disabled until a discipline is chosen)
  *
+ * MODAL SHAPE — REMOVE-STUDENT MODE:
+ *   Header: "Remove student from slot"
+ *   Body:
+ *     - Slot summary line
+ *     - Warning panel: "Remove [Name] from this slot?"
+ *     - Detail: discipline, duration, member count
+ *   Footer:
+ *     - Cancel
+ *     - Remove (danger)
+ *
+ * MODAL SHAPE — REMOVE-GROUP MODE:
+ *   Header: "Delete teaching group"
+ *   Body:
+ *     - Slot summary line
+ *     - Warning panel: "Delete this group and every session on it?"
+ *     - Detail: discipline, duration, member count, session count
+ *   Footer:
+ *     - Cancel
+ *     - Delete Group (danger)
+ *
  * COLLISION RETRY:
  *   When AcademySchedule.assignStudentToSlot rejects with
  *   reason: 'student_collision' or reason: 'instructor_collision',
- *   the modal does not close. It shows a confirmation inline:
- *
- *     "The student is already scheduled at an overlapping time.
- *      Assign anyway?"
- *      [ Cancel ]   [ Assign anyway ]
- *
- *   If the user confirms, the modal re-submits with
- *   allowCollisions: true. The domain's structural invariants are
- *   never bypassed by this flag; only the two policy checks are.
- *
- *   Other rejections (structural: missing_instructor, not_enrolled,
- *   group_session_overlap, offering_inactive, ...) are shown as an
- *   error toast. The modal stays open so the user can adjust or
- *   close.
+ *   the modal does not close. It shows a confirmation inline.
+ *   Other rejections are shown as an error toast.
  *
  * WINDOW SEMANTICS:
  *   The membership window is derived by the domain, not the modal.
  *   The domain caps it at the tighter of the enrolment interval and
- *   the discipline's endWeek. This modal passes only `week` (the
- *   assignment week). The domain computes the rest.
+ *   the discipline's endWeek. This modal passes only `week`.
  *
  * INPUT VALIDATION:
  *   The modal performs strict numeric validation on the values it
- *   receives from the controller (week, day, startHour) and on the
- *   duration it reads from the select element. `parseStrictInteger`
- *   accepts an integer or a pure digit string; it rejects floats,
- *   strings with trailing characters, and NaN.
- *
- *   This is UX validation, not authority. The domain re-validates
- *   everything against the pipeline snapshot.
+ *   receives from the controller. This is UX validation, not
+ *   authority. The domain re-validates everything.
  *
  * LISTENER DISCIPLINE:
  *   Content listeners are bound ONCE, on the modal's content element,
  *   when the modal is created. Re-rendering replaces innerHTML but
- *   does not rebind. Modal-level listeners (Escape, click-outside)
- *   are installed by Modal.modalSetup.
+ *   does not rebind. Modal-level listeners are installed by
+ *   Modal.modalSetup.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -90,20 +100,45 @@
  *   - window.AcademyClassDisciplinesQueries
  *   - window.AcademyDisciplines
  *   - window.AcademySchedule
+ *   - window.AcademyTeachingGroups
  *   - window.CharacterQueries
  *   - window.CalendarConstants
  *
  * USAGE:
- *   var Modal = window.AcademyScheduleAssignModal;
- *   Modal.openModal({
+ *   // Assign
+ *   AcademyScheduleAssignModal.openModal({
  *       charId: 'char_1',
  *       classId: 'class_1',
- *       week: 5,
- *       day: 1,
- *       startHour: 9,
- *       onClose: function() {
- *           // re-render the People view
- *       }
+ *       week: 5, day: 1, startHour: 9,
+ *       onClose: function() { ... }
+ *   });
+ *
+ *   // Remove student
+ *   AcademyScheduleAssignModal.openModal({
+ *       mode: 'remove-student',
+ *       charId: 'char_1',
+ *       classId: 'class_1',
+ *       week: 5, day: 1, startHour: 9,
+ *       groupId: 'tgroup_abc',
+ *       sessionId: 'tsession_xyz',
+ *       disciplineName: 'English',
+ *       duration: 2,
+ *       memberCount: 4,
+ *       onClose: function() { ... }
+ *   });
+ *
+ *   // Remove group
+ *   AcademyScheduleAssignModal.openModal({
+ *       mode: 'remove-group',
+ *       classId: 'class_1',
+ *       week: 5, day: 1, startHour: 9,
+ *       groupId: 'tgroup_abc',
+ *       sessionId: 'tsession_xyz',
+ *       disciplineName: 'English',
+ *       duration: 2,
+ *       memberCount: 4,
+ *       sessionCount: 3,
+ *       onClose: function() { ... }
  *   });
  */
 
@@ -126,6 +161,7 @@
         window.AcademyClassDisciplinesQueries;
     var AcademyDisciplines = window.AcademyDisciplines;
     var AcademySchedule = window.AcademySchedule;
+    var AcademyTeachingGroups = window.AcademyTeachingGroups;
     var CharacterQueries = window.CharacterQueries;
     var CalendarConstants = window.CalendarConstants;
 
@@ -164,6 +200,14 @@
         typeof AcademySchedule.assignStudentToSlot !== 'function') {
         _missing.push('AcademySchedule.assignStudentToSlot');
     }
+    if (!AcademySchedule ||
+        typeof AcademySchedule.removeTeachingGroup !== 'function') {
+        _missing.push('AcademySchedule.removeTeachingGroup');
+    }
+    if (!AcademyTeachingGroups ||
+        typeof AcademyTeachingGroups.removeMemberRecord !== 'function') {
+        _missing.push('AcademyTeachingGroups.removeMemberRecord');
+    }
     if (!CharacterQueries ||
         typeof CharacterQueries.getCharacterById !== 'function' ||
         typeof CharacterQueries.getDisplayName !== 'function') {
@@ -193,6 +237,8 @@
     var MIN_DURATION = CalendarConstants.MIN_CLASS_DURATION;
     var MAX_DURATION = CalendarConstants.MAX_CLASS_DURATION;
     var DEFAULT_DURATION = MIN_DURATION;
+
+    var VALID_MODES = ['assign', 'remove-student', 'remove-group'];
 
     // ============================================================
     // MODULE STATE
@@ -293,33 +339,55 @@
         }
     }
 
+    function formatDuration(hours) {
+        var n = parseStrictInteger(hours);
+        if (n === null) { n = 1; }
+        return n + ' hour' + (n === 1 ? '' : 's');
+    }
+
     // ============================================================
     // ENTRY POINT
     // ============================================================
 
     /**
-     * Open the assign modal.
+     * Open the modal.
      *
      * @param {object} options
-     * @param {string} options.charId      required
-     * @param {string} options.classId     required
-     * @param {number} options.week        required, integer
-     * @param {number} options.day         required, integer
-     * @param {number} options.startHour   required, integer
-     * @param {function} [options.onClose] called once when the modal
-     *                                     closes, regardless of reason
+     * @param {string} [options.mode]        'assign' (default) |
+     *                                       'remove-student' |
+     *                                       'remove-group'
+     * @param {string} [options.charId]      required in 'assign' and
+     *                                       'remove-student' modes
+     * @param {string} options.classId       required in every mode
+     * @param {number} options.week          required, integer
+     * @param {number} options.day           required, integer
+     * @param {number} options.startHour     required, integer
+     * @param {string} [options.groupId]     required in 'remove-*' modes
+     * @param {string} [options.sessionId]   required in 'remove-*' modes
+     * @param {string} [options.disciplineName] display in 'remove-*' modes
+     * @param {number} [options.duration]    display in 'remove-*' modes
+     * @param {number} [options.memberCount] display in 'remove-*' modes
+     * @param {number} [options.sessionCount] display in 'remove-group' mode
+     * @param {function} [options.onClose]   called once when the modal
+     *                                       closes, regardless of reason
      * @returns {object|null} the modal element, or null on failure
      */
     function openModal(options) {
         if (!options || typeof options !== 'object') {
-            notify('Invalid assign request.', 'error');
+            notify('Invalid schedule request.', 'error');
             return null;
         }
 
-        if (!isNonEmptyString(options.charId)) {
-            notify('Character ID is required.', 'error');
+        var mode = isNonEmptyString(options.mode)
+            ? String(options.mode)
+            : 'assign';
+
+        if (VALID_MODES.indexOf(mode) === -1) {
+            notify('Unknown modal mode.', 'error');
             return null;
         }
+
+        // ---- Common validation ----
         if (!isNonEmptyString(options.classId)) {
             notify('Class ID is required.', 'error');
             return null;
@@ -343,15 +411,55 @@
             return null;
         }
 
+        // ---- Mode-specific validation ----
+        var charId = null;
+        var groupId = null;
+        var sessionId = null;
+
+        if (mode === 'assign' || mode === 'remove-student') {
+            if (!isNonEmptyString(options.charId)) {
+                notify('Character ID is required.', 'error');
+                return null;
+            }
+            charId = String(options.charId);
+        }
+
+        if (mode === 'remove-student' || mode === 'remove-group') {
+            if (!isNonEmptyString(options.groupId)) {
+                notify('Group ID is required.', 'error');
+                return null;
+            }
+            groupId = String(options.groupId);
+        }
+
+        if (mode === 'remove-student' || mode === 'remove-group') {
+            // sessionId is optional — used for display only in the
+            // confirmation, not for the mutation. The cascade that
+            // removes a group finds its own sessions; removing a
+            // single student does not touch sessions.
+            sessionId = isNonEmptyString(options.sessionId)
+                ? String(options.sessionId)
+                : null;
+        }
+
         // Close any prior instance.
         closeModal();
 
         _context = {
-            charId: String(options.charId),
+            mode: mode,
+            charId: charId,
             classId: String(options.classId),
             week: week,
             day: day,
-            startHour: startHour
+            startHour: startHour,
+            groupId: groupId,
+            sessionId: sessionId,
+            disciplineName: isNonEmptyString(options.disciplineName)
+                ? String(options.disciplineName)
+                : '',
+            duration: parseStrictInteger(options.duration),
+            memberCount: parseStrictInteger(options.memberCount),
+            sessionCount: parseStrictInteger(options.sessionCount)
         };
         _onClose = typeof options.onClose === 'function'
             ? options.onClose
@@ -452,15 +560,51 @@
     /**
      * Build the modal's view model from current context and state.
      *
-     * The discipline list is the class's active offerings for the
-     * target week: getClassDisciplinesForClass filtered by
-     * isActiveInWeek. Each row carries { id, name, mandatory }. The
-     * modal does not filter by the student's enrolment; that
-     * eligibility check runs in the domain.
+     * In 'assign' mode, the discipline list is the class's active
+     * offerings for the target week.
+     * In 'remove-student' and 'remove-group' modes, the discipline
+     * list is not needed; the context carries the display fields.
      */
     function buildViewModel() {
         if (!_context) { return null; }
 
+        var slotDisplay = formatDay(_context.day) + ', ' +
+                          formatStartHour(_context.startHour) +
+                          ', Week ' + _context.week;
+
+        var base = {
+            mode: _context.mode,
+            charId: _context.charId,
+            classId: _context.classId,
+            week: _context.week,
+            day: _context.day,
+            startHour: _context.startHour,
+            groupId: _context.groupId,
+            sessionId: _context.sessionId,
+            disciplineName: _context.disciplineName,
+            duration: _context.duration,
+            memberCount: _context.memberCount,
+            sessionCount: _context.sessionCount,
+            slotDisplay: slotDisplay,
+            busy: _busy,
+            pendingCollision: _pendingCollision
+        };
+
+        if (_context.mode === 'assign') {
+            var rows = buildAssignDisciplineRows();
+            base.charName = getCharacterName(_context.charId);
+            base.disciplines = rows;
+            base.selectedDisciplineId = _selectedDisciplineId;
+            base.selectedDuration = _selectedDuration;
+            base.durations = buildDurationOptions();
+        } else if (_context.mode === 'remove-student') {
+            base.charName = getCharacterName(_context.charId);
+        }
+
+        return base;
+    }
+
+    function buildAssignDisciplineRows() {
         var offerings = [];
         try {
             offerings = AcademyClassDisciplinesQueries
@@ -506,31 +650,15 @@
             return a.name.localeCompare(b.name);
         });
 
-        // Duration options: MIN..MAX.
+        return rows;
+    }
+
+    function buildDurationOptions() {
         var durations = [];
         for (var d = MIN_DURATION; d <= MAX_DURATION; d++) {
             durations.push(d);
         }
-
-        var charName = getCharacterName(_context.charId);
-
-        return {
-            charId: _context.charId,
-            classId: _context.classId,
-            week: _context.week,
-            day: _context.day,
-            startHour: _context.startHour,
-            charName: charName,
-            slotDisplay: formatDay(_context.day) + ', ' +
-                         formatStartHour(_context.startHour) +
-                         ', Week ' + _context.week,
-            disciplines: rows,
-            durations: durations,
-            selectedDisciplineId: _selectedDisciplineId,
-            selectedDuration: _selectedDuration,
-            pendingCollision: _pendingCollision,
-            busy: _busy
-        };
+        return durations;
     }
 
     // ============================================================
@@ -545,6 +673,22 @@
     }
 
     function buildModalHTML(vm) {
+        switch (vm.mode) {
+            case 'remove-student':
+                return buildRemoveStudentHTML(vm);
+            case 'remove-group':
+                return buildRemoveGroupHTML(vm);
+            case 'assign':
+            default:
+                return buildAssignHTML(vm);
+        }
+    }
+
+    // ============================================================
+    // HTML — ASSIGN MODE
+    // ============================================================
+
+    function buildAssignHTML(vm) {
         var html = '';
 
         // ---- Header ----
@@ -573,7 +717,7 @@
                         'the class first.' +
                     '</p>';
             html += '</div>';
-            html += renderFooter(vm, true);
+            html += renderAssignFooter(vm, true);
             return html;
         }
 
@@ -625,40 +769,12 @@
         html += '</div>';
 
         // ---- Footer ----
-        html += renderFooter(vm, false);
+        html += renderAssignFooter(vm, false);
 
         return html;
     }
 
-    function renderCollisionPrompt(collision) {
-        var message = '';
-        if (collision.type === 'student') {
-            message =
-                (collision.studentName || 'The student') +
-                ' is already scheduled at an overlapping time' +
-                (collision.week ? ' (week ' + collision.week + ')' : '') +
-                '.';
-        } else if (collision.type === 'instructor') {
-            message =
-                (collision.instructorName || 'The instructor') +
-                ' is already teaching at an overlapping time.';
-        } else {
-            message = 'A schedule conflict was detected.';
-        }
-
-        var html = '';
-        html += '<div class="academy-schedule-assign-collision">';
-        html += '<p class="academy-schedule-assign-collision-text">' +
-                    escapeHtml(message) +
-                '</p>';
-        html += '<p class="academy-schedule-assign-collision-question">' +
-                    'Assign anyway?' +
-                '</p>';
-        html += '</div>';
-        return html;
-    }
-
-    function renderFooter(vm, noOfferings) {
+    function renderAssignFooter(vm, noOfferings) {
         var busy = vm.busy === true;
         var hasCollision = !!vm.pendingCollision;
 
@@ -692,12 +808,204 @@
         return html;
     }
 
+    function renderCollisionPrompt(collision) {
+        var message = '';
+        if (collision.type === 'student') {
+            message =
+                (collision.studentName || 'The student') +
+                ' is already scheduled at an overlapping time' +
+                (collision.week ? ' (week ' + collision.week + ')' : '') +
+                '.';
+        } else if (collision.type === 'instructor') {
+            message =
+                (collision.instructorName || 'The instructor') +
+                ' is already teaching at an overlapping time.';
+        } else {
+            message = 'A schedule conflict was detected.';
+        }
+
+        var html = '';
+        html += '<div class="academy-schedule-assign-collision">';
+        html += '<p class="academy-schedule-assign-collision-text">' +
+                    escapeHtml(message) +
+                '</p>';
+        html += '<p class="academy-schedule-assign-collision-question">' +
+                    'Assign anyway?' +
+                '</p>';
+        html += '</div>';
+        return html;
+    }
+
+    // ============================================================
+    // HTML — REMOVE-STUDENT MODE
+    // ============================================================
+
+    function buildRemoveStudentHTML(vm) {
+        var html = '';
+
+        html += '<div class="modal-header">';
+        html += '<h3>Remove student from slot</h3>';
+        html += '<button type="button" class="close-modal" ' +
+                    'data-assign-action="close" ' +
+                    'aria-label="Close">&times;</button>';
+        html += '</div>';
+
+        html += '<div class="modal-body">';
+
+        html += '<p class="academy-schedule-assign-summary">' +
+                    'Slot: <strong>' +
+                    escapeHtml(vm.slotDisplay) +
+                    '</strong>' +
+                '</p>';
+
+        html += '<div class="academy-schedule-assign-remove-warning">';
+        html += '<p class="academy-schedule-assign-remove-warning-title">' +
+                    'Remove ' +
+                    escapeHtml(vm.charName) +
+                    ' from this slot?' +
+                '</p>';
+        html += '<p class="academy-schedule-assign-remove-warning-text">' +
+                    'They will no longer appear on the roster for ' +
+                    'this group. The session and the group remain; ' +
+                    'other students are unaffected.' +
+                '</p>';
+        html += '</div>';
+
+        html += renderRemoveDetailPanel(vm, false);
+
+        html += '</div>';
+
+        html += '<div class="modal-footer academy-schedule-assign-footer">';
+        html += '<button type="button" class="secondary" ' +
+                    'data-assign-action="close"' +
+                    (vm.busy ? ' disabled' : '') + '>' +
+                    'Cancel' +
+                '</button>';
+        html += '<button type="button" class="danger" ' +
+                    'data-assign-action="schedule-remove-student-submit"' +
+                    (vm.busy ? ' disabled' : '') + '>' +
+                    'Remove' +
+                '</button>';
+        html += '</div>';
+
+        return html;
+    }
+
+    // ============================================================
+    // HTML — REMOVE-GROUP MODE
+    // ============================================================
+
+    function buildRemoveGroupHTML(vm) {
+        var html = '';
+
+        html += '<div class="modal-header">';
+        html += '<h3>Delete teaching group</h3>';
+        html += '<button type="button" class="close-modal" ' +
+                    'data-assign-action="close" ' +
+                    'aria-label="Close">&times;</button>';
+        html += '</div>';
+
+        html += '<div class="modal-body">';
+
+        html += '<p class="academy-schedule-assign-summary">' +
+                    'Slot: <strong>' +
+                    escapeHtml(vm.slotDisplay) +
+                    '</strong>' +
+                '</p>';
+
+        html += '<div class="academy-schedule-assign-remove-warning">';
+        html += '<p class="academy-schedule-assign-remove-warning-title">' +
+                    'Delete this group and everything on it?' +
+                '</p>';
+        html += '<p class="academy-schedule-assign-remove-warning-text">' +
+                    'This removes the teaching group, every session ' +
+                    'scheduled on it, and every student membership. ' +
+                    'This cannot be undone.' +
+                '</p>';
+        html += '</div>';
+
+        html += renderRemoveDetailPanel(vm, true);
+
+        html += '</div>';
+
+        html += '<div class="modal-footer academy-schedule-assign-footer">';
+        html += '<button type="button" class="secondary" ' +
+                    'data-assign-action="close"' +
+                    (vm.busy ? ' disabled' : '') + '>' +
+                    'Cancel' +
+                '</button>';
+        html += '<button type="button" class="danger" ' +
+                    'data-assign-action="schedule-remove-group-submit"' +
+                    (vm.busy ? ' disabled' : '') + '>' +
+                    'Delete Group' +
+                '</button>';
+        html += '</div>';
+
+        return html;
+    }
+
+    // ============================================================
+    // HTML — SHARED REMOVE DETAIL PANEL
+    // ============================================================
+
+    function renderRemoveDetailPanel(vm, showSessionCount) {
+        var disciplineName = isNonEmptyString(vm.disciplineName)
+            ? vm.disciplineName
+            : 'Unknown discipline';
+
+        var rows = [];
+        rows.push({
+            label: 'Discipline',
+            value: disciplineName
+        });
+
+        if (vm.duration !== null && vm.duration !== undefined) {
+            rows.push({
+                label: 'Duration',
+                value: formatDuration(vm.duration)
+            });
+        }
+
+        if (vm.memberCount !== null && vm.memberCount !== undefined) {
+            rows.push({
+                label: 'Students on this group',
+                value: String(vm.memberCount)
+            });
+        }
+
+        if (showSessionCount &&
+            vm.sessionCount !== null &&
+            vm.sessionCount !== undefined) {
+            rows.push({
+                label: 'Sessions on this group',
+                value: String(vm.sessionCount)
+            });
+        }
+
+        var html = '';
+        html += '<div class="academy-schedule-assign-remove-detail">';
+        for (var i = 0; i < rows.length; i++) {
+            html += '<div class="academy-schedule-assign-remove-detail-row">';
+            html += '<span class="academy-schedule-assign-remove-detail-label">' +
+                        escapeHtml(rows[i].label) +
+                    '</span>';
+            html += '<span class="academy-schedule-assign-remove-detail-value">' +
+                        escapeHtml(rows[i].value) +
+                    '</span>';
+            html += '</div>';
+        }
+        html += '</div>';
+        return html;
+    }
+
     // ============================================================
     // EVENT HANDLERS
     // ============================================================
 
     function handleContentChange(e) {
         if (_busy) { return; }
+        if (!_context || _context.mode !== 'assign') { return; }
+
         var target = e.target;
         if (!target || !target.classList) { return; }
 
@@ -758,14 +1066,26 @@
             submitAssign(true);
             return;
         }
+
+        if (action === 'schedule-remove-student-submit') {
+            e.preventDefault();
+            submitRemoveStudent();
+            return;
+        }
+
+        if (action === 'schedule-remove-group-submit') {
+            e.preventDefault();
+            submitRemoveGroup();
+            return;
+        }
     }
 
     // ============================================================
-    // SUBMIT
+    // SUBMIT — ASSIGN
     // ============================================================
 
     function submitAssign(allowCollisions) {
-        if (!_context) { return; }
+        if (!_context || _context.mode !== 'assign') { return; }
         if (_busy) { return; }
 
         if (!isNonEmptyString(_selectedDisciplineId)) {
@@ -842,6 +1162,117 @@
                 notify('Could not assign this slot.', 'error');
                 renderContent();
             });
+    }
+
+    // ============================================================
+    // SUBMIT — REMOVE STUDENT
+    // ============================================================
+
+    function submitRemoveStudent() {
+        if (!_context || _context.mode !== 'remove-student') { return; }
+        if (_busy) { return; }
+
+        if (!isNonEmptyString(_context.charId)) {
+            notify('Character ID is required.', 'error');
+            return;
+        }
+        if (!isNonEmptyString(_context.groupId)) {
+            notify('Group ID is required.', 'error');
+            return;
+        }
+
+        _busy = true;
+        renderContent();
+
+        AcademyTeachingGroups.removeMemberRecord(
+            _context.groupId,
+            _context.charId
+        ).then(function(result) {
+            _busy = false;
+
+            if (result && result.success) {
+                notify('Student removed from group.', 'success');
+                closeModal();
+                return;
+            }
+
+            var msg = (result && result.message)
+                ? result.message
+                : 'Could not remove the student.';
+            notify(msg, 'error');
+            renderContent();
+        }).catch(function(err) {
+            _busy = false;
+            console.warn(
+                '[AcademyScheduleAssignModal] removeMemberRecord threw:',
+                err
+            );
+            notify('Could not remove the student.', 'error');
+            renderContent();
+        });
+    }
+
+    // ============================================================
+    // SUBMIT — REMOVE GROUP
+    // ============================================================
+
+    function submitRemoveGroup() {
+        if (!_context || _context.mode !== 'remove-group') { return; }
+        if (_busy) { return; }
+
+        if (!isNonEmptyString(_context.groupId)) {
+            notify('Group ID is required.', 'error');
+            return;
+        }
+        if (!isNonEmptyString(_context.classId)) {
+            notify('Class ID is required.', 'error');
+            return;
+        }
+
+        _busy = true;
+        renderContent();
+
+        AcademySchedule.removeTeachingGroup({
+            groupId: _context.groupId,
+            classId: _context.classId
+        }).then(function(result) {
+            _busy = false;
+
+            if (result && result.success) {
+                var stats = result.data || {};
+                var sessions = (typeof stats.sessionsRemoved === 'number')
+                    ? stats.sessionsRemoved
+                    : 0;
+                var members = (typeof stats.membersRemoved === 'number')
+                    ? stats.membersRemoved
+                    : 0;
+                var msg = 'Teaching group deleted';
+                if (sessions > 0 || members > 0) {
+                    msg += ' (' + sessions + ' session' +
+                        (sessions === 1 ? '' : 's') + ', ' +
+                        members + ' membership' +
+                        (members === 1 ? '' : 's') + ')';
+                }
+                msg += '.';
+                notify(msg, 'success');
+                closeModal();
+                return;
+            }
+
+            var errMsg = (result && result.message)
+                ? result.message
+                : 'Could not delete the teaching group.';
+            notify(errMsg, 'error');
+            renderContent();
+        }).catch(function(err) {
+            _busy = false;
+            console.warn(
+                '[AcademyScheduleAssignModal] removeTeachingGroup threw:',
+                err
+            );
+            notify('Could not delete the teaching group.', 'error');
+            renderContent();
+        });
     }
 
     // ============================================================

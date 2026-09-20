@@ -18,38 +18,28 @@
  *     character-tab reset-on-change bookkeeping
  *     (_lastCharacterIdForTab). Both are feature state.
  *   - The People search debounce timer.
- *   - The class selection flow (select, resolve which character to
- *     preserve, call AcademyUI.selectClass).
- *   - The character selection flow (toggle, call
- *     AcademyUI.selectCharacter).
+ *   - The class selection flow.
+ *   - The character selection flow.
  *   - The class detail panel (when no character is selected).
- *   - The character detail panel (when a character is selected), and
- *     the tabs within it.
+ *   - The character detail panel (when a character is selected).
  *   - The character-mode checkbox (student / instructor toggle).
- *     The write routes through CharacterCRUD.setMode.
- *   - The Drop Out flow (AcademyEliminations.addStandalone).
- *   - The Remove from Class flow (AcademyClasses.removeClassById).
- *   - The Enroll Discipline flow
- *     (AcademyEnrollmentModal.openModal). This flow serves both
- *     student enrolment and instructor assignment to a discipline;
- *     the character's mode determines which title the modal shows.
- *     The write is identical either way.
- *   - The Leave Discipline flow (AcademyEnrolments.leave). This
- *     flow serves both student unenrolment and instructor stop-
- *     teaching-a-class; the same domain call, scoped to the
- *     currently selected class.
- *   - The instructor auto-group Add Student / Remove Student flows
- *     (AcademyGroups.addStudentToGroup / removeStudentFromGroup).
- *   - The Edit Social Score modal (via AcademyCRUDModals).
- *   - The class CRUD modals (add character to class, edit class,
- *     delete class) via AcademyCRUDModals.
- *   - The class-disciplines picker modal
- *     (AcademyClassDisciplinesPicker.openModal).
+ *   - The Drop Out flow.
+ *   - The Remove from Class flow.
+ *   - The Enroll Discipline flow.
+ *   - The Leave Discipline flow.
+ *   - The instructor auto-group Add Student / Remove Student flows.
+ *   - The Edit Social Score modal.
+ *   - The class CRUD modals.
+ *   - The class-disciplines picker modal.
  *   - The inline grades editor and schedule grid sub-editor
  *     lifecycles.
  *   - The schedule-assign flow: a click on an empty editable cell
- *     in the student-mode schedule grid opens the assign modal
- *     (AcademyScheduleAssignModal.openModal).
+ *     in the student-mode schedule grid opens the assign modal in
+ *     'assign' mode.
+ *   - The schedule-slot-open flow: a click on an occupied editable
+ *     cell opens the assign modal in 'remove-student' or
+ *     'remove-group' mode. The cell carries the mode directly; the
+ *     controller does not re-derive it from UI state.
  *
  * WHAT THIS DOES NOT OWN:
  *   - The content host. The shell provides it.
@@ -59,12 +49,6 @@
  *     calls context.onChange().
  *   - Domain reads and writes. The aggregators produce VMs; the
  *     domain modules perform mutations.
- *   - The class-disciplines marker store, either side of it.
- *   - The class-disciplines picker's modal shell.
- *   - The enrollment modal's modal shell and its candidate
- *     derivation.
- *   - The schedule assign modal's modal shell, its discipline
- *     options derivation, and its write.
  *   - Cross-view navigation.
  *
  * CHARACTER MODE (v27):
@@ -81,14 +65,28 @@
  *                 one of the class's offerings at the display week.
  *
  *   `isCharacterInClassVM(charId, classVM)` returns true for either
- *   sense. This is what lets the People view preserve a character
- *   selection across a class switch when the character is the
- *   class's instructor (they aren't in the roster, but they are
- *   reachable through the roster stitch in the aggregator).
- *
- *   The instructor set is sourced from
+ *   sense. The instructor set is sourced from
  *   AcademyClasses.getClassInstructorIds(classId, week). There is
  *   no `class.instructorId` field; that was retired in v29.
+ *
+ * SCHEDULE SLOT OPEN FLOW:
+ *   The schedule grid emits two action attributes on editable cells:
+ *     - data-action="schedule-assign"      on empty cells
+ *     - data-action="schedule-slot-open"   on occupied cells
+ *
+ *   The occupied-cell action carries:
+ *     - data-day, data-hour     (structural; always present)
+ *     - data-group-id           (the teaching group the slot belongs to)
+ *     - data-session-id         (the session the slot belongs to)
+ *     - data-mode               ('remove-student' | 'remove-group')
+ *
+ *   The mode value is set by the renderer from the grid VM's mode.
+ *   The controller does not branch on character mode; it passes the
+ *   mode through to the modal, which knows what to do with it.
+ *
+ *   This handler resolves display-only context the modal needs
+ *   (discipline name, duration, member count, session count) and
+ *   opens the modal. The mutation itself belongs to the modal.
  *
  * DEPENDENCY DIRECTION:
  *   Shell → registry → this controller.
@@ -120,6 +118,8 @@
  *   - window.AcademyEnrolments               (lazy)
  *   - window.AcademyEliminations             (lazy)
  *   - window.AcademyGroups                   (lazy)
+ *   - window.AcademyTeachingGroups           (lazy)
+ *   - window.AcademyTeachingSessions         (lazy)
  *   - window.CharacterQueries                (lazy)
  */
 
@@ -252,6 +252,14 @@
 
     function getScheduleAssignModal() {
         return window.AcademyScheduleAssignModal || null;
+    }
+
+    function getTeachingGroups() {
+        return window.AcademyTeachingGroups || null;
+    }
+
+    function getTeachingSessions() {
+        return window.AcademyTeachingSessions || null;
     }
 
     // ============================================================
@@ -832,6 +840,9 @@
             // ---- Schedule grid ----
             case 'schedule-assign':
                 handleScheduleAssign(el.dataset.day, el.dataset.hour);
+                return;
+            case 'schedule-slot-open':
+                handleScheduleSlotOpen(el);
                 return;
 
             default:
@@ -1548,6 +1559,210 @@
                 'openModal threw:', e
             );
             notify('Failed to open the assign modal.', 'error');
+        }
+    }
+
+    // ============================================================
+    // SCHEDULE SLOT OPEN FLOW
+    // ============================================================
+    //
+    // Called when the user clicks an occupied editable cell. The
+    // cell carries the mode directly — 'remove-student' or
+    // 'remove-group' — because the renderer resolved it from the
+    // grid VM's mode. This handler does not re-derive the mode
+    // from the character's current mode; it reads the emitted
+    // value and passes it through.
+    //
+    // WHAT THIS RESOLVES:
+    //   The modal needs display-only context that the grid VM
+    //   does not carry:
+    //     - the discipline name for the group
+    //     - the session's duration
+    //     - the member count on the group
+    //     - the session count on the group (for remove-group)
+    //
+    //   These are read from the live stores. If a store is
+    //   missing, the modal still opens with whatever context is
+    //   available; the modal treats missing values as null and
+    //   renders only the fields it has.
+    //
+    // WHAT THE MUTATION IS:
+    //   The modal performs the mutation. This handler does not.
+    //   It opens the modal; the modal owns the transaction.
+
+    function handleScheduleSlotOpen(el) {
+        if (!el || !el.dataset) { return; }
+
+        var classId = AcademyUI.getSelectedClassId();
+        if (!isNonEmptyString(classId)) {
+            notify(
+                'Select a class before editing a slot.',
+                'error'
+            );
+            return;
+        }
+
+        var week = AcademyUI.getDisplayWeek();
+
+        var day = parseInt(el.dataset.day, 10);
+        if (isNaN(day)) {
+            notify('Invalid day.', 'error');
+            return;
+        }
+
+        var hour = parseInt(el.dataset.hour, 10);
+        if (isNaN(hour)) {
+            notify('Invalid hour.', 'error');
+            return;
+        }
+
+        var mode = isNonEmptyString(el.dataset.mode)
+            ? String(el.dataset.mode)
+            : 'remove-student';
+
+        var groupId = isNonEmptyString(el.dataset.groupId)
+            ? String(el.dataset.groupId)
+            : null;
+
+        var sessionId = isNonEmptyString(el.dataset.sessionId)
+            ? String(el.dataset.sessionId)
+            : null;
+
+        if (mode === 'remove-group' && !groupId) {
+            notify(
+                'Cannot open this slot: group ID is missing.',
+                'error'
+            );
+            return;
+        }
+        if (mode === 'remove-student' && !groupId) {
+            notify(
+                'Cannot open this slot: group ID is missing.',
+                'error'
+            );
+            return;
+        }
+
+        // For remove-student, we need a character to remove. The
+        // currently-selected character is the one whose grid the
+        // user clicked into.
+        var charId = AcademyUI.getSelectedCharacterId();
+        if (mode === 'remove-student' && !isNonEmptyString(charId)) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        // ---- Resolve display context ----
+        var disciplineName = '';
+        var duration = null;
+        var memberCount = null;
+        var sessionCount = null;
+
+        var TG = getTeachingGroups();
+        if (TG && groupId && typeof TG.getGroup === 'function') {
+            var group = null;
+            try {
+                group = TG.getGroup(groupId);
+            } catch (e) {
+                group = null;
+            }
+
+            if (group) {
+                var AD = getDisciplines();
+                if (AD && typeof AD.getDiscipline === 'function') {
+                    var disc = AD.getDiscipline(group.disciplineId);
+                    if (disc && isNonEmptyString(disc.name)) {
+                        disciplineName = disc.name;
+                    }
+                }
+
+                if (typeof TG.getActiveMembers === 'function') {
+                    try {
+                        var members = TG.getActiveMembers(groupId, week);
+                        if (Array.isArray(members)) {
+                            memberCount = members.length;
+                        }
+                    } catch (e) {
+                        memberCount = null;
+                    }
+                }
+            }
+        }
+
+        // Duration and session count come from the sessions store.
+        var TS = getTeachingSessions();
+        if (TS && groupId) {
+            var sessions = [];
+            if (typeof TS.getSessionsForGroup === 'function') {
+                try {
+                    sessions = TS.getSessionsForGroup(groupId) || [];
+                } catch (e) {
+                    sessions = [];
+                }
+            }
+
+            if (Array.isArray(sessions)) {
+                sessionCount = sessions.length;
+
+                // Find the session that owns this slot. Prefer the
+                // one the renderer identified by id; fall back to a
+                // match on (day, startTime).
+                var targetSession = null;
+                for (var i = 0; i < sessions.length; i++) {
+                    var s = sessions[i];
+                    if (!s) { continue; }
+                    if (sessionId && String(s.id) === sessionId) {
+                        targetSession = s;
+                        break;
+                    }
+                    if (!targetSession &&
+                        s.day === day &&
+                        s.startTime === hour) {
+                        targetSession = s;
+                    }
+                }
+
+                if (targetSession && typeof targetSession.duration === 'number') {
+                    duration = targetSession.duration;
+                }
+            }
+        }
+
+        // ---- Open the modal ----
+        var Modal = getScheduleAssignModal();
+        if (!Modal || typeof Modal.openModal !== 'function') {
+            notify(
+                'Schedule assign modal is not available.',
+                'error'
+            );
+            return;
+        }
+
+        try {
+            Modal.openModal({
+                mode: mode,
+                charId: mode === 'remove-student' ? String(charId) : null,
+                classId: String(classId),
+                week: week,
+                day: day,
+                startHour: hour,
+                groupId: groupId,
+                sessionId: sessionId,
+                disciplineName: disciplineName,
+                duration: duration,
+                memberCount: memberCount,
+                sessionCount: sessionCount,
+                onClose: function() {
+                    var ctx = getContext();
+                    ctx.onChange();
+                }
+            });
+        } catch (e) {
+            console.warn(
+                '[AcademyPeopleController] schedule slot-open modal ' +
+                'openModal threw:', e
+            );
+            notify('Failed to open the slot editor.', 'error');
         }
     }
 

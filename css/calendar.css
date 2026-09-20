@@ -16,6 +16,10 @@
  *   - Blocked slots (danger-tinted)
  *   - The legend (.calendar-legend)
  *   - The loading state (.loading-state)
+ *   - The Academy schedule-assign modal's BODY content: the slot
+ *     summary, discipline and duration selects, the collision
+ *     prompt, and the two removal panels (remove-student and
+ *     remove-group).
  *
  * WHAT THIS FILE DOES NOT COVER:
  *   - The outer wrapper provided by the host view. The Academy
@@ -23,10 +27,6 @@
  *     styling lives in css/academy/character-detail.css.
  *   - Modal CHROME — .modal, .modal-content, .modal-header,
  *     .modal-footer, .close-modal. Those live in shared.css.
- *     Feature-specific CONTENT rendered inside a modal body is
- *     this file's concern when the feature is the schedule. The
- *     Academy schedule-assign modal's summary line, form fields,
- *     and collision prompt live here.
  *   - Any view chrome (sidebars, top bars, detail panels). Those
  *     are the host's concern.
  *
@@ -48,6 +48,16 @@
  *   The CSS does not attempt to merge these into a spanning cell;
  *   the renderer does not emit the data needed for that (it emits
  *   per-cell blocks, not per-span blocks).
+ *
+ * CELL INTERACTION:
+ *   The renderer emits data-action on editable cells:
+ *     data-action="schedule-assign"      empty editable cells
+ *     data-action="schedule-slot-open"   occupied editable cells
+ *
+ *   Both attributes produce a hover affordance via attribute
+ *   selectors below. The renderer emits the action; the CSS obeys
+ *   it. The renderer does not infer editability from mode; it reads
+ *   `canEdit` from the VM.
  *
  * LOAD ORDER:
  *   Loads after shared.css and academy.css. It depends on both
@@ -206,7 +216,8 @@
    ============================================================ */
 
 .schedule-slot {
-    transition: background 0.15s ease, border-color 0.15s ease;
+    transition: background 0.15s ease, border-color 0.15s ease,
+                outline-color 0.15s ease;
 }
 
 .schedule-occupied {
@@ -215,8 +226,26 @@
     cursor: default;
 }
 
-.schedule-occupied:hover {
+/* Occupied editable cell: the renderer emitted
+   data-action="schedule-slot-open". Hover gives a subtle
+   affordance that this cell is interactive; the mutation path
+   is the remove-student or remove-group flow in the modal. */
+.schedule-cell[data-action="schedule-slot-open"] {
+    cursor: pointer;
+}
+
+.schedule-cell[data-action="schedule-slot-open"]:hover {
     background: var(--accent-hover);
+    outline: 1px solid var(--accent);
+    outline-offset: -2px;
+}
+
+/* A continuation cell carries the same action; make its hover
+   match the first cell so the whole block reads as one slot. */
+.schedule-cell[data-action="schedule-slot-open"]:hover
+    .schedule-continuation {
+    color: var(--accent);
+    opacity: 1;
 }
 
 /* ============================================================
@@ -229,8 +258,7 @@
    no hover affordance at all.
 
    The renderer decides assignability and emits the action
-   attribute. The CSS obeys it. The renderer does not infer
-   editability from mode; it reads `canEdit` from the VM.
+   attribute. The CSS obeys it.
    ============================================================ */
 
 .schedule-empty {
@@ -248,10 +276,6 @@
     margin: auto;
 }
 
-/* Assignable cells: pointer cursor, distinct hover background,
-   dashed accent outline, and the "+" hint at full opacity.
-   Cursor and hover are scoped to the data-action attribute, so
-   non-assignable empty cells stay inert. */
 .schedule-cell[data-action="schedule-assign"] {
     cursor: pointer;
 }
@@ -286,6 +310,13 @@
    hover hint should not appear either. */
 .schedule-rest-day .schedule-empty-label {
     display: none;
+}
+
+/* A rest day does not emit an action, even on an occupied cell.
+   The renderer's action gate checks !isRestDay. This rule is a
+   belt-and-braces guard against a malformed VM. */
+.schedule-rest-day[data-action] {
+    cursor: default;
 }
 
 /* ============================================================
@@ -370,6 +401,7 @@
     color: var(--text-dim);
     opacity: 0.7;
     line-height: 1;
+    transition: color 0.15s ease, opacity 0.15s ease;
 }
 
 /* ============================================================
@@ -436,14 +468,21 @@
    (modules/academy/academy-schedule-assign-modal.js). The modal
    shell — .modal, .modal-content, .modal-header, .modal-footer,
    .close-modal — is styled in shared.css. These rules style only
-   the modal BODY's schedule-specific content: the slot summary,
-   the discipline and duration selects, and the collision prompt.
+   the modal BODY's schedule-specific content.
 
-   The modal writes and reads through AcademySchedule; the classes
-   here are presentation only. Do not grow this block into a
-   general form system. Anything that applies to more than one
-   feature's modal belongs in shared.css.
+   The modal has three modes:
+     'assign'          — slot summary + discipline/duration selects,
+                         plus an optional collision prompt.
+     'remove-student'  — slot summary + warning panel + detail list.
+     'remove-group'    — slot summary + warning panel + detail list,
+                         with an additional session-count row.
+
+   The classes here are presentation only. Do not grow this block
+   into a general form system. Anything that applies to more than
+   one feature's modal belongs in shared.css.
    ============================================================ */
+
+/* ---- Slot summary line (shared across all three modes) ---- */
 
 .academy-schedule-assign-summary {
     margin: 0 0 12px;
@@ -461,9 +500,10 @@
     font-weight: 600;
 }
 
-/* The two form selects inherit .form-group spacing from
-   shared.css; these rules only tighten their width so they do not
-   stretch the full modal width on wide viewports. */
+/* ---- Assign mode: the two selects ----
+   They inherit .form-group spacing from shared.css; these rules
+   only tighten their width so they do not stretch the full modal
+   width on wide viewports. */
 
 .academy-schedule-assign-discipline,
 .academy-schedule-assign-duration {
@@ -471,7 +511,7 @@
     max-width: 320px;
 }
 
-/* ---- Collision prompt ----
+/* ---- Collision prompt (assign mode only) ----
    Shown when the domain rejects with reason 'student_collision'
    or 'instructor_collision'. Visual language matches
    .schedule-blocked: soft-danger background, danger-tinted left
@@ -501,10 +541,80 @@
     line-height: 1.3;
 }
 
-/* ---- Footer ----
+/* ---- Removal warning panel (remove-student and remove-group) ----
+   The top-of-body confirmation block. Visually distinct from the
+   collision prompt: the collision prompt offers a retry ("Assign
+   anyway?"), whereas this panel is a straightforward destructive
+   confirmation. Same soft-danger background family, but a
+   slightly larger type scale and a title/text split so the
+   question and the consequence read as two distinct lines. */
+
+.academy-schedule-assign-remove-warning {
+    margin: 0 0 12px;
+    padding: 12px 14px;
+    background: var(--danger-soft);
+    border-left: 3px solid var(--danger);
+    border-radius: var(--radius);
+}
+
+.academy-schedule-assign-remove-warning-title {
+    margin: 0;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--danger);
+    line-height: 1.3;
+}
+
+.academy-schedule-assign-remove-warning-text {
+    margin: 6px 0 0;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    line-height: 1.4;
+}
+
+/* ---- Removal detail list ----
+   A compact key-value list of what is about to be affected:
+   discipline, duration, member count (and session count for
+   remove-group). Values are right-aligned against their labels
+   so the eye lands on the numbers. */
+
+.academy-schedule-assign-remove-detail {
+    margin: 0 0 12px;
+    padding: 10px 12px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+    font-size: 0.72rem;
+}
+
+.academy-schedule-assign-remove-detail-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    padding: 3px 0;
+}
+
+.academy-schedule-assign-remove-detail-row + .academy-schedule-assign-remove-detail-row {
+    border-top: 1px solid var(--border-soft);
+}
+
+.academy-schedule-assign-remove-detail-label {
+    color: var(--text-dim);
+    flex-shrink: 0;
+}
+
+.academy-schedule-assign-remove-detail-value {
+    color: var(--text);
+    font-weight: 600;
+    text-align: right;
+    word-break: break-word;
+}
+
+/* ---- Footer (shared across all three modes) ----
    The modal footer is shared chrome; this rule only sets the
-   alignment the assign modal wants (space-between so Cancel sits
-   at the far side from Assign). */
+   alignment the schedule-assign modal wants (space-between so
+   Cancel sits at the far side from the submit button). */
 
 .academy-schedule-assign-footer {
     display: flex;
@@ -542,7 +652,8 @@
 
 @media (prefers-reduced-motion: reduce) {
     .schedule-slot,
-    .schedule-empty-label {
+    .schedule-empty-label,
+    .schedule-continuation {
         transition: none;
     }
 }

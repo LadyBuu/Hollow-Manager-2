@@ -14,7 +14,11 @@
  * WHAT THIS DOES NOT OWN:
  *   - Storage. Reads go through the projector.
  *   - Writes. Schedule mutations are owned by AcademySchedule.
- *   - Collisions. AcademyTeachingCollisions owns them.
+ *   - Collisions. AcademyTeachingCollisions owns them. This
+ *     aggregator does NOT detect, warn about, or annotate
+ *     collisions. The grid VM is a pure read projection of what
+ *     is scheduled; whether two of those things conflict is a
+ *     separate question answered by a separate module.
  *   - Rendering. CalendarRenderer owns that.
  *   - Rest days. There is no rest-day concept in the teaching model.
  *     VMs always return an empty restDays array.
@@ -50,8 +54,19 @@
  *       groupLabel:      string,      // always '' — sessions have no group label
  *       instructorId:    string | null,
  *       instructorName:  string,
+ *       groupId:         string | null,
+ *       sessionId:       string | null,
  *       isContinuation:  boolean
  *     }
+ *
+ *   The two new fields — groupId and sessionId — are carried so the
+ *   renderer can emit them as data attributes on the occupied cell.
+ *   The Academy People controller reads those attributes when the
+ *   user clicks an occupied cell in an editable grid, and routes to
+ *   the schedule-assign modal in its remove-student or remove-group
+ *   mode. This aggregator does not decide which mode applies; the
+ *   renderer does not decide either. The controller does, from the
+ *   character's mode.
  *
  *   A multi-hour occurrence is expanded into multiple entries: the
  *   first hour carries isContinuation: false; each subsequent hour
@@ -331,6 +346,20 @@
     }
 
     /**
+     * Coerce an occurrence identifier to a non-empty string or null.
+     * The projector is the source of these values; a missing value
+     * means the projector's output is malformed. null is the honest
+     * answer — the renderer omits the data attribute.
+     */
+    function toIdOrNull(value) {
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+        var str = String(value);
+        return str === '' ? null : str;
+    }
+
+    /**
      * Expand an occurrence into a slot descriptor.
      *
      * The occurrence's [startTime, startTime + duration) window is
@@ -369,6 +398,8 @@
                 groupLabel: '',
                 instructorId: occurrence.instructorId || null,
                 instructorName: getCharacterDisplayName(occurrence.instructorId),
+                groupId: toIdOrNull(occurrence.groupId),
+                sessionId: toIdOrNull(occurrence.sessionId),
                 isContinuation: false
             }
         };
@@ -421,6 +452,8 @@
                         groupLabel: slot.groupLabel,
                         instructorId: slot.instructorId,
                         instructorName: slot.instructorName,
+                        groupId: slot.groupId,
+                        sessionId: slot.sessionId,
                         isContinuation: true
                     };
                 }

@@ -25,6 +25,9 @@
  *                               session implied by a single
  *                               (student, week, day, hour, discipline)
  *                               assignment, then add the membership
+ *     removeTeachingGroup       delete a teaching group and every
+ *                               session owned by it, in one
+ *                               transaction
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - Single-store reads             (AcademyClassDisciplinesQueries,
@@ -208,6 +211,11 @@
  *       day: 1,
  *       startHour: 9,
  *       duration: 2
+ *   }).then(function(result) { ... });
+ *
+ *   AcademySchedule.removeTeachingGroup({
+ *       groupId: 'tgroup_1',
+ *       classId: 'class_1'
  *   }).then(function(result) { ... });
  */
 
@@ -1668,6 +1676,202 @@
     }
 
     // ============================================================
+    // removeTeachingGroup
+    // ============================================================
+    //
+    // Hard-delete a teaching group and every session owned by it,
+    // in one transaction.
+    //
+    // THIS IS A HARD DELETE, NOT A WINDOW TRUNCATION:
+    //   Every other end* helper in the teaching-model stack sets
+    //   endWeek and preserves the record as a historical fact.
+    //   removeTeachingGroup is different: it is the user-facing
+    //   "delete this group" action, called from the schedule-assign
+    //   modal's remove-group mode. The intent is destructive, and
+    //   the group and its sessions are removed outright.
+    //
+    //   Student enrolments are NOT touched. A student's enrolment in
+    //   a class-discipline is a fact about the student, not about
+    //   the group. Dropping the group does not drop the enrolment;
+    //   the student is simply no longer scheduled into any group for
+    //   that discipline until they are re-assigned.
+    //
+    // WHAT IT DOES:
+    //   1. Delete every session in academy.teachingSessions whose
+    //      groupId matches.
+    //   2. Delete the group record from academy.teachingGroups.
+    //   3. Return a summary of what was removed.
+    //
+    // WHAT IT DOES NOT DO:
+    //   - It does not touch enrolments.
+    //   - It does not touch the teachingGroupSequences counter. A
+    //     future group for the same (class, discipline, instructor)
+    //     triple continues from the last allocated number, which is
+    //     the correct behavior: sequence numbers are monotonic and
+    //     must not be reused even after a group is deleted.
+    //   - It does not cascade into any other store.
+    //
+    // INPUT:
+    //   { groupId, classId }
+    //     groupId  required
+    //     classId  required; used only as a safety check to prevent
+    //              a caller from removing a group belonging to a
+    //              different class than the one it thinks it is
+    //              operating on.
+    //
+    // RETURN (success):
+    //   {
+    //     success: true,
+    //     data: {
+    //       groupId,
+    //       classId,
+    //       sessionsRemoved: number,
+    //       membersRemoved:  number
+    //     }
+    //   }
+    //
+    // RETURN (rejection):
+    //   {
+    //     success: false,
+    //     message: string
+    //   }
+    //
+    //   Reasons: missing groupId / classId, group not found,
+    //   class mismatch.
+
+    /**
+     * Remove a teaching group and every session owned by it.
+     *
+     * @param {object} payload { groupId, classId }
+     * @returns {Promise<{success, data?, message?}>}
+     */
+    function removeTeachingGroup(payload) {
+        if (!isPlainObject(payload)) {
+            return Promise.resolve(failure('Payload must be an object.'));
+        }
+
+        if (!isNonEmptyString(payload.groupId)) {
+            return Promise.resolve(failure('Group ID is required.'));
+        }
+        if (!isNonEmptyString(payload.classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+
+        var targetGroup = String(payload.groupId);
+        var targetClass = String(payload.classId);
+
+        // Preflight against the live store: the group must exist and
+        // must belong to the class the caller thinks it does. This
+        // is a fast, friendly rejection for a caller bug; the
+        // authoritative check runs inside the pipeline against the
+        // snapshot.
+        var liveGroup = null;
+        try {
+            liveGroup = AcademyTeachingGroups.getGroup(targetGroup);
+        } catch (e) {
+            liveGroup = null;
+        }
+        if (!liveGroup) {
+            return Promise.resolve(failure('Teaching group not found.'));
+        }
+        if (String(liveGroup.classId) !== targetClass) {
+            return Promise.resolve(failure(
+                'This group does not belong to the specified class.'
+            ));
+        }
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+                var academy = getAcademySnapshot(appData);
+                if (!academy) {
+                    return {
+                        valid: false,
+                        message: 'Academy store is not available.'
+                    };
+                }
+                if (!isPlainObject(academy.teachingGroups) ||
+                    !academy.teachingGroups[targetGroup]) {
+                    return {
+                        valid: false,
+                        message: 'Teaching group no longer exists.'
+                    };
+                }
+                var snapshotGroup = academy.teachingGroups[targetGroup];
+                if (String(snapshotGroup.classId) !== targetClass) {
+                    return {
+                        valid: false,
+                        message:
+                            'This group does not belong to the specified class.'
+                    };
+                }
+                return { valid: true };
+            },
+
+            mutate: function(appData) {
+                var academy = getAcademySnapshot(appData);
+                if (!academy) {
+                    throw new Error('Academy store is not available.');
+                }
+
+                var group = academy.teachingGroups[targetGroup];
+                if (!isPlainObject(group)) {
+                    throw new Error('Teaching group not found.');
+                }
+
+                var membersRemoved = Array.isArray(group.members)
+                    ? group.members.length
+                    : 0;
+
+                // ---- 1. Delete every session belonging to this group ----
+                var sessionsRemoved = 0;
+                if (isPlainObject(academy.teachingSessions)) {
+                    var sessionIds = Object.keys(academy.teachingSessions);
+                    for (var i = 0; i < sessionIds.length; i++) {
+                        var sid = sessionIds[i];
+                        var session = academy.teachingSessions[sid];
+                        if (!isPlainObject(session)) { continue; }
+                        if (String(session.groupId) !== targetGroup) {
+                            continue;
+                        }
+                        delete academy.teachingSessions[sid];
+                        sessionsRemoved++;
+                    }
+                }
+
+                // ---- 2. Delete the group record ----
+                delete academy.teachingGroups[targetGroup];
+
+                return {
+                    groupId: targetGroup,
+                    classId: targetClass,
+                    sessionsRemoved: sessionsRemoved,
+                    membersRemoved: membersRemoved
+                };
+            },
+
+            logMessage: function(result) {
+                var parts = ['Deleted teaching group ' + targetGroup];
+                if (result.sessionsRemoved > 0) {
+                    parts.push(result.sessionsRemoved + ' session(s)');
+                }
+                if (result.membersRemoved > 0) {
+                    parts.push(result.membersRemoved + ' membership(s)');
+                }
+                return parts.join(' — ');
+            },
+
+            successMessage: 'Teaching group deleted.',
+            failureMessage: 'Failed to delete teaching group.'
+        });
+    }
+
+    // ============================================================
     // assignStudentToSlot
     // ============================================================
     //
@@ -2860,6 +3064,7 @@
         addStudentToTeachingGroup: addStudentToTeachingGroup,
         dropStudentFromClass: dropStudentFromClass,
         assignStudentToSlot: assignStudentToSlot,
+        removeTeachingGroup: removeTeachingGroup,
 
         MIN_WEEK: MIN_WEEK,
         MAX_WEEK: MAX_WEEK
@@ -2879,7 +3084,8 @@
             'scheduleGroupMeeting',
             'addStudentToTeachingGroup',
             'dropStudentFromClass',
-            'assignStudentToSlot'
+            'assignStudentToSlot',
+            'removeTeachingGroup'
         ];
 
         for (var i = 0; i < required.length; i++) {
