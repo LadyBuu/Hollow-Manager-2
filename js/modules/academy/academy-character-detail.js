@@ -2335,31 +2335,38 @@ return (
             html += '<label class="academy-teaching-group-candidate-label">' +
                         'Add student' +
                     '</label>';
+
             html += '<select class="academy-teaching-group-candidate-select">';
             html += '<option value="">Select a student...</option>';
+
             for (var i = 0; i < candidates.length; i++) {
                 var c = candidates[i];
                 if (!c || !c.id) { continue; }
+
                 html += '<option value="' +
                             escapeAttribute(c.id) + '">' +
                             escapeHtml(c.name) +
                         '</option>';
             }
+
             html += '</select>';
 
             html += '<div class="academy-teaching-group-candidate-actions">';
+
             html += '<button type="button" class="small secondary" ' +
                         'data-action="teaching-groups-add-student-cancel" ' +
                         'data-group-id="' +
                             escapeAttribute(group.groupId) + '">' +
                         'Cancel' +
                     '</button>';
+
             html += '<button type="button" class="small primary" ' +
                         'data-action="teaching-groups-add-student-submit" ' +
                         'data-group-id="' +
                             escapeAttribute(group.groupId) + '">' +
                         'Add' +
                     '</button>';
+
             html += '</div>';
         }
 
