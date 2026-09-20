@@ -2374,25 +2374,3 @@ return (
     window.AcademyCharacterDetail = {
         renderHTML: renderHTML
     };
-
-})();' +
-                            'Remove' +
-                        '</button>';
-                html += '</div>';
-            }
-            html += '</div>';
-        }
-
-        html += '</div>';
-        return html;
-    }
-
-    // ============================================================
-    // EXPOSE
-    // ============================================================
-
-    window.AcademyCharacterDetail = {
-        renderHTML: renderHTML
-    };
-
-})();
