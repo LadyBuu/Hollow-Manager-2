@@ -1119,28 +1119,36 @@
                         'academy-instructor-group-empty">' +
                         'No students in this group yet.' +
                     '</p>';
-        } else {
-            html += '<div class="academy-instructor-group-roster">';
-            for (var i = 0; i < students.length; i++) {
-                var s = students[i];
-                if (!s || !s.id) { continue; }
-                html += '<div class="academy-instructor-group-roster-row" ' +
-                            'data-character-id="' +
-                                escapeAttribute(s.id) + '">';
-                html += '<span class="academy-instructor-group-roster-name">' +
-                            escapeHtml(s.name) +
-                        '</span>';
-                if (isNonEmptyString(s.status)) {
-                    html += '<span class="academy-instructor-group-roster-status">' +
-                                escapeHtml(s.status) +
-                            '</span>';
-                }
-                html += '<button type="button" class="small danger" ' +
-                            'data-action="character-remove-group-student" ' +
-                            'data-group-key="' +
-                                escapeAttribute(group.key || '') + '" ' +
-                            'data-character-id="' +
-                                escapeAttribute(s.id) + '">
+} else {
+    html += '<div class="academy-instructor-group-roster">';
+    for (var i = 0; i < students.length; i++) {
+        var s = students[i];
+        if (!s || !s.id) { continue; }
+
+        html += '<div class="academy-instructor-group-roster-row" ' +
+                    'data-character-id="' +
+                        escapeAttribute(s.id) + '">';
+
+        html += '<span class="academy-instructor-group-roster-name">' +
+                    escapeHtml(s.name) +
+                '</span>';
+
+        if (isNonEmptyString(s.status)) {
+            html += '<span class="academy-instructor-group-roster-status">' +
+                        escapeHtml(s.status) +
+                    '</span>';
+        }
+
+        html += '<button type="button" class="small danger" ' +
+                    'data-action="character-remove-group-student" ' +
+                    'data-group-key="' +
+                        escapeAttribute(group.key || '') + '" ' +
+                    'data-character-id="' +
+                        escapeAttribute(s.id) + '">' +
+                'Remove' +
+                '</button>';
+    }
+}
 /**
  * modules/academy/academy-character-detail.js - Academy Character Detail Panel
  * Pure renderer for the character detail VM.
