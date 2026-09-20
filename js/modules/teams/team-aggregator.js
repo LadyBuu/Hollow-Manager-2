@@ -63,11 +63,30 @@
  *
  *     Deceased status does not affect the tier.
  *
+ * CLASS MEMBERSHIP SIGNAL (v29):
+ *   The "in class" tier signal for the member modal reads class
+ *   membership from two sources:
+ *
+ *     1. Students: the class's roster, via
+ *        AcademyQueries.getClassStudentIds.
+ *     2. Instructors: AcademyClasses.getClassInstructorIdsAllTime,
+ *        which derives the class's instructors from per-discipline
+ *        instructor enrolments.
+ *
+ *   The retired `class.instructorId` field is not consulted. It was
+ *   removed in v29; the relationship is expressed through
+ *   instructor enrolments.
+ *
+ *   The all-time query is used here (not the week-scoped
+ *   getClassInstructorIds) because the tier signal is a statement
+ *   about class membership, not about a specific week's schedule.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamQueries
  *   - window.TeamConstants
  *   - window.CharacterQueries
  *   - window.AcademyQueries
+ *   - window.AcademyClasses           (getClassInstructorIdsAllTime)
  *
  * DEPENDENCIES (LAZY, read at call time):
  *   - window.TeamUI             (filter bar VM defaults)
@@ -90,6 +109,7 @@
     var TeamConstants = window.TeamConstants;
     var CharacterQueries = window.CharacterQueries;
     var AcademyQueries = window.AcademyQueries;
+    var AcademyClasses = window.AcademyClasses;
 
     var _missing = [];
 
@@ -161,6 +181,11 @@
     }
     if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
         _missing.push('AcademyQueries.getClass');
+    }
+
+    if (!AcademyClasses ||
+        typeof AcademyClasses.getClassInstructorIdsAllTime !== 'function') {
+        _missing.push('AcademyClasses.getClassInstructorIdsAllTime');
     }
 
     if (_missing.length > 0) {
@@ -250,6 +275,63 @@
 
     function getPeriodLabel(type) {
         return TeamConstants.getPeriodLabel(type);
+    }
+
+    /**
+     * Collect the character IDs of everyone who belongs to a class in
+     * any sense: current students (from the class roster) and every
+     * character who has ever been an instructor for the class (from
+     * per-discipline instructor enrolments).
+     *
+     * The retired `class.instructorId` field is not consulted.
+     *
+     * Used by the member-modal candidate sort to compute the "in
+     * class" tier signal. It is a statement about class membership,
+     * not about any specific week, so it uses the all-time instructor
+     * query rather than the week-scoped one.
+     *
+     * @param {string} classId
+     * @returns {object} Set-shaped object keyed by character ID string
+     */
+    function buildClassMembershipSet(classId) {
+        var result = Object.create(null);
+        if (!isNonEmptyString(classId)) {
+            return result;
+        }
+
+        // Students
+        var studentIds = [];
+        try {
+            studentIds = AcademyQueries.getClassStudentIds(classId) || [];
+        } catch (e) {
+            studentIds = [];
+        }
+        if (Array.isArray(studentIds)) {
+            for (var s = 0; s < studentIds.length; s++) {
+                if (studentIds[s]) {
+                    result[String(studentIds[s])] = true;
+                }
+            }
+        }
+
+        // Instructors — all-time, not week-scoped.
+        var instructorIds = [];
+        try {
+            instructorIds = AcademyClasses.getClassInstructorIdsAllTime(
+                classId
+            );
+        } catch (e) {
+            instructorIds = [];
+        }
+        if (Array.isArray(instructorIds)) {
+            for (var i = 0; i < instructorIds.length; i++) {
+                if (instructorIds[i]) {
+                    result[String(instructorIds[i])] = true;
+                }
+            }
+        }
+
+        return result;
     }
 
     // ============================================================
@@ -893,23 +975,16 @@
         }
 
         // Class membership is not a filter; it is a sort signal.
+        //
+        // The signal is derived from the class's current students
+        // plus every character who has ever been an instructor for
+        // the class. The retired `class.instructorId` field is not
+        // consulted.
         var teamClassId = isNonEmptyString(team.classId)
             ? String(team.classId)
             : null;
 
-        var inClassSet = Object.create(null);
-        if (teamClassId !== null) {
-            var studentIds = AcademyQueries.getClassStudentIds(teamClassId);
-            if (Array.isArray(studentIds)) {
-                for (var s = 0; s < studentIds.length; s++) {
-                    inClassSet[String(studentIds[s])] = true;
-                }
-            }
-            var cls = AcademyQueries.getClass(teamClassId);
-            if (cls && cls.instructorId) {
-                inClassSet[String(cls.instructorId)] = true;
-            }
-        }
+        var inClassSet = buildClassMembershipSet(teamClassId);
 
         // Already on another team of THIS TYPE at this period.
         var onAnotherTeamSet = Object.create(null);

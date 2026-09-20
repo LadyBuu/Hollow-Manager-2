@@ -33,74 +33,14 @@
  *     AcademyAggregator.getClassViewModel.
  *   - Not a student detail aggregator. That is
  *     AcademyAggregator.getStudentViewModel or CharacterAggregator.
+ *   - Not an instructor-of-class service. That is
+ *     AcademyClasses.getClassInstructorIds (week-scoped) and
+ *     AcademyClasses.getClassInstructorIdsAllTime (not week-scoped).
  *
  * LIVE CALLERS:
- *   The module is not dead. As of this revision, one caller still
- *   routes through the facade:
- *
- *     AcademyRanking.autoGenerate → resolveClassStudentIds
- *       calls AcademyQueries.getClassStudentIds(classId)
- *
- *   Every other caller in the corpus has been migrated to call the
- *   canonical domain modules directly. The ranking caller is the
- *   last one; it will be migrated in a dedicated pass that also
- *   converges roster derivation onto a single owner (see below).
- *
- * ROSTER DERIVATION:
- *   The class-scoped roster derivation — "which characters are in
- *   this class?" — is currently implemented THREE times in the
- *   codebase:
- *
- *     - AcademyQueries.getClassStudentIds
- *     - AcademyAggregator.deriveClassRoster
- *     - AcademyRanking.resolveClassStudentIds (via the facade)
- *
- *   The three implementations agree in behaviour but differ in
- *   shape (IDs vs enriched rows). Consolidating them is deferred:
- *   the intended home is AcademyClasses.getClassStudentIds, which
- *   sits next to the reverse-direction helper
- *   AcademyClasses.getCharacterClasses. AcademyClasses already has
- *   a lazy CharacterQueries dependency for its membership
- *   mutations, so the new helper introduces no new module edge.
- *
- *   Until that consolidation runs, this module's getClassStudentIds
- *   and getClassStudents remain the canonical roster surface that
- *   the ranking caller reads through. They are not dead code.
- *
- * REMOVED FUNCTIONS (and their replacements):
- *   - calculateGradeSummary           → AcademyGrades.calculateSummary
- *   - calculateStudentGPA             → AcademyGrades.calculateStudentGPA
- *   - calculateClassRanking           → AcademyRanking.autoGenerate /
- *                                       AcademyPerformance.calculateRanking
- *   - getClassStudentsWithGrades      → AcademyAggregator.getClassViewModel
- *   - getStudentGrades / getClassGrades /
- *     getDisciplineGrades / getWeekGrades / getGrade / getAllGrades
- *                                     → AcademyGrades equivalents
- *   - getClassRankings / getStudentRank /
- *     getRankingsWithDetails / getRankings / calculateRankingSummary
- *                                     → AcademyRanking equivalents
- *   - getAllGroups / getGroup / ...   → AcademyAutoGroupsRead
- *   - getAvailableStudents            → AcademyAggregator.getClassStudentsViewModel
- *                                       combined with a caller-side diff
- *   - getClassTeams / getAcademicTeamMembers /
- *     getAcademicTeamMemberCount      → TeamQueries equivalents
- *   - getStudentDetails / getClassDetails
- *                                     → AcademyAggregator equivalents
- *   - getDiscipline / getDisciplines / ...
- *                                     → AcademyDisciplines equivalents
- *   - getLocations / getLocation / getLocationName
- *                                     → AcademyLocations equivalents
- *   - getInstructors / getStudents / getClassInstructors
- *                                     → CharacterQueries equivalents
- *   - getCurrentWeek                  → CalendarQueries or a direct
- *                                       window.data.currentWeek read
- *   - isClassActive / isClassArchived /
- *     isClassGraduated                → inline on cls.status
- *
- * OWNERSHIP:
- *   - Academy domain, class subset.
- *   - The class roster is DERIVED from character.classIds. There is no
- *     separate roster store; there has not been one since v15.
+ *   The module is not dead. As of this revision, the live callers
+ *   route through the facade for class reads. The facade will be
+ *   retired when those callers are migrated.
  *
  * CLASS MEMBERSHIP MODEL (v15+):
  *   character.classIds[] is the SINGLE SOURCE OF TRUTH for membership.
@@ -111,17 +51,32 @@
  *   roster. getClassStudentIds returns the IDs. Both are thin
  *   projections over AcademyClasses' internal helpers.
  *
+ * NO CLASS-LEVEL INSTRUCTOR (v29):
+ *   Prior to v29, a class record carried `instructorId` — a single
+ *   instructor per class. That field was retired. Instructors are
+ *   now per-discipline enrolments, and the class's instructors are
+ *   derived from them via AcademyClasses.getClassInstructorIds
+ *   (week-scoped) or getClassInstructorIdsAllTime (not week-scoped).
+ *
+ *   This module does NOT expose any instructor-of-class read. The
+ *   two instructor queries live on AcademyClasses. Callers that
+ *   need them call AcademyClasses directly.
+ *
+ *   The roster functions in this module (getClassStudents,
+ *   getClassStudentIds) return characters whose classIds include
+ *   classId. They do NOT exclude the class's instructors. Instructor
+ *   exclusion is done at the aggregator layer, where the display
+ *   week is known. This module has no week context and cannot make
+ *   that decision.
+ *
  * READ SAFETY:
  *   - Reads never create the store.
  *   - getClass / getClasses / getClassesByStatus / getClassByName
  *     delegate to AcademyClasses, whose public reads already return
- *     DEEP CLONES. This module does NOT re-clone; the double-clone
- *     that lived here was removed. Trusting the canonical module's
- *     public read contract is the correct posture: if AcademyClasses
- *     ever changes its read shape, the change lands in one place.
+ *     DEEP CLONES. This module does NOT re-clone.
  *   - getClassStudents returns whatever CharacterQueries.getCharacterById
- *     returns — a live reference. This matches the historical behaviour.
- *     Callers that need a clone copy it themselves.
+ *     returns — a live reference. This matches the historical
+ *     behaviour. Callers that need a clone copy it themselves.
  *
  * DEPENDENCIES (lazily loaded):
  *   - window.AcademyClasses    (from academy-classes.js)
@@ -294,8 +249,15 @@
      * Is the character a member of the class?
      *
      * This is a projection over character.classIds. It does NOT consider
-     * the class's instructorId. A character can be in a class without
-     * being on the roster, if they are the class's instructor.
+     * whether the character teaches anything in the class. A character
+     * can be an instructor for a class without being a member of it in
+     * the classIds sense.
+     *
+     * The instructor-of-class relationship is expressed through
+     * instructor-mode enrolments and is answered by
+     * AcademyClasses.getClassInstructorIds / getClassInstructorIdsAllTime.
+     * The retired `class.instructorId` field is not consulted anywhere;
+     * it was removed in v29.
      *
      * @param {object} character
      * @param {string} classId
@@ -325,10 +287,14 @@
      * Get the character IDs of a class's roster.
      *
      * The roster is DERIVED: characters whose classIds include classId.
-     * The class INSTRUCTOR is NOT included here even if the class
-     * record has an instructorId — the instructor is a separate
-     * relationship and is stitched into the roster at the VM layer
-     * (AcademyAggregator.getClassViewModel) for display only.
+     * The roster does NOT exclude the class's instructors. A character
+     * who both has the class in their classIds and teaches something
+     * in the class appears in this list.
+     *
+     * Instructor exclusion is done at the aggregator layer
+     * (AcademyAggregator.deriveClassRoster), where the display week is
+     * known and the week-scoped instructor query can be applied. This
+     * module has no week context, so it cannot make that decision.
      *
      * @param {string} classId
      * @returns {array} Array of character IDs (strings)

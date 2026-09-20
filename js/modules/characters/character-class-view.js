@@ -66,10 +66,29 @@
  *     AcademyEnrolments.getStudentDisciplines(charId, classId).
  *   - character.disciplineIds is dead and is NOT read here.
  *
- * ROLE LABELS:
- *   - A character is an "Instructor" for a class when
- *     class.instructorId === char.id.
+ * ROLE LABELS (v29):
+ *   - A character is an "Instructor" for a class when they have an
+ *     instructor-mode enrolment in any of the class's offerings.
+ *     This is an ALL-TIME fact about the character's relationship
+ *     with the class; it is NOT week-scoped.
+ *
+ *     A character who taught Combat for Class 2026 during weeks 1-8
+ *     and stopped is still an instructor for Class 2026. The label
+ *     is a statement about the role, not about the current week's
+ *     schedule.
+ *
  *   - Otherwise the character is a "Trainee" for that class.
+ *
+ *   - The retired `class.instructorId` field is not consulted. It
+ *     was removed in v29; the relationship is expressed through
+ *     instructor enrolments.
+ *
+ *   - The all-time query is AcademyClasses.getClassInstructorIdsAllTime.
+ *     It is distinct from AcademyClasses.getClassInstructorIds(classId,
+ *     week), which answers "who teaches this class during this week"
+ *     and is used by the schedule projector, the roster derivation,
+ *     and the Add Character modal. Those reads ARE week-scoped; the
+ *     role label is not.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.AcademyClasses
@@ -139,6 +158,9 @@
         }
         if (!AcademyClasses || typeof AcademyClasses.getCharacterClasses !== 'function') {
             missing.push('AcademyClasses.getCharacterClasses');
+        }
+        if (!AcademyClasses || typeof AcademyClasses.getClassInstructorIdsAllTime !== 'function') {
+            missing.push('AcademyClasses.getClassInstructorIdsAllTime');
         }
 
         if (!AcademyGrades || typeof AcademyGrades.getStudentClassGrades !== 'function') {
@@ -221,13 +243,72 @@
         return cls ? (cls.name || 'Unnamed Class') : 'Unknown Class';
     }
 
+    /**
+     * Resolve the role label for a character in a class.
+     *
+     * "Instructor" when the character teaches something in the class;
+     * "Trainee" otherwise.
+     *
+     * ALL-TIME, NOT WEEK-SCOPED:
+     *   The relationship between a character and a class as
+     *   instructor is a fact about the character, not about the
+     *   current week's schedule. A character who taught Combat for
+     *   Class 2026 during weeks 1-8 and stopped is still an
+     *   instructor for Class 2026.
+     *
+     *   The query is AcademyClasses.getClassInstructorIdsAllTime(
+     *   classId). It walks every instructor-mode enrolment in the
+     *   class's bucket, without a week filter.
+     *
+     *   This is deliberately different from
+     *   AcademyClasses.getClassInstructorIds(classId, week), which
+     *   answers "who teaches this class during this week." The
+     *   schedule projector, the roster derivation, the ranking
+     *   exclusion, the Add Character modal, and the schedule-assign
+     *   resolver all use the week-scoped query. They are asking
+     *   about this week. This function is not.
+     *
+     * The retired `class.instructorId` field is not consulted.
+     *
+     * Falls back to "Trainee" when the query module is unavailable
+     * or the character is not an instructor. The label is
+     * display-only.
+     *
+     * @param {object} cls - class record (or null)
+     * @param {string} charId
+     * @returns {string} 'Instructor' | 'Trainee'
+     */
     function getClassRoleLabel(cls, charId) {
         if (!cls || !charId) {
             return 'Trainee';
         }
-        if (cls.instructorId && String(cls.instructorId) === String(charId)) {
-            return 'Instructor';
+        if (!cls.id) {
+            return 'Trainee';
         }
+
+        if (!AcademyClasses ||
+            typeof AcademyClasses.getClassInstructorIdsAllTime !== 'function') {
+            return 'Trainee';
+        }
+
+        var instructorIds = [];
+        try {
+            instructorIds = AcademyClasses.getClassInstructorIdsAllTime(
+                cls.id
+            );
+        } catch (e) {
+            instructorIds = [];
+        }
+
+        var target = String(charId);
+        if (Array.isArray(instructorIds)) {
+            for (var i = 0; i < instructorIds.length; i++) {
+                if (String(instructorIds[i]) === target) {
+                    return 'Instructor';
+                }
+            }
+        }
+
         return 'Trainee';
     }
 

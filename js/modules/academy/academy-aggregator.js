@@ -42,6 +42,20 @@
  *     absent, the projection returns null or an empty collection.
  *   - The class VM is deliberately small (header fields only).
  *
+ * INSTRUCTOR-OF-CLASS (v29):
+ *   A class does not carry an instructor field. The instructors of
+ *   a class are whoever has an instructor-mode enrolment in one of
+ *   the class's offerings, during the requested week.
+ *
+ *   The canonical query is AcademyClasses.getClassInstructorIds(
+ *   classId, week, { disciplineId }). This aggregator reads through
+ *   that query. It does NOT read `cls.instructorId`; the field no
+ *   longer exists on class records.
+ *
+ *   Where the aggregator previously stitched the class's single
+ *   instructor into the roster or excluded it from a set, it now
+ *   works with the plural list returned by the query.
+ *
  * RANGE PREDICATES:
  *   The "does this range contain this week" question is owned by
  *   window.RangeUtils, which is the canonical range-predicate module
@@ -173,18 +187,6 @@
  *                                 getWeeklyTeamMemberManagerViewModel
  *                                 and by the People 'eliminated'
  *                                 filter)
- *
- *   Note: AcademyEnrolments is NOT a dependency of this module.
- *   After the v27 picker VM trim, this file no longer reads
- *   enrolments directly. Enrolment reads are performed by the
- *   character-detail aggregator and the performance layer; the
- *   aggregator's picker VM was reduced to markers only.
- *
- *   Note: AcademyClassDisciplines (the mutation module) is NOT a
- *   dependency of this module. Reads route through
- *   AcademyClassDisciplinesQueries. The mutation module exists only
- *   to write markers and to run cascade cleanup; a projection
- *   builder has no reason to reach for it.
  */
 
 (function() {
@@ -220,6 +222,9 @@
     }
     if (!AcademyClasses || typeof AcademyClasses.getClasses !== 'function') {
         _missing.push('AcademyClasses.getClasses');
+    }
+    if (!AcademyClasses || typeof AcademyClasses.getClassInstructorIds !== 'function') {
+        _missing.push('AcademyClasses.getClassInstructorIds');
     }
     if (!AcademyDisciplines || typeof AcademyDisciplines.getDisciplines !== 'function') {
         _missing.push('AcademyDisciplines.getDisciplines');
@@ -368,6 +373,44 @@
         return '-';
     }
 
+    /**
+     * Return the IDs of every instructor teaching in this class at
+     * the given week.
+     *
+     * Delegates to AcademyClasses.getClassInstructorIds, which is
+     * the canonical query. Returns an empty array when the query is
+     * unavailable or the class has no instructors.
+     *
+     * The optional disciplineId narrows the result to instructors
+     * enrolled in that specific discipline.
+     */
+    function getClassInstructorIds(classId, week, disciplineId) {
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
+        if (week === undefined || week === null) {
+            return [];
+        }
+        if (typeof AcademyClasses.getClassInstructorIds !== 'function') {
+            return [];
+        }
+        var options = null;
+        if (isNonEmptyString(disciplineId)) {
+            options = { disciplineId: String(disciplineId) };
+        }
+        try {
+            var ids = AcademyClasses.getClassInstructorIds(
+                classId, week, options
+            );
+            return Array.isArray(ids) ? ids : [];
+        } catch (e) {
+            console.warn(
+                '[AcademyAggregator] getClassInstructorIds failed:', e
+            );
+            return [];
+        }
+    }
+
     // ============================================================
     // ELIMINATION PROJECTION
     // ============================================================
@@ -408,6 +451,15 @@
     // ============================================================
     // ROSTER DERIVATION
     // ============================================================
+    //
+    // The roster is DERIVED: characters whose classIds include
+    // classId, minus the instructors of the class.
+    //
+    // The instructor exclusion is sourced from
+    // getClassInstructorIds(classId, week), not from a class-level
+    // instructor field. A character who both has the class in their
+    // classIds and teaches something in the class is an instructor
+    // here and is excluded from the student roster.
 
     function deriveClassRoster(classId, week) {
         if (!isNonEmptyString(classId)) {
@@ -421,18 +473,22 @@
 
         var weekNum = resolveWeek(week);
 
+        // Build the instructor exclusion set from the derived list.
+        var instructorIds = getClassInstructorIds(classId, weekNum);
+        var instructorSet = Object.create(null);
+        for (var ii = 0; ii < instructorIds.length; ii++) {
+            instructorSet[String(instructorIds[ii])] = true;
+        }
+
         var all = CharacterQueries.getCharacters() || [];
         var target = String(classId);
-        var instructorId = cls.instructorId
-            ? String(cls.instructorId)
-            : null;
         var result = [];
 
         for (var i = 0; i < all.length; i++) {
             var c = all[i];
             if (!c || !c.id) { continue; }
 
-            if (instructorId && String(c.id) === instructorId) {
+            if (instructorSet[String(c.id)]) {
                 continue;
             }
 
@@ -499,6 +555,14 @@
     // ============================================================
     // CLASS VIEW MODEL
     // ============================================================
+    //
+    // The VM carries id, name, status, year, description,
+    // studentCount, createdAt. It does NOT carry instructorId or
+    // instructorName. A class does not have a singular instructor;
+    // its instructors are per-discipline and are read from the
+    // enrolment store by the code that actually needs them (the
+    // People view's roster stitch, the class-detail panel's
+    // "instructors" list if ever added, etc.).
 
     function getClassViewModel(classId, week) {
         if (!classId) { return null; }
@@ -515,10 +579,6 @@
             status: cls.status || 'active',
             year: cls.year || null,
             description: cls.description || '',
-            instructorId: cls.instructorId || null,
-            instructorName: cls.instructorId
-                ? getCharacterDisplayName(cls.instructorId)
-                : 'Not assigned',
             studentCount: studentCount,
             createdAt: cls.createdAt || ''
         };
@@ -527,6 +587,12 @@
     // ============================================================
     // PEOPLE VIEW MODEL
     // ============================================================
+    //
+    // The People roster is the class's students PLUS every
+    // instructor who teaches something in the class at the display
+    // week. Instructors are sourced from
+    // getClassInstructorIds(classId, week); they are NOT sourced
+    // from a class-level instructor field.
 
     function getPeopleViewModel(classId, options) {
         options = options || {};
@@ -571,35 +637,37 @@
             weekNum
         );
 
-        var cls = AcademyClasses.getClass(selectedClass.id);
-        if (cls && cls.instructorId) {
-            var alreadyPresent = false;
-            for (var s = 0; s < students.length; s++) {
-                if (String(students[s].id) === String(cls.instructorId)) {
-                    alreadyPresent = true;
-                    break;
-                }
-            }
-            if (!alreadyPresent) {
-                var instructorChar =
-                    CharacterQueries.getCharacterById(cls.instructorId);
-                if (instructorChar) {
-                    var instructorElim = readEliminationState(
-                        instructorChar.id, weekNum
-                    );
-                    students = students.concat([{
-                        id: instructorChar.id,
-                        name: CharacterQueries.getDisplayName(instructorChar),
-                        status: CharacterQueries.getCurrentStatus(instructorChar),
-                        age: CharacterQueries.getCharacterAge(instructorChar),
-                        deceased: instructorChar.deceased === true,
-                        eliminated: instructorElim.eliminated,
-                        eliminationWeek: instructorElim.eliminationWeek,
-                        eliminationReason: instructorElim.eliminationReason,
-                        role: 'instructor'
-                    }]);
-                }
-            }
+        // Stitch every instructor who teaches in this class at the
+        // display week. The instructor set comes from the derived
+        // query; a character appears at most once regardless of how
+        // many disciplines they teach.
+        var instructorIds = getClassInstructorIds(
+            selectedClass.id, weekNum
+        );
+        var alreadyPresent = Object.create(null);
+        for (var s = 0; s < students.length; s++) {
+            alreadyPresent[String(students[s].id)] = true;
+        }
+
+        for (var ii = 0; ii < instructorIds.length; ii++) {
+            var instrId = String(instructorIds[ii]);
+            if (alreadyPresent[instrId]) { continue; }
+
+            var instructorChar = CharacterQueries.getCharacterById(instrId);
+            if (!instructorChar) { continue; }
+
+            var instrElim = readEliminationState(instrId, weekNum);
+            students = students.concat([{
+                id: instructorChar.id,
+                name: CharacterQueries.getDisplayName(instructorChar),
+                status: CharacterQueries.getCurrentStatus(instructorChar),
+                age: CharacterQueries.getCharacterAge(instructorChar),
+                deceased: instructorChar.deceased === true,
+                eliminated: instrElim.eliminated,
+                eliminationWeek: instrElim.eliminationWeek,
+                eliminationReason: instrElim.eliminationReason,
+                role: 'instructor'
+            }]);
         }
 
         var search = (filters.search || '').toLowerCase().trim();
@@ -858,35 +926,6 @@
     // It does not carry instructors. Instructor-of-a-discipline-for-
     // a-class is expressed through enrolments, edited from the
     // character's own Disciplines tab.
-    //
-    // SHAPE:
-    //
-    //   {
-    //     classId,
-    //     className,
-    //     disciplines: [
-    //       {
-    //         id,
-    //         name,
-    //         type,
-    //         typeLabel,
-    //         startWeek,
-    //         endWeek,
-    //         activeInWeek,      // whether the discipline window
-    //                            // covers the current display week
-    //         offered,           // class offers this discipline?
-    //         mandatory          // false unless offered
-    //       },
-    //       ...
-    //     ]
-    //   }
-    //
-    // READS SOURCE:
-    //   The `offered` flag, the `mandatory` flag, and the
-    //   `activeInWeek` flag all come from
-    //   AcademyClassDisciplinesQueries. The mutation module
-    //   (AcademyClassDisciplines) is not consulted; a projection
-    //   builder never reaches for a writer.
 
     function getClassDisciplinesPickerViewModel(classId, options) {
         options = options || {};
@@ -960,6 +999,12 @@
     // ============================================================
     // RANKING VIEW MODEL
     // ============================================================
+    //
+    // The ranking entries exclude instructors. A character who
+    // teaches anything in this class at the display week is not a
+    // ranking entry, even if they also appear in the class's
+    // character.classIds. The exclusion set is sourced from
+    // getClassInstructorIds(classId, week).
 
     function getRankingViewModel(classId, week) {
         var classList = getClassListViewModel();
@@ -1010,6 +1055,17 @@
             return [];
         }
 
+        // Build the instructor exclusion set once. A character who
+        // teaches something in this class at this week is excluded
+        // from ranking, even if they also appear in character
+        // classIds.
+        var weekNum = resolveWeek(week);
+        var instructorIds = getClassInstructorIds(classId, weekNum);
+        var instructorSet = Object.create(null);
+        for (var ii = 0; ii < instructorIds.length; ii++) {
+            instructorSet[String(instructorIds[ii])] = true;
+        }
+
         var entries = ranked.map(function(r) {
             var studentId = r.studentId || r.characterId;
             var name = r.studentName || getCharacterDisplayName(studentId);
@@ -1035,7 +1091,7 @@
                 averageDisplay: average !== null ? String(average) : '\u2014',
                 gradeCount: gradeCount,
                 gradeCountDisplay: gradeCount !== null ? String(gradeCount) : '\u2014',
-                isInstructor: r.isInstructor === true
+                isInstructor: instructorSet[String(studentId)] === true
             };
         });
 
@@ -1054,10 +1110,7 @@
     //
     // AcademyLocations is a MANDATORY dependency. Its absence is a
     // load-time failure of the whole module, not a runtime degrade
-    // here. The previous inline `window.AcademyLocations` lookup was
-    // a fallback for a dependency that is guaranteed present by
-    // index.html's load order; the fallback was dead code that lied
-    // about the module's dependency surface.
+    // here.
 
     function getLocationViewModel(filters, week, selectedLocationId) {
         filters = filters || {};
@@ -1709,10 +1762,14 @@
             }
         }
 
-        var cls = AcademyClasses.getClass(classId);
-        var instructorId = cls && cls.instructorId
-            ? String(cls.instructorId)
-            : null;
+        // Exclude the class's instructors from the candidate pool.
+        // Instructors teach, they are not candidates for team
+        // membership as students.
+        var instructorIds = getClassInstructorIds(classId, weekNum);
+        var instructorSet = Object.create(null);
+        for (var ii = 0; ii < instructorIds.length; ii++) {
+            instructorSet[String(instructorIds[ii])] = true;
+        }
 
         var roster = deriveClassRoster(classId, weekNum);
 
@@ -1724,7 +1781,7 @@
 
             var studentId = String(student.id);
 
-            if (instructorId !== null && studentId === instructorId) {
+            if (instructorSet[studentId]) {
                 continue;
             }
             if (allCurrentIds[studentId]) {
@@ -1826,10 +1883,6 @@
             }
         }
 
-        // Smoke test the delegating range check via a shape-compatible
-        // call. `partitionTeamMembers` is not exported; this exercises
-        // RangeUtils directly against the same semantics the aggregator
-        // depends on. A failure here means the delegation is broken.
         try {
             if (RangeUtils.containsWeek(5, 1, 10) !== true) {
                 missing.push('RangeUtils.containsWeek active-in-range failed');

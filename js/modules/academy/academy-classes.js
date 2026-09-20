@@ -11,38 +11,32 @@
  *   - Class entity mutations
  *   - Character ↔ class membership mutations (addToClass,
  *     removeClassById, addClassByName, removeFromAllClasses)
- *   - Instructor-of-class derivation (getClassInstructorIds),
- *     sourced from per-discipline instructor enrolments
+ *   - Instructor-of-class derivation (getClassInstructorIds,
+ *     getClassInstructorIdsAllTime), sourced from per-discipline
+ *     instructor enrolments
  *
  * This module is NOT responsible for:
  *   - Class membership STORAGE. Membership lives on
- *     character.classIds. That fact is unchanged by S10.1; what
- *     changed is that the mutations which write to that array now
- *     live here rather than in the character suite.
+ *     character.classIds.
  *   - Class roster DERIVATION. AcademyQueries derives rosters from
  *     character.classIds.
  *   - Cross-domain cascade cleanup. That is owned by AcademyCascade.
  *   - Per-discipline instructor assignment. That is an ENROLMENT,
  *     written by the instructor-side Disciplines tab in the character
  *     detail panel, through AcademyEnrolments.enrol. This module
- *     only READS those enrolments, via getClassInstructorIds.
+ *     only READS those enrolments, via the two getClassInstructorIds
+ *     functions.
  *
  * IMPORTANT (v15+):
- *   - This module OWNS class ENTITIES and now OWNS the mutations
- *     that write character.classIds.
- *   - academy.classStudents no longer exists. It was removed in v15
- *     and must never be reintroduced.
  *   - Character membership is stored on character.classIds[].
  *   - The academy roster is DERIVED: characters whose classIds
  *     include classId. AcademyQueries owns that derivation.
  *
- * NO CLASS-LEVEL INSTRUCTOR (v27+):
+ * NO CLASS-LEVEL INSTRUCTOR (v29):
  *   Prior to this revision, a class record carried `instructorId` —
  *   a single instructor per class. That field was retired because
  *   the relationship it expressed is discipline-scoped: an instructor
- *   teaches a discipline for a class, not the class as a whole. Two
- *   instructors may teach the same class different disciplines; the
- *   same instructor may teach one class several disciplines.
+ *   teaches a discipline for a class, not the class as a whole.
  *
  *   The relationship is expressed as an ENROLMENT:
  *
@@ -58,13 +52,26 @@
  *     - accepts `instructorId` in create or update payloads,
  *     - returns `instructorId` in any shape.
  *
- *   A caller that passes `instructorId` gets a structured rejection,
- *   not a silent no-op. Silently accepting a retired field is how a
- *   dead API stays alive in three files wearing a fake moustache.
+ * INSTRUCTOR QUERIES (v29):
+ *   Two functions, answering two different questions:
  *
- *   getClassInstructorIds is the canonical way to ask "which
- *   instructors teach something in this class at this week?". It
- *   reads enrolments, not the class record.
+ *   getClassInstructorIds(classId, week, options)
+ *     "Who teaches something in this class DURING this week?"
+ *     Week-scoped. Used by the schedule projector, the roster
+ *     derivation, the ranking exclusion, the Add Character modal,
+ *     and the schedule-assign resolver.
+ *
+ *   getClassInstructorIdsAllTime(classId)
+ *     "Who has EVER taught something in this class?"
+ *     NOT week-scoped. Used by the character class-role label.
+ *     A character who taught Combat for Class 2026 during weeks 1-8
+ *     and stopped is still an instructor for Class 2026. The label
+ *     is a statement about the role, not about this week.
+ *
+ *   The two are deliberately separate. The week filter belongs on
+ *   queries that answer "what is happening this week." It does not
+ *   belong on queries that answer "what is this character to this
+ *   class."
  *
  * S10.1 MIGRATION:
  *   The four membership mutations (addToClass, removeClassById,
@@ -86,38 +93,30 @@
  *   Deleting a class is a CASCADE. In a single MutationPipeline
  *   transaction it:
  *     1. Strips the classId from every character's classIds array.
- *        (Character-side concern; kept inline.)
  *     2. Deletes the class entity from academy.graduatingClasses.
  *     3. Cross-domain cleanup: enrolments, grades, rankings, social
  *        scores, weekly teams. Delegated to AcademyCascade.classDeleted.
  *
- *   The cascade is atomic: if the mutation fails, the entire snapshot
- *   is restored. No partial cleanup.
- *
  * YEAR SEMANTICS:
- *   - Years are UNBOUNDED positive integers.
- *   - There is no MIN_YEAR or MAX_YEAR.
- *   - Any integer >= 1 is a valid year for a class.
- *   - A null year is also valid (represents "year not specified").
+ *   - Years are UNBOUNDED positive integers. A null year is valid.
  *
  * DEPENDENCIES (MANDATORY):
- *   - window.ObjectUtils (from object-utils.js) - MANDATORY
- *   - window.IdUtils (from id-utils.js) - MANDATORY
- *   - window.ValidationUtils (from validation-utils.js) - MANDATORY
- *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
- *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
- *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
- *   - window.RangeUtils (from range-utils.js) - MANDATORY
+ *   - window.ObjectUtils
+ *   - window.IdUtils
+ *   - window.ValidationUtils
+ *   - window.MutationPipeline
+ *   - window.CalendarConstants
+ *   - window.CalendarValidation
+ *   - window.RangeUtils
  *
  * DEPENDENCIES (LAZY):
- *   - window.AcademyCascade (from academy-cascade.js)
- *     When present, cross-domain cleanup on delete routes through it.
- *   - window.CharacterQueries (from character-queries.js)
- *     Read by the membership mutations and by getClassInstructorIds.
+ *   - window.AcademyCascade
+ *   - window.CharacterQueries
  *   - window.AcademyClassDisciplinesQueries
- *     (from academy-class-disciplines-queries.js)
  *     Read by getClassInstructorIds to resolve the class's active
- *     offerings.
+ *     offerings. getClassInstructorIdsAllTime does NOT use it; that
+ *     function reads enrolments directly, because "was this
+ *     discipline ever offered" is not the question it answers.
  *
  * USAGE:
  *   var classes = window.AcademyClasses;
@@ -130,16 +129,21 @@
  *   var all = classes.getClasses();
  *   var byName = classes.getClassByName('Class of 2026');
  *
- *   // Membership mutations (moved here in S10.1)
+ *   // Membership mutations
  *   classes.addToClass('char_456', 'class_123').then(...);
  *   classes.removeClassById('char_456', 'class_123').then(...);
  *   classes.addClassByName('char_456', 'New Class').then(...);
  *   classes.removeFromAllClasses('char_456').then(...);
  *
- *   // Instructor-of-class derivation
- *   var instructorIds = classes.getClassInstructorIds('class_123', 5);
- *   var englishOnly = classes.getClassInstructorIds(
+ *   // Instructor queries
+ *   var teachingThisWeek = classes.getClassInstructorIds(
+ *       'class_123', 5
+ *   );
+ *   var taughtEnglishThisWeek = classes.getClassInstructorIds(
  *       'class_123', 5, { disciplineId: 'disc_en' }
+ *   );
+ *   var everTaught = classes.getClassInstructorIdsAllTime(
+ *       'class_123'
  *   );
  */
 
@@ -453,7 +457,7 @@
     //
     // A class does not carry an instructor field. The instructors of
     // a class are whoever has an instructor-mode enrolment in one of
-    // the class's offerings, during the requested week.
+    // the class's offerings.
     //
     // The relationship is expressed as an enrolment, the same store
     // as student enrolment:
@@ -467,23 +471,45 @@
     // mode-neutral; mode is a fact on the character, not on the
     // enrolment.
     //
-    // The helper is WEEK-AWARE. An instructor who taught a discipline
-    // during weeks 1-8 and stopped is not returned for week 9. Range
-    // containment delegates to RangeUtils.containsWeek.
+    // TWO QUERIES, TWO QUESTIONS:
     //
-    // DEPENDENCY ORDERING:
-    //   This helper reads offerings through
-    //   AcademyClassDisciplinesQueries and enrolments through
-    //   academy.enrolments directly. Both reads are lazy; neither
-    //   module loads before this one, and neither is imported at
-    //   load time.
+    //   getClassInstructorIds(classId, week, options)
+    //     "Who teaches something in this class DURING this week?"
+    //     Week-scoped. Reads offerings via AcademyClassDisciplinesQueries
+    //     to filter out enrolments whose discipline is not currently
+    //     offered. Filters enrolment intervals to those whose range
+    //     contains the week. Filters to instructor mode.
     //
-    // NOT A MUTATION-CONTEXT HELPER:
-    //   This is a live/preflight read against window.data. It is
-    //   NOT authoritative inside a MutationPipeline transaction.
-    //   Callers that need the authoritative answer (assignStudentToSlot,
-    //   for example) must re-resolve against the pipeline snapshot,
-    //   using the same rule this helper expresses.
+    //     Used by: the schedule projector's filters, the roster
+    //     derivation (AcademyAggregator.deriveClassRoster), the
+    //     ranking exclusion, the Add Character modal's candidate
+    //     filter, and AcademySchedule.assignStudentToSlot's
+    //     preflight.
+    //
+    //   getClassInstructorIdsAllTime(classId)
+    //     "Who has EVER taught something in this class?"
+    //     NOT week-scoped. Does NOT consult offerings; reads the
+    //     enrolment bucket directly and returns every character
+    //     with instructor mode and at least one interval in the
+    //     bucket.
+    //
+    //     Used by: the character class-role label in
+    //     character-class-view.js. The label is a statement about
+    //     the character's role in the class, not about this week's
+    //     schedule.
+    //
+    //   They are deliberately separate. A character who taught
+    //   Combat for Class 2026 during weeks 1-8 and stopped is an
+    //   instructor for Class 2026 (all-time) but not for week 12
+    //   (week-scoped). Both answers are correct for their respective
+    //   questions.
+    //
+    // NOT AUTHORITATIVE INSIDE A MUTATION TRANSACTION:
+    //   Both functions read window.data through the live store.
+    //   Neither is authoritative inside a MutationPipeline
+    //   transaction. AcademySchedule.assignStudentToSlot re-resolves
+    //   against the pipeline snapshot using the same rule,
+    //   expressed transaction-locally.
 
     /**
      * Return the character IDs of every instructor who teaches
@@ -618,6 +644,78 @@
             // instructor. A character who was an instructor at one
             // point and has since flipped mode is not an instructor
             // now, and is not returned.
+            var char = CQ.getCharacterById(charId);
+            if (!char || typeof char !== 'object') { continue; }
+            if (char.mode !== 'instructor') { continue; }
+
+            result[String(charId)] = true;
+        }
+
+        var out = Object.keys(result);
+        out.sort();
+        return out;
+    }
+
+    /**
+     * Return the character IDs of every instructor who has EVER
+     * taught something in this class.
+     *
+     * NOT week-scoped. Reads the enrolment bucket for the class
+     * directly; every character in that bucket with instructor mode
+     * and at least one enrolment interval is returned.
+     *
+     * Does NOT consult AcademyClassDisciplinesQueries. The question
+     * is "did this character ever teach for this class," not "is
+     * the discipline still offered." An enrolment in the class's
+     * bucket is the fact; the class's current offering set is a
+     * separate question.
+     *
+     * The mode check is live: a character who was an instructor at
+     * one point and has since flipped to student mode is not
+     * returned. Mode is the discriminator.
+     *
+     * @param {string} classId
+     * @returns {array} Deduplicated, sorted array of character IDs
+     */
+    function getClassInstructorIdsAllTime(classId) {
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
+
+        var academy = getAcademyStore();
+        if (!academy) {
+            return [];
+        }
+
+        var enrolments = academy.enrolments;
+        if (!isObject(enrolments)) {
+            return [];
+        }
+
+        var byClass = enrolments[String(classId)];
+        if (!isObject(byClass)) {
+            return [];
+        }
+
+        var CQ = getCharacterQueries();
+        if (!CQ || typeof CQ.getCharacterById !== 'function') {
+            return [];
+        }
+
+        var result = Object.create(null);
+        var charIds = Object.keys(byClass);
+
+        for (var ci = 0; ci < charIds.length; ci++) {
+            var charId = charIds[ci];
+            var intervals = byClass[charId];
+
+            // Must have at least one enrolment interval. A character
+            // present in the bucket with an empty array is not
+            // teaching anything.
+            if (!Array.isArray(intervals) || intervals.length === 0) {
+                continue;
+            }
+
             var char = CQ.getCharacterById(charId);
             if (!char || typeof char !== 'object') { continue; }
             if (char.mode !== 'instructor') { continue; }
@@ -858,15 +956,8 @@
      * CASCADE. In a single transaction it:
      *   1. Strips the classId from every character's classIds array.
      *   2. Deletes the class entity from academy.graduatingClasses.
-     *   3. Delegates cross-domain cleanup (enrolments, grades,
-     *      rankings, social scores, weekly teams) to
+     *   3. Delegates cross-domain cleanup to
      *      AcademyCascade.classDeleted.
-     *
-     * The character-side strip is inline because AcademyClasses owns
-     * the class-membership relationship on the character side. The
-     * cross-domain parts are delegated so that adding a new
-     * class-keyed store means updating one file (the coordinator),
-     * not every delete path.
      */
     function deleteClass(classId) {
         if (!isNonEmptyString(classId)) {
@@ -1015,15 +1106,6 @@
     // ============================================================
     // CLASS IDS NORMALISATION (moved here in S10.1)
     // ============================================================
-    //
-    // The character record's classIds array can drift. Duplicates,
-    // empty strings, and non-array shapes all show up in practice.
-    // These two helpers are the canonical shape enforcement.
-    //
-    // normaliseClassIds(char) MUTATES the character in place, replacing
-    //   char.classIds with a deduplicated, filtered array.
-    // getNormalisedClassIds(char) RETURNS a deduplicated, filtered
-    //   array without touching the character.
 
     function normaliseClassIds(char) {
         if (!char) return;
@@ -1059,19 +1141,9 @@
     // ============================================================
     // MEMBERSHIP MUTATIONS (moved here in S10.1)
     // ============================================================
-    //
-    // These four functions write character.classIds. They route
-    // through MutationPipeline. The class lookup goes through
-    // AcademyClasses's own internal accessors (getClassInternal,
-    // getClassByNameInternal), which read from the same store as the
-    // entity CRUD above. There is no facade between them.
 
     /**
      * Add a character to a class by class ID.
-     *
-     * @param {string} charId
-     * @param {string} classId
-     * @returns {Promise<{success, data?, message?}>}
      */
     function addToClass(charId, classId) {
         if (!charId) {
@@ -1081,8 +1153,6 @@
             return Promise.resolve(failure('Class ID is required.'));
         }
 
-        // Character read goes through CharacterQueries lazily; the
-        // character store is not owned here.
         var CharacterQueries = getCharacterQueries();
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
             return Promise.resolve(failure('CharacterQueries is not available.'));
@@ -1161,10 +1231,6 @@
 
     /**
      * Remove a character from a class by class ID.
-     *
-     * @param {string} charId
-     * @param {string} classId
-     * @returns {Promise<{success, data?, message?}>}
      */
     function removeClassById(charId, classId) {
         if (!charId) {
@@ -1269,10 +1335,6 @@
      *
      *   There is no instructorId. The field was retired; instructors
      *   are per-discipline enrolments.
-     *
-     * @param {string} charId
-     * @param {string} className
-     * @returns {Promise<{success, data?, message?}>}
      */
     function addClassByName(charId, className) {
         if (!charId) {
@@ -1324,9 +1386,6 @@
             },
 
             mutate: function(data) {
-                // Look for the class entity inside the transaction's
-                // data snapshot, not the live store. This makes the
-                // operation consistent with the rest of the pipeline.
                 var classId = null;
                 var className_ = trimmedName;
                 var classCreated = false;
@@ -1352,9 +1411,6 @@
                 });
 
                 // Create the class entity directly if it doesn't exist.
-                // We do NOT call AcademyClasses.create here — that is a
-                // separate Promise-based pipeline call, and nesting
-                // pipelines is not supported.
                 if (!existing) {
                     var now = new Date().toISOString();
                     classId = IdUtils.generateId('class');
@@ -1415,9 +1471,6 @@
 
     /**
      * Remove a character from every class they are a member of.
-     *
-     * @param {string} charId
-     * @returns {Promise<{success, data?, message?}>}
      */
     function removeFromAllClasses(charId) {
         if (!charId) {
@@ -1506,6 +1559,7 @@
 
         // ---- Instructor-of-class derivation ----
         getClassInstructorIds: getClassInstructorIds,
+        getClassInstructorIdsAllTime: getClassInstructorIdsAllTime,
 
         // ---- Internal (LIVE REFERENCES) ----
         getClassInternal: getClassInternal,

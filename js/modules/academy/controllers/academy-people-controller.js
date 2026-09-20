@@ -49,11 +49,7 @@
  *     lifecycles.
  *   - The schedule-assign flow: a click on an empty editable cell
  *     in the student-mode schedule grid opens the assign modal
- *     (AcademyScheduleAssignModal.openModal). The modal collects
- *     a discipline and a duration, and calls
- *     AcademySchedule.assignStudentToSlot. The controller's only
- *     job here is routing the click to the modal with the right
- *     context (character ID, class ID, week, day, hour).
+ *     (AcademyScheduleAssignModal.openModal).
  *
  * WHAT THIS DOES NOT OWN:
  *   - The content host. The shell provides it.
@@ -64,21 +60,11 @@
  *   - Domain reads and writes. The aggregators produce VMs; the
  *     domain modules perform mutations.
  *   - The class-disciplines marker store, either side of it.
- *     The picker modal reads through AcademyAggregator (which reads
- *     through AcademyClassDisciplinesQueries) and writes through
- *     AcademyClassDisciplines. This controller does neither. It
- *     routes a click to the picker and receives a re-render
- *     callback. It does not import the queries module and it does
- *     not import the mutation module.
  *   - The class-disciplines picker's modal shell.
  *   - The enrollment modal's modal shell and its candidate
- *     derivation. The modal owns those; this controller just opens
- *     it with the right context and title.
+ *     derivation.
  *   - The schedule assign modal's modal shell, its discipline
- *     options derivation, and its write. The modal owns those; this
- *     controller just opens it with the right context. The domain
- *     (AcademySchedule.assignStudentToSlot) owns the resolution
- *     policy for group and session.
+ *     options derivation, and its write.
  *   - Cross-view navigation.
  *
  * CHARACTER MODE (v27):
@@ -87,49 +73,22 @@
  *     - Reads it via AcademyUI.getCharacterMode(charId).
  *     - Writes it via CharacterCRUD.setMode(charId, mode).
  *
- *   The write is a Promise. On success, the controller re-renders
- *   the shell by calling context.onChange().
+ * CLASS MEMBERSHIP VS INSTRUCTOR RELATIONSHIP (v29):
+ *   A character is "in a class" in one of two senses:
  *
- * ENROLMENT AND LEAVING ARE MODE-AGNOSTIC DOMAIN CALLS:
- *   The two data-actions the character detail panel emits for
- *   discipline membership — "enroll-discipline" and
- *   "leave-discipline" — are the SAME actions in student and
- *   instructor mode. The domain calls are the same:
+ *     Student:    the classId is in the character's classIds array.
+ *     Instructor: the character has an instructor-mode enrolment in
+ *                 one of the class's offerings at the display week.
  *
- *     AcademyEnrolments.enrol(charId, classId, disciplineId, week)
- *     AcademyEnrolments.leave(charId, classId, disciplineId, week)
+ *   `isCharacterInClassVM(charId, classVM)` returns true for either
+ *   sense. This is what lets the People view preserve a character
+ *   selection across a class switch when the character is the
+ *   class's instructor (they aren't in the roster, but they are
+ *   reachable through the roster stitch in the aggregator).
  *
- *   The character's mode determines how the Academy UI interprets
- *   the enrolment record:
- *
- *     mode = 'student'     → "student is enrolled in Discipline"
- *     mode = 'instructor'  → "instructor teaches Discipline for Class"
- *
- *   The controller's only mode-aware behavior is what title it
- *   passes to the enrollment modal. The write path is identical.
- *
- *   Leave is scoped to the currently selected class. An instructor
- *   who teaches English for two classes and leaves for one keeps the
- *   other. This falls out of the domain call signature
- *   (charId, classId, disciplineId, week) — no special handling is
- *   needed in the controller.
- *
- * SCHEDULE GRID (slice 1):
- *   The Schedule tab mounts a grid into #academy-schedule-host. The
- *   grid VM is mode-aware:
- *     - student mode  → getStudentScheduleViewModel, canEdit: true
- *     - instructor    → getInstructorScheduleViewModel, canEdit: false
- *
- *   The controller reads the mode via AcademyUI.getCharacterMode and
- *   passes it into the aggregator's getScheduleGridViewModel as an
- *   option. The aggregator does NOT resolve mode itself; it is a
- *   pure function of its inputs.
- *
- *   When the grid VM says canEdit is true, empty cells emit
- *   data-action="schedule-assign" with data-day and data-hour. The
- *   controller's handleClick intercepts that action and opens the
- *   assign modal. Instructor-mode grids emit no such action, so no
- *   assign flow is reachable from them.
+ *   The instructor set is sourced from
+ *   AcademyClasses.getClassInstructorIds(classId, week). There is
+ *   no `class.instructorId` field; that was retired in v29.
  *
  * DEPENDENCY DIRECTION:
  *   Shell → registry → this controller.
@@ -150,6 +109,7 @@
  *   - window.CharacterCRUD                   (v27 — for setMode)
  *   - window.NotificationSystem
  *   - window.DomUtils
+ *   - window.AcademyClasses                  (getClassInstructorIds)
  *   - window.AcademyGradesEditor             (lazy)
  *   - window.CalendarRenderer                (lazy)
  *   - window.AcademyCRUDModals               (lazy)
@@ -161,7 +121,6 @@
  *   - window.AcademyEliminations             (lazy)
  *   - window.AcademyGroups                   (lazy)
  *   - window.CharacterQueries                (lazy)
- *   - window.AcademyClasses                  (lazy)
  */
 
 (function() {
@@ -181,6 +140,7 @@
     var CharacterCRUD = window.CharacterCRUD;
     var NotificationSystem = window.NotificationSystem;
     var DomUtils = window.DomUtils;
+    var AcademyClasses = window.AcademyClasses;
 
     var _missing = [];
 
@@ -219,6 +179,10 @@
         typeof DomUtils.escapeHtml !== 'function' ||
         typeof DomUtils.escapeAttribute !== 'function') {
         _missing.push('DomUtils.escapeHtml/escapeAttribute');
+    }
+    if (!AcademyClasses ||
+        typeof AcademyClasses.getClassInstructorIds !== 'function') {
+        _missing.push('AcademyClasses.getClassInstructorIds');
     }
 
     if (_missing.length > 0) {
@@ -904,16 +868,45 @@
         c.onChange();
     }
 
+    /**
+     * Is the character "in" the class in either sense?
+     *
+     *   1. Student: the classId appears in the character's classIds.
+     *   2. Instructor: the character teaches something in the class
+     *      at the current display week.
+     *
+     * The instructor check reads AcademyClasses.getClassInstructorIds
+     * for (classId, week). Prior to v29, it read `class.instructorId`;
+     * that field was retired.
+     *
+     * @param {string} charId
+     * @param {object} classVM
+     * @returns {boolean}
+     */
     function isCharacterInClassVM(charId, classVM) {
-        if (!charId || !classVM) { return false; }
+        if (!charId || !classVM || !classVM.id) { return false; }
         var target = String(charId);
 
-        if (classVM.instructorId &&
-            String(classVM.instructorId) === target) {
-            return true;
+        // Instructor check: does this character teach anything in
+        // the class at the current display week?
+        var week = AcademyUI.getDisplayWeek();
+        var instructorIds = [];
+        try {
+            instructorIds = AcademyClasses.getClassInstructorIds(
+                classVM.id, week
+            );
+        } catch (e) {
+            instructorIds = [];
+        }
+        if (Array.isArray(instructorIds)) {
+            for (var ii = 0; ii < instructorIds.length; ii++) {
+                if (String(instructorIds[ii]) === target) {
+                    return true;
+                }
+            }
         }
 
-        var week = AcademyUI.getDisplayWeek();
+        // Student check: is the character on the class roster?
         var students = AcademyAggregator.getClassStudentsViewModel(
             classVM.id,
             week
@@ -923,6 +916,7 @@
                 return true;
             }
         }
+
         return false;
     }
 
@@ -1164,41 +1158,7 @@
     // ============================================================
     // DISCIPLINE ENROLMENT FLOWS
     // ============================================================
-    //
-    // The "enroll-discipline" action is emitted by two renderers:
-    //
-    //   - The student Disciplines tab's "+ Enroll" button.
-    //   - The instructor Disciplines tab's "+ Assign to teach" button.
-    //
-    // Both route here. Both write through AcademyEnrolments.enrol
-    // with the same signature. The only difference is the modal's
-    // header title, which the controller computes from the
-    // character's mode.
-    //
-    // The title is PRESENTATION. It does not change what the modal
-    // does, what options it offers, or how the enrolment is written.
-    // The modal is mode-agnostic by design.
-    //
-    // The character's mode is read from AcademyUI, the shared
-    // Academy state. The controller does not cache it and does not
-    // pass it to the modal as anything other than a display string.
 
-    /**
-     * Open the enrollment modal for a character.
-     *
-     * The character ID comes from the button's dataset. The class
-     * ID and the display week come from AcademyUI. The modal itself
-     * derives its candidate list (the class's active offerings,
-     * filtered against the character's existing enrolments) and
-     * writes its own enrolments via AcademyEnrolments.enrol.
-     *
-     * The controller's only job is routing: resolve the context,
-     * compute the mode-appropriate title, call the modal, and wire
-     * the onClose callback to re-render the shell so the character
-     * detail panel reflects any new enrolments.
-     *
-     * @param {string} charId
-     */
     function handleEnrollDiscipline(charId) {
         if (!isNonEmptyString(charId)) {
             return;
@@ -1252,28 +1212,6 @@
         }
     }
 
-    /**
-     * End a character's enrolment in a discipline for the currently
-     * selected class.
-     *
-     * The "leave-discipline" action is emitted by two renderers:
-     *
-     *   - The student Disciplines tab's per-row "Leave" button.
-     *   - The instructor Disciplines tab's per-row "Stop teaching
-     *     this class" button.
-     *
-     * Both route here. Both write through AcademyEnrolments.leave
-     * with the same signature: (charId, classId, disciplineId, week).
-     * The classId is the currently selected class, read from
-     * AcademyUI, not from the button. This is what scopes the
-     * instructor's removal to one class without affecting their
-     * other relationships with the same discipline.
-     *
-     * The confirmation wording is generic ("Leave X?") and works for
-     * both modes. If a mode-specific wording is ever needed, the
-     * controller can branch on AcademyUI.getCharacterMode here; but
-     * the domain call stays identical.
-     */
     function handleLeaveDiscipline(charId, disciplineId) {
         if (!charId || !disciplineId) { return; }
 
@@ -1469,16 +1407,6 @@
     // ============================================================
     // SCHEDULE GRID SUB-EDITOR
     // ============================================================
-    //
-    // The grid VM is mode-aware. The controller reads the character's
-    // mode via AcademyUI.getCharacterMode and passes it to the
-    // aggregator as an option. The aggregator dispatches to the
-    // correct calendar aggregator method and returns an envelope VM
-    // carrying `mode` and `canEdit`.
-    //
-    // The renderer obeys `canEdit`: only student-mode grids emit
-    // data-action="schedule-assign" on empty cells. Instructor-mode
-    // grids are display-only.
 
     function mountScheduleGridIfPresent(charId, week) {
         var host = document.getElementById('academy-schedule-host');
@@ -1492,8 +1420,6 @@
             return;
         }
 
-        // Read the mode from the shared Academy state. This is the
-        // same read the character detail panel uses for its tabs.
         var mode = AcademyUI.getCharacterMode(charId);
 
         var gridVM = null;
@@ -1562,29 +1488,8 @@
     }
 
     // ============================================================
-    // SCHEDULE ASSIGN FLOW (slice 1)
+    // SCHEDULE ASSIGN FLOW
     // ============================================================
-    //
-    // The click target carries data-day and data-hour from the grid
-    // renderer. The controller resolves the rest of the context:
-    //
-    //   charId      — AcademyUI.getSelectedCharacterId()
-    //   classId     — AcademyUI.getSelectedClassId()
-    //   week        — AcademyUI.getDisplayWeek()
-    //   day, hour   — data attributes on the click target
-    //
-    // It hands those to AcademyScheduleAssignModal.openModal. The
-    // modal collects a discipline and a duration, and calls
-    // AcademySchedule.assignStudentToSlot. The modal owns:
-    //   - its own shell
-    //   - its own discipline dropdown (via AcademyClassDisciplinesQueries
-    //     + AcademyDisciplines)
-    //   - its own submission handling and rejection display
-    //   - its own re-render callback via the onClose parameter
-    //
-    // The controller does not validate discipline eligibility, does
-    // not resolve group or session, and does not perform the
-    // mutation. Those belong to the modal and to the domain.
 
     function handleScheduleAssign(dayRaw, hourRaw) {
         var charId = AcademyUI.getSelectedCharacterId();

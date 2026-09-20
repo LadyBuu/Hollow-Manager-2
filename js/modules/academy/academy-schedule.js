@@ -76,16 +76,6 @@
  *   the whole application; this module does not reimplement range
  *   math.
  *
- *     weekInRange(week, start, end)
- *       -> RangeUtils.containsWeek(week, start, end)
- *
- *     weekRangesOverlap(startA, endA, startB, endB)
- *       -> RangeUtils.weeksOverlap(startA, endA, startB, endB)
- *
- *   Both wrappers exist because the names read better in this
- *   module's context, and because a local wrapper centralises the
- *   delegation. They carry no logic beyond the call.
- *
  * CLASS-DISCIPLINE READS:
  *   The class-discipline marker store has two modules: a mutation
  *   module (AcademyClassDisciplines) and a read module
@@ -94,27 +84,29 @@
  *
  * DISCIPLINE WINDOW (v27):
  *   A class-discipline marker has no window. The discipline entity
- *   owns startWeek / endWeek. When auto-enrolling students in a
- *   newly-offered class-discipline, the enrolment window is the
- *   discipline's window.
+ *   owns startWeek / endWeek.
  *
- * ROSTER SEMANTICS:
- *   "Active students in a class" is defined as:
+ * INSTRUCTOR-OF-CLASS (v29):
+ *   A class does not carry an instructor field. The instructors of a
+ *   class are derived from per-discipline instructor enrolments. The
+ *   `assignStudentToSlot` resolver reads those enrolments inside the
+ *   pipeline transaction:
  *
- *     CharacterQueries.getCharacters()
- *       filtered by character.classIds.includes(classId)
- *       minus the class's instructorId
+ *     explicit instructorId in the payload
+ *         ↓
+ *     active instructor-mode enrolment for (classId, disciplineId)
+ *         ├── exactly one  → use it
+ *         ├── more than one → reject 'ambiguous_instructor'
+ *         └── zero          → reject 'missing_instructor'
  *
- *   This is what AcademyAggregator.getClassStudentsViewModel returns.
- *   The coordinator uses that function so the roster in the auto-
- *   enrolment path and the roster in the UI always agree.
+ *   There is no class-level fallback. Prior to v29, the resolver fell
+ *   back to `cls.instructorId`; that field was retired, and the
+ *   fallback went with it.
  *
- *   AcademyAggregator is accessed LAZILY.
- *
- * ELIMINATION SEMANTICS:
- *   A student eliminated in week N is available during week N and
- *   unavailable from week N+1 onward. This is the same boundary rule
- *   used everywhere else in the codebase (EliminationQueries owns it).
+ *   The rule is mirrored by the live/preflight query
+ *   AcademyClasses.getClassInstructorIds(classId, week, { disciplineId }).
+ *   The two must agree. Neither calls the other across a transaction
+ *   boundary; both express the same rule against their own source.
  *
  * COLLISION POLICY:
  *   When scheduling a group meeting, the coordinator checks for:
@@ -139,14 +131,10 @@
  *     - missing class / discipline / character
  *     - offering inactive in the requested week
  *     - student not enrolled in the offering
- *     - missing instructor (no explicit, no class default)
+ *     - missing instructor (no explicit, no active instructor enrolment)
+ *     - ambiguous instructor (multiple active instructor enrolments)
  *     - group_session_overlap (same group, overlapping session)
  *     - malformed references
- *
- *   The split matters. "Two sessions for the same group overlap" is
- *   a structural violation of the group's own schedule, not a policy
- *   preference about which resources may share a time slot. It is
- *   never overridable.
  *
  * STORE SHAPES (v27):
  *   academy.classDisciplines[classId][disciplineId] = {
@@ -729,13 +717,10 @@
      *
      * THE ENROLMENT WINDOW (v27):
      *   The marker has no window. The window comes from the
-     *   DISCIPLINE. A discipline with startWeek 1 and endWeek 24
-     *   produces enrolments spanning weeks 1-24.
+     *   DISCIPLINE.
      *
      * CONFIG SHAPE (v27):
      *   config = { mandatory?: boolean }
-     *
-     *   Retired config fields are rejected with a message.
      *
      * @param {string} classId
      * @param {string} disciplineId
@@ -1000,13 +985,6 @@
      *
      * effectiveWeek is the first week that is NOT covered by the
      * offering.
-     *
-     * In one transaction it:
-     *   - Removes the class-discipline marker.
-     *   - Ends every teaching group for the class-discipline.
-     *   - Ends every session for those groups.
-     *   - Ends every student's enrolment interval in the class-
-     *     discipline.
      *
      * @param {string} classId
      * @param {string} disciplineId
@@ -1701,10 +1679,10 @@
     // All five writes happen in ONE MutationPipeline transaction.
     // The coordinator does NOT call AcademyTeachingGroups.createGroup,
     // AcademyTeachingSessions.createSession, or
-    // AcademyWeeklyTeams.addMember; those methods run their own
-    // pipelines. Instead, the equivalent records are written
-    // inline on the snapshot, using the canonical record shapes
-    // those modules produce.
+    // AcademyEnrolments.enrol; those methods run their own pipelines.
+    // Instead, the equivalent records are written inline on the
+    // snapshot, using the canonical record shapes those modules
+    // produce.
     //
     // RESOLUTION POLICY:
     //
@@ -1713,8 +1691,14 @@
     //      exists, character is a member of the class, class-
     //      discipline marker exists, offering active in `week`,
     //      student enrolled in the offering during `week`.
-    //   3. Resolve instructor: explicit override, else the
-    //      class's instructorId, else reject `missing_instructor`.
+    //   3. Resolve instructor (preflight, for early rejection):
+    //        - explicit override, or
+    //        - exactly one active instructor-mode enrolment for
+    //          (classId, disciplineId) at `week`, or
+    //        - reject 'ambiguous_instructor' when >1, or
+    //        - reject 'missing_instructor' when 0.
+    //      There is NO class-level fallback; the class record no
+    //      longer carries an instructor field.
     //   4. Inside the pipeline: re-resolve all of the above
     //      against the snapshot.
     //   5. Find or create the teaching group:
@@ -1733,19 +1717,24 @@
     //        endWeek   = min(enrolmentInterval.endWeek,
     //                        discipline.endWeek)  // null = ongoing
     //   7. Collision checks (skipped when allowCollisions is true):
-    //        - student collision: does the student already have an
-    //          occurrence in `week` at an overlapping slot?
-    //        - instructor collision: only when a session is being
-    //          created; does the instructor already teach at an
-    //          overlapping slot in `week`?
+    //        - student collision
+    //        - instructor collision (only when creating a session)
     //   8. Write the new group (if any), new session (if any),
     //      and the membership.
     //
     // STRUCTURAL INVARIANTS ARE NEVER OVERRIDABLE.
     //   `allowCollisions: true` bypasses only the POLICY checks
     //   (student_collision, instructor_collision). It does NOT
-    //   bypass validation errors, missing prerequisites, or
-    //   group_session_overlap.
+    //   bypass validation errors, missing prerequisites,
+    //   ambiguous/missing instructor, or group_session_overlap.
+    //
+    // INSTRUCTOR RESOLUTION IS TRANSACTION-LOCAL:
+    //   The authoritative resolution reads `academy.enrolments`
+    //   from the pipeline snapshot, not from the live store. The
+    //   live/preflight query AcademyClasses.getClassInstructorIds
+    //   expresses the same rule; the two must agree. The
+    //   transaction-local helper `resolveInstructorFromSnapshot`
+    //   below is the authoritative one.
     //
     // INPUT SHAPE:
     //   {
@@ -1757,8 +1746,7 @@
     //     startHour,               required, in [MIN_HOUR, MAX_HOUR]
     //     duration,                required, in [MIN_CLASS_DURATION,
     //                                                 MAX_CLASS_DURATION]
-    //     instructorId,            optional; defaults to class's
-    //                              instructorId
+    //     instructorId,            optional; overrides the enrolment
     //     allowCollisions,         optional; default false
     //   }
     //
@@ -1786,6 +1774,7 @@
     //            | 'offering_inactive'
     //            | 'not_enrolled'
     //            | 'missing_instructor'
+    //            | 'ambiguous_instructor'
     //            | 'group_session_overlap'
     //            | 'student_collision'
     //            | 'instructor_collision',
@@ -1966,9 +1955,6 @@
      *   startWeek = week
      *   endWeek   = min(enrolmentInterval.endWeek,
      *                   discipline.endWeek)   // null = unbounded
-     *
-     * Both inputs may be null (ongoing). The minimum of two
-     * "ongoing" values is "ongoing".
      */
     function computeMembershipEndWeek(enrolmentInterval, discipline) {
         var enrolEnd = (enrolmentInterval &&
@@ -1991,8 +1977,7 @@
 
     /**
      * Generate a group id for a newly created group inside
-     * assignStudentToSlot. Uses IdUtils so ids are consistent with
-     * the rest of the app.
+     * assignStudentToSlot.
      */
     function generateGroupId() {
         return IdUtils.generateId('tgroup');
@@ -2035,16 +2020,107 @@
     }
 
     /**
+     * Resolve the instructor for (classId, disciplineId) at a given
+     * week from the pipeline snapshot.
+     *
+     * A character is treated as an instructor for this purpose when
+     * their `mode` is 'instructor'. The enrolment itself is
+     * mode-neutral; mode is a fact on the character, not on the
+     * enrolment.
+     *
+     * Reads exclusively from the snapshot. Does not consult
+     * AcademyClasses.getClassInstructorIds, which is a live-store
+     * read and not authoritative inside a transaction.
+     *
+     * Returns:
+     *   { ok: true,  instructorId }                    — exactly one
+     *   { ok: false, reason: 'missing_instructor' }    — zero
+     *   { ok: false, reason: 'ambiguous_instructor',
+     *     instructorIds }                              — more than one
+     */
+    function resolveInstructorFromSnapshot(
+        appData,
+        classId,
+        disciplineId,
+        week
+    ) {
+        if (!appData || !Array.isArray(appData.characters)) {
+            return { ok: false, reason: 'missing_instructor' };
+        }
+        var academy = getAcademySnapshot(appData);
+        if (!isPlainObject(academy)) {
+            return { ok: false, reason: 'missing_instructor' };
+        }
+
+        var enrBucket = academy.enrolments &&
+            academy.enrolments[String(classId)];
+        if (!isPlainObject(enrBucket)) {
+            return { ok: false, reason: 'missing_instructor' };
+        }
+
+        var targetDisc = String(disciplineId);
+
+        // Index characters by id so the mode lookup is O(1) per
+        // candidate. The character array is walked once per call,
+        // which is what the other resolver-adjacent helpers do
+        // anyway.
+        var charById = Object.create(null);
+        for (var i = 0; i < appData.characters.length; i++) {
+            var c = appData.characters[i];
+            if (c && c.id !== undefined && c.id !== null) {
+                charById[String(c.id)] = c;
+            }
+        }
+
+        var matches = [];
+        var charIds = Object.keys(enrBucket);
+
+        for (var ci = 0; ci < charIds.length; ci++) {
+            var charId = charIds[ci];
+            var intervals = enrBucket[charId];
+            if (!Array.isArray(intervals)) { continue; }
+
+            var matched = false;
+            for (var ii = 0; ii < intervals.length; ii++) {
+                var iv = intervals[ii];
+                if (!iv || typeof iv !== 'object') { continue; }
+                if (String(iv.disciplineId) !== targetDisc) {
+                    continue;
+                }
+                if (!weekInRange(week, iv.startWeek, iv.endWeek)) {
+                    continue;
+                }
+                matched = true;
+                break;
+            }
+            if (!matched) { continue; }
+
+            var char = charById[String(charId)];
+            if (!char) { continue; }
+            if (char.mode !== 'instructor') { continue; }
+
+            matches.push(String(charId));
+        }
+
+        if (matches.length === 0) {
+            return { ok: false, reason: 'missing_instructor' };
+        }
+        if (matches.length === 1) {
+            return { ok: true, instructorId: matches[0] };
+        }
+
+        matches.sort();
+        return {
+            ok: false,
+            reason: 'ambiguous_instructor',
+            instructorIds: matches
+        };
+    }
+
+    /**
      * Check the student's existing occurrences in `week` for a
      * time overlap with the requested slot, excluding any
      * occurrence that belongs to `excludeGroupId`.
-     *
-     * Uses AcademyTeachingProjector when available. When the
-     * projector is absent, returns null with a warning; the
-     * caller proceeds without the check (fail-open for this
-     * diagnostic, not for a structural invariant).
-     *
-     * @returns {object|null} { occurrence } on collision, else null
      */
     function findStudentSlotCollision(
         charId,
@@ -2253,24 +2329,46 @@
             ));
         }
 
-        // Resolve instructor for the preflight eligibility check.
-        var resolvedInstructor = explicitInstructor;
-        if (resolvedInstructor === null) {
-            resolvedInstructor = isNonEmptyString(cls.instructorId)
-                ? String(cls.instructorId)
-                : null;
-        }
-        if (resolvedInstructor === null) {
-            return Promise.resolve(rejection(
-                'missing_instructor',
-                'This class has no instructor assigned. Assign an ' +
-                'instructor before scheduling the student.'
-            ));
-        }
+        // Preflight instructor resolution: live read, used only to
+        // give the caller an early rejection. The authoritative
+        // resolution runs inside the pipeline against the snapshot.
+        //
+        // Skipped when an explicit instructor was supplied: the
+        // explicit value wins, and the caller is asserting they
+        // know who it is.
+        if (explicitInstructor === null) {
+            var liveInstructorIds = null;
+            try {
+                if (typeof AcademyClasses.getClassInstructorIds === 'function') {
+                    liveInstructorIds = AcademyClasses.getClassInstructorIds(
+                        targetClass,
+                        week,
+                        { disciplineId: targetDiscipline }
+                    );
+                }
+            } catch (e) {
+                liveInstructorIds = null;
+            }
 
-        // Snapshot this for the closure; the pipeline re-resolves
-        // everything against its own snapshot.
-        var targetInstructor = resolvedInstructor;
+            if (Array.isArray(liveInstructorIds)) {
+                if (liveInstructorIds.length === 0) {
+                    return Promise.resolve(rejection(
+                        'missing_instructor',
+                        'No instructor teaches this discipline for this ' +
+                        'class. Assign an instructor from the character\'s ' +
+                        'Disciplines tab before scheduling the student.'
+                    ));
+                }
+                if (liveInstructorIds.length > 1) {
+                    return Promise.resolve(rejection(
+                        'ambiguous_instructor',
+                        'Multiple instructors teach this discipline for ' +
+                        'this class. Specify which one to use.',
+                        { instructorIds: liveInstructorIds.slice() }
+                    ));
+                }
+            }
+        }
 
         // ---- Pipeline ----
         return MutationPipeline.performMutation({
@@ -2349,6 +2447,38 @@
                 );
                 if (!snapshotDiscipline) {
                     throw new Error('Discipline not found.');
+                }
+
+                // ---- Instructor resolution (authoritative) ----
+                //
+                // Explicit instructor wins; otherwise resolve from
+                // active instructor-mode enrolments in the snapshot.
+                // Reject with missing/ambiguous when the snapshot
+                // does not have exactly one answer.
+                var targetInstructor;
+                if (explicitInstructor !== null) {
+                    targetInstructor = explicitInstructor;
+                } else {
+                    var resolution = resolveInstructorFromSnapshot(
+                        appData,
+                        targetClass,
+                        targetDiscipline,
+                        week
+                    );
+                    if (!resolution.ok) {
+                        if (resolution.reason === 'ambiguous_instructor') {
+                            throw new Error(
+                                '__ambiguous_instructor__:' +
+                                JSON.stringify({
+                                    instructorIds: resolution.instructorIds
+                                })
+                            );
+                        }
+                        throw new Error(
+                            '__missing_instructor__'
+                        );
+                    }
+                    targetInstructor = resolution.instructorId;
                 }
 
                 // ---- Resolve group and session ----
@@ -2508,8 +2638,6 @@
 
                 // ---- Collision checks ----
                 if (!allowCollisions) {
-                    // Student collision: does the student already
-                    // have an occurrence at this slot in `week`?
                     var studentCollision = findStudentSlotCollision(
                         targetChar,
                         week,
@@ -2525,10 +2653,6 @@
                         );
                     }
 
-                    // Instructor collision: only when we created a
-                    // session. Reuse of an existing session is
-                    // already known to be collision-free from the
-                    // session's own creation.
                     if (createdSession) {
                         var candidateSession = {
                             day: day,
@@ -2573,8 +2697,6 @@
                     if (weekInRange(
                         week, existing.startWeek, existing.endWeek
                     )) {
-                        // Already a member this week. Idempotent
-                        // no-op.
                         return {
                             groupId: String(resolvedGroup.id),
                             sessionId: String(resolvedSession.id),
@@ -2642,6 +2764,7 @@
             // rejections.
             if (result && result.success === false &&
                 typeof result.message === 'string') {
+
                 if (result.message.indexOf(
                     '__group_session_overlap__:'
                 ) === 0) {
@@ -2651,6 +2774,32 @@
                         'Pick a different slot or a different duration.'
                     );
                 }
+
+                if (result.message.indexOf(
+                    '__missing_instructor__'
+                ) === 0) {
+                    return rejection(
+                        'missing_instructor',
+                        'No instructor teaches this discipline for this ' +
+                        'class. Assign an instructor from the character\'s ' +
+                        'Disciplines tab before scheduling the student.'
+                    );
+                }
+
+                if (result.message.indexOf(
+                    '__ambiguous_instructor__:'
+                ) === 0) {
+                    return rejection(
+                        'ambiguous_instructor',
+                        'Multiple instructors teach this discipline for ' +
+                        'this class. Specify which one to use.',
+                        parseSentinelJson(
+                            result.message,
+                            '__ambiguous_instructor__:'
+                        )
+                    );
+                }
+
                 if (result.message.indexOf(
                     '__student_collision__:'
                 ) === 0) {
@@ -2666,6 +2815,7 @@
                         }
                     );
                 }
+
                 if (result.message.indexOf(
                     '__instructor_collision__:'
                 ) === 0) {
@@ -2688,8 +2838,7 @@
 
     /**
      * Parse a JSON payload out of a sentinel-prefixed message.
-     * Returns null on any failure. Used only for the three
-     * collision sentinels above.
+     * Returns null on any failure.
      */
     function parseSentinelJson(message, prefix) {
         try {

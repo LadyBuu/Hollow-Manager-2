@@ -48,7 +48,7 @@
  *
  * ADD CHARACTER TO CLASS — SORTING AND OPTGROUP:
  *   The candidate list excludes characters who are already in the
- *   target class (as students or as instructor). It does not exclude
+ *   target class (as students or as instructors). It does not exclude
  *   characters who are in OTHER classes. The list is partitioned:
  *
  *     1. Characters with no class membership — first.
@@ -61,15 +61,23 @@
  *     <optgroup label="Unassigned">...free characters...</optgroup>
  *     <optgroup label="In Other Classes">...assigned...</optgroup>
  *
- *   The <optgroup> distinguishes the two cases visually. A flat list
- *   would rely on the user noticing that alphabetical order "resets"
- *   at the boundary between the partitions, which is easy to miss.
- *
  *   When ALL candidates are in the "Unassigned" partition, the modal
- *   renders a single option list with no optgroup wrapper, since the
- *   label adds nothing. Same for the "In Other Classes" partition
- *   alone. This keeps the common case (a class with mostly unassigned
- *   characters) visually simple.
+ *   renders a single option list with no optgroup wrapper.
+ *
+ * ADD CHARACTER TO CLASS — INSTRUCTOR EXCLUSION (v29):
+ *   The candidate list excludes both the class's current students
+ *   AND every character who teaches something in the class at the
+ *   current display week. The instructor set is sourced from
+ *   AcademyClasses.getClassInstructorIds(classId, week), which reads
+ *   the per-discipline instructor enrolments. There is no
+ *   `class.instructorId` field; that field was retired in v29.
+ *
+ *   The week used for the instructor query comes from the aggregator
+ *   via AcademyAggregator, which reads AcademyUI.getDisplayWeek().
+ *   When the display week is not resolvable, the exclusion falls
+ *   back to the student roster alone and the instructor set is
+ *   treated as empty. That is a display-only degradation; it does
+ *   not fabricate data.
  *
  * ADD CHARACTER TO CLASS — OPTION LABEL:
  *   Each option shows the character's display name and, when
@@ -79,19 +87,11 @@
  *
  *   Age comes from CharacterQueries.getCharacterAge(char), which
  *   returns a string like '22 yrs' or '-' when the birth year is
- *   unknown. The '-' sentinel is suppressed, so a character with no
- *   birth year just shows the name. This matches the rest of the
- *   Academy UI's age formatting and keeps the dropdown readable
- *   when the age is unavailable.
+ *   unknown. The '-' sentinel is suppressed.
  *
- * ADD CHARACTER TO CLASS — MUTATION OWNERSHIP (post-S10.1):
+ * ADD CHARACTER TO CLASS — MUTATION OWNERSHIP:
  *   The class-membership mutation lives on AcademyClasses:
  *     AcademyClasses.addToClass(charId, classId)
- *
- *   The retired CharacterClasses module owned this mutation before
- *   S10.1. That module is gone; its mutations moved to AcademyClasses.
- *   This file was one of the consumers the S10.1 sweep missed; the
- *   accessor and call site are now on AcademyClasses.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -99,7 +99,8 @@
  *   - window.NotificationSystem
  *   - window.ValidationUtils
  *   - window.AcademyClasses         (Add Character to Class mutates
- *                                    through AcademyClasses.addToClass)
+ *                                    through AcademyClasses.addToClass;
+ *                                    also owns getClassInstructorIds)
  *   - window.AcademyDisciplines
  *   - window.AcademyLocations
  *   - window.CharacterQueries
@@ -107,6 +108,8 @@
  *
  * DEPENDENCIES (OPTIONAL, lazily accessed):
  *   - window.AcademySocialScore — required for the Social Score modal
+ *   - window.AcademyUI          — used to resolve the display week
+ *                                 for the instructor-exclusion query
  */
 
 (function() {
@@ -159,6 +162,9 @@
     if (!AcademyClasses || typeof AcademyClasses.addToClass !== 'function') {
         _missing.push('AcademyClasses.addToClass');
     }
+    if (!AcademyClasses || typeof AcademyClasses.getClassInstructorIds !== 'function') {
+        _missing.push('AcademyClasses.getClassInstructorIds');
+    }
     if (!AcademyClasses || !Array.isArray(AcademyClasses.VALID_STATUSES)) {
         _missing.push('AcademyClasses.VALID_STATUSES');
     }
@@ -203,6 +209,10 @@
         return window.AcademySocialScore || null;
     }
 
+    function getAcademyUI() {
+        return window.AcademyUI || null;
+    }
+
     // ============================================================
     // HELPERS
     // ============================================================
@@ -244,9 +254,6 @@
      *
      * Returns "<name> (<age>)" when the age is a real value, or just
      * "<name>" when the age is missing or the '-' sentinel.
-     *
-     * The age string comes from CharacterQueries.getCharacterAge,
-     * which returns something like '22 yrs' or '-' for unknown.
      */
     function formatCharacterOptionLabel(name, age) {
         var safeName = isNonEmptyString(name) ? name : 'Unknown';
@@ -257,6 +264,26 @@
             return safeName;
         }
         return safeName + ' (' + safeAge + ')';
+    }
+
+    /**
+     * Resolve the current display week from AcademyUI, or null.
+     */
+    function getDisplayWeek() {
+        var AcademyUI = getAcademyUI();
+        if (!AcademyUI || typeof AcademyUI.getDisplayWeek !== 'function') {
+            return null;
+        }
+        try {
+            var week = AcademyUI.getDisplayWeek();
+            if (typeof week === 'number' && isFinite(week) &&
+                Number.isInteger(week)) {
+                return week;
+            }
+            return null;
+        } catch (e) {
+            return null;
+        }
     }
 
     // ============================================================
@@ -660,14 +687,18 @@
      *                           target class, since the target class's
      *                           roster is already excluded).
      *
+     * The exclusion set covers:
+     *   - Students of the target class, from the aggregator's roster.
+     *   - Instructors of the target class, from
+     *     AcademyClasses.getClassInstructorIds(classId, week).
+     *
      * Each candidate entry carries { id, name, age, status }.
      * Age is the display string from CharacterQueries.getCharacterAge
      * (e.g. '22 yrs' or '-'), unmodified. The renderer suppresses the
      * '-' sentinel so an unknown age produces just the name.
      *
-     * The roster of the TARGET class is excluded entirely — both its
-     * students (from the aggregator) and its instructor (from the
-     * class record).
+     * @param {string} classId
+     * @returns {object|null}
      */
     function buildAddCharacterToClassViewModel(classId) {
         var cls = getClassRecord(classId);
@@ -675,6 +706,7 @@
 
         var currentIds = {};
 
+        // Exclude the class's students.
         var students = AcademyAggregator.getClassStudentsViewModel(classId) || [];
         for (var i = 0; i < students.length; i++) {
             if (students[i] && students[i].id) {
@@ -682,8 +714,28 @@
             }
         }
 
-        if (cls.instructorId) {
-            currentIds[String(cls.instructorId)] = true;
+        // Exclude the class's instructors. Sourced from the
+        // per-discipline instructor enrolments at the display week.
+        // When the display week is not resolvable, the exclusion set
+        // contains only students; that is a display-only degradation,
+        // not a data error.
+        var week = getDisplayWeek();
+        var instructorIds = [];
+        if (week !== null) {
+            try {
+                instructorIds = AcademyClasses.getClassInstructorIds(
+                    classId, week
+                );
+            } catch (e) {
+                instructorIds = [];
+            }
+        }
+        if (Array.isArray(instructorIds)) {
+            for (var ii = 0; ii < instructorIds.length; ii++) {
+                if (instructorIds[ii]) {
+                    currentIds[String(instructorIds[ii])] = true;
+                }
+            }
         }
 
         var all = CharacterQueries.getCharacters() || [];
@@ -1027,11 +1079,6 @@
     // ============================================================
     // OPEN — ADD CHARACTER TO CLASS
     // ============================================================
-    //
-    // The mutation lives on AcademyClasses.addToClass. AcademyClasses
-    // is a mandatory import at the top of this file, so the module is
-    // guaranteed to be present. There is no gate here; if the import
-    // is missing, the module would not have loaded.
 
     function openAddCharacterToClass(classId) {
         var vm = buildAddCharacterToClassViewModel(classId);

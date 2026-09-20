@@ -18,6 +18,14 @@
  *   - The class-disciplines picker. The button on the header emits
  *     data-action="edit-class-disciplines"; the People controller
  *     routes it to AcademyClassDisciplinesPicker.
+ *   - The class's instructors. Prior to v29 the panel rendered an
+ *     "Instructor:" line sourced from `class.instructorId`. That
+ *     field was retired; instructors are now per-discipline
+ *     enrolments. The panel does not replace the line with a
+ *     derived list. Instructor-of-a-class is a discipline-level
+ *     relationship, and the class panel is not the place for it.
+ *     The instructor's own Disciplines tab is where the
+ *     relationship is edited and viewed.
  *
  * ROLE VOCABULARY:
  *   'student' | 'instructor'. There is no 'trainee'.
@@ -50,11 +58,12 @@
  *     status:          'active' | 'archived' | 'graduated',
  *     year:            number | null,
  *     description:     string,
- *     instructorId:    string | null,
- *     instructorName:  string,   // 'Not assigned' when no instructor
  *     studentCount:    number,   // derived roster size (instructor excluded)
  *     createdAt:       string
  *   }
+ *
+ *   The VM does NOT carry instructorId or instructorName. A class does
+ *   not have a singular instructor.
  *
  *   studentCount is always present on the VM. When the aggregator
  *   is older and the field is absent, the renderer falls back to
@@ -180,7 +189,12 @@
                 '</span>';
         html += '</div>';
 
-        // Meta row
+        // Meta row: year + student count.
+        //
+        // The instructor line that used to live here was removed in
+        // v29. A class does not have a singular instructor; its
+        // instructors are per-discipline enrolments, edited from the
+        // instructor's own Disciplines tab.
         html += '<div class="academy-class-detail-meta">';
 
         if (isPositiveNumber(classVM.year)) {
@@ -199,22 +213,6 @@
             html += '<span class="academy-class-detail-meta-item academy-class-detail-student-count">' +
                         '<span class="meta-label">' + countLabel + ':</span> ' +
                         escapeHtml(String(count)) +
-                    '</span>';
-        }
-
-        // Instructor
-        if (classVM.instructorId && isNonEmptyString(classVM.instructorName)) {
-            html += '<span class="academy-class-detail-meta-item" ' +
-                        'data-instructor-id="' +
-                            escapeAttribute(classVM.instructorId) + '">' +
-                        '<span class="meta-label">Instructor:</span> ' +
-                        escapeHtml(classVM.instructorName) +
-                    '</span>';
-        } else {
-            html += '<span class="academy-class-detail-meta-item ' +
-                        'academy-meta-muted">' +
-                        '<span class="meta-label">Instructor:</span> ' +
-                        'Not assigned' +
                     '</span>';
         }
 
