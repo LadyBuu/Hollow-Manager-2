@@ -4,73 +4,44 @@
  *
  * Path: js/modules/academy/academy-character-detail-aggregator.js
  *
- * This module produces the view model consumed by AcademyCharacterDetail.
- * It is the single place where the character detail panel's domain reads
+ * Produces the view model consumed by AcademyCharacterDetail.
+ * Single place where the character detail panel's domain reads
  * happen.
- *
- * ARCHITECTURE:
- *
- *     AcademyView / controller
- *         ↓
- *     AcademyCharacterDetailAggregator.getViewModel(charId, options)
- *         ↓
- *     Character Detail VM
- *         ↓
- *     AcademyCharacterDetail.renderHTML(vm)
- *         ↓
- *     HTML
  *
  * Domain reads composed here:
  *
  *   CharacterQueries              identity, display name, status, age, death
  *   AcademyClasses                class entity, character↔class membership
  *   AcademyClassDisciplinesQueries
- *                                 class-discipline marker reads (v27)
+ *                                 class-discipline marker reads
  *   AcademyEnrolments             student↔discipline enrolment (class-scoped)
  *   AcademyGrades                 grade records (class-scoped)
  *   AcademyDisciplines            discipline entities
+ *   AcademyTeachingGroups         teaching group entities + members
+ *   AcademyTeachingSessions       teaching sessions (lazy; group VMs)
+ *   AcademyLocations              location display names (lazy)
+ *   AcademyCalendarAggregator     schedule grid reads (projector-backed)
  *   AcademyPerformance            academic average, overall score
  *   AcademySocialScore            social score
- *   AcademyTeachingGroups         teaching group entities + members
  *   TeamQueries                   persistent Team entities
  *   EliminationQueries            elimination week, reason, state
- *   CalendarConstants             week bounds for current-week resolution
- *   AcademyCalendarAggregator     schedule grid reads (projector-backed)
+ *   CalendarConstants             week bounds + day/hour labels
  *
- * TEACHING GROUPS (v29 + this slice):
- *   The instructor projection carries `teachingGroups` — the groups
- *   the instructor runs, grouped by discipline, scoped to the
- *   currently selected class. This replaces the retired
- *   `autoGroups` projection, which read `curriculum.autoGroups`.
+ * TEACHING GROUPS:
+ *   The instructor projection carries `teachingGroups` — the
+ *   groups the instructor runs, grouped by discipline, scoped to
+ *   the currently selected class.
  *
- *   An instructor's teaching groups are the teaching-group records
- *   whose instructorId equals the character and whose classId equals
- *   the selected class. The relationship is derived from
- *   AcademyTeachingGroups.getGroupsForInstructor and filtered to
- *   the selected class.
+ *   Each group VM now also carries its sessions. A group is a
+ *   who and a when; the projection surfaces both. The session
+ *   VMs are read-only projections; the session editor lives in
+ *   academy-session-form-modal.js and writes through
+ *   AcademyTeachingSessions.
  *
- *   Groups are grouped by discipline. Every discipline the
- *   instructor has an instructor-mode enrolment for at the display
- *   week appears as a container, even when it has no groups yet.
- *   The container's `groups` array is empty in that case. This
- *   reflects the fact that the instructor has been assigned to
- *   teach the discipline for the class; staffing it with students
- *   is a separate step.
- *
- *   Sibling members from other active groups for the same
- *   (classId, disciplineId) are excluded from the candidate pool.
- *   A student belongs to at most one group per class-discipline at
- *   a time. This mirrors the resolver in
- *   AcademySchedule.assignStudentToSlot.
- *
- * INSTRUCTOR DISCIPLINES (v27):
+ * INSTRUCTOR DISCIPLINES:
  *   An instructor's "disciplines I teach" list is derived from
  *   enrolments. There is no instructor list on the discipline
  *   entity.
- *
- * SCHEDULE SOURCE (v21):
- *   buildScheduleGridViewModel reads from AcademyCalendarAggregator,
- *   which is projector-backed.
  *
  * VIEW MODEL SHAPE:
  *
@@ -99,14 +70,24 @@
  *           groupNumber,
  *           displayName,
  *           memberCount,
- *           members: [{ id, name, status, age, deceased }]
+ *           members: [{ id, name, status, age, deceased }],
+ *           sessionCount,
+ *           sessions: [{
+ *             sessionId,
+ *             day, dayLabel,
+ *             startTime, startTimeLabel,
+ *             duration, durationLabel,
+ *             locationId, locationName,
+ *             startWeek, endWeek,
+ *             periodDisplay
+ *           }]
  *         }]
  *       }]
  *     }
  *   }
  *
  * NULL SEMANTICS:
- *   - character is always present (aggregator returns null if not found).
+ *   - character is always present (returns null if not found).
  *   - instructor is null unless mode is 'instructor'.
  *   - instructor.teachingGroups is [] when the instructor has no
  *     enrolments for the selected class, or when no class is
@@ -129,6 +110,8 @@
  *   - window.CalendarConstants
  *
  * DEPENDENCIES (optional, feature-scoped):
+ *   - window.AcademyTeachingSessions  (group session VMs)
+ *   - window.AcademyLocations         (session location names)
  *   - window.AcademyPerformance
  *   - window.AcademySocialScore
  *   - window.TeamQueries
@@ -261,6 +244,12 @@
     function getAcademySocialScore() { return window.AcademySocialScore || null; }
     function getTeamQueries() { return window.TeamQueries || null; }
     function getEliminationQueries() { return window.EliminationQueries || null; }
+    function getAcademyTeachingSessions() {
+        return window.AcademyTeachingSessions || null;
+    }
+    function getAcademyLocations() {
+        return window.AcademyLocations || null;
+    }
 
     function getAcademyCalendarAggregator() {
         return window.AcademyCalendarAggregator || null;
@@ -461,7 +450,7 @@
                     academic = academicResult.average;
                 }
             } catch (e) {
-                // Leave null
+                // Leave null.
             }
         }
 
@@ -473,7 +462,7 @@
                     social = s;
                 }
             } catch (e) {
-                // Leave null
+                // Leave null.
             }
         }
 
@@ -484,7 +473,7 @@
                     overall = o;
                 }
             } catch (e) {
-                // Leave null
+                // Leave null.
             }
         }
 
@@ -591,7 +580,7 @@
     }
 
     // ============================================================
-    // INSTRUCTOR PROJECTION (v27)
+    // INSTRUCTOR DISCIPLINES
     // ============================================================
     //
     // An instructor's disciplines are DERIVED from enrolments.
@@ -687,24 +676,166 @@
     }
 
     // ============================================================
-    // INSTRUCTOR TEACHING GROUPS
+    // TEACHING GROUPS — SESSION VMs
+    // ============================================================
+    //
+    // A group is a who and a when. The roster projection already
+    // lives in buildTeachingGroupVM; this block adds the "when".
+    //
+    // The session's window is the discipline's window. The
+    // aggregator reads both and exposes them on each session VM
+    // so the renderer can display a period string.
+    //
+    // Sessions are sorted by (day, startTime, sessionId) for
+    // determinism, matching the projector's canonical order.
+
+    function buildTeachingGroupSessionsVM(group) {
+        if (!group || !group.id) { return []; }
+
+        var TS = getAcademyTeachingSessions();
+        if (!TS || typeof TS.getSessionsForGroup !== 'function') {
+            return [];
+        }
+
+        var rawSessions = [];
+        try {
+            rawSessions = TS.getSessionsForGroup(group.id) || [];
+        } catch (e) {
+            rawSessions = [];
+        }
+
+        if (!Array.isArray(rawSessions)) { return []; }
+
+        // Resolve the discipline's window once. It is the same
+        // for every session of the group; the per-session window
+        // is a future extension point, not a current override.
+        var disciplineStart = null;
+        var disciplineEnd = null;
+        if (isNonEmptyString(group.disciplineId)) {
+            var disc = AcademyDisciplines.getDiscipline(
+                group.disciplineId
+            );
+            if (disc) {
+                if (isFiniteNumber(disc.startWeek)) {
+                    disciplineStart = disc.startWeek;
+                }
+                if (disc.endWeek !== undefined &&
+                    disc.endWeek !== null) {
+                    disciplineEnd = disc.endWeek;
+                }
+            }
+        }
+
+        var result = [];
+
+        for (var i = 0; i < rawSessions.length; i++) {
+            var s = rawSessions[i];
+            if (!s || !s.id) { continue; }
+
+            var startWeek = isFiniteNumber(s.startWeek)
+                ? s.startWeek
+                : disciplineStart;
+            var endWeek = (s.endWeek !== undefined && s.endWeek !== null)
+                ? s.endWeek
+                : disciplineEnd;
+
+            var dayLabel = '';
+            if (isFiniteNumber(s.day) &&
+                typeof CalendarConstants.getDayName === 'function') {
+                try {
+                    dayLabel = CalendarConstants.getDayName(s.day) || '';
+                } catch (e) {
+                    dayLabel = '';
+                }
+            }
+
+            var startTimeLabel = '';
+            if (isFiniteNumber(s.startTime) &&
+                typeof CalendarConstants.formatHour === 'function') {
+                try {
+                    startTimeLabel =
+                        CalendarConstants.formatHour(s.startTime) || '';
+                } catch (e) {
+                    startTimeLabel = '';
+                }
+            }
+
+            var durationNum = isFiniteNumber(s.duration)
+                ? s.duration
+                : 1;
+            var durationLabel = durationNum + 'h';
+
+            var locationId = isNonEmptyString(s.locationId)
+                ? String(s.locationId)
+                : null;
+
+            var locationName = '';
+            if (locationId) {
+                var AL = getAcademyLocations();
+                if (AL && typeof AL.getLocationName === 'function') {
+                    try {
+                        var n = AL.getLocationName(locationId);
+                        if (isNonEmptyString(n) && n !== 'Unknown') {
+                            locationName = n;
+                        }
+                    } catch (e) {
+                        locationName = '';
+                    }
+                }
+            }
+
+            var periodDisplay = '';
+            if (isFiniteNumber(startWeek)) {
+                if (isFiniteNumber(endWeek)) {
+                    periodDisplay = 'Wk ' + startWeek +
+                        '\u2013' + endWeek;
+                } else {
+                    periodDisplay = 'From wk ' + startWeek;
+                }
+            }
+
+            result.push({
+                sessionId: String(s.id),
+                day: s.day,
+                dayLabel: dayLabel,
+                startTime: s.startTime,
+                startTimeLabel: startTimeLabel,
+                duration: durationNum,
+                durationLabel: durationLabel,
+                locationId: locationId,
+                locationName: locationName,
+                startWeek: startWeek,
+                endWeek: endWeek,
+                periodDisplay: periodDisplay
+            });
+        }
+
+        result.sort(function(a, b) {
+            if (a.day !== b.day) { return (a.day || 0) - (b.day || 0); }
+            if (a.startTime !== b.startTime) {
+                return (a.startTime || 0) - (b.startTime || 0);
+            }
+            return String(a.sessionId).localeCompare(
+                String(b.sessionId)
+            );
+        });
+
+        return result;
+    }
+
+    // ============================================================
+    // TEACHING GROUPS — GROUP VMs
     // ============================================================
     //
     // The groups the instructor runs for the selected class,
-    // grouped by discipline. Every discipline the instructor has an
-    // instructor-mode enrolment for appears as a container, even
-    // when it has no groups yet.
+    // grouped by discipline. Every discipline the instructor has
+    // an instructor-mode enrolment for appears as a container,
+    // even when it has no groups yet.
     //
     // SCOPE:
     //   - Instructor: the character whose detail panel is open.
-    //   - Class:      the currently selected class only. Groups
-    //                 belonging to other classes the instructor
-    //                 also teaches are not shown. The character
-    //                 detail panel is class-scoped; every other tab
-    //                 respects the selected class, and this one
-    //                 does too.
-    //   - Week:       the display week. Members and roster size are
-    //                 resolved at the display week, not all-time.
+    //   - Class:      the currently selected class only.
+    //   - Week:       the display week.
 
     function buildInstructorTeachingGroups(char, classId, week) {
         if (!isNonEmptyString(classId) || week === null) {
@@ -821,7 +952,9 @@
         }
 
         members.sort(function(a, b) {
-            return String(a.name || '').localeCompare(String(b.name || ''));
+            return String(a.name || '').localeCompare(
+                String(b.name || '')
+            );
         });
 
         var customName = isNonEmptyString(group.customName)
@@ -840,13 +973,17 @@
                 ? ' ' + groupNumber
                 : ''));
 
+        var sessions = buildTeachingGroupSessionsVM(group);
+
         return {
             groupId: String(group.id),
             customName: customName,
             groupNumber: groupNumber,
             displayName: displayName,
             memberCount: members.length,
-            members: members
+            members: members,
+            sessionCount: sessions.length,
+            sessions: sessions
         };
     }
 
@@ -863,9 +1000,9 @@
     // TEACHING GROUP CANDIDATE VIEW MODEL
     // ============================================================
     //
-    // The candidate pool for adding a student to a specific teaching
-    // group. Called on demand by the controller when the user opens
-    // the inline picker on a group row.
+    // The candidate pool for adding a student to a specific
+    // teaching group. Called on demand by the controller when the
+    // user opens the inline picker on a group row.
     //
     // The candidate set is:
     //   - students enrolled in (classId, disciplineId) at the week
@@ -875,19 +1012,11 @@
     //   - MINUS students eliminated as of the week
     //
     // The strict exclusion of siblings mirrors the resolver in
-    // AcademySchedule.assignStudentToSlot: a student belongs to at
-    // most one active group per class-discipline at a time.
+    // AcademySchedule.assignStudentToSlot: a student belongs to
+    // at most one active group per class-discipline at a time.
     //
     // Returns null when the group does not exist, or when the
     // character is not the group's instructor.
-    //
-    // @param {string} charId  the instructor
-    // @param {string} groupId the group whose roster will grow
-    // @param {object} options { week }
-    // @returns {object|null} {
-    //   groupId, groupDisplayName, disciplineId, disciplineName,
-    //   candidates: [{ id, name, status, age, deceased }]
-    // }
 
     function getTeachingGroupCandidateViewModel(charId, groupId, options) {
         if (!isNonEmptyString(charId) || !isNonEmptyString(groupId)) {
@@ -910,9 +1039,6 @@
             return null;
         }
 
-        // The caller asks for candidates for a group they instruct.
-        // A caller asking for candidates for a group they don't
-        // instruct is a mistake.
         if (String(group.instructorId) !== String(charId)) {
             return null;
         }
@@ -1098,10 +1224,10 @@
     // ============================================================
     //
     // The controller supplies { week, mode }. The aggregator does
-    // NOT read AcademyUI for the mode; it is a pure function of its
-    // inputs.
+    // NOT read AcademyUI for the mode; it is a pure function of
+    // its inputs.
     //
-    // The public wrapper normalises the two API shapes:
+    // Normalises two API shapes:
     //
     //   getScheduleGridViewModel(charId, 5)                    [legacy]
     //   getScheduleGridViewModel(charId, { week: 5 })          [legacy]
