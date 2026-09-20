@@ -4,89 +4,61 @@
  *
  * Path: js/modules/academy/controllers/academy-people-controller.js
  *
- * The People feature controller. Owns the People view: its render,
- * its character-class and character-instructor flows, the class and
- * character detail panels, and the mounting of the grades editor
- * and schedule grid sub-editors.
+ * The People feature controller. Owns the People view.
  *
  * WHAT THIS OWNS:
- *   - Rendering the People view (top bar, sidebar, detail panel)
- *     into the shell's content host.
+ *   - Rendering the People view into the shell's content host.
  *   - Handling clicks, changes, inputs, and keydowns routed by the
  *     shell for events inside the host.
- *   - The active character tab (_activeCharacterTab) and the
- *     character-tab reset-on-change bookkeeping
- *     (_lastCharacterIdForTab). Both are feature state.
+ *   - The active character tab.
  *   - The People search debounce timer.
  *   - The class selection flow.
  *   - The character selection flow.
- *   - The class detail panel (when no character is selected).
- *   - The character detail panel (when a character is selected).
- *   - The character-mode checkbox (student / instructor toggle).
+ *   - The class detail panel.
+ *   - The character detail panel.
+ *   - The character-mode checkbox.
  *   - The Drop Out flow.
  *   - The Remove from Class flow.
  *   - The Enroll Discipline flow.
  *   - The Leave Discipline flow.
- *   - The instructor auto-group Add Student / Remove Student flows.
  *   - The Edit Social Score modal.
  *   - The class CRUD modals.
  *   - The class-disciplines picker modal.
- *   - The inline grades editor and schedule grid sub-editor
- *     lifecycles.
- *   - The schedule-assign flow: a click on an empty editable cell
- *     in the student-mode schedule grid opens the assign modal in
- *     'assign' mode.
- *   - The schedule-slot-open flow: a click on an occupied editable
- *     cell opens the assign modal in 'remove-student' or
- *     'remove-group' mode. The cell carries the mode directly; the
- *     controller does not re-derive it from UI state.
+ *   - The inline grades editor and schedule grid sub-editors.
+ *   - The schedule-assign flow (empty cells).
+ *   - The schedule-slot-open flow (occupied cells).
+ *   - The teaching-groups flow: toggling discipline containers,
+ *     opening the inline candidate picker, adding a student, and
+ *     removing a student. All writes route to
+ *     AcademyTeachingGroups.
  *
  * WHAT THIS DOES NOT OWN:
  *   - The content host. The shell provides it.
- *   - The class selection, character selection, display week, people
- *     filter, and character mode.
- *   - Re-rendering the shell. When state changes, the controller
- *     calls context.onChange().
- *   - Domain reads and writes. The aggregators produce VMs; the
- *     domain modules perform mutations.
+ *   - The class selection, character selection, display week,
+ *     people filter, and character mode.
+ *   - Re-rendering the shell.
+ *   - Domain reads and writes.
  *   - Cross-view navigation.
  *
- * CHARACTER MODE (v27):
- *   The mode is a DOMAIN FACT. It lives on the character record as
- *   `character.mode`. The controller:
- *     - Reads it via AcademyUI.getCharacterMode(charId).
- *     - Writes it via CharacterCRUD.setMode(charId, mode).
+ * TEACHING GROUPS FLOW:
+ *   The tab is scoped to the currently selected class and the
+ *   display week. Writes route to AcademyTeachingGroups:
+ *     - add:    AcademyTeachingGroups.addMemberToGroup(groupId,
+ *               charId, week)
+ *     - remove: AcademyTeachingGroups.removeMemberRecord(groupId,
+ *               charId)
  *
- * CLASS MEMBERSHIP VS INSTRUCTOR RELATIONSHIP (v29):
- *   A character is "in a class" in one of two senses:
+ *   Removal is COMPLETE — the member entry is deleted, no interval
+ *   is truncated, no history is preserved. Students who need to
+ *   change their group do so via a correction, not a schedule
+ *   change. The historical path (endMembership, which truncates
+ *   the interval at a week) is not exposed in this tab.
  *
- *     Student:    the classId is in the character's classIds array.
- *     Instructor: the character has an instructor-mode enrolment in
- *                 one of the class's offerings at the display week.
- *
- *   `isCharacterInClassVM(charId, classVM)` returns true for either
- *   sense. The instructor set is sourced from
- *   AcademyClasses.getClassInstructorIds(classId, week). There is
- *   no `class.instructorId` field; that was retired in v29.
- *
- * SCHEDULE SLOT OPEN FLOW:
- *   The schedule grid emits two action attributes on editable cells:
- *     - data-action="schedule-assign"      on empty cells
- *     - data-action="schedule-slot-open"   on occupied cells
- *
- *   The occupied-cell action carries:
- *     - data-day, data-hour     (structural; always present)
- *     - data-group-id           (the teaching group the slot belongs to)
- *     - data-session-id         (the session the slot belongs to)
- *     - data-mode               ('remove-student' | 'remove-group')
- *
- *   The mode value is set by the renderer from the grid VM's mode.
- *   The controller does not branch on character mode; it passes the
- *   mode through to the modal, which knows what to do with it.
- *
- *   This handler resolves display-only context the modal needs
- *   (discipline name, duration, member count, session count) and
- *   opens the modal. The mutation itself belongs to the modal.
+ *   The candidate picker state (which group's picker is open, and
+ *   the candidate list for it) lives in this controller's module
+ *   scope. It is passed to the renderer via VM fields prefixed
+ *   with an underscore, so the renderer can render it without
+ *   owning it.
  *
  * DEPENDENCY DIRECTION:
  *   Shell → registry → this controller.
@@ -98,29 +70,30 @@
  *   host    — the HTMLElement the shell allocates.
  *   context — { onChange: function() }
  *
- * DEPENDENCIES:
+ * DEPENDENCIES (mandatory):
  *   - window.AcademyUI
  *   - window.AcademyAggregator
  *   - window.AcademyCharacterDetailAggregator
- *   - window.AcademyClassDetail
- *   - window.AcademyCharacterDetail
- *   - window.CharacterCRUD                   (v27 — for setMode)
+ *   - window.CharacterCRUD
  *   - window.NotificationSystem
  *   - window.DomUtils
- *   - window.AcademyClasses                  (getClassInstructorIds)
- *   - window.AcademyGradesEditor             (lazy)
- *   - window.CalendarRenderer                (lazy)
- *   - window.AcademyCRUDModals               (lazy)
- *   - window.AcademyClassDisciplinesPicker   (lazy)
- *   - window.AcademyEnrollmentModal          (lazy)
- *   - window.AcademyScheduleAssignModal      (lazy)
- *   - window.AcademyDisciplines              (lazy)
- *   - window.AcademyEnrolments               (lazy)
- *   - window.AcademyEliminations             (lazy)
- *   - window.AcademyGroups                   (lazy)
- *   - window.AcademyTeachingGroups           (lazy)
- *   - window.AcademyTeachingSessions         (lazy)
- *   - window.CharacterQueries                (lazy)
+ *   - window.AcademyClasses
+ *
+ * DEPENDENCIES (lazy):
+ *   - window.AcademyClassDetail
+ *   - window.AcademyCharacterDetail
+ *   - window.AcademyGradesEditor
+ *   - window.CalendarRenderer
+ *   - window.AcademyCRUDModals
+ *   - window.AcademyClassDisciplinesPicker
+ *   - window.AcademyEnrollmentModal
+ *   - window.AcademyScheduleAssignModal
+ *   - window.AcademyDisciplines
+ *   - window.AcademyEnrolments
+ *   - window.AcademyEliminations
+ *   - window.AcademyTeachingGroups
+ *   - window.AcademyTeachingSessions
+ *   - window.CharacterQueries
  */
 
 (function() {
@@ -165,7 +138,8 @@
     }
     if (!AcademyCharacterDetailAggregator ||
         typeof AcademyCharacterDetailAggregator.getViewModel !== 'function' ||
-        typeof AcademyCharacterDetailAggregator.getScheduleGridViewModel !== 'function') {
+        typeof AcademyCharacterDetailAggregator.getScheduleGridViewModel !== 'function' ||
+        typeof AcademyCharacterDetailAggregator.getTeachingGroupCandidateViewModel !== 'function') {
         _missing.push('AcademyCharacterDetailAggregator API');
     }
     if (!CharacterCRUD ||
@@ -230,10 +204,6 @@
         return window.AcademyEliminations || null;
     }
 
-    function getGroups() {
-        return window.AcademyGroups || null;
-    }
-
     function getCharacterQueries() {
         return window.CharacterQueries || null;
     }
@@ -285,6 +255,15 @@
     var _activeCharacterTab = 'main';
     var _lastCharacterIdForTab = null;
     var _searchTimer = null;
+
+    // Teaching-groups picker state.
+    //
+    // _openPickerGroupId      the group whose inline candidate
+    //                         picker is open, or null.
+    // _pickerCandidates       the candidate list for that picker,
+    //                         or null while loading.
+    var _openPickerGroupId = null;
+    var _pickerCandidates = null;
 
     // ============================================================
     // CONTEXT NORMALISATION
@@ -404,6 +383,9 @@
         } else {
             _lastCharacterIdForTab = null;
             _activeCharacterTab = 'main';
+            // Leaving the character detail panel clears any
+            // picker state that was scoped to the character.
+            clearPickerState();
             html += renderClassDetailContent(classVM);
         }
 
@@ -643,6 +625,14 @@
             return '<p class="empty-state">Character not found.</p>';
         }
 
+        // Attach teaching-groups picker state to the VM. Underscore
+        // prefix marks these as controller-owned feature state; the
+        // renderer reads them but does not mutate them. Only
+        // meaningful when the active tab is teachingGroups; setting
+        // them on every render is harmless.
+        vm._openPickerGroupId = _openPickerGroupId;
+        vm._pickerCandidates = _pickerCandidates;
+
         var CharacterDetail = getCharacterDetailModule();
         if (CharacterDetail &&
             typeof CharacterDetail.renderHTML === 'function') {
@@ -677,7 +667,13 @@
         if (_lastCharacterIdForTab !== normalised) {
             _lastCharacterIdForTab = normalised;
             _activeCharacterTab = 'main';
+            clearPickerState();
         }
+    }
+
+    function clearPickerState() {
+        _openPickerGroupId = null;
+        _pickerCandidates = null;
     }
 
     // ============================================================
@@ -712,6 +708,9 @@
         if (tabBtn && tabBtn.dataset && tabBtn.dataset.tab) {
             e.preventDefault();
             _activeCharacterTab = tabBtn.dataset.tab;
+            // Any pending picker is scoped to the tab that opened
+            // it; leaving the tab abandons the picker.
+            clearPickerState();
             var ctx = getContext();
             ctx.onChange();
             return;
@@ -808,15 +807,6 @@
                     el.dataset.disciplineId
                 );
                 return;
-            case 'character-add-group-student':
-                handleAddGroupStudent(el.dataset.groupKey);
-                return;
-            case 'character-remove-group-student':
-                handleRemoveGroupStudent(
-                    el.dataset.groupKey,
-                    el.dataset.characterId
-                );
-                return;
 
             // ---- Score card ----
             case 'edit-social-score':
@@ -843,6 +833,26 @@
                 return;
             case 'schedule-slot-open':
                 handleScheduleSlotOpen(el);
+                return;
+
+            // ---- Teaching groups ----
+            case 'teaching-groups-toggle-discipline':
+                handleToggleTeachingGroupDiscipline(el.dataset.disciplineId);
+                return;
+            case 'teaching-groups-add-student':
+                handleOpenTeachingGroupPicker(el.dataset.groupId);
+                return;
+            case 'teaching-groups-add-student-cancel':
+                handleCloseTeachingGroupPicker();
+                return;
+            case 'teaching-groups-add-student-submit':
+                handleSubmitTeachingGroupAdd(el.dataset.groupId);
+                return;
+            case 'teaching-groups-remove-student':
+                handleRemoveTeachingGroupStudent(
+                    el.dataset.groupId,
+                    el.dataset.characterId
+                );
                 return;
 
             default:
@@ -879,27 +889,10 @@
         c.onChange();
     }
 
-    /**
-     * Is the character "in" the class in either sense?
-     *
-     *   1. Student: the classId appears in the character's classIds.
-     *   2. Instructor: the character teaches something in the class
-     *      at the current display week.
-     *
-     * The instructor check reads AcademyClasses.getClassInstructorIds
-     * for (classId, week). Prior to v29, it read `class.instructorId`;
-     * that field was retired.
-     *
-     * @param {string} charId
-     * @param {object} classVM
-     * @returns {boolean}
-     */
     function isCharacterInClassVM(charId, classVM) {
         if (!charId || !classVM || !classVM.id) { return false; }
         var target = String(charId);
 
-        // Instructor check: does this character teach anything in
-        // the class at the current display week?
         var week = AcademyUI.getDisplayWeek();
         var instructorIds = [];
         try {
@@ -917,7 +910,6 @@
             }
         }
 
-        // Student check: is the character on the class roster?
         var students = AcademyAggregator.getClassStudentsViewModel(
             classVM.id,
             week
@@ -1033,7 +1025,7 @@
     }
 
     // ============================================================
-    // CHARACTER MODE (v27)
+    // CHARACTER MODE
     // ============================================================
 
     function handleCharacterModeToggle(checked) {
@@ -1042,18 +1034,18 @@
 
         var newMode = checked ? 'instructor' : 'student';
 
-        // Adjust the active tab BEFORE the write resolves, so that
-        // if the write succeeds the re-render immediately shows a
-        // valid tab for the new mode.
         if (newMode === 'instructor' &&
             (_activeCharacterTab === 'grades' ||
                 _activeCharacterTab === 'teams')) {
             _activeCharacterTab = 'main';
         }
         if (newMode === 'student' &&
-            _activeCharacterTab === 'autoGroups') {
+            _activeCharacterTab === 'teachingGroups') {
             _activeCharacterTab = 'main';
         }
+
+        // A mode change invalidates the picker state.
+        clearPickerState();
 
         CharacterCRUD.setMode(charId, newMode)
             .then(function(result) {
@@ -1061,7 +1053,6 @@
                     var ctx = getContext();
                     ctx.onChange();
                 }
-                // On failure, the pipeline has already notified.
             })
             .catch(function(err) {
                 console.warn(
@@ -1195,10 +1186,6 @@
 
         var week = AcademyUI.getDisplayWeek();
 
-        // Presentation-only title override. Student mode gets the
-        // modal's default heading; instructor mode gets an
-        // instructor-appropriate heading. The write path is the
-        // same either way.
         var mode = AcademyUI.getCharacterMode(charId);
         var title = mode === 'instructor'
             ? 'Assign to teach a discipline'
@@ -1266,117 +1253,6 @@
                 '[AcademyPeopleController] Leave failed:', err
             );
             notify('Failed to leave discipline.', 'error');
-        });
-    }
-
-    // ============================================================
-    // INSTRUCTOR GROUP FLOWS
-    // ============================================================
-
-    function handleAddGroupStudent(groupKey) {
-        if (!groupKey) { return; }
-
-        var AG = getGroups();
-        if (!AG || typeof AG.getGroupStudents !== 'function') {
-            notify('Auto-groups module not available.', 'error');
-            return;
-        }
-
-        var CQ = getCharacterQueries();
-        if (!CQ) {
-            notify('Character queries not available.', 'error');
-            return;
-        }
-
-        var currentIds = AG.getGroupStudents(groupKey) || [];
-        var currentSet = {};
-        for (var i = 0; i < currentIds.length; i++) {
-            currentSet[String(currentIds[i])] = true;
-        }
-
-        var allChars = CQ.getCharacters() || [];
-        var candidates = allChars.filter(function(c) {
-            if (!c || !c.id) { return false; }
-            return !currentSet[String(c.id)];
-        });
-
-        candidates.sort(function(a, b) {
-            return CQ.getDisplayName(a).localeCompare(
-                CQ.getDisplayName(b)
-            );
-        });
-
-        if (candidates.length === 0) {
-            notify('No eligible students to add.', 'info');
-            return;
-        }
-
-        var names = candidates.map(function(c, idx) {
-            return (idx + 1) + '. ' + CQ.getDisplayName(c);
-        }).join('\n');
-
-        var input = prompt(
-            'Add which student to this group?\n\n' + names +
-            '\n\nEnter the number:',
-            '1'
-        );
-
-        if (input === null) { return; }
-
-        var choice = parseInt(input, 10);
-        if (isNaN(choice) || choice < 1 || choice > candidates.length) {
-            notify('Invalid selection.', 'error');
-            return;
-        }
-
-        var picked = candidates[choice - 1];
-        AG.addStudentToGroup(groupKey, picked.id).then(function(result) {
-            if (result && result.success) {
-                var ctx = getContext();
-                ctx.onChange();
-            }
-        }).catch(function(err) {
-            console.warn(
-                '[AcademyPeopleController] Add student to group failed:',
-                err
-            );
-            notify('Failed to add student.', 'error');
-        });
-    }
-
-    function handleRemoveGroupStudent(groupKey, charId) {
-        if (!groupKey || !charId) { return; }
-
-        var AG = getGroups();
-        if (!AG || typeof AG.removeStudentFromGroup !== 'function') {
-            notify('Auto-groups module not available.', 'error');
-            return;
-        }
-
-        var name = 'this student';
-        var CQ = getCharacterQueries();
-        if (CQ) {
-            var char = CQ.getCharacterById(charId);
-            if (char) {
-                name = '"' + CQ.getDisplayName(char) + '"';
-            }
-        }
-
-        if (!confirm('Remove ' + name + ' from this group?')) {
-            return;
-        }
-
-        AG.removeStudentFromGroup(groupKey, charId).then(function(result) {
-            if (result && result.success) {
-                var ctx = getContext();
-                ctx.onChange();
-            }
-        }).catch(function(err) {
-            console.warn(
-                '[AcademyPeopleController] Remove student from group ' +
-                'failed:', err
-            );
-            notify('Failed to remove student.', 'error');
         });
     }
 
@@ -1565,30 +1441,6 @@
     // ============================================================
     // SCHEDULE SLOT OPEN FLOW
     // ============================================================
-    //
-    // Called when the user clicks an occupied editable cell. The
-    // cell carries the mode directly — 'remove-student' or
-    // 'remove-group' — because the renderer resolved it from the
-    // grid VM's mode. This handler does not re-derive the mode
-    // from the character's current mode; it reads the emitted
-    // value and passes it through.
-    //
-    // WHAT THIS RESOLVES:
-    //   The modal needs display-only context that the grid VM
-    //   does not carry:
-    //     - the discipline name for the group
-    //     - the session's duration
-    //     - the member count on the group
-    //     - the session count on the group (for remove-group)
-    //
-    //   These are read from the live stores. If a store is
-    //   missing, the modal still opens with whatever context is
-    //   available; the modal treats missing values as null and
-    //   renders only the fields it has.
-    //
-    // WHAT THE MUTATION IS:
-    //   The modal performs the mutation. This handler does not.
-    //   It opens the modal; the modal owns the transaction.
 
     function handleScheduleSlotOpen(el) {
         if (!el || !el.dataset) { return; }
@@ -1628,14 +1480,7 @@
             ? String(el.dataset.sessionId)
             : null;
 
-        if (mode === 'remove-group' && !groupId) {
-            notify(
-                'Cannot open this slot: group ID is missing.',
-                'error'
-            );
-            return;
-        }
-        if (mode === 'remove-student' && !groupId) {
+        if (!groupId) {
             notify(
                 'Cannot open this slot: group ID is missing.',
                 'error'
@@ -1643,9 +1488,6 @@
             return;
         }
 
-        // For remove-student, we need a character to remove. The
-        // currently-selected character is the one whose grid the
-        // user clicked into.
         var charId = AcademyUI.getSelectedCharacterId();
         if (mode === 'remove-student' && !isNonEmptyString(charId)) {
             notify('No character selected.', 'error');
@@ -1659,7 +1501,7 @@
         var sessionCount = null;
 
         var TG = getTeachingGroups();
-        if (TG && groupId && typeof TG.getGroup === 'function') {
+        if (TG && typeof TG.getGroup === 'function') {
             var group = null;
             try {
                 group = TG.getGroup(groupId);
@@ -1689,7 +1531,6 @@
             }
         }
 
-        // Duration and session count come from the sessions store.
         var TS = getTeachingSessions();
         if (TS && groupId) {
             var sessions = [];
@@ -1704,9 +1545,6 @@
             if (Array.isArray(sessions)) {
                 sessionCount = sessions.length;
 
-                // Find the session that owns this slot. Prefer the
-                // one the renderer identified by id; fall back to a
-                // match on (day, startTime).
                 var targetSession = null;
                 for (var i = 0; i < sessions.length; i++) {
                     var s = sessions[i];
@@ -1728,7 +1566,6 @@
             }
         }
 
-        // ---- Open the modal ----
         var Modal = getScheduleAssignModal();
         if (!Modal || typeof Modal.openModal !== 'function') {
             notify(
@@ -1767,6 +1604,195 @@
     }
 
     // ============================================================
+    // TEACHING GROUPS FLOW
+    // ============================================================
+
+    function handleToggleTeachingGroupDiscipline(disciplineId) {
+        if (!isNonEmptyString(disciplineId)) { return; }
+
+        var charId = AcademyUI.getSelectedCharacterId();
+        if (!isNonEmptyString(charId)) { return; }
+
+        // The collapse key is (charId, disciplineId). Character is
+        // included so two instructors in the same session do not
+        // share collapse state.
+        if (typeof AcademyUI.toggleExpanded !== 'function') {
+            // AcademyUI lacks the API; the renderer will fall back
+            // to expanded. Nothing to do.
+            return;
+        }
+
+        var key = 'teachingGroup:' + String(charId) + ':' + String(disciplineId);
+        AcademyUI.toggleExpanded(key);
+
+        var ctx = getContext();
+        ctx.onChange();
+    }
+
+    function handleOpenTeachingGroupPicker(groupId) {
+        if (!isNonEmptyString(groupId)) { return; }
+
+        var charId = AcademyUI.getSelectedCharacterId();
+        if (!isNonEmptyString(charId)) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        var week = AcademyUI.getDisplayWeek();
+
+        var vm = null;
+        try {
+            vm = AcademyCharacterDetailAggregator
+                .getTeachingGroupCandidateViewModel(charId, groupId, {
+                    week: week
+                });
+        } catch (e) {
+            console.warn(
+                '[AcademyPeopleController] ' +
+                'getTeachingGroupCandidateViewModel threw:', e
+            );
+            vm = null;
+        }
+
+        if (!vm) {
+            notify('Could not open the candidate list.', 'error');
+            return;
+        }
+
+        _openPickerGroupId = String(groupId);
+        _pickerCandidates = vm.candidates;
+
+        var ctx = getContext();
+        ctx.onChange();
+    }
+
+    function handleCloseTeachingGroupPicker() {
+        if (_openPickerGroupId === null && _pickerCandidates === null) {
+            return;
+        }
+        clearPickerState();
+        var ctx = getContext();
+        ctx.onChange();
+    }
+
+    function handleSubmitTeachingGroupAdd(groupId) {
+        if (!isNonEmptyString(groupId)) { return; }
+
+        // Read the selected candidate from the DOM. The picker
+        // rendered a select element inside the tab body.
+        var selectEl = document.querySelector(
+            '.academy-teaching-group-candidate-picker' +
+            '[data-group-id="' + cssEscape(groupId) + '"] ' +
+            '.academy-teaching-group-candidate-select'
+        );
+        if (!selectEl) {
+            notify('Could not read the selected student.', 'error');
+            return;
+        }
+
+        var charId = selectEl.value;
+        if (!isNonEmptyString(charId)) {
+            notify('Select a student first.', 'error');
+            return;
+        }
+
+        var TG = getTeachingGroups();
+        if (!TG || typeof TG.addMemberToGroup !== 'function') {
+            notify('Teaching groups module not available.', 'error');
+            return;
+        }
+
+        var week = AcademyUI.getDisplayWeek();
+
+        TG.addMemberToGroup(groupId, charId, week)
+            .then(function(result) {
+                if (result && result.success) {
+                    clearPickerState();
+                    var ctx = getContext();
+                    ctx.onChange();
+                } else if (result && result.message) {
+                    notify(result.message, 'error');
+                }
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[AcademyPeopleController] addMemberToGroup failed:',
+                    err
+                );
+                notify('Failed to add student to group.', 'error');
+            });
+    }
+
+    function handleRemoveTeachingGroupStudent(groupId, charId) {
+        if (!isNonEmptyString(groupId) || !isNonEmptyString(charId)) {
+            return;
+        }
+
+        var TG = getTeachingGroups();
+        if (!TG || typeof TG.removeMemberRecord !== 'function') {
+            notify('Teaching groups module not available.', 'error');
+            return;
+        }
+
+        var name = 'this student';
+        var CQ = getCharacterQueries();
+        if (CQ) {
+            var char = CQ.getCharacterById(charId);
+            if (char) {
+                name = '"' + CQ.getDisplayName(char) + '"';
+            }
+        }
+
+        if (!confirm(
+            'Remove ' + name + ' from this group?\n\n' +
+            'This is a correction. The student is completely removed ' +
+            'from the group; there is no record of them having been in ' +
+            'it. To change a group, remove here and re-assign from the ' +
+            'schedule grid.'
+        )) {
+            return;
+        }
+
+        TG.removeMemberRecord(groupId, charId)
+            .then(function(result) {
+                if (result && result.success) {
+                    // If the picker was open on this group, refresh
+                    // its candidates too — the removed student is
+                    // now eligible.
+                    if (_openPickerGroupId &&
+                        String(_openPickerGroupId) === String(groupId)) {
+                        handleOpenTeachingGroupPicker(groupId);
+                        return;
+                    }
+                    var ctx = getContext();
+                    ctx.onChange();
+                } else if (result && result.message) {
+                    notify(result.message, 'error');
+                }
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[AcademyPeopleController] removeMemberRecord failed:',
+                    err
+                );
+                notify('Failed to remove student from group.', 'error');
+            });
+    }
+
+    /**
+     * Minimal CSS.escape shim. Used to build a selector for a
+     * groupId, which is a generated string but could in principle
+     * contain characters that need escaping.
+     */
+    function cssEscape(value) {
+        if (typeof CSS !== 'undefined' &&
+            typeof CSS.escape === 'function') {
+            return CSS.escape(String(value));
+        }
+        return String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+    }
+
+    // ============================================================
     // SEARCH DEBOUNCE
     // ============================================================
 
@@ -1796,6 +1822,7 @@
 
         _activeCharacterTab = 'main';
         _lastCharacterIdForTab = null;
+        clearPickerState();
 
         _host = null;
         _context = null;

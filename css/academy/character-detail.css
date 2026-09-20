@@ -14,7 +14,8 @@
  *   - Grades tab: host element + inline grades editor
  *   - Schedule tab: host element
  *   - Teams tab: student team list
- *   - Auto-Groups tab: instructor group blocks
+ *   - Teaching Groups tab: collapsible discipline containers,
+ *     group blocks, inline candidate picker, roster
  *   - Enrollment modal (opened from the Disciplines tab)
  *
  * Load order: shared.css → academy.css → academy/character-detail.css
@@ -486,7 +487,7 @@
    and adds three things:
 
      1. A distinct border-left colour (--info, matching the
-        instructor role badge and the Auto-Groups block).
+        instructor role badge and the Teaching Groups block).
 
      2. A classes list, shown next to each discipline, listing
         every class the instructor teaches that discipline for.
@@ -767,103 +768,235 @@
 }
 
 /* ============================================================
-   AUTO-GROUPS TAB
+   TEACHING GROUPS TAB
+   ============================================================
+   Instructor-mode tab. Lists the teaching groups the instructor
+   runs for the currently selected class, grouped by discipline.
+
+   Layout:
+
+     [Discipline header — toggles collapse]   [N groups]
+        [Group block]
+           [Group name]  [N students]  [+ Add Student]
+           [Inline candidate picker, when open]
+           [Roster: one row per member, each with a Remove button]
+        [Group block]
+        ...
+
+   Every discipline the instructor teaches for the class appears
+   as a container, even when it has no groups yet. The container
+   shows an empty state in that case.
+
+   Visual language matches the instructor Disciplines tab
+   (--info border for the discipline header) and the roster
+   patterns already in this file.
    ============================================================ */
 
-.academy-character-auto-groups {
+.academy-character-teaching-groups {
     /* reuses .academy-character-detail-section */
 }
 
-.academy-instructor-group {
-    margin-bottom: 10px;
-    padding: 10px;
+.academy-teaching-group-discipline-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* ---------- Discipline container ---------- */
+
+.academy-teaching-group-discipline {
     background: var(--panel-alt);
     border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+
+.academy-teaching-group-discipline-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 10px;
+    background: var(--panel);
+    border: none;
     border-left: 3px solid var(--info);
-    border-radius: 6px;
+    cursor: pointer;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    transition: background 0.15s;
 }
 
-.academy-instructor-group:last-child {
-    margin-bottom: 0;
+.academy-teaching-group-discipline-header:hover {
+    background: var(--info-soft);
 }
 
-.academy-instructor-group-header {
+.academy-teaching-group-discipline-caret {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    width: 12px;
+    display: inline-block;
+    flex-shrink: 0;
+}
+
+.academy-teaching-group-discipline-name {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--info);
+    flex: 1;
+    min-width: 0;
+}
+
+.academy-teaching-group-discipline-count {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+.academy-teaching-group-discipline-body {
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.academy-teaching-group-empty {
+    margin: 0;
+    padding: 4px 0;
+}
+
+/* ---------- Group block ---------- */
+
+.academy-teaching-group-block {
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.academy-teaching-group-header {
     display: flex;
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
-    padding-bottom: 8px;
-    margin-bottom: 8px;
-    border-bottom: 1px solid var(--border-soft);
 }
 
-.academy-instructor-group-name {
-    flex: 1;
-    min-width: 0;
-    font-size: 0.8rem;
+.academy-teaching-group-name {
+    font-size: 0.75rem;
     font-weight: 600;
     color: var(--text);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
-.academy-instructor-group-count {
+.academy-teaching-group-count {
     font-size: 0.65rem;
     color: var(--text-dim);
     white-space: nowrap;
 }
 
-.academy-instructor-group-header button.small {
-    font-size: 0.65rem;
-    padding: 3px 10px;
-    flex: 0 0 auto;
+.academy-teaching-group-add-btn {
+    flex-shrink: 0;
     white-space: nowrap;
+    font-size: 0.62rem;
+    padding: 2px 8px;
 }
 
-/* ---------- Empty state inside a group ---------- */
+/* ---------- Inline candidate picker ---------- */
 
-.academy-instructor-group-empty {
-    padding: 6px 4px;
-    font-size: 0.7rem;
-    font-style: italic;
+.academy-teaching-group-candidate-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px;
+    background: var(--panel-alt);
+    border: 1px dashed var(--accent);
+    border-radius: 4px;
 }
 
-/* ---------- Group roster ---------- */
+.academy-teaching-group-candidate-label {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
 
-.academy-instructor-group-roster {
+.academy-teaching-group-candidate-select {
+    width: 100%;
+    padding: 4px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.72rem;
+}
+
+.academy-teaching-group-candidate-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+    margin-top: 2px;
+}
+
+.academy-teaching-group-candidate-actions button.small {
+    font-size: 0.62rem;
+    padding: 2px 10px;
+}
+
+/* ---------- Roster ---------- */
+
+.academy-teaching-group-roster {
     display: flex;
     flex-direction: column;
     gap: 3px;
 }
 
-.academy-instructor-group-roster-row {
+.academy-teaching-group-roster-row {
     display: flex;
-    justify-content: space-between;
     align-items: center;
     gap: 8px;
     padding: 4px 8px;
-    background: var(--bg);
-    border-radius: 4px;
+    background: var(--panel-alt);
+    border-radius: 3px;
+    border-left: 2px solid var(--info);
     font-size: 0.72rem;
 }
 
-.academy-instructor-group-roster-name {
-    flex: 1;
-    min-width: 0;
+.academy-teaching-group-roster-name {
     font-weight: 500;
     color: var(--text);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
-.academy-instructor-group-roster-status {
-    font-size: 0.62rem;
+.academy-teaching-group-roster-status {
+    font-size: 0.6rem;
     color: var(--text-dim);
     font-style: italic;
     white-space: nowrap;
+    flex-shrink: 0;
 }
 
-.academy-instructor-group-roster-row button.small {
+.academy-teaching-group-roster-row button.small {
     font-size: 0.6rem;
     padding: 2px 8px;
-    flex: 0 0 auto;
+    flex-shrink: 0;
     white-space: nowrap;
+}
+
+.academy-teaching-group-roster-empty {
+    margin: 0;
+    padding: 4px 0;
 }
 
 /* ============================================================
@@ -1074,21 +1207,32 @@
         width: 100%;
     }
 
-    .academy-instructor-group-header {
+    /* ---------- Teaching Groups (mobile) ---------- */
+
+    .academy-teaching-group-header {
         gap: 4px;
     }
 
-    .academy-instructor-group-header button.small {
+    .academy-teaching-group-add-btn {
         width: 100%;
         text-align: center;
     }
 
-    .academy-instructor-group-roster-row {
+    .academy-teaching-group-roster-row {
         flex-wrap: wrap;
     }
 
-    .academy-instructor-group-roster-row button.small {
+    .academy-teaching-group-roster-row button.small {
         margin-left: auto;
+    }
+
+    .academy-teaching-group-candidate-actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .academy-teaching-group-candidate-actions button.small {
+        width: 100%;
     }
 
     /* ---------- Grades editor (mobile) ---------- */
