@@ -5,8 +5,10 @@
  * Path: js/modules/academy/academy-location-view.js
  *
  * This module is responsible for:
+ *   - Rendering the top bar with the week selector
  *   - Rendering the location list with type/search filters
- *   - Rendering the location detail panel (type, capacity, schedule)
+ *   - Rendering the location detail panel (type, capacity,
+ *     schedule host)
  *   - Rendering an empty state when no location is selected
  *
  * IMPORTANT:
@@ -18,10 +20,27 @@
  *   - Uses DomUtils for escaping (MANDATORY, no fallback).
  *   - Returns an HTML string.
  *
+ * SCHEDULE HOST:
+ *   The detail panel renders an empty #academy-location-schedule-host
+ *   div. Mounting the grid into that host is a controller-lifecycle
+ *   concern and lives in AcademyLocationController's
+ *   mountLocationScheduleGridIfPresent, not here. The renderer emits
+ *   the host; the controller injects the grid.
+ *
+ *   This mirrors the character detail panel's Schedule tab: the
+ *   renderer emits #academy-schedule-host, and the People controller
+ *   mounts the grid into it.
+ *
+ * WEEK SELECTOR:
+ *   The top bar carries the week input. This is the same pattern
+ *   every other Academy view with a week selector uses. Changing
+ *   the week fires #academy-location-week-input's change event,
+ *   which the controller routes to AcademyUI.setDisplayWeek.
+ *
  * VIEW MODEL SOURCE:
- *   AcademyAggregator.getLocationViewModel(filters, week, selectedLocationId).
- *   Every display-ready value (including typeLabel) is on the VM.
- *   The renderer does not derive labels from raw enum values.
+ *   AcademyAggregator.getLocationViewModel(filters, week,
+ *   selectedLocationId). Every display-ready value (including
+ *   typeLabel) is on the VM.
  *
  * INTERFACE:
  *   AcademyLocationView.renderHTML(viewModel) -> string
@@ -55,34 +74,23 @@
  *       schedule:   [ <slotVM> ]
  *     }
  *
- *   slotVM:
- *     {
- *       day:            number,    // 1-7
- *       hour:           number,    // 0-23
- *       disciplineId:   string,
- *       disciplineName: string,
- *       duration:       number | null,
- *       label:          string
- *     }
- *
- *   The `schedule` array is pre-sorted by (day, hour) in the
- *   aggregator. The renderer does not re-sort.
+ *   The `schedule` array on detailVM is no longer rendered here.
+ *   It is dead (the grid replaces it), but the VM still carries it
+ *   because AcademyAggregator computes the count from it. Removing
+ *   it from the VM is a separate change.
  *
  * EVENTS EMITTED (data-* attributes, for AcademyView to bind):
- *   - .academy-location-row [data-location-id]           (click)
- *   - #academy-location-type-filter                      (change)
- *   - #academy-location-search                           (input)
- *   - [data-action="location-add"]                       (click)
- *   - [data-action="location-edit"]   [data-location-id] (click)
- *   - [data-action="location-delete"] [data-location-id] (click)
+ *   - #academy-location-week-input                        (change/keydown)
+ *   - .academy-location-row [data-location-id]            (click)
+ *   - #academy-location-type-filter                       (change)
+ *   - #academy-location-search                            (input)
+ *   - [data-action="location-add"]                        (click)
+ *   - [data-action="location-edit"]   [data-location-id]  (click)
+ *   - [data-action="location-delete"] [data-location-id]  (click)
  *
  * DEPENDENCIES:
  *   - window.DomUtils         (MANDATORY)
- *   - window.CalendarConstants (MANDATORY) — day / hour labels
- *
- * USAGE:
- *   var html = AcademyLocationView.renderHTML(vm);
- *   container.innerHTML = html;
+ *   - window.CalendarConstants (MANDATORY) — week bounds
  */
 
 (function() {
@@ -105,10 +113,11 @@
     }
 
     if (!CalendarConstants ||
-        typeof CalendarConstants.getDayName !== 'function') {
+        typeof CalendarConstants.MIN_WEEK !== 'number' ||
+        typeof CalendarConstants.MAX_WEEK !== 'number') {
         throw new Error(
             '[AcademyLocationView] Missing mandatory dependency: ' +
-            'CalendarConstants.getDayName'
+            'CalendarConstants.MIN_WEEK / MAX_WEEK'
         );
     }
 
@@ -152,29 +161,11 @@
         }
     }
 
-    function getDayName(dayNum) {
-        return CalendarConstants.getDayName(dayNum) || ('Day ' + dayNum);
-    }
-
-    function formatHour(hourNum) {
-        if (typeof CalendarConstants.formatHour === 'function') {
-            return CalendarConstants.formatHour(hourNum);
-        }
-        return String(hourNum) + ':00';
-    }
-
     function formatCapacity(value) {
         if (!isFiniteNumber(value) || value <= 0) {
             return '';
         }
         return String(value);
-    }
-
-    function formatDuration(value) {
-        if (!isFiniteNumber(value)) {
-            return '\u2014';
-        }
-        return String(value) + 'h';
     }
 
     // ============================================================
@@ -189,10 +180,39 @@
 
         return (
             '<div class="academy-body academy-location-layout">' +
-                renderListPanel(locations, filters) +
-                renderDetailPanel(selected, vm.week) +
+                renderTopBar(vm.week) +
+                '<div class="academy-location-panels">' +
+                    renderListPanel(locations, filters) +
+                    renderDetailPanel(selected, vm.week) +
+                '</div>' +
             '</div>'
         );
+    }
+
+    // ============================================================
+    // TOP BAR
+    // ============================================================
+
+    function renderTopBar(week) {
+        var html = '';
+        html += '<div class="academy-location-top-bar">';
+
+        html += '<div class="academy-location-top-left"></div>';
+
+        html += '<div class="academy-location-top-right">';
+        html += '<label class="academy-top-label" ' +
+                    'for="academy-location-week-input">Week:</label>';
+        html += '<input type="number" id="academy-location-week-input" ' +
+                    'class="academy-week-input" ' +
+                    'value="' +
+                        escapeAttribute(isFiniteNumber(week) ? String(week) : '') +
+                    '" ' +
+                    'min="' + escapeAttribute(String(CalendarConstants.MIN_WEEK)) + '" ' +
+                    'max="' + escapeAttribute(String(CalendarConstants.MAX_WEEK)) + '">';
+        html += '</div>';
+
+        html += '</div>';
+        return html;
     }
 
     // ============================================================
@@ -342,7 +362,7 @@
         return (
             '<div class="academy-detail-empty">' +
                 '<p class="empty-state small">' +
-                    'Select a location to view its details.' +
+                    'Select a location to view its details and schedule.' +
                 '</p>' +
             '</div>'
         );
@@ -416,78 +436,24 @@
         html += '<div class="academy-location-detail-section ' +
                     'academy-location-schedule">';
 
-        var schedule = Array.isArray(l.schedule) ? l.schedule : [];
-        var count = schedule.length;
-
         html += '<div class="academy-location-detail-section-header">';
         html += '<h4 class="academy-location-detail-section-title">Schedule</h4>';
-        html += '<span class="academy-location-detail-section-subtitle">' +
-                    (isFiniteNumber(week)
-                        ? 'Week ' + escapeHtml(String(week))
-                        : '') +
-                '</span>';
-        html += '<span class="academy-location-detail-section-count">' +
-                    count +
-                '</span>';
+
+        if (isFiniteNumber(week)) {
+            html += '<span class="academy-location-detail-section-subtitle">' +
+                        'Week ' + escapeHtml(String(week)) +
+                    '</span>';
+        }
+
         html += '</div>';
 
-        if (count === 0) {
-            html += '<p class="empty-state small">' +
-                        'No classes scheduled at this location for this week.' +
-                    '</p>';
-            html += '</div>';
-            return html;
-        }
+        // The host is empty. AcademyLocationController mounts the
+        // grid into it. Mirrors the character detail panel's
+        // #academy-schedule-host.
+        html += '<div id="academy-location-schedule-host" ' +
+                    'class="academy-location-schedule-host"></div>';
 
-        // The VM pre-sorts the schedule by (day, hour). No re-sort here.
-        html += '<table class="academy-location-schedule-table">';
-        html += '<thead>';
-        html += '<tr>';
-        html += '<th class="day-col">Day</th>';
-        html += '<th class="time-col">Time</th>';
-        html += '<th class="discipline-col">Discipline</th>';
-        html += '<th class="duration-col">Duration</th>';
-        html += '</tr>';
-        html += '</thead>';
-        html += '<tbody>';
-
-        for (var i = 0; i < schedule.length; i++) {
-            html += renderScheduleRow(schedule[i]);
-        }
-
-        html += '</tbody>';
-        html += '</table>';
         html += '</div>';
-
-        return html;
-    }
-
-    function renderScheduleRow(entry) {
-        if (!entry) {
-            return '';
-        }
-
-        var dayName = getDayName(entry.day);
-        var hourDisplay = formatHour(entry.hour);
-        var disciplineName = entry.disciplineName || 'Unknown';
-        var durationDisplay = formatDuration(entry.duration);
-        var label = isNonEmptyString(entry.label) ? entry.label : '';
-
-        var html = '<tr class="academy-location-schedule-row">';
-        html += '<td class="day-col">' + escapeHtml(dayName) + '</td>';
-        html += '<td class="time-col">' + escapeHtml(hourDisplay) + '</td>';
-        html += '<td class="discipline-col">' + escapeHtml(disciplineName);
-        if (label) {
-            html += ' <span class="academy-location-schedule-label">[' +
-                        escapeHtml(label) +
-                    ']</span>';
-        }
-        html += '</td>';
-        html += '<td class="duration-col">' +
-                    escapeHtml(durationDisplay) +
-                '</td>';
-        html += '</tr>';
-
         return html;
     }
 

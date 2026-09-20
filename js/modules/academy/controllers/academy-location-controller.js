@@ -5,74 +5,53 @@
  * Path: js/modules/academy/controllers/academy-location-controller.js
  *
  * The Locations feature controller. Owns the Locations view: its
- * render, its row selection, its type/search filters, and its CRUD
- * modal routing.
+ * render, its row selection, its type/search filters, its week
+ * selector, its CRUD modal routing, and the schedule grid mount.
  *
  * WHAT THIS OWNS:
- *   - Rendering the Locations view (sidebar, detail panel) into the
- *     shell's content host.
+ *   - Rendering the Locations view into the shell's content host.
  *   - Handling clicks, changes, inputs, and keydowns routed by the
  *     shell for events that occur inside the host.
- *   - The location selection (_selectedLocationId) — the id of the
- *     currently expanded location, or null.
+ *   - The location selection (_selectedLocationId).
  *   - The list filter (_locationFilters: { type, search }).
  *   - The search debounce timer.
- *   - Routing location-* actions to AcademyCRUDModals
- *     (location-add, location-edit, location-delete).
+ *   - Routing location-* actions to AcademyCRUDModals.
+ *   - Mounting the schedule grid into
+ *     #academy-location-schedule-host.
  *
  * WHAT THIS DOES NOT OWN:
  *   - The content host. The shell provides it.
- *   - The display week. The controller reads it from AcademyUI on
- *     each render via context.week (with an AcademyUI fallback).
- *   - Re-rendering the shell. When a state change or mutation should
- *     re-render, the controller calls context.onChange().
- *   - Location domain reads and writes. AcademyLocations owns them;
- *     AcademyAggregator.getLocationViewModel produces the VM; the
- *     CRUD modals perform the mutations.
- *   - Any navigation to another view. The Locations view has no
- *     cross-view navigation.
+ *   - The display week. The controller reads and writes it through
+ *     AcademyUI, same as every other Academy view.
+ *   - Re-rendering the shell.
+ *   - Location domain reads and writes.
  *
- * DEPENDENCY DIRECTION:
- *   Shell → registry → this controller.
- *   This controller never references window.AcademyView.
+ * SCHEDULE GRID:
+ *   The schedule grid is produced by AcademyCalendarAggregator,
+ *   which reads through the projector. The controller's job is to
+ *   read the grid VM and hand it to CalendarRenderer, which
+ *   returns HTML. The controller does not know how the grid is
+ *   shaped; it only knows how to ask for it and how to place it.
  *
- * RENDER SIGNATURE:
- *   render(host, context)
+ *   This mirrors the People controller's
+ *   mountScheduleGridIfPresent: same lifecycle, same pattern.
  *
- *   host    — the HTMLElement the shell allocates for the active
- *             controller.
- *   context — {
- *               week: number,
- *               onChange: function()
- *             }
+ * WEEK SELECTOR:
+ *   The location view's top bar carries a week input. Changing the
+ *   week fires AcademyUI.setDisplayWeek and re-renders the view.
+ *   The grid re-mounts on the new week because the render function
+ *   is re-entered.
  *
- *   The week is passed in for convenience and also readable from
- *   AcademyUI. Either path produces the same value.
- *
- * EVENT ROUTING:
- *   The controller's handleClick handles location row selection and
- *   the three location-* actions. handleChange handles the type
- *   filter. handleInput handles the search debounce.
- *
- *   The renderer's action strings and data attributes are unchanged
- *   from pre-S1.6. No renderer changes are needed.
- *
- * STATE OWNERSHIP:
- *   The location selection (_selectedLocationId) is feature state:
- *   which location's detail panel is expanded. It survives a view
- *   switch (the shell's module-scope selection did too).
- *
- *   The filter (_locationFilters) is feature state, and like the
- *   discipline filter, it survives a view switch.
- *
- *   The search debounce timer is cleared on unmount.
- *
- * DEPENDENCIES:
+ * DEPENDENCIES (mandatory):
  *   - window.AcademyUI
  *   - window.AcademyAggregator
  *   - window.AcademyLocationView
- *   - window.AcademyCRUDModals     (lazy)
  *   - window.NotificationSystem
+ *
+ * DEPENDENCIES (lazy):
+ *   - window.AcademyCRUDModals
+ *   - window.AcademyCalendarAggregator
+ *   - window.CalendarRenderer
  */
 
 (function() {
@@ -94,8 +73,9 @@
     var _missing = [];
 
     if (!AcademyUI ||
-        typeof AcademyUI.getDisplayWeek !== 'function') {
-        _missing.push('AcademyUI.getDisplayWeek');
+        typeof AcademyUI.getDisplayWeek !== 'function' ||
+        typeof AcademyUI.setDisplayWeek !== 'function') {
+        _missing.push('AcademyUI display-week API');
     }
     if (!AcademyAggregator ||
         typeof AcademyAggregator.getLocationViewModel !== 'function') {
@@ -119,11 +99,19 @@
     window.__academyLocationControllerLoaded = true;
 
     // ============================================================
-    // OPTIONAL DEPENDENCY ACCESSOR
+    // OPTIONAL DEPENDENCY ACCESSORS
     // ============================================================
 
     function getCRUDModals() {
         return window.AcademyCRUDModals || null;
+    }
+
+    function getCalendarAggregator() {
+        return window.AcademyCalendarAggregator || null;
+    }
+
+    function getCalendarRenderer() {
+        return window.CalendarRenderer || null;
     }
 
     // ============================================================
@@ -158,18 +146,11 @@
             ? rawContext
             : {};
 
-        var week = typeof ctx.week === 'number' && isFinite(ctx.week)
-            ? ctx.week
-            : AcademyUI.getDisplayWeek();
-
         var onChange = typeof ctx.onChange === 'function'
             ? ctx.onChange
             : function() {};
 
-        return {
-            week: week,
-            onChange: onChange
-        };
+        return { onChange: onChange };
     }
 
     function getContext() {
@@ -189,11 +170,13 @@
         _host = host;
         _context = normaliseContext(rawContext);
 
+        var week = AcademyUI.getDisplayWeek();
+
         var vm;
         try {
             vm = AcademyAggregator.getLocationViewModel(
                 _locationFilters,
-                _context.week,
+                week,
                 _selectedLocationId
             );
         } catch (e) {
@@ -210,10 +193,6 @@
             return;
         }
 
-        // The aggregator may drop a stale selection (selected null
-        // when the id no longer names a filtered location). Adopt
-        // the resolved state so the controller's view is consistent
-        // with what was actually rendered.
         if (!vm.selected) {
             _selectedLocationId = null;
         }
@@ -235,6 +214,87 @@
         }
 
         host.innerHTML = html;
+
+        // Mount the schedule grid into its host. This runs after
+        // the innerHTML swap, so the host element is present.
+        if (_selectedLocationId) {
+            mountLocationScheduleGridIfPresent(_selectedLocationId, week);
+        }
+    }
+
+    // ============================================================
+    // SCHEDULE GRID MOUNT
+    // ============================================================
+
+    function mountLocationScheduleGridIfPresent(locationId, week) {
+        var host = document.getElementById('academy-location-schedule-host');
+        if (!host) { return; }
+
+        var Renderer = getCalendarRenderer();
+        if (!Renderer || typeof Renderer.renderGrid !== 'function') {
+            host.innerHTML = '<p class="empty-state small">' +
+                'Calendar renderer not available.' +
+                '</p>';
+            return;
+        }
+
+        var ACA = getCalendarAggregator();
+        if (!ACA || typeof ACA.getLocationScheduleViewModel !== 'function') {
+            host.innerHTML = '<p class="empty-state small">' +
+                'Schedule data not available.' +
+                '</p>';
+            return;
+        }
+
+        var gridVM = null;
+        try {
+            gridVM = ACA.getLocationScheduleViewModel(locationId, week);
+        } catch (e) {
+            console.warn(
+                '[AcademyLocationController] ' +
+                'getLocationScheduleViewModel threw:', e
+            );
+        }
+
+        if (!gridVM) {
+            host.innerHTML = '<p class="empty-state small">' +
+                'Schedule data not available.' +
+                '</p>';
+            return;
+        }
+
+        var renderState = {
+            selectedId: locationId,
+            week: week
+        };
+
+        var renderVM = {
+            // canEdit is false: the location grid is read-only. A
+            // location is a resource, not an actor; the assign
+            // flow belongs to the character's schedule grid, not
+            // here.
+            canEdit: false,
+
+            mode: null,
+            schedule: gridVM.schedule,
+            restDays: gridVM.restDays,
+            entityName: gridVM.entityName,
+            modeLabel: gridVM.modeLabel,
+            showEmptySlots: false,
+            showRestDays: true,
+            hours: gridVM.hours
+        };
+
+        try {
+            host.innerHTML = Renderer.renderGrid(renderState, renderVM);
+        } catch (e) {
+            console.warn(
+                '[AcademyLocationController] renderGrid failed:', e
+            );
+            host.innerHTML = '<p class="empty-state small">' +
+                'Failed to render schedule grid.' +
+                '</p>';
+        }
     }
 
     // ============================================================
@@ -290,6 +350,11 @@
             ctx.onChange();
             return;
         }
+
+        if (target.id === 'academy-location-week-input') {
+            commitDisplayWeek(target.value);
+            return;
+        }
     }
 
     function handleInput(e) {
@@ -303,7 +368,14 @@
     }
 
     function handleKeydown(e) {
-        // No keyboard shortcuts in the Locations view. Reserved.
+        var target = e.target;
+        if (!target || e.key !== 'Enter') { return; }
+
+        if (target.id === 'academy-location-week-input') {
+            e.preventDefault();
+            commitDisplayWeek(target.value);
+            return;
+        }
     }
 
     // ============================================================
@@ -317,6 +389,18 @@
         _selectedLocationId = next;
         var ctx = getContext();
         ctx.onChange();
+    }
+
+    // ============================================================
+    // WEEK COMMIT
+    // ============================================================
+
+    function commitDisplayWeek(value) {
+        var accepted = AcademyUI.setDisplayWeek(value);
+        if (accepted) {
+            var ctx = getContext();
+            ctx.onChange();
+        }
     }
 
     // ============================================================
@@ -364,15 +448,13 @@
     // ============================================================
 
     function unmount() {
-        // Clear the search debounce. A pending search refresh after
-        // the view is gone should not fire.
         if (_locationSearchTimer) {
             clearTimeout(_locationSearchTimer);
             _locationSearchTimer = null;
         }
 
-        // The selection and filter are deliberately NOT cleared.
-        // They survive a view switch, matching pre-S1.6 behavior.
+        // Selection and filter survive a view switch, matching
+        // pre-existing behavior.
 
         _host = null;
         _context = null;

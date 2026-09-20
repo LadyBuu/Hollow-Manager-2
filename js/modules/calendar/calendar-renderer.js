@@ -31,28 +31,21 @@
  *     data-session-id="..."
  *     data-mode="remove-student" | "remove-group"
  *
- *   The two actions are distinct and route to different controller
- *   flows. An empty cell is assigned into; an occupied cell is
- *   opened to edit or remove what is already there.
+ * CO-OCCUPANCY MARKER:
+ *   When the slot descriptor carries a non-empty `coOccupants`
+ *   array, the cell renders a small "+N" marker in the top-right
+ *   corner. The marker's `title` attribute carries the
+ *   co-occupants' discipline names so a hover shows the detail.
  *
- *   When `canEdit` is false or missing, no cell emits an action.
- *   The grid renders as a read-only projection. The `data-day` and
- *   `data-hour` attributes still emit on every cell; those are
- *   structural, not behavioural.
+ *   The marker is a read-only indicator. It does not emit an
+ *   action; clicking the cell in an editable grid routes to the
+ *   primary slot's action, not to a co-occupant. Co-occupancy is
+ *   visualised, not acted on.
  *
- * MODE DISPATCH:
- *   The renderer emits `data-mode` on occupied editable cells so
- *   the controller can route directly to the correct removal mode
- *   without re-deriving it from UI state. The value comes from
- *   `viewModel.mode`:
- *     'student'     -> 'remove-student'
- *     'instructor'  -> 'remove-group'
- *
- *   This is a lookup, not a policy decision. The aggregator sets
- *   `mode` on the VM; the renderer maps it to the shape the
- *   controller's dispatcher expects. The controller may still
- *   override the mode for edge cases, but the renderer's emission
- *   is the canonical route for the common case.
+ *   When both the marker and the duration badge would sit in the
+ *   same corner, the CSS offsets the marker above the duration
+ *   badge. The renderer does not decide the offset; it emits both
+ *   elements and lets the stylesheet place them.
  *
  * DEPENDENCIES:
  *   - CalendarConstants
@@ -95,14 +88,6 @@
     // ============================================================
     // MODE -> ACTION MODE
     // ============================================================
-    //
-    // The VM carries `mode` ('student' | 'instructor'). The
-    // controller's dispatcher expects a data-mode value it can
-    // branch on directly: 'remove-student' or 'remove-group'.
-    //
-    // This mapping is a lookup. The renderer does not decide which
-    // removal is correct for a given grid; it reads the mode that
-    // the aggregator already resolved.
 
     function getOccupiedCellMode(gridMode) {
         if (gridMode === 'instructor') {
@@ -188,6 +173,44 @@
     }
 
     // ============================================================
+    // CO-OCCUPANCY MARKER
+    // ============================================================
+    //
+    // Build the "+N" marker with a title carrying the co-occupants'
+    // discipline names. Returns '' when the slot has no
+    // co-occupants, so the caller can concatenate unconditionally.
+
+    function renderCoOccupantMarker(slotData) {
+        if (!slotData || !Array.isArray(slotData.coOccupants)) {
+            return '';
+        }
+        var count = slotData.coOccupants.length;
+        if (count === 0) {
+            return '';
+        }
+
+        var names = [];
+        for (var i = 0; i < slotData.coOccupants.length; i++) {
+            var occ = slotData.coOccupants[i];
+            if (!occ) { continue; }
+            var name = occ.disciplineName || 'Unknown';
+            if (occ.instructorName) {
+                name += ' (' + occ.instructorName + ')';
+            }
+            names.push(name);
+        }
+
+        var title = names.length > 0
+            ? names.join(', ')
+            : (count + ' groups in this slot');
+
+        return '<span class="schedule-co-occupant-marker" ' +
+                    'title="' + escapeAttribute(title) + '">' +
+                    '+' + count +
+                '</span>';
+    }
+
+    // ============================================================
     // RENDER GRID
     // ============================================================
 
@@ -203,9 +226,6 @@
         var showEmptySlots = viewModel.showEmptySlots !== false;
         var showRestDays = viewModel.showRestDays !== false;
 
-        // The renderer obeys `canEdit`. It does not inspect `mode`
-        // to decide editability. It reads `mode` only to choose
-        // the removal-mode attribute on occupied cells.
         var canEdit = viewModel.canEdit === true;
         var occupiedCellMode = getOccupiedCellMode(viewModel.mode);
 
@@ -247,15 +267,6 @@
                 if (isRestDay) { classes += ' schedule-rest-day'; }
                 if (isBlock) { classes += ' schedule-blocked'; }
 
-                // Which action, if any, attaches to this cell?
-                //
-                //   empty + editable   -> schedule-assign
-                //   occupied + editable -> schedule-slot-open
-                //   anything else       -> no action
-                //
-                // The renderer knows which cell is which; the
-                // controller does not have to figure it out from the
-                // click target.
                 var cellAction = null;
                 if (canEdit && !isRestDay) {
                     if (isOccupied) {
@@ -299,9 +310,10 @@
                     if (slotData && slotData.isContinuation) {
                         html += '<div class="schedule-continuation">↕</div>';
                     }
+                    html += renderCoOccupantMarker(slotData);
 
                 } else if (isBlock && !isRestDay) {
-                    html += '<div class="schedule-blocked-label">⛔ ' + escapeHtml(slotData.label || 'Blocked') + '</div>';
+                    html += '<div class="schedule-blocked-label">\u25a0 ' + escapeHtml(slotData.label || 'Blocked') + '</div>';
 
                 } else if (!isRestDay && showEmptySlots) {
                     html += '<div class="schedule-empty-label">+</div>';
@@ -314,7 +326,6 @@
         html += '</div>';
         html += '</div>';
 
-        // Sidebar
         if (viewModel.sidebarContent) {
             html += viewModel.sidebarContent;
         }

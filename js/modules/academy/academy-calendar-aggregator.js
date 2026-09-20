@@ -16,9 +16,7 @@
  *   - Writes. Schedule mutations are owned by AcademySchedule.
  *   - Collisions. AcademyTeachingCollisions owns them. This
  *     aggregator does NOT detect, warn about, or annotate
- *     collisions. The grid VM is a pure read projection of what
- *     is scheduled; whether two of those things conflict is a
- *     separate question answered by a separate module.
+ *     collisions.
  *   - Rendering. CalendarRenderer owns that.
  *   - Rest days. There is no rest-day concept in the teaching model.
  *     VMs always return an empty restDays array.
@@ -39,73 +37,59 @@
  * VM SHAPE (consumed by CalendarRenderer.renderGrid):
  *   {
  *     schedule:   { day: { hour: slotDescriptor } },
- *     restDays:   [number],          // always [] in this aggregator
+ *     restDays:   [number],
  *     entityName: string,
  *     modeLabel:  string,
- *     hours:      [number]           // calendar's canonical hour range
+ *     hours:      [number]
  *   }
  *
  *   slotDescriptor:
  *     {
  *       disciplineId:    string | null,
  *       disciplineName:  string,
- *       duration:        number,      // hours
- *       label:           string,      // always '' — sessions have no label
- *       groupLabel:      string,      // always '' — sessions have no group label
+ *       duration:        number,
+ *       label:           string,
+ *       groupLabel:      string,
  *       instructorId:    string | null,
  *       instructorName:  string,
  *       groupId:         string | null,
  *       sessionId:       string | null,
+ *       coOccupants:     [{ groupId, disciplineName,
+ *                           instructorName }, ...],
  *       isContinuation:  boolean
  *     }
  *
- *   The two new fields — groupId and sessionId — are carried so the
- *   renderer can emit them as data attributes on the occupied cell.
- *   The Academy People controller reads those attributes when the
- *   user clicks an occupied cell in an editable grid, and routes to
- *   the schedule-assign modal in its remove-student or remove-group
- *   mode. This aggregator does not decide which mode applies; the
- *   renderer does not decide either. The controller does, from the
- *   character's mode.
+ * CO-OCCUPANCY:
+ *   Two teaching groups can share a location. When two occurrences
+ *   land in the same (day, hour) cell of a LOCATION projection,
+ *   the first becomes the primary slot descriptor and the second's
+ *   group identity is appended to the primary's `coOccupants`
+ *   array. The cell renders as one cell, with a marker indicating
+ *   how many additional groups are present.
  *
- *   A multi-hour occurrence is expanded into multiple entries: the
- *   first hour carries isContinuation: false; each subsequent hour
- *   carries isContinuation: true. This matches what the renderer
- *   expects when drawing spanning cells.
+ *   Co-occupancy is a LOCATION fact. The current data model keys
+ *   sessions to a single location, and the projectForStudent /
+ *   projectForInstructor / projectForClass projections are scoped
+ *   to one entity's own occurrences. A character cannot be in two
+ *   places at once (the assign resolver prevents it), and an
+ *   instructor cannot teach two groups at once (the collision
+ *   detector prevents it). So the pivot's co-occupancy branch is
+ *   exercised only on the location projection's path. It is
+ *   harmless on the other paths: a second occurrence in the same
+ *   cell simply produces a co-occupant entry, and today that
+ *   cannot happen.
  *
- * OCCURRENCE SOURCE:
- *   The projector emits one Occurrence per (session, week) pair.
- *   Each occurrence carries:
- *     sessionId, groupId, classId, disciplineId, instructorId,
- *     week, day, startTime, duration, locationId, studentIds[]
- *
- *   The aggregator does not filter by studentIds when projecting a
- *   schedule view. A student schedule projection is already scoped
- *   by the projector to the occurrences that student attends. An
- *   instructor projection is scoped to the instructor's groups. A
- *   location projection is scoped to sessions at that location.
- *   The aggregator just shapes what it gets.
- *
- * NO ENRICHMENT BEYOND DISPLAY:
- *   Discipline names and instructor names are resolved here, once,
- *   because CalendarRenderer reads them directly from the slot
- *   descriptor. This is the display enrichment boundary. Nothing
- *   else is added.
+ *   The co-occupant list is PER-CELL: groups at this location, on
+ *   this day, at this hour, in this week. Not a week summary.
  *
  * NULL SEMANTICS:
  *   Every public function returns null when:
  *     - the entity id is missing or malformed
  *     - the week is missing, malformed, or out of range
  *     - the entity does not exist in the store
- *   A null return means "no VM available". Callers render an empty
- *   state. The aggregator does not fabricate a VM with empty
- *   contents, because an empty schedule and a missing entity are
- *   different facts.
  *
  *   When the entity exists but has no occurrences this week, the
- *   VM is returned with an empty `schedule: {}`. That is the
- *   truthful answer: "this entity has a schedule, and it is empty
- *   this week."
+ *   VM is returned with an empty `schedule: {}`.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.AcademyTeachingProjector
@@ -117,21 +101,6 @@
  *
  * DEPENDENCIES (LAZY, used only if present):
  *   - window.AcademyLocations
- *     Used by getLocationScheduleViewModel to resolve a location's
- *     display name. When absent, the VM's entityName falls back to
- *     the location id. This is a display-only degradation; the
- *     schedule data itself is complete.
- *
- * USAGE:
- *   var VM = AcademyCalendarAggregator.getStudentScheduleViewModel(
- *       'char_123', 5
- *   );
- *   container.innerHTML = CalendarRenderer.renderGrid(state, VM);
- *
- *   var locVM = AcademyCalendarAggregator.getLocationScheduleViewModel(
- *       'loc_abc', 5
- *   );
- *   container.innerHTML = CalendarRenderer.renderGrid(state, locVM);
  */
 
 (function() {
@@ -211,11 +180,6 @@
     // ============================================================
     // LAZY DEPENDENCIES
     // ============================================================
-    //
-    // AcademyLocations is used only for display enrichment when the
-    // caller asks for a location schedule VM. If it isn't loaded
-    // yet, the VM still works; the entityName just falls back to
-    // the location id.
 
     function getAcademyLocations() {
         return window.AcademyLocations || null;
@@ -233,10 +197,6 @@
         return typeof value === 'number' && isFinite(value);
     }
 
-    /**
-     * Parse a week with the canonical validator.
-     * Returns an integer in [MIN_WEEK, MAX_WEEK] or null.
-     */
     function parseWeek(week) {
         if (week === undefined || week === null || week === '') {
             return null;
@@ -252,12 +212,6 @@
         return parsed;
     }
 
-    /**
-     * Resolve a discipline's display name.
-     * Returns 'Unknown' when the discipline doesn't exist. This
-     * matches the rest of the Academy UI, which uses 'Unknown' as
-     * the sentinel for missing references.
-     */
     function getDisciplineName(disciplineId) {
         if (!isNonEmptyString(disciplineId)) {
             return 'Unknown';
@@ -272,13 +226,6 @@
         return d.name;
     }
 
-    /**
-     * Resolve a character's display name.
-     * Returns '' when the character is missing. Empty string is
-     * preferable to 'Unknown' for instructors: a slot with no
-     * instructor should render without an instructor line, not
-     * with "Unknown" written in it.
-     */
     function getCharacterDisplayName(charId) {
         if (!isNonEmptyString(charId)) {
             return '';
@@ -290,10 +237,6 @@
         return CharacterQueries.getDisplayName(c) || '';
     }
 
-    /**
-     * Resolve a class's display name. Falls back to the id when the
-     * class doesn't exist or has no name.
-     */
     function getClassDisplayName(classId) {
         if (!isNonEmptyString(classId)) {
             return 'Class';
@@ -305,13 +248,6 @@
         return isNonEmptyString(cls.name) ? cls.name : classId;
     }
 
-    /**
-     * Resolve a location's display name. Falls back to the id.
-     *
-     * AcademyLocations is a LAZY dependency. When it isn't loaded
-     * yet, the id is used as the display name. This is a display-
-     * only degradation; the schedule data is complete.
-     */
     function getLocationDisplayName(locationId) {
         if (!isNonEmptyString(locationId)) {
             return 'Location';
@@ -331,10 +267,6 @@
         }
     }
 
-    /**
-     * Build the canonical hour range for the grid. This is what
-     * CalendarRenderer uses to decide which rows to draw.
-     */
     function getHoursRange() {
         var start = CalendarConstants.CALENDAR_START_HOUR;
         var end = CalendarConstants.CALENDAR_END_HOUR;
@@ -345,12 +277,6 @@
         return hours;
     }
 
-    /**
-     * Coerce an occurrence identifier to a non-empty string or null.
-     * The projector is the source of these values; a missing value
-     * means the projector's output is malformed. null is the honest
-     * answer — the renderer omits the data attribute.
-     */
     function toIdOrNull(value) {
         if (value === undefined || value === null || value === '') {
             return null;
@@ -360,15 +286,19 @@
     }
 
     /**
+     * Build the co-occupant entry for an occurrence that is not the
+     * primary slot of its cell.
+     */
+    function buildCoOccupant(occurrence) {
+        return {
+            groupId: toIdOrNull(occurrence.groupId),
+            disciplineName: getDisciplineName(occurrence.disciplineId),
+            instructorName: getCharacterDisplayName(occurrence.instructorId)
+        };
+    }
+
+    /**
      * Expand an occurrence into a slot descriptor.
-     *
-     * The occurrence's [startTime, startTime + duration) window is
-     * split across that many hourly cells. The first cell carries
-     * isContinuation: false; every subsequent cell carries true.
-     * This is what the renderer expects for spanning classes.
-     *
-     * @param {object} occurrence
-     * @returns {object|null} { day, startHour, duration, slot }
      */
     function buildSlotDescriptor(occurrence) {
         if (!occurrence || typeof occurrence !== 'object') {
@@ -400,6 +330,7 @@
                 instructorName: getCharacterDisplayName(occurrence.instructorId),
                 groupId: toIdOrNull(occurrence.groupId),
                 sessionId: toIdOrNull(occurrence.sessionId),
+                coOccupants: [],
                 isContinuation: false
             }
         };
@@ -409,8 +340,18 @@
      * Pivot a flat occurrence list into the schedule map the
      * renderer consumes.
      *
-     * @param {array} occurrences
-     * @returns {object} { day: { hour: slotDescriptor } }
+     * When a second occurrence lands in an occupied cell, its group
+     * identity is appended to the primary descriptor's
+     * `coOccupants` array. The cell keeps the first occurrence as
+     * its primary slot; the co-occupant is a marker, not a second
+     * cell.
+     *
+     * CO-OCCUPANCY AND CONTINUATION:
+     *   A multi-hour slot occupies multiple cells. If a co-occupant
+     *   shares only some of those cells, the marker appears only in
+     *   the cells the co-occupant shares. The pivot does not
+     *   propagate co-occupants from the first hour to the
+     *   continuation cells; the co-occupancy is a per-cell fact.
      */
     function pivotOccurrencesToSchedule(occurrences) {
         var schedule = {};
@@ -438,37 +379,54 @@
                 if (hour > CalendarConstants.MAX_HOUR) { break; }
                 if (hour < CalendarConstants.MIN_HOUR) { continue; }
 
-                if (h === 0) {
-                    schedule[day][hour] = slot;
-                } else {
-                    // Continuation cells carry the same descriptor
-                    // with isContinuation: true. Cloning keeps the
-                    // renderer from mutating shared state.
-                    schedule[day][hour] = {
-                        disciplineId: slot.disciplineId,
-                        disciplineName: slot.disciplineName,
-                        duration: slot.duration,
-                        label: slot.label,
-                        groupLabel: slot.groupLabel,
-                        instructorId: slot.instructorId,
-                        instructorName: slot.instructorName,
-                        groupId: slot.groupId,
-                        sessionId: slot.sessionId,
-                        isContinuation: true
-                    };
+                var cell = schedule[day][hour];
+
+                if (!cell) {
+                    // Empty cell. Place the primary slot.
+                    if (h === 0) {
+                        schedule[day][hour] = slot;
+                    } else {
+                        schedule[day][hour] = {
+                            disciplineId: slot.disciplineId,
+                            disciplineName: slot.disciplineName,
+                            duration: slot.duration,
+                            label: slot.label,
+                            groupLabel: slot.groupLabel,
+                            instructorId: slot.instructorId,
+                            instructorName: slot.instructorName,
+                            groupId: slot.groupId,
+                            sessionId: slot.sessionId,
+                            coOccupants: [],
+                            isContinuation: true
+                        };
+                    }
+                    continue;
                 }
+
+                // Cell is already occupied. This occurrence is a
+                // co-occupant of the primary slot.
+                //
+                // A single occurrence can also land in a cell where
+                // its OWN primary already sits — that would be a
+                // malformed projector output (same session twice in
+                // the same week). Defensively, skip when the
+                // incoming sessionId matches the cell's.
+                if (cell.sessionId !== null &&
+                    slot.sessionId !== null &&
+                    String(cell.sessionId) === String(slot.sessionId)) {
+                    continue;
+                }
+
+                if (!Array.isArray(cell.coOccupants)) {
+                    cell.coOccupants = [];
+                }
+                cell.coOccupants.push(buildCoOccupant(occ));
             }
         }
 
         return schedule;
     }
 
-    /**
-     * Run a projector call, swallowing exceptions into an empty
-     * result. A throwing projector is a bug, but a broken schedule
-     * VM should not take down the whole render. The console gets
-     * the error; the caller gets an empty schedule.
-     */
     function safeProjectorCall(fn, label) {
         try {
             var result = fn();
@@ -488,13 +446,6 @@
     // STUDENT SCHEDULE VM
     // ============================================================
 
-    /**
-     * Build the schedule VM for a student's week.
-     *
-     * @param {string} studentId
-     * @param {number|string} week
-     * @returns {object|null} VM or null when the input is invalid
-     */
     function getStudentScheduleViewModel(studentId, week) {
         if (!isNonEmptyString(studentId)) {
             return null;
@@ -528,13 +479,6 @@
     // INSTRUCTOR SCHEDULE VM
     // ============================================================
 
-    /**
-     * Build the schedule VM for an instructor's week.
-     *
-     * @param {string} instructorId
-     * @param {number|string} week
-     * @returns {object|null}
-     */
     function getInstructorScheduleViewModel(instructorId, week) {
         if (!isNonEmptyString(instructorId)) {
             return null;
@@ -568,13 +512,6 @@
     // LOCATION SCHEDULE VM
     // ============================================================
 
-    /**
-     * Build the schedule VM for a location's week.
-     *
-     * @param {string} locationId
-     * @param {number|string} week
-     * @returns {object|null}
-     */
     function getLocationScheduleViewModel(locationId, week) {
         if (!isNonEmptyString(locationId)) {
             return null;
@@ -584,12 +521,6 @@
             return null;
         }
 
-        // Location entity check is a display concern only. The
-        // schedule is a projection over sessions, not over the
-        // location entity. If the location store isn't loaded yet,
-        // we still project — the caller might be rendering a
-        // location that exists in the session data but whose
-        // entity module isn't available in this build.
         var AL = getAcademyLocations();
         if (AL && typeof AL.getLocation === 'function') {
             var loc = null;
@@ -622,17 +553,6 @@
     // CLASS SCHEDULE VM
     // ============================================================
 
-    /**
-     * Build the schedule VM for a class's week.
-     *
-     * The grid shows every session belonging to the class's teaching
-     * groups, regardless of discipline, instructor, or location.
-     * This is useful for a class-level overview grid.
-     *
-     * @param {string} classId
-     * @param {number|string} week
-     * @returns {object|null}
-     */
     function getClassScheduleViewModel(classId, week) {
         if (!isNonEmptyString(classId)) {
             return null;
@@ -666,22 +586,6 @@
     // WEEK OVERVIEW VM
     // ============================================================
 
-    /**
-     * Build a lightweight summary of one week's scheduled teaching
-     * across the whole academy. Useful for dashboards.
-     *
-     * @param {number|string} week
-     * @returns {object|null} {
-     *   week,
-     *   occurrenceCount,
-     *   uniqueSessionCount,
-     *   uniqueGroupCount,
-     *   uniqueClassCount,
-     *   uniqueInstructorCount,
-     *   uniqueLocationCount,
-     *   studentOccurrenceCount
-     * }
-     */
     function getWeekOverviewViewModel(week) {
         var weekNum = parseWeek(week);
         if (weekNum === null) {

@@ -9,14 +9,82 @@
  * This file adds the location-specific pieces.
  *
  * Covers:
+ *   - Top bar (week selector)
+ *   - Two-panel wrapper
  *   - Add Location button
  *   - Sidebar row type badges
  *   - Detail header (title, badge, meta)
- *   - Schedule section and table
- *   - Mobile collapse for the schedule table
+ *   - Schedule host (the grid container)
+ *   - Mobile
+ *
+ * Dead rules: the previous schedule TABLE styles
+ * (.academy-location-schedule-table and its children) are no
+ * longer referenced by academy-location-view.js. They are kept
+ * for one pass as a safety net; a future cleanup can delete them.
  *
  * Load order: shared.css → academy.css → academy/location.css
  */
+
+/* ============================================================
+   TOP BAR
+   ============================================================ */
+
+.academy-location-top-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 6px 0 10px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-location-top-left {
+    flex: 1;
+    min-width: 0;
+}
+
+.academy-location-top-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+/* ============================================================
+   TWO-PANEL WRAPPER
+   ============================================================ */
+
+.academy-location-panels {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.academy-location-panels > .academy-location-sidebar {
+    flex: 0 0 260px;
+    min-width: 0;
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+.academy-location-panels > .academy-location-detail {
+    flex: 1;
+    min-width: 0;
+}
+
+@media (max-width: 900px) {
+    .academy-location-panels {
+        flex-direction: column;
+    }
+
+    .academy-location-panels > .academy-location-sidebar {
+        flex: 0 0 auto;
+        max-height: none;
+        width: 100%;
+    }
+}
 
 /* ============================================================
    ADD LOCATION BUTTON
@@ -32,11 +100,7 @@
 
 /* ============================================================
    TYPE BADGES
-   ============================================================
-   Colour mapping per location type. The base shape lives here
-   because it is location-specific; nothing else in the Academy
-   uses the exact set of type values.
- */
+   ============================================================ */
 
 .academy-location-type-badge {
     display: inline-block;
@@ -184,22 +248,22 @@
     white-space: nowrap;
 }
 
-.academy-location-detail-section-count {
-    font-size: 0.65rem;
-    color: var(--text-dim);
-    background: var(--panel-alt);
-    padding: 1px 8px;
-    border-radius: 10px;
-    white-space: nowrap;
+/* ---------- Schedule host ---------- */
+
+.academy-location-schedule-host {
+    display: block;
+    min-height: 200px;
 }
 
 /* ============================================================
-   SCHEDULE TABLE
-   ============================================================ */
-
-.academy-location-schedule {
-    /* reuses .academy-location-detail-section */
-}
+   DEAD RULES - scheduled for removal
+   ============================================================
+   These styled the previous schedule table rendered directly by
+   academy-location-view.js. That renderer is gone; the grid is
+   now mounted into .academy-location-schedule-host. Kept for one
+   pass so a stale cache cannot visually break the view. Delete
+   in a future cleanup once the new grid has been exercised.
+ */
 
 .academy-location-schedule-table {
     width: 100%;
@@ -238,8 +302,6 @@
     background: var(--panel-alt);
 }
 
-/* ---------- Columns ---------- */
-
 .academy-location-schedule-table .day-col {
     width: 110px;
     color: var(--text);
@@ -255,7 +317,6 @@
 }
 
 .academy-location-schedule-table .discipline-col {
-    /* Flexible */
     color: var(--text);
 }
 
@@ -266,8 +327,6 @@
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
 }
-
-/* ---------- Label suffix ---------- */
 
 .academy-location-schedule-label {
     display: inline-block;
@@ -298,30 +357,16 @@
         width: 100%;
     }
 
-    .academy-location-schedule-table {
-        font-size: 0.68rem;
+    .academy-location-top-bar {
+        padding: 4px 0 8px;
     }
 
-    .academy-location-schedule-table thead th,
-    .academy-location-schedule-table tbody td {
-        padding: 4px 6px;
+    .academy-location-top-right {
+        width: 100%;
+        justify-content: flex-start;
     }
 
-    .academy-location-schedule-table .day-col {
-        width: 80px;
-    }
-
-    .academy-location-schedule-table .time-col {
-        width: 60px;
-    }
-
-    .academy-location-schedule-table .duration-col {
-        width: 55px;
-    }
-
-    .academy-location-schedule-label {
-        display: block;
-        margin-left: 0;
-        margin-top: 2px;
+    .academy-location-top-right .academy-week-input {
+        flex: 1;
     }
 }

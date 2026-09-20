@@ -10,59 +10,20 @@
  *   - The schedule grid (.schedule-grid and its cells)
  *   - Header row (day names, time column)
  *   - Occupied slots (with discipline name, label, group, instructor,
- *     duration, continuation marker)
+ *     duration, continuation marker, co-occupant marker)
  *   - Empty slots (the "+" hint, gated on assignability)
- *   - Rest-day columns (muted, non-interactive)
- *   - Blocked slots (danger-tinted)
- *   - The legend (.calendar-legend)
- *   - The loading state (.loading-state)
- *   - The Academy schedule-assign modal's BODY content: the slot
- *     summary, discipline and duration selects, the collision
- *     prompt, and the two removal panels (remove-student and
- *     remove-group).
- *
- * WHAT THIS FILE DOES NOT COVER:
- *   - The outer wrapper provided by the host view. The Academy
- *     character detail panel provides .academy-schedule-host. That
- *     styling lives in css/academy/character-detail.css.
- *   - Modal CHROME — .modal, .modal-content, .modal-header,
- *     .modal-footer, .close-modal. Those live in shared.css.
- *   - Any view chrome (sidebars, top bars, detail panels). Those
- *     are the host's concern.
+ *   - Rest-day columns
+ *   - Blocked slots
+ *   - The legend
+ *   - The loading state
+ *   - The Academy schedule-assign modal's BODY content
  *
  * TOKEN DISCIPLINE:
  *   Every colour, radius, and shadow references a custom property
- *   from css/shared.css. No literal hex values. When shared.css
- *   changes its palette, this file follows automatically.
- *
- * GRID MODEL:
- *   The renderer emits cells in row-major order: the time cell of a
- *   row, then the seven day cells of that row. The CSS grid is
- *   declared with `grid-template-columns: <time-width> repeat(7,
- *   minmax(0, 1fr))` and lets auto-placement do the rest.
- *
- *   Multi-hour slots are rendered as multiple cells, one per hour.
- *   The first cell carries .schedule-occupied; subsequent cells
- *   carry .schedule-occupied plus the isContinuation marker (the
- *   renderer emits `.schedule-continuation` inside those cells).
- *   The CSS does not attempt to merge these into a spanning cell;
- *   the renderer does not emit the data needed for that (it emits
- *   per-cell blocks, not per-span blocks).
- *
- * CELL INTERACTION:
- *   The renderer emits data-action on editable cells:
- *     data-action="schedule-assign"      empty editable cells
- *     data-action="schedule-slot-open"   occupied editable cells
- *
- *   Both attributes produce a hover affordance via attribute
- *   selectors below. The renderer emits the action; the CSS obeys
- *   it. The renderer does not infer editability from mode; it reads
- *   `canEdit` from the VM.
+ *   from css/shared.css. No literal hex values.
  *
  * LOAD ORDER:
- *   Loads after shared.css and academy.css. It depends on both
- *   (academy.css for the .academy-schedule-host frame; shared.css
- *   for tokens).
+ *   Loads after shared.css and academy.css.
  */
 
 /* ============================================================
@@ -119,10 +80,6 @@
     width: 100%;
 }
 
-/* Narrow viewports: shrink the time column, allow horizontal scroll
-   on the wrapper. 64px is comfortable for "12:00 PM"; below 600px
-   the label wraps to two lines, so we shrink the column and let the
-   text wrap. */
 @media (max-width: 600px) {
     .schedule-grid {
         grid-template-columns: 44px repeat(7, minmax(64px, 1fr));
@@ -204,8 +161,6 @@
     }
 }
 
-/* The first cell of the grid is both .schedule-time and
-   .schedule-header; make sure it sits on the header background. */
 .schedule-time.schedule-header {
     background: var(--panel-alt);
     border-bottom: 1px solid var(--border);
@@ -226,10 +181,6 @@
     cursor: default;
 }
 
-/* Occupied editable cell: the renderer emitted
-   data-action="schedule-slot-open". Hover gives a subtle
-   affordance that this cell is interactive; the mutation path
-   is the remove-student or remove-group flow in the modal. */
 .schedule-cell[data-action="schedule-slot-open"] {
     cursor: pointer;
 }
@@ -240,8 +191,6 @@
     outline-offset: -2px;
 }
 
-/* A continuation cell carries the same action; make its hover
-   match the first cell so the whole block reads as one slot. */
 .schedule-cell[data-action="schedule-slot-open"]:hover
     .schedule-continuation {
     color: var(--accent);
@@ -250,15 +199,6 @@
 
 /* ============================================================
    EMPTY SLOT
-   ============================================================
-   Empty cells render a "+" hint. The hint is only shown when
-   the cell is actually assignable — that is, when the renderer
-   emitted data-action="schedule-assign". Non-assignable empty
-   cells (instructor-mode grids, rest days, blocked cells) show
-   no hover affordance at all.
-
-   The renderer decides assignability and emits the action
-   attribute. The CSS obeys it.
    ============================================================ */
 
 .schedule-empty {
@@ -306,15 +246,10 @@
     font-style: italic;
 }
 
-/* The renderer suppresses content inside rest-day slots, so the
-   hover hint should not appear either. */
 .schedule-rest-day .schedule-empty-label {
     display: none;
 }
 
-/* A rest day does not emit an action, even on an occupied cell.
-   The renderer's action gate checks !isRestDay. This rule is a
-   belt-and-braces guard against a malformed VM. */
 .schedule-rest-day[data-action] {
     cursor: default;
 }
@@ -405,6 +340,49 @@
 }
 
 /* ============================================================
+   CO-OCCUPANT MARKER
+   ============================================================
+   A small "+N" badge in the top-right corner of an occupied
+   cell. Rendered when the slot descriptor carries a non-empty
+   `coOccupants` array — that is, when a second group shares
+   this location at this (day, hour) in this week. The marker's
+   `title` attribute carries the co-occupants' discipline names
+   and instructors; hovering reveals them.
+
+   The marker shares the top-right corner with .schedule-duration
+   when a multi-hour slot also has co-occupants. When both are
+   present, the marker is offset above the duration badge so the
+   two do not overlap.
+
+   Colour: --warning, matching the "shared resource" reading.
+   Not --danger: co-occupancy is not a collision. Two groups in
+   the same room is a legitimate configuration.
+*/
+
+.schedule-co-occupant-marker {
+    position: absolute;
+    top: 3px;
+    right: 5px;
+    font-size: 0.58rem;
+    font-weight: 700;
+    color: var(--warning);
+    background: var(--warning-soft);
+    border: 1px solid var(--warning);
+    border-radius: 8px;
+    padding: 0 5px;
+    line-height: 1.4;
+    cursor: help;
+    z-index: 1;
+}
+
+/* When a duration badge shares the corner, push the marker up.
+   The duration badge is ~14px tall; the marker sits above it. */
+.schedule-occupied .schedule-duration ~ .schedule-co-occupant-marker,
+.schedule-occupied:has(.schedule-duration) .schedule-co-occupant-marker {
+    top: -14px;
+}
+
+/* ============================================================
    LEGEND
    ============================================================ */
 
@@ -433,10 +411,6 @@
     border: 1px solid var(--border);
 }
 
-/* Legend colour modifiers. Callers pass a className string to
-   renderLegend; these are the class names the aggregator or the
-   host view can pass. They match the occupied / blocked / rest-day
-   semantics of the grid. */
 .legend-color.schedule-occupied {
     background: var(--accent-soft);
     border-left: 3px solid var(--accent);
@@ -463,26 +437,7 @@
 
 /* ============================================================
    SCHEDULE ASSIGN MODAL
-   ============================================================
-   Content of the Academy schedule-assign modal
-   (modules/academy/academy-schedule-assign-modal.js). The modal
-   shell — .modal, .modal-content, .modal-header, .modal-footer,
-   .close-modal — is styled in shared.css. These rules style only
-   the modal BODY's schedule-specific content.
-
-   The modal has three modes:
-     'assign'          — slot summary + discipline/duration selects,
-                         plus an optional collision prompt.
-     'remove-student'  — slot summary + warning panel + detail list.
-     'remove-group'    — slot summary + warning panel + detail list,
-                         with an additional session-count row.
-
-   The classes here are presentation only. Do not grow this block
-   into a general form system. Anything that applies to more than
-   one feature's modal belongs in shared.css.
    ============================================================ */
-
-/* ---- Slot summary line (shared across all three modes) ---- */
 
 .academy-schedule-assign-summary {
     margin: 0 0 12px;
@@ -500,23 +455,13 @@
     font-weight: 600;
 }
 
-/* ---- Assign mode: the two selects ----
-   They inherit .form-group spacing from shared.css; these rules
-   only tighten their width so they do not stretch the full modal
-   width on wide viewports. */
-
 .academy-schedule-assign-discipline,
 .academy-schedule-assign-duration {
     width: 100%;
     max-width: 320px;
 }
 
-/* ---- Collision prompt (assign mode only) ----
-   Shown when the domain rejects with reason 'student_collision'
-   or 'instructor_collision'. Visual language matches
-   .schedule-blocked: soft-danger background, danger-tinted left
-   border, no button styling (the confirm/cancel buttons are the
-   modal footer's standard .primary / .secondary). */
+/* ---- Collision prompt (assign mode only) ---- */
 
 .academy-schedule-assign-collision {
     margin: 12px 0 0;
@@ -541,13 +486,7 @@
     line-height: 1.3;
 }
 
-/* ---- Removal warning panel (remove-student and remove-group) ----
-   The top-of-body confirmation block. Visually distinct from the
-   collision prompt: the collision prompt offers a retry ("Assign
-   anyway?"), whereas this panel is a straightforward destructive
-   confirmation. Same soft-danger background family, but a
-   slightly larger type scale and a title/text split so the
-   question and the consequence read as two distinct lines. */
+/* ---- Removal warning panel ---- */
 
 .academy-schedule-assign-remove-warning {
     margin: 0 0 12px;
@@ -572,11 +511,7 @@
     line-height: 1.4;
 }
 
-/* ---- Removal detail list ----
-   A compact key-value list of what is about to be affected:
-   discipline, duration, member count (and session count for
-   remove-group). Values are right-aligned against their labels
-   so the eye lands on the numbers. */
+/* ---- Removal detail list ---- */
 
 .academy-schedule-assign-remove-detail {
     margin: 0 0 12px;
@@ -611,11 +546,6 @@
     word-break: break-word;
 }
 
-/* ---- Footer (shared across all three modes) ----
-   The modal footer is shared chrome; this rule only sets the
-   alignment the schedule-assign modal wants (space-between so
-   Cancel sits at the far side from the submit button). */
-
 .academy-schedule-assign-footer {
     display: flex;
     justify-content: space-between;
@@ -626,8 +556,6 @@
 /* ============================================================
    LOADING / EMPTY STATES
    ============================================================ */
-
-/* .empty-state is defined in shared.css. We do not redeclare it. */
 
 .loading-state {
     padding: 12px;
