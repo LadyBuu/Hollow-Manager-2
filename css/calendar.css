@@ -11,7 +11,7 @@
  *   - Header row (day names, time column)
  *   - Occupied slots (with discipline name, label, group, instructor,
  *     duration, continuation marker)
- *   - Empty slots (the "+" hint)
+ *   - Empty slots (the "+" hint, gated on assignability)
  *   - Rest-day columns (muted, non-interactive)
  *   - Blocked slots (danger-tinted)
  *   - The legend (.calendar-legend)
@@ -21,7 +21,12 @@
  *   - The outer wrapper provided by the host view. The Academy
  *     character detail panel provides .academy-schedule-host. That
  *     styling lives in css/academy/character-detail.css.
- *   - Modal chrome. Modals live in shared.css.
+ *   - Modal CHROME — .modal, .modal-content, .modal-header,
+ *     .modal-footer, .close-modal. Those live in shared.css.
+ *     Feature-specific CONTENT rendered inside a modal body is
+ *     this file's concern when the feature is the schedule. The
+ *     Academy schedule-assign modal's summary line, form fields,
+ *     and collision prompt live here.
  *   - Any view chrome (sidebars, top bars, detail panels). Those
  *     are the host's concern.
  *
@@ -216,6 +221,16 @@
 
 /* ============================================================
    EMPTY SLOT
+   ============================================================
+   Empty cells render a "+" hint. The hint is only shown when
+   the cell is actually assignable — that is, when the renderer
+   emitted data-action="schedule-assign". Non-assignable empty
+   cells (instructor-mode grids, rest days, blocked cells) show
+   no hover affordance at all.
+
+   The renderer decides assignability and emits the action
+   attribute. The CSS obeys it. The renderer does not infer
+   editability from mode; it reads `canEdit` from the VM.
    ============================================================ */
 
 .schedule-empty {
@@ -228,14 +243,28 @@
     color: var(--text-dim);
     opacity: 0;
     font-size: 0.85rem;
-    transition: opacity 0.15s ease;
+    transition: opacity 0.15s ease, color 0.15s ease;
     text-align: center;
     margin: auto;
 }
 
-/* Show the "+" hint on hover/focus. */
-.schedule-slot.schedule-empty:hover .schedule-empty-label {
-    opacity: 0.5;
+/* Assignable cells: pointer cursor, distinct hover background,
+   dashed accent outline, and the "+" hint at full opacity.
+   Cursor and hover are scoped to the data-action attribute, so
+   non-assignable empty cells stay inert. */
+.schedule-cell[data-action="schedule-assign"] {
+    cursor: pointer;
+}
+
+.schedule-cell[data-action="schedule-assign"]:hover {
+    background: var(--accent-soft);
+    outline: 1px dashed var(--accent);
+    outline-offset: -2px;
+}
+
+.schedule-cell[data-action="schedule-assign"]:hover .schedule-empty-label {
+    opacity: 1;
+    color: var(--accent);
 }
 
 /* ============================================================
@@ -401,40 +430,6 @@
 }
 
 /* ============================================================
-   LOADING / EMPTY STATES
-   ============================================================ */
-
-/* .empty-state is defined in shared.css. We do not redeclare it. */
-
-.loading-state {
-    padding: 12px;
-    text-align: center;
-    color: var(--text-dim);
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    font-size: 0.75rem;
-    font-style: italic;
-}
-
-@media (min-width: 768px) {
-    .loading-state {
-        padding: 20px;
-    }
-}
-
-/* ============================================================
-   REDUCED MOTION
-   ============================================================ */
-
-@media (prefers-reduced-motion: reduce) {
-    .schedule-slot,
-    .schedule-empty-label {
-        transition: none;
-    }
-}
-
-/* ============================================================
    SCHEDULE ASSIGN MODAL
    ============================================================
    Content of the Academy schedule-assign modal
@@ -516,4 +511,38 @@
     justify-content: space-between;
     align-items: center;
     gap: 8px;
+}
+
+/* ============================================================
+   LOADING / EMPTY STATES
+   ============================================================ */
+
+/* .empty-state is defined in shared.css. We do not redeclare it. */
+
+.loading-state {
+    padding: 12px;
+    text-align: center;
+    color: var(--text-dim);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 0.75rem;
+    font-style: italic;
+}
+
+@media (min-width: 768px) {
+    .loading-state {
+        padding: 20px;
+    }
+}
+
+/* ============================================================
+   REDUCED MOTION
+   ============================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+    .schedule-slot,
+    .schedule-empty-label {
+        transition: none;
+    }
 }
