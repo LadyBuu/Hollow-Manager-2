@@ -40,7 +40,9 @@
  *   - Composes domain modules. Never walks raw storage.
  *   - No fallback values for missing domain data. When a source is
  *     absent, the projection returns null or an empty collection.
- *   - The class VM is deliberately small (header fields only).
+ *   - The class VM is deliberately small (header fields only). It
+ *     does NOT carry an instructor field; see INSTRUCTOR-OF-CLASS
+ *     below.
  *
  * INSTRUCTOR-OF-CLASS (v29):
  *   A class does not carry an instructor field. The instructors of
@@ -51,6 +53,21 @@
  *   classId, week, { disciplineId }). This aggregator reads through
  *   that query. It does NOT read `cls.instructorId`; the field no
  *   longer exists on class records.
+ *
+ *   WEEK-SCOPED vs ALL-TIME:
+ *     getClassInstructorIds(classId, week)         week-scoped
+ *     getClassInstructorIdsAllTime(classId)        not week-scoped
+ *
+ *   This aggregator uses the WEEK-SCOPED query. The roster question
+ *   is "who is a student in this class this week?", and the
+ *   instructor-exclusion set must answer the same question at the
+ *   same scope. A character who taught weeks 1-8 and stopped is
+ *   not an instructor for week 12.
+ *
+ *   The all-time query answers a different question — "is this
+ *   character, by role, an instructor for this class?" — and is
+ *   used by the character suite's class-role label, not here.
+ *   Both are correct for their respective questions.
  *
  *   Where the aggregator previously stitched the class's single
  *   instructor into the roster or excluded it from a set, it now
@@ -124,9 +141,8 @@
  *
  *   Instructor-of-a-discipline-for-a-class is expressed through
  *   enrolments, and it is edited from the character's own
- *   Disciplines tab (enrol an instructor-mode character in a
- *   discipline for the current class). The picker has no business
- *   with that relationship, so its VM carries no instructor fields.
+ *   Disciplines tab. The picker has no business with that
+ *   relationship, so its VM carries no instructor fields.
  *
  *   Per-row VM:
  *     id, name, type, typeLabel,
@@ -162,7 +178,9 @@
  *   throws. It does NOT silently treat the candidate as eligible.
  *
  * DEPENDENCIES (MANDATORY):
- *   - AcademyClasses                 (class entities)
+ *   - AcademyClasses                 (class entities + instructor
+ *                                     derivation via
+ *                                     getClassInstructorIds)
  *   - AcademyDisciplines             (discipline entities)
  *   - AcademyClassDisciplinesQueries (class-discipline marker reads,
  *                                     v27)
@@ -383,6 +401,9 @@
      *
      * The optional disciplineId narrows the result to instructors
      * enrolled in that specific discipline.
+     *
+     * The returned IDs are strings. They are deduplicated by the
+     * query, so callers can treat them as a set.
      */
     function getClassInstructorIds(classId, week, disciplineId) {
         if (!isNonEmptyString(classId)) {
@@ -409,6 +430,23 @@
             );
             return [];
         }
+    }
+
+    /**
+     * Build a set-shaped lookup from an array of character IDs.
+     * Keys are stringified so numeric-string mismatches do not
+     * produce false negatives.
+     */
+    function buildIdSet(ids) {
+        var set = Object.create(null);
+        if (!Array.isArray(ids)) { return set; }
+        for (var i = 0; i < ids.length; i++) {
+            if (ids[i] === undefined || ids[i] === null) { continue; }
+            var key = String(ids[i]);
+            if (key === '') { continue; }
+            set[key] = true;
+        }
+        return set;
     }
 
     // ============================================================
@@ -456,9 +494,22 @@
     // classId, minus the instructors of the class.
     //
     // The instructor exclusion is sourced from
-    // getClassInstructorIds(classId, week), not from a class-level
-    // instructor field. A character who both has the class in their
-    // classIds and teaches something in the class is an instructor
+    // getClassInstructorIds(classId, week), which is the derived
+    // instructor query. It returns an array of character IDs.
+    //
+    // SCOPE:
+    //   The exclusion is WEEK-SCOPED. A character who taught this
+    //   class during weeks 1-8 and stopped is not excluded from
+    //   the week-12 roster. The roster question is "who is a
+    //   student this week?", and the exclusion must answer the
+    //   same question at the same scope.
+    //
+    //   The all-time query (getClassInstructorIdsAllTime) answers
+    //   a different question — "is this character, by role, an
+    //   instructor for this class?" — and is not used here.
+    //
+    // A character who both has the class in their classIds AND
+    // teaches something in the class this week is an instructor
     // here and is excluded from the student roster.
 
     function deriveClassRoster(classId, week) {
@@ -474,11 +525,9 @@
         var weekNum = resolveWeek(week);
 
         // Build the instructor exclusion set from the derived list.
+        // The list is plural; every ID in it is excluded.
         var instructorIds = getClassInstructorIds(classId, weekNum);
-        var instructorSet = Object.create(null);
-        for (var ii = 0; ii < instructorIds.length; ii++) {
-            instructorSet[String(instructorIds[ii])] = true;
-        }
+        var instructorSet = buildIdSet(instructorIds);
 
         var all = CharacterQueries.getCharacters() || [];
         var target = String(classId);
@@ -558,11 +607,14 @@
     //
     // The VM carries id, name, status, year, description,
     // studentCount, createdAt. It does NOT carry instructorId or
-    // instructorName. A class does not have a singular instructor;
-    // its instructors are per-discipline and are read from the
-    // enrolment store by the code that actually needs them (the
-    // People view's roster stitch, the class-detail panel's
-    // "instructors" list if ever added, etc.).
+    // instructorName.
+    //
+    // A class does not have a singular instructor. Its instructors
+    // are per-discipline and are derived from the instructor-mode
+    // enrolments in the class's offerings. Callers that need that
+    // list call AcademyClasses.getClassInstructorIds(classId, week)
+    // directly. The class VM is deliberately small: header fields
+    // only.
 
     function getClassViewModel(classId, week) {
         if (!classId) { return null; }
@@ -590,9 +642,17 @@
     //
     // The People roster is the class's students PLUS every
     // instructor who teaches something in the class at the display
-    // week. Instructors are sourced from
-    // getClassInstructorIds(classId, week); they are NOT sourced
-    // from a class-level instructor field.
+    // week.
+    //
+    // Instructors are sourced from getClassInstructorIds(classId,
+    // week), which is the derived, plural query. They are NOT
+    // sourced from a class-level instructor field.
+    //
+    // A character is stitched at most once. If a character is both
+    // a member of classIds AND an instructor of one of the class's
+    // offerings at the display week, deriveClassRoster already
+    // excluded them from the student list; the stitch loop does
+    // not add them back as a duplicate.
 
     function getPeopleViewModel(classId, options) {
         options = options || {};
@@ -644,10 +704,9 @@
         var instructorIds = getClassInstructorIds(
             selectedClass.id, weekNum
         );
-        var alreadyPresent = Object.create(null);
-        for (var s = 0; s < students.length; s++) {
-            alreadyPresent[String(students[s].id)] = true;
-        }
+        var alreadyPresent = buildIdSet(
+            students.map(function(s) { return s.id; })
+        );
 
         for (var ii = 0; ii < instructorIds.length; ii++) {
             var instrId = String(instructorIds[ii]);
@@ -1061,10 +1120,7 @@
         // classIds.
         var weekNum = resolveWeek(week);
         var instructorIds = getClassInstructorIds(classId, weekNum);
-        var instructorSet = Object.create(null);
-        for (var ii = 0; ii < instructorIds.length; ii++) {
-            instructorSet[String(instructorIds[ii])] = true;
-        }
+        var instructorSet = buildIdSet(instructorIds);
 
         var entries = ranked.map(function(r) {
             var studentId = r.studentId || r.characterId;
@@ -1766,10 +1822,7 @@
         // Instructors teach, they are not candidates for team
         // membership as students.
         var instructorIds = getClassInstructorIds(classId, weekNum);
-        var instructorSet = Object.create(null);
-        for (var ii = 0; ii < instructorIds.length; ii++) {
-            instructorSet[String(instructorIds[ii])] = true;
-        }
+        var instructorSet = buildIdSet(instructorIds);
 
         var roster = deriveClassRoster(classId, weekNum);
 

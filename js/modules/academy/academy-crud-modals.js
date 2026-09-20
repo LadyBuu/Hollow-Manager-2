@@ -73,11 +73,10 @@
  *   `class.instructorId` field; that field was retired in v29.
  *
  *   The week used for the instructor query comes from the aggregator
- *   via AcademyAggregator, which reads AcademyUI.getDisplayWeek().
- *   When the display week is not resolvable, the exclusion falls
- *   back to the student roster alone and the instructor set is
- *   treated as empty. That is a display-only degradation; it does
- *   not fabricate data.
+ *   via AcademyUI, which reads the display week. When the display
+ *   week is not resolvable, the exclusion falls back to the student
+ *   roster alone and the instructor set is treated as empty. That is
+ *   a display-only degradation; it does not fabricate data.
  *
  * ADD CHARACTER TO CLASS — OPTION LABEL:
  *   Each option shows the character's display name and, when
@@ -283,6 +282,39 @@
             return null;
         } catch (e) {
             return null;
+        }
+    }
+
+    /**
+     * Resolve the instructor IDs of a class at the current display
+     * week, or an empty array. Delegates to
+     * AcademyClasses.getClassInstructorIds, which is the canonical
+     * plural query for the retired singular instructor field.
+     *
+     * The week used here is the display week. When it is not
+     * resolvable, this returns an empty array. That is a display-only
+     * degradation: the exclusion falls back to the student roster
+     * alone rather than fabricating an instructor set.
+     *
+     * @param {string} classId
+     * @returns {array} Array of character ID strings
+     */
+    function getClassInstructorIdsForDisplay(classId) {
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
+        var week = getDisplayWeek();
+        if (week === null) {
+            return [];
+        }
+        try {
+            var ids = AcademyClasses.getClassInstructorIds(classId, week);
+            return Array.isArray(ids) ? ids : [];
+        } catch (e) {
+            console.warn(
+                '[AcademyCRUDModals] getClassInstructorIds failed:', e
+            );
+            return [];
         }
     }
 
@@ -690,7 +722,9 @@
      * The exclusion set covers:
      *   - Students of the target class, from the aggregator's roster.
      *   - Instructors of the target class, from
-     *     AcademyClasses.getClassInstructorIds(classId, week).
+     *     AcademyClasses.getClassInstructorIds(classId, week). The
+     *     query returns the plural list of every character teaching
+     *     something in the class at the display week.
      *
      * Each candidate entry carries { id, name, age, status }.
      * Age is the display string from CharacterQueries.getCharacterAge
@@ -704,7 +738,7 @@
         var cls = getClassRecord(classId);
         if (!cls) { return null; }
 
-        var currentIds = {};
+        var currentIds = Object.create(null);
 
         // Exclude the class's students.
         var students = AcademyAggregator.getClassStudentsViewModel(classId) || [];
@@ -714,27 +748,14 @@
             }
         }
 
-        // Exclude the class's instructors. Sourced from the
-        // per-discipline instructor enrolments at the display week.
-        // When the display week is not resolvable, the exclusion set
-        // contains only students; that is a display-only degradation,
-        // not a data error.
-        var week = getDisplayWeek();
-        var instructorIds = [];
-        if (week !== null) {
-            try {
-                instructorIds = AcademyClasses.getClassInstructorIds(
-                    classId, week
-                );
-            } catch (e) {
-                instructorIds = [];
-            }
-        }
-        if (Array.isArray(instructorIds)) {
-            for (var ii = 0; ii < instructorIds.length; ii++) {
-                if (instructorIds[ii]) {
-                    currentIds[String(instructorIds[ii])] = true;
-                }
+        // Exclude the class's instructors. Sourced from the derived
+        // plural query at the display week. When the display week is
+        // not resolvable, the exclusion set contains only students;
+        // that is a display-only degradation, not a data error.
+        var instructorIds = getClassInstructorIdsForDisplay(classId);
+        for (var ii = 0; ii < instructorIds.length; ii++) {
+            if (instructorIds[ii]) {
+                currentIds[String(instructorIds[ii])] = true;
             }
         }
 
