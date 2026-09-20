@@ -1438,31 +1438,30 @@
             ? ' \u2014 ' + escapeHtml(elimination.reason)
             : '';
 
-        if (elimination.state === 'current') {
-            return (
-                '<div class="academy-character-detail-warning academy-warning-elimination-now">' +
-                    '<span class="academy-warning-icon">\u26a0</span>' +
-                    '<span class="academy-warning-text">' +
-                        'Eliminated this week (Week ' +
-                        escapeHtml(String(elimination.week)) +
-                        ')' +
-                        reasonSuffix +
-                    '</span>' +
-                '</div>'
-            );
-        }
+if (elimination.state === 'current') {
+    return (
+        '<div class="academy-character-detail-warning academy-warning-elimination-now">' +
+            '<span class="academy-warning-icon">⚠</span>' +
+            '<span class="academy-warning-text">' +
+                'Eliminated this week (Week ' +
+                escapeHtml(String(elimination.week)) +
+                ')' +
+                reasonSuffix +
+            '</span>' +
+        '</div>'
+    );
+}
 
-        return (
-            '<div class="academy-character-detail-warning academy-warning-eliminated">' +
-                '<span class="academy-warning-icon">\u26a0</span>' +
-                '<span class="academy-warning-text">' +
-                    'Eliminated in Week ' +
-                    escapeHtml(String(elimination.week)) +
-                    reasonSuffix +
-                '</span>' +
-            '</div>'
-        );
-    }
+return (
+    '<div class="academy-character-detail-warning academy-warning-eliminated">' +
+        '<span class="academy-warning-icon">⚠</span>' +
+        '<span class="academy-warning-text">' +
+            'Eliminated in Week ' +
+            escapeHtml(String(elimination.week)) +
+            reasonSuffix +
+        '</span>' +
+    '</div>'
+);
 
     // ============================================================
     // TAB BAR
