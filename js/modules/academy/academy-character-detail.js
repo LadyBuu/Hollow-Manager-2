@@ -1140,7 +1140,8 @@
                             'data-group-key="' +
                                 escapeAttribute(group.key || '') + '" ' +
                             'data-character-id="' +
-                                escapeAttribute(s.id) + '">/**
+                                escapeAttribute(s.id) + '">
+/**
  * modules/academy/academy-character-detail.js - Academy Character Detail Panel
  * Pure renderer for the character detail VM.
  *
