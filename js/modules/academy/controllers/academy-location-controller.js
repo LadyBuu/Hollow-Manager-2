@@ -10,10 +10,10 @@
  *
  * WHAT THIS OWNS:
  *   - Rendering the Locations view into the shell's content host.
- *   - Handling clicks, changes, inputs, and keydowns routed by the
- *     shell for events that occur inside the host.
+ *   - Handling clicks, changes, inputs, and keydowns routed by
+ *     the shell for events that occur inside the host.
  *   - The location selection (_selectedLocationId).
- *   - The list filter (_locationFilters: { type, search }).
+ *   - The list filter (_locationFilters).
  *   - The search debounce timer.
  *   - Routing location-* actions to AcademyCRUDModals.
  *   - Mounting the schedule grid into
@@ -22,25 +22,19 @@
  * WHAT THIS DOES NOT OWN:
  *   - The content host. The shell provides it.
  *   - The display week. The controller reads and writes it through
- *     AcademyUI, same as every other Academy view.
+ *     AcademyUI.
  *   - Re-rendering the shell.
  *   - Location domain reads and writes.
  *
  * SCHEDULE GRID:
- *   The schedule grid is produced by AcademyCalendarAggregator,
- *   which reads through the projector. The controller's job is to
- *   read the grid VM and hand it to CalendarRenderer, which
- *   returns HTML. The controller does not know how the grid is
- *   shaped; it only knows how to ask for it and how to place it.
- *
- *   This mirrors the People controller's
- *   mountScheduleGridIfPresent: same lifecycle, same pattern.
+ *   Produced by AcademyCalendarAggregator, handed to
+ *   CalendarRenderer. This controller asks for the grid VM and
+ *   places the HTML. It does not know how the grid is shaped.
  *
  * WEEK SELECTOR:
- *   The location view's top bar carries a week input. Changing the
- *   week fires AcademyUI.setDisplayWeek and re-renders the view.
- *   The grid re-mounts on the new week because the render function
- *   is re-entered.
+ *   The location view's top bar carries a week input. Changing
+ *   the week fires AcademyUI.setDisplayWeek and re-renders. The
+ *   grid re-mounts on the new week because render is re-entered.
  *
  * DEPENDENCIES (mandatory):
  *   - window.AcademyUI
@@ -215,8 +209,8 @@
 
         host.innerHTML = html;
 
-        // Mount the schedule grid into its host. This runs after
-        // the innerHTML swap, so the host element is present.
+        // Mount the schedule grid into its host. Runs after the
+        // innerHTML swap, so the host element is present.
         if (_selectedLocationId) {
             mountLocationScheduleGridIfPresent(_selectedLocationId, week);
         }
@@ -227,7 +221,9 @@
     // ============================================================
 
     function mountLocationScheduleGridIfPresent(locationId, week) {
-        var host = document.getElementById('academy-location-schedule-host');
+        var host = document.getElementById(
+            'academy-location-schedule-host'
+        );
         if (!host) { return; }
 
         var Renderer = getCalendarRenderer();
@@ -271,8 +267,7 @@
         var renderVM = {
             // canEdit is false: the location grid is read-only. A
             // location is a resource, not an actor; the assign
-            // flow belongs to the character's schedule grid, not
-            // here.
+            // flow belongs to the character's schedule grid.
             canEdit: false,
 
             mode: null,
@@ -336,6 +331,15 @@
                 openLocationDelete(actionEl.dataset.locationId);
                 return;
             default:
+                // Diagnostic: a click on an element carrying
+                // data-action that the switch does not recognise.
+                // If you see this in the console when clicking a
+                // location control, the action name is mismatched
+                // between the view and this controller.
+                console.warn(
+                    '[AcademyLocationController] unhandled action:',
+                    action
+                );
                 return;
         }
     }
@@ -453,9 +457,6 @@
             _locationSearchTimer = null;
         }
 
-        // Selection and filter survive a view switch, matching
-        // pre-existing behavior.
-
         _host = null;
         _context = null;
     }
@@ -472,36 +473,5 @@
         handleKeydown: handleKeydown,
         unmount: unmount
     });
-
-    // ============================================================
-    // VERIFICATION
-    // ============================================================
-
-    (function verify() {
-        var exports = window.AcademyLocationController;
-        var missing = [];
-
-        var required = [
-            'render',
-            'handleClick',
-            'handleChange',
-            'handleInput',
-            'handleKeydown',
-            'unmount'
-        ];
-
-        for (var i = 0; i < required.length; i++) {
-            if (typeof exports[required[i]] !== 'function') {
-                missing.push(required[i]);
-            }
-        }
-
-        if (missing.length > 0) {
-            console.warn(
-                '[AcademyLocationController] Verification - some ' +
-                'exports may be missing:', missing.join(', ')
-            );
-        }
-    })();
 
 })();

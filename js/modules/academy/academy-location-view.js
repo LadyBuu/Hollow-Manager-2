@@ -1,85 +1,39 @@
 /**
- * modules/academy/academy-location-view.js - Academy Location View
+ * modules/academy/academy-location-view.js
+ * Academy Location View
  * Standalone view for browsing locations.
  *
  * Path: js/modules/academy/academy-location-view.js
  *
- * This module is responsible for:
- *   - Rendering the top bar with the week selector
- *   - Rendering the location list with type/search filters
- *   - Rendering the location detail panel (type, capacity,
- *     schedule host)
- *   - Rendering an empty state when no location is selected
+ * RENDERS:
+ *   - The top bar with the week selector
+ *   - The location list with type/search filters
+ *   - The location detail panel (type, capacity, schedule host)
+ *   - An empty state when no location is selected
  *
- * IMPORTANT:
- *   - RENDER ONLY - no mutations, no domain logic.
- *   - Does NOT fetch data. Does NOT call AcademyLocations directly.
- *   - Receives a view model from AcademyAggregator.getLocationViewModel.
- *   - Does NOT bind events. Buttons and rows emit data-* attributes
- *     that AcademyView's delegated container listeners resolve.
- *   - Uses DomUtils for escaping (MANDATORY, no fallback).
- *   - Returns an HTML string.
+ * RENDER ONLY. No mutations, no domain logic. Receives a VM from
+ * AcademyAggregator.getLocationViewModel and returns HTML. Emits
+ * data-* attributes for AcademyView's delegated listeners.
+ *
+ * LAYOUT SHAPE:
+ *   The top bar is a SIBLING of the two-panel wrapper, not a
+ *   child. This matches the People view: the top bar is shell
+ *   furniture that spans the full content width, and the two
+ *   panels sit beneath it.
+ *
+ *   The outer wrapper carries `academy-location-root`, NOT
+ *   `academy-location-layout`. The latter is a two-column grid
+ *   declared in academy.css and shared with the People and
+ *   Discipline views. Using it here would put the top bar and
+ *   the panels wrapper into the grid's two cells, squeezing the
+ *   top bar into the sidebar column.
  *
  * SCHEDULE HOST:
- *   The detail panel renders an empty #academy-location-schedule-host
- *   div. Mounting the grid into that host is a controller-lifecycle
- *   concern and lives in AcademyLocationController's
- *   mountLocationScheduleGridIfPresent, not here. The renderer emits
- *   the host; the controller injects the grid.
- *
- *   This mirrors the character detail panel's Schedule tab: the
- *   renderer emits #academy-schedule-host, and the People controller
+ *   The detail panel renders an empty
+ *   #academy-location-schedule-host. AcademyLocationController
  *   mounts the grid into it.
  *
- * WEEK SELECTOR:
- *   The top bar carries the week input. This is the same pattern
- *   every other Academy view with a week selector uses. Changing
- *   the week fires #academy-location-week-input's change event,
- *   which the controller routes to AcademyUI.setDisplayWeek.
- *
- * VIEW MODEL SOURCE:
- *   AcademyAggregator.getLocationViewModel(filters, week,
- *   selectedLocationId). Every display-ready value (including
- *   typeLabel) is on the VM.
- *
- * INTERFACE:
- *   AcademyLocationView.renderHTML(viewModel) -> string
- *
- *   viewModel:
- *     {
- *       locations:   [ <rowVM> ],
- *       selected:    <detailVM> | null,
- *       filters:     { type, search },
- *       week:        number | null,
- *       total:       number
- *     }
- *
- *   rowVM:
- *     {
- *       id:            string,
- *       name:          string,
- *       type:          string,
- *       typeLabel:     string,
- *       capacity:      number | null,
- *       scheduleCount: number
- *     }
- *
- *   detailVM:
- *     {
- *       id:         string,
- *       name:       string,
- *       type:       string,
- *       typeLabel:  string,
- *       capacity:   number | null,
- *       schedule:   [ <slotVM> ]
- *     }
- *
- *   The `schedule` array on detailVM is no longer rendered here.
- *   It is dead (the grid replaces it), but the VM still carries it
- *   because AcademyAggregator computes the count from it. Removing
- *   it from the VM is a separate change.
- *
- * EVENTS EMITTED (data-* attributes, for AcademyView to bind):
+ * EVENTS EMITTED:
  *   - #academy-location-week-input                        (change/keydown)
  *   - .academy-location-row [data-location-id]            (click)
  *   - #academy-location-type-filter                       (change)
@@ -89,8 +43,8 @@
  *   - [data-action="location-delete"] [data-location-id]  (click)
  *
  * DEPENDENCIES:
- *   - window.DomUtils         (MANDATORY)
- *   - window.CalendarConstants (MANDATORY) — week bounds
+ *   - window.DomUtils
+ *   - window.CalendarConstants
  */
 
 (function() {
@@ -171,6 +125,11 @@
     // ============================================================
     // RENDER - Top-level entry point
     // ============================================================
+    //
+    // The top bar is a sibling of the panels wrapper. Do not nest
+    // the top bar inside the panels wrapper; the panels wrapper is
+    // a two-column layout, and a third child would take a grid
+    // cell instead of spanning the row.
 
     function renderHTML(viewModel) {
         var vm = viewModel || {};
@@ -179,7 +138,7 @@
         var filters = vm.filters || { type: 'all', search: '' };
 
         return (
-            '<div class="academy-body academy-location-layout">' +
+            '<div class="academy-body academy-location-root">' +
                 renderTopBar(vm.week) +
                 '<div class="academy-location-panels">' +
                     renderListPanel(locations, filters) +
@@ -448,8 +407,7 @@
         html += '</div>';
 
         // The host is empty. AcademyLocationController mounts the
-        // grid into it. Mirrors the character detail panel's
-        // #academy-schedule-host.
+        // grid into it.
         html += '<div id="academy-location-schedule-host" ' +
                     'class="academy-location-schedule-host"></div>';
 
