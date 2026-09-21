@@ -33,22 +33,26 @@
  *     HH:00
  *
  *   with a two-digit hour (00-23) and `:00` minutes. There is no
- *   AM/PM suffix anywhere. There is no 12-hour representation.
+ *   AM/PM suffix anywhere. There is no 12-hour representation in
+ *   the output.
  *
- *   formatHour(hour, includeMinutes) always emits minutes when
- *   includeMinutes is true (the default) and just the two-digit
- *   hour when includeMinutes is false. Callers that omit the flag
- *   get `HH:00`.
+ *   formatHour(hour, includeMinutes):
+ *     - includeMinutes !== false (the default):
+ *         "05:00", "09:00", "13:00", "23:00"
+ *     - includeMinutes === false:
+ *         "05", "09", "13", "23"
+ *     An invalid hour returns the raw value stringified rather
+ *     than inventing a value.
  *
- *   parseHour accepts the same format back. It also still accepts
- *   bare integers and legacy 12-hour strings ("9:00 AM") so that
- *   imported data and older call sites do not break; the
+ *   parseHour accepts the same 24-hour format back. It also still
+ *   accepts bare integers and legacy 12-hour strings ("9:00 AM")
+ *   so that imported data and older call sites keep working; the
  *   canonical output of formatHour is 24-hour, and every new
  *   caller sees 24-hour labels.
  *
- *   Consumers of formatHour (the schedule grid, the session form
+ *   Consumers of formatHour — the schedule grid, the session form
  *   dropdowns, the schedule modals, the location co-occupants
- *   panel) inherit 24-hour labels automatically. There is no
+ *   panel — inherit 24-hour labels automatically. There is no
  *   per-caller switch and no additional flag.
  *
  * DEPENDENCIES:
@@ -277,7 +281,7 @@
     //
     // Two-digit hour, `:00` minutes, no AM/PM suffix. When
     // includeMinutes is false, the output is just the two-digit
-    // hour (`"09"`). No caller in the current codebase passes
+    // hour (e.g. "09"). No caller in the current codebase passes
     // false; the branch is retained for completeness.
     //
     // An invalid hour (out of range, non-integer) returns the raw
@@ -307,7 +311,7 @@
      * Parse an hour string.
      *
      * Accepts, in order:
-     *   - "HH:MM" (24-hour) with HH in 0-23 and MM in 0-59
+     *   - "HH:MM" or "H:MM" (24-hour) with HH in 0-23 and MM in 0-59
      *   - "H:MM AM"/"H:MM PM" (legacy 12-hour)
      *   - "H AM"/"H PM" (legacy 12-hour, no minutes)
      *   - "H" or "HH" (bare hour, 0-23)
