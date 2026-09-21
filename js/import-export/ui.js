@@ -17,6 +17,16 @@
  *   - Uses TabManager for UI refresh
  *   - Self-contained UI lifecycle
  * 
+ * GRADUATES EXPORT:
+ *   The two graduate buttons (JSON, CSV) read the currently selected
+ *   class from AcademyUI.getSelectedClassId(). The user selects a
+ *   class in the Academy tab's People view, then clicks a graduate
+ *   button. If no class is selected, the handler notifies and stops.
+ * 
+ *   GraduatesExport is resolved lazily at click time. If the module
+ *   is missing, the handler reports "not available" rather than
+ *   throwing at IIFE time and taking the rest of ui.js with it.
+ * 
  * DEPENDENCIES:
  *   - window.ExportUtils (from export-utils.js) - MANDATORY
  *   - window.NotificationSystem (from notification.js) - MANDATORY
@@ -27,6 +37,10 @@
  *   - window.JSONIO (from json-io.js) - MANDATORY
  *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
  *   - window.ActivityLog (from activity-log.js) - MANDATORY
+ * 
+ * DEPENDENCIES (LAZY, resolved at click time):
+ *   - window.AcademyUI        (graduates: reads selected class)
+ *   - window.GraduatesExport  (graduates: the exporter itself)
  * 
  * USAGE:
  *   // Auto-initializes on DOM ready
@@ -653,6 +667,132 @@
     }
 
     // ============================================================
+    // HANDLERS - Graduates Export
+    // ============================================================
+    //
+    // Reads the currently selected Academy class from AcademyUI.
+    // If no class is selected, the handler notifies and stops.
+    //
+    // GraduatesExport and AcademyUI are resolved lazily at click
+    // time. A missing module produces a toast, not a crash.
+
+    function getGraduatesExport() {
+        return window.GraduatesExport || null;
+    }
+
+    function getAcademyUI() {
+        return window.AcademyUI || null;
+    }
+
+    function resolveSelectedClassId() {
+        var UI = getAcademyUI();
+        if (!UI || typeof UI.getSelectedClassId !== 'function') {
+            return null;
+        }
+        try {
+            var classId = UI.getSelectedClassId();
+            if (typeof classId === 'string' && classId.trim() !== '') {
+                return classId;
+            }
+            return null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function handleGraduatesJSONExport() {
+        var GE = getGraduatesExport();
+        if (!GE || typeof GE.exportGraduatesJSON !== 'function') {
+            notifyError('Graduates export not available');
+            return;
+        }
+
+        var classId = resolveSelectedClassId();
+        if (!classId) {
+            notifyWarning(
+                'Select a class in the Academy tab first, then ' +
+                'export its graduates.'
+            );
+            return;
+        }
+
+        try {
+            var result = GE.exportGraduatesJSON(classId);
+            if (result && result.exported) {
+                notifySuccess(
+                    'Exported ' + result.count + ' graduate(s): ' +
+                    result.filename
+                );
+                try {
+                    deps.ActivityLog.record(
+                        'Exported ' + result.count +
+                        ' graduates (JSON) for class ' + classId,
+                        'export'
+                    );
+                } catch (e) {
+                    // Non-fatal
+                }
+            } else if (result && result.error) {
+                if (result.error === 'No graduates found for this class.') {
+                    notifyWarning(result.error);
+                } else {
+                    notifyError('Graduates export failed: ' + result.error);
+                }
+            } else {
+                notifyError('Graduates export failed.');
+            }
+        } catch (err) {
+            notifyError('Graduates export failed: ' + err.message);
+        }
+    }
+
+    function handleGraduatesCSVExport() {
+        var GE = getGraduatesExport();
+        if (!GE || typeof GE.exportGraduatesCSV !== 'function') {
+            notifyError('Graduates export not available');
+            return;
+        }
+
+        var classId = resolveSelectedClassId();
+        if (!classId) {
+            notifyWarning(
+                'Select a class in the Academy tab first, then ' +
+                'export its graduates.'
+            );
+            return;
+        }
+
+        try {
+            var result = GE.exportGraduatesCSV(classId);
+            if (result && result.exported) {
+                notifySuccess(
+                    'Exported ' + result.count + ' graduate(s): ' +
+                    result.filename
+                );
+                try {
+                    deps.ActivityLog.record(
+                        'Exported ' + result.count +
+                        ' graduates (CSV) for class ' + classId,
+                        'export'
+                    );
+                } catch (e) {
+                    // Non-fatal
+                }
+            } else if (result && result.error) {
+                if (result.error === 'No graduates found for this class.') {
+                    notifyWarning(result.error);
+                } else {
+                    notifyError('Graduates export failed: ' + result.error);
+                }
+            } else {
+                notifyError('Graduates export failed.');
+            }
+        } catch (err) {
+            notifyError('Graduates export failed: ' + err.message);
+        }
+    }
+
+    // ============================================================
     // INITIALIZATION
     // ============================================================
 
@@ -690,6 +830,10 @@
         });
         bindFileInput('missions-csv-file-input', handleMissionImport);
         bindButton('template-missions-csv-btn', handleMissionTemplate);
+
+        // ---- Graduates Export ----
+        bindButton('export-graduates-json-btn', handleGraduatesJSONExport);
+        bindButton('export-graduates-csv-btn', handleGraduatesCSVExport);
 
     }
 
@@ -731,6 +875,8 @@
         handleMissionExport: handleMissionExport,
         handleMissionImport: handleMissionImport,
         handleMissionTemplate: handleMissionTemplate,
+        handleGraduatesJSONExport: handleGraduatesJSONExport,
+        handleGraduatesCSVExport: handleGraduatesCSVExport,
 
         // Utilities
         bindButton: bindButton,
