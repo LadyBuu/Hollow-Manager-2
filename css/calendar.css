@@ -13,9 +13,11 @@
  *   - Empty slots (the "+" hint, gated on assignability)
  *   - Rest-day columns
  *   - Blocked slots
+ *   - The co-occupant marker (shared-location indicator)
  *   - The legend
  *   - The loading state
- *   - The schedule-assign and schedule-instructor modals
+ *   - The schedule-assign modal (assign / remove modes)
+ *   - The schedule-instructor modal
  *
  * Loads after shared.css and academy.css.
  */
@@ -295,6 +297,9 @@
     line-height: 1.15;
     word-break: break-word;
     overflow-wrap: anywhere;
+    /* Reserve room on the right so the discipline name does not
+       run under the corner badges (duration / co-occupant). */
+    padding-right: 22px;
 }
 
 @media (min-width: 768px) {
@@ -325,6 +330,31 @@
     text-overflow: ellipsis;
 }
 
+/* ---------- Corner badges ---------- */
+/*
+ * Both the duration badge and the co-occupant marker are
+ * absolutely positioned inside their .schedule-cell. The cell
+ * is `position: relative; overflow: hidden;`, so anything these
+ * elements render must stay INSIDE the cell's content box.
+ *
+ * The cell's overflow: hidden exists to clip long discipline
+ * names. It is not a bug; it is a feature. The badges cooperate
+ * with it by not leaving the cell.
+ *
+ * Stacking (which badge sits above which in a tight cell):
+ *   .schedule-duration           top:  3px, right: 5px
+ *   .schedule-co-occupant-marker top: 17px, right: 5px
+ *                                (only when a duration shares
+ *                                the corner)
+ *   .schedule-co-occupant-marker top:  3px, right: 5px
+ *                                (when it is alone)
+ *
+ * When both are present, the marker drops below the duration.
+ * It is never pushed above the cell — the previous `top: -14px`
+ * rule was clipped by the cell's overflow and produced an
+ * invisible marker. See calendar.css history.
+ */
+
 .schedule-duration {
     font-size: 0.58rem;
     color: var(--text-dim);
@@ -335,6 +365,7 @@
     background: var(--panel-alt);
     padding: 0 3px;
     border-radius: 3px;
+    line-height: 1.4;
 }
 
 .schedule-continuation {
@@ -350,7 +381,23 @@
 
 /* ============================================================
    CO-OCCUPANT MARKER
-   ============================================================ */
+   ============================================================
+   A small "+N" badge in the corner of an occupied cell when the
+   slot descriptor carries a non-empty `coOccupants` array.
+   Rendered when a second group shares this location at this
+   (day, hour) in this week.
+
+   The marker's `title` attribute lists the co-occupants'
+   discipline names and instructors. Hovering reveals the
+   detail. The marker is a passive indicator: it does not emit
+   an action. Clicking it is clicking the cell; the cell's own
+   action fires.
+
+   The marker stays INSIDE the cell bounds so the cell's
+   `overflow: hidden` does not clip it. When a duration badge
+   shares the corner, the marker drops below the duration badge
+   rather than pushing above the cell.
+*/
 
 .schedule-co-occupant-marker {
     position: absolute;
@@ -365,12 +412,14 @@
     padding: 0 5px;
     line-height: 1.4;
     cursor: help;
-    z-index: 1;
+    white-space: nowrap;
 }
 
-.schedule-occupied .schedule-duration ~ .schedule-co-occupant-marker,
-.schedule-occupied:has(.schedule-duration) .schedule-co-occupant-marker {
-    top: -14px;
+/* When a duration badge shares the corner, drop the marker
+   below it. The cell has `overflow: hidden`; the marker must
+   stay inside the cell's content box. */
+.schedule-occupied .schedule-duration ~ .schedule-co-occupant-marker {
+    top: 17px;
 }
 
 /* ============================================================
@@ -547,7 +596,7 @@
 /* ============================================================
    SCHEDULE INSTRUCTOR MODAL
    ============================================================
-   The two-field modal opened from an empty cell in an
+   Two-field modal opened from an empty cell in an
    instructor-mode grid. Same visual language as the
    schedule-assign modal.
    ============================================================ */
