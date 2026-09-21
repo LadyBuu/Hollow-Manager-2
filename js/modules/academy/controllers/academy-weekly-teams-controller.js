@@ -46,20 +46,31 @@
  *   The modal shell is created OUTSIDE the controller's content
  *   host, so a host re-render cannot destroy it.
  *
- * MODAL ESCAPE (this revision):
- *   openModalShell now passes an explicit onClose to Modal.modalSetup.
- *   Before this revision, Modal.modalSetup(modal) was called with no
- *   second argument, which meant Escape-key and click-outside closed
- *   the modal through Modal.closeModal directly, bypassing the
- *   controller's closeTrackedModal helper. The modal still closed
- *   correctly, but the controller's _openModal field retained a
- *   reference to the now-detached modal element until the next
- *   modal replaced it.
+ * MODAL ESCAPE AND CLOSE BUTTONS (this revision):
+ *   openModalShell now binds the modal's own close affordances:
  *
- *   The fix routes every close path — close button, submit success,
- *   click-outside, Escape — through closeTrackedModal, so the
- *   controller's _openModal tracking stays in sync with the actual
- *   modal lifecycle.
+ *     - the .close-modal button in the modal header,
+ *     - the .cancel-modal-btn button (wherever it appears),
+ *     - and a delegated click listener that catches any
+ *       element carrying those classes even if it is added
+ *       later or nested inside the modal's form.
+ *
+ *   Previously, callers of openModalShell were expected to bind
+ *   their own close buttons. Most did not, and the modal had no
+ *   working close path except the Escape key (which
+ *   Modal.modalSetup already wired). The close and Cancel
+ *   buttons rendered inert. This revision binds them centrally,
+ *   so every caller of openModalShell inherits a working close
+ *   path with no per-caller wiring.
+ *
+ *   The binding happens AFTER onBind runs, so a caller that binds
+ *   its own click handlers on the same buttons is not disturbed.
+ *
+ * MODAL ESCAPE (previous revision):
+ *   Modal.modalSetup is called with an explicit onClose that
+ *   routes through closeTrackedModal, so the controller's
+ *   _openModal field stays in sync with the modal's actual
+ *   lifecycle regardless of which path closes it.
  *
  * DEPENDENCY DIRECTION:
  *   Shell → registry → this controller.
@@ -237,11 +248,6 @@
     // ============================================================
     // MODULE STATE
     // ============================================================
-    //
-    // The only things this controller holds across calls are the
-    // most recent render context and the currently open modals
-    // (so unmount can close them). Everything else is derived
-    // from the context and the aggregator on each render.
 
     var _renderContext = null;
     var _openModal = null;
@@ -418,7 +424,6 @@
             return;
         }
 
-        // ---- Team row selection: toggle selected team ----
         var teamRow = target.closest('.academy-weekly-team-row');
         if (teamRow && teamRow.dataset && teamRow.dataset.teamId) {
             e.preventDefault();
@@ -426,7 +431,6 @@
             return;
         }
 
-        // ---- Member row: open the character in People view ----
         var memberRow = target.closest('.academy-weekly-team-member-row');
         if (memberRow && memberRow.dataset && memberRow.dataset.characterId) {
             e.preventDefault();
@@ -435,7 +439,6 @@
             return;
         }
 
-        // ---- Delegated action dispatch ----
         var actionEl = target.closest('[data-action]');
         if (!actionEl || !actionEl.dataset) { return; }
 
@@ -508,8 +511,7 @@
     }
 
     function handleInput(e) {
-        // The Weekly Teams view has no text inputs that need live
-        // handling. Reserved for future use.
+        // No live text inputs in this view.
     }
 
     function handleKeydown(e) {
@@ -771,22 +773,6 @@
     // ============================================================
     // MANAGE MEMBERS (shared manager)
     // ============================================================
-    //
-    // Opens the shared MemberManager with the Academy adapter.
-    //
-    // The manager is identical to the one used by the Teams tab.
-    // Only the adapter differs: it resolves the class ID from the
-    // team, routes mutations to AcademyWeeklyTeams, and drops role
-    // changes (no role mutation on the academic side).
-    //
-    // MODAL LIFECYCLE:
-    //   - Shell created on demand here.
-    //   - Appended to document.body by Modal.showModal.
-    //   - Not in the controller's content host, so a re-render of
-    //     the Weekly Teams view cannot destroy it.
-    //   - On close, the manager calls onClose, which closes the
-    //     shell and fires context.onChange so the view behind
-    //     updates.
 
     function openMembersModal(teamId) {
         if (!isNonEmptyString(teamId)) { return; }
@@ -799,7 +785,6 @@
             return;
         }
 
-        // Close any prior instance.
         if (_openMemberManagerModal) {
             try {
                 Modal.closeModal(_openMemberManagerModal);
@@ -952,14 +937,6 @@
         );
     }
 
-    // ============================================================
-    // AUTO-DISTRIBUTE — OPERATION
-    // ============================================================
-    //
-    // Extracted into academy-weekly-teams-operations.js. This
-    // controller reads the operations module lazily and falls back
-    // to an inline implementation when it is absent.
-
     function runAutoDistribute(ctx) {
         var Operations = getOperations();
         if (Operations && typeof Operations.runAutoDistribute === 'function') {
@@ -974,7 +951,6 @@
             return Operations.runAutoDistribute(ctx, deps);
         }
 
-        // Fallback: the extracted module is not loaded.
         notify(
             'Auto-Distribute module is not available.', 'error'
         );
@@ -1121,23 +1097,28 @@
 
     /**
      * Open a modal shell with the given content, wire it through
-     * the controller's own close function, and invoke the caller's
-     * bind callback.
+     * the controller's own close function, bind its close
+     * affordances, and invoke the caller's bind callback.
      *
      * ESCAPE / CLICK-OUTSIDE:
      *   Modal.modalSetup is called with an explicit onClose that
      *   routes through closeTrackedModal. This keeps the
      *   controller's _openModal field in sync with the modal's
-     *   actual lifecycle, no matter which path closes it: the
-     *   close button, a successful submit, a click outside the
-     *   modal, or the Escape key.
+     *   actual lifecycle.
      *
-     *   Before this revision, Modal.modalSetup(modal) was called
-     *   with no second argument. That still closed the modal on
-     *   Escape and click-outside (Modal called its own
-     *   closeModal), but it bypassed closeTrackedModal, leaving
-     *   _openModal pointing at a detached element until the next
-     *   open replaced it.
+     * CLOSE AND CANCEL BUTTONS (this revision):
+     *   The modal's .close-modal button and any .cancel-modal-btn
+     *   in the content are bound to the close function here,
+     *   AFTER onBind runs. Previously, callers were expected to
+     *   bind their own close buttons and most did not, so the
+     *   buttons rendered inert. Centralising the binding here
+     *   means every caller of openModalShell gets a working
+     *   close path with no per-caller wiring.
+     *
+     *   A delegated click listener on the modal element catches
+     *   any element carrying either class, including ones that
+     *   are added to the modal after this function returns (for
+     *   example, a close button that a subsequent render inserts).
      */
     function openModalShell(className, contentHTML, onBind) {
         var modal = Modal.createModal(className);
@@ -1166,7 +1147,56 @@
             onBind(modal, close);
         }
 
+        // Bind close affordances AFTER the caller's own listeners
+        // are attached, so a caller that binds its own click
+        // handlers on the same buttons is not disturbed.
+        bindCloseAffordances(modal, close);
+
         return modal;
+    }
+
+    /**
+     * Bind every close affordance in a modal to the close function.
+     *
+     * Two classes are recognised:
+     *
+     *   .close-modal        the header's X button
+     *   .cancel-modal-btn   the footer's Cancel button
+     *
+     * A delegated listener on the modal element catches both,
+     * wherever they appear and whenever they are added. Direct
+     * listeners are also attached to any element that already
+     * carries either class at bind time, for the common case.
+     *
+     * The delegated listener is the load-bearing one. It works
+     * even if the modal's content is re-rendered after this
+     * function returns.
+     */
+    function bindCloseAffordances(modal, close) {
+        if (!modal || typeof close !== 'function') { return; }
+
+        // Direct binding for elements present now.
+        var directTargets = modal.querySelectorAll(
+            '.close-modal, .cancel-modal-btn'
+        );
+        for (var i = 0; i < directTargets.length; i++) {
+            directTargets[i].addEventListener('click', function(e) {
+                e.preventDefault();
+                close();
+            });
+        }
+
+        // Delegated binding for anything added later.
+        modal.addEventListener('click', function(e) {
+            var target = e.target;
+            if (!target || typeof target.closest !== 'function') {
+                return;
+            }
+            var btn = target.closest('.close-modal, .cancel-modal-btn');
+            if (!btn) { return; }
+            e.preventDefault();
+            close();
+        });
     }
 
     function trackOpenModal(modal) {
