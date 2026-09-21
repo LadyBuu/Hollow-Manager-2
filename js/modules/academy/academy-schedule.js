@@ -17,16 +17,13 @@
  *                               blocking collision check
  *     scheduleInstructorSlot    resolve-or-create the group and
  *                               session implied by an instructor
- *                               staking a claim on a (day, hour)
- *                               slot for one of their disciplines
+ *                               staking a claim on a slot
  *     addStudentToTeachingGroup add a member to a group, validating
  *                               enrolment and elimination
  *     dropStudentFromClass      end every enrolment and membership
- *                               for a character in a class, and
- *                               remove the classId from the character
+ *                               for a character in a class
  *     assignStudentToSlot       resolve-or-create the group and
- *                               session implied by a single
- *                               (student, week, day, hour, discipline)
+ *                               session implied by a student
  *                               assignment, then add the membership
  *     removeTeachingGroup       delete a teaching group and every
  *                               session owned by it, in one
@@ -39,13 +36,11 @@
  *   - Collision reporting            (AcademyTeachingCollisions)
  *   - Validation warnings            (AcademyTeachingValidation)
  *   - Rendering                      (views)
+ *   - Location entities              (AcademyLocations)
  *
  * TRANSACTION MODEL:
  *   Every public function here is a single MutationPipeline.performMutation
  *   call. It either fully succeeds or fully rolls back.
- *
- *   Reads performed during validation and inside the mutate callback
- *   use the pipeline's appData snapshot, not window.data.
  *
  * WEEK SEMANTICS (INCLUSIVE BOUNDS):
  *   All week ranges are inclusive on both ends.
@@ -57,23 +52,32 @@
  *
  * INSTRUCTOR-OF-CLASS:
  *   A class does not carry an instructor field. Instructors are
- *   derived from per-discipline instructor enrolments:
+ *   derived from per-discipline instructor enrolments.
  *
- *     explicit instructorId in the payload
- *         ↓
- *     active instructor-mode enrolment for (classId, disciplineId)
- *         ├── exactly one  → use it
- *         ├── more than one → reject 'ambiguous_instructor'
- *         └── zero          → reject 'missing_instructor'
+ * SESSION LOCATION (this revision):
+ *   `assignStudentToSlot` and `scheduleInstructorSlot` both accept
+ *   an optional `locationId`. It is applied ONLY when the resolver
+ *   creates a new session. When an existing session is reused, the
+ *   location on the payload is IGNORED — the location of an existing
+ *   session is a fact about that meeting, not a suggestion, and
+ *   adding a member should not move a meeting.
  *
- *   There is no class-level fallback.
+ *   To change the location of an existing session, use the session
+ *   form (from the Teaching Groups tab's Sessions list), which calls
+ *   AcademyTeachingSessions.updateSession.
+ *
+ *   When `locationId` is non-null, it must resolve to a real location
+ *   via AcademyLocations.getLocation. Otherwise the payload is
+ *   rejected with `location_not_found`. Silent fallback to null
+ *   would hide a caller bug.
  *
  * COLLISION POLICY:
- *   scheduleGroupMeeting and scheduleInstructorSlot both perform a
- *   blocking collision check on instructor and student time
- *   overlaps. `allowCollisions: true` bypasses POLICY conflicts
- *   only; structural invariants (bad week, missing entities,
- *   group_session_overlap) are never overridden.
+ *   scheduleGroupMeeting, scheduleInstructorSlot, and
+ *   assignStudentToSlot all perform a blocking collision check on
+ *   instructor and student time overlaps. `allowCollisions: true`
+ *   bypasses POLICY conflicts only; structural invariants (bad
+ *   week, missing entities, group_session_overlap) are never
+ *   overridden.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.ObjectUtils
@@ -95,6 +99,8 @@
  * DEPENDENCIES (LAZY):
  *   - window.AcademyAggregator
  *   - window.AcademyTeachingProjector
+ *   - window.AcademyLocations     (validates locationId on the two
+ *                                  slot-setting entry points)
  */
 
 (function() {
@@ -135,6 +141,10 @@
 
     function getAcademyTeachingProjector() {
         return window.AcademyTeachingProjector || null;
+    }
+
+    function getAcademyLocations() {
+        return window.AcademyLocations || null;
     }
 
     // ============================================================
@@ -308,6 +318,58 @@
             );
             return [];
         }
+    }
+
+    // ============================================================
+    // LOCATION RESOLUTION
+    // ============================================================
+    //
+    // A locationId on a slot-setting payload is optional. When
+    // non-null, it must resolve to a real location. The check is
+    // fail-closed: a bad ID rejects, it does not silently fall
+    // back to null. The modal only offers real locations, so the
+    // failure path only fires for programmatic callers.
+    //
+    // When AcademyLocations is not loaded, the check is skipped
+    // and the value is accepted as-is. The location store is a
+    // separate domain; its absence should not block scheduling
+    // entirely. The projector reads locationId through the
+    // location store, so a location-less session that carries a
+    // dangling ID will simply not project a location.
+
+    function resolveLocationId(rawLocationId) {
+        if (rawLocationId === undefined ||
+            rawLocationId === null ||
+            rawLocationId === '') {
+            return { ok: true, value: null };
+        }
+
+        if (!isNonEmptyString(rawLocationId)) {
+            return {
+                ok: false,
+                message: 'Location ID must be a non-empty string.'
+            };
+        }
+
+        var id = String(rawLocationId);
+        var AL = getAcademyLocations();
+
+        if (AL && typeof AL.getLocation === 'function') {
+            var loc = null;
+            try {
+                loc = AL.getLocation(id);
+            } catch (e) {
+                loc = null;
+            }
+            if (!loc) {
+                return {
+                    ok: false,
+                    message: 'Location not found.'
+                };
+            }
+        }
+
+        return { ok: true, value: id };
     }
 
     // ============================================================
@@ -1058,9 +1120,11 @@
             collisionMode = 'ignore';
         }
 
-        var locationId = isNonEmptyString(config.locationId)
-            ? String(config.locationId)
-            : null;
+        var locationResult = resolveLocationId(config.locationId);
+        if (!locationResult.ok) {
+            return Promise.resolve(failure(locationResult.message));
+        }
+        var locationId = locationResult.value;
 
         var targetGroup = String(groupId);
 
@@ -1441,14 +1505,6 @@
     // removeTeachingGroup
     // ============================================================
 
-    /**
-     * Hard-delete a teaching group and every session owned by it,
-     * in one transaction.
-     *
-     * THIS IS A HARD DELETE, NOT A WINDOW TRUNCATION. Enrolments
-     * are NOT touched. The teachingGroupSequences counter is not
-     * reset.
-     */
     function removeTeachingGroup(payload) {
         if (!isPlainObject(payload)) {
             return Promise.resolve(failure('Payload must be an object.'));
@@ -1571,11 +1627,6 @@
     // ============================================================
     // assignStudentToSlot
     // ============================================================
-    //
-    // See the original docstring above for the full algorithm.
-    // The instructor-resolution and group/session resolution paths
-    // are shared with scheduleInstructorSlot below via the helpers
-    // in this section.
 
     function rejection(reason, message, data) {
         var result = {
@@ -1957,6 +2008,16 @@
             ));
         }
 
+        // Optional location. Validated fail-closed.
+        var locationResult = resolveLocationId(payload.locationId);
+        if (!locationResult.ok) {
+            return Promise.resolve(rejection(
+                'invalid_input',
+                locationResult.message
+            ));
+        }
+        var locationId = locationResult.value;
+
         var allowCollisions = payload.allowCollisions === true;
 
         var targetChar = String(payload.charId);
@@ -2181,7 +2242,8 @@
                     day,
                     startHour,
                     duration,
-                    snapshotDiscipline
+                    snapshotDiscipline,
+                    locationId
                 );
 
                 var resolvedGroup = resolved.group;
@@ -2255,6 +2317,7 @@
                             day: day,
                             startHour: startHour,
                             duration: duration,
+                            locationId: resolvedSession.locationId || null,
                             createdGroup: createdGroup,
                             createdSession: createdSession,
                             addedMembership: false
@@ -2283,6 +2346,7 @@
                     day: day,
                     startHour: startHour,
                     duration: duration,
+                    locationId: resolvedSession.locationId || null,
                     createdGroup: createdGroup,
                     createdSession: createdSession,
                     addedMembership: true
@@ -2314,56 +2378,6 @@
     // ============================================================
     // scheduleInstructorSlot
     // ============================================================
-    //
-    // Reading B: an instructor stakes a claim on a (day, hour)
-    // slot for one of their disciplines for the currently selected
-    // class.
-    //
-    // WHAT IT WRITES:
-    //   1. Resolve-or-create the teaching group for
-    //      (classId, disciplineId, instructorId).
-    //   2. Resolve-or-create the teaching session at
-    //      (day, startHour, duration) on that group.
-    //
-    // No students are assigned. No enrolments are touched. The
-    // session's window is the discipline's window.
-    //
-    // PREREQUISITES:
-    //   - The instructor exists and is in the class.
-    //   - The instructor has an instructor-mode enrolment for
-    //     (classId, disciplineId) that covers `week`.
-    //   - The class offers the discipline.
-    //   - The discipline is active in `week`.
-    //
-    // IDEMPOTENCY:
-    //   If an exact-match session already exists on the resolved
-    //   group, it is reused. The result reports
-    //   addedSession: false.
-    //
-    // RETURN SHAPE (success):
-    //   {
-    //     success: true,
-    //     data: {
-    //       groupId, sessionId, disciplineId, instructorId,
-    //       week, day, startHour, duration,
-    //       createdGroup: boolean,
-    //       createdSession: boolean
-    //     }
-    //   }
-    //
-    // RETURN SHAPE (rejection):
-    //   Same reason vocabulary as assignStudentToSlot, minus the
-    //   student-specific reasons. Includes:
-    //     invalid_input
-    //     class_not_found
-    //     discipline_not_found
-    //     character_not_found
-    //     not_in_class
-    //     no_class_discipline
-    //     offering_inactive
-    //     not_an_instructor
-    //     group_session_overlap
-    //     instructor_collision
 
     function scheduleInstructorSlot(payload) {
         if (!isPlainObject(payload)) {
@@ -2438,6 +2452,16 @@
             ));
         }
 
+        // Optional location. Validated fail-closed.
+        var locationResult = resolveLocationId(payload.locationId);
+        if (!locationResult.ok) {
+            return Promise.resolve(rejection(
+                'invalid_input',
+                locationResult.message
+            ));
+        }
+        var locationId = locationResult.value;
+
         var allowCollisions = payload.allowCollisions === true;
 
         var targetInstructor = String(payload.instructorId);
@@ -2503,8 +2527,6 @@
             ));
         }
 
-        // The instructor must be enrolled as an instructor for
-        // this (class, discipline) covering the week.
         var isInstructorEnrolled = false;
         try {
             isInstructorEnrolled = AcademyEnrolments.isEnrolledInWeek(
@@ -2603,7 +2625,8 @@
                     day,
                     startHour,
                     duration,
-                    snapshotDiscipline
+                    snapshotDiscipline,
+                    locationId
                 );
 
                 var resolvedGroup = resolved.group;
@@ -2612,10 +2635,6 @@
                 var createdSession = resolved.createdSession;
 
                 if (!allowCollisions) {
-                    // Student collisions are not checked here: the
-                    // instructor is staking a slot with no student
-                    // membership attached. Only the instructor's own
-                    // time matters.
                     if (createdSession) {
                         var candidateSession = {
                             day: day,
@@ -2653,6 +2672,7 @@
                     day: day,
                     startHour: startHour,
                     duration: duration,
+                    locationId: resolvedSession.locationId || null,
                     createdGroup: createdGroup,
                     createdSession: createdSession
                 };
@@ -2689,25 +2709,19 @@
     // (classId, disciplineId, instructorId). Used by both
     // assignStudentToSlot and scheduleInstructorSlot.
     //
-    // Resolution rules (identical to the original inline logic):
-    //   - Candidate groups: for (classId, disciplineId,
-    //     instructorId) active at `week`.
-    //   - For each candidate group (sorted by startWeek, then id):
-    //       - If a session on the group matches (day, startHour,
-    //         duration) exactly at `week`, reuse both.
-    //       - Else if a session on the group overlaps in time at
-    //         `week`, reject '__group_session_overlap__'.
-    //       - Else use the group; a session will be created below.
-    //   - If no candidate group works, create a new group and a
-    //     session on it.
+    // LOCATION SEMANTICS:
+    //   `locationId` is applied ONLY when a new session is created.
+    //   When an existing session is reused (exact match on day /
+    //   startHour / duration, active at `week`), its location is
+    //   left as-is; the payload's locationId is ignored. Adding a
+    //   member or an instructor slot should not move an existing
+    //   meeting.
     //
-    // WRITES:
-    //   - Writes the new group and/or session into the academy
-    //     snapshot. Does not write memberships.
+    //   To change an existing session's location, use the session
+    //   form (from the Teaching Groups tab's Sessions list).
     //
-    // THROWS:
-    //   - A sentinel-prefixed Error for structural rejections the
-    //     pipeline needs to unwind. The caller reshapes it.
+    //   `locationId` may be null. A null location is valid; the
+    //   session renders on the grid without a location line.
 
     function resolveOrCreateGroupAndSession(
         academy,
@@ -2718,7 +2732,8 @@
         day,
         startHour,
         duration,
-        discipline
+        discipline,
+        locationId
     ) {
         var candidates = collectCandidateGroups(
             academy,
@@ -2782,6 +2797,7 @@
             }
 
             if (exactMatch) {
+                // Reuse. Location on the payload is IGNORED.
                 resolvedGroup = candidateGroup;
                 resolvedSession = exactMatch;
                 break;
@@ -2850,7 +2866,9 @@
                 day: day,
                 startTime: startHour,
                 duration: duration,
-                locationId: null,
+                locationId: (locationId === undefined || locationId === null)
+                    ? null
+                    : String(locationId),
                 startWeek: sessionStart,
                 endWeek: sessionEnd,
                 createdAt: sessionNow,
@@ -2875,11 +2893,6 @@
     // ============================================================
     // SENTINEL RESHAPING
     // ============================================================
-    //
-    // The pipeline catches thrown errors and turns them into
-    // { success: false, message }. Our structural rejections are
-    // thrown with sentinel-prefixed messages; this reshapes them
-    // back into structured rejections the caller can branch on.
 
     function reshapeSentinelRejection(result) {
         if (!result || result.success !== false) {
