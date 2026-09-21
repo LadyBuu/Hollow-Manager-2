@@ -17,12 +17,39 @@
  *   Modal lifecycle:
  *     - Creates its own .modal shell, appended to document.body.
  *     - Reads its candidate list from
- *       AcademyClassDisciplinesQueries (the class's offerings
- *       active in the display week) and AcademyDisciplines
- *       (names), filtered against the character's existing
- *       enrolments via AcademyEnrolments.getStudentDisciplineIds.
+ *       AcademyClassDisciplinesQueries (the class's offerings) and
+ *       AcademyDisciplines (names, start weeks), filtered against
+ *       the character's existing enrolments via
+ *       AcademyEnrolments.getStudentDisciplineIds.
  *     - Writes through AcademyEnrolments.enrol only.
  *     - Closes on Close button, backdrop click, Escape.
+ *
+ * WEEK SEMANTICS (this revision):
+ *   Enrollment is a YEAR-LEVEL decision. The picker shows EVERY
+ *   discipline the class offers, regardless of the display week.
+ *   Switching the display week does NOT change the picker.
+ *
+ *   Each enrolment's startWeek is CLIPPED to the discipline's own
+ *   startWeek:
+ *
+ *     enrolmentStartWeek = max(displayWeek, discipline.startWeek)
+ *
+ *   This keeps the enrolment interval honest: it never claims to
+ *   cover weeks the discipline does not run. A discipline that
+ *   starts in week 5, enrolled while the display week is 1, gets
+ *   an enrolment whose startWeek is 5. AcademyEnrolments.isEnrolledInWeek
+ *   returns true only from week 5 onward, matching the discipline's
+ *   own window.
+ *
+ *   The matching READ side (isEnrolledInWeek) is unchanged; it
+ *   already required the enrolment interval to contain the week.
+ *   Clipping the startWeek on write is what makes the two agree.
+ *
+ *   This is the opposite treatment from the schedule-assign modal
+ *   (academy-schedule-assign-modal.js), which IS week-scoped: a
+ *   student cannot be scheduled into a slot for a discipline that
+ *   does not run that week. Enrollment is a fact about the year;
+ *   scheduling is a fact about the week.
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - The enrolment store          (AcademyEnrolments)
@@ -64,7 +91,8 @@
  *   A single "Enrol in all mandatory" button enrols the character
  *   in every discipline that is currently offered by the class
  *   with a per-class marker whose `mandatory` flag is true, and
- *   that the character is not yet enrolled in.
+ *   that the character is not yet enrolled in. The bulk respects
+ *   the same startWeek-clipping rule as individual enrolments.
  *
  * PARTIAL SUCCESS:
  *   Individual enrolments that fail do not roll back the ones
@@ -73,15 +101,16 @@
  *   This matches the picker's bulk-operation contract.
  *
  * OFFERING WINDOW:
- *   An offering is "active" when its DISCIPLINE's window
- *   (startWeek / endWeek on the discipline entity) contains the
- *   display week. The marker has no window. This is the v27
- *   marker-only semantics.
+ *   An offering's window is the DISCIPLINE's window
+ *   (startWeek / endWeek on the discipline entity). The marker has
+ *   no window. The picker shows every offering, and each row's
+ *   enrolment uses the discipline's startWeek as the floor for the
+ *   enrolment's startWeek. This is the v27 marker-only semantics.
  *
- * START WEEK:
- *   Every new enrolment starts at the display week. This matches
- *   the pre-existing prompt-based flow and the leave() endpoint's
- *   week semantics.
+ * START WEEK CLIPPING:
+ *   The enrolment's startWeek is max(displayWeek, discipline.startWeek).
+ *   A discipline without a valid startWeek (malformed record) is
+ *   rejected for that row; the modal does not invent a value.
  *
  * CLASS-DISCIPLINE READS:
  *   The class-discipline marker store has two modules: a mutation
@@ -93,8 +122,14 @@
  *
  *   The three reads the modal performs are:
  *     - getClassDisciplinesForClass   (offering list)
- *     - isActiveInWeek                (offering window)
  *     - getClassDiscipline            (per-class mandatory flag)
+ *     - isActiveInWeek                (NOT USED for filtering in
+ *                                      this revision; the marker's
+ *                                      discipline window is read
+ *                                      via AcademyDisciplines, not
+ *                                      via the query. The query
+ *                                      method remains available to
+ *                                      other callers.)
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -107,7 +142,7 @@
  *   - window.CharacterQueries
  *
  * USAGE:
- *   // Student enrolment
+ *   // Student enrollment
  *   AcademyEnrollmentModal.openModal(charId, {
  *       classId: 'class_123',
  *       week: 5,
@@ -171,7 +206,6 @@
     }
     if (!AcademyClassDisciplinesQueries ||
         typeof AcademyClassDisciplinesQueries.getClassDisciplinesForClass !== 'function' ||
-        typeof AcademyClassDisciplinesQueries.isActiveInWeek !== 'function' ||
         typeof AcademyClassDisciplinesQueries.getClassDiscipline !== 'function') {
         _missing.push('AcademyClassDisciplinesQueries API');
     }
@@ -227,8 +261,34 @@
         return typeof value === 'string' && value.trim() !== '';
     }
 
+    function isFiniteInteger(value) {
+        return typeof value === 'number' &&
+            isFinite(value) &&
+            Number.isInteger(value) &&
+            value > 0;
+    }
+
     function notify(message, type) {
         NotificationSystem.notify(message, type || 'info');
+    }
+
+    /**
+     * Compute the enrolment's startWeek for a discipline.
+     *
+     *   effectiveStart = max(displayWeek, discipline.startWeek)
+     *
+     * A discipline without a valid startWeek is rejected by the
+     * caller. This helper assumes the discipline's startWeek has
+     * already been validated as a positive integer.
+     */
+    function computeEnrolmentStartWeek(displayWeek, disciplineStartWeek) {
+        if (!isFiniteInteger(disciplineStartWeek)) {
+            return displayWeek;
+        }
+        if (!isFiniteInteger(displayWeek)) {
+            return disciplineStartWeek;
+        }
+        return Math.max(displayWeek, disciplineStartWeek);
     }
 
     // ============================================================
@@ -243,7 +303,9 @@
      * @param {string} options.classId     - required
      * @param {number} [options.week]      - display week; defaults
      *                                       to AcademyUI's current
-     *                                       display week.
+     *                                       display week. Used as
+     *                                       the floor for each
+     *                                       enrolment's startWeek.
      * @param {string} [options.title]     - optional header title.
      *                                       When present, the header
      *                                       reads "<title> — <name>".
@@ -395,6 +457,15 @@
     // ============================================================
     // VIEW MODEL
     // ============================================================
+    //
+    // Every offering the class has is listed, regardless of the
+    // display week. Each row carries the discipline's startWeek so
+    // the write path can clip the enrolment's startWeek to it.
+    //
+    // A discipline with a malformed startWeek is skipped: the
+    // modal cannot compute a valid enrolment window for it, and
+    // inventing one would silently lie about when the enrolment
+    // begins.
 
     function buildViewModel() {
         if (!_charId || !_classId) {
@@ -436,14 +507,20 @@
             var rec = offerings[o];
             if (!rec || !rec.disciplineId) { continue; }
 
-            if (!AcademyClassDisciplinesQueries.isActiveInWeek(
-                _classId, rec.disciplineId, _week
-            )) {
-                continue;
-            }
-
             var disc = AcademyDisciplines.getDiscipline(rec.disciplineId);
             if (!disc) { continue; }
+
+            // A discipline without a valid startWeek is skipped.
+            // The enrolment window depends on it, and the modal
+            // does not invent a value.
+            var disciplineStartWeek = parseInt(disc.startWeek, 10);
+            if (isNaN(disciplineStartWeek) || disciplineStartWeek < 1) {
+                console.warn(
+                    '[AcademyEnrollmentModal] Skipping discipline ' +
+                    rec.disciplineId + ': no valid startWeek.'
+                );
+                continue;
+            }
 
             var disciplineId = String(rec.disciplineId);
 
@@ -456,10 +533,13 @@
                 id: disciplineId,
                 name: disc.name || 'Unnamed Discipline',
                 mandatory: mandatory,
-                enrolled: enrolledSet[disciplineId] === true
+                enrolled: enrolledSet[disciplineId] === true,
+                startWeek: disciplineStartWeek
             });
         }
 
+        // Sort: already-enrolled rows at the bottom; mandatory
+        // above optional; then alphabetically.
         rows.sort(function(a, b) {
             if (a.enrolled !== b.enrolled) {
                 return a.enrolled ? 1 : -1;
@@ -548,22 +628,27 @@
 
         if (total === 0) {
             html += '<p class="empty-state">' +
-                        'This class has no offerings active in week ' +
-                        DomUtils.escapeHtml(String(vm.week)) + '.' +
+                        'This class does not offer any disciplines ' +
+                        'with a valid start week.' +
                     '</p>';
         } else if (eligibleCount === 0) {
             html += '<p class="empty-state">' +
                         DomUtils.escapeHtml(vm.charName) +
-                        ' is already enrolled in every active discipline ' +
-                        'for this class.' +
+                        ' is already enrolled in every discipline ' +
+                        'offered by this class.' +
                     '</p>';
         } else {
             html += '<p class="academy-enroll-summary">' +
-                        'Active offerings for week ' +
-                        DomUtils.escapeHtml(String(vm.week)) + ': ' +
+                        'Offerings for this class: ' +
                         '<strong>' + total + '</strong> ' +
                         '&middot; Available to enroll: ' +
                         '<strong>' + eligibleCount + '</strong>' +
+                    '</p>';
+
+            html += '<p class="academy-enroll-note">' +
+                        'Enrollment is a year-level decision. ' +
+                        'Every discipline the class offers is listed, ' +
+                        'regardless of the display week.' +
                     '</p>';
 
             html += '<div class="academy-enroll-list">';
@@ -766,12 +851,65 @@
      *   - If some failures: honest per-row failure summary, and the
      *     modal is refetched so it reflects whatever succeeded.
      *
+     * Each row's startWeek is clipped to the discipline's own
+     * startWeek:
+     *
+     *   enrolmentStart = max(displayWeek, discipline.startWeek)
+     *
+     * The clip is applied here, at the write boundary, so the
+     * enrolment interval never claims to cover weeks the
+     * discipline does not run. AcademyEnrolments.enrol stores
+     * whatever startWeek it is given; the modal is responsible for
+     * giving it an honest value.
+     *
      * While the chain runs, `_busy` is true and the rendered modal
      * shows disabled controls. `renderContent` is not called until
      * the chain completes, so the DOM stays stable during the run.
      */
     function runBulkEnrolment(ids, successMessage) {
         if (!_charId || !_classId || ids.length === 0) { return; }
+
+        // Resolve each id to a discipline's startWeek so we can
+        // clip. A discipline that has gone missing between render
+        // and submit is recorded as a failure; the modal does not
+        // invent a value.
+        var plans = [];
+        for (var p = 0; p < ids.length; p++) {
+            var disciplineId = ids[p];
+            var disc = null;
+            try {
+                disc = AcademyDisciplines.getDiscipline(disciplineId);
+            } catch (e) {
+                disc = null;
+            }
+
+            if (!disc) {
+                plans.push({
+                    disciplineId: disciplineId,
+                    startWeek: null,
+                    error: 'Discipline no longer exists.'
+                });
+                continue;
+            }
+
+            var disciplineStartWeek = parseInt(disc.startWeek, 10);
+            if (isNaN(disciplineStartWeek) || disciplineStartWeek < 1) {
+                plans.push({
+                    disciplineId: disciplineId,
+                    startWeek: null,
+                    error: 'Discipline has no valid start week.'
+                });
+                continue;
+            }
+
+            plans.push({
+                disciplineId: disciplineId,
+                startWeek: computeEnrolmentStartWeek(
+                    _week, disciplineStartWeek
+                ),
+                error: null
+            });
+        }
 
         _busy = true;
 
@@ -786,33 +924,41 @@
         var succeeded = 0;
         var chain = Promise.resolve();
 
-        ids.forEach(function (disciplineId) {
-            chain = chain.then(function () {
+        plans.forEach(function(plan) {
+            chain = chain.then(function() {
+                if (plan.error !== null) {
+                    failures.push({
+                        disciplineId: plan.disciplineId,
+                        message: plan.error
+                    });
+                    return;
+                }
+
                 return AcademyEnrolments.enrol(
                     _charId,
                     _classId,
-                    disciplineId,
-                    _week
-                ).then(function (result) {
+                    plan.disciplineId,
+                    plan.startWeek
+                ).then(function(result) {
                     if (result && result.success) {
                         succeeded++;
                     } else {
                         failures.push({
-                            disciplineId: disciplineId,
+                            disciplineId: plan.disciplineId,
                             message: (result && result.message) ||
                                 'Unknown error'
                         });
                     }
-                }).catch(function (err) {
+                }).catch(function(err) {
                     failures.push({
-                        disciplineId: disciplineId,
+                        disciplineId: plan.disciplineId,
                         message: String(err && err.message || err)
                     });
                 });
             });
         });
 
-        chain.then(function () {
+        chain.then(function() {
             _busy = false;
 
             if (failures.length === 0) {
