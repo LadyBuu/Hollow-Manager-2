@@ -8,29 +8,22 @@
  *
  * WHAT THIS OWNS:
  *   - Rendering the People view into the shell's content host.
- *   - Handling clicks, changes, inputs, and keydowns routed by the
- *     shell for events inside the host.
+ *   - Handling clicks, changes, inputs, and keydowns routed by
+ *     the shell for events inside the host.
  *   - The active character tab.
  *   - The People search debounce timer.
- *   - The class selection flow.
- *   - The character selection flow.
- *   - The class detail panel.
- *   - The character detail panel.
+ *   - The class selection and character selection flows.
+ *   - The class detail panel and the character detail panel.
  *   - The character-mode checkbox.
- *   - The Drop Out flow.
- *   - The Remove from Class flow.
- *   - The Enroll Discipline flow.
- *   - The Leave Discipline flow.
+ *   - Drop Out / Remove from Class / Enroll / Leave Discipline.
  *   - The Edit Social Score modal.
- *   - The class CRUD modals.
- *   - The class-disciplines picker modal.
+ *   - The class CRUD modals and the class-disciplines picker.
  *   - The inline grades editor and schedule grid sub-editors.
- *   - The schedule-assign flow (empty cells).
+ *   - The schedule-assign flow (empty cells in student mode).
+ *   - The schedule-assign-instructor flow (empty cells in
+ *     instructor mode).
  *   - The schedule-slot-open flow (occupied cells).
- *   - The teaching-groups flow: toggling discipline containers,
- *     opening the inline candidate picker, adding a student, and
- *     removing a student. All writes route to
- *     AcademyTeachingGroups.
+ *   - The teaching-groups roster and session flows.
  *
  * WHAT THIS DOES NOT OWN:
  *   - The content host. The shell provides it.
@@ -38,27 +31,17 @@
  *     people filter, and character mode.
  *   - Re-rendering the shell.
  *   - Domain reads and writes.
- *   - Cross-view navigation.
  *
- * TEACHING GROUPS FLOW:
- *   The tab is scoped to the currently selected class and the
- *   display week. Writes route to AcademyTeachingGroups:
- *     - add:    AcademyTeachingGroups.addMemberToGroup(groupId,
- *               charId, week)
- *     - remove: AcademyTeachingGroups.removeMemberRecord(groupId,
- *               charId)
+ * SCHEDULE GRID DISPATCH:
+ *   The grid's view model carries two editable flags:
+ *     canEdit              student-mode cells accept assign and
+ *                          slot-open.
+ *     canEditInstructorSlot instructor-mode empty cells accept
+ *                          schedule-assign-instructor.
  *
- *   Removal is COMPLETE — the member entry is deleted, no interval
- *   is truncated, no history is preserved. Students who need to
- *   change their group do so via a correction, not a schedule
- *   change. The historical path (endMembership, which truncates
- *   the interval at a week) is not exposed in this tab.
- *
- *   The candidate picker state (which group's picker is open, and
- *   the candidate list for it) lives in this controller's module
- *   scope. It is passed to the renderer via VM fields prefixed
- *   with an underscore, so the renderer can render it without
- *   owning it.
+ *   Occupied cells in instructor mode continue to emit
+ *   schedule-slot-open with data-mode="remove-group"; the modal
+ *   handles that as a group-delete confirmation.
  *
  * DEPENDENCY DIRECTION:
  *   Shell → registry → this controller.
@@ -88,6 +71,8 @@
  *   - window.AcademyClassDisciplinesPicker
  *   - window.AcademyEnrollmentModal
  *   - window.AcademyScheduleAssignModal
+ *   - window.AcademyScheduleInstructorModal
+ *   - window.AcademySessionFormModal
  *   - window.AcademyDisciplines
  *   - window.AcademyEnrolments
  *   - window.AcademyEliminations
@@ -224,6 +209,14 @@
         return window.AcademyScheduleAssignModal || null;
     }
 
+    function getScheduleInstructorModal() {
+        return window.AcademyScheduleInstructorModal || null;
+    }
+
+    function getSessionFormModal() {
+        return window.AcademySessionFormModal || null;
+    }
+
     function getTeachingGroups() {
         return window.AcademyTeachingGroups || null;
     }
@@ -251,17 +244,10 @@
     var _host = null;
     var _context = null;
 
-    // Feature state.
     var _activeCharacterTab = 'main';
     var _lastCharacterIdForTab = null;
     var _searchTimer = null;
 
-    // Teaching-groups picker state.
-    //
-    // _openPickerGroupId      the group whose inline candidate
-    //                         picker is open, or null.
-    // _pickerCandidates       the candidate list for that picker,
-    //                         or null while loading.
     var _openPickerGroupId = null;
     var _pickerCandidates = null;
 
@@ -383,8 +369,6 @@
         } else {
             _lastCharacterIdForTab = null;
             _activeCharacterTab = 'main';
-            // Leaving the character detail panel clears any
-            // picker state that was scoped to the character.
             clearPickerState();
             html += renderClassDetailContent(classVM);
         }
@@ -558,7 +542,7 @@
                 ? ' (Wk ' + person.eliminationWeek + ')'
                 : '';
             html += '<div class="academy-character-row-warning">' +
-                        '\u26a0 Eliminated' +
+                        '\u2715 Eliminated' +
                         DomUtils.escapeHtml(weekText) +
                     '</div>';
         }
@@ -625,11 +609,6 @@
             return '<p class="empty-state">Character not found.</p>';
         }
 
-        // Attach teaching-groups picker state to the VM. Underscore
-        // prefix marks these as controller-owned feature state; the
-        // renderer reads them but does not mutate them. Only
-        // meaningful when the active tab is teachingGroups; setting
-        // them on every render is harmless.
         vm._openPickerGroupId = _openPickerGroupId;
         vm._pickerCandidates = _pickerCandidates;
 
@@ -708,8 +687,6 @@
         if (tabBtn && tabBtn.dataset && tabBtn.dataset.tab) {
             e.preventDefault();
             _activeCharacterTab = tabBtn.dataset.tab;
-            // Any pending picker is scoped to the tab that opened
-            // it; leaving the tab abandons the picker.
             clearPickerState();
             var ctx = getContext();
             ctx.onChange();
@@ -827,17 +804,29 @@
                 handleClassAction('delete-class', el.dataset.classId);
                 return;
 
-            // ---- Schedule grid ----
+            // ---- Schedule grid (student mode) ----
             case 'schedule-assign':
                 handleScheduleAssign(el.dataset.day, el.dataset.hour);
                 return;
+
+            // ---- Schedule grid (instructor mode) ----
+            case 'schedule-assign-instructor':
+                handleScheduleInstructorAssign(
+                    el.dataset.day,
+                    el.dataset.hour
+                );
+                return;
+
+            // ---- Schedule grid (occupied cells) ----
             case 'schedule-slot-open':
                 handleScheduleSlotOpen(el);
                 return;
 
-            // ---- Teaching groups ----
+            // ---- Teaching groups: roster ----
             case 'teaching-groups-toggle-discipline':
-                handleToggleTeachingGroupDiscipline(el.dataset.disciplineId);
+                handleToggleTeachingGroupDiscipline(
+                    el.dataset.disciplineId
+                );
                 return;
             case 'teaching-groups-add-student':
                 handleOpenTeachingGroupPicker(el.dataset.groupId);
@@ -852,6 +841,23 @@
                 handleRemoveTeachingGroupStudent(
                     el.dataset.groupId,
                     el.dataset.characterId
+                );
+                return;
+
+            // ---- Teaching groups: sessions ----
+            case 'teaching-groups-add-session':
+                handleAddTeachingGroupSession(el.dataset.groupId);
+                return;
+            case 'teaching-groups-edit-session':
+                handleEditTeachingGroupSession(
+                    el.dataset.groupId,
+                    el.dataset.sessionId
+                );
+                return;
+            case 'teaching-groups-delete-session':
+                handleDeleteTeachingGroupSession(
+                    el.dataset.groupId,
+                    el.dataset.sessionId
                 );
                 return;
 
@@ -1044,7 +1050,6 @@
             _activeCharacterTab = 'main';
         }
 
-        // A mode change invalidates the picker state.
         clearPickerState();
 
         CharacterCRUD.setMode(charId, newMode)
@@ -1341,6 +1346,7 @@
         var renderVM = {
             mode: gridVM.mode,
             canEdit: gridVM.canEdit,
+            canEditInstructorSlot: gridVM.canEditInstructorSlot,
             schedule: gridVM.schedule,
             restDays: gridVM.restDays,
             entityName: gridVM.entityName,
@@ -1375,7 +1381,7 @@
     }
 
     // ============================================================
-    // SCHEDULE ASSIGN FLOW
+    // SCHEDULE ASSIGN FLOW (student mode)
     // ============================================================
 
     function handleScheduleAssign(dayRaw, hourRaw) {
@@ -1439,6 +1445,77 @@
     }
 
     // ============================================================
+    // SCHEDULE ASSIGN-INSTRUCTOR FLOW
+    // ============================================================
+    //
+    // Empty cells in instructor mode. The instructor claims a
+    // slot for one of their disciplines. No students are
+    // assigned; the modal writes a group and a session.
+
+    function handleScheduleInstructorAssign(dayRaw, hourRaw) {
+        var charId = AcademyUI.getSelectedCharacterId();
+        if (!isNonEmptyString(charId)) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        var classId = AcademyUI.getSelectedClassId();
+        if (!isNonEmptyString(classId)) {
+            notify(
+                'Select a class before adding a slot.',
+                'error'
+            );
+            return;
+        }
+
+        var week = AcademyUI.getDisplayWeek();
+
+        var day = parseInt(dayRaw, 10);
+        if (isNaN(day)) {
+            notify('Invalid day.', 'error');
+            return;
+        }
+
+        var hour = parseInt(hourRaw, 10);
+        if (isNaN(hour)) {
+            notify('Invalid hour.', 'error');
+            return;
+        }
+
+        var Modal = getScheduleInstructorModal();
+        if (!Modal || typeof Modal.openModal !== 'function') {
+            notify(
+                'Instructor schedule modal is not available.',
+                'error'
+            );
+            return;
+        }
+
+        try {
+            Modal.openModal({
+                instructorId: String(charId),
+                classId: String(classId),
+                week: week,
+                day: day,
+                startHour: hour,
+                onClose: function() {
+                    var ctx = getContext();
+                    ctx.onChange();
+                }
+            });
+        } catch (e) {
+            console.warn(
+                '[AcademyPeopleController] instructor schedule ' +
+                'modal openModal threw:', e
+            );
+            notify(
+                'Failed to open the instructor slot modal.',
+                'error'
+            );
+        }
+    }
+
+    // ============================================================
     // SCHEDULE SLOT OPEN FLOW
     // ============================================================
 
@@ -1494,7 +1571,6 @@
             return;
         }
 
-        // ---- Resolve display context ----
         var disciplineName = '';
         var duration = null;
         var memberCount = null;
@@ -1560,7 +1636,8 @@
                     }
                 }
 
-                if (targetSession && typeof targetSession.duration === 'number') {
+                if (targetSession &&
+                    typeof targetSession.duration === 'number') {
                     duration = targetSession.duration;
                 }
             }
@@ -1604,7 +1681,7 @@
     }
 
     // ============================================================
-    // TEACHING GROUPS FLOW
+    // TEACHING GROUPS — ROSTER FLOW
     // ============================================================
 
     function handleToggleTeachingGroupDiscipline(disciplineId) {
@@ -1613,16 +1690,12 @@
         var charId = AcademyUI.getSelectedCharacterId();
         if (!isNonEmptyString(charId)) { return; }
 
-        // The collapse key is (charId, disciplineId). Character is
-        // included so two instructors in the same session do not
-        // share collapse state.
         if (typeof AcademyUI.toggleExpanded !== 'function') {
-            // AcademyUI lacks the API; the renderer will fall back
-            // to expanded. Nothing to do.
             return;
         }
 
-        var key = 'teachingGroup:' + String(charId) + ':' + String(disciplineId);
+        var key = 'teachingGroup:' + String(charId) + ':' +
+            String(disciplineId);
         AcademyUI.toggleExpanded(key);
 
         var ctx = getContext();
@@ -1678,8 +1751,6 @@
     function handleSubmitTeachingGroupAdd(groupId) {
         if (!isNonEmptyString(groupId)) { return; }
 
-        // Read the selected candidate from the DOM. The picker
-        // rendered a select element inside the tab body.
         var selectEl = document.querySelector(
             '.academy-teaching-group-candidate-picker' +
             '[data-group-id="' + cssEscape(groupId) + '"] ' +
@@ -1756,9 +1827,6 @@
         TG.removeMemberRecord(groupId, charId)
             .then(function(result) {
                 if (result && result.success) {
-                    // If the picker was open on this group, refresh
-                    // its candidates too — the removed student is
-                    // now eligible.
                     if (_openPickerGroupId &&
                         String(_openPickerGroupId) === String(groupId)) {
                         handleOpenTeachingGroupPicker(groupId);
@@ -1779,17 +1847,119 @@
             });
     }
 
-    /**
-     * Minimal CSS.escape shim. Used to build a selector for a
-     * groupId, which is a generated string but could in principle
-     * contain characters that need escaping.
-     */
     function cssEscape(value) {
         if (typeof CSS !== 'undefined' &&
             typeof CSS.escape === 'function') {
             return CSS.escape(String(value));
         }
         return String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+    }
+
+    // ============================================================
+    // TEACHING GROUPS — SESSIONS FLOW
+    // ============================================================
+
+    function handleAddTeachingGroupSession(groupId) {
+        if (!isNonEmptyString(groupId)) { return; }
+
+        var Modal = getSessionFormModal();
+        if (!Modal || typeof Modal.openModal !== 'function') {
+            notify(
+                'Session form modal is not available.',
+                'error'
+            );
+            return;
+        }
+
+        try {
+            Modal.openModal({
+                mode: 'add',
+                groupId: String(groupId),
+                onClose: function() {
+                    var ctx = getContext();
+                    ctx.onChange();
+                }
+            });
+        } catch (e) {
+            console.warn(
+                '[AcademyPeopleController] session form ' +
+                'openModal(add) threw:', e
+            );
+            notify('Failed to open the session form.', 'error');
+        }
+    }
+
+    function handleEditTeachingGroupSession(groupId, sessionId) {
+        if (!isNonEmptyString(groupId) ||
+            !isNonEmptyString(sessionId)) {
+            return;
+        }
+
+        var Modal = getSessionFormModal();
+        if (!Modal || typeof Modal.openModal !== 'function') {
+            notify(
+                'Session form modal is not available.',
+                'error'
+            );
+            return;
+        }
+
+        try {
+            Modal.openModal({
+                mode: 'edit',
+                groupId: String(groupId),
+                sessionId: String(sessionId),
+                onClose: function() {
+                    var ctx = getContext();
+                    ctx.onChange();
+                }
+            });
+        } catch (e) {
+            console.warn(
+                '[AcademyPeopleController] session form ' +
+                'openModal(edit) threw:', e
+            );
+            notify('Failed to open the session form.', 'error');
+        }
+    }
+
+    function handleDeleteTeachingGroupSession(groupId, sessionId) {
+        if (!isNonEmptyString(groupId) ||
+            !isNonEmptyString(sessionId)) {
+            return;
+        }
+
+        var TS = getTeachingSessions();
+        if (!TS || typeof TS.removeSessionRecord !== 'function') {
+            notify('Teaching sessions module not available.', 'error');
+            return;
+        }
+
+        if (!confirm(
+            'Delete this session?\n\n' +
+            'The session is removed from the schedule. Students ' +
+            'enrolled in the discipline are not affected; only ' +
+            'this one meeting is removed.'
+        )) {
+            return;
+        }
+
+        TS.removeSessionRecord(sessionId)
+            .then(function(result) {
+                if (result && result.success) {
+                    var ctx = getContext();
+                    ctx.onChange();
+                } else if (result && result.message) {
+                    notify(result.message, 'error');
+                }
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[AcademyPeopleController] ' +
+                    'removeSessionRecord failed:', err
+                );
+                notify('Failed to delete session.', 'error');
+            });
     }
 
     // ============================================================
