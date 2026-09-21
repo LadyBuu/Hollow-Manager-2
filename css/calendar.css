@@ -6,9 +6,16 @@
  * Styles for the pure calendar renderer in
  * modules/calendar/calendar-renderer.js.
  *
- * Covers the schedule grid, its cells, the co-occupant marker
- * and its panel, the discipline-hours panel and its picker,
- * the legend, the loading state, and the two assign modals.
+ * Covers:
+ *   - The schedule grid and its cells
+ *   - Header row
+ *   - Occupied slots, empty slots, rest-day columns, blocked slots
+ *   - The co-occupant marker and its detail panel
+ *   - The discipline-hours panel, its rows, and its current-group
+ *     sub-block
+ *   - The discipline picker
+ *   - The legend, the loading state
+ *   - The schedule-assign and schedule-instructor modals
  *
  * Loads after shared.css and academy.css.
  */
@@ -305,8 +312,6 @@
     text-overflow: ellipsis;
 }
 
-/* ---------- Corner badges ---------- */
-
 .schedule-duration {
     font-size: 0.58rem;
     color: var(--text-dim);
@@ -488,12 +493,12 @@
 /* ============================================================
    DISCIPLINE HOURS PANEL
    ============================================================
-   Rendered below the grid, above the co-occupants host.
-   One row per discipline the student is enrolled in for the
-   currently selected class.
+   Rendered below the grid. One row per discipline the student
+   is enrolled in for the currently selected class.
 
-   Each row is a button: clicking opens the group picker for
-   that discipline.
+   Each row is a button that opens the group picker. When the
+   student is already a member of a group for that discipline,
+   a view-only sub-block renders below the button.
 
    Row states:
      under    scheduled < target   → warning colour
@@ -644,19 +649,57 @@
     color: var(--text-dim);
 }
 
+/* ---------- Current-group sub-block ---------- */
+/*
+ * Display-only. Rendered below the row's button when the student
+ * is already a member of a group for the discipline.
+ *
+ * Two lines:
+ *   GroupName · InstructorName
+ *   N classmates
+ *
+ * The sub-block aligns with the button's left edge and indents
+ * slightly so it reads as part of the row.
+ */
+
+.schedule-hours-current-group {
+    margin: 2px 0 0 4px;
+    padding: 4px 8px 4px 10px;
+    border-left: 2px solid var(--border-soft);
+    font-size: 0.7rem;
+    color: var(--text-dim);
+}
+
+.schedule-hours-current-group-line {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.schedule-hours-current-group-name {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.schedule-hours-current-group-sep {
+    color: var(--text-dim);
+    font-size: 0.7rem;
+}
+
+.schedule-hours-current-group-instructor {
+    color: var(--text-dim);
+}
+
+.schedule-hours-current-group-meta {
+    margin-top: 1px;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+}
+
 /* ============================================================
    DISCIPLINE PICKER
-   ============================================================
-   Mounted below the hours panel into
-   #academy-schedule-discipline-picker-host when the user clicks
-   a discipline row. Lists every teaching group for the
-   (class, discipline) the student can join.
-
-   Row states:
-     green    every session of the group is free in the
-              student's schedule. Clickable; adds the student.
-     red      at least one session collides. Disabled.
-*/
+   ============================================================ */
 
 .schedule-discipline-picker-host {
     display: block;
@@ -938,7 +981,8 @@
 }
 
 .academy-schedule-assign-discipline,
-.academy-schedule-assign-duration {
+.academy-schedule-assign-duration,
+.academy-schedule-assign-location {
     width: 100%;
     max-width: 320px;
 }
@@ -1050,7 +1094,8 @@
 }
 
 .academy-schedule-instructor-discipline,
-.academy-schedule-instructor-duration {
+.academy-schedule-instructor-duration,
+.academy-schedule-instructor-location {
     width: 100%;
     max-width: 320px;
 }
@@ -1141,6 +1186,11 @@
 
     .schedule-hours-remaining {
         flex: 0 0 auto;
+    }
+
+    .schedule-hours-current-group {
+        margin-left: 0;
+        padding-left: 6px;
     }
 
     .schedule-discipline-picker-row-main {
