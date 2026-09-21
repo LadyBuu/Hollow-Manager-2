@@ -1,51 +1,38 @@
 /**
  * modules/calendar/calendar-renderer.js - Calendar Renderer
- * PURE rendering for calendar grids - NO event binding, NO modals, NO state
+ * PURE rendering for calendar grids - NO event binding, NO modals, NO state.
  *
- * IMPORTANT:
- *   - PURE - no side effects, no data mutation
- *   - Input: already-prepared calendar view model
- *   - Output: HTML string
- *   - NO event binding (moved to UI layer)
- *   - NO modal creation (moved to UI layer)
- *   - NO notifications (moved to UI layer)
- *   - NO domain logic - all values already resolved
- *   - USES DomUtils.escapeHtml() - SINGLE SOURCE OF TRUTH
+ * Path: js/modules/calendar/calendar-renderer.js
  *
  * CONTRACT:
- *   - Renderer does NOT decide colours, labels, durations
- *   - Aggregator provides resolved semantic values
- *   - Renderer takes: view model -> HTML
+ *   - PURE. No side effects, no data mutation.
+ *   - Input: an already-prepared calendar view model.
+ *   - Output: HTML string.
+ *   - No event binding, no modal creation, no notifications.
+ *   - Uses DomUtils.escapeHtml() as the single escaping source.
  *
  * GRID EDITABILITY:
- *   The renderer reads `viewModel.canEdit` to decide whether grid
- *   cells emit action attributes. The renderer does NOT infer
- *   "student means editable" or "instructor means read-only"; the
- *   aggregator owns that mapping and the renderer obeys the flag.
+ *   The renderer reads two flags on the view model:
  *
- *   Empty cells in an editable grid emit:
- *     data-action="schedule-assign"
- *   Occupied cells in an editable grid emit:
- *     data-action="schedule-slot-open"
- *     data-group-id="..."
- *     data-session-id="..."
- *     data-mode="remove-student" | "remove-group"
+ *     canEdit               student-mode grids. Empty cells emit
+ *                           data-action="schedule-assign"; occupied
+ *                           cells emit data-action="schedule-slot-open"
+ *                           with data-mode from the grid mode.
+ *
+ *     canEditInstructorSlot instructor-mode grids. Empty cells emit
+ *                           data-action="schedule-assign-instructor".
+ *                           Occupied cells keep emitting
+ *                           data-action="schedule-slot-open" with
+ *                           data-mode="remove-group".
+ *
+ *   The renderer never infers editability from mode; the
+ *   aggregator states it.
  *
  * CO-OCCUPANCY MARKER:
  *   When the slot descriptor carries a non-empty `coOccupants`
  *   array, the cell renders a small "+N" marker in the top-right
- *   corner. The marker's `title` attribute carries the
- *   co-occupants' discipline names so a hover shows the detail.
- *
- *   The marker is a read-only indicator. It does not emit an
- *   action; clicking the cell in an editable grid routes to the
- *   primary slot's action, not to a co-occupant. Co-occupancy is
- *   visualised, not acted on.
- *
- *   When both the marker and the duration badge would sit in the
- *   same corner, the CSS offsets the marker above the duration
- *   badge. The renderer does not decide the offset; it emits both
- *   elements and lets the stylesheet place them.
+ *   corner. The marker's title carries the co-occupants'
+ *   discipline names. The marker does not emit an action.
  *
  * DEPENDENCIES:
  *   - CalendarConstants
@@ -175,10 +162,6 @@
     // ============================================================
     // CO-OCCUPANCY MARKER
     // ============================================================
-    //
-    // Build the "+N" marker with a title carrying the co-occupants'
-    // discipline names. Returns '' when the slot has no
-    // co-occupants, so the caller can concatenate unconditionally.
 
     function renderCoOccupantMarker(slotData) {
         if (!slotData || !Array.isArray(slotData.coOccupants)) {
@@ -226,7 +209,12 @@
         var showEmptySlots = viewModel.showEmptySlots !== false;
         var showRestDays = viewModel.showRestDays !== false;
 
+        // Two independent editability flags. Neither is inferred
+        // from mode; both come from the aggregator.
         var canEdit = viewModel.canEdit === true;
+        var canEditInstructorSlot =
+            viewModel.canEditInstructorSlot === true;
+
         var occupiedCellMode = getOccupiedCellMode(viewModel.mode);
 
         var hours = viewModel.hours || getAvailableHours();
@@ -267,11 +255,22 @@
                 if (isRestDay) { classes += ' schedule-rest-day'; }
                 if (isBlock) { classes += ' schedule-blocked'; }
 
+                // ---- Cell action ----
+                //
+                // Student mode: empty → assign, occupied → slot-open.
+                // Instructor mode: empty → assign-instructor,
+                // occupied → slot-open (mode is remove-group).
+                //
+                // The two modes never share an action name.
                 var cellAction = null;
-                if (canEdit && !isRestDay) {
+                if (!isRestDay && !isBlock) {
                     if (isOccupied) {
-                        cellAction = 'schedule-slot-open';
-                    } else if (!isBlock) {
+                        if (canEdit || canEditInstructorSlot) {
+                            cellAction = 'schedule-slot-open';
+                        }
+                    } else if (canEditInstructorSlot) {
+                        cellAction = 'schedule-assign-instructor';
+                    } else if (canEdit) {
                         cellAction = 'schedule-assign';
                     }
                 }
@@ -279,6 +278,8 @@
                 var dataAttrs = 'data-day="' + day + '" data-hour="' + hour + '"';
                 if (cellAction === 'schedule-assign') {
                     dataAttrs += ' data-action="schedule-assign"';
+                } else if (cellAction === 'schedule-assign-instructor') {
+                    dataAttrs += ' data-action="schedule-assign-instructor"';
                 } else if (cellAction === 'schedule-slot-open') {
                     dataAttrs += ' data-action="schedule-slot-open"';
                     if (slotData && slotData.groupId) {
@@ -308,7 +309,7 @@
                     if (instructorName) { html += '<div class="schedule-instructor">' + escapeHtml(instructorName) + '</div>'; }
                     if (duration > 1) { html += '<div class="schedule-duration">' + duration + 'h</div>'; }
                     if (slotData && slotData.isContinuation) {
-                        html += '<div class="schedule-continuation">↕</div>';
+                        html += '<div class="schedule-continuation">\u2195</div>';
                     }
                     html += renderCoOccupantMarker(slotData);
 
