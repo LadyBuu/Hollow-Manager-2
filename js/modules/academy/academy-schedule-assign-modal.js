@@ -39,7 +39,7 @@
  *     surfaces the rejection and offers a retry with
  *     allowCollisions.
  *
- * SESSION LOCATION (this revision):
+ * SESSION LOCATION:
  *   The 'assign' mode form gains a location dropdown, sourced from
  *   AcademyLocations.getLocations(). Optional. An empty selection
  *   sends locationId: null.
@@ -54,16 +54,52 @@
  *   To change the location of an existing session, use the session
  *   form (from the Teaching Groups tab's Sessions list).
  *
+ * INSTRUCTOR PICKER (this revision):
+ *   When more than one instructor teaches the selected discipline
+ *   for the selected class at the target week, the modal offers an
+ *   inline instructor picker and includes `instructorId` in the
+ *   submission payload. The domain then skips its own instructor
+ *   resolution and proceeds straight to the collision check.
+ *
+ *   The picker is reached two ways:
+ *
+ *     1. PRE-FLIGHT (primary).
+ *        When the user picks a discipline, the modal reads the
+ *        class's instructors for that (class, discipline, week)
+ *        directly via AcademyClasses.getClassInstructorIds and
+ *        decides:
+ *          - zero instructors: show an inline error, disable submit
+ *          - one instructor:   auto-select, no picker shown
+ *          - many instructors: show the picker
+ *        This is the normal flow. It removes the round trip and
+ *        makes the multi-instructor case a first-class affordance,
+ *        not a stall.
+ *
+ *     2. FALLBACK.
+ *        If the domain still returns
+ *        reason: 'ambiguous_instructor' — because the pre-flight
+ *        was skipped, or because the state changed between
+ *        pre-flight and submit — the modal enters the picker
+ *        sub-state using the rejection's data.instructorIds. The
+ *        pending discipline / duration / location selections
+ *        survive the transition. The retry carries the chosen
+ *        instructorId.
+ *
+ *   The two paths share the picker rendering. The fallback exists
+ *   because two reads can disagree; it is not the primary path.
+ *
  * MODAL SHAPE — ASSIGN MODE:
  *   Header: "Assign discipline"
  *   Body:
  *     - Slot summary line
  *     - Discipline select
+ *     - Instructor picker (only when > 1 instructor available)
  *     - Duration select
  *     - Location select (optional)
  *   Footer:
  *     - Cancel
- *     - Assign (disabled until a discipline is chosen)
+ *     - Assign (disabled until a discipline is chosen and an
+ *       instructor is resolved)
  *
  * MODAL SHAPE — REMOVE-STUDENT MODE:
  *   Header: "Remove student from slot"
@@ -110,6 +146,7 @@
  *   - window.Modal
  *   - window.NotificationSystem
  *   - window.AcademyUI
+ *   - window.AcademyClasses
  *   - window.AcademyClassDisciplinesQueries
  *   - window.AcademyDisciplines
  *   - window.AcademyLocations
@@ -134,6 +171,7 @@
     var Modal = window.Modal;
     var NotificationSystem = window.NotificationSystem;
     var AcademyUI = window.AcademyUI;
+    var AcademyClasses = window.AcademyClasses;
     var AcademyClassDisciplinesQueries =
         window.AcademyClassDisciplinesQueries;
     var AcademyDisciplines = window.AcademyDisciplines;
@@ -164,6 +202,10 @@
     if (!AcademyUI ||
         typeof AcademyUI.getDisplayWeek !== 'function') {
         _missing.push('AcademyUI.getDisplayWeek');
+    }
+    if (!AcademyClasses ||
+        typeof AcademyClasses.getClassInstructorIds !== 'function') {
+        _missing.push('AcademyClasses.getClassInstructorIds');
     }
     if (!AcademyClassDisciplinesQueries ||
         typeof AcademyClassDisciplinesQueries.getClassDisciplinesForClass !== 'function' ||
@@ -237,6 +279,30 @@
     var _selectedDisciplineId = '';
     var _selectedDuration = DEFAULT_DURATION;
     var _selectedLocationId = '';
+
+    // Instructor picker state.
+    //
+    //   _availableInstructors  [{ id, name }, ...]  — the current
+    //                          candidate list for the selected
+    //                          discipline at the target week. Empty
+    //                          when no discipline is selected or
+    //                          when the discipline has no
+    //                          instructors.
+    //   _selectedInstructorId  '' when auto-resolution has not been
+    //                          needed (single instructor auto-picks
+    //                          into this field) or when the picker
+    //                          is still open.
+    //   _instructorError       '' when the instructor situation is
+    //                          clean; a message string otherwise
+    //                          (e.g. "No instructor teaches this
+    //                          discipline for this class").
+    //   _showInstructorPicker  true when the picker panel is
+    //                          rendered. Set when the candidate
+    //                          list has more than one entry.
+    var _availableInstructors = [];
+    var _selectedInstructorId = '';
+    var _instructorError = '';
+    var _showInstructorPicker = false;
 
     // When the domain rejects with a policy collision, the modal
     // shows a confirm prompt. `_pendingCollision` holds the last
@@ -318,9 +384,6 @@
     // ============================================================
     // LOCATION LIST
     // ============================================================
-    //
-    // Read once per render. Sorted alphabetically. The store is
-    // small, so no pagination or filtering.
 
     function getAvailableLocations() {
         var all = [];
@@ -333,6 +396,132 @@
             return String(a.name || '').localeCompare(String(b.name || ''));
         });
         return all;
+    }
+
+    // ============================================================
+    // INSTRUCTOR RESOLUTION
+    // ============================================================
+    //
+    // Reads the class's instructors for a (discipline, week) pair
+    // via the canonical query. Returns a normalised list of
+    // { id, name } objects, sorted alphabetically by name.
+    //
+    // A character whose record cannot be resolved is dropped from
+    // the list; the picker never offers an instructor it cannot
+    // name. This is a defensive filter, not a policy decision —
+    // the domain will reject the assignment if the chosen
+    // instructor is not actually valid.
+    //
+    // Errors from the read are logged and treated as an empty list.
+    // The modal then shows the "no instructor" error, which is the
+    // honest UI for a broken read.
+
+    function readAvailableInstructors(classId, disciplineId, week) {
+        if (!isNonEmptyString(classId) ||
+            !isNonEmptyString(disciplineId)) {
+            return [];
+        }
+
+        var weekNum = parseStrictInteger(week);
+        if (weekNum === null) {
+            return [];
+        }
+
+        var rawIds = [];
+        try {
+            rawIds = AcademyClasses.getClassInstructorIds(
+                classId,
+                weekNum,
+                { disciplineId: String(disciplineId) }
+            ) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademyScheduleAssignModal] ' +
+                'getClassInstructorIds failed:', e
+            );
+            return [];
+        }
+
+        if (!Array.isArray(rawIds)) {
+            return [];
+        }
+
+        var seen = Object.create(null);
+        var result = [];
+
+        for (var i = 0; i < rawIds.length; i++) {
+            if (!rawIds[i]) { continue; }
+            var id = String(rawIds[i]);
+            if (seen[id]) { continue; }
+            seen[id] = true;
+
+            var char = CharacterQueries.getCharacterById(id);
+            if (!char) { continue; }
+
+            var name = CharacterQueries.getDisplayName(char);
+            if (!isNonEmptyString(name)) {
+                name = 'Unknown';
+            }
+
+            result.push({ id: id, name: name });
+        }
+
+        result.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
+
+        return result;
+    }
+
+    /**
+     * Update instructor state based on the currently-selected
+     * discipline.
+     *
+     * Called whenever the discipline changes, and once at open when
+     * a discipline is pre-selected (it is not, in this modal — the
+     * user always picks).
+     *
+     * Clears any prior collision state. The collision was resolved
+     * against a specific instructor; changing discipline invalidates
+     * it.
+     */
+    function refreshInstructorState() {
+        _availableInstructors = [];
+        _selectedInstructorId = '';
+        _instructorError = '';
+        _showInstructorPicker = false;
+        _pendingCollision = null;
+
+        if (!_context || _context.mode !== 'assign') {
+            return;
+        }
+
+        if (!isNonEmptyString(_selectedDisciplineId)) {
+            return;
+        }
+
+        var list = readAvailableInstructors(
+            _context.classId,
+            _selectedDisciplineId,
+            _context.week
+        );
+
+        _availableInstructors = list;
+
+        if (list.length === 0) {
+            _instructorError =
+                'No instructor teaches this discipline for this ' +
+                'class during the requested week.';
+            return;
+        }
+
+        if (list.length === 1) {
+            _selectedInstructorId = list[0].id;
+            return;
+        }
+
+        _showInstructorPicker = true;
+        // _selectedInstructorId stays ''. The user picks.
     }
 
     // ============================================================
@@ -429,6 +618,10 @@
         _selectedDisciplineId = '';
         _selectedDuration = DEFAULT_DURATION;
         _selectedLocationId = '';
+        _availableInstructors = [];
+        _selectedInstructorId = '';
+        _instructorError = '';
+        _showInstructorPicker = false;
         _pendingCollision = null;
         _busy = false;
 
@@ -513,6 +706,10 @@
         _selectedDisciplineId = '';
         _selectedDuration = DEFAULT_DURATION;
         _selectedLocationId = '';
+        _availableInstructors = [];
+        _selectedInstructorId = '';
+        _instructorError = '';
+        _showInstructorPicker = false;
         _pendingCollision = null;
         _busy = false;
     }
@@ -555,6 +752,10 @@
             base.durations = buildDurationOptions();
             base.locations = getAvailableLocations();
             base.selectedLocationId = _selectedLocationId;
+            base.instructors = _availableInstructors;
+            base.selectedInstructorId = _selectedInstructorId;
+            base.instructorError = _instructorError;
+            base.showInstructorPicker = _showInstructorPicker;
         } else if (_context.mode === 'remove-student') {
             base.charName = getCharacterName(_context.charId);
         }
@@ -700,6 +901,18 @@
         html += '</select>';
         html += '</div>';
 
+        // ---- Instructor picker / error (only when a discipline
+        //      is selected) ----
+        if (isNonEmptyString(vm.selectedDisciplineId)) {
+            if (isNonEmptyString(vm.instructorError)) {
+                html += renderInstructorError(vm.instructorError);
+            } else if (vm.showInstructorPicker) {
+                html += renderInstructorPicker(vm);
+            } else if (isNonEmptyString(vm.selectedInstructorId)) {
+                html += renderInstructorAutoSelected(vm);
+            }
+        }
+
         // ---- Duration ----
         html += '<div class="form-group">';
         html += '<label for="academy-schedule-assign-duration">' +
@@ -731,6 +944,89 @@
 
         html += renderAssignFooter(vm, false);
 
+        return html;
+    }
+
+    function renderInstructorPicker(vm) {
+        var instructors = Array.isArray(vm.instructors)
+            ? vm.instructors
+            : [];
+
+        if (instructors.length === 0) { return ''; }
+
+        var html = '';
+        html += '<div class="form-group academy-schedule-assign-instructors">';
+        html += '<label class="academy-schedule-assign-instructors-label">' +
+                    'Instructor *' +
+                '</label>';
+        html += '<p class="field-hint academy-schedule-assign-instructors-hint">' +
+                    'More than one instructor teaches this discipline ' +
+                    'for this class. Choose which one to schedule with.' +
+                '</p>';
+
+        html += '<div class="academy-schedule-assign-instructors-list">';
+
+        for (var i = 0; i < instructors.length; i++) {
+            var instr = instructors[i];
+            if (!instr || !instr.id) { continue; }
+
+            var checked = String(instr.id) ===
+                String(vm.selectedInstructorId)
+                ? ' checked'
+                : '';
+
+            html += '<label class="academy-schedule-assign-instructor-option">';
+            html += '<input type="radio" ' +
+                        'name="academy-schedule-assign-instructor" ' +
+                        'class="academy-schedule-assign-instructor-radio" ' +
+                        'data-instructor-id="' +
+                            escapeAttribute(instr.id) + '"' +
+                        checked +
+                        (vm.busy ? ' disabled' : '') + '>';
+            html += '<span class="academy-schedule-assign-instructor-name">' +
+                        escapeHtml(instr.name) +
+                    '</span>';
+            html += '</label>';
+        }
+
+        html += '</div>';
+        html += '</div>';
+        return html;
+    }
+
+    function renderInstructorError(message) {
+        var html = '';
+        html += '<div class="academy-schedule-assign-instructors-error">';
+        html += '<p class="academy-schedule-assign-instructors-error-text">' +
+                    escapeHtml(message) +
+                '</p>';
+        html += '</div>';
+        return html;
+    }
+
+    function renderInstructorAutoSelected(vm) {
+        var instructor = null;
+        for (var i = 0; i < vm.instructors.length; i++) {
+            if (String(vm.instructors[i].id) ===
+                String(vm.selectedInstructorId)) {
+                instructor = vm.instructors[i];
+                break;
+            }
+        }
+        if (!instructor) { return ''; }
+
+        var html = '';
+        html += '<div class="form-group academy-schedule-assign-instructors">';
+        html += '<label class="academy-schedule-assign-instructors-label">' +
+                    'Instructor' +
+                '</label>';
+        html += '<p class="academy-schedule-assign-instructor-single">' +
+                    escapeHtml(instructor.name) +
+                    ' <span class="academy-schedule-assign-instructor-single-note">' +
+                        '(only instructor for this discipline)' +
+                    '</span>' +
+                '</p>';
+        html += '</div>';
         return html;
     }
 
@@ -768,13 +1064,39 @@
         return html;
     }
 
+    /**
+     * Is the form ready to submit?
+     *
+     * The submit button is disabled until:
+     *   - a discipline is chosen
+     *   - the discipline resolves to exactly one instructor, OR
+     *     the user has picked one from the picker
+     *
+     * A collision prompt overrides the disabled state — the user
+     * is confirming an already-complete assignment.
+     */
+    function canSubmitAssign(vm) {
+        if (vm.busy) { return false; }
+        if (vm.pendingCollision) { return true; }
+
+        if (!isNonEmptyString(vm.selectedDisciplineId)) {
+            return false;
+        }
+        if (isNonEmptyString(vm.instructorError)) {
+            return false;
+        }
+        if (!isNonEmptyString(vm.selectedInstructorId)) {
+            return false;
+        }
+        return true;
+    }
+
     function renderAssignFooter(vm, noOfferings) {
         var busy = vm.busy === true;
         var hasCollision = !!vm.pendingCollision;
+        var canSubmit = canSubmitAssign(vm);
 
-        var hasDiscipline = isNonEmptyString(vm.selectedDisciplineId);
-        var submitDisabled = noOfferings || busy ||
-            (!hasCollision && !hasDiscipline);
+        var submitDisabled = noOfferings || !canSubmit;
 
         var submitLabel = hasCollision ? 'Assign anyway' : 'Assign';
         var submitAction = hasCollision
@@ -1007,9 +1329,12 @@
             'academy-schedule-assign-discipline'
         )) {
             _selectedDisciplineId = target.value || '';
-            if (_pendingCollision) {
-                _pendingCollision = null;
-            }
+
+            // A new discipline invalidates any prior collision —
+            // the collision was against a specific instructor.
+            // refreshInstructorState clears _pendingCollision.
+            refreshInstructorState();
+
             renderContent();
             return;
         }
@@ -1028,6 +1353,24 @@
             'academy-schedule-assign-location'
         )) {
             _selectedLocationId = target.value || '';
+            return;
+        }
+
+        // ---- Instructor radio ----
+        if (target.classList.contains(
+            'academy-schedule-assign-instructor-radio'
+        )) {
+            var instrId = target.dataset
+                ? target.dataset.instructorId
+                : '';
+            _selectedInstructorId = isNonEmptyString(instrId)
+                ? String(instrId)
+                : '';
+
+            // A changed instructor invalidates any prior collision.
+            _pendingCollision = null;
+
+            renderContent();
             return;
         }
     }
@@ -1092,12 +1435,21 @@
             return;
         }
 
+        if (isNonEmptyString(_instructorError)) {
+            notify(_instructorError, 'error');
+            return;
+        }
+
+        if (!isNonEmptyString(_selectedInstructorId)) {
+            notify('Choose an instructor.', 'error');
+            return;
+        }
+
         var duration = parseStrictInteger(_selectedDuration);
         if (duration === null) {
             duration = DEFAULT_DURATION;
         }
 
-        // Optional location. Empty string → null.
         var locationId = isNonEmptyString(_selectedLocationId)
             ? String(_selectedLocationId)
             : null;
@@ -1114,6 +1466,7 @@
             startHour: _context.startHour,
             duration: duration,
             locationId: locationId,
+            instructorId: _selectedInstructorId,
             allowCollisions: allowCollisions === true
         };
 
@@ -1145,6 +1498,30 @@
                     return;
                 }
 
+                // ---- Fallback: domain says the instructor set is
+                //      still ambiguous. The pre-flight was skipped
+                //      or the state changed between pre-flight and
+                //      submit. Re-enter the picker with the
+                //      domain's list.
+                if (result && result.reason === 'ambiguous_instructor') {
+                    handleAmbiguousInstructorRejection(result);
+                    return;
+                }
+
+                // ---- Fallback: domain says no instructor is
+                //      enrolled for this discipline.
+                if (result && result.reason === 'missing_instructor') {
+                    _instructorError =
+                        'No instructor teaches this discipline for ' +
+                        'this class during the requested week.';
+                    _selectedInstructorId = '';
+                    _availableInstructors = [];
+                    _showInstructorPicker = false;
+                    _pendingCollision = null;
+                    renderContent();
+                    return;
+                }
+
                 _pendingCollision = null;
 
                 var msg = (result && result.message)
@@ -1162,6 +1539,81 @@
                 notify('Could not assign this slot.', 'error');
                 renderContent();
             });
+    }
+
+    /**
+     * Handle a domain rejection with reason 'ambiguous_instructor'.
+     *
+     * The rejection shape is:
+     *
+     *   {
+     *     reason: 'ambiguous_instructor',
+     *     message: '...',
+     *     data: { instructorIds: ['id1', 'id2', ...] }
+     *   }
+     *
+     * We resolve the IDs to names via CharacterQueries and enter
+     * the picker sub-state. If the list turns out to be empty or
+     * single, we surface the appropriate error instead — the
+     * domain's "ambiguous" claim is only meaningful when there are
+     * at least two.
+     */
+    function handleAmbiguousInstructorRejection(result) {
+        var ids = (result.data && Array.isArray(result.data.instructorIds))
+            ? result.data.instructorIds
+            : [];
+
+        var resolved = [];
+        var seen = Object.create(null);
+
+        for (var i = 0; i < ids.length; i++) {
+            if (!ids[i]) { continue; }
+            var id = String(ids[i]);
+            if (seen[id]) { continue; }
+            seen[id] = true;
+
+            var char = CharacterQueries.getCharacterById(id);
+            if (!char) { continue; }
+
+            var name = CharacterQueries.getDisplayName(char);
+            if (!isNonEmptyString(name)) {
+                name = 'Unknown';
+            }
+
+            resolved.push({ id: id, name: name });
+        }
+
+        resolved.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
+
+        if (resolved.length === 0) {
+            _instructorError =
+                'No instructor teaches this discipline for this ' +
+                'class during the requested week.';
+            _availableInstructors = [];
+            _selectedInstructorId = '';
+            _showInstructorPicker = false;
+            renderContent();
+            return;
+        }
+
+        if (resolved.length === 1) {
+            _availableInstructors = resolved;
+            _selectedInstructorId = resolved[0].id;
+            _instructorError = '';
+            _showInstructorPicker = false;
+            renderContent();
+            return;
+        }
+
+        // Two or more: enter the picker. Keep the user's discipline
+        // and duration; the picker sits between them.
+        _availableInstructors = resolved;
+        _selectedInstructorId = '';
+        _instructorError = '';
+        _showInstructorPicker = true;
+        renderContent();
     }
 
     // ============================================================
