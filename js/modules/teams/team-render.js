@@ -6,7 +6,7 @@
  *
  * Provides:
  *   - renderContainer(vm)          full page shell
- *   - renderList(teams, options)   team rows (with optional expansion)
+ *   - renderList(teams, options)   team rows
  *   - renderExpandedMembers(vm)    expanded member section
  *   - renderTeamCard(vm)           compact card (single team)
  *   - renderTeamSummary(vm)        single-line summary
@@ -19,7 +19,8 @@
  * IMPORTANT:
  *   - RENDER ONLY. No queries, no state, no mutations, no domain
  *     calculations.
- *   - Every input is a view model already produced by TeamAggregator.
+ *   - Every input is a view model already produced by
+ *     TeamAggregator.
  *   - Uses DomUtils for escaping.
  *   - Display strings (type label, period display, rank display)
  *     arrive on the VM. The renderer does not derive them.
@@ -66,10 +67,12 @@
     if (!DomUtils || typeof DomUtils.escapeAttribute !== 'function') {
         _missing.push('DomUtils.escapeAttribute');
     }
-    if (!TeamConstants || typeof TeamConstants.getTeamTypes !== 'function') {
+    if (!TeamConstants ||
+        typeof TeamConstants.getTeamTypes !== 'function') {
         _missing.push('TeamConstants.getTeamTypes');
     }
-    if (!TeamConstants || typeof TeamConstants.getTeamStatuses !== 'function') {
+    if (!TeamConstants ||
+        typeof TeamConstants.getTeamStatuses !== 'function') {
         _missing.push('TeamConstants.getTeamStatuses');
     }
 
@@ -97,14 +100,11 @@
     }
 
     function safeString(value) {
-        return value === undefined || value === null ? '' : String(value);
+        return value === undefined || value === null
+            ? ''
+            : String(value);
     }
 
-    /**
-     * Coerce a count to an integer. Missing or malformed counts
-     * become 0, because an absent count and a count of zero render
-     * identically and the honest default is zero.
-     */
     function safeCount(value) {
         if (typeof value === 'number' && isFinite(value)) {
             return String(value);
@@ -112,19 +112,11 @@
         return '0';
     }
 
-    /**
-     * Build the type list for a form dropdown.
-     *
-     * The Teams tab does not manage academic teams; those belong to
-     * the Academy module. Filter them out.
-     */
     function getFormTeamTypes() {
         var all = TeamConstants.getTeamTypes();
         var result = [];
         for (var i = 0; i < all.length; i++) {
-            if (all[i].isAcademic === true) {
-                continue;
-            }
+            if (all[i].isAcademic === true) { continue; }
             result.push(all[i]);
         }
         return result;
@@ -138,15 +130,6 @@
     // SHARED FRAGMENTS
     // ============================================================
 
-    /**
-     * Render the action buttons for a team row.
-     *
-     * @param {string} teamId
-     * @param {boolean} isExpanded
-     * @param {boolean} allowToggle - when false, the expand toggle
-     *   button is omitted. Used by the card context, where expansion
-     *   is not meaningful.
-     */
     function renderTeamActions(teamId, isExpanded, allowToggle) {
         var idAttr = escapeAttribute(teamId);
         var html = '';
@@ -158,21 +141,27 @@
                 : 'Expand team members';
             var ariaExpanded = isExpanded ? 'true' : 'false';
 
-            html += '<button type="button" class="small toggle-members" ' +
+            html += '<button type="button" ' +
+                        'class="small toggle-members" ' +
                         'data-id="' + idAttr + '" ' +
-                        'aria-label="' + escapeAttribute(ariaLabel) + '" ' +
+                        'aria-label="' +
+                            escapeAttribute(ariaLabel) + '" ' +
                         'aria-expanded="' + ariaExpanded + '">' +
                         caret +
                     '</button>';
         }
 
-        html += '<button type="button" class="small manage-members" ' +
+        html += '<button type="button" ' +
+                    'class="small manage-members" ' +
                     'data-id="' + idAttr + '">Members</button>';
-        html += '<button type="button" class="small manage-rankings" ' +
+        html += '<button type="button" ' +
+                    'class="small manage-rankings" ' +
                     'data-id="' + idAttr + '">Rankings</button>';
-        html += '<button type="button" class="small edit-team" ' +
+        html += '<button type="button" ' +
+                    'class="small edit-team" ' +
                     'data-id="' + idAttr + '">Edit</button>';
-        html += '<button type="button" class="small danger delete-team" ' +
+        html += '<button type="button" ' +
+                    'class="small danger delete-team" ' +
                     'data-id="' + idAttr + '">Delete</button>';
 
         return html;
@@ -182,16 +171,6 @@
     // TEAM LIST
     // ============================================================
 
-    /**
-     * Render the team list.
-     *
-     * @param {array} teams - Array of team list VMs (from the page VM)
-     * @param {object} options
-     * @param {string} options.type - active tab ('professional' etc.)
-     * @param {string|null} options.expandedTeamId
-     * @param {object|null} options.expandedMembersVM
-     * @returns {string}
-     */
     function renderList(teams, options) {
         options = options || {};
         var type = options.type || 'professional';
@@ -222,9 +201,7 @@
 
         for (var i = 0; i < teams.length; i++) {
             var team = teams[i];
-            if (!team || !team.id) {
-                continue;
-            }
+            if (!team || !team.id) { continue; }
 
             var isExpanded = expandedTeamId &&
                 String(expandedTeamId) === String(team.id);
@@ -235,7 +212,8 @@
             }
 
             html += '<div class="' + rowClass + '" ' +
-                        'data-id="' + escapeAttribute(team.id) + '">';
+                        'data-id="' +
+                            escapeAttribute(team.id) + '">';
 
             html += '<span class="team-name-cell">';
             html += '<strong>' +
@@ -247,7 +225,9 @@
                         ']</span>';
             }
             html += ' <span class="team-type-label">' +
-                        escapeHtml(team.typeLabel || team.type || '') +
+                        escapeHtml(
+                            team.typeLabel || team.type || ''
+                        ) +
                     '</span>';
             if (team.isActive === false) {
                 html += ' <span class="team-status-inactive">' +
@@ -320,7 +300,8 @@
         }
 
         html += '<div class="members-expanded-header">' +
-                    'Active Members in ' + escapeHtml(periodLabel) +
+                    'Active Members in ' +
+                    escapeHtml(periodLabel) +
                     ' ' + safeString(period) +
                 ':</div>';
 
@@ -337,9 +318,9 @@
 
         html += '<div class="member-entry" ' +
                     'data-character-id="' +
-                        escapeAttribute(member.characterId || '') + '">';
+                        escapeAttribute(member.characterId || '') +
+                    '">';
 
-        // Header line: name, role, age, status.
         html += '<div class="member-entry-header">';
         html += '<span class="member-entry-name">' +
                     escapeHtml(member.displayName || 'Unknown') +
@@ -361,7 +342,6 @@
         }
         html += '</div>';
 
-        // Stint sub-lines.
         var intervals = Array.isArray(member.intervals)
             ? member.intervals
             : [];
@@ -375,9 +355,7 @@
         } else {
             for (var k = 0; k < intervals.length; k++) {
                 var iv = intervals[k];
-                if (!iv || typeof iv !== 'object') {
-                    continue;
-                }
+                if (!iv || typeof iv !== 'object') { continue; }
 
                 var rowClass = 'member-entry-interval';
                 if (iv.activeAtPeriod === true) {
@@ -386,7 +364,9 @@
 
                 html += '<div class="' + rowClass + '" ' +
                             'data-join-period="' +
-                                escapeAttribute(iv.joinPeriod || '') + '">';
+                                escapeAttribute(
+                                    iv.joinPeriod || ''
+                                ) + '">';
                 html += '<span class="member-entry-interval-period">' +
                             escapeHtml(
                                 iv.periodDisplay ||
@@ -402,10 +382,6 @@
         return html;
     }
 
-    /**
-     * Fallback period display for an interval whose VM does not
-     * carry a pre-computed display string.
-     */
     function formatFallbackInterval(iv) {
         var join = iv && isNonEmptyString(iv.joinPeriod)
             ? iv.joinPeriod
@@ -428,11 +404,6 @@
     // ============================================================
     // TEAM CARD
     // ============================================================
-    //
-    // Compact single-team presentation. Used by contexts that render
-    // one team outside the main list (e.g. a detail panel).
-    //
-    // The card never expands members; the toggle button is omitted.
 
     function renderTeamCard(team) {
         if (!team || !team.id) {
@@ -490,9 +461,6 @@
     // ============================================================
     // TEAM SUMMARY
     // ============================================================
-    //
-    // Single-line summary. Used for tooltips, breadcrumbs, or any
-    // context where a full card is too heavy.
 
     function renderTeamSummary(team) {
         if (!team || !team.id) {
@@ -504,7 +472,9 @@
                         escapeHtml(team.name || 'Unnamed Team') +
                     '</span>' +
                     '<span class="team-type">' +
-                        escapeHtml(team.typeLabel || team.type || '') +
+                        escapeHtml(
+                            team.typeLabel || team.type || ''
+                        ) +
                     '</span>' +
                     '<span class="team-rank">#' +
                         escapeHtml(team.currentRank || '-') +
@@ -541,7 +511,8 @@
             html += '<label for="civilian-show-inactive">' +
                         'Show Inactive:' +
                     '</label>';
-            html += '<input type="checkbox" id="civilian-show-inactive"' +
+            html += '<input type="checkbox" ' +
+                        'id="civilian-show-inactive"' +
                         (status === 'inactive' ? ' checked' : '') +
                     '>';
             html += '</div>';
@@ -557,14 +528,15 @@
                     escapeHtml(periodLabel) + ':' +
                 '</label>';
         html += '<input type="number" id="team-filter-year" ' +
-                    'value="' + escapeAttribute(safeString(yearValue)) + '" ' +
-                    'placeholder="All">';
+                    'value="' +
+                        escapeAttribute(safeString(yearValue)) +
+                    '" placeholder="All">';
         html += '</div>';
         html += '<div class="filter-group">';
         html += '<label for="' + escapeAttribute(tab) +
                     '-show-inactive">Show Inactive:</label>';
-        html += '<input type="checkbox" id="' + escapeAttribute(tab) +
-                    '-show-inactive"' +
+        html += '<input type="checkbox" id="' +
+                    escapeAttribute(tab) + '-show-inactive"' +
                     (status === 'inactive' ? ' checked' : '') +
                 '>';
         html += '</div>';
@@ -590,9 +562,7 @@
 
         for (var i = 0; i < rankVM.history.length; i++) {
             var entry = rankVM.history[i];
-            if (!entry) {
-                continue;
-            }
+            if (!entry) { continue; }
 
             html += '<div class="ranking-entry">';
             html += '<span class="ranking-entry-text">' +
@@ -642,7 +612,9 @@
         html += '</div>';
 
         html += '<form id="team-form-inner" data-edit-id="' +
-                    (isEdit ? escapeAttribute(formVM.teamId) : '') + '">';
+                    (isEdit
+                        ? escapeAttribute(formVM.teamId)
+                        : '') + '">';
 
         html += '<div class="form-grid">';
 
@@ -690,8 +662,8 @@
         html += '<div class="form-group">';
         html += '<label>Current Ranking</label>';
         html += '<input type="text" value="' +
-                    escapeAttribute(formVM.currentRank || '-') + '" ' +
-                    'readonly disabled>';
+                    escapeAttribute(formVM.currentRank || '-') +
+                    '" readonly disabled>';
         html += '<span class="field-hint">' +
                     '(Read-only; use Rankings to modify)' +
                 '</span>';
@@ -706,7 +678,9 @@
 
         html += '<div class="form-group full-width" ' +
                     'id="temporary-mission-field">';
-        html += '<label for="team-mission">Associated Mission</label>';
+        html += '<label for="team-mission">' +
+                    'Associated Mission' +
+                '</label>';
         html += '<select id="team-mission">';
         html += '<option value="">None</option>';
         html += missionOptions;
@@ -745,8 +719,11 @@
         var html = '';
         for (var i = 0; i < types.length; i++) {
             var type = types[i];
-            var selected = currentType === type.id ? ' selected' : '';
-            html += '<option value="' + escapeAttribute(type.id) + '"' +
+            var selected = currentType === type.id
+                ? ' selected'
+                : '';
+            html += '<option value="' +
+                        escapeAttribute(type.id) + '"' +
                         selected + '>' +
                         escapeHtml(type.label) +
                     '</option>';
@@ -759,8 +736,11 @@
         var html = '';
         for (var i = 0; i < statuses.length; i++) {
             var status = statuses[i];
-            var selected = currentStatus === status.id ? ' selected' : '';
-            html += '<option value="' + escapeAttribute(status.id) + '"' +
+            var selected = currentStatus === status.id
+                ? ' selected'
+                : '';
+            html += '<option value="' +
+                        escapeAttribute(status.id) + '"' +
                         selected + '>' +
                         escapeHtml(status.label) +
                     '</option>';
@@ -777,13 +757,12 @@
         var html = '';
         for (var i = 0; i < options.length; i++) {
             var opt = options[i];
-            if (!opt || !opt.id) {
-                continue;
-            }
+            if (!opt || !opt.id) { continue; }
             var selected = String(currentId) === String(opt.id)
                 ? ' selected'
                 : '';
-            html += '<option value="' + escapeAttribute(opt.id) + '"' +
+            html += '<option value="' +
+                        escapeAttribute(opt.id) + '"' +
                         selected + '>' +
                         escapeHtml(opt.name || 'Unnamed Class') +
                     '</option>';
@@ -800,14 +779,15 @@
         var html = '';
         for (var i = 0; i < options.length; i++) {
             var opt = options[i];
-            if (!opt || !opt.id) {
-                continue;
-            }
+            if (!opt || !opt.id) { continue; }
             var selected = String(currentId) === String(opt.id)
                 ? ' selected'
                 : '';
-            var suffix = opt.status === 'completed' ? ' (completed)' : '';
-            html += '<option value="' + escapeAttribute(opt.id) + '"' +
+            var suffix = opt.status === 'completed'
+                ? ' (completed)'
+                : '';
+            html += '<option value="' +
+                        escapeAttribute(opt.id) + '"' +
                         selected + '>' +
                         escapeHtml(opt.title + suffix) +
                     '</option>';
@@ -835,13 +815,18 @@
         html += '<div class="name-history-entry">';
         html += '<input type="text" class="name-history-name" ' +
                     'placeholder="Team Name" ' +
-                    'value="' + escapeAttribute(e.name || '') + '">';
+                    'value="' +
+                        escapeAttribute(e.name || '') + '">';
         html += '<input type="text" class="name-history-start" ' +
                     'placeholder="Start" ' +
-                    'value="' + escapeAttribute(e.startPeriod || '') + '">';
+                    'value="' +
+                        escapeAttribute(e.startPeriod || '') +
+                    '">';
         html += '<input type="text" class="name-history-end" ' +
                     'placeholder="End" ' +
-                    'value="' + escapeAttribute(e.endPeriod || '') + '">';
+                    'value="' +
+                        escapeAttribute(e.endPeriod || '') +
+                    '">';
         html += '<button type="button" ' +
                     'class="small danger remove-name">x</button>';
         html += '</div>';
@@ -857,7 +842,8 @@
         html += '<form id="ranking-form-inner">';
         html += '<div class="ranking-form">';
         html += '<input type="text" id="ranking-period" ' +
-                    'class="ranking-period-input" placeholder="Period">';
+                    'class="ranking-period-input" ' +
+                    'placeholder="Period">';
         html += '<input type="number" id="ranking-rank" ' +
                     'class="ranking-rank-input" ' +
                     'placeholder="Rank" min="1">';
@@ -875,7 +861,8 @@
     function renderContainer(pageVM) {
         if (!pageVM) {
             throw new Error(
-                '[TeamRender] renderContainer requires a page view model.'
+                '[TeamRender] renderContainer requires a page ' +
+                'view model.'
             );
         }
 
@@ -885,7 +872,9 @@
             temporary: 0,
             civilian: 0
         };
-        var teams = Array.isArray(pageVM.teams) ? pageVM.teams : [];
+        var teams = Array.isArray(pageVM.teams)
+            ? pageVM.teams
+            : [];
         var expandedTeamId = pageVM.expandedTeamId || null;
         var expandedTeam = pageVM.expandedTeam || null;
         var period = pageVM.period;
@@ -902,20 +891,37 @@
 
         var html = '';
 
+        // ---- Page header ----
+        //
+        // The header contains two primary actions:
+        //   + Add Team        : opens the team form
+        //   Matchmaking       : opens the matchmaking modal
+        //
+        // Matchmaking is available only on the professional tab,
+        // because the matchmaking algorithm targets professional
+        // teams only. On other tabs the button is not rendered.
         html += '<div class="page-header">';
         html += '<h2>Team Manager</h2>';
-        html += '<button type="button" id="add-team-btn" class="primary">' +
-                    '+ Add Team' +
-                '</button>';
+        html += '<div class="page-header-actions">';
+        if (activeTab === 'professional') {
+            html += '<button type="button" ' +
+                        'id="team-matchmaking-btn" ' +
+                        'class="secondary">Matchmaking</button>';
+        }
+        html += '<button type="button" id="add-team-btn" ' +
+                    'class="primary">+ Add Team</button>';
+        html += '</div>';
         html += '</div>';
 
         html += renderStats(counts);
 
         html += renderTabNav(activeTab, counts);
 
-        html += '<div id="filter-container" class="filter-container"></div>';
+        html += '<div id="filter-container" ' +
+                    'class="filter-container"></div>';
 
-        html += '<div id="team-list-container" class="team-list-container">';
+        html += '<div id="team-list-container" ' +
+                    'class="team-list-container">';
         html += renderList(teams, {
             type: activeTab,
             expandedTeamId: expandedTeamId,
@@ -951,15 +957,22 @@
             return '<button type="button" ' +
                         'class="tab-btn' + active + '" ' +
                         'data-tab="' + escapeAttribute(tab) + '">' +
-                        escapeHtml(label) + ' (' + safeCount(count) + ')' +
+                        escapeHtml(label) +
+                        ' (' + safeCount(count) + ')' +
                     '</button>';
         }
 
         var html = '';
         html += '<div class="tab-nav" id="team-tab-nav">';
-        html += tabBtn('professional', 'Professional', counts.professional);
-        html += tabBtn('temporary', 'Temporary', counts.temporary);
-        html += tabBtn('civilian', 'Civilian', counts.civilian);
+        html += tabBtn(
+            'professional', 'Professional', counts.professional
+        );
+        html += tabBtn(
+            'temporary', 'Temporary', counts.temporary
+        );
+        html += tabBtn(
+            'civilian', 'Civilian', counts.civilian
+        );
         html += '</div>';
         return html;
     }
