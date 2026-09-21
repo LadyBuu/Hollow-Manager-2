@@ -23,16 +23,19 @@
  *
  * INPUT BOUNDS:
  *   Every enumerated input (statuses, location types, capacity bounds,
- *   social-score bounds) is read from its owning domain module. The
- *   builders do not hardcode any of these. When a caller wants to add
- *   a new status or type, they add it to the domain module and the
- *   modal picks it up.
+ *   social-score bounds, rest-day bounds) is read from its owning
+ *   domain module. The builders do not hardcode any of these.
  *
  * STRICT PARSING:
  *   Integer inputs (class year, location capacity) are parsed via
  *   ValidationUtils.parseStrictPositiveInteger. Inputs like "2026foo",
- *   "3.9", and "-1" are rejected. Blank input is treated as null
- *   (unset) where the field is optional.
+ *   "3.9", and "-1" are rejected.
+ *
+ * REST DAYS:
+ *   The class form carries a fieldset of seven checkboxes (Mon–Sun).
+ *   The submitted value is an array of day numbers. Empty array means
+ *   no rest days. The domain (AcademyClasses.create / .update)
+ *   validates the array; this module reads what the checkboxes carry.
  *
  * MODAL CONTENT CONTRACT:
  *   Modal.createModal(className) returns a bare .modal shell. This
@@ -43,72 +46,41 @@
  * MODAL CLOSE SEMANTICS:
  *   Modal.hideModal is ASYNCHRONOUS. closeModal below awaits the
  *   returned Promise before removing the element from the DOM.
- *   Preferring Modal.closeModal when available gives the full
- *   teardown path (cleanups, focus restore, listener removal).
+ *   Prefer Modal.closeModal when available.
  *
  * ADD CHARACTER TO CLASS — SORTING AND OPTGROUP:
  *   The candidate list excludes characters who are already in the
- *   target class (as students or as instructors). It does not exclude
- *   characters who are in OTHER classes. The list is partitioned:
+ *   target class (as students or as instructors). It is partitioned:
  *
  *     1. Characters with no class membership — first.
  *     2. Characters with at least one class membership — second.
  *
  *   Within each partition, alphabetical by display name.
  *
- *   The modal renders the two partitions as <optgroup> blocks:
- *
- *     <optgroup label="Unassigned">...free characters...</optgroup>
- *     <optgroup label="In Other Classes">...assigned...</optgroup>
- *
- *   When ALL candidates are in the "Unassigned" partition, the modal
- *   renders a single option list with no optgroup wrapper.
+ *   The modal renders the two partitions as <optgroup> blocks when
+ *   both are non-empty.
  *
  * ADD CHARACTER TO CLASS — INSTRUCTOR EXCLUSION (v29):
  *   The candidate list excludes both the class's current students
  *   AND every character who teaches something in the class at the
- *   current display week. The instructor set is sourced from
- *   AcademyClasses.getClassInstructorIds(classId, week), which reads
- *   the per-discipline instructor enrolments. There is no
- *   `class.instructorId` field; that field was retired in v29.
- *
- *   The week used for the instructor query comes from the aggregator
- *   via AcademyUI, which reads the display week. When the display
- *   week is not resolvable, the exclusion falls back to the student
- *   roster alone and the instructor set is treated as empty. That is
- *   a display-only degradation; it does not fabricate data.
- *
- * ADD CHARACTER TO CLASS — OPTION LABEL:
- *   Each option shows the character's display name and, when
- *   available, their age in parentheses:
- *
- *     Alice Blackwood (22 yrs)
- *
- *   Age comes from CharacterQueries.getCharacterAge(char), which
- *   returns a string like '22 yrs' or '-' when the birth year is
- *   unknown. The '-' sentinel is suppressed.
- *
- * ADD CHARACTER TO CLASS — MUTATION OWNERSHIP:
- *   The class-membership mutation lives on AcademyClasses:
- *     AcademyClasses.addToClass(charId, classId)
+ *   current display week. Sourced from
+ *   AcademyClasses.getClassInstructorIds(classId, week).
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
  *   - window.Modal
  *   - window.NotificationSystem
  *   - window.ValidationUtils
- *   - window.AcademyClasses         (Add Character to Class mutates
- *                                    through AcademyClasses.addToClass;
- *                                    also owns getClassInstructorIds)
+ *   - window.AcademyClasses
  *   - window.AcademyDisciplines
  *   - window.AcademyLocations
  *   - window.CharacterQueries
  *   - window.AcademyAggregator
+ *   - window.CalendarConstants
  *
  * DEPENDENCIES (OPTIONAL, lazily accessed):
- *   - window.AcademySocialScore — required for the Social Score modal
- *   - window.AcademyUI          — used to resolve the display week
- *                                 for the instructor-exclusion query
+ *   - window.AcademySocialScore
+ *   - window.AcademyUI
  */
 
 (function() {
@@ -131,6 +103,7 @@
     var AcademyLocations = window.AcademyLocations;
     var CharacterQueries = window.CharacterQueries;
     var AcademyAggregator = window.AcademyAggregator;
+    var CalendarConstants = window.CalendarConstants;
 
     var _missing = [];
 
@@ -190,6 +163,11 @@
     if (!AcademyAggregator || typeof AcademyAggregator.getClassStudentsViewModel !== 'function') {
         _missing.push('AcademyAggregator.getClassStudentsViewModel');
     }
+    if (!CalendarConstants ||
+        typeof CalendarConstants.MIN_DAY !== 'number' ||
+        typeof CalendarConstants.MAX_DAY !== 'number') {
+        _missing.push('CalendarConstants.MIN_DAY / MAX_DAY');
+    }
 
     if (_missing.length > 0) {
         throw new Error(
@@ -237,23 +215,12 @@
         return String(value);
     }
 
-    /**
-     * Compare two strings for alphabetical ordering. Case-insensitive,
-     * locale-aware. Null/undefined coalesce to '' so callers don't
-     * need to guard.
-     */
     function compareAlpha(a, b) {
         var sa = isNonEmptyString(a) ? a : '';
         var sb = isNonEmptyString(b) ? b : '';
         return sa.localeCompare(sb);
     }
 
-    /**
-     * Format the label for a character in a candidate dropdown.
-     *
-     * Returns "<name> (<age>)" when the age is a real value, or just
-     * "<name>" when the age is missing or the '-' sentinel.
-     */
     function formatCharacterOptionLabel(name, age) {
         var safeName = isNonEmptyString(name) ? name : 'Unknown';
         var safeAge = isNonEmptyString(age) && age !== '-'
@@ -265,9 +232,6 @@
         return safeName + ' (' + safeAge + ')';
     }
 
-    /**
-     * Resolve the current display week from AcademyUI, or null.
-     */
     function getDisplayWeek() {
         var AcademyUI = getAcademyUI();
         if (!AcademyUI || typeof AcademyUI.getDisplayWeek !== 'function') {
@@ -285,20 +249,6 @@
         }
     }
 
-    /**
-     * Resolve the instructor IDs of a class at the current display
-     * week, or an empty array. Delegates to
-     * AcademyClasses.getClassInstructorIds, which is the canonical
-     * plural query for the retired singular instructor field.
-     *
-     * The week used here is the display week. When it is not
-     * resolvable, this returns an empty array. That is a display-only
-     * degradation: the exclusion falls back to the student roster
-     * alone rather than fabricating an instructor set.
-     *
-     * @param {string} classId
-     * @returns {array} Array of character ID strings
-     */
     function getClassInstructorIdsForDisplay(classId) {
         if (!isNonEmptyString(classId)) {
             return [];
@@ -335,6 +285,102 @@
     function getLocationRecord(locationId) {
         if (!isNonEmptyString(locationId)) { return null; }
         return AcademyLocations.getLocation(locationId);
+    }
+
+    // ============================================================
+    // REST DAYS (class form)
+    // ============================================================
+    //
+    // The canonical vocabulary is a seven-element ordered list. Day
+    // numbers follow CalendarConstants (Monday=1 … Sunday=7).
+    //
+    // The label is short ("Mon") so seven of them fit inline on a
+    // narrow viewport.
+
+    var DAY_ORDER = [
+        { num: 1, short: 'Mon' },
+        { num: 2, short: 'Tue' },
+        { num: 3, short: 'Wed' },
+        { num: 4, short: 'Thu' },
+        { num: 5, short: 'Fri' },
+        { num: 6, short: 'Sat' },
+        { num: 7, short: 'Sun' }
+    ];
+
+    function normaliseRestDaysForForm(raw) {
+        if (!Array.isArray(raw)) { return []; }
+        var seen = Object.create(null);
+        var result = [];
+        for (var i = 0; i < raw.length; i++) {
+            var n = Number(raw[i]);
+            if (!Number.isInteger(n)) { continue; }
+            if (n < CalendarConstants.MIN_DAY ||
+                n > CalendarConstants.MAX_DAY) {
+                continue;
+            }
+            var key = String(n);
+            if (seen[key]) { continue; }
+            seen[key] = true;
+            result.push(n);
+        }
+        return result;
+    }
+
+    function buildRestDaysFieldset(selectedDays) {
+        var selected = normaliseRestDaysForForm(selectedDays);
+        var selectedSet = Object.create(null);
+        for (var i = 0; i < selected.length; i++) {
+            selectedSet[String(selected[i])] = true;
+        }
+
+        var html = '';
+        html += '<fieldset class="academy-rest-days-fieldset">';
+        html += '<legend class="academy-rest-days-legend">' +
+                    'Rest Days' +
+                '</legend>';
+        html += '<p class="field-hint academy-rest-days-hint">' +
+                    'Days this class does not meet. Students and ' +
+                    'instructors of the class inherit these. ' +
+                    'Leave all unchecked for no rest days.' +
+                '</p>';
+        html += '<div class="academy-rest-days-row">';
+
+        for (var d = 0; d < DAY_ORDER.length; d++) {
+            var entry = DAY_ORDER[d];
+            var checked = selectedSet[String(entry.num)] ? ' checked' : '';
+            html += '<label class="academy-rest-day-toggle">';
+            html += '<input type="checkbox" ' +
+                        'class="academy-rest-day-checkbox" ' +
+                        'data-rest-day="' + entry.num + '"' +
+                        checked + '>';
+            html += '<span class="academy-rest-day-label">' +
+                        escapeHtml(entry.short) +
+                    '</span>';
+            html += '</label>';
+        }
+
+        html += '</div>';
+        html += '</fieldset>';
+        return html;
+    }
+
+    function collectRestDaysFromForm(form) {
+        if (!form) { return []; }
+        var boxes = form.querySelectorAll('.academy-rest-day-checkbox');
+        var result = [];
+        for (var i = 0; i < boxes.length; i++) {
+            var box = boxes[i];
+            if (!box || !box.checked) { continue; }
+            var n = Number(box.dataset ? box.dataset.restDay : null);
+            if (!Number.isInteger(n)) { continue; }
+            if (n < CalendarConstants.MIN_DAY ||
+                n > CalendarConstants.MAX_DAY) {
+                continue;
+            }
+            result.push(n);
+        }
+        result.sort(function(a, b) { return a - b; });
+        return result;
     }
 
     // ============================================================
@@ -386,15 +432,6 @@
         return modal;
     }
 
-    /**
-     * Close a modal.
-     *
-     * Prefers Modal.closeModal (full teardown) and awaits its Promise.
-     * Falls back to Modal.hideModal. Both are asynchronous; the modal
-     * stays in the DOM until the fade-out animation completes.
-     *
-     * Idempotent: calling on an already-detached modal does nothing.
-     */
     function closeModal(modal) {
         if (!modal) { return; }
 
@@ -458,12 +495,19 @@
     // ============================================================
     // CLASS — FORM HTML
     // ============================================================
+    //
+    // The rest-days fieldset renders below the description field.
+    // Both create and edit share the same builder; the edit case
+    // passes the existing class, whose restDays prefills the
+    // checkboxes.
 
     function buildClassFormHTML(cls) {
         var isEdit = !!cls;
         var c = cls || {};
 
         var statuses = AcademyClasses.VALID_STATUSES;
+
+        var restDays = Array.isArray(c.restDays) ? c.restDays : [];
 
         var html = '';
         html += '<form id="academy-class-form" class="academy-crud-form" ' +
@@ -523,6 +567,9 @@
                 '</textarea>';
         html += '</div>';
 
+        // Rest Days (v30)
+        html += buildRestDaysFieldset(restDays);
+
         // Actions
         html += '<div class="form-actions">';
         html += '<button type="button" ' +
@@ -571,15 +618,6 @@
     // ============================================================
     // CLASS — ADD CHARACTER
     // ============================================================
-    //
-    // The candidate list is supplied by the caller. The builder does
-    // NOT query the roster; the aggregator does that.
-    //
-    // The VM carries `candidatesUnassigned` and `candidatesAssigned`
-    // as two separate arrays. Each entry is { id, name, age, status }.
-    // The builder renders them as two <optgroup> blocks when both are
-    // non-empty, a single <optgroup> when only one is non-empty, and
-    // a flat list when the VM has only the legacy `candidates` array.
 
     function buildAddCharacterToClassHTML(vm) {
         var html = '';
@@ -619,10 +657,8 @@
                 html += renderCharacterOptgroup('Unassigned', free);
                 html += renderCharacterOptgroup('In Other Classes', assigned);
             } else if (free.length > 0) {
-                // Only unassigned; a label adds nothing.
                 html += renderCharacterOptions(free);
             } else if (assigned.length > 0) {
-                // Only assigned.
                 html += renderCharacterOptgroup('In Other Classes', assigned);
             }
 
@@ -655,9 +691,7 @@
             return html;
         }
 
-        // Legacy path: the VM has a flat `candidates` array. Kept so
-        // a partially-migrated deployment doesn't produce an empty
-        // modal.
+        // Legacy path: flat `candidates` array.
         var candidates = Array.isArray(vm.candidates) ? vm.candidates : [];
 
         html += '<option value="">Select a character...</option>';
@@ -707,40 +741,12 @@
                 '</optgroup>';
     }
 
-    /**
-     * Build the VM for the "Add Character to Class" modal.
-     *
-     * Uses the aggregator's roster projection and character list to
-     * compute the diff. Partitions candidates into:
-     *
-     *   - candidatesUnassigned: characters with no class membership.
-     *   - candidatesAssigned:   characters with at least one class
-     *                           membership (any class other than the
-     *                           target class, since the target class's
-     *                           roster is already excluded).
-     *
-     * The exclusion set covers:
-     *   - Students of the target class, from the aggregator's roster.
-     *   - Instructors of the target class, from
-     *     AcademyClasses.getClassInstructorIds(classId, week). The
-     *     query returns the plural list of every character teaching
-     *     something in the class at the display week.
-     *
-     * Each candidate entry carries { id, name, age, status }.
-     * Age is the display string from CharacterQueries.getCharacterAge
-     * (e.g. '22 yrs' or '-'), unmodified. The renderer suppresses the
-     * '-' sentinel so an unknown age produces just the name.
-     *
-     * @param {string} classId
-     * @returns {object|null}
-     */
     function buildAddCharacterToClassViewModel(classId) {
         var cls = getClassRecord(classId);
         if (!cls) { return null; }
 
         var currentIds = Object.create(null);
 
-        // Exclude the class's students.
         var students = AcademyAggregator.getClassStudentsViewModel(classId) || [];
         for (var i = 0; i < students.length; i++) {
             if (students[i] && students[i].id) {
@@ -748,10 +754,6 @@
             }
         }
 
-        // Exclude the class's instructors. Sourced from the derived
-        // plural query at the display week. When the display week is
-        // not resolvable, the exclusion set contains only students;
-        // that is a display-only degradation, not a data error.
         var instructorIds = getClassInstructorIdsForDisplay(classId);
         for (var ii = 0; ii < instructorIds.length; ii++) {
             if (instructorIds[ii]) {
@@ -791,9 +793,6 @@
             className: cls.name || 'Unnamed Class',
             candidatesUnassigned: free,
             candidatesAssigned: assigned,
-
-            // Legacy flat array. Kept so callers that read
-            // `vm.candidates` still see a sensible combined list.
             candidates: free.concat(assigned)
         };
     }
@@ -852,14 +851,12 @@
 
         html += '<div class="modal-body">';
 
-        // Name
         html += '<div class="form-group">';
         html += '<label for="ac-loc-name">Location Name *</label>';
         html += '<input type="text" id="ac-loc-name" class="ac-loc-name" ' +
                     'value="' + escapeAttribute(l.name || '') + '" required>';
         html += '</div>';
 
-        // Type
         html += '<div class="form-group">';
         html += '<label for="ac-loc-type">Type</label>';
         html += '<select id="ac-loc-type" class="ac-loc-type">';
@@ -873,7 +870,6 @@
         html += '</select>';
         html += '</div>';
 
-        // Capacity
         html += '<div class="form-group">';
         html += '<label for="ac-loc-capacity">Capacity</label>';
         html += '<input type="number" id="ac-loc-capacity" ' +
@@ -888,7 +884,6 @@
                     'placeholder="Optional">';
         html += '</div>';
 
-        // Actions
         html += '<div class="form-actions">';
         html += '<button type="button" ' +
                     'class="cancel-modal-btn secondary">Cancel</button>';
@@ -1036,11 +1031,14 @@
                     }
                 }
 
+                var restDays = collectRestDaysFromForm(form);
+
                 var payload = {
                     name: name,
                     year: yearValue,
                     status: status,
-                    description: description
+                    description: description,
+                    restDays: restDays
                 };
 
                 var promise = (cls && cls.id)
@@ -1277,17 +1275,6 @@
     // OPEN — SOCIAL SCORE
     // ============================================================
 
-    /**
-     * Open the Social Score modal.
-     *
-     * The class and week are explicit parameters. The caller
-     * (AcademyView) resolves them from UI state. This module does not
-     * look up UI state.
-     *
-     * @param {string} charId
-     * @param {string} classId
-     * @param {number|string} week
-     */
     function openSocialScoreForm(charId, classId, week) {
         if (!isNonEmptyString(charId)) {
             notify('No character selected.', 'error');
