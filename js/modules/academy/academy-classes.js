@@ -14,6 +14,7 @@
  *   - Instructor-of-class derivation (getClassInstructorIds,
  *     getClassInstructorIdsAllTime), sourced from per-discipline
  *     instructor enrolments
+ *   - Class rest days (class.restDays)
  *
  * This module is NOT responsible for:
  *   - Class membership STORAGE. Membership lives on
@@ -22,10 +23,12 @@
  *     character.classIds.
  *   - Cross-domain cascade cleanup. That is owned by AcademyCascade.
  *   - Per-discipline instructor assignment. That is an ENROLMENT,
- *     written by the instructor-side Disciplines tab in the character
- *     detail panel, through AcademyEnrolments.enrol. This module
- *     only READS those enrolments, via the two getClassInstructorIds
- *     functions.
+ *     written by the instructor-side Disciplines tab in the
+ *     character detail panel, through AcademyEnrolments.enrol.
+ *   - Applying rest days to schedule projections. The calendar
+ *     aggregator reads class.restDays and propagates it to the
+ *     grid VMs. This module owns the storage and validation of
+ *     the field, not its effect.
  *
  * IMPORTANT (v15+):
  *   - Character membership is stored on character.classIds[].
@@ -33,69 +36,50 @@
  *     include classId. AcademyQueries owns that derivation.
  *
  * NO CLASS-LEVEL INSTRUCTOR (v29):
- *   Prior to this revision, a class record carried `instructorId` —
- *   a single instructor per class. That field was retired because
- *   the relationship it expressed is discipline-scoped: an instructor
- *   teaches a discipline for a class, not the class as a whole.
+ *   Prior to this revision, a class record carried `instructorId`.
+ *   That field was retired. Instructors are per-discipline
+ *   enrolments. See getClassInstructorIds below.
  *
- *   The relationship is expressed as an ENROLMENT:
+ * REST DAYS (v30):
+ *   class.restDays = [dayNumber, ...]
+ *   Day numbers are integers in [CalendarConstants.MIN_DAY,
+ *   CalendarConstants.MAX_DAY]. Empty array means no rest days.
  *
- *     academy.enrolments[classId][instructorCharId] = [
- *       { disciplineId, startWeek, endWeek }, ...
- *     ]
+ *   A class's rest days are inherited by every student and
+ *   instructor of the class: their schedule grids dim the
+ *   columns for those days and refuse assignments there. The
+ *   location grid does not inherit them (a room is not a class
+ *   member).
  *
- *   with the character's mode set to 'instructor'. The character's
- *   Disciplines tab (instructor mode) is where this is edited.
- *
- *   This module no longer:
- *     - writes `instructorId` on class records,
- *     - accepts `instructorId` in create or update payloads,
- *     - returns `instructorId` in any shape.
- *
- * INSTRUCTOR QUERIES (v29):
- *   Two functions, answering two different questions:
- *
- *   getClassInstructorIds(classId, week, options)
- *     "Who teaches something in this class DURING this week?"
- *     Week-scoped. Used by the schedule projector, the roster
- *     derivation, the ranking exclusion, the Add Character modal,
- *     and the schedule-assign resolver.
- *
- *   getClassInstructorIdsAllTime(classId)
- *     "Who has EVER taught something in this class?"
- *     NOT week-scoped. Used by the character class-role label.
- *     A character who taught Combat for Class 2026 during weeks 1-8
- *     and stopped is still an instructor for Class 2026. The label
- *     is a statement about the role, not about this week.
- *
- *   The two are deliberately separate. The week filter belongs on
- *   queries that answer "what is happening this week." It does not
- *   belong on queries that answer "what is this character to this
- *   class."
+ *   The field is stored, validated, and written here. It is read
+ *   by the calendar aggregator, which folds it into the grid VM.
+ *   Nothing in this module consults restDays for any decision.
  *
  * S10.1 MIGRATION:
  *   The four membership mutations (addToClass, removeClassById,
- *   addClassByName, removeFromAllClasses) and the two
- *   classIds-normalisation helpers (normaliseClassIds,
+ *   addClassByName, removeFromAllClasses) and the two classIds-
+ *   normalisation helpers (normaliseClassIds,
  *   getNormalisedClassIds) were moved here from
  *   character-classes.js. That file has been deleted.
  *
  * READ SAFETY (Phase 2):
- *   - getAcademyStore() returns null (does NOT create academy.{...})
- *     when the store is missing. Reads are side-effect free.
+ *   - getAcademyStore() returns null when the store is missing.
+ *     Reads are side-effect free.
  *   - Public lookups return DEEP CLONES.
  *   - Internal lookups return LIVE REFERENCES.
- *   - Pipeline validate() callbacks read from the `appData` argument.
- *   - ObjectUtils.deepClone throws if cloning fails or if the clone
- *     aliases the input.
+ *   - Pipeline validate() callbacks read from the `appData`
+ *     argument.
+ *   - ObjectUtils.deepClone throws if cloning fails or if the
+ *     clone aliases the input.
  *
  * DELETE CASCADE (Phase 8):
  *   Deleting a class is a CASCADE. In a single MutationPipeline
  *   transaction it:
  *     1. Strips the classId from every character's classIds array.
  *     2. Deletes the class entity from academy.graduatingClasses.
- *     3. Cross-domain cleanup: enrolments, grades, rankings, social
- *        scores, weekly teams. Delegated to AcademyCascade.classDeleted.
+ *     3. Cross-domain cleanup: enrolments, grades, rankings,
+ *        social scores, weekly teams. Delegated to
+ *        AcademyCascade.classDeleted.
  *
  * YEAR SEMANTICS:
  *   - Years are UNBOUNDED positive integers. A null year is valid.
@@ -113,16 +97,15 @@
  *   - window.AcademyCascade
  *   - window.CharacterQueries
  *   - window.AcademyClassDisciplinesQueries
- *     Read by getClassInstructorIds to resolve the class's active
- *     offerings. getClassInstructorIdsAllTime does NOT use it; that
- *     function reads enrolments directly, because "was this
- *     discipline ever offered" is not the question it answers.
  *
  * USAGE:
  *   var classes = window.AcademyClasses;
  *
  *   var result = classes.create('Class of 2026');
- *   var result = classes.update('class_123', { name: 'New Name' });
+ *   var result = classes.update('class_123', {
+ *       name: 'New Name',
+ *       restDays: [6, 7]
+ *   });
  *   var result = classes.delete('class_123');
  *
  *   var cls = classes.getClass('class_123');
@@ -178,8 +161,10 @@
 
     if (!window.CalendarConstants ||
         typeof window.CalendarConstants.MIN_WEEK !== 'number' ||
-        typeof window.CalendarConstants.MAX_WEEK !== 'number') {
-        missing.push('CalendarConstants.MIN_WEEK/MAX_WEEK');
+        typeof window.CalendarConstants.MAX_WEEK !== 'number' ||
+        typeof window.CalendarConstants.MIN_DAY !== 'number' ||
+        typeof window.CalendarConstants.MAX_DAY !== 'number') {
+        missing.push('CalendarConstants week/day bounds');
     }
 
     if (!window.CalendarValidation ||
@@ -235,6 +220,8 @@
 
     var MIN_WEEK = CalendarConstants.MIN_WEEK;
     var MAX_WEEK = CalendarConstants.MAX_WEEK;
+    var MIN_DAY = CalendarConstants.MIN_DAY;
+    var MAX_DAY = CalendarConstants.MAX_DAY;
 
     // ============================================================
     // HELPERS
@@ -459,70 +446,34 @@
     // a class are whoever has an instructor-mode enrolment in one of
     // the class's offerings.
     //
-    // The relationship is expressed as an enrolment, the same store
-    // as student enrolment:
-    //
-    //   academy.enrolments[classId][charId] = [
-    //     { disciplineId, startWeek, endWeek }, ...
-    //   ]
-    //
-    // A character is treated as an instructor for this purpose when
-    // character.mode === 'instructor'. The enrolment itself is
-    // mode-neutral; mode is a fact on the character, not on the
-    // enrolment.
-    //
     // TWO QUERIES, TWO QUESTIONS:
     //
     //   getClassInstructorIds(classId, week, options)
     //     "Who teaches something in this class DURING this week?"
-    //     Week-scoped. Reads offerings via AcademyClassDisciplinesQueries
-    //     to filter out enrolments whose discipline is not currently
-    //     offered. Filters enrolment intervals to those whose range
-    //     contains the week. Filters to instructor mode.
-    //
-    //     Used by: the schedule projector's filters, the roster
-    //     derivation (AcademyAggregator.deriveClassRoster), the
-    //     ranking exclusion, the Add Character modal's candidate
-    //     filter, and AcademySchedule.assignStudentToSlot's
-    //     preflight.
+    //     Week-scoped. Reads offerings via
+    //     AcademyClassDisciplinesQueries to filter out enrolments
+    //     whose discipline is not currently offered. Filters
+    //     enrolment intervals to those whose range contains the
+    //     week. Filters to instructor mode.
     //
     //   getClassInstructorIdsAllTime(classId)
     //     "Who has EVER taught something in this class?"
     //     NOT week-scoped. Does NOT consult offerings; reads the
-    //     enrolment bucket directly and returns every character
-    //     with instructor mode and at least one interval in the
-    //     bucket.
+    //     enrolment bucket directly.
     //
-    //     Used by: the character class-role label in
-    //     character-class-view.js. The label is a statement about
-    //     the character's role in the class, not about this week's
-    //     schedule.
-    //
-    //   They are deliberately separate. A character who taught
+    //   The two are deliberately separate. A character who taught
     //   Combat for Class 2026 during weeks 1-8 and stopped is an
     //   instructor for Class 2026 (all-time) but not for week 12
-    //   (week-scoped). Both answers are correct for their respective
-    //   questions.
+    //   (week-scoped). Both answers are correct for their
+    //   respective questions.
     //
     // NOT AUTHORITATIVE INSIDE A MUTATION TRANSACTION:
     //   Both functions read window.data through the live store.
     //   Neither is authoritative inside a MutationPipeline
-    //   transaction. AcademySchedule.assignStudentToSlot re-resolves
-    //   against the pipeline snapshot using the same rule,
-    //   expressed transaction-locally.
+    //   transaction. AcademySchedule.assignStudentToSlot
+    //   re-resolves against the pipeline snapshot using the same
+    //   rule, expressed transaction-locally.
 
-    /**
-     * Return the character IDs of every instructor who teaches
-     * something in this class during the given week.
-     *
-     * When options.disciplineId is supplied, only instructors whose
-     * enrolment covers that discipline are returned.
-     *
-     * @param {string} classId
-     * @param {number|string} week
-     * @param {object} [options] { disciplineId?: string }
-     * @returns {array} Deduplicated, sorted array of character IDs
-     */
     function getClassInstructorIds(classId, week, options) {
         if (!isNonEmptyString(classId)) {
             return [];
@@ -548,12 +499,6 @@
             return [];
         }
 
-        // Resolve the class's active offerings for the week. When
-        // the queries module is unavailable, fall back to the raw
-        // disciplines referenced by enrolment intervals — the
-        // week-and-mode filter still applies, but the offering-set
-        // check does not. This mirrors the fail-soft behaviour of
-        // other optional reads in the module.
         var offeringSet = Object.create(null);
         var offeringFilterAvailable = false;
 
@@ -585,7 +530,6 @@
             offeringFilterAvailable = true;
         }
 
-        // Optional discipline filter.
         var disciplineFilter = null;
         if (options && isNonEmptyString(options.disciplineId)) {
             disciplineFilter = String(options.disciplineId);
@@ -604,10 +548,6 @@
             var intervals = byClass[charId];
             if (!Array.isArray(intervals)) { continue; }
 
-            // Does this character have at least one interval that
-            // covers the week, matches the optional discipline
-            // filter, and (when the offering filter is available)
-            // corresponds to an active offering?
             var matchedDiscipline = false;
             for (var ii = 0; ii < intervals.length; ii++) {
                 var iv = intervals[ii];
@@ -640,10 +580,6 @@
 
             if (!matchedDiscipline) { continue; }
 
-            // Mode check. The character must currently be an
-            // instructor. A character who was an instructor at one
-            // point and has since flipped mode is not an instructor
-            // now, and is not returned.
             var char = CQ.getCharacterById(charId);
             if (!char || typeof char !== 'object') { continue; }
             if (char.mode !== 'instructor') { continue; }
@@ -656,27 +592,6 @@
         return out;
     }
 
-    /**
-     * Return the character IDs of every instructor who has EVER
-     * taught something in this class.
-     *
-     * NOT week-scoped. Reads the enrolment bucket for the class
-     * directly; every character in that bucket with instructor mode
-     * and at least one enrolment interval is returned.
-     *
-     * Does NOT consult AcademyClassDisciplinesQueries. The question
-     * is "did this character ever teach for this class," not "is
-     * the discipline still offered." An enrolment in the class's
-     * bucket is the fact; the class's current offering set is a
-     * separate question.
-     *
-     * The mode check is live: a character who was an instructor at
-     * one point and has since flipped to student mode is not
-     * returned. Mode is the discriminator.
-     *
-     * @param {string} classId
-     * @returns {array} Deduplicated, sorted array of character IDs
-     */
     function getClassInstructorIdsAllTime(classId) {
         if (!isNonEmptyString(classId)) {
             return [];
@@ -709,9 +624,6 @@
             var charId = charIds[ci];
             var intervals = byClass[charId];
 
-            // Must have at least one enrolment interval. A character
-            // present in the bucket with an empty array is not
-            // teaching anything.
             if (!Array.isArray(intervals) || intervals.length === 0) {
                 continue;
             }
@@ -750,13 +662,95 @@
     }
 
     // ============================================================
+    // REST DAYS VALIDATION
+    // ============================================================
+    //
+    // The accepted shape is an array of unique integers in
+    // [MIN_DAY, MAX_DAY]. Duplicates are collapsed. Order is not
+    // significant (the canonical form is sorted ascending by
+    // normaliseRestDays below), but callers may pass any order.
+    //
+    // Rejections:
+    //   - not an array
+    //   - any element that cannot be parsed to an integer in range
+    //
+    // Silent no-op:
+    //   - a caller who passes `undefined` gets the current value
+    //     preserved. The validator does not treat `undefined` as
+    //     "clear the field"; that requires an explicit `[]`.
+
+    function validateRestDaysValue(value) {
+        if (value === undefined) {
+            return { valid: true, value: undefined };
+        }
+
+        if (!Array.isArray(value)) {
+            return {
+                valid: false,
+                value: null,
+                message: 'Rest days must be an array of day numbers.'
+            };
+        }
+
+        var seen = Object.create(null);
+        var result = [];
+
+        for (var i = 0; i < value.length; i++) {
+            var raw = value[i];
+
+            if (raw === null || raw === undefined || raw === '') {
+                return {
+                    valid: false,
+                    value: null,
+                    message: 'Rest days must not contain empty values.'
+                };
+            }
+
+            var n = Number(raw);
+            if (!Number.isInteger(n)) {
+                return {
+                    valid: false,
+                    value: null,
+                    message: 'Rest day "' + raw + '" is not an integer.'
+                };
+            }
+
+            if (n < MIN_DAY || n > MAX_DAY) {
+                return {
+                    valid: false,
+                    value: null,
+                    message: 'Rest day ' + n + ' is out of range (' +
+                        MIN_DAY + '-' + MAX_DAY + ').'
+                };
+            }
+
+            var key = String(n);
+            if (seen[key]) { continue; }
+            seen[key] = true;
+            result.push(n);
+        }
+
+        result.sort(function(a, b) { return a - b; });
+
+        return { valid: true, value: result };
+    }
+
+    function normaliseRestDays(value) {
+        var check = validateRestDaysValue(value);
+        if (!check.valid) {
+            return [];
+        }
+        if (check.value === undefined) {
+            return [];
+        }
+        return check.value;
+    }
+
+    // ============================================================
     // CLASS-LEVEL INSTRUCTOR PAYLOAD GUARD
     // ============================================================
     //
-    // The retired `instructorId` field is rejected explicitly. A
-    // caller that passes it gets a structured failure, not a silent
-    // no-op. The message names the replacement so the caller can
-    // migrate without a search.
+    // The retired `instructorId` field is rejected explicitly.
 
     var RETIRED_INSTRUCTOR_MESSAGE =
         'instructorId is not a class field. Instructor assignment is ' +
@@ -776,6 +770,10 @@
 
     /**
      * Create a new class.
+     *
+     * New in v30: restDays.
+     *   options.restDays is an optional array of day numbers. When
+     *   omitted, the created class has restDays: [].
      */
     function create(name, options) {
         if (!isNonEmptyString(name)) {
@@ -806,6 +804,15 @@
             return Promise.resolve(failure(yearResult.message));
         }
 
+        var restDaysResult = validateRestDaysValue(options.restDays);
+        if (!restDaysResult.valid) {
+            return Promise.resolve(failure(restDaysResult.message));
+        }
+
+        var restDays = restDaysResult.value === undefined
+            ? []
+            : restDaysResult.value;
+
         var now = new Date().toISOString();
         var classId = generateId();
 
@@ -815,6 +822,7 @@
             status: status,
             year: yearResult.value,
             description: options.description || '',
+            restDays: restDays,
             createdAt: now,
             updatedAt: now
         };
@@ -860,6 +868,11 @@
 
     /**
      * Update an existing class.
+     *
+     * New in v30: restDays.
+     *   updates.restDays, when present, must be a valid array.
+     *   updates.restDays = [] explicitly clears the field.
+     *   Omitting updates.restDays preserves the current value.
      */
     function update(classId, updates) {
         if (!isNonEmptyString(classId)) {
@@ -885,6 +898,13 @@
         var candidate = deepClone(existing);
         if (candidate === null) {
             return Promise.resolve(failure('Failed to clone class data.'));
+        }
+
+        // Ensure the candidate always carries restDays; older records
+        // may predate the field even though normaliseDataStructure
+        // backfills it, so guard defensively.
+        if (!Array.isArray(candidate.restDays)) {
+            candidate.restDays = [];
         }
 
         if (updates.name !== undefined) {
@@ -918,6 +938,14 @@
 
         if (updates.description !== undefined) {
             candidate.description = updates.description || '';
+        }
+
+        if (updates.restDays !== undefined) {
+            var restDaysResult = validateRestDaysValue(updates.restDays);
+            if (!restDaysResult.valid) {
+                return Promise.resolve(failure(restDaysResult.message));
+            }
+            candidate.restDays = restDaysResult.value;
         }
 
         candidate.updatedAt = new Date().toISOString();
@@ -1142,9 +1170,6 @@
     // MEMBERSHIP MUTATIONS (moved here in S10.1)
     // ============================================================
 
-    /**
-     * Add a character to a class by class ID.
-     */
     function addToClass(charId, classId) {
         if (!charId) {
             return Promise.resolve(failure('Character ID is required.'));
@@ -1229,9 +1254,6 @@
         });
     }
 
-    /**
-     * Remove a character from a class by class ID.
-     */
     function removeClassById(charId, classId) {
         if (!charId) {
             return Promise.resolve(failure('Character ID is required.'));
@@ -1330,11 +1352,8 @@
      *
      * ENTITY SHAPE CONTRACT:
      *   The created class entity matches AcademyClasses.create's
-     *   shape exactly: { id, name, status, year, description,
-     *   createdAt, updatedAt }.
-     *
-     *   There is no instructorId. The field was retired; instructors
-     *   are per-discipline enrolments.
+     *   shape exactly, including `restDays: []` (v30). Newly
+     *   auto-created classes start with no rest days.
      */
     function addClassByName(charId, className) {
         if (!charId) {
@@ -1399,7 +1418,6 @@
                     data.academy.graduatingClasses = {};
                 }
 
-                // Look up existing class by name inside the snapshot.
                 var nameLower = trimmedName.toLowerCase();
                 var existing = null;
                 Object.keys(data.academy.graduatingClasses).forEach(function(id) {
@@ -1410,7 +1428,6 @@
                     }
                 });
 
-                // Create the class entity directly if it doesn't exist.
                 if (!existing) {
                     var now = new Date().toISOString();
                     classId = IdUtils.generateId('class');
@@ -1420,6 +1437,7 @@
                         status: 'active',
                         year: null,
                         description: '',
+                        restDays: [],
                         createdAt: now,
                         updatedAt: now
                     };
@@ -1431,7 +1449,6 @@
                     className_ = existing.name;
                 }
 
-                // Add classId to the character.
                 var currentChar = data.characters.find(function(c) {
                     return c && String(c.id) === String(charId);
                 });
@@ -1469,9 +1486,6 @@
         });
     }
 
-    /**
-     * Remove a character from every class they are a member of.
-     */
     function removeFromAllClasses(charId) {
         if (!charId) {
             return Promise.resolve(failure('Character ID is required.'));
@@ -1574,9 +1588,15 @@
         normaliseClassIds: normaliseClassIds,
         getNormalisedClassIds: getNormalisedClassIds,
 
+        // ---- Rest days helpers (v30) ----
+        normaliseRestDays: normaliseRestDays,
+        validateRestDays: validateRestDaysValue,
+
         // ---- Constants ----
         VALID_STATUSES: VALID_STATUSES,
-        DEFAULT_STATUS: DEFAULT_STATUS
+        DEFAULT_STATUS: DEFAULT_STATUS,
+        MIN_DAY: MIN_DAY,
+        MAX_DAY: MAX_DAY
     };
 
 })();
