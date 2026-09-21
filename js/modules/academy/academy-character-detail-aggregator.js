@@ -39,14 +39,8 @@
  *
  * REST DAYS (v30):
  *   The schedule-grid VM carries `restDays`, sourced from the
- *   class the character is viewing. The caller supplies the
- *   classId; the aggregator forwards it to the calendar
- *   aggregator, which reads the class and returns its rest
- *   days. When no class is supplied, `restDays: []`.
- *
- *   The character grid inherits the class's rest days because
- *   the class is a cohort with a shared timetable. The location
- *   grid does not inherit them (a room is not a class member).
+ *   class the character is viewing. Forwarded to the calendar
+ *   aggregator, which reads the class.
  *
  * HOURS PANEL (student mode):
  *   The schedule-grid VM carries `disciplineHours`, one entry per
@@ -56,17 +50,35 @@
  *     targetHours      discipline.weeklyHours
  *     scheduledHours   sum of the student's sessions this week
  *     remainingHours   target - scheduled (may be negative)
+ *     currentGroup     the group the student is already in, or
+ *                      null (see below)
+ *     groups           the picker's candidate groups
  *
- *   And a `groups` array: every teaching group for this
- *   (classId, disciplineId) at the display week, with a
- *   per-group status for the picker:
+ * CURRENT GROUP:
+ *   Each discipline-hours entry carries `currentGroup`. It is the
+ *   teaching group the student is a member of for that
+ *   (classId, disciplineId) at the display week, resolved via
+ *   AcademyTeachingGroups.getGroupForStudentInClassDiscipline.
  *
- *     'green'   every session of the group is free in the
- *               student's schedule. Adding would succeed.
- *     'red'     at least one session of the group overlaps one
- *               of the student's other scheduled sessions.
+ *   Shape when present:
+ *     {
+ *       groupId, displayName,
+ *       instructorId, instructorName,
+ *       classmateCount
+ *     }
  *
- *   Groups the student is already a member of are omitted.
+ *   `classmateCount` is active members at the display week, minus
+ *   the student themselves. It is week-scoped; a student who left
+ *   last week does not count this week.
+ *
+ *   When the student is not a member of any group for the
+ *   discipline, `currentGroup` is null and the panel renders no
+ *   sub-block for that row.
+ *
+ *   The field is display-only. The picker still lists groups the
+ *   student can join; the current group is not in that list
+ *   (members are excluded). The sub-block answers "where am I",
+ *   the picker answers "where could I be".
  *
  * NULL SEMANTICS:
  *   - character is always present (returns null if not found).
@@ -76,6 +88,8 @@
  *     selected.
  *   - disciplineHours is [] in instructor mode, or when the
  *     student has no enrolments for the class.
+ *   - currentGroup is null when the student is not in any group
+ *     for the discipline.
  *   - Display fields use '—' or null rather than invented values.
  *
  * DEPENDENCIES (mandatory):
@@ -196,6 +210,12 @@
     if (!AcademyTeachingGroups ||
         typeof AcademyTeachingGroups.getGroup !== 'function') {
         missing.push('AcademyTeachingGroups.getGroup');
+    }
+    if (!AcademyTeachingGroups ||
+        typeof AcademyTeachingGroups.getGroupForStudentInClassDiscipline !== 'function') {
+        missing.push(
+            'AcademyTeachingGroups.getGroupForStudentInClassDiscipline'
+        );
     }
 
     if (!CalendarConstants ||
@@ -1146,11 +1166,6 @@
     // ============================================================
     // SCHEDULE GRID VIEW MODEL
     // ============================================================
-    //
-    // The caller supplies { week, mode, classId }. The aggregator
-    // forwards classId to the calendar aggregator, which reads the
-    // class and returns its restDays. The aggregator does not read
-    // AcademyUI; it is a pure function of its inputs.
 
     var VALID_SCHEDULE_MODES = ['student', 'instructor'];
 
@@ -1212,8 +1227,6 @@
 
         var isInstructor = mode === 'instructor';
 
-        // Forward classId into the calendar aggregator. It uses
-        // the class to resolve restDays for the grid VM.
         var options = {
             week: weekNum,
             classId: isNonEmptyString(classId) ? String(classId) : null
@@ -1253,9 +1266,6 @@
 
         var disciplineHours = [];
 
-        // The hours panel is a student-mode affordance. It needs
-        // a class to be meaningful: the targets and the picker
-        // are scoped to the class-discipline set.
         if (!isInstructor && isNonEmptyString(classId)) {
             disciplineHours = buildDisciplineHoursVM(
                 charId,
@@ -1302,10 +1312,23 @@
     //     scheduledHours,    sum of the student's sessions this week
     //     remainingHours,    target - scheduled
     //     isOver,            remainingHours < 0
+    //     currentGroup,      the group the student is already in,
+    //                        or null
     //     groups: [ GroupPickVM, ... ]
     //   }
     //
-    // Groups the student is already a member of are omitted.
+    // `currentGroup` shape:
+    //   {
+    //     groupId, displayName,
+    //     instructorId, instructorName,
+    //     classmateCount
+    //   }
+    //
+    // `classmateCount` = active members at the display week,
+    // minus the student themselves. Week-scoped.
+    //
+    // `groups` is the picker's candidate list. The current group
+    // is not in that list (members are excluded).
 
     function buildDisciplineHoursVM(charId, classId, week, gridVM) {
         var enrolledIds = [];
@@ -1337,6 +1360,13 @@
             );
             var remainingHours = targetHours - scheduledHours;
 
+            var currentGroup = buildCurrentGroupForDiscipline(
+                charId,
+                classId,
+                disciplineId,
+                week
+            );
+
             var groups = buildDisciplineGroupsForPicker(
                 charId,
                 classId,
@@ -1353,6 +1383,7 @@
                 scheduledHours: scheduledHours,
                 remainingHours: remainingHours,
                 isOver: remainingHours < 0,
+                currentGroup: currentGroup,
                 groups: groups
             });
         }
@@ -1362,6 +1393,77 @@
         });
 
         return result;
+    }
+
+    /**
+     * Resolve the group the student is a member of for a
+     * (classId, disciplineId) at the display week.
+     *
+     * Uses AcademyTeachingGroups.getGroupForStudentInClassDiscipline
+     * which returns a clone, or null when the student is in no
+     * group.
+     *
+     * `classmateCount` is active members at the display week minus
+     * the student themselves. A member who left last week does not
+     * count this week.
+     */
+    function buildCurrentGroupForDiscipline(
+        charId,
+        classId,
+        disciplineId,
+        week
+    ) {
+        if (!isNonEmptyString(charId) ||
+            !isNonEmptyString(classId) ||
+            !isNonEmptyString(disciplineId)) {
+            return null;
+        }
+        if (week === null) { return null; }
+
+        var group = null;
+        try {
+            group = AcademyTeachingGroups.getGroupForStudentInClassDiscipline(
+                classId,
+                disciplineId,
+                charId,
+                week
+            );
+        } catch (e) {
+            group = null;
+        }
+        if (!group || !group.id) { return null; }
+
+        var memberIds = [];
+        try {
+            memberIds = AcademyTeachingGroups.getActiveMembers(
+                group.id, week
+            ) || [];
+        } catch (e) {
+            memberIds = [];
+        }
+
+        var targetChar = String(charId);
+        var classmateCount = 0;
+        for (var i = 0; i < memberIds.length; i++) {
+            if (memberIds[i] === undefined || memberIds[i] === null) {
+                continue;
+            }
+            if (String(memberIds[i]) === targetChar) { continue; }
+            classmateCount++;
+        }
+
+        var instructorId = isNonEmptyString(group.instructorId)
+            ? String(group.instructorId)
+            : null;
+        var instructorName = getCharacterDisplayName(instructorId);
+
+        return {
+            groupId: String(group.id),
+            displayName: buildGroupDisplayName(group),
+            instructorId: instructorId,
+            instructorName: instructorName,
+            classmateCount: classmateCount
+        };
     }
 
     function countScheduledHoursForDiscipline(schedule, disciplineId) {
