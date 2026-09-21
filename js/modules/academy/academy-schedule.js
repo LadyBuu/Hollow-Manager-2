@@ -54,7 +54,36 @@
  *   A class does not carry an instructor field. Instructors are
  *   derived from per-discipline instructor enrolments.
  *
- * SESSION LOCATION (this revision):
+ * GROUP SELECTION (this revision):
+ *   `assignStudentToSlot` and `scheduleInstructorSlot` accept an
+ *   optional `groupId` payload field. When present, the resolver
+ *   uses that group directly: it validates the group exists and
+ *   matches the (classId, disciplineId, instructorId) triple, then
+ *   operates on it. When absent, the resolver falls back to its
+ *   candidate-walking behaviour: pick the group whose session
+ *   shape best matches the requested slot.
+ *
+ *   The candidate-walking fallback produces ONE group per
+ *   (classId, disciplineId, instructorId) triple, because it
+ *   always picks the earliest-created candidate. That is fine for
+ *   the common case of a single group; it is wrong for the case
+ *   where the instructor runs two or more groups of the same
+ *   discipline. Passing `groupId` explicitly is how a caller
+ *   selects among them.
+ *
+ *   The resolver does NOT auto-create a second group. A caller
+ *   that needs a new group must create it first, via
+ *   AcademyTeachingGroups.createGroup, then pass its id. This
+ *   keeps the "the user chose which group this belongs to"
+ *   decision in the user's hands.
+ *
+ *   THE MODAL DOES NOT YET OFFER A GROUP PICKER. The domain
+ *   accepts an explicit groupId; the UI does not yet supply one.
+ *   When the UI supplies it, the second-group case becomes
+ *   reachable. Until then, the default behaviour is unchanged.
+ *   See the pinboard for the pending modal work.
+ *
+ * SESSION LOCATION:
  *   `assignStudentToSlot` and `scheduleInstructorSlot` both accept
  *   an optional `locationId`. It is applied ONLY when the resolver
  *   creates a new session. When an existing session is reused, the
@@ -323,19 +352,6 @@
     // ============================================================
     // LOCATION RESOLUTION
     // ============================================================
-    //
-    // A locationId on a slot-setting payload is optional. When
-    // non-null, it must resolve to a real location. The check is
-    // fail-closed: a bad ID rejects, it does not silently fall
-    // back to null. The modal only offers real locations, so the
-    // failure path only fires for programmatic callers.
-    //
-    // When AcademyLocations is not loaded, the check is skipped
-    // and the value is accepted as-is. The location store is a
-    // separate domain; its absence should not block scheduling
-    // entirely. The projector reads locationId through the
-    // location store, so a location-less session that carries a
-    // dangling ID will simply not project a location.
 
     function resolveLocationId(rawLocationId) {
         if (rawLocationId === undefined ||
@@ -1935,6 +1951,69 @@
         return null;
     }
 
+    /**
+     * Validate an explicit groupId against the required triple.
+     *
+     * Returns { ok: true, group } when the group exists, belongs to
+     * the specified class and discipline, and has the specified
+     * instructor. Returns { ok: false, reason, message } otherwise.
+     *
+     * The caller-supplied groupId is authoritative only when it
+     * matches the triple the resolver was invoked with. This
+     * prevents a caller from anchoring a student to a group of a
+     * different class, discipline, or instructor than the payload
+     * declared.
+     */
+    function validateExplicitGroup(
+        academy,
+        groupId,
+        classId,
+        disciplineId,
+        instructorId
+    ) {
+        if (!isPlainObject(academy) ||
+            !isPlainObject(academy.teachingGroups)) {
+            return {
+                ok: false,
+                reason: 'group_not_found',
+                message: 'Teaching group store is not available.'
+            };
+        }
+
+        var g = academy.teachingGroups[String(groupId)];
+        if (!isPlainObject(g)) {
+            return {
+                ok: false,
+                reason: 'group_not_found',
+                message: 'Teaching group not found.'
+            };
+        }
+
+        if (String(g.classId) !== String(classId)) {
+            return {
+                ok: false,
+                reason: 'group_mismatch',
+                message: 'Teaching group does not belong to this class.'
+            };
+        }
+        if (String(g.disciplineId) !== String(disciplineId)) {
+            return {
+                ok: false,
+                reason: 'group_mismatch',
+                message: 'Teaching group does not belong to this discipline.'
+            };
+        }
+        if (String(g.instructorId) !== String(instructorId)) {
+            return {
+                ok: false,
+                reason: 'group_mismatch',
+                message: 'Teaching group does not belong to this instructor.'
+            };
+        }
+
+        return { ok: true, group: g };
+    }
+
     function assignStudentToSlot(payload) {
         if (!isPlainObject(payload)) {
             return Promise.resolve(rejection(
@@ -2026,6 +2105,12 @@
 
         var explicitInstructor = isNonEmptyString(payload.instructorId)
             ? String(payload.instructorId)
+            : null;
+
+        // Optional explicit group. When present, the resolver uses it
+        // directly, bypassing candidate-walking.
+        var explicitGroupId = isNonEmptyString(payload.groupId)
+            ? String(payload.groupId)
             : null;
 
         // ---- Preflight (live reads for early UX feedback) ----
@@ -2120,7 +2205,10 @@
                         'Disciplines tab before scheduling the student.'
                     ));
                 }
-                if (liveInstructorIds.length > 1) {
+                if (liveInstructorIds.length > 1 && explicitGroupId === null) {
+                    // Multiple instructors is ambiguous UNLESS an
+                    // explicit group is supplied, which pins the
+                    // instructor too.
                     return Promise.resolve(rejection(
                         'ambiguous_instructor',
                         'Multiple instructors teach this discipline for ' +
@@ -2210,6 +2298,39 @@
                 var targetInstructor;
                 if (explicitInstructor !== null) {
                     targetInstructor = explicitInstructor;
+                } else if (explicitGroupId !== null) {
+                    // An explicit group pins the instructor.
+                    var pinCheck = validateExplicitGroup(
+                        academy,
+                        explicitGroupId,
+                        targetClass,
+                        targetDiscipline,
+                        null
+                    );
+                    // validateExplicitGroup requires instructorId; when
+                    // pinning from the group, read the group directly
+                    // and derive the instructor from it.
+                    var pinnedGroup = isPlainObject(academy.teachingGroups)
+                        ? academy.teachingGroups[String(explicitGroupId)]
+                        : null;
+                    if (!isPlainObject(pinnedGroup)) {
+                        throw new Error(
+                            '__group_not_found__'
+                        );
+                    }
+                    if (String(pinnedGroup.classId) !== targetClass) {
+                        throw new Error(
+                            '__group_mismatch__:class'
+                        );
+                    }
+                    if (String(pinnedGroup.disciplineId) !==
+                        targetDiscipline) {
+                        throw new Error(
+                            '__group_mismatch__:discipline'
+                        );
+                    }
+                    targetInstructor = String(pinnedGroup.instructorId);
+                    void pinCheck;
                 } else {
                     var resolution = resolveInstructorFromSnapshot(
                         appData,
@@ -2243,7 +2364,8 @@
                     startHour,
                     duration,
                     snapshotDiscipline,
-                    locationId
+                    locationId,
+                    explicitGroupId
                 );
 
                 var resolvedGroup = resolved.group;
@@ -2452,7 +2574,6 @@
             ));
         }
 
-        // Optional location. Validated fail-closed.
         var locationResult = resolveLocationId(payload.locationId);
         if (!locationResult.ok) {
             return Promise.resolve(rejection(
@@ -2467,6 +2588,10 @@
         var targetInstructor = String(payload.instructorId);
         var targetClass = String(payload.classId);
         var targetDiscipline = String(payload.disciplineId);
+
+        var explicitGroupId = isNonEmptyString(payload.groupId)
+            ? String(payload.groupId)
+            : null;
 
         // ---- Preflight (live reads) ----
         var cls = AcademyClasses.getClass(targetClass);
@@ -2626,7 +2751,8 @@
                     startHour,
                     duration,
                     snapshotDiscipline,
-                    locationId
+                    locationId,
+                    explicitGroupId
                 );
 
                 var resolvedGroup = resolved.group;
@@ -2709,19 +2835,26 @@
     // (classId, disciplineId, instructorId). Used by both
     // assignStudentToSlot and scheduleInstructorSlot.
     //
+    // EXPLICIT GROUP:
+    //   When `explicitGroupId` is supplied, the resolver uses that
+    //   group directly. It validates the group exists and matches
+    //   the (classId, disciplineId, instructorId) triple. It then
+    //   proceeds to session resolution against that group only.
+    //
+    //   When `explicitGroupId` is null, the resolver walks the
+    //   candidate groups and picks the first whose session shape
+    //   best matches. This preserves the pre-revision behaviour.
+    //
+    //   The explicit path is what allows two groups of the same
+    //   (class, discipline, instructor) triple to coexist and be
+    //   addressed independently. The fallback cannot: it always
+    //   picks the earliest candidate.
+    //
     // LOCATION SEMANTICS:
     //   `locationId` is applied ONLY when a new session is created.
     //   When an existing session is reused (exact match on day /
     //   startHour / duration, active at `week`), its location is
-    //   left as-is; the payload's locationId is ignored. Adding a
-    //   member or an instructor slot should not move an existing
-    //   meeting.
-    //
-    //   To change an existing session's location, use the session
-    //   form (from the Teaching Groups tab's Sessions list).
-    //
-    //   `locationId` may be null. A null location is valid; the
-    //   session renders on the grid without a location line.
+    //   left as-is; the payload's locationId is ignored.
 
     function resolveOrCreateGroupAndSession(
         academy,
@@ -2733,84 +2866,164 @@
         startHour,
         duration,
         discipline,
-        locationId
+        locationId,
+        explicitGroupId
     ) {
-        var candidates = collectCandidateGroups(
-            academy,
-            classId,
-            disciplineId,
-            instructorId
-        );
-
         var resolvedGroup = null;
         var resolvedSession = null;
         var createdGroup = false;
         var createdSession = false;
 
-        candidates.sort(function(a, b) {
-            var as = typeof a.startWeek === 'number'
-                ? a.startWeek : 0;
-            var bs = typeof b.startWeek === 'number'
-                ? b.startWeek : 0;
-            if (as !== bs) { return as - bs; }
-            return String(a.id).localeCompare(String(b.id));
-        });
-
-        for (var ci = 0; ci < candidates.length; ci++) {
-            var candidateGroup = candidates[ci];
+        // ---- Explicit-group path ----
+        if (explicitGroupId !== null && explicitGroupId !== undefined) {
+            var check = validateExplicitGroup(
+                academy,
+                explicitGroupId,
+                classId,
+                disciplineId,
+                instructorId
+            );
+            if (!check.ok) {
+                throw new Error(
+                    '__explicit_group_invalid__:' +
+                    check.reason + ':' + check.message
+                );
+            }
+            resolvedGroup = check.group;
 
             if (!weekInRange(
                 week,
-                candidateGroup.startWeek,
-                candidateGroup.endWeek
+                resolvedGroup.startWeek,
+                resolvedGroup.endWeek
             )) {
-                continue;
+                throw new Error(
+                    '__explicit_group_inactive__:' + explicitGroupId
+                );
             }
+        }
 
-            var sessions = collectSessionsForGroup(
-                academy, candidateGroup.id
+        // ---- Candidate-walking path (when no explicit group) ----
+        if (resolvedGroup === null) {
+            var candidates = collectCandidateGroups(
+                academy,
+                classId,
+                disciplineId,
+                instructorId
             );
 
-            var exactMatch = null;
-            var overlapping = null;
+            candidates.sort(function(a, b) {
+                var as = typeof a.startWeek === 'number'
+                    ? a.startWeek : 0;
+                var bs = typeof b.startWeek === 'number'
+                    ? b.startWeek : 0;
+                if (as !== bs) { return as - bs; }
+                return String(a.id).localeCompare(String(b.id));
+            });
 
-            for (var si = 0; si < sessions.length; si++) {
-                var s = sessions[si];
+            for (var ci = 0; ci < candidates.length; ci++) {
+                var candidateGroup = candidates[ci];
+
                 if (!weekInRange(
                     week,
-                    s.startWeek,
-                    s.endWeek
+                    candidateGroup.startWeek,
+                    candidateGroup.endWeek
+                )) {
+                    continue;
+                }
+
+                var sessions = collectSessionsForGroup(
+                    academy, candidateGroup.id
+                );
+
+                var exactMatch = null;
+                var overlapping = null;
+
+                for (var si = 0; si < sessions.length; si++) {
+                    var s = sessions[si];
+                    if (!weekInRange(
+                        week,
+                        s.startWeek,
+                        s.endWeek
+                    )) {
+                        continue;
+                    }
+                    if (sessionMatchesExactly(
+                        s, day, startHour, duration
+                    )) {
+                        exactMatch = s;
+                        break;
+                    }
+                    if (timeSlotsOverlap(
+                        day, startHour, duration, s
+                    )) {
+                        overlapping = s;
+                    }
+                }
+
+                if (exactMatch) {
+                    resolvedGroup = candidateGroup;
+                    resolvedSession = exactMatch;
+                    break;
+                }
+                if (overlapping) {
+                    throw new Error(
+                        '__group_session_overlap__:' +
+                        String(overlapping.id)
+                    );
+                }
+
+                resolvedGroup = candidateGroup;
+                break;
+            }
+        }
+
+        // ---- Session resolution for the resolved group ----
+        //
+        // Two paths reach here:
+        //   - Explicit-group path: resolvedGroup was set directly;
+        //     we still need to find or create a session on it.
+        //   - Candidate-walking path: resolvedGroup and possibly
+        //     resolvedSession were set; if a session was found,
+        //     skip; otherwise create.
+
+        if (resolvedGroup !== null && resolvedSession === null) {
+            var groupSessions = collectSessionsForGroup(
+                academy, resolvedGroup.id
+            );
+
+            var sessionExact = null;
+            var sessionOverlapping = null;
+
+            for (var gsi = 0; gsi < groupSessions.length; gsi++) {
+                var gs = groupSessions[gsi];
+                if (!weekInRange(
+                    week,
+                    gs.startWeek,
+                    gs.endWeek
                 )) {
                     continue;
                 }
                 if (sessionMatchesExactly(
-                    s, day, startHour, duration
+                    gs, day, startHour, duration
                 )) {
-                    exactMatch = s;
+                    sessionExact = gs;
                     break;
                 }
                 if (timeSlotsOverlap(
-                    day, startHour, duration, s
+                    day, startHour, duration, gs
                 )) {
-                    overlapping = s;
+                    sessionOverlapping = gs;
                 }
             }
 
-            if (exactMatch) {
-                // Reuse. Location on the payload is IGNORED.
-                resolvedGroup = candidateGroup;
-                resolvedSession = exactMatch;
-                break;
-            }
-            if (overlapping) {
+            if (sessionExact) {
+                resolvedSession = sessionExact;
+            } else if (sessionOverlapping) {
                 throw new Error(
                     '__group_session_overlap__:' +
-                    String(overlapping.id)
+                    String(sessionOverlapping.id)
                 );
             }
-
-            resolvedGroup = candidateGroup;
-            break;
         }
 
         if (!resolvedGroup) {
@@ -2909,6 +3122,47 @@
                 'group_session_overlap',
                 'This group already meets during that time. ' +
                 'Pick a different slot or a different duration.'
+            );
+        }
+
+        if (result.message.indexOf(
+            '__explicit_group_invalid__:'
+        ) === 0) {
+            var parts = result.message.split(':');
+            var reason = parts.length >= 3 ? parts[2] : 'invalid';
+            return rejection(
+                'explicit_group_invalid',
+                'The selected group is not valid for this slot ' +
+                '(' + reason + ').'
+            );
+        }
+
+        if (result.message.indexOf(
+            '__explicit_group_inactive__:'
+        ) === 0) {
+            return rejection(
+                'explicit_group_inactive',
+                'The selected group is not active during the ' +
+                'requested week.'
+            );
+        }
+
+        if (result.message.indexOf(
+            '__group_not_found__'
+        ) === 0) {
+            return rejection(
+                'group_not_found',
+                'The selected group no longer exists.'
+            );
+        }
+
+        if (result.message.indexOf(
+            '__group_mismatch__:'
+        ) === 0) {
+            return rejection(
+                'group_mismatch',
+                'The selected group does not match the class, ' +
+                'discipline, or instructor of this slot.'
             );
         }
 
