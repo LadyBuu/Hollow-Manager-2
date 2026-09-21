@@ -32,8 +32,34 @@
  *   Callers that need a character's enrolled disciplines call
  *   AcademyEnrolments.getStudentDisciplines(charId, classId).
  *
+ * STATUS TIERS:
+ *   The canonical tier classifier is CharacterConstants.classifyStatus.
+ *   It returns 'student', 'instructor', 'support', or null. The three
+ *   tiers are disjoint and are enforced at CharacterConstants load.
+ *
+ *   This module's predicates (isStudent, isInstructor, isCivilian)
+ *   delegate to CharacterConstants.classifyStatus. Reimplementing
+ *   the tier logic here is what produced the "senior is an
+ *   instructor" bug: the predicate's local string comparison did
+ *   not match the canonical tier membership.
+ *
+ *   `senior` is a STUDENT status, not an instructor status. A
+ *   senior is a final-year student, still enrolled, still
+ *   participating in academic teams and exams. This was the bug.
+ *
+ *   `support` is its own tier: neither student nor instructor.
+ *   Support staff (medics, technicians, administrative roles) are
+ *   excluded from student-scoped and instructor-scoped queries
+ *   alike. isCivilian does not report support as civilian; support
+ *   is not civilian, it is support.
+ *
  * DEPENDENCIES:
- *   - window.data (canonical state)
+ *   - window.data                 (canonical state)
+ *   - window.CharacterConstants   (canonical status tiers;
+ *                                  optional at load, but the
+ *                                  predicates degrade gracefully
+ *                                  with a hardcoded fallback that
+ *                                  mirrors the canonical tiers)
  */
 
 (function() {
@@ -41,6 +67,12 @@
 
     if (window.__characterQueriesLoaded) { return; }
     window.__characterQueriesLoaded = true;
+
+    // ============================================================
+    // DEPENDENCIES
+    // ============================================================
+
+    var CharacterConstants = window.CharacterConstants;
 
     // ============================================================
     // DATA ACCESS
@@ -74,21 +106,6 @@
     // DISPLAY NAME
     // ============================================================
 
-    /**
-     * Get the display name for a character.
-     *
-     * Uses displayParts if present on the character:
-     *   First Nickname Middle Last (Alias)
-     *
-     * Falls back to the legacy nameFormat switch if displayParts is
-     * missing entirely, so existing characters keep displaying as before.
-     *
-     * If all displayParts are false, falls back to firstName + lastName
-     * so we never render a blank name.
-     *
-     * @param {object} char - Character object
-     * @returns {string} Display name
-     */
     function getDisplayName(char) {
         if (!char || typeof char !== 'object') { return 'Unknown'; }
 
@@ -314,18 +331,107 @@
         return 'Civilian';
     }
 
+    // ============================================================
+    // STATUS TIER CLASSIFICATION
+    // ============================================================
+    //
+    // The canonical tier classifier lives on CharacterConstants.
+    // This module does not reimplement it.
+    //
+    // Fallback logic is preserved so this module works even when
+    // CharacterConstants has not loaded. The fallback MIRRORS the
+    // canonical tier membership exactly, including `senior` in the
+    // student tier. It is NOT the legacy pre-fix membership.
+
+    var FALLBACK_STUDENT = ['trainee', 'rookie', 'junior', 'senior', 'student'];
+    var FALLBACK_INSTRUCTOR = ['instructor', 'teacher', 'professor'];
+    var FALLBACK_SUPPORT = ['support'];
+
+    /**
+     * Classify a status string into a tier.
+     *
+     * Delegates to CharacterConstants.classifyStatus when available.
+     * Falls back to a hardcoded classifier that mirrors the canonical
+     * tier membership when the constants module has not loaded.
+     *
+     * A status string with a ' (Former)' suffix is classified by its
+     * base tier. A former instructor is still classified as an
+     * instructor. The tier describes what role the status string
+     * names, not whether the role is current.
+     *
+     * @param {string} status
+     * @returns {string|null} 'student' | 'instructor' | 'support' | null
+     */
+    function classifyStatusTier(status) {
+        if (!status || typeof status !== 'string') { return null; }
+
+        // Prefer the canonical classifier.
+        if (CharacterConstants &&
+            typeof CharacterConstants.classifyStatus === 'function') {
+            return CharacterConstants.classifyStatus(status);
+        }
+
+        // Fallback: mirror the canonical tier membership.
+        var base = status.toLowerCase();
+        var formerIndex = base.indexOf(' (former)');
+        if (formerIndex !== -1) {
+            base = base.substring(0, formerIndex).trim();
+        }
+
+        if (FALLBACK_STUDENT.indexOf(base) !== -1) { return 'student'; }
+        if (FALLBACK_INSTRUCTOR.indexOf(base) !== -1) { return 'instructor'; }
+        if (FALLBACK_SUPPORT.indexOf(base) !== -1) { return 'support'; }
+        return null;
+    }
+
+    // ============================================================
+    // STATUS PREDICATES
+    // ============================================================
+    //
+    // These delegate to classifyStatusTier, which in turn delegates
+    // to CharacterConstants.classifyStatus.
+    //
+    // THE THREE TIERS ARE DISJOINT. A character is at most one of
+    // student, instructor, support. A character whose status is
+    // neither (e.g. civilian, or an unrecognised string) is none
+    // of them.
+    //
+    // `senior` is a STUDENT status. It was previously misclassified
+    // as an instructor; that bug is fixed.
+    //
+    // `support` is its own tier. Support staff are neither students
+    // nor instructors.
+
     function isStudent(char) {
         if (!char || typeof char !== 'object') { return false; }
-        var status = getCurrentStatus(char).toLowerCase();
-        return status === 'trainee' || status === 'rookie' || status === 'junior' || status === 'student';
+        return classifyStatusTier(getCurrentStatus(char)) === 'student';
     }
 
     function isInstructor(char) {
         if (!char || typeof char !== 'object') { return false; }
-        var status = getCurrentStatus(char).toLowerCase();
-        return status === 'instructor' || status === 'teacher' || status === 'professor' || status === 'senior';
+        return classifyStatusTier(getCurrentStatus(char)) === 'instructor';
     }
 
+    function isSupport(char) {
+        if (!char || typeof char !== 'object') { return false; }
+        return classifyStatusTier(getCurrentStatus(char)) === 'support';
+    }
+
+    /**
+     * Is the character a civilian?
+     *
+     * A civilian is a character whose current status is the literal
+     * string 'Civilian' (case-insensitive). This is distinct from
+     * "not a student and not an instructor": a support staffer is
+     * not a civilian, and neither is a character with an
+     * unrecognised status string.
+     *
+     * The predicate answers a positive question: "is this character
+     * recorded as a civilian?" It does not answer "is this
+     * character a non-combatant?" — that is a different question
+     * with a different answer, and it belongs to whichever feature
+     * is asking it.
+     */
     function isCivilian(char) {
         if (!char || typeof char !== 'object') { return false; }
         return getCurrentStatus(char).toLowerCase() === 'civilian';
@@ -434,6 +540,7 @@
         getCurrentStatus: getCurrentStatus,
         isStudent: isStudent,
         isInstructor: isInstructor,
+        isSupport: isSupport,
         isCivilian: isCivilian,
 
         // Lists
