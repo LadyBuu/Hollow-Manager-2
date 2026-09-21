@@ -25,7 +25,32 @@
  *     timelines and shouldn't impose artificial bounds.
  *   - Weeks and days remain bounded (they have real semantic
  *     meaning: 52 weeks per year, 7 days per week).
- * 
+ *
+ * HOUR FORMAT (24-HOUR):
+ *   The application uses a 24-hour clock throughout. Every
+ *   human-readable hour produced by this module is in the form
+ *
+ *     HH:00
+ *
+ *   with a two-digit hour (00-23) and `:00` minutes. There is no
+ *   AM/PM suffix anywhere. There is no 12-hour representation.
+ *
+ *   formatHour(hour, includeMinutes) always emits minutes when
+ *   includeMinutes is true (the default) and just the two-digit
+ *   hour when includeMinutes is false. Callers that omit the flag
+ *   get `HH:00`.
+ *
+ *   parseHour accepts the same format back. It also still accepts
+ *   bare integers and legacy 12-hour strings ("9:00 AM") so that
+ *   imported data and older call sites do not break; the
+ *   canonical output of formatHour is 24-hour, and every new
+ *   caller sees 24-hour labels.
+ *
+ *   Consumers of formatHour (the schedule grid, the session form
+ *   dropdowns, the schedule modals, the location co-occupants
+ *   panel) inherit 24-hour labels automatically. There is no
+ *   per-caller switch and no additional flag.
+ *
  * DEPENDENCIES:
  *   - None (self-contained)
  */
@@ -241,8 +266,104 @@
     }
 
     // ============================================================
-    // HOUR HELPERS
+    // HOUR HELPERS - 24-HOUR CLOCK
     // ============================================================
+    //
+    // formatHour(hour, includeMinutes) produces the canonical
+    // 24-hour label for an hour:
+    //
+    //     "00:00", "01:00", ..., "09:00", "10:00", ...,
+    //     "12:00", "13:00", ..., "22:00", "23:00"
+    //
+    // Two-digit hour, `:00` minutes, no AM/PM suffix. When
+    // includeMinutes is false, the output is just the two-digit
+    // hour (`"09"`). No caller in the current codebase passes
+    // false; the branch is retained for completeness.
+    //
+    // An invalid hour (out of range, non-integer) returns the raw
+    // value stringified rather than inventing a value. This
+    // matches the previous behaviour's spirit: bad input produces
+    // a visible-but-harmless result rather than a fabricated
+    // valid-looking label.
+
+    function formatHour(hour, includeMinutes) {
+        includeMinutes = includeMinutes !== false;
+
+        var num = isValidHour(hour);
+        if (num === null) {
+            return String(hour);
+        }
+
+        var padded = num < 10 ? '0' + num : String(num);
+
+        if (!includeMinutes) {
+            return padded;
+        }
+
+        return padded + ':00';
+    }
+
+    /**
+     * Parse an hour string.
+     *
+     * Accepts, in order:
+     *   - "HH:MM" (24-hour) with HH in 0-23 and MM in 0-59
+     *   - "H:MM AM"/"H:MM PM" (legacy 12-hour)
+     *   - "H AM"/"H PM" (legacy 12-hour, no minutes)
+     *   - "H" or "HH" (bare hour, 0-23)
+     *
+     * Returns the hour as an integer in [0, 23], or null.
+     *
+     * The 24-hour forms are the ones this module produces; the
+     * 12-hour forms are accepted so imported data and any older
+     * call site keeps working. New code should parse the 24-hour
+     * forms only.
+     */
+    function parseHour(timeStr) {
+        if (!timeStr || typeof timeStr !== 'string') { return null; }
+        var trimmed = timeStr.trim().toUpperCase();
+
+        // "HH:MM" or "H:MM"
+        var match24 = trimmed.match(/^(\d{1,2}):(\d{2})$/);
+        if (match24) {
+            var hour = parseInt(match24[1], 10);
+            var minute = parseInt(match24[2], 10);
+            if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+                return hour;
+            }
+        }
+
+        // "H:MM AM/PM" (legacy)
+        var match12 = trimmed.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/);
+        if (match12) {
+            var hour12 = parseInt(match12[1], 10);
+            var minute12 = parseInt(match12[2], 10);
+            var ampm = match12[3];
+            if (hour12 >= 1 && hour12 <= 12 && minute12 >= 0 && minute12 <= 59) {
+                if (ampm === 'PM' && hour12 < 12) { hour12 += 12; }
+                if (ampm === 'AM' && hour12 === 12) { hour12 = 0; }
+                return hour12;
+            }
+        }
+
+        // "H AM/PM" or bare "H" (legacy)
+        var matchSimple = trimmed.match(/^(\d{1,2})\s*(AM|PM)?$/);
+        if (matchSimple) {
+            var hourS = parseInt(matchSimple[1], 10);
+            if (matchSimple[2]) {
+                var ampmS = matchSimple[2];
+                if (hourS >= 1 && hourS <= 12) {
+                    if (ampmS === 'PM' && hourS < 12) { hourS += 12; }
+                    if (ampmS === 'AM' && hourS === 12) { hourS = 0; }
+                    return hourS;
+                }
+            } else {
+                if (hourS >= 0 && hourS <= 23) { return hourS; }
+            }
+        }
+
+        return null;
+    }
 
     function getHourOptions(startHour, endHour, includeMinutes) {
         startHour = startHour !== undefined ? isValidCalendarHour(startHour) : CALENDAR_START_HOUR;
@@ -254,53 +375,6 @@
             options.push({ value: h, label: formatHour(h, includeMinutes) });
         }
         return options;
-    }
-
-    function formatHour(hour, includeMinutes) {
-        includeMinutes = includeMinutes !== false;
-        var num = isValidHour(hour);
-        if (num === null) { return String(hour); }
-        var displayHour = num > 12 ? num - 12 : num;
-        if (num === 0) { displayHour = 12; }
-        var ampm = num >= 12 ? 'PM' : 'AM';
-        return displayHour + (includeMinutes ? ':00 ' : ' ') + ampm;
-    }
-
-    function parseHour(timeStr) {
-        if (!timeStr || typeof timeStr !== 'string') { return null; }
-        var trimmed = timeStr.trim().toUpperCase();
-        var match24 = trimmed.match(/^(\d{1,2}):(\d{2})$/);
-        if (match24) {
-            var hour = parseInt(match24[1], 10);
-            var minute = parseInt(match24[2], 10);
-            if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) { return hour; }
-        }
-        var match12 = trimmed.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/);
-        if (match12) {
-            var hour = parseInt(match12[1], 10);
-            var minute = parseInt(match12[2], 10);
-            var ampm = match12[3];
-            if (hour >= 1 && hour <= 12 && minute >= 0 && minute <= 59) {
-                if (ampm === 'PM' && hour < 12) { hour += 12; }
-                if (ampm === 'AM' && hour === 12) { hour = 0; }
-                return hour;
-            }
-        }
-        var matchSimple = trimmed.match(/^(\d{1,2})\s*(AM|PM)?$/);
-        if (matchSimple) {
-            var hour = parseInt(matchSimple[1], 10);
-            if (matchSimple[2]) {
-                var ampm = matchSimple[2];
-                if (hour >= 1 && hour <= 12) {
-                    if (ampm === 'PM' && hour < 12) { hour += 12; }
-                    if (ampm === 'AM' && hour === 12) { hour = 0; }
-                    return hour;
-                }
-            } else {
-                if (hour >= 0 && hour <= 23) { return hour; }
-            }
-        }
-        return null;
     }
 
     // ============================================================
