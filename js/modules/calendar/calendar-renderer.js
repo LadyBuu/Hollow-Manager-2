@@ -22,26 +22,34 @@
  *
  * HOSTS EMITTED BELOW THE GRID:
  *   #academy-schedule-co-occupants-host
- *     Empty. The controller mounts the co-occupants panel into
- *     it. See the co-occupants slice.
+ *     Empty. Mounted by the location controller.
  *
  *   #academy-schedule-hours-host
  *     Rendered with the discipline-hours panel when the VM
- *     carries a non-empty `disciplineHours` array. The panel is
- *     display-only for the summary rows, plus per-discipline
- *     clickable rows that open the group picker.
+ *     carries a non-empty `disciplineHours` array.
  *
  *   #academy-schedule-discipline-picker-host
- *     Empty. The controller mounts the picker into it when the
- *     user clicks a discipline row in the hours panel.
+ *     Empty. Mounted by the controller when a discipline row
+ *     is clicked.
  *
- * CO-OCCUPANCY MARKER:
- *   Button. Emits data-action="schedule-co-occupants-open" with
- *   the cell's day and hour.
+ * HOURS PANEL — CURRENT GROUP:
+ *   Each discipline-hours row optionally carries a
+ *   `currentGroup` sub-block, listing the group the student is
+ *   already in for that discipline:
+ *
+ *     English 4/6h 2h left
+ *       English 1 · Ms. Chen
+ *       4 classmates
+ *
+ *   The sub-block is display-only. It has no action; the row's
+ *   button is still the only interactive element.
  *
  * DISCIPLINE HOURS ROW:
  *   Button. Emits data-action="schedule-discipline-picker-open"
  *   with data-discipline-id.
+ *
+ * CO-OCCUPANCY MARKER:
+ *   Button. Emits data-action="schedule-co-occupants-open".
  *
  * DEPENDENCIES:
  *   - CalendarConstants
@@ -289,7 +297,78 @@
         html += '<span class="schedule-hours-caret">\u25b8</span>';
 
         html += '</button>';
+
+        html += renderCurrentGroupBlock(entry.currentGroup);
+
         html += '</li>';
+        return html;
+    }
+
+    /**
+     * The current-group sub-block, shown below the row's button
+     * when the student is already a member of a group for the
+     * discipline. Display-only: no action, no click target.
+     *
+     * Two lines:
+     *   GroupName · InstructorName
+     *   N classmates
+     *
+     * When the group has no instructor, only the group name
+     * renders on the first line. When N === 0, "0 classmates"
+     * still renders so the reader sees the zero explicitly.
+     */
+    function renderCurrentGroupBlock(currentGroup) {
+        if (!currentGroup || !currentGroup.groupId) {
+            return '';
+        }
+
+        var displayName = isFiniteNumber(currentGroup.classmateCount) ||
+                          typeof currentGroup.classmateCount === 'number'
+            ? currentGroup.displayName
+            : null;
+        // Guard above is defensive; the VM always carries a
+        // displayName. If it is missing, skip the block.
+        if (typeof currentGroup.displayName !== 'string' ||
+            currentGroup.displayName === '') {
+            displayName = 'Unnamed Group';
+        } else {
+            displayName = currentGroup.displayName;
+        }
+
+        var instructorName = (typeof currentGroup.instructorName === 'string')
+            ? currentGroup.instructorName.trim()
+            : '';
+
+        var classmateCount = isFiniteNumber(currentGroup.classmateCount)
+            ? currentGroup.classmateCount
+            : 0;
+
+        var classmateLabel = classmateCount === 1
+            ? '1 classmate'
+            : classmateCount + ' classmates';
+
+        var html = '';
+        html += '<div class="schedule-hours-current-group">';
+
+        html += '<div class="schedule-hours-current-group-line">';
+        html += '<span class="schedule-hours-current-group-name">' +
+                    escapeHtml(displayName) +
+                '</span>';
+        if (instructorName !== '') {
+            html += '<span class="schedule-hours-current-group-sep">' +
+                        '\u00b7' +
+                    '</span>';
+            html += '<span class="schedule-hours-current-group-instructor">' +
+                        escapeHtml(instructorName) +
+                    '</span>';
+        }
+        html += '</div>';
+
+        html += '<div class="schedule-hours-current-group-meta">' +
+                    escapeHtml(classmateLabel) +
+                '</div>';
+
+        html += '</div>';
         return html;
     }
 
