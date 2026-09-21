@@ -10,13 +10,13 @@
  *   - The schedule grid and its cells
  *   - Header row (day names, time column)
  *   - Occupied slots
- *   - Empty slots (the "+" hint, gated on assignability)
+ *   - Empty slots
  *   - Rest-day columns
  *   - Blocked slots
- *   - The co-occupant marker (shared-location indicator)
+ *   - The co-occupant marker and its detail panel
  *   - The legend
  *   - The loading state
- *   - The schedule-assign modal (assign / remove modes)
+ *   - The schedule-assign modal
  *   - The schedule-instructor modal
  *
  * Loads after shared.css and academy.css.
@@ -177,11 +177,6 @@
     cursor: default;
 }
 
-/*
- * Both student-mode and instructor-mode occupied cells emit
- * data-action="schedule-slot-open". The cursor and hover state
- * are identical for both.
- */
 .schedule-cell[data-action="schedule-slot-open"] {
     cursor: pointer;
 }
@@ -217,15 +212,6 @@
     margin: auto;
 }
 
-/*
- * Student mode and instructor mode use DIFFERENT action names
- * for assignable empty cells:
- *   schedule-assign             (student)
- *   schedule-assign-instructor  (instructor)
- *
- * Both render the same hover affordance: dashed outline, "+"
- * hint, accent colour.
- */
 .schedule-cell[data-action="schedule-assign"],
 .schedule-cell[data-action="schedule-assign-instructor"] {
     cursor: pointer;
@@ -297,8 +283,6 @@
     line-height: 1.15;
     word-break: break-word;
     overflow-wrap: anywhere;
-    /* Reserve room on the right so the discipline name does not
-       run under the corner badges (duration / co-occupant). */
     padding-right: 22px;
 }
 
@@ -331,29 +315,6 @@
 }
 
 /* ---------- Corner badges ---------- */
-/*
- * Both the duration badge and the co-occupant marker are
- * absolutely positioned inside their .schedule-cell. The cell
- * is `position: relative; overflow: hidden;`, so anything these
- * elements render must stay INSIDE the cell's content box.
- *
- * The cell's overflow: hidden exists to clip long discipline
- * names. It is not a bug; it is a feature. The badges cooperate
- * with it by not leaving the cell.
- *
- * Stacking (which badge sits above which in a tight cell):
- *   .schedule-duration           top:  3px, right: 5px
- *   .schedule-co-occupant-marker top: 17px, right: 5px
- *                                (only when a duration shares
- *                                the corner)
- *   .schedule-co-occupant-marker top:  3px, right: 5px
- *                                (when it is alone)
- *
- * When both are present, the marker drops below the duration.
- * It is never pushed above the cell — the previous `top: -14px`
- * rule was clipped by the cell's overflow and produced an
- * invisible marker. See calendar.css history.
- */
 
 .schedule-duration {
     font-size: 0.58rem;
@@ -382,21 +343,12 @@
 /* ============================================================
    CO-OCCUPANT MARKER
    ============================================================
-   A small "+N" badge in the corner of an occupied cell when the
-   slot descriptor carries a non-empty `coOccupants` array.
-   Rendered when a second group shares this location at this
-   (day, hour) in this week.
+   A small "+N" button in the corner of an occupied cell when
+   the slot descriptor carries a non-empty coOccupants array.
+   Clicking opens the co-occupants panel below the grid.
 
-   The marker's `title` attribute lists the co-occupants'
-   discipline names and instructors. Hovering reveals the
-   detail. The marker is a passive indicator: it does not emit
-   an action. Clicking it is clicking the cell; the cell's own
-   action fires.
-
-   The marker stays INSIDE the cell bounds so the cell's
-   `overflow: hidden` does not clip it. When a duration badge
-   shares the corner, the marker drops below the duration badge
-   rather than pushing above the cell.
+   The marker stays inside the cell bounds. When a duration
+   badge shares the corner, the marker drops below it.
 */
 
 .schedule-co-occupant-marker {
@@ -411,15 +363,147 @@
     border-radius: 8px;
     padding: 0 5px;
     line-height: 1.4;
-    cursor: help;
+    white-space: nowrap;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.schedule-co-occupant-marker:hover {
+    background: var(--warning);
+    color: var(--panel);
+}
+
+.schedule-occupied .schedule-duration ~ .schedule-co-occupant-marker {
+    top: 17px;
+}
+
+/* ============================================================
+   CO-OCCUPANTS PANEL
+   ============================================================
+   Mounted below the grid into
+   #academy-schedule-co-occupants-host. Empty until the user
+   clicks a co-occupant marker. Only one panel is open at a
+   time.
+*/
+
+.schedule-co-occupants-host {
+    display: block;
+}
+
+.schedule-co-occupants-host:empty {
+    display: none;
+}
+
+.schedule-co-occupants-panel {
+    margin-top: 10px;
+    padding: 10px 12px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--warning);
+    border-radius: var(--radius);
+}
+
+.schedule-co-occupants-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-bottom: 6px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.schedule-co-occupants-title {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text);
+    flex: 0 0 auto;
+}
+
+.schedule-co-occupants-count {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    flex: 1;
+    min-width: 0;
+}
+
+.schedule-co-occupants-close {
+    flex: 0 0 auto;
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    font-size: 1rem;
+    line-height: 1;
+    padding: 0 4px;
+    cursor: pointer;
+}
+
+.schedule-co-occupants-close:hover {
+    color: var(--text);
+}
+
+.schedule-co-occupants-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.schedule-co-occupants-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    background: var(--bg);
+    border-radius: 3px;
+    border-left: 2px solid var(--border);
+    font-size: 0.72rem;
+}
+
+.schedule-co-occupants-row-primary {
+    border-left-color: var(--warning);
+    background: var(--warning-soft);
+}
+
+.schedule-co-occupants-bullet {
+    flex: 0 0 auto;
+    font-size: 0.6rem;
+    color: var(--warning);
+    line-height: 1;
+}
+
+.schedule-co-occupants-discipline {
+    flex: 1;
+    min-width: 0;
+    font-weight: 500;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-/* When a duration badge shares the corner, drop the marker
-   below it. The cell has `overflow: hidden`; the marker must
-   stay inside the cell's content box. */
-.schedule-occupied .schedule-duration ~ .schedule-co-occupant-marker {
-    top: 17px;
+.schedule-co-occupants-instructor {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+.schedule-co-occupants-instructor-empty {
+    font-style: italic;
+    opacity: 0.7;
+}
+
+.schedule-co-occupants-duration {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    background: var(--panel);
+    padding: 0 5px;
+    border-radius: 6px;
+    border: 1px solid var(--border-soft);
+    white-space: nowrap;
+    flex: 0 0 auto;
 }
 
 /* ============================================================
@@ -501,8 +585,6 @@
     max-width: 320px;
 }
 
-/* ---- Collision prompt (assign mode only) ---- */
-
 .academy-schedule-assign-collision {
     margin: 12px 0 0;
     padding: 10px 12px;
@@ -526,8 +608,6 @@
     line-height: 1.3;
 }
 
-/* ---- Removal warning panel ---- */
-
 .academy-schedule-assign-remove-warning {
     margin: 0 0 12px;
     padding: 12px 14px;
@@ -550,8 +630,6 @@
     color: var(--text-dim);
     line-height: 1.4;
 }
-
-/* ---- Removal detail list ---- */
 
 .academy-schedule-assign-remove-detail {
     margin: 0 0 12px;
@@ -595,10 +673,6 @@
 
 /* ============================================================
    SCHEDULE INSTRUCTOR MODAL
-   ============================================================
-   Two-field modal opened from an empty cell in an
-   instructor-mode grid. Same visual language as the
-   schedule-assign modal.
    ============================================================ */
 
 .academy-schedule-instructor-summary {
@@ -670,6 +744,27 @@
 @media (min-width: 768px) {
     .loading-state {
         padding: 20px;
+    }
+}
+
+/* ============================================================
+   MOBILE
+   ============================================================ */
+
+@media (max-width: 600px) {
+    .schedule-co-occupants-row {
+        flex-wrap: wrap;
+        gap: 4px;
+    }
+
+    .schedule-co-occupants-discipline {
+        flex-basis: 100%;
+        white-space: normal;
+    }
+
+    .schedule-co-occupants-instructor {
+        flex: 1;
+        min-width: 0;
     }
 }
 
