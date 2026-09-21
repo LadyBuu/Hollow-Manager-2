@@ -16,23 +16,31 @@
  *
  *     canEdit               student-mode grids. Empty cells emit
  *                           data-action="schedule-assign"; occupied
- *                           cells emit data-action="schedule-slot-open"
- *                           with data-mode from the grid mode.
+ *                           cells emit data-action="schedule-slot-open".
  *
  *     canEditInstructorSlot instructor-mode grids. Empty cells emit
  *                           data-action="schedule-assign-instructor".
- *                           Occupied cells keep emitting
- *                           data-action="schedule-slot-open" with
- *                           data-mode="remove-group".
  *
- *   The renderer never infers editability from mode; the
- *   aggregator states it.
+ *   A location grid (canEdit === false, canEditInstructorSlot ===
+ *   false) emits no cell actions except the co-occupant marker's,
+ *   which is separate and always active.
  *
  * CO-OCCUPANCY MARKER:
  *   When the slot descriptor carries a non-empty `coOccupants`
- *   array, the cell renders a small "+N" marker in the top-right
- *   corner. The marker's title carries the co-occupants'
- *   discipline names. The marker does not emit an action.
+ *   array, the cell renders a small "+N" marker. The marker is a
+ *   BUTTON; it emits data-action="schedule-co-occupants-open"
+ *   with the cell's day and hour. Clicking the marker opens the
+ *   co-occupants panel below the grid.
+ *
+ *   The marker is a sibling action to the cell's own action.
+ *   On an editable grid, clicking the marker opens the panel;
+ *   clicking anywhere else on the cell fires the cell's action.
+ *   On a read-only grid, the marker is the only interactive
+ *   element in the cell.
+ *
+ * CO-OCCUPANTS PANEL HOST:
+ *   The grid emits an empty #academy-schedule-co-occupants-host
+ *   below itself. The controller mounts the panel into it.
  *
  * DEPENDENCIES:
  *   - CalendarConstants
@@ -162,8 +170,23 @@
     // ============================================================
     // CO-OCCUPANCY MARKER
     // ============================================================
+    //
+    // The marker is a BUTTON. It emits
+    // data-action="schedule-co-occupants-open" with the cell's
+    // day and hour. Clicking it opens the co-occupants panel
+    // below the grid.
+    //
+    // The marker is INSIDE the cell, so clicking it also triggers
+    // the cell's :hover. On an editable grid the cell has its
+    // own data-action; the controller's click handler dispatches
+    // to the marker first because the marker is the innermost
+    // element with a data-action.
+    //
+    // The marker does NOT carry a `title` attribute any more.
+    // The tooltip was a desktop affordance; the panel replaces
+    // it on every input mode.
 
-    function renderCoOccupantMarker(slotData) {
+    function renderCoOccupantMarker(slotData, day, hour) {
         if (!slotData || !Array.isArray(slotData.coOccupants)) {
             return '';
         }
@@ -172,25 +195,19 @@
             return '';
         }
 
-        var names = [];
-        for (var i = 0; i < slotData.coOccupants.length; i++) {
-            var occ = slotData.coOccupants[i];
-            if (!occ) { continue; }
-            var name = occ.disciplineName || 'Unknown';
-            if (occ.instructorName) {
-                name += ' (' + occ.instructorName + ')';
-            }
-            names.push(name);
-        }
-
-        var title = names.length > 0
-            ? names.join(', ')
-            : (count + ' groups in this slot');
-
-        return '<span class="schedule-co-occupant-marker" ' +
-                    'title="' + escapeAttribute(title) + '">' +
+        return '<button type="button" ' +
+                    'class="schedule-co-occupant-marker" ' +
+                    'data-action="schedule-co-occupants-open" ' +
+                    'data-day="' + escapeAttribute(String(day)) + '" ' +
+                    'data-hour="' + escapeAttribute(String(hour)) + '" ' +
+                    'aria-label="' +
+                        escapeAttribute(
+                            count + ' group' +
+                            (count === 1 ? '' : 's') +
+                            ' share this slot; open the list'
+                        ) + '">' +
                     '+' + count +
-                '</span>';
+                '</button>';
     }
 
     // ============================================================
@@ -209,8 +226,6 @@
         var showEmptySlots = viewModel.showEmptySlots !== false;
         var showRestDays = viewModel.showRestDays !== false;
 
-        // Two independent editability flags. Neither is inferred
-        // from mode; both come from the aggregator.
         var canEdit = viewModel.canEdit === true;
         var canEditInstructorSlot =
             viewModel.canEditInstructorSlot === true;
@@ -257,11 +272,11 @@
 
                 // ---- Cell action ----
                 //
-                // Student mode: empty → assign, occupied → slot-open.
-                // Instructor mode: empty → assign-instructor,
-                // occupied → slot-open (mode is remove-group).
-                //
-                // The two modes never share an action name.
+                // The cell's own action is separate from the
+                // marker's action. The marker sits inside the
+                // cell; clicking it fires the marker's action.
+                // Clicking anywhere else in the cell fires the
+                // cell's action.
                 var cellAction = null;
                 if (!isRestDay && !isBlock) {
                     if (isOccupied) {
@@ -311,7 +326,7 @@
                     if (slotData && slotData.isContinuation) {
                         html += '<div class="schedule-continuation">\u2195</div>';
                     }
-                    html += renderCoOccupantMarker(slotData);
+                    html += renderCoOccupantMarker(slotData, day, hour);
 
                 } else if (isBlock && !isRestDay) {
                     html += '<div class="schedule-blocked-label">\u25a0 ' + escapeHtml(slotData.label || 'Blocked') + '</div>';
@@ -330,6 +345,15 @@
         if (viewModel.sidebarContent) {
             html += viewModel.sidebarContent;
         }
+
+        // ---- Co-occupants panel host ----
+        //
+        // Empty on render. The controller mounts the panel into
+        // it when the user clicks a co-occupant marker. The host
+        // is always emitted, even when no cell carries a marker,
+        // so the controller's mount path is unconditional.
+        html += '<div id="academy-schedule-co-occupants-host" ' +
+                    'class="schedule-co-occupants-host"></div>';
 
         html += '</div>';
 
