@@ -14,12 +14,14 @@
  * WHAT THIS DOES NOT OWN:
  *   - Storage. Reads go through the projector.
  *   - Writes. Schedule mutations are owned by AcademySchedule.
- *   - Collisions. AcademyTeachingCollisions owns them. This
- *     aggregator does NOT detect, warn about, or annotate
- *     collisions.
+ *   - Collisions. AcademyTeachingCollisions owns them.
  *   - Rendering. CalendarRenderer owns that.
- *   - Rest days. There is no rest-day concept in the teaching model.
- *     VMs always return an empty restDays array.
+ *   - Rest days as a concept. class.restDays is stored and
+ *     validated by AcademyClasses. This module is a pass-through:
+ *     it reads the class's restDays for a class-member projection
+ *     and copies them onto the VM. The location grid does NOT
+ *     inherit class rest days (a room is a resource, not a class
+ *     member).
  *
  * ARCHITECTURE:
  *
@@ -67,20 +69,9 @@
  *   array. The cell renders as one cell, with a marker indicating
  *   how many additional groups are present.
  *
- *   Co-occupancy is a LOCATION fact. The current data model keys
- *   sessions to a single location, and the projectForStudent /
+ *   Co-occupancy is a LOCATION fact. The projectForStudent /
  *   projectForInstructor / projectForClass projections are scoped
- *   to one entity's own occurrences. A character cannot be in two
- *   places at once (the assign resolver prevents it), and an
- *   instructor cannot teach two groups at once (the collision
- *   detector prevents it). So the pivot's co-occupancy branch is
- *   exercised only on the location projection's path. It is
- *   harmless on the other paths: a second occurrence in the same
- *   cell simply produces a co-occupant entry, and today that
- *   cannot happen.
- *
- *   The co-occupant list is PER-CELL: groups at this location, on
- *   this day, at this hour, in this week. Not a week summary.
+ *   to one entity's own occurrences.
  *
  * NULL SEMANTICS:
  *   Every public function returns null when:
@@ -285,10 +276,78 @@
         return str === '' ? null : str;
     }
 
+    // ============================================================
+    // REST DAYS (v30)
+    // ============================================================
+    //
+    // A class carries its restDays. The rest-day concept is a
+    // property of the class, not of the individual student or
+    // instructor: a class is a cohort with a shared timetable.
+    //
+    // The three class-member projections (student, instructor,
+    // class) read the class's restDays and copy them onto the VM.
+    // The location projection does NOT — a room can be used by
+    // two classes with different rest days, so it cannot inherit
+    // either class's.
+    //
+    // Shape at read time:
+    //   class.restDays = [dayNumber, ...], integers in
+    //   [CalendarConstants.MIN_DAY, CalendarConstants.MAX_DAY],
+    //   no duplicates. AcademyClasses validates on write; the
+    //   reader is defensive anyway.
+
+    function readClassRestDays(classId) {
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
+        var cls = AcademyClasses.getClass(classId);
+        if (!cls || !Array.isArray(cls.restDays)) {
+            return [];
+        }
+        return normaliseRestDaysArray(cls.restDays);
+    }
+
+    function normaliseRestDaysArray(raw) {
+        if (!Array.isArray(raw)) { return []; }
+        var seen = Object.create(null);
+        var result = [];
+        for (var i = 0; i < raw.length; i++) {
+            var n = Number(raw[i]);
+            if (!Number.isInteger(n)) { continue; }
+            if (n < CalendarConstants.MIN_DAY ||
+                n > CalendarConstants.MAX_DAY) {
+                continue;
+            }
+            var key = String(n);
+            if (seen[key]) { continue; }
+            seen[key] = true;
+            result.push(n);
+        }
+        result.sort(function(a, b) { return a - b; });
+        return result;
+    }
+
     /**
-     * Build the co-occupant entry for an occurrence that is not the
-     * primary slot of its cell.
+     * Resolve the class whose rest days apply to a given student
+     * or instructor grid.
+     *
+     * A character may be a member of more than one class. The grid
+     * shows one week's schedule for one character; the character's
+     * own rest days are the ones the class they are viewing in the
+     * Academy People view declares. That class is the currently
+     * selected class.
+     *
+     * The aggregator does not read AcademyUI. The caller (the
+     * character detail aggregator, via the People controller) has
+     * already resolved the classId and passes it in options. When
+     * no class is supplied, restDays is []: the projection does
+     * not guess.
      */
+
+    // ============================================================
+    // SLOT DESCRIPTORS
+    // ============================================================
+
     function buildCoOccupant(occurrence) {
         return {
             groupId: toIdOrNull(occurrence.groupId),
@@ -297,9 +356,6 @@
         };
     }
 
-    /**
-     * Expand an occurrence into a slot descriptor.
-     */
     function buildSlotDescriptor(occurrence) {
         if (!occurrence || typeof occurrence !== 'object') {
             return null;
@@ -336,23 +392,6 @@
         };
     }
 
-    /**
-     * Pivot a flat occurrence list into the schedule map the
-     * renderer consumes.
-     *
-     * When a second occurrence lands in an occupied cell, its group
-     * identity is appended to the primary descriptor's
-     * `coOccupants` array. The cell keeps the first occurrence as
-     * its primary slot; the co-occupant is a marker, not a second
-     * cell.
-     *
-     * CO-OCCUPANCY AND CONTINUATION:
-     *   A multi-hour slot occupies multiple cells. If a co-occupant
-     *   shares only some of those cells, the marker appears only in
-     *   the cells the co-occupant shares. The pivot does not
-     *   propagate co-occupants from the first hour to the
-     *   continuation cells; the co-occupancy is a per-cell fact.
-     */
     function pivotOccurrencesToSchedule(occurrences) {
         var schedule = {};
 
@@ -382,7 +421,6 @@
                 var cell = schedule[day][hour];
 
                 if (!cell) {
-                    // Empty cell. Place the primary slot.
                     if (h === 0) {
                         schedule[day][hour] = slot;
                     } else {
@@ -403,14 +441,6 @@
                     continue;
                 }
 
-                // Cell is already occupied. This occurrence is a
-                // co-occupant of the primary slot.
-                //
-                // A single occurrence can also land in a cell where
-                // its OWN primary already sits — that would be a
-                // malformed projector output (same session twice in
-                // the same week). Defensively, skip when the
-                // incoming sessionId matches the cell's.
                 if (cell.sessionId !== null &&
                     slot.sessionId !== null &&
                     String(cell.sessionId) === String(slot.sessionId)) {
@@ -445,11 +475,31 @@
     // ============================================================
     // STUDENT SCHEDULE VM
     // ============================================================
+    //
+    // REST DAYS:
+    //   The caller passes options.classId when it wants the class's
+    //   rest days applied. The legacy `getStudentScheduleViewModel(
+    //   studentId, week)` two-argument form has no class and yields
+    //   restDays: []. Callers that want rest days use the
+    //   options-object form.
 
-    function getStudentScheduleViewModel(studentId, week) {
+    function getStudentScheduleViewModel(studentId, weekOrOptions) {
         if (!isNonEmptyString(studentId)) {
             return null;
         }
+
+        var week = weekOrOptions;
+        var classId = null;
+
+        if (weekOrOptions !== undefined &&
+            weekOrOptions !== null &&
+            typeof weekOrOptions === 'object') {
+            week = weekOrOptions.week;
+            if (isNonEmptyString(weekOrOptions.classId)) {
+                classId = String(weekOrOptions.classId);
+            }
+        }
+
         var weekNum = parseWeek(week);
         if (weekNum === null) {
             return null;
@@ -468,7 +518,7 @@
 
         return {
             schedule: schedule,
-            restDays: [],
+            restDays: readClassRestDays(classId),
             entityName: CharacterQueries.getDisplayName(char) || 'Student',
             modeLabel: 'Student Schedule',
             hours: getHoursRange()
@@ -479,10 +529,23 @@
     // INSTRUCTOR SCHEDULE VM
     // ============================================================
 
-    function getInstructorScheduleViewModel(instructorId, week) {
+    function getInstructorScheduleViewModel(instructorId, weekOrOptions) {
         if (!isNonEmptyString(instructorId)) {
             return null;
         }
+
+        var week = weekOrOptions;
+        var classId = null;
+
+        if (weekOrOptions !== undefined &&
+            weekOrOptions !== null &&
+            typeof weekOrOptions === 'object') {
+            week = weekOrOptions.week;
+            if (isNonEmptyString(weekOrOptions.classId)) {
+                classId = String(weekOrOptions.classId);
+            }
+        }
+
         var weekNum = parseWeek(week);
         if (weekNum === null) {
             return null;
@@ -501,7 +564,7 @@
 
         return {
             schedule: schedule,
-            restDays: [],
+            restDays: readClassRestDays(classId),
             entityName: CharacterQueries.getDisplayName(char) || 'Instructor',
             modeLabel: 'Instructor Schedule',
             hours: getHoursRange()
@@ -511,6 +574,12 @@
     // ============================================================
     // LOCATION SCHEDULE VM
     // ============================================================
+    //
+    // REST DAYS:
+    //   The location projection does NOT inherit class rest days.
+    //   A room can be used by two classes with different rest days,
+    //   so it cannot inherit either class's. The VM always returns
+    //   restDays: [].
 
     function getLocationScheduleViewModel(locationId, week) {
         if (!isNonEmptyString(locationId)) {
@@ -552,6 +621,10 @@
     // ============================================================
     // CLASS SCHEDULE VM
     // ============================================================
+    //
+    // REST DAYS:
+    //   The class grid is the class's own schedule, so the class's
+    //   rest days apply. Read directly from the class record.
 
     function getClassScheduleViewModel(classId, week) {
         if (!isNonEmptyString(classId)) {
@@ -575,7 +648,7 @@
 
         return {
             schedule: schedule,
-            restDays: [],
+            restDays: readClassRestDays(classId),
             entityName: getClassDisplayName(classId),
             modeLabel: 'Class Schedule',
             hours: getHoursRange()
