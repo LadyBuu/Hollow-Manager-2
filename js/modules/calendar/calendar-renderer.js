@@ -1,6 +1,6 @@
 /**
  * modules/calendar/calendar-renderer.js - Calendar Renderer
- * PURE rendering for calendar grids - NO event binding, NO modals, NO state.
+ * PURE rendering for calendar grids.
  *
  * Path: js/modules/calendar/calendar-renderer.js
  *
@@ -14,33 +14,34 @@
  * GRID EDITABILITY:
  *   The renderer reads two flags on the view model:
  *
- *     canEdit               student-mode grids. Empty cells emit
- *                           data-action="schedule-assign"; occupied
- *                           cells emit data-action="schedule-slot-open".
+ *     canEdit               student-mode grids.
+ *     canEditInstructorSlot instructor-mode grids.
  *
- *     canEditInstructorSlot instructor-mode grids. Empty cells emit
- *                           data-action="schedule-assign-instructor".
+ *   A location grid (both false) emits no cell actions except
+ *   the co-occupant marker's, which is separate.
  *
- *   A location grid (canEdit === false, canEditInstructorSlot ===
- *   false) emits no cell actions except the co-occupant marker's,
- *   which is separate and always active.
+ * HOSTS EMITTED BELOW THE GRID:
+ *   #academy-schedule-co-occupants-host
+ *     Empty. The controller mounts the co-occupants panel into
+ *     it. See the co-occupants slice.
+ *
+ *   #academy-schedule-hours-host
+ *     Rendered with the discipline-hours panel when the VM
+ *     carries a non-empty `disciplineHours` array. The panel is
+ *     display-only for the summary rows, plus per-discipline
+ *     clickable rows that open the group picker.
+ *
+ *   #academy-schedule-discipline-picker-host
+ *     Empty. The controller mounts the picker into it when the
+ *     user clicks a discipline row in the hours panel.
  *
  * CO-OCCUPANCY MARKER:
- *   When the slot descriptor carries a non-empty `coOccupants`
- *   array, the cell renders a small "+N" marker. The marker is a
- *   BUTTON; it emits data-action="schedule-co-occupants-open"
- *   with the cell's day and hour. Clicking the marker opens the
- *   co-occupants panel below the grid.
+ *   Button. Emits data-action="schedule-co-occupants-open" with
+ *   the cell's day and hour.
  *
- *   The marker is a sibling action to the cell's own action.
- *   On an editable grid, clicking the marker opens the panel;
- *   clicking anywhere else on the cell fires the cell's action.
- *   On a read-only grid, the marker is the only interactive
- *   element in the cell.
- *
- * CO-OCCUPANTS PANEL HOST:
- *   The grid emits an empty #academy-schedule-co-occupants-host
- *   below itself. The controller mounts the panel into it.
+ * DISCIPLINE HOURS ROW:
+ *   Button. Emits data-action="schedule-discipline-picker-open"
+ *   with data-discipline-id.
  *
  * DEPENDENCIES:
  *   - CalendarConstants
@@ -78,6 +79,10 @@
             hours.push(h);
         }
         return hours;
+    }
+
+    function isFiniteNumber(value) {
+        return typeof value === 'number' && isFinite(value);
     }
 
     // ============================================================
@@ -170,21 +175,6 @@
     // ============================================================
     // CO-OCCUPANCY MARKER
     // ============================================================
-    //
-    // The marker is a BUTTON. It emits
-    // data-action="schedule-co-occupants-open" with the cell's
-    // day and hour. Clicking it opens the co-occupants panel
-    // below the grid.
-    //
-    // The marker is INSIDE the cell, so clicking it also triggers
-    // the cell's :hover. On an editable grid the cell has its
-    // own data-action; the controller's click handler dispatches
-    // to the marker first because the marker is the innermost
-    // element with a data-action.
-    //
-    // The marker does NOT carry a `title` attribute any more.
-    // The tooltip was a desktop affordance; the panel replaces
-    // it on every input mode.
 
     function renderCoOccupantMarker(slotData, day, hour) {
         if (!slotData || !Array.isArray(slotData.coOccupants)) {
@@ -208,6 +198,99 @@
                         ) + '">' +
                     '+' + count +
                 '</button>';
+    }
+
+    // ============================================================
+    // DISCIPLINE HOURS PANEL
+    // ============================================================
+
+    function renderDisciplineHoursPanel(disciplineHours) {
+        if (!Array.isArray(disciplineHours) ||
+            disciplineHours.length === 0) {
+            return '';
+        }
+
+        var html = '';
+        html += '<div class="schedule-hours-panel">';
+
+        html += '<div class="schedule-hours-header">';
+        html += '<span class="schedule-hours-title">Weekly Hours</span>';
+        html += '<span class="schedule-hours-hint">' +
+                    'Click a discipline to add the student to a ' +
+                    'group.' +
+                '</span>';
+        html += '</div>';
+
+        html += '<ul class="schedule-hours-list">';
+
+        for (var i = 0; i < disciplineHours.length; i++) {
+            html += renderDisciplineHoursRow(disciplineHours[i]);
+        }
+
+        html += '</ul>';
+        html += '</div>';
+        return html;
+    }
+
+    function renderDisciplineHoursRow(entry) {
+        if (!entry || !entry.disciplineId) { return ''; }
+
+        var target = isFiniteNumber(entry.targetHours)
+            ? entry.targetHours
+            : 0;
+        var scheduled = isFiniteNumber(entry.scheduledHours)
+            ? entry.scheduledHours
+            : 0;
+        var remaining = isFiniteNumber(entry.remainingHours)
+            ? entry.remainingHours
+            : (target - scheduled);
+
+        var stateClass = 'schedule-hours-row';
+        if (entry.isOver) {
+            stateClass += ' schedule-hours-row-over';
+        } else if (remaining === 0) {
+            stateClass += ' schedule-hours-row-met';
+        } else {
+            stateClass += ' schedule-hours-row-under';
+        }
+
+        var remainingLabel = entry.isOver
+            ? (Math.abs(remaining) + 'h over')
+            : (remaining + 'h left');
+
+        var html = '';
+        html += '<li class="' + stateClass + '">';
+
+        html += '<button type="button" ' +
+                    'class="schedule-hours-row-btn" ' +
+                    'data-action="schedule-discipline-picker-open" ' +
+                    'data-discipline-id="' +
+                        escapeAttribute(entry.disciplineId) + '">';
+
+        html += '<span class="schedule-hours-discipline">' +
+                    escapeHtml(entry.disciplineName) +
+                '</span>';
+
+        html += '<span class="schedule-hours-counts">' +
+                    '<span class="schedule-hours-scheduled">' +
+                        scheduled +
+                    '</span>' +
+                    '<span class="schedule-hours-slash">/</span>' +
+                    '<span class="schedule-hours-target">' +
+                        target +
+                    '</span>' +
+                    '<span class="schedule-hours-unit">h</span>' +
+                '</span>';
+
+        html += '<span class="schedule-hours-remaining">' +
+                    escapeHtml(remainingLabel) +
+                '</span>';
+
+        html += '<span class="schedule-hours-caret">\u25b8</span>';
+
+        html += '</button>';
+        html += '</li>';
+        return html;
     }
 
     // ============================================================
@@ -270,13 +353,6 @@
                 if (isRestDay) { classes += ' schedule-rest-day'; }
                 if (isBlock) { classes += ' schedule-blocked'; }
 
-                // ---- Cell action ----
-                //
-                // The cell's own action is separate from the
-                // marker's action. The marker sits inside the
-                // cell; clicking it fires the marker's action.
-                // Clicking anywhere else in the cell fires the
-                // cell's action.
                 var cellAction = null;
                 if (!isRestDay && !isBlock) {
                     if (isOccupied) {
@@ -346,14 +422,16 @@
             html += viewModel.sidebarContent;
         }
 
+        // ---- Hours panel ----
+        html += renderDisciplineHoursPanel(viewModel.disciplineHours);
+
         // ---- Co-occupants panel host ----
-        //
-        // Empty on render. The controller mounts the panel into
-        // it when the user clicks a co-occupant marker. The host
-        // is always emitted, even when no cell carries a marker,
-        // so the controller's mount path is unconditional.
         html += '<div id="academy-schedule-co-occupants-host" ' +
                     'class="schedule-co-occupants-host"></div>';
+
+        // ---- Discipline picker host ----
+        html += '<div id="academy-schedule-discipline-picker-host" ' +
+                    'class="schedule-discipline-picker-host"></div>';
 
         html += '</div>';
 
