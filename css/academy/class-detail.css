@@ -9,13 +9,21 @@
  *   - Panel container
  *   - Header (title, status badge, meta row, actions)
  *   - Description block
+ *   - Class form fieldset: rest days (v30)
  *
  * Load order: shared.css → academy.css → academy/class-detail.css
  *
  * NOTE:
  *   The status badge classes (.class-status-badge and its variants)
  *   and the shared detail-section furniture live in academy.css.
- *   This file adds the panel-specific container and layout.
+ *   This file adds the panel-specific container and layout, plus
+ *   the rest-days fieldset used by the class CRUD modal.
+ *
+ *   The rest-days fieldset belongs to the class form, which is
+ *   opened from this panel's actions. It lives here so all
+ *   class-scoped styling sits in one file. The form itself is
+ *   built by academy-crud-modals.js, which does not own any
+ *   class-panel CSS.
  */
 
 /* ============================================================
@@ -71,8 +79,6 @@
     font-weight: 500;
 }
 
-/* A specific class for the student-count item, so the counter
-   number can be styled independently if needed. */
 .academy-class-detail-student-count {
     /* No default override. Present for future use. */
 }
@@ -112,6 +118,109 @@
 }
 
 /* ============================================================
+   CLASS FORM - REST DAYS FIELDSET
+   ============================================================
+   Rendered by academy-crud-modals.js inside the class create /
+   edit form. Seven inline toggle checkboxes, one per day of the
+   week, Monday through Sunday.
+
+   The fieldset is the first fieldset in the class form. The
+   other fields are form-groups; this one reads as a distinct
+   group because it is a set of related values rather than a
+   single input.
+
+   Visual language:
+     - Default (unchecked): muted border, text-dim label.
+     - Checked: accent border, accent label, subtle accent
+       background.
+     - Hover: accent border on the toggle.
+*/
+
+.academy-rest-days-fieldset {
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+    padding: 10px 12px 12px;
+    margin: 0 0 12px;
+}
+
+.academy-rest-days-legend {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--accent);
+    padding: 0 6px;
+    margin-left: -6px;
+}
+
+.academy-rest-days-hint {
+    margin: 0 0 8px;
+    padding: 0;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    line-height: 1.4;
+}
+
+.academy-rest-days-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.academy-rest-day-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 4px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s, border-color 0.15s;
+    flex: 1 1 auto;
+    min-width: 48px;
+}
+
+.academy-rest-day-toggle:hover {
+    border-color: var(--accent);
+}
+
+/* The checkbox itself is visually redundant with the toggle's
+   checked state; keep it focusable for keyboard users, hide the
+   native chrome. */
+.academy-rest-day-checkbox {
+    width: auto;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+/* When the checkbox is checked, style the surrounding label.
+   `:has` is used to keep the visual state on the toggle rather
+   than requiring a wrapper class from the renderer. */
+.academy-rest-day-toggle:has(.academy-rest-day-checkbox:checked) {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.academy-rest-day-toggle:has(.academy-rest-day-checkbox:checked)
+    .academy-rest-day-label {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.academy-rest-day-toggle:has(.academy-rest-day-checkbox:focus-visible) {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.academy-rest-day-label {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+
+/* ============================================================
    MOBILE
    ============================================================ */
 
@@ -127,5 +236,12 @@
 
     .academy-class-detail-actions button.small {
         width: 100%;
+    }
+
+    /* Rest days wrap into two rows on narrow viewports. The
+       four-plus-three split is natural; no explicit break. */
+    .academy-rest-day-toggle {
+        flex: 1 1 calc(25% - 4px);
+        min-width: 0;
     }
 }
