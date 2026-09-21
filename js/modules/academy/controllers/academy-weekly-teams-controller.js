@@ -46,6 +46,21 @@
  *   The modal shell is created OUTSIDE the controller's content
  *   host, so a host re-render cannot destroy it.
  *
+ * MODAL ESCAPE (this revision):
+ *   openModalShell now passes an explicit onClose to Modal.modalSetup.
+ *   Before this revision, Modal.modalSetup(modal) was called with no
+ *   second argument, which meant Escape-key and click-outside closed
+ *   the modal through Modal.closeModal directly, bypassing the
+ *   controller's closeTrackedModal helper. The modal still closed
+ *   correctly, but the controller's _openModal field retained a
+ *   reference to the now-detached modal element until the next
+ *   modal replaced it.
+ *
+ *   The fix routes every close path — close button, submit success,
+ *   click-outside, Escape — through closeTrackedModal, so the
+ *   controller's _openModal tracking stays in sync with the actual
+ *   modal lifecycle.
+ *
  * DEPENDENCY DIRECTION:
  *   Shell → registry → this controller.
  *   This controller never references window.AcademyView.
@@ -1104,6 +1119,26 @@
     // MODAL PLUMBING
     // ============================================================
 
+    /**
+     * Open a modal shell with the given content, wire it through
+     * the controller's own close function, and invoke the caller's
+     * bind callback.
+     *
+     * ESCAPE / CLICK-OUTSIDE:
+     *   Modal.modalSetup is called with an explicit onClose that
+     *   routes through closeTrackedModal. This keeps the
+     *   controller's _openModal field in sync with the modal's
+     *   actual lifecycle, no matter which path closes it: the
+     *   close button, a successful submit, a click outside the
+     *   modal, or the Escape key.
+     *
+     *   Before this revision, Modal.modalSetup(modal) was called
+     *   with no second argument. That still closed the modal on
+     *   Escape and click-outside (Modal called its own
+     *   closeModal), but it bypassed closeTrackedModal, leaving
+     *   _openModal pointing at a detached element until the next
+     *   open replaced it.
+     */
     function openModalShell(className, contentHTML, onBind) {
         var modal = Modal.createModal(className);
         if (!modal) {
@@ -1116,7 +1151,9 @@
         contentEl.innerHTML = contentHTML || '';
         modal.appendChild(contentEl);
 
-        Modal.modalSetup(modal);
+        Modal.modalSetup(modal, function() {
+            closeTrackedModal(modal);
+        });
         Modal.showModal(modal);
 
         trackOpenModal(modal);
