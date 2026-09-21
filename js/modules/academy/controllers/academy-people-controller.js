@@ -24,6 +24,9 @@
  *     instructor mode).
  *   - The schedule-slot-open flow (occupied cells).
  *   - The teaching-groups roster and session flows.
+ *   - The discipline-hours picker (student mode): the panel that
+ *     lets a student be dropped into an existing teaching group
+ *     for one of their enrolled disciplines.
  *
  * WHAT THIS DOES NOT OWN:
  *   - The content host. The shell provides it.
@@ -31,17 +34,6 @@
  *     people filter, and character mode.
  *   - Re-rendering the shell.
  *   - Domain reads and writes.
- *
- * SCHEDULE GRID DISPATCH:
- *   The grid's view model carries two editable flags:
- *     canEdit              student-mode cells accept assign and
- *                          slot-open.
- *     canEditInstructorSlot instructor-mode empty cells accept
- *                          schedule-assign-instructor.
- *
- *   Occupied cells in instructor mode continue to emit
- *   schedule-slot-open with data-mode="remove-group"; the modal
- *   handles that as a group-delete confirmation.
  *
  * DEPENDENCY DIRECTION:
  *   Shell → registry → this controller.
@@ -73,6 +65,7 @@
  *   - window.AcademyScheduleAssignModal
  *   - window.AcademyScheduleInstructorModal
  *   - window.AcademySessionFormModal
+ *   - window.AcademySchedule
  *   - window.AcademyDisciplines
  *   - window.AcademyEnrolments
  *   - window.AcademyEliminations
@@ -225,6 +218,10 @@
         return window.AcademyTeachingSessions || null;
     }
 
+    function getSchedule() {
+        return window.AcademySchedule || null;
+    }
+
     // ============================================================
     // SMALL HELPERS
     // ============================================================
@@ -233,8 +230,20 @@
         return typeof value === 'string' && value.trim() !== '';
     }
 
+    function isFiniteNumber(value) {
+        return typeof value === 'number' && isFinite(value);
+    }
+
     function notify(message, type) {
         NotificationSystem.notify(message, type || 'info');
+    }
+
+    function escapeHtml(value) {
+        return DomUtils.escapeHtml(value);
+    }
+
+    function escapeAttribute(value) {
+        return DomUtils.escapeAttribute(value);
     }
 
     // ============================================================
@@ -250,6 +259,14 @@
 
     var _openPickerGroupId = null;
     var _pickerCandidates = null;
+
+    // Discipline-hours picker state.
+    //   _openDisciplinePicker = { disciplineId } | null
+    //   _currentGridVM         the grid VM from the last mount,
+    //                          used to resolve group statuses
+    //                          without a second aggregator call
+    var _openDisciplinePicker = null;
+    var _currentGridVM = null;
 
     // ============================================================
     // CONTEXT NORMALISATION
@@ -283,6 +300,11 @@
 
         _host = host;
         _context = normaliseContext(rawContext);
+
+        // A re-render invalidates the discipline picker: the
+        // grid is about to be replaced.
+        _openDisciplinePicker = null;
+        _currentGridVM = null;
 
         var classId = AcademyUI.getSelectedClassId();
         var charId = AcademyUI.getSelectedCharacterId();
@@ -383,7 +405,7 @@
             if (_activeCharacterTab === 'grades') {
                 mountGradesEditorIfPresent(charId, classId, week);
             } else if (_activeCharacterTab === 'schedule') {
-                mountScheduleGridIfPresent(charId, week);
+                mountScheduleGridIfPresent(charId, classId, week);
             }
         }
     }
@@ -688,6 +710,7 @@
             e.preventDefault();
             _activeCharacterTab = tabBtn.dataset.tab;
             clearPickerState();
+            _openDisciplinePicker = null;
             var ctx = getContext();
             ctx.onChange();
             return;
@@ -820,6 +843,25 @@
             // ---- Schedule grid (occupied cells) ----
             case 'schedule-slot-open':
                 handleScheduleSlotOpen(el);
+                return;
+
+            // ---- Co-occupants panel ----
+            case 'schedule-co-occupants-open':
+                // Not implemented on character grids. Reserved for
+                // the location controller. Silently ignore.
+                return;
+            case 'schedule-co-occupants-close':
+                return;
+
+            // ---- Discipline-hours picker ----
+            case 'schedule-discipline-picker-open':
+                handleDisciplinePickerOpen(el.dataset.disciplineId);
+                return;
+            case 'schedule-discipline-picker-close':
+                handleDisciplinePickerClose();
+                return;
+            case 'schedule-discipline-picker-add':
+                handleDisciplinePickerAdd(el.dataset.groupId);
                 return;
 
             // ---- Teaching groups: roster ----
@@ -1051,6 +1093,7 @@
         }
 
         clearPickerState();
+        _openDisciplinePicker = null;
 
         CharacterCRUD.setMode(charId, newMode)
             .then(function(result) {
@@ -1300,7 +1343,7 @@
     // SCHEDULE GRID SUB-EDITOR
     // ============================================================
 
-    function mountScheduleGridIfPresent(charId, week) {
+    function mountScheduleGridIfPresent(charId, classId, week) {
         var host = document.getElementById('academy-schedule-host');
         if (!host) { return; }
 
@@ -1321,7 +1364,8 @@
                 gridVM = AcademyCharacterDetailAggregator
                     .getScheduleGridViewModel(charId, {
                         week: week,
-                        mode: mode
+                        mode: mode,
+                        classId: classId
                     });
             } catch (e) {
                 console.warn(
@@ -1338,6 +1382,10 @@
             return;
         }
 
+        // Cache the grid VM for the discipline picker. It holds
+        // the disciplineHours array the picker reads.
+        _currentGridVM = gridVM;
+
         var renderState = {
             selectedId: charId,
             week: week
@@ -1353,7 +1401,8 @@
             modeLabel: gridVM.modeLabel,
             showEmptySlots: false,
             showRestDays: true,
-            hours: gridVM.hours
+            hours: gridVM.hours,
+            disciplineHours: gridVM.disciplineHours
         };
 
         try {
@@ -1365,6 +1414,16 @@
             host.innerHTML = '<p class="empty-state small">' +
                 'Failed to render schedule grid.' +
                 '</p>';
+            return;
+        }
+
+        // If the discipline picker was open before this render
+        // pass, remount it. The render() entry point clears the
+        // picker state, so this branch is only reached when the
+        // mount happens without a full render (i.e. after an add
+        // that refetched the VM in place).
+        if (_openDisciplinePicker) {
+            mountDisciplinePickerPanel();
         }
     }
 
@@ -1447,10 +1506,6 @@
     // ============================================================
     // SCHEDULE ASSIGN-INSTRUCTOR FLOW
     // ============================================================
-    //
-    // Empty cells in instructor mode. The instructor claims a
-    // slot for one of their disciplines. No students are
-    // assigned; the modal writes a group and a session.
 
     function handleScheduleInstructorAssign(dayRaw, hourRaw) {
         var charId = AcademyUI.getSelectedCharacterId();
@@ -1678,6 +1733,300 @@
             );
             notify('Failed to open the slot editor.', 'error');
         }
+    }
+
+    // ============================================================
+    // DISCIPLINE-HOURS PICKER FLOW
+    // ============================================================
+    //
+    // Opened from a discipline row in the hours panel at the
+    // bottom of the student's schedule grid. Lists every
+    // teaching group for the (class, discipline) the student can
+    // join, colour-coded by whether adding would collide with
+    // the student's existing schedule.
+    //
+    // Click a green group: add the student to the group.
+    // Red groups are not clickable.
+
+    function handleDisciplinePickerOpen(disciplineId) {
+        if (!isNonEmptyString(disciplineId)) { return; }
+
+        if (_openDisciplinePicker &&
+            _openDisciplinePicker.disciplineId === String(disciplineId)) {
+            handleDisciplinePickerClose();
+            return;
+        }
+
+        _openDisciplinePicker = { disciplineId: String(disciplineId) };
+        mountDisciplinePickerPanel();
+    }
+
+    function handleDisciplinePickerClose() {
+        _openDisciplinePicker = null;
+        var host = document.getElementById(
+            'academy-schedule-discipline-picker-host'
+        );
+        if (host) { host.innerHTML = ''; }
+    }
+
+    function mountDisciplinePickerPanel() {
+        var host = document.getElementById(
+            'academy-schedule-discipline-picker-host'
+        );
+        if (!host) { return; }
+
+        if (!_openDisciplinePicker) {
+            host.innerHTML = '';
+            return;
+        }
+
+        if (!_currentGridVM || !Array.isArray(_currentGridVM.disciplineHours)) {
+            host.innerHTML = '';
+            return;
+        }
+
+        var entry = null;
+        for (var i = 0; i < _currentGridVM.disciplineHours.length; i++) {
+            var candidate = _currentGridVM.disciplineHours[i];
+            if (candidate &&
+                String(candidate.disciplineId) ===
+                _openDisciplinePicker.disciplineId) {
+                entry = candidate;
+                break;
+            }
+        }
+
+        if (!entry) {
+            host.innerHTML = '';
+            _openDisciplinePicker = null;
+            return;
+        }
+
+        host.innerHTML = buildDisciplinePickerHTML(entry);
+    }
+
+    function buildDisciplinePickerHTML(entry) {
+        var disciplineName = isNonEmptyString(entry.disciplineName)
+            ? entry.disciplineName
+            : 'Unknown Discipline';
+
+        var groups = Array.isArray(entry.groups) ? entry.groups : [];
+
+        var html = '';
+        html += '<div class="schedule-discipline-picker">';
+
+        html += '<div class="schedule-discipline-picker-header">';
+        html += '<span class="schedule-discipline-picker-title">' +
+                    escapeHtml(disciplineName) +
+                '</span>';
+        html += '<span class="schedule-discipline-picker-hint">' +
+                    'Click a green group to add the student.' +
+                '</span>';
+        html += '<button type="button" ' +
+                    'class="schedule-discipline-picker-close" ' +
+                    'data-action="schedule-discipline-picker-close" ' +
+                    'aria-label="Close">&times;</button>';
+        html += '</div>';
+
+        if (groups.length === 0) {
+            html += '<p class="empty-state small ' +
+                        'schedule-discipline-picker-empty">' +
+                        'No groups exist for this discipline yet. ' +
+                        'Groups are created by the instructor from ' +
+                        'their own schedule grid.' +
+                    '</p>';
+            html += '</div>';
+            return html;
+        }
+
+        html += '<ul class="schedule-discipline-picker-list">';
+        for (var i = 0; i < groups.length; i++) {
+            html += renderDisciplinePickerGroupRow(groups[i]);
+        }
+        html += '</ul>';
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderDisciplinePickerGroupRow(group) {
+        if (!group || !group.groupId) { return ''; }
+
+        var isGreen = group.status === 'green';
+        var isRed = group.status === 'red';
+
+        var rowClass = 'schedule-discipline-picker-row';
+        if (isGreen) { rowClass += ' schedule-discipline-picker-row-green'; }
+        if (isRed) { rowClass += ' schedule-discipline-picker-row-red'; }
+
+        var displayName = isNonEmptyString(group.displayName)
+            ? group.displayName
+            : 'Unnamed Group';
+
+        var html = '';
+        html += '<li class="' + rowClass + '">';
+
+        if (isGreen) {
+            html += '<button type="button" ' +
+                        'class="schedule-discipline-picker-row-btn" ' +
+                        'data-action="schedule-discipline-picker-add" ' +
+                        'data-group-id="' +
+                            escapeAttribute(group.groupId) + '">';
+        } else {
+            html += '<div class="schedule-discipline-picker-row-btn" ' +
+                        'aria-disabled="true">';
+        }
+
+        html += '<div class="schedule-discipline-picker-row-main">';
+        html += '<span class="schedule-discipline-picker-group-name">' +
+                    escapeHtml(displayName) +
+                '</span>';
+        if (isNonEmptyString(group.instructorName)) {
+            html += '<span class="schedule-discipline-picker-instructor">' +
+                        escapeHtml(group.instructorName) +
+                    '</span>';
+        }
+        if (isFiniteNumber(group.memberCount)) {
+            html += '<span class="schedule-discipline-picker-members">' +
+                        group.memberCount + ' member' +
+                        (group.memberCount === 1 ? '' : 's') +
+                    '</span>';
+        }
+        html += '</div>';
+
+        if (Array.isArray(group.sessions) && group.sessions.length > 0) {
+            html += '<ul class="schedule-discipline-picker-sessions">';
+            for (var s = 0; s < group.sessions.length; s++) {
+                html += renderDisciplinePickerSessionRow(
+                    group.sessions[s],
+                    group
+                );
+            }
+            html += '</ul>';
+        }
+
+        if (isRed && group.conflict) {
+            var cDay = group.conflict.conflictDay;
+            var cStart = group.conflict.conflictStartTime;
+            var cDiscipline = group.conflict.conflictingDisciplineName;
+
+            var dayLabel = '';
+            var AC = window.CalendarConstants;
+            if (AC && typeof AC.getDayName === 'function') {
+                dayLabel = AC.getDayName(cDay) || ('Day ' + cDay);
+            }
+            var startLabel = '';
+            if (AC && typeof AC.formatHour === 'function') {
+                startLabel = AC.formatHour(cStart) ||
+                    (cStart + ':00');
+            }
+
+            html += '<div class="schedule-discipline-picker-conflict">' +
+                        'Conflicts with ' +
+                        escapeHtml(cDiscipline) +
+                        ' on ' + escapeHtml(dayLabel) +
+                        ' at ' + escapeHtml(startLabel) +
+                    '</div>';
+        }
+
+        if (isGreen) {
+            html += '</button>';
+        } else {
+            html += '</div>';
+        }
+
+        html += '</li>';
+        return html;
+    }
+
+    function renderDisciplinePickerSessionRow(session, group) {
+        if (!session) { return ''; }
+
+        var dayLabel = isNonEmptyString(session.dayLabel)
+            ? session.dayLabel
+            : '?';
+        var startLabel = isNonEmptyString(session.startTimeLabel)
+            ? session.startTimeLabel
+            : '';
+        var durationLabel = isNonEmptyString(session.durationLabel)
+            ? session.durationLabel
+            : '';
+
+        // Mark the session that is the conflict source, when the
+        // group is red.
+        var isConflictSource = false;
+        if (group && group.status === 'red' && group.conflict) {
+            if (String(session.sessionId) ===
+                String(group.conflict.sessionId)) {
+                isConflictSource = true;
+            }
+        }
+
+        var rowClass = 'schedule-discipline-picker-session';
+        if (isConflictSource) {
+            rowClass += ' schedule-discipline-picker-session-conflict';
+        }
+
+        var html = '';
+        html += '<li class="' + rowClass + '">';
+
+        html += '<span class="schedule-discipline-picker-session-time">' +
+                    escapeHtml(dayLabel) +
+                    (startLabel ? ', ' + escapeHtml(startLabel) : '') +
+                '</span>';
+
+        if (durationLabel) {
+            html += '<span class="schedule-discipline-picker-session-duration">' +
+                        escapeHtml(durationLabel) +
+                    '</span>';
+        }
+
+        if (isNonEmptyString(session.locationName)) {
+            html += '<span class="schedule-discipline-picker-session-location">' +
+                        escapeHtml(session.locationName) +
+                    '</span>';
+        }
+
+        html += '</li>';
+        return html;
+    }
+
+    function handleDisciplinePickerAdd(groupId) {
+        if (!isNonEmptyString(groupId)) { return; }
+
+        var charId = AcademyUI.getSelectedCharacterId();
+        if (!isNonEmptyString(charId)) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        var week = AcademyUI.getDisplayWeek();
+
+        var Schedule = getSchedule();
+        if (!Schedule ||
+            typeof Schedule.addStudentToTeachingGroup !== 'function') {
+            notify('Schedule module not available.', 'error');
+            return;
+        }
+
+        Schedule.addStudentToTeachingGroup(groupId, charId, week)
+            .then(function(result) {
+                if (result && result.success) {
+                    _openDisciplinePicker = null;
+                    notify('Student added to group.', 'success');
+                    var ctx = getContext();
+                    ctx.onChange();
+                } else if (result && result.message) {
+                    notify(result.message, 'error');
+                }
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[AcademyPeopleController] ' +
+                    'addStudentToTeachingGroup failed:', err
+                );
+                notify('Failed to add student to group.', 'error');
+            });
     }
 
     // ============================================================
@@ -1993,6 +2342,9 @@
         _activeCharacterTab = 'main';
         _lastCharacterIdForTab = null;
         clearPickerState();
+
+        _openDisciplinePicker = null;
+        _currentGridVM = null;
 
         _host = null;
         _context = null;
