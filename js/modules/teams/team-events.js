@@ -13,34 +13,48 @@
  *   - Hand VMs to TeamRender.
  *   - Open and close modals.
  *   - Read and write form field values.
+ *   - Own the matchmaking modal's proposal state.
  *
  * IMPORTANT:
  *   - Orchestration only. No domain reads beyond TeamQueries,
- *     TeamAggregator, and the two scalar reads (window.data.currentYear,
- *     the tab's filterYear).
- *   - No HTML construction. All markup comes from TeamRender.
+ *     TeamAggregator, and the two scalar reads
+ *     (window.data.currentYear, the tab's filterYear).
+ *   - No HTML construction beyond the modal shells. All inner
+ *     markup comes from the renderers.
  *   - TeamCore owns mutations; TeamAggregator owns projections;
  *     TeamUI owns transient state; TeamRender owns HTML.
- *   - Mutation results are Promises. On success, request a fresh VM
- *     and re-render. On failure, the pipeline has already notified;
- *     do not double-notify.
+ *   - Mutation results are Promises. On success, request a fresh
+ *     VM and re-render. On failure, the pipeline has already
+ *     notified; do not double-notify.
  *   - Delegation is scoped to the container. Modal shells are
  *     appended to document.body and are wired directly by the
  *     function that opens them.
  *
- * MEMBER MANAGER:
- *   The professional member manager is the shared window.MemberManager
- *   wired through window.MemberAdapterTeams. All domain logic lives
- *   in the adapter.
+ * MATCHMAKING MODAL:
+ *   The matchmaking modal has two modes: Setup and Proposal.
+ *   The proposal itself lives in a plain object attached to the
+ *   modal element (`modal.__matchmakingState`). The setup mode
+ *   has no state: it reads its two inputs, calls the aggregator
+ *   and the matcher, and transitions to proposal mode.
  *
- *   The modal shell is created on demand, appended to document.body,
- *   and removed when the manager closes. It is not inside the
- *   container, so refreshUI cannot destroy it.
+ *   Proposal-mode edits mutate the modal's state object in
+ *   place and re-render the modal body. Nothing is written to
+ *   storage until Commit.
+ *
+ *   Commit builds the flat assignments array from the state and
+ *   calls TeamCore.batchAddMembers.
+ *
+ * MEMBER MANAGER:
+ *   The professional member manager is the shared
+ *   window.MemberManager wired through window.MemberAdapterTeams.
+ *
+ *   The modal shell is created on demand, appended to
+ *   document.body, and removed when the manager closes.
  *
  * MODAL STATE:
- *   TeamUI does not track modal state. The team ID a modal is acting
- *   on lives on the modal's own dataset (`data-edit-id`, form
- *   arguments). There is no cross-render modal state.
+ *   TeamUI does not track modal state. The team ID a modal is
+ *   acting on lives on the modal's own dataset. Matchmaking
+ *   state lives on the modal element itself.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamCore
@@ -48,6 +62,8 @@
  *   - window.TeamAggregator
  *   - window.TeamUI
  *   - window.TeamRender
+ *   - window.TeamMatchmaking
+ *   - window.TeamMatchmakingView
  *   - window.Modal
  *   - window.MemberManager
  *   - window.MemberAdapterTeams
@@ -71,6 +87,8 @@
     var TeamAggregator = window.TeamAggregator;
     var TeamUI = window.TeamUI;
     var TeamRender = window.TeamRender;
+    var TeamMatchmaking = window.TeamMatchmaking;
+    var TeamMatchmakingView = window.TeamMatchmakingView;
     var Modal = window.Modal;
     var MemberManager = window.MemberManager;
     var MemberAdapterTeams = window.MemberAdapterTeams;
@@ -93,11 +111,16 @@
     if (!TeamCore || typeof TeamCore.removeRanking !== 'function') {
         _missing.push('TeamCore.removeRanking');
     }
+    if (!TeamCore ||
+        typeof TeamCore.batchAddMembers !== 'function') {
+        _missing.push('TeamCore.batchAddMembers');
+    }
 
     if (!TeamQueries || typeof TeamQueries.getTeamName !== 'function') {
         _missing.push('TeamQueries.getTeamName');
     }
-    if (!TeamQueries || typeof TeamQueries.getRankingSummary !== 'function') {
+    if (!TeamQueries ||
+        typeof TeamQueries.getRankingSummary !== 'function') {
         _missing.push('TeamQueries.getRankingSummary');
     }
 
@@ -110,12 +133,20 @@
         _missing.push('TeamAggregator.getTeamFormViewModel');
     }
     if (!TeamAggregator ||
-        typeof TeamAggregator.getRankingModalViewModel !== 'function') {
+        typeof TeamAggregator.getRankingModalViewModel !==
+            'function') {
         _missing.push('TeamAggregator.getRankingModalViewModel');
     }
     if (!TeamAggregator ||
         typeof TeamAggregator.getFilterBarViewModel !== 'function') {
         _missing.push('TeamAggregator.getFilterBarViewModel');
+    }
+    if (!TeamAggregator ||
+        typeof TeamAggregator.getTeamMatchmakingViewModel !==
+            'function') {
+        _missing.push(
+            'TeamAggregator.getTeamMatchmakingViewModel'
+        );
     }
 
     if (!TeamUI || typeof TeamUI.getCurrentTab !== 'function') {
@@ -125,23 +156,47 @@
         _missing.push('TeamUI.getExpandedTeamId');
     }
 
-    if (!TeamRender || typeof TeamRender.renderContainer !== 'function') {
+    if (!TeamRender ||
+        typeof TeamRender.renderContainer !== 'function') {
         _missing.push('TeamRender.renderContainer');
     }
-    if (!TeamRender || typeof TeamRender.renderFilterBar !== 'function') {
+    if (!TeamRender ||
+        typeof TeamRender.renderFilterBar !== 'function') {
         _missing.push('TeamRender.renderFilterBar');
     }
-    if (!TeamRender || typeof TeamRender.renderTeamForm !== 'function') {
+    if (!TeamRender ||
+        typeof TeamRender.renderTeamForm !== 'function') {
         _missing.push('TeamRender.renderTeamForm');
     }
-    if (!TeamRender || typeof TeamRender.renderRankingForm !== 'function') {
+    if (!TeamRender ||
+        typeof TeamRender.renderRankingForm !== 'function') {
         _missing.push('TeamRender.renderRankingForm');
     }
-    if (!TeamRender || typeof TeamRender.renderRankingList !== 'function') {
+    if (!TeamRender ||
+        typeof TeamRender.renderRankingList !== 'function') {
         _missing.push('TeamRender.renderRankingList');
     }
-    if (!TeamRender || typeof TeamRender.renderNameHistoryRow !== 'function') {
+    if (!TeamRender ||
+        typeof TeamRender.renderNameHistoryRow !== 'function') {
         _missing.push('TeamRender.renderNameHistoryRow');
+    }
+
+    if (!TeamMatchmaking ||
+        typeof TeamMatchmaking.buildProposal !== 'function') {
+        _missing.push('TeamMatchmaking.buildProposal');
+    }
+
+    if (!TeamMatchmakingView ||
+        typeof TeamMatchmakingView.renderHTML !== 'function') {
+        _missing.push('TeamMatchmakingView.renderHTML');
+    }
+    if (!TeamMatchmakingView ||
+        typeof TeamMatchmakingView.collectSetup !== 'function') {
+        _missing.push('TeamMatchmakingView.collectSetup');
+    }
+    if (!TeamMatchmakingView ||
+        typeof TeamMatchmakingView.readAddSelect !== 'function') {
+        _missing.push('TeamMatchmakingView.readAddSelect');
     }
 
     if (!Modal ||
@@ -190,6 +245,30 @@
         NotificationSystem.notify(message, type || 'info');
     }
 
+    function parsePositiveInteger(value) {
+        if (value === undefined || value === null) {
+            return null;
+        }
+        if (typeof value === 'number') {
+            if (!Number.isInteger(value) || value < 1) {
+                return null;
+            }
+            return value;
+        }
+        if (typeof value === 'string') {
+            var trimmed = value.trim();
+            if (trimmed === '' || !/^\d+$/.test(trimmed)) {
+                return null;
+            }
+            var n = Number(trimmed);
+            if (!Number.isInteger(n) || n < 1) {
+                return null;
+            }
+            return n;
+        }
+        return null;
+    }
+
     // ============================================================
     // MODULE STATE
     // ============================================================
@@ -198,20 +277,15 @@
     var _container = null;
     var _eventListeners = [];
 
-    // The open member-manager modal. Created on demand, appended to
-    // document.body, removed when the manager closes. Kept here so
-    // destroy() can close it if the Teams tab is torn down while
-    // it is open.
     var _memberManagerModal = null;
+    var _matchmakingModal = null;
 
     // ============================================================
     // LISTENER BOOKKEEPING
     // ============================================================
 
     function addBoundListener(element, eventName, handler) {
-        if (!element) {
-            return;
-        }
+        if (!element) { return; }
         element.addEventListener(eventName, handler);
         _eventListeners.push({
             element: element,
@@ -224,7 +298,9 @@
         for (var i = 0; i < _eventListeners.length; i++) {
             var item = _eventListeners[i];
             try {
-                item.element.removeEventListener(item.eventName, item.handler);
+                item.element.removeEventListener(
+                    item.eventName, item.handler
+                );
             } catch (e) {
                 // Ignore
             }
@@ -233,27 +309,17 @@
     }
 
     function delegate(selector, eventName, handler) {
-        if (!_container) {
-            return;
-        }
+        if (!_container) { return; }
 
         function wrapped(e) {
-            if (!_container) {
-                return;
-            }
-            if (!_container.contains(e.target)) {
-                return;
-            }
+            if (!_container) { return; }
+            if (!_container.contains(e.target)) { return; }
 
             var target = e.target.closest
                 ? e.target.closest(selector)
                 : null;
-            if (!target) {
-                return;
-            }
-            if (!_container.contains(target)) {
-                return;
-            }
+            if (!target) { return; }
+            if (!_container.contains(target)) { return; }
 
             handler(e, target);
         }
@@ -273,7 +339,8 @@
     function getCurrentPeriod(tab) {
         var filter = TeamUI.getFilter(tab);
         if (filter && filter.filterYear !== undefined &&
-            filter.filterYear !== null && filter.filterYear !== '') {
+            filter.filterYear !== null &&
+            filter.filterYear !== '') {
             var parsed = parseInt(filter.filterYear, 10);
             if (!isNaN(parsed) && parsed >= 1) {
                 return parsed;
@@ -294,9 +361,7 @@
     // ============================================================
 
     function refreshUI() {
-        if (!_container) {
-            return;
-        }
+        if (!_container) { return; }
 
         var currentTab = TeamUI.getCurrentTab();
         var period = getCurrentPeriod(currentTab);
@@ -312,12 +377,16 @@
             TeamUI.setExpandedTeamId(pageVM.expandedTeamId);
         }
 
-        _container.innerHTML = TeamRender.renderContainer(pageVM);
+        _container.innerHTML =
+            TeamRender.renderContainer(pageVM);
 
-        var filterContainer = _container.querySelector('#filter-container');
+        var filterContainer =
+            _container.querySelector('#filter-container');
         if (filterContainer) {
-            var filterVM = TeamAggregator.getFilterBarViewModel(currentTab);
-            filterContainer.innerHTML = TeamRender.renderFilterBar(filterVM);
+            var filterVM =
+                TeamAggregator.getFilterBarViewModel(currentTab);
+            filterContainer.innerHTML =
+                TeamRender.renderFilterBar(filterVM);
         }
     }
 
@@ -343,6 +412,7 @@
 
         bindTabSwitching();
         bindAddTeam();
+        bindMatchmaking();
         bindTeamActions();
         bindFilters();
 
@@ -359,6 +429,15 @@
             _memberManagerModal = null;
         }
 
+        if (_matchmakingModal) {
+            try {
+                Modal.closeModal(_matchmakingModal);
+            } catch (e) {
+                // Ignore
+            }
+            _matchmakingModal = null;
+        }
+
         removeAllEventListeners();
         _initialized = false;
         _container = null;
@@ -371,9 +450,7 @@
     function bindTabSwitching() {
         delegate('.tab-btn', 'click', function(e, target) {
             var tab = target.dataset.tab;
-            if (!tab) {
-                return;
-            }
+            if (!tab) { return; }
 
             TeamUI.setCurrentTab(tab);
             refreshUI();
@@ -417,59 +494,65 @@
 
     function bindTeamFormEvents(modal, contentEl) {
         var form = contentEl.querySelector('#team-form-inner');
-        if (!form) {
-            return;
-        }
+        if (!form) { return; }
 
         function close() {
             closeModal(modal);
         }
 
-        var closeBtn = contentEl.querySelector('#close-team-form');
+        var closeBtn = contentEl.querySelector(
+            '#close-team-form'
+        );
         if (closeBtn) {
             closeBtn.addEventListener('click', close);
         }
 
-        var cancelBtn = contentEl.querySelector('#cancel-team-form');
+        var cancelBtn = contentEl.querySelector(
+            '#cancel-team-form'
+        );
         if (cancelBtn) {
             cancelBtn.addEventListener('click', close);
         }
 
-        var addNameBtn = contentEl.querySelector('#add-name-history-btn');
+        var addNameBtn = contentEl.querySelector(
+            '#add-name-history-btn'
+        );
         if (addNameBtn) {
             addNameBtn.addEventListener('click', function() {
-                var containerEl = form.querySelector('#name-history-container');
-                if (!containerEl) {
-                    return;
-                }
+                var containerEl = form.querySelector(
+                    '#name-history-container'
+                );
+                if (!containerEl) { return; }
                 var wrapper = document.createElement('div');
-                wrapper.innerHTML = TeamRender.renderNameHistoryRow(null);
-                containerEl.appendChild(wrapper.firstElementChild);
+                wrapper.innerHTML =
+                    TeamRender.renderNameHistoryRow(null);
+                containerEl.appendChild(
+                    wrapper.firstElementChild
+                );
             });
         }
 
-        // Name history row removal. Modal-scoped, not container-delegated,
-        // because the modal lives outside the container.
         contentEl.addEventListener('click', function(e) {
             var removeBtn = e.target.closest
                 ? e.target.closest('.remove-name')
                 : null;
-            if (!removeBtn) {
-                return;
-            }
+            if (!removeBtn) { return; }
             e.preventDefault();
 
-            var entry = removeBtn.closest('.name-history-entry');
-            if (!entry) {
-                return;
-            }
+            var entry = removeBtn.closest(
+                '.name-history-entry'
+            );
+            if (!entry) { return; }
             var parent = entry.parentElement;
-            if (!parent) {
-                return;
-            }
+            if (!parent) { return; }
 
-            if (parent.querySelectorAll('.name-history-entry').length <= 1) {
-                notify('You need at least one name entry.', 'error');
+            if (parent.querySelectorAll(
+                '.name-history-entry'
+            ).length <= 1) {
+                notify(
+                    'You need at least one name entry.',
+                    'error'
+                );
                 return;
             }
 
@@ -511,7 +594,9 @@
             status: status,
             classId: classEl ? classEl.value : null,
             teamNumber: numberEl ? numberEl.value.trim() : '',
-            temporaryMission: (type === 'temporary' || type === 'professional')
+            temporaryMission:
+                (type === 'temporary' ||
+                 type === 'professional')
                 ? (missionEl ? missionEl.value : null)
                 : null,
             nameHistory: collectNameHistory(form)
@@ -522,40 +607,500 @@
             : TeamCore.createTeam(teamData);
 
         promise.then(function(result) {
-            if (!result || !result.success) {
-                return;
-            }
+            if (!result || !result.success) { return; }
             closeModal(modal);
             refreshUI();
         }).catch(function(err) {
-            console.warn('[TeamEvents] saveTeam failed:', err);
+            console.warn(
+                '[TeamEvents] saveTeam failed:', err
+            );
             notify('Failed to save team.', 'error');
         });
     }
 
     function collectNameHistory(form) {
-        var entries = form.querySelectorAll('.name-history-entry');
+        var entries = form.querySelectorAll(
+            '.name-history-entry'
+        );
         var history = [];
 
         for (var i = 0; i < entries.length; i++) {
             var entry = entries[i];
-            var nameEl = entry.querySelector('.name-history-name');
-            var startEl = entry.querySelector('.name-history-start');
-            var endEl = entry.querySelector('.name-history-end');
+            var nameEl = entry.querySelector(
+                '.name-history-name'
+            );
+            var startEl = entry.querySelector(
+                '.name-history-start'
+            );
+            var endEl = entry.querySelector(
+                '.name-history-end'
+            );
 
             var name = nameEl ? nameEl.value.trim() : '';
-            if (!name) {
-                continue;
-            }
+            if (!name) { continue; }
 
             history.push({
                 name: name,
-                startPeriod: startEl ? startEl.value.trim() : '',
-                endPeriod: endEl ? endEl.value.trim() : ''
+                startPeriod: startEl
+                    ? startEl.value.trim()
+                    : '',
+                endPeriod: endEl
+                    ? endEl.value.trim()
+                    : ''
             });
         }
 
         return history;
+    }
+
+    // ============================================================
+    // MATCHMAKING
+    // ============================================================
+
+    function bindMatchmaking() {
+        delegate('#team-matchmaking-btn', 'click', function(e) {
+            e.preventDefault();
+            openMatchmakingModal();
+        });
+    }
+
+    function openMatchmakingModal() {
+        if (_matchmakingModal) {
+            try {
+                Modal.closeModal(_matchmakingModal);
+            } catch (e) {
+                // Ignore
+            }
+            _matchmakingModal = null;
+        }
+
+        var data = window.data || {};
+        var defaultYear =
+            typeof data.currentYear === 'number' &&
+            isFinite(data.currentYear) &&
+            data.currentYear > 0
+                ? Math.floor(data.currentYear)
+                : null;
+
+        var modal = Modal.createModal('team-matchmaking-modal');
+        if (!modal) {
+            notify('Could not open matchmaking.', 'error');
+            return;
+        }
+        modal.id = 'team-matchmaking-modal';
+
+        var contentEl = document.createElement('div');
+        contentEl.className = 'modal-content wide matchmaking-content';
+        modal.appendChild(contentEl);
+
+        // Modal state lives on the modal element.
+        modal.__matchmakingState = {
+            mode: 'setup',
+            setupYear: defaultYear,
+            setupTargetSize: 3,
+            year: null,
+            targetSize: null,
+            candidatesById: Object.create(null),
+            assignments: [],
+            unassigned: []
+        };
+
+        _matchmakingModal = modal;
+
+        Modal.modalSetup(modal, function() {
+            closeMatchmakingModal();
+        });
+        Modal.showModal(modal);
+
+        renderMatchmaking(modal, contentEl);
+        bindMatchmakingEvents(modal, contentEl);
+    }
+
+    function closeMatchmakingModal() {
+        var modal = _matchmakingModal;
+        _matchmakingModal = null;
+
+        if (modal) {
+            try {
+                Modal.closeModal(modal);
+            } catch (e) {
+                // Ignore
+            }
+        }
+
+        refreshUI();
+    }
+
+    function renderMatchmaking(modal, contentEl) {
+        var state = modal.__matchmakingState;
+        if (!state) { return; }
+
+        if (state.mode === 'setup') {
+            contentEl.innerHTML =
+                TeamMatchmakingView.renderHTML({
+                    mode: 'setup',
+                    defaultYear: state.setupYear,
+                    defaultTargetSize: state.setupTargetSize
+                });
+        } else {
+            contentEl.innerHTML =
+                TeamMatchmakingView.renderHTML({
+                    mode: 'proposal',
+                    year: state.year,
+                    targetSize: state.targetSize,
+                    assignments: state.assignments,
+                    unassigned: state.unassigned,
+                    candidatesById: state.candidatesById
+                });
+        }
+    }
+
+    function bindMatchmakingEvents(modal, contentEl) {
+        contentEl.addEventListener('click', function(e) {
+            var actionEl = e.target.closest
+                ? e.target.closest('[data-action]')
+                : null;
+            if (!actionEl || !actionEl.dataset) { return; }
+
+            var action = actionEl.dataset.action;
+            switch (action) {
+                case 'matchmaking-close':
+                    e.preventDefault();
+                    closeMatchmakingModal();
+                    return;
+                case 'matchmaking-build':
+                    e.preventDefault();
+                    handleMatchmakingBuild(modal, contentEl);
+                    return;
+                case 'matchmaking-back':
+                    e.preventDefault();
+                    handleMatchmakingBack(modal, contentEl);
+                    return;
+                case 'matchmaking-remove-addition':
+                    e.preventDefault();
+                    handleMatchmakingRemoveAddition(
+                        modal, contentEl, actionEl
+                    );
+                    return;
+                case 'matchmaking-add-addition':
+                    e.preventDefault();
+                    handleMatchmakingAddAddition(
+                        modal, contentEl, actionEl
+                    );
+                    return;
+                case 'matchmaking-commit':
+                    e.preventDefault();
+                    handleMatchmakingCommit(modal, contentEl);
+                    return;
+                default:
+                    return;
+            }
+        });
+    }
+
+    function handleMatchmakingBuild(modal, contentEl) {
+        var state = modal.__matchmakingState;
+        if (!state) { return; }
+
+        var form = TeamMatchmakingView.collectSetup(contentEl);
+        if (!form) { return; }
+
+        var year = parsePositiveInteger(form.year);
+        if (year === null) {
+            notify('Year must be a positive integer.', 'error');
+            return;
+        }
+
+        var targetSize = parsePositiveInteger(form.targetSize);
+        if (targetSize === null) {
+            notify(
+                'Target size must be a positive integer.',
+                'error'
+            );
+            return;
+        }
+
+        // Snapshot the setup values so "Back to Setup" restores
+        // them.
+        state.setupYear = year;
+        state.setupTargetSize = targetSize;
+
+        // Build the VM and the raw proposal.
+        var vm;
+        try {
+            vm = TeamAggregator.getTeamMatchmakingViewModel(
+                year, targetSize
+            );
+        } catch (e) {
+            console.warn(
+                '[TeamEvents] getTeamMatchmakingViewModel failed:',
+                e
+            );
+            notify('Failed to build matchmaking pool.', 'error');
+            return;
+        }
+
+        if (!vm || vm.candidates.length === 0) {
+            notify(
+                'No eligible candidates for the selected year.',
+                'info'
+            );
+        }
+
+        var candidatesById = Object.create(null);
+        for (var i = 0; i < vm.candidates.length; i++) {
+            var c = vm.candidates[i];
+            candidatesById[c.id] = c;
+        }
+
+        // Run the pure matcher.
+        var raw = TeamMatchmaking.buildProposal({
+            year: year,
+            targetSize: targetSize,
+            candidates: vm.candidates,
+            targets: vm.targets
+        });
+
+        // Augment the raw proposal with candidate metadata. The
+        // matcher returns only { id, name } per addition; the
+        // modal needs status and history for display.
+        var assignments = [];
+        var placedIds = Object.create(null);
+
+        for (var a = 0; a < raw.assignments.length; a++) {
+            var rawAsg = raw.assignments[a];
+            var additions = [];
+            for (var j = 0; j < rawAsg.additions.length; j++) {
+                var addition = rawAsg.additions[j];
+                placedIds[addition.id] = true;
+                var full = candidatesById[addition.id];
+                additions.push({
+                    id: addition.id,
+                    name: full ? full.name : addition.name,
+                    status: full ? full.status : '',
+                    history: full ? full.history : []
+                });
+            }
+            assignments.push({
+                teamId: rawAsg.teamId,
+                teamName: rawAsg.teamName,
+                additions: additions
+            });
+        }
+
+        // Compute the unassigned pool: candidates not in any
+        // assignment.
+        var unassigned = [];
+        for (var u = 0; u < vm.candidates.length; u++) {
+            var cand = vm.candidates[u];
+            if (placedIds[cand.id]) { continue; }
+            unassigned.push(cand);
+        }
+
+        state.mode = 'proposal';
+        state.year = year;
+        state.targetSize = targetSize;
+        state.candidatesById = candidatesById;
+        state.assignments = assignments;
+        state.unassigned = unassigned;
+
+        renderMatchmaking(modal, contentEl);
+    }
+
+    function handleMatchmakingBack(modal, contentEl) {
+        var state = modal.__matchmakingState;
+        if (!state) { return; }
+
+        state.mode = 'setup';
+        state.year = null;
+        state.targetSize = null;
+        state.assignments = [];
+        state.unassigned = [];
+        state.candidatesById = Object.create(null);
+
+        renderMatchmaking(modal, contentEl);
+    }
+
+    function handleMatchmakingRemoveAddition(
+        modal, contentEl, actionEl
+    ) {
+        var state = modal.__matchmakingState;
+        if (!state || state.mode !== 'proposal') { return; }
+
+        var teamId = actionEl.dataset.teamId;
+        var charId = actionEl.dataset.characterId;
+        if (!teamId || !charId) { return; }
+
+        var assignmentIndex = -1;
+        for (var i = 0; i < state.assignments.length; i++) {
+            if (state.assignments[i].teamId === teamId) {
+                assignmentIndex = i;
+                break;
+            }
+        }
+        if (assignmentIndex === -1) { return; }
+
+        var assignment = state.assignments[assignmentIndex];
+        var additionIndex = -1;
+        for (var j = 0; j < assignment.additions.length; j++) {
+            if (assignment.additions[j].id === charId) {
+                additionIndex = j;
+                break;
+            }
+        }
+        if (additionIndex === -1) { return; }
+
+        var removed = assignment.additions.splice(
+            additionIndex, 1
+        )[0];
+
+        // Return the candidate to the unassigned pool.
+        var candidate = state.candidatesById[removed.id];
+        if (candidate) {
+            state.unassigned.push(candidate);
+            state.unassigned.sort(function(a, b) {
+                return a.name.localeCompare(b.name);
+            });
+        }
+
+        // If the assignment is now empty, drop it.
+        if (assignment.additions.length === 0) {
+            state.assignments.splice(assignmentIndex, 1);
+        }
+
+        renderMatchmaking(modal, contentEl);
+    }
+
+    function handleMatchmakingAddAddition(
+        modal, contentEl, actionEl
+    ) {
+        var state = modal.__matchmakingState;
+        if (!state || state.mode !== 'proposal') { return; }
+
+        var teamId = actionEl.dataset.teamId;
+        if (!teamId) { return; }
+
+        var select = contentEl.querySelector(
+            '.matchmaking-add-select[data-team-id="' +
+            cssEscape(teamId) + '"]'
+        );
+        if (!select) { return; }
+
+        var charId = TeamMatchmakingView.readAddSelect(select);
+        if (!charId) {
+            notify('Select a character to add.', 'error');
+            return;
+        }
+
+        var candidate = state.candidatesById[charId];
+        if (!candidate) { return; }
+
+        // Find the assignment for this team. If it does not
+        // exist (the team was dropped when it became empty),
+        // create it from the candidate's team info — but we
+        // need the team name. Look it up from the assignment
+        // list if it exists; otherwise, the pool VM must have
+        // carried it. Since the target VM is not stored on the
+        // modal state, we rebuild the team name from the
+        // candidate's perspective: it is not available. This
+        // case is prevented because an empty assignment is only
+        // dropped when its last addition is removed; the "Add"
+        // mini-form is only shown for assignments that exist.
+        var assignment = null;
+        for (var i = 0; i < state.assignments.length; i++) {
+            if (state.assignments[i].teamId === teamId) {
+                assignment = state.assignments[i];
+                break;
+            }
+        }
+        if (!assignment) {
+            // Should not happen: the Add form is rendered
+            // inside an existing assignment. Re-render and
+            // bail.
+            renderMatchmaking(modal, contentEl);
+            return;
+        }
+
+        // Remove the candidate from unassigned.
+        var unassignedIndex = -1;
+        for (var u = 0; u < state.unassigned.length; u++) {
+            if (state.unassigned[u].id === charId) {
+                unassignedIndex = u;
+                break;
+            }
+        }
+        if (unassignedIndex !== -1) {
+            state.unassigned.splice(unassignedIndex, 1);
+        }
+
+        assignment.additions.push(candidate);
+        assignment.additions.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
+
+        renderMatchmaking(modal, contentEl);
+    }
+
+    function handleMatchmakingCommit(modal, contentEl) {
+        var state = modal.__matchmakingState;
+        if (!state || state.mode !== 'proposal') { return; }
+
+        var flat = [];
+        for (var i = 0; i < state.assignments.length; i++) {
+            var assignment = state.assignments[i];
+            for (var j = 0;
+                 j < assignment.additions.length;
+                 j++) {
+                flat.push({
+                    teamId: assignment.teamId,
+                    charId: assignment.additions[j].id,
+                    joinPeriod: String(state.year),
+                    leavePeriod: '',
+                    role: 'Member'
+                });
+            }
+        }
+
+        if (flat.length === 0) {
+            notify('Nothing to commit.', 'info');
+            return;
+        }
+
+        TeamCore.batchAddMembers(flat).then(function(result) {
+            if (!result || !result.success) {
+                return;
+            }
+            notify(
+                'Added ' + result.data.added +
+                ' member' +
+                (result.data.added === 1 ? '' : 's') +
+                ' across ' + result.data.teamsTouched +
+                ' team' +
+                (result.data.teamsTouched === 1 ? '' : 's') +
+                '.',
+                'success'
+            );
+            closeMatchmakingModal();
+        }).catch(function(err) {
+            console.warn(
+                '[TeamEvents] batchAddMembers failed:', err
+            );
+            notify('Failed to commit proposal.', 'error');
+        });
+    }
+
+    /**
+     * Escape a value for use in a CSS attribute selector.
+     *
+     * Minimal implementation; matches on the exact string. The
+     * team IDs in this app are generated by IdUtils and are
+     * safe ASCII, but we escape defensively.
+     */
+    function cssEscape(value) {
+        if (value === undefined || value === null) {
+            return '';
+        }
+        return String(value).replace(/(["\\])/g, '\\$1');
     }
 
     // ============================================================
@@ -598,9 +1143,7 @@
         delegate('.toggle-members', 'click', function(e, target) {
             e.preventDefault();
             var teamId = target.dataset.id;
-            if (!teamId) {
-                return;
-            }
+            if (!teamId) { return; }
 
             var current = TeamUI.getExpandedTeamId();
             if (current && String(current) === String(teamId)) {
@@ -621,9 +1164,7 @@
         }
 
         TeamCore.deleteTeam(teamId).then(function(result) {
-            if (!result || !result.success) {
-                return;
-            }
+            if (!result || !result.success) { return; }
 
             if (TeamUI.getExpandedTeamId() === teamId) {
                 TeamUI.setExpandedTeamId(null);
@@ -631,7 +1172,9 @@
 
             refreshUI();
         }).catch(function(err) {
-            console.warn('[TeamEvents] deleteTeam failed:', err);
+            console.warn(
+                '[TeamEvents] deleteTeam failed:', err
+            );
             notify('Failed to delete team.', 'error');
         });
     }
@@ -641,15 +1184,16 @@
     // ============================================================
 
     function openMemberManager(teamId) {
-        if (!isNonEmptyString(teamId)) {
-            return;
-        }
+        if (!isNonEmptyString(teamId)) { return; }
 
         var currentTab = TeamUI.getCurrentTab();
         var period = getCurrentPeriod(currentTab);
 
         if (period === null) {
-            notify('Cannot determine the current period.', 'error');
+            notify(
+                'Cannot determine the current period.',
+                'error'
+            );
             return;
         }
 
@@ -664,7 +1208,10 @@
 
         var modal = Modal.createModal('member-manager-modal');
         if (!modal) {
-            notify('Could not open the member manager.', 'error');
+            notify(
+                'Could not open the member manager.',
+                'error'
+            );
             return;
         }
         modal.id = 'member-manager-modal';
@@ -752,15 +1299,6 @@
         bindRankingModalEvents(modal, contentEl, teamId);
     }
 
-    /**
-     * Escape a value for HTML insertion. Uses the same escaper as
-     * TeamRender but does not import it as a public dependency,
-     * because the escaper is a small utility and the alternative is
-     * a hard dependency on TeamRender.escapeHtml.
-     *
-     * Kept local because this is the only string interpolation in
-     * this module that is not already escaped by a renderer.
-     */
     function escapeHtmlSafe(value) {
         if (value === undefined || value === null) {
             return '';
@@ -794,15 +1332,11 @@
             var removeBtn = e.target.closest
                 ? e.target.closest('.remove-ranking')
                 : null;
-            if (!removeBtn) {
-                return;
-            }
+            if (!removeBtn) { return; }
             e.preventDefault();
 
             var period = removeBtn.dataset.period;
-            if (!period) {
-                return;
-            }
+            if (!period) { return; }
 
             if (!confirm('Remove this ranking entry?')) {
                 return;
@@ -811,7 +1345,9 @@
             TeamCore.removeRanking(teamId, period)
                 .then(function(result) {
                     if (result && result.success) {
-                        refreshRankingListInPlace(modal, teamId);
+                        refreshRankingListInPlace(
+                            modal, teamId
+                        );
                         refreshUI();
                     }
                 })
@@ -819,13 +1355,18 @@
                     console.warn(
                         '[TeamEvents] removeRanking failed:', err
                     );
-                    notify('Failed to remove ranking.', 'error');
+                    notify(
+                        'Failed to remove ranking.',
+                        'error'
+                    );
                 });
         });
     }
 
     function addRankingFromModal(modal, contentEl, teamId) {
-        var periodEl = contentEl.querySelector('#ranking-period');
+        var periodEl = contentEl.querySelector(
+            '#ranking-period'
+        );
         var rankEl = contentEl.querySelector('#ranking-rank');
 
         var period = periodEl ? periodEl.value.trim() : '';
@@ -842,33 +1383,28 @@
 
         TeamCore.addRanking(teamId, period, rank)
             .then(function(result) {
-                if (!result || !result.success) {
-                    return;
-                }
-                if (periodEl) {
-                    periodEl.value = '';
-                }
-                if (rankEl) {
-                    rankEl.value = '';
-                }
+                if (!result || !result.success) { return; }
+                if (periodEl) { periodEl.value = ''; }
+                if (rankEl) { rankEl.value = ''; }
                 refreshRankingListInPlace(modal, teamId);
                 refreshUI();
             })
             .catch(function(err) {
-                console.warn('[TeamEvents] addRanking failed:', err);
+                console.warn(
+                    '[TeamEvents] addRanking failed:', err
+                );
                 notify('Failed to add ranking.', 'error');
             });
     }
 
     function refreshRankingListInPlace(modal, teamId) {
         var vm = TeamAggregator.getRankingModalViewModel(teamId);
-        if (!vm) {
-            return;
-        }
+        if (!vm) { return; }
 
         var listContainer = modal.querySelector('#ranking-list');
         if (listContainer) {
-            listContainer.innerHTML = TeamRender.renderRankingList(vm);
+            listContainer.innerHTML =
+                TeamRender.renderRankingList(vm);
         }
     }
 
@@ -889,7 +1425,8 @@
             }
         });
 
-        delegate('.filter-container input[type="checkbox"]', 'change',
+        delegate('.filter-container input[type="checkbox"]',
+            'change',
             function() {
                 applyFilters();
             }
@@ -900,7 +1437,9 @@
         var tab = TeamUI.getCurrentTab();
 
         if (tab === 'professional' || tab === 'temporary') {
-            var yearEl = _container.querySelector('#team-filter-year');
+            var yearEl = _container.querySelector(
+                '#team-filter-year'
+            );
             if (yearEl) {
                 var yearRaw = yearEl.value.trim();
                 if (yearRaw === '') {
@@ -908,7 +1447,9 @@
                 } else {
                     var yearNum = parseInt(yearRaw, 10);
                     if (!isNaN(yearNum) && yearNum >= 1) {
-                        TeamUI.setFilter(tab, 'filterYear', yearNum);
+                        TeamUI.setFilter(
+                            tab, 'filterYear', yearNum
+                        );
                     }
                 }
             }
@@ -933,13 +1474,13 @@
     // ============================================================
 
     function closeModal(modal) {
-        if (!modal) {
-            return;
-        }
+        if (!modal) { return; }
         try {
             Modal.closeModal(modal);
         } catch (e) {
-            console.warn('[TeamEvents] modal close failed:', e);
+            console.warn(
+                '[TeamEvents] modal close failed:', e
+            );
         }
     }
 
@@ -955,7 +1496,8 @@
 
         showTeamForm: showTeamForm,
         showRankingModal: showRankingModal,
-        openMemberManager: openMemberManager
+        openMemberManager: openMemberManager,
+        openMatchmakingModal: openMatchmakingModal
     });
 
 })();
