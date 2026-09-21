@@ -11,8 +11,8 @@
  *
  * WHAT THIS MODULE IS:
  *   - One public function: runAutoDistribute(ctx, deps).
- *   - The algorithm itself, unchanged from the version that lived
- *     inline in the controller through S1.2–S1.8.
+ *   - The algorithm: fill existing teams, create new teams,
+ *     overflow the remainder.
  *
  * WHAT THIS MODULE IS NOT:
  *   - A UI module. It never touches the DOM, never opens or closes
@@ -53,12 +53,14 @@
  *   Returns a Promise resolving to:
  *     { success: true,  data: { existingTeamsFilled,
  *                                newTeamsCreated,
- *                                studentsPlaced } }
+ *                                studentsPlaced,
+ *                                overflowed } }
  *     or
  *     { success: false, message: string }
  *
  *   The return value mirrors the shape the controller used to
- *   produce inline. Nothing about the caller's contract changes.
+ *   produce inline. `overflowed` is a new key; the others are
+ *   unchanged.
  *
  * ELIGIBILITY:
  *   The distribution pool excludes:
@@ -71,18 +73,37 @@
  *   `eliminated` flag with the correct boundary; this module trusts
  *   it.
  *
- * ALGORITHM SHAPE (unchanged since S1.2):
- *   - Existing academic teams active this week are ranked by member
- *     count ascending. Ties broken by name.
- *   - Every unassigned eligible student is placed into the
- *     least-full existing team with room, or into a new team when
- *     every existing team has reached groupSize.
- *   - New teams are named prefix + number, where number starts one
- *     above the highest existing prefix-matching name.
- *   - Placement is performed by AcademyWeeklyTeams.addMember. New
- *     teams are created by TeamCore.createTeam, then given a
- *     weekly-team window by AcademyWeeklyTeams.setWindow (falling
- *     back to ensureWindow when setWindow is absent).
+ * ALGORITHM SHAPE (three phases):
+ *
+ *   Phase 1 — fill existing teams.
+ *     Every unassigned eligible student is placed into the
+ *     least-full existing team with room below groupSize.
+ *
+ *   Phase 2 — create new teams while the remainder supports a
+ *     full one.
+ *     While at least groupSize students remain unplaced, create a
+ *     new team, name it prefix + number, and fill it to groupSize.
+ *     A partial team is never created in this phase.
+ *
+ *   Phase 3 — overflow the remainder.
+ *     After Phases 1 and 2, fewer than groupSize students remain.
+ *     Distribute them one per team, cycling through the teams in
+ *     ascending current-size order. When every team has received
+ *     one overflow, loop back to the smallest.
+ *
+ *     Reading (a), sub-shape (a1): there is NO per-team overflow
+ *     cap. A team may grow to groupSize + 2, + 3, ... when there
+ *     are not enough teams to spread across. The "no partial team"
+ *     constraint wins over the "one overflow per team" preference.
+ *
+ *     Phase 3 exists because the pinboard rule is:
+ *       "A new team is only created when R >= N."
+ *       "A partial team is never created."
+ *     Those two constraints together force the overflow to land
+ *     on existing teams, however many students remain.
+ *
+ *   The three phases are sequential and independent. Phase 3 runs
+ *   only if Phase 1 and Phase 2 are exhausted.
  *
  * IDEMPOTENCY:
  *   The operation is not idempotent. Running it twice will place
@@ -255,14 +276,6 @@
     // ============================================================
     // CORE ALGORITHM
     // ============================================================
-    //
-    // This is the algorithm lifted verbatim from the controller. The
-    // only structural changes are:
-    //   - Dependencies arrive via `deps`, not via captured globals.
-    //   - `week` is passed as a parsed integer, not re-parsed here.
-    //   - The final success/failure handling returns a Promise-shaped
-    //     result instead of calling context.onChange (which was the
-    //     controller's job).
 
     function runAutoDistributeCore(ctx, groupSize, week, deps) {
         var NS = deps.NotificationSystem;
@@ -368,6 +381,7 @@
         );
         var nextNumber = highestExistingNumber + 1;
 
+        // ---- Phase 1 — fill existing teams to groupSize. ----
         var existingPlans = [];
         for (var e = 0; e < rankedExisting.length; e++) {
             existingPlans.push({
@@ -401,20 +415,102 @@
                 continue;
             }
 
+            // Phase 1 could not place this student. Everything from
+            // here is Phase 2 and Phase 3 territory, which are
+            // handled below with the full unassigned remainder.
+            break;
+        }
+
+        // ---- Phase 2 — create new teams while the remainder
+        //      supports a full one. ----
+        //
+        // We compute the remainder as "students not placed by
+        // Phase 1." A student is "placed by Phase 1" when they
+        // appear in some existingPlans[].charIds.
+        var placedByPhase1 = countPlannedCharIds(existingPlans);
+        var remainder = unassigned.slice(placedByPhase1);
+
+        while (remainder.length >= groupSize) {
             var newName = namePrefix + nextNumber;
             nextNumber++;
             var newPlan = {
                 type: 'create',
                 teamName: newName,
-                charIds: [studentId]
+                charIds: []
             };
+            // Fill to groupSize from the front of the remainder.
+            for (var f = 0; f < groupSize; f++) {
+                newPlan.charIds.push(String(remainder[f].id));
+            }
+            remainder = remainder.slice(groupSize);
             newPlans.push(newPlan);
         }
 
+        // ---- Phase 3 — overflow the remainder. ----
+        //
+        // Reading (a), sub-shape (a1):
+        //   - No partial team.
+        //   - No per-team overflow cap.
+        //   - Cycle through the teams in ascending current-size
+        //     order. When every team has received one overflow,
+        //     loop back to the smallest.
+        //
+        // At this point all teams (existing + newly planned) are
+        // exactly groupSize by construction. The "ascending order"
+        // is therefore the stable order the plans were built in:
+        // existing plans first (ranked by pre-fill count), then
+        // new plans in creation order.
+        //
+        // We attach the overflow directly to the plans, so the
+        // commit loop below sees a single coherent plan list.
+        var overflowAssignments = [];
+        if (remainder.length > 0) {
+            var allPlans = existingPlans.concat(newPlans);
+            if (allPlans.length === 0) {
+                // Degenerate: no existing teams and remainder <
+                // groupSize. Nothing to cycle onto. The pinboard
+                // rule says "a new team is only created when
+                // R >= N" and "a partial team is never created."
+                // Both forbid creating a team here.
+                //
+                // This is a real corner: it can happen only when
+                // there are zero existing active teams AND fewer
+                // than groupSize unassigned students. The correct
+                // resolution is out of scope for this file; we
+                // surface it rather than silently swallowing the
+                // students.
+                var tail = remainder.length;
+                NS.notify(
+                    'Cannot place ' + tail + ' student' +
+                    (tail === 1 ? '' : 's') +
+                    ': no existing teams to overflow and fewer ' +
+                    'than ' + groupSize + ' to form a new one.',
+                    'warning'
+                );
+                remainder = [];
+            } else {
+                var cursor = 0;
+                while (remainder.length > 0) {
+                    var targetPlan = allPlans[cursor];
+                    var nextStudent = remainder.shift();
+                    var nextCharId = String(nextStudent.id);
+                    targetPlan.charIds.push(nextCharId);
+                    overflowAssignments.push({
+                        teamId: targetPlan.teamId || null,
+                        teamName: targetPlan.teamName,
+                        characterId: nextCharId
+                    });
+                    cursor = (cursor + 1) % allPlans.length;
+                }
+            }
+        }
+
+        // ---- Commit ----
         var failed = false;
         var failureMessage = null;
         var addedToExisting = 0;
         var createdNewTeams = 0;
+        var overflowed = overflowAssignments.length;
         var chain = Promise.resolve();
 
         existingPlans.forEach(function(plan) {
@@ -484,6 +580,10 @@
                             ' has no id.';
                         return;
                     }
+
+                    // Backfill the plan's teamId so the overflow
+                    // assignments above can find it.
+                    plan.teamId = newTeamId;
 
                     createdNewTeams++;
 
@@ -565,6 +665,10 @@
                 parts.push('and ' + newCount +
                     ' new team' + (newCount === 1 ? '' : 's'));
             }
+            if (overflowed > 0) {
+                parts.push('(' + overflowed + ' overflow' +
+                    (overflowed === 1 ? '' : 's') + ')');
+            }
             NS.notify(parts.join(' ') + '.', 'success');
 
             return {
@@ -572,7 +676,8 @@
                 data: {
                     existingTeamsFilled: existingCount,
                     newTeamsCreated: newCount,
-                    studentsPlaced: totalStudents
+                    studentsPlaced: totalStudents,
+                    overflowed: overflowed
                 }
             };
         });
@@ -611,6 +716,23 @@
         }
 
         return highest;
+    }
+
+    /**
+     * Count how many character IDs appear in the charIds arrays of
+     * a list of plans. Used to slice the unassigned pool after
+     * Phase 1, without having to track a parallel index.
+     */
+    function countPlannedCharIds(plans) {
+        var n = 0;
+        if (!Array.isArray(plans)) { return 0; }
+        for (var i = 0; i < plans.length; i++) {
+            var plan = plans[i];
+            if (plan && Array.isArray(plan.charIds)) {
+                n += plan.charIds.length;
+            }
+        }
+        return n;
     }
 
     // ============================================================
