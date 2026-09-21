@@ -6,24 +6,18 @@
  * Styles for the pure calendar renderer in
  * modules/calendar/calendar-renderer.js.
  *
- * WHAT THIS FILE COVERS:
- *   - The schedule grid (.schedule-grid and its cells)
+ * Covers:
+ *   - The schedule grid and its cells
  *   - Header row (day names, time column)
- *   - Occupied slots (with discipline name, label, group, instructor,
- *     duration, continuation marker, co-occupant marker)
+ *   - Occupied slots
  *   - Empty slots (the "+" hint, gated on assignability)
  *   - Rest-day columns
  *   - Blocked slots
  *   - The legend
  *   - The loading state
- *   - The Academy schedule-assign modal's BODY content
+ *   - The schedule-assign and schedule-instructor modals
  *
- * TOKEN DISCIPLINE:
- *   Every colour, radius, and shadow references a custom property
- *   from css/shared.css. No literal hex values.
- *
- * LOAD ORDER:
- *   Loads after shared.css and academy.css.
+ * Loads after shared.css and academy.css.
  */
 
 /* ============================================================
@@ -181,6 +175,11 @@
     cursor: default;
 }
 
+/*
+ * Both student-mode and instructor-mode occupied cells emit
+ * data-action="schedule-slot-open". The cursor and hover state
+ * are identical for both.
+ */
 .schedule-cell[data-action="schedule-slot-open"] {
     cursor: pointer;
 }
@@ -216,17 +215,30 @@
     margin: auto;
 }
 
-.schedule-cell[data-action="schedule-assign"] {
+/*
+ * Student mode and instructor mode use DIFFERENT action names
+ * for assignable empty cells:
+ *   schedule-assign             (student)
+ *   schedule-assign-instructor  (instructor)
+ *
+ * Both render the same hover affordance: dashed outline, "+"
+ * hint, accent colour.
+ */
+.schedule-cell[data-action="schedule-assign"],
+.schedule-cell[data-action="schedule-assign-instructor"] {
     cursor: pointer;
 }
 
-.schedule-cell[data-action="schedule-assign"]:hover {
+.schedule-cell[data-action="schedule-assign"]:hover,
+.schedule-cell[data-action="schedule-assign-instructor"]:hover {
     background: var(--accent-soft);
     outline: 1px dashed var(--accent);
     outline-offset: -2px;
 }
 
-.schedule-cell[data-action="schedule-assign"]:hover .schedule-empty-label {
+.schedule-cell[data-action="schedule-assign"]:hover .schedule-empty-label,
+.schedule-cell[data-action="schedule-assign-instructor"]:hover
+    .schedule-empty-label {
     opacity: 1;
     color: var(--accent);
 }
@@ -325,9 +337,6 @@
     border-radius: 3px;
 }
 
-/* Continuation marker on the second and subsequent cells of a
-   multi-hour slot. Small, muted, does not compete with the
-   discipline name. */
 .schedule-continuation {
     position: absolute;
     bottom: 2px;
@@ -341,23 +350,7 @@
 
 /* ============================================================
    CO-OCCUPANT MARKER
-   ============================================================
-   A small "+N" badge in the top-right corner of an occupied
-   cell. Rendered when the slot descriptor carries a non-empty
-   `coOccupants` array — that is, when a second group shares
-   this location at this (day, hour) in this week. The marker's
-   `title` attribute carries the co-occupants' discipline names
-   and instructors; hovering reveals them.
-
-   The marker shares the top-right corner with .schedule-duration
-   when a multi-hour slot also has co-occupants. When both are
-   present, the marker is offset above the duration badge so the
-   two do not overlap.
-
-   Colour: --warning, matching the "shared resource" reading.
-   Not --danger: co-occupancy is not a collision. Two groups in
-   the same room is a legitimate configuration.
-*/
+   ============================================================ */
 
 .schedule-co-occupant-marker {
     position: absolute;
@@ -375,8 +368,6 @@
     z-index: 1;
 }
 
-/* When a duration badge shares the corner, push the marker up.
-   The duration badge is ~14px tall; the marker sits above it. */
 .schedule-occupied .schedule-duration ~ .schedule-co-occupant-marker,
 .schedule-occupied:has(.schedule-duration) .schedule-co-occupant-marker {
     top: -14px;
@@ -550,6 +541,65 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 8px;
+}
+
+/* ============================================================
+   SCHEDULE INSTRUCTOR MODAL
+   ============================================================
+   The two-field modal opened from an empty cell in an
+   instructor-mode grid. Same visual language as the
+   schedule-assign modal.
+   ============================================================ */
+
+.academy-schedule-instructor-summary {
+    margin: 0 0 12px;
+    padding: 8px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    line-height: 1.3;
+}
+
+.academy-schedule-instructor-summary strong {
+    color: var(--text);
+    font-weight: 600;
+}
+
+.academy-schedule-instructor-discipline,
+.academy-schedule-instructor-duration {
+    width: 100%;
+    max-width: 320px;
+}
+
+.academy-schedule-instructor-collision {
+    margin: 12px 0 0;
+    padding: 10px 12px;
+    background: var(--danger-soft);
+    border-left: 3px solid var(--danger);
+    border-radius: var(--radius);
+}
+
+.academy-schedule-instructor-collision-text {
+    margin: 0;
+    font-size: 0.72rem;
+    color: var(--danger);
+    line-height: 1.3;
+}
+
+.academy-schedule-instructor-collision-question {
+    margin: 4px 0 0;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--danger);
+    line-height: 1.3;
+}
+
+.academy-schedule-instructor-footer {
+    display: flex;
+    justify-content: flex-end;
     gap: 8px;
 }
 
