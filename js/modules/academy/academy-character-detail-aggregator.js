@@ -37,9 +37,20 @@
  *     canEditInstructorSlot   instructor mode: empty cells accept
  *                             schedule-assign-instructor.
  *
+ * REST DAYS (v30):
+ *   The schedule-grid VM carries `restDays`, sourced from the
+ *   class the character is viewing. The caller supplies the
+ *   classId; the aggregator forwards it to the calendar
+ *   aggregator, which reads the class and returns its rest
+ *   days. When no class is supplied, `restDays: []`.
+ *
+ *   The character grid inherits the class's rest days because
+ *   the class is a cohort with a shared timetable. The location
+ *   grid does not inherit them (a room is not a class member).
+ *
  * HOURS PANEL (student mode):
- *   The VM carries `disciplineHours`, one entry per discipline
- *   the student is enrolled in for the class. Each entry has:
+ *   The schedule-grid VM carries `disciplineHours`, one entry per
+ *   discipline the student is enrolled in for the class:
  *
  *     disciplineId, disciplineName,
  *     targetHours      discipline.weeklyHours
@@ -54,10 +65,8 @@
  *               student's schedule. Adding would succeed.
  *     'red'     at least one session of the group overlaps one
  *               of the student's other scheduled sessions.
- *               Adding would be rejected.
  *
- *   Groups the student is already a member of are omitted from
- *   the array entirely.
+ *   Groups the student is already a member of are omitted.
  *
  * NULL SEMANTICS:
  *   - character is always present (returns null if not found).
@@ -1137,6 +1146,11 @@
     // ============================================================
     // SCHEDULE GRID VIEW MODEL
     // ============================================================
+    //
+    // The caller supplies { week, mode, classId }. The aggregator
+    // forwards classId to the calendar aggregator, which reads the
+    // class and returns its restDays. The aggregator does not read
+    // AcademyUI; it is a pure function of its inputs.
 
     var VALID_SCHEDULE_MODES = ['student', 'instructor'];
 
@@ -1198,18 +1212,29 @@
 
         var isInstructor = mode === 'instructor';
 
+        // Forward classId into the calendar aggregator. It uses
+        // the class to resolve restDays for the grid VM.
+        var options = {
+            week: weekNum,
+            classId: isNonEmptyString(classId) ? String(classId) : null
+        };
+
         var vm = null;
         try {
             if (isInstructor) {
                 if (typeof ACA.getInstructorScheduleViewModel !== 'function') {
                     return null;
                 }
-                vm = ACA.getInstructorScheduleViewModel(charId, weekNum);
+                vm = ACA.getInstructorScheduleViewModel(
+                    charId, options
+                );
             } else {
                 if (typeof ACA.getStudentScheduleViewModel !== 'function') {
                     return null;
                 }
-                vm = ACA.getStudentScheduleViewModel(charId, weekNum);
+                vm = ACA.getStudentScheduleViewModel(
+                    charId, options
+                );
             }
         } catch (e) {
             console.warn(
@@ -1280,16 +1305,6 @@
     //     groups: [ GroupPickVM, ... ]
     //   }
     //
-    // GroupPickVM:
-    //   {
-    //     groupId, displayName, memberCount,
-    //     sessions: [ SessionVM, ... ]    (each with a collision
-    //                                      flag)
-    //     status: 'green' | 'red'
-    //     conflict: null | { sessionId, day, startTime, duration,
-    //                        conflictingDisciplineName }
-    //   }
-    //
     // Groups the student is already a member of are omitted.
 
     function buildDisciplineHoursVM(charId, classId, week, gridVM) {
@@ -1306,9 +1321,6 @@
             return [];
         }
 
-        // The student's own schedule for the week. Used both for
-        // the scheduled-hours count and for the collision check.
-        // gridVM.schedule is the same projection the renderer uses.
         var studentSchedule = gridVM && gridVM.schedule
             ? gridVM.schedule
             : {};
@@ -1352,14 +1364,6 @@
         return result;
     }
 
-    /**
-     * Sum the student's scheduled hours for a discipline this
-     * week by walking the grid VM's schedule map.
-     *
-     * The schedule map is keyed day → hour → slot. A multi-hour
-     * slot occupies multiple cells, but the descriptor is the
-     * same reference; count each unique sessionId once.
-     */
     function countScheduledHoursForDiscipline(schedule, disciplineId) {
         if (!schedule || !isNonEmptyString(disciplineId)) { return 0; }
 
@@ -1396,21 +1400,6 @@
         return total;
     }
 
-    /**
-     * Build the picker entries for a (class, discipline).
-     *
-     * Walks every teaching group for the class-discipline.
-     * Omits groups the student is already a member of. For the
-     * rest, computes a per-group status:
-     *
-     *   'green'  every session is free in the student's schedule
-     *   'red'    at least one session collides
-     *
-     * The collision is derived from the student's grid VM: a
-     * group's session at (day, startTime, duration) collides if
-     * any cell it would occupy is already taken by a session
-     * belonging to a different group.
-     */
     function buildDisciplineGroupsForPicker(
         charId,
         classId,
@@ -1437,8 +1426,6 @@
             var group = allGroups[i];
             if (!group || !group.id) { continue; }
 
-            // Skip groups the student is already a member of.
-            // Membership is checked at `week`, not all-time.
             var isMember = false;
             try {
                 isMember = AcademyTeachingGroups.isMemberOfGroup(
@@ -1451,7 +1438,6 @@
 
             var sessionVMs = buildTeachingGroupSessionsVM(group);
 
-            // For the picker, filter to sessions active this week.
             var activeSessions = [];
             for (var s = 0; s < sessionVMs.length; s++) {
                 var sv = sessionVMs[s];
@@ -1460,8 +1446,6 @@
             }
 
             if (activeSessions.length === 0) {
-                // A group with no active sessions this week is not
-                // a slot the student can join. Omit it.
                 continue;
             }
 
@@ -1510,12 +1494,10 @@
         var e = sessionVM.endWeek;
         if (!isFiniteNumber(s)) { return false; }
 
-        // Use RangeUtils for the canonical answer.
         var RU = getRangeUtils();
         if (RU && typeof RU.containsWeek === 'function') {
             return RU.containsWeek(week, s, e) === true;
         }
-        // Fallback: inclusive bounds, null means ongoing.
         if (week < s) { return false; }
         if (e !== null && e !== undefined && week > e) { return false; }
         return true;
@@ -1552,19 +1534,6 @@
         return disciplineName + (num > 0 ? ' ' + num : '');
     }
 
-    /**
-     * Does adding the student to `group` collide anywhere in the
-     * group's session set?
-     *
-     * Walk each of the group's sessions. For each, walk the
-     * cells the session would occupy on the student's grid. If
-     * any of those cells is occupied by a session belonging to a
-     * DIFFERENT group, the group is red.
-     *
-     * The student's grid VM is the source of truth for what the
-     * student already has. A cell occupied by a session of THIS
-     * group is not a collision — that's the same session.
-     */
     function detectConflictForSession(sessionVM, group, studentSchedule) {
         if (!sessionVM) { return null; }
 
@@ -1596,12 +1565,10 @@
                 ? String(slot.groupId)
                 : null;
 
-            // Same group → not a conflict.
             if (slotGroupId !== null && slotGroupId === groupId) {
                 continue;
             }
 
-            // Different group → conflict.
             return {
                 sessionId: sessionVM.sessionId,
                 day: day,
