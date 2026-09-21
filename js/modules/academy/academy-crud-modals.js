@@ -31,11 +31,29 @@
  *   ValidationUtils.parseStrictPositiveInteger. Inputs like "2026foo",
  *   "3.9", and "-1" are rejected.
  *
- * REST DAYS:
- *   The class form carries a fieldset of seven checkboxes (Mon–Sun).
- *   The submitted value is an array of day numbers. Empty array means
- *   no rest days. The domain (AcademyClasses.create / .update)
- *   validates the array; this module reads what the checkboxes carry.
+ * REST DAYS (v30, extended v31):
+ *   class.restDays is the DEFAULT set of rest days. class.restDaysByWeek
+ *   is a sparse map of per-week overrides.
+ *
+ *   The form has two sections:
+ *
+ *     1. "Default Rest Days": seven checkboxes. Every week not
+ *        overridden by a rule uses these.
+ *
+ *     2. "Per-Week Overrides": a list of rules. Each rule has a
+ *        mode (all / odd / even / range / single), optional week
+ *        bounds, and seven checkboxes. Rules are evaluated in
+ *        the order listed; later rules overwrite earlier ones
+ *        for the weeks they match. This is CSS-like precedence.
+ *
+ *   On save, the form expands rules into a sparse per-week map.
+ *   A rule that matches every week of the class's run expands to
+ *   52 entries; a rule that matches "odd weeks" expands to 26;
+ *   a single-week rule expands to 1.
+ *
+ *   The domain validates the resulting map and stores it. On read,
+ *   AcademyClasses.getRestDaysForWeek resolves the effective set
+ *   for a given week from the map or the default.
  *
  * MODAL CONTENT CONTRACT:
  *   Modal.createModal(className) returns a bare .modal shell. This
@@ -56,9 +74,6 @@
  *     2. Characters with at least one class membership — second.
  *
  *   Within each partition, alphabetical by display name.
- *
- *   The modal renders the two partitions as <optgroup> blocks when
- *   both are non-empty.
  *
  * ADD CHARACTER TO CLASS — INSTRUCTOR EXCLUSION (v29):
  *   The candidate list excludes both the class's current students
@@ -165,8 +180,10 @@
     }
     if (!CalendarConstants ||
         typeof CalendarConstants.MIN_DAY !== 'number' ||
-        typeof CalendarConstants.MAX_DAY !== 'number') {
-        _missing.push('CalendarConstants.MIN_DAY / MAX_DAY');
+        typeof CalendarConstants.MAX_DAY !== 'number' ||
+        typeof CalendarConstants.MIN_WEEK !== 'number' ||
+        typeof CalendarConstants.MAX_WEEK !== 'number') {
+        _missing.push('CalendarConstants day/week bounds');
     }
 
     if (_missing.length > 0) {
@@ -290,12 +307,6 @@
     // ============================================================
     // REST DAYS (class form)
     // ============================================================
-    //
-    // The canonical vocabulary is a seven-element ordered list. Day
-    // numbers follow CalendarConstants (Monday=1 … Sunday=7).
-    //
-    // The label is short ("Mon") so seven of them fit inline on a
-    // narrow viewport.
 
     var DAY_ORDER = [
         { num: 1, short: 'Mon' },
@@ -306,6 +317,9 @@
         { num: 6, short: 'Sat' },
         { num: 7, short: 'Sun' }
     ];
+
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
 
     function normaliseRestDaysForForm(raw) {
         if (!Array.isArray(raw)) { return []; }
@@ -326,7 +340,11 @@
         return result;
     }
 
-    function buildRestDaysFieldset(selectedDays) {
+    /**
+     * Render the seven day checkboxes for one section of the form.
+     * Used by both the default fieldset and each rule row.
+     */
+    function renderRestDayCheckboxes(prefix, selectedDays) {
         var selected = normaliseRestDaysForForm(selectedDays);
         var selectedSet = Object.create(null);
         for (var i = 0; i < selected.length; i++) {
@@ -334,39 +352,212 @@
         }
 
         var html = '';
-        html += '<fieldset class="academy-rest-days-fieldset">';
-        html += '<legend class="academy-rest-days-legend">' +
-                    'Rest Days' +
-                '</legend>';
-        html += '<p class="field-hint academy-rest-days-hint">' +
-                    'Days this class does not meet. Students and ' +
-                    'instructors of the class inherit these. ' +
-                    'Leave all unchecked for no rest days.' +
-                '</p>';
         html += '<div class="academy-rest-days-row">';
-
         for (var d = 0; d < DAY_ORDER.length; d++) {
             var entry = DAY_ORDER[d];
             var checked = selectedSet[String(entry.num)] ? ' checked' : '';
             html += '<label class="academy-rest-day-toggle">';
             html += '<input type="checkbox" ' +
                         'class="academy-rest-day-checkbox" ' +
-                        'data-rest-day="' + entry.num + '"' +
+                        'data-rest-day="' + entry.num + '" ' +
+                        'data-rest-day-owner="' + escapeAttribute(prefix) + '"' +
                         checked + '>';
             html += '<span class="academy-rest-day-label">' +
                         escapeHtml(entry.short) +
                     '</span>';
             html += '</label>';
         }
-
         html += '</div>';
+        return html;
+    }
+
+    function buildRestDaysFieldset(selectedDays) {
+        var html = '';
+        html += '<fieldset class="academy-rest-days-fieldset">';
+        html += '<legend class="academy-rest-days-legend">' +
+                    'Default Rest Days' +
+                '</legend>';
+        html += '<p class="field-hint academy-rest-days-hint">' +
+                    'Days this class does not meet, unless a per-week ' +
+                    'override below says otherwise.' +
+                '</p>';
+        html += renderRestDayCheckboxes('default', selectedDays);
         html += '</fieldset>';
         return html;
     }
 
-    function collectRestDaysFromForm(form) {
+    /**
+     * Render the per-week override rules section.
+     *
+     * Each rule carries:
+     *   - a mode select (all / odd / even / range / single)
+     *   - optional week bounds (start and end for range, week for
+     *     single, hidden for all / odd / even)
+     *   - the seven checkboxes
+     *   - a remove button
+     *
+     * Rules are rendered in the order stored on the class. Rules
+     * are evaluated on save in render order; later rules overwrite
+     * earlier ones for the weeks they match.
+     *
+     * The form stores rules as DOM rows. On save, each row's mode
+     * and bounds are read, the row's rest days are collected, and
+     * the whole set of rules is expanded into a per-week map.
+     */
+    function buildRestDayRulesFieldset(existingRules) {
+        var rules = Array.isArray(existingRules) ? existingRules : [];
+
+        var html = '';
+        html += '<fieldset class="academy-rest-day-rules-fieldset">';
+        html += '<legend class="academy-rest-day-rules-legend">' +
+                    'Per-Week Overrides' +
+                '</legend>';
+        html += '<p class="field-hint academy-rest-day-rules-hint">' +
+                    'Optional. Rules apply top-to-bottom; later rules ' +
+                    'override earlier ones for the weeks they match. ' +
+                    'Leave all checkboxes unchecked to mark a week ' +
+                    'with no rest days.' +
+                '</p>';
+
+        html += '<div class="academy-rest-day-rules-list" ' +
+                    'id="academy-rest-day-rules-list">';
+
+        if (rules.length === 0) {
+            // No stored rules; the empty list is fine. The user
+            // adds rules with the button below.
+        } else {
+            for (var i = 0; i < rules.length; i++) {
+                html += renderRestDayRuleRow(rules[i]);
+            }
+        }
+
+        html += '</div>';
+
+        html += '<button type="button" ' +
+                    'class="small add-rest-day-rule-btn" ' +
+                    'id="add-rest-day-rule-btn">' +
+                    '+ Add Rule' +
+                '</button>';
+
+        html += '</fieldset>';
+        return html;
+    }
+
+    function renderRestDayRuleRow(rule) {
+        rule = rule || {};
+        var mode = isNonEmptyString(rule.mode) ? rule.mode : 'all';
+        var start = rule.startWeek !== undefined && rule.startWeek !== null
+            ? String(rule.startWeek)
+            : '';
+        var end = rule.endWeek !== undefined && rule.endWeek !== null
+            ? String(rule.endWeek)
+            : '';
+        var days = Array.isArray(rule.days) ? rule.days : [];
+
+        var html = '';
+        html += '<div class="academy-rest-day-rule-row">';
+
+        html += '<div class="academy-rest-day-rule-mode">';
+        html += '<label class="academy-rest-day-rule-mode-label">Apply to:</label>';
+        html += '<select class="academy-rest-day-rule-mode-select">';
+        html += '<option value="all"' +
+                    (mode === 'all' ? ' selected' : '') + '>All weeks</option>';
+        html += '<option value="odd"' +
+                    (mode === 'odd' ? ' selected' : '') + '>Odd weeks</option>';
+        html += '<option value="even"' +
+                    (mode === 'even' ? ' selected' : '') + '>Even weeks</option>';
+        html += '<option value="range"' +
+                    (mode === 'range' ? ' selected' : '') + '>Range</option>';
+        html += '<option value="single"' +
+                    (mode === 'single' ? ' selected' : '') + '>Single week</option>';
+        html += '</select>';
+        html += '</div>';
+
+        html += '<div class="academy-rest-day-rule-bounds">';
+        html += '<label class="academy-rest-day-rule-bounds-label">' +
+                    'Start:' +
+                '</label>';
+        html += '<input type="number" ' +
+                    'class="academy-rest-day-rule-start" ' +
+                    'min="' + MIN_WEEK + '" max="' + MAX_WEEK + '" ' +
+                    'value="' + escapeAttribute(start) + '">';
+        html += '<label class="academy-rest-day-rule-bounds-label">' +
+                    'End:' +
+                '</label>';
+        html += '<input type="number" ' +
+                    'class="academy-rest-day-rule-end" ' +
+                    'min="' + MIN_WEEK + '" max="' + MAX_WEEK + '" ' +
+                    'value="' + escapeAttribute(end) + '">';
+        html += '</div>';
+
+        html += renderRestDayCheckboxes('rule', days);
+
+        html += '<button type="button" ' +
+                    'class="small danger remove-rest-day-rule-btn" ' +
+                    'title="Remove this rule">' +
+                    '\u2715' +
+                '</button>';
+
+        html += '</div>';
+        return html;
+    }
+
+    /**
+     * Collect the default rest days from the form.
+     */
+    function collectDefaultRestDaysFromForm(form) {
         if (!form) { return []; }
-        var boxes = form.querySelectorAll('.academy-rest-day-checkbox');
+        var boxes = form.querySelectorAll(
+            '.academy-rest-day-checkbox[data-rest-day-owner="default"]'
+        );
+        return collectCheckedDays(boxes);
+    }
+
+    /**
+     * Collect rest-day rules from the form, in DOM order.
+     */
+    function collectRestDayRulesFromForm(form) {
+        if (!form) { return []; }
+        var list = form.querySelector('#academy-rest-day-rules-list');
+        if (!list) { return []; }
+
+        var rows = list.querySelectorAll('.academy-rest-day-rule-row');
+        var rules = [];
+
+        for (var i = 0; i < rows.length; i++) {
+            var row = rows[i];
+
+            var modeEl = row.querySelector(
+                '.academy-rest-day-rule-mode-select'
+            );
+            var startEl = row.querySelector(
+                '.academy-rest-day-rule-start'
+            );
+            var endEl = row.querySelector(
+                '.academy-rest-day-rule-end'
+            );
+
+            var mode = modeEl ? modeEl.value : 'all';
+            var start = startEl ? startEl.value.trim() : '';
+            var end = endEl ? endEl.value.trim() : '';
+
+            var boxes = row.querySelectorAll(
+                '.academy-rest-day-checkbox[data-rest-day-owner="rule"]'
+            );
+            var days = collectCheckedDays(boxes);
+
+            rules.push({
+                mode: mode,
+                startWeek: start === '' ? null : start,
+                endWeek: end === '' ? null : end,
+                days: days
+            });
+        }
+
+        return rules;
+    }
+
+    function collectCheckedDays(boxes) {
         var result = [];
         for (var i = 0; i < boxes.length; i++) {
             var box = boxes[i];
@@ -381,6 +572,243 @@
         }
         result.sort(function(a, b) { return a - b; });
         return result;
+    }
+
+    /**
+     * Expand rules into a per-week map.
+     *
+     * Rules are applied in order. Later rules overwrite earlier
+     * ones for the weeks they match. This mirrors CSS and lets a
+     * broad "odd weeks: Sat/Sun" rule be narrowed by a later
+     * "week 7: none" rule without reordering.
+     *
+     * A rule that matches every week is written to every key; the
+     * caller is expected to layer such a rule BEFORE specific
+     * ones, or not at all (since the default fieldset already
+     * covers "all weeks").
+     *
+     * When a rule has empty day array (all checkboxes unchecked),
+     * the expanded value is [] — an explicit "no rest days this
+     * week" entry that overrides the default.
+     *
+     * Malformed rules are skipped. Malformed bounds reject the
+     * whole rule (silently; the domain will not be reached with an
+     * invalid value).
+     */
+    function expandRestDayRulesToMap(rules) {
+        var map = {};
+
+        if (!Array.isArray(rules) || rules.length === 0) {
+            return map;
+        }
+
+        for (var i = 0; i < rules.length; i++) {
+            var rule = rules[i];
+            if (!rule || typeof rule !== 'object') { continue; }
+
+            var days = Array.isArray(rule.days) ? rule.days.slice() : [];
+            days.sort(function(a, b) { return a - b; });
+
+            var mode = isNonEmptyString(rule.mode) ? rule.mode : 'all';
+
+            if (mode === 'all') {
+                for (var w = MIN_WEEK; w <= MAX_WEEK; w++) {
+                    map[String(w)] = days.slice();
+                }
+                continue;
+            }
+
+            if (mode === 'odd') {
+                for (var wo = MIN_WEEK; wo <= MAX_WEEK; wo += 2) {
+                    map[String(wo)] = days.slice();
+                }
+                continue;
+            }
+
+            if (mode === 'even') {
+                var startEven = MIN_WEEK % 2 === 0
+                    ? MIN_WEEK
+                    : MIN_WEEK + 1;
+                for (var we = startEven; we <= MAX_WEEK; we += 2) {
+                    map[String(we)] = days.slice();
+                }
+                continue;
+            }
+
+            if (mode === 'single') {
+                var single = parseInt(rule.startWeek, 10);
+                if (isNaN(single)) { continue; }
+                if (single < MIN_WEEK || single > MAX_WEEK) { continue; }
+                map[String(single)] = days.slice();
+                continue;
+            }
+
+            if (mode === 'range') {
+                var rangeStart = parseInt(rule.startWeek, 10);
+                var rangeEnd = parseInt(rule.endWeek, 10);
+                if (isNaN(rangeStart) || isNaN(rangeEnd)) { continue; }
+                if (rangeStart > rangeEnd) { continue; }
+                if (rangeStart < MIN_WEEK) { rangeStart = MIN_WEEK; }
+                if (rangeEnd > MAX_WEEK) { rangeEnd = MAX_WEEK; }
+                for (var wr = rangeStart; wr <= rangeEnd; wr++) {
+                    map[String(wr)] = days.slice();
+                }
+                continue;
+            }
+        }
+
+        return map;
+    }
+
+    /**
+     * Rebuild form-friendly rules from an existing restDaysByWeek
+     * map, so the edit form shows the user something coherent.
+     *
+     * The map has already lost the rule structure — it is a
+     * flattened per-week answer. Reconstructing the rules exactly
+     * would be over-engineering; instead, we detect the common
+     * patterns (odd, even, range, single) and show one rule per
+     * pattern.
+     *
+     * A map that does not fit any pattern falls back to a single
+     * "all weeks" rule only if every entry is identical. Otherwise
+     * the reconstruction is skipped and the map is left as-is; the
+     * form shows no rules and the map is preserved unless the user
+     * explicitly edits.
+     *
+     * Wait — that would lose data. Instead: the form always shows
+     * the map as a list of single-week rules when no pattern is
+     * detected. That is verbose but lossless. The user can delete
+     * them and author cleaner rules if they want.
+     */
+    function deriveRulesFromRestDaysByWeek(map) {
+        if (!map || typeof map !== 'object') { return []; }
+
+        var keys = Object.keys(map);
+        if (keys.length === 0) { return []; }
+
+        var sorted = [];
+        for (var i = 0; i < keys.length; i++) {
+            var n = parseInt(keys[i], 10);
+            if (isNaN(n)) { continue; }
+            if (n < MIN_WEEK || n > MAX_WEEK) { continue; }
+            sorted.push(n);
+        }
+        sorted.sort(function(a, b) { return a - b; });
+        if (sorted.length === 0) { return []; }
+
+        // ---- Common pattern 1: every week present, all identical ----
+        if (sorted.length === MAX_WEEK - MIN_WEEK + 1) {
+            var first = map[String(sorted[0])];
+            var allSame = true;
+            for (var c = 1; c < sorted.length; c++) {
+                if (!arraysEqual(map[String(sorted[c])], first)) {
+                    allSame = false;
+                    break;
+                }
+            }
+            if (allSame) {
+                return [{
+                    mode: 'all',
+                    startWeek: null,
+                    endWeek: null,
+                    days: first.slice()
+                }];
+            }
+        }
+
+        // ---- Common pattern 2: odd weeks only, all identical ----
+        var isOddOnly = true;
+        var oddDays = null;
+        for (var oi = 0; oi < sorted.length; oi++) {
+            var wOdd = sorted[oi];
+            if (wOdd % 2 === 0) { isOddOnly = false; break; }
+            if (oddDays === null) {
+                oddDays = map[String(wOdd)];
+            } else if (!arraysEqual(map[String(wOdd)], oddDays)) {
+                isOddOnly = false;
+                break;
+            }
+        }
+        if (isOddOnly && oddDays !== null) {
+            return [{
+                mode: 'odd',
+                startWeek: null,
+                endWeek: null,
+                days: oddDays.slice()
+            }];
+        }
+
+        // ---- Common pattern 3: even weeks only, all identical ----
+        var isEvenOnly = true;
+        var evenDays = null;
+        for (var ei = 0; ei < sorted.length; ei++) {
+            var wEven = sorted[ei];
+            if (wEven % 2 !== 0) { isEvenOnly = false; break; }
+            if (evenDays === null) {
+                evenDays = map[String(wEven)];
+            } else if (!arraysEqual(map[String(wEven)], evenDays)) {
+                isEvenOnly = false;
+                break;
+            }
+        }
+        if (isEvenOnly && evenDays !== null) {
+            return [{
+                mode: 'even',
+                startWeek: null,
+                endWeek: null,
+                days: evenDays.slice()
+            }];
+        }
+
+        // ---- Common pattern 4: contiguous range, all identical ----
+        var isContiguous = true;
+        for (var ci = 1; ci < sorted.length; ci++) {
+            if (sorted[ci] !== sorted[ci - 1] + 1) {
+                isContiguous = false;
+                break;
+            }
+        }
+        if (isContiguous && sorted.length > 1) {
+            var firstDays = map[String(sorted[0])];
+            var rangeSame = true;
+            for (var ri = 1; ri < sorted.length; ri++) {
+                if (!arraysEqual(map[String(sorted[ri])], firstDays)) {
+                    rangeSame = false;
+                    break;
+                }
+            }
+            if (rangeSame) {
+                return [{
+                    mode: 'range',
+                    startWeek: String(sorted[0]),
+                    endWeek: String(sorted[sorted.length - 1]),
+                    days: firstDays.slice()
+                }];
+            }
+        }
+
+        // ---- Fallback: one single-week rule per entry ----
+        var rules = [];
+        for (var si = 0; si < sorted.length; si++) {
+            var week = sorted[si];
+            rules.push({
+                mode: 'single',
+                startWeek: String(week),
+                endWeek: null,
+                days: (map[String(week)] || []).slice()
+            });
+        }
+        return rules;
+    }
+
+    function arraysEqual(a, b) {
+        if (!Array.isArray(a) || !Array.isArray(b)) { return false; }
+        if (a.length !== b.length) { return false; }
+        for (var i = 0; i < a.length; i++) {
+            if (Number(a[i]) !== Number(b[i])) { return false; }
+        }
+        return true;
     }
 
     // ============================================================
@@ -495,11 +923,6 @@
     // ============================================================
     // CLASS — FORM HTML
     // ============================================================
-    //
-    // The rest-days fieldset renders below the description field.
-    // Both create and edit share the same builder; the edit case
-    // passes the existing class, whose restDays prefills the
-    // checkboxes.
 
     function buildClassFormHTML(cls) {
         var isEdit = !!cls;
@@ -508,6 +931,11 @@
         var statuses = AcademyClasses.VALID_STATUSES;
 
         var restDays = Array.isArray(c.restDays) ? c.restDays : [];
+        var restDaysByWeek = (c.restDaysByWeek && typeof c.restDaysByWeek === 'object' && !Array.isArray(c.restDaysByWeek))
+            ? c.restDaysByWeek
+            : {};
+
+        var existingRules = deriveRulesFromRestDaysByWeek(restDaysByWeek);
 
         var html = '';
         html += '<form id="academy-class-form" class="academy-crud-form" ' +
@@ -521,14 +949,12 @@
 
         html += '<div class="modal-body">';
 
-        // Name
         html += '<div class="form-group">';
         html += '<label for="ac-class-name">Class Name *</label>';
         html += '<input type="text" id="ac-class-name" class="ac-class-name" ' +
                     'value="' + escapeAttribute(c.name || '') + '" required>';
         html += '</div>';
 
-        // Year
         html += '<div class="form-group">';
         html += '<label for="ac-class-year">Year</label>';
         html += '<input type="number" id="ac-class-year" class="ac-class-year" ' +
@@ -543,7 +969,6 @@
                 '</p>';
         html += '</div>';
 
-        // Status
         html += '<div class="form-group">';
         html += '<label for="ac-class-status">Status</label>';
         html += '<select id="ac-class-status" class="ac-class-status">';
@@ -557,7 +982,6 @@
         html += '</select>';
         html += '</div>';
 
-        // Description
         html += '<div class="form-group">';
         html += '<label for="ac-class-description">Description</label>';
         html += '<textarea id="ac-class-description" ' +
@@ -567,10 +991,10 @@
                 '</textarea>';
         html += '</div>';
 
-        // Rest Days (v30)
         html += buildRestDaysFieldset(restDays);
 
-        // Actions
+        html += buildRestDayRulesFieldset(existingRules);
+
         html += '<div class="form-actions">';
         html += '<button type="button" ' +
                     'class="cancel-modal-btn secondary">Cancel</button>';
@@ -691,7 +1115,6 @@
             return html;
         }
 
-        // Legacy path: flat `candidates` array.
         var candidates = Array.isArray(vm.candidates) ? vm.candidates : [];
 
         html += '<option value="">Select a character...</option>';
@@ -1004,6 +1427,41 @@
             var form = modal.querySelector('#academy-class-form');
             if (!form) { return; }
 
+            // ---- "+ Add Rule" button ----
+            var addRuleBtn = form.querySelector('#add-rest-day-rule-btn');
+            if (addRuleBtn) {
+                addRuleBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    var list = form.querySelector('#academy-rest-day-rules-list');
+                    if (!list) { return; }
+                    var wrapper = document.createElement('div');
+                    wrapper.innerHTML = renderRestDayRuleRow({
+                        mode: 'all',
+                        startWeek: null,
+                        endWeek: null,
+                        days: []
+                    });
+                    var row = wrapper.firstElementChild;
+                    if (row) {
+                        list.appendChild(row);
+                    }
+                });
+            }
+
+            // ---- Rule removal, delegated on the form ----
+            form.addEventListener('click', function(e) {
+                var removeBtn = e.target.closest
+                    ? e.target.closest('.remove-rest-day-rule-btn')
+                    : null;
+                if (!removeBtn) { return; }
+                e.preventDefault();
+                var row = removeBtn.closest('.academy-rest-day-rule-row');
+                if (row && row.parentNode) {
+                    row.parentNode.removeChild(row);
+                }
+            });
+
+            // ---- Submit ----
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
 
@@ -1031,14 +1489,17 @@
                     }
                 }
 
-                var restDays = collectRestDaysFromForm(form);
+                var restDays = collectDefaultRestDaysFromForm(form);
+                var rules = collectRestDayRulesFromForm(form);
+                var restDaysByWeek = expandRestDayRulesToMap(rules);
 
                 var payload = {
                     name: name,
                     year: yearValue,
                     status: status,
                     description: description,
-                    restDays: restDays
+                    restDays: restDays,
+                    restDaysByWeek: restDaysByWeek
                 };
 
                 var promise = (cls && cls.id)
@@ -1050,8 +1511,6 @@
                         close();
                         notifyChange();
                     }
-                    // On failure, the pipeline has already notified.
-                    // Modal stays open so the user can retry.
                 }).catch(function(err) {
                     console.warn('[AcademyCRUDModals] Class save failed:', err);
                     notify('Failed to save class.', 'error');
@@ -1354,25 +1813,19 @@
     // ============================================================
 
     window.AcademyCRUDModals = Object.freeze({
-        // Class
         openClassForm: openClassForm,
         openClassDelete: openClassDelete,
         openAddCharacterToClass: openAddCharacterToClass,
 
-        // Discipline — delete only.
         openDisciplineDelete: openDisciplineDelete,
 
-        // Location
         openLocationForm: openLocationForm,
         openLocationDelete: openLocationDelete,
 
-        // Social score
         openSocialScoreForm: openSocialScoreForm,
 
-        // Wiring
         setOnChangeCallback: setOnChangeCallback,
 
-        // HTML builders (exposed for testing)
         buildClassFormHTML: buildClassFormHTML,
         buildClassDeleteHTML: buildClassDeleteHTML,
         buildAddCharacterToClassHTML: buildAddCharacterToClassHTML,
