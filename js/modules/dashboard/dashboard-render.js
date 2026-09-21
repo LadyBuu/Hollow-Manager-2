@@ -29,6 +29,32 @@
  *   - Computing statistics
  *   - Resolving character names or domain references
  *
+ * ICON VOCABULARY:
+ *   Icons in this module are monochrome Unicode glyphs, not emoji.
+ *   Emoji do not render consistently across platforms, cannot be
+ *   styled with a single color, and lose meaning in text contexts
+ *   (console, activity log, tooltip). The glyphs chosen here are
+ *   from the Miscellaneous Symbols, Miscellaneous Technical, and
+ *   Arrows blocks — the same blocks already used elsewhere in the
+ *   application for decorative glyphs (▸ ▾ ✓ ✕ † ⚑).
+ *
+ * QUICK LINKS:
+ *   The link list is Dashboard presentation configuration. It is
+ *   not derived from data, so it lives here rather than in the
+ *   aggregator. Every link must point at a tab that exists in the
+ *   application's main navigation. The list is:
+ *
+ *     Characters   characters
+ *     Teams        teams
+ *     Social       social
+ *     Academy      academy
+ *     Missions     missions
+ *
+ *   Adding a link for a tab that does not exist produces a dead
+ *   navigation target. The renderer does not validate the tab id;
+ *   the caller (or the test suite) is responsible for keeping the
+ *   list in sync with the navigation.
+ *
  * DEPENDENCIES:
  *   - window.DomUtils (from dom-utils.js) - MANDATORY
  *
@@ -79,6 +105,25 @@
     function escapeHtml(value) {
         return DomUtils.escapeHtml(value);
     }
+
+    // ============================================================
+    // ICON VOCABULARY
+    // ============================================================
+    //
+    // Monochrome Unicode glyphs. See the module header for the
+    // rationale and the block each glyph is drawn from.
+    //
+    // Every glyph here renders as a single-color mark in the
+    // application's font stack and does not fall back to a color
+    // emoji on any platform.
+
+    var ICONS = Object.freeze({
+        characters: '\u263A',   // ☺  white smiling face (U+263A)
+        teams:      '\u2637',   // ☷  trigram for earth  (U+2637)
+        social:     '\u221E',   // ∞  infinity           (U+221E)
+        academy:    '\u2630',   // ☰  trigram for heaven (U+2630)
+        missions:   '\u2691'    // ⚑  black flag         (U+2691)
+    });
 
     // ============================================================
     // TOP-LEVEL RENDER
@@ -232,25 +277,55 @@
     // ============================================================
     // QUICK LINKS
     // ============================================================
+    //
+    // The link list is Dashboard presentation configuration. It is
+    // not derived from data, so it lives here rather than in the
+    // aggregator.
+    //
+    // Every link's `tab` must be the id of a tab that exists in the
+    // application's main navigation. The current navigation has
+    // six tabs:
+    //
+    //     dashboard    characters    teams
+    //     social       academy       missions
+    //
+    // The dashboard does not link to itself, so the quick-link
+    // list is the other five. This list is the single source of
+    // truth for dashboard navigation; adding a link for a tab that
+    // does not exist produces a dead navigation target.
 
-    /**
-     * Render quick navigation links.
-     *
-     * The link list is Dashboard presentation configuration.
-     * It is not derived from data, so it lives here rather than
-     * in the aggregator.
-     *
-     * @returns {string} HTML string
-     */
     function renderQuickLinks() {
         var links = [
-            { tab: 'characters', label: 'Characters', description: 'Manage all characters', icon: '👤' },
-            { tab: 'classes', label: 'Classes', description: 'Manage graduating classes', icon: '🎓' },
-            { tab: 'teams', label: 'Teams', description: 'Manage teams', icon: '👥' },
-            { tab: 'curriculum', label: 'Curriculum', description: 'Disciplines & locations', icon: '📚' },
-            { tab: 'calendar', label: 'Calendar', description: 'Schedules & timetables', icon: '📅' },
-            { tab: 'missions', label: 'Missions', description: 'Manage missions', icon: '📋' },
-            { tab: 'tournaments', label: 'Tournaments', description: 'Manage tournaments', icon: '🏆' }
+            {
+                tab: 'characters',
+                label: 'Characters',
+                description: 'Manage all characters',
+                icon: ICONS.characters
+            },
+            {
+                tab: 'teams',
+                label: 'Teams',
+                description: 'Manage teams',
+                icon: ICONS.teams
+            },
+            {
+                tab: 'social',
+                label: 'Social',
+                description: 'Manage relationships',
+                icon: ICONS.social
+            },
+            {
+                tab: 'academy',
+                label: 'Academy',
+                description: 'Classes, disciplines, exams',
+                icon: ICONS.academy
+            },
+            {
+                tab: 'missions',
+                label: 'Missions',
+                description: 'Manage missions',
+                icon: ICONS.missions
+            }
         ];
 
         var html = '';
