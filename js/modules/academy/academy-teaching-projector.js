@@ -7,9 +7,11 @@
  *
  * WHAT THIS MODULE OWNS:
  *   - Reading the persisted teaching data (class-disciplines,
- *     enrolments, teaching groups, teaching sessions).
+ *     enrolments, teaching groups, teaching sessions, class rest
+ *     days).
  *   - Computing which occurrences exist in a given week, by
- *     intersecting every applicable window.
+ *     intersecting every applicable window AND excluding sessions
+ *     that fall on a rest day for the target week.
  *   - Projecting the result as a flat, read-only list of
  *     Occurrence objects.
  *
@@ -42,20 +44,34 @@
  *
  *     "For week W, what are all the meetings that actually happen?"
  *
- *   A meeting "actually happens" when the week falls inside the
- *   intersection of every applicable window:
+ *   A meeting "actually happens" when:
+ *     - the week falls inside the intersection of every
+ *       applicable window:
+ *         class-discipline window
+ *           ∩ group window
+ *           ∩ session window
+ *     - per student:
+ *         ∩ enrolment window
+ *           ∩ membership window
+ *     - AND the session's day is not a rest day for the week in
+ *       the class the group belongs to.
  *
- *     class-discipline window
- *       ∩ group window
- *       ∩ session window
+ * REST DAYS:
+ *   class.restDays is the class's default rest days. class.restDaysByWeek
+ *   is a sparse map of per-week overrides. AcademyClasses.getRestDaysForWeek
+ *   resolves the effective set for a given week.
  *
- *   And, per student:
+ *   The projector consults this resolver once per class per week,
+ *   caching the result, and skips any session whose day is in the
+ *   set. Skipped sessions are not emitted as occurrences. This is
+ *   the mechanism by which "a class is on rest on Saturday" stops
+ *   a scheduled Saturday session from counting toward the
+ *   discipline's weekly-hours target, from appearing on the grid,
+ *   and from colliding with anything.
  *
- *     ∩ enrolment window
- *       ∩ membership window
- *
- *   The intersection is the model. Nothing is duplicated in
- *   storage; every layer carries only its own range.
+ *   The session record itself is NOT deleted. If the day is a
+ *   rest day for week 3 but not for week 4, the session is
+ *   suppressed in week 3 and projects in week 4.
  *
  * WHY ONE PROJECTION MODULE:
  *   Every consumer of schedules needs the same answer to "what
@@ -79,22 +95,22 @@
  *   `rangeContainsWeek` and `rangesOverlap` remain exported because
  *   external callers depend on them. They are thin wrappers over
  *   RangeUtils.containsWeek and RangeUtils.weeksOverlap
- *   respectively. The docstrings on each wrapper name RangeUtils
- *   as the owner of the semantics. Do not reimplement the range
- *   math here; it lives in one place, on purpose.
+ *   respectively. Do not reimplement the range math here.
  *
  * CLASS-DISCIPLINE READS:
  *   The class-discipline marker store has two modules: a mutation
  *   module (AcademyClassDisciplines) and a read module
  *   (AcademyClassDisciplinesQueries). This projector reads through
- *   the read module. It has no reason to reach for the mutation
- *   module; a projection that walked the writer would be reading
- *   through a surface that has no business existing on the read
- *   path.
+ *   the read module. The single read it performs is
+ *   `isActiveInWeek`, which reads the DISCIPLINE's window (the
+ *   marker has no window).
  *
- *   The single read the projector performs is `isActiveInWeek`,
- *   which reads the DISCIPLINE's window (the marker has no window).
- *   That read is a query, and it lives on the queries module.
+ * REST-DAY READS:
+ *   The rest-day question — "what are the effective rest days
+ *   for this class this week?" — is owned by AcademyClasses,
+ *   through getRestDaysForWeek. This projector reads through that
+ *   function. It does not walk class.restDays or
+ *   class.restDaysByWeek directly.
  *
  * OCCURRENCE SHAPE:
  *
@@ -112,15 +128,6 @@
  *     studentIds     array of strings
  *   }
  *
- *   The studentIds list contains only students whose enrolment
- *   window AND membership window cover the requested week. A
- *   student whose enrolment has ended is not in the list, even
- *   though the session and the group might still be running.
- *
- *   The occurrence represents one group-session-week with its
- *   effective roster. It is not one row per student; consumers
- *   that want per-student projections filter the studentIds list.
- *
  * DETERMINISM:
  *   The output is a deterministic list. Occurrences are sorted by
  *   (day, startTime, sessionId). This is the canonical order used
@@ -134,6 +141,7 @@
  *   - window.AcademyEnrolments
  *   - window.AcademyTeachingGroups
  *   - window.AcademyTeachingSessions
+ *   - window.AcademyClasses           (rest-day resolution)
  */
 
 (function() {
@@ -155,6 +163,7 @@
     var AcademyEnrolments = window.AcademyEnrolments;
     var AcademyTeachingGroups = window.AcademyTeachingGroups;
     var AcademyTeachingSessions = window.AcademyTeachingSessions;
+    var AcademyClasses = window.AcademyClasses;
 
     var _missing = [];
 
@@ -204,6 +213,10 @@
             _missing.push('AcademyTeachingSessions.getAllSessions');
         }
     }
+    if (!AcademyClasses ||
+        typeof AcademyClasses.getRestDaysForWeek !== 'function') {
+        _missing.push('AcademyClasses.getRestDaysForWeek');
+    }
 
     if (_missing.length > 0) {
         throw new Error(
@@ -249,31 +262,51 @@
     // ============================================================
     // RANGE PREDICATES — DELEGATE TO RangeUtils
     // ============================================================
-    //
-    // The range question is owned by RangeUtils. The two functions
-    // below are delegating wrappers:
-    //
-    //   rangeContains(week, start, end)
-    //     → RangeUtils.contains(week, start, end)
-    //
-    //   rangeContainsWeek(start, end, week)  [exported]
-    //     → RangeUtils.containsWeek(week, start, end)
-    //
-    // The wrappers exist because the projector's internal call sites
-    // read more naturally as `rangeContains(week, start, end)`, and
-    // because `rangeContainsWeek` and `rangesOverlap` are part of
-    // this module's public surface, consumed by collision detection
-    // and validation. Delegation keeps the semantics identical
-    // across the whole application.
 
-    /**
-     * Does [start, end] contain the given week?
-     *
-     * Delegates to RangeUtils.contains. end === null means ongoing.
-     * Both bounds are inclusive.
-     */
     function rangeContains(week, start, end) {
         return RangeUtils.contains(week, start, end);
+    }
+
+    // ============================================================
+    // REST-DAY SUPPRESSION
+    // ============================================================
+    //
+    // For a given week, resolve each class's effective rest days
+    // once. A session whose day is in the set is skipped. The
+    // cache is local to the projectWeek call, so it is discarded
+    // when the call returns. Subsequent calls re-resolve.
+    //
+    // A class with no entry in the cache and no rest days at all
+    // is not stored; lookups miss and return [] quickly.
+
+    function makeRestDayResolver(week) {
+        var cache = Object.create(null);
+
+        return function isRestDay(classId, day) {
+            if (!isNonEmptyString(classId)) {
+                return false;
+            }
+            var key = String(classId);
+            var days;
+            if (Object.prototype.hasOwnProperty.call(cache, key)) {
+                days = cache[key];
+            } else {
+                try {
+                    var resolved = AcademyClasses.getRestDaysForWeek(
+                        key, week
+                    );
+                    days = Array.isArray(resolved) ? resolved : [];
+                } catch (e) {
+                    console.warn(
+                        '[AcademyTeachingProjector] ' +
+                        'getRestDaysForWeek failed:', e
+                    );
+                    days = [];
+                }
+                cache[key] = days;
+            }
+            return days.indexOf(day) !== -1;
+        };
     }
 
     // ============================================================
@@ -299,30 +332,26 @@
             return [];
         }
 
+        var isRestDay = makeRestDayResolver(weekNum);
+
         var occurrences = [];
 
         for (var g = 0; g < groups.length; g++) {
             var group = groups[g];
             if (!isPlainObject(group)) { continue; }
 
-            // The group's own window.
             if (!rangeContains(weekNum, group.startWeek, group.endWeek)) {
                 continue;
             }
 
-            // The class-discipline window. A group whose class or
-            // discipline has ended does not project.
             if (!classDisciplineActiveInWeek(
                 group.classId, group.disciplineId, weekNum
             )) {
                 continue;
             }
 
-            // The members of this group who were enrolled and
-            // members during this week.
             var studentIds = activeStudentsForGroup(group, weekNum);
 
-            // Sessions belonging to this group.
             var sessions = AcademyTeachingSessions.getSessionsForGroup(
                 group.id
             );
@@ -335,6 +364,15 @@
                 if (!rangeContains(
                     weekNum, session.startWeek, session.endWeek
                 )) {
+                    continue;
+                }
+
+                // Rest-day suppression. A session whose day is a
+                // rest day for this week in this class does not
+                // happen this week. It remains in the store and
+                // projects in other weeks where its day is not a
+                // rest day.
+                if (isRestDay(group.classId, session.day)) {
                     continue;
                 }
 
@@ -362,14 +400,6 @@
         );
     }
 
-    /**
-     * Return the student IDs that are members of the group AND
-     * enrolled in the group's class-discipline during the given
-     * week.
-     *
-     * Membership and enrolment are separate facts; both must
-     * contain the week for a student to appear.
-     */
     function activeStudentsForGroup(group, week) {
         if (!isPlainObject(group) ||
             !Array.isArray(group.members)) {
@@ -393,12 +423,10 @@
             var charId = member.characterId;
             if (!isNonEmptyString(charId)) { continue; }
 
-            // Membership window covers this week?
             if (!rangeContains(week, member.startWeek, member.endWeek)) {
                 continue;
             }
 
-            // Enrolment window covers this week?
             if (!AcademyEnrolments.isEnrolledInWeek(
                 charId, classId, disciplineId, week
             )) {
@@ -408,7 +436,6 @@
             result.push(String(charId));
         }
 
-        // Deterministic order for the occurrence's studentIds list.
         result.sort();
         return result;
     }
@@ -448,15 +475,7 @@
     // ============================================================
     // FILTERED PROJECTIONS
     // ============================================================
-    //
-    // These are thin filters over projectWeek. They exist so
-    // consumers do not have to walk the full list when they only
-    // care about one entity. Every consumer is still reading the
-    // same underlying projection, computed the same way.
 
-    /**
-     * Occurrences that involve a specific student in a given week.
-     */
     function projectForStudent(studentId, week) {
         if (!isNonEmptyString(studentId)) { return []; }
         var target = String(studentId);
@@ -474,9 +493,6 @@
         return result;
     }
 
-    /**
-     * Occurrences taught by a specific instructor in a given week.
-     */
     function projectForInstructor(instructorId, week) {
         if (!isNonEmptyString(instructorId)) { return []; }
         var target = String(instructorId);
@@ -492,9 +508,6 @@
         return result;
     }
 
-    /**
-     * Occurrences held at a specific location in a given week.
-     */
     function projectForLocation(locationId, week) {
         if (!isNonEmptyString(locationId)) { return []; }
         var target = String(locationId);
@@ -510,9 +523,6 @@
         return result;
     }
 
-    /**
-     * Occurrences belonging to a specific class in a given week.
-     */
     function projectForClass(classId, week) {
         if (!isNonEmptyString(classId)) { return []; }
         var target = String(classId);
@@ -527,10 +537,6 @@
         return result;
     }
 
-    /**
-     * Occurrences belonging to a specific teaching group in a
-     * given week. This is the group's own projected schedule.
-     */
     function projectForGroup(groupId, week) {
         if (!isNonEmptyString(groupId)) { return []; }
         var target = String(groupId);
@@ -545,11 +551,6 @@
         return result;
     }
 
-    /**
-     * Occurrences in a given week belonging to a specific
-     * (classId, disciplineId) pair. Used by the weekly-hours
-     * validator to compute per-discipline scheduled minutes.
-     */
     function projectForClassDiscipline(classId, disciplineId, week) {
         if (!isNonEmptyString(classId) ||
             !isNonEmptyString(disciplineId)) {
@@ -572,36 +573,11 @@
     // ============================================================
     // RANGE HELPERS - PUBLIC
     // ============================================================
-    //
-    // These two functions are part of the projector's public
-    // surface. They exist so that consumers of the projector do
-    // not reimplement the range containment or overlap logic; they
-    // delegate to RangeUtils, which owns the semantics.
-    //
-    // Do not add logic here. The bodies are the delegate calls and
-    // nothing else. If a caller needs a different predicate, add it
-    // to RangeUtils and delegate from there, or open-code the
-    // caller's own check — but do not grow these wrappers.
 
-    /**
-     * Does [start, end] contain the given week?
-     * end === null means ongoing.
-     *
-     * Delegates to RangeUtils.containsWeek. Exposed so that
-     * collision detection, validation, and the calendar
-     * aggregator all get the same answer from the same owner.
-     */
     function rangeContainsWeek(start, end, week) {
         return RangeUtils.containsWeek(week, start, end);
     }
 
-    /**
-     * Do two ranges overlap? end === null means ongoing.
-     *
-     * Delegates to RangeUtils.weeksOverlap. Overlap here means
-     * "there exists a week contained by both." Both ends
-     * inclusive.
-     */
     function rangesOverlap(startA, endA, startB, endB) {
         return RangeUtils.weeksOverlap(startA, endA, startB, endB);
     }
@@ -611,10 +587,8 @@
     // ============================================================
 
     window.AcademyTeachingProjector = Object.freeze({
-        // Full projection
         projectWeek: projectWeek,
 
-        // Filtered projections
         projectForStudent: projectForStudent,
         projectForInstructor: projectForInstructor,
         projectForLocation: projectForLocation,
@@ -622,7 +596,6 @@
         projectForGroup: projectForGroup,
         projectForClassDiscipline: projectForClassDiscipline,
 
-        // Range helpers (delegating wrappers over RangeUtils)
         rangeContainsWeek: rangeContainsWeek,
         rangesOverlap: rangesOverlap
     });
@@ -653,11 +626,7 @@
             }
         }
 
-        // Smoke tests on the two exported delegating wrappers.
-        // These exercise the delegation and confirm the RangeUtils
-        // semantics are what the projector's consumers expect.
         try {
-            // rangeContainsWeek — inclusive bounds, null end means ongoing.
             if (rangeContainsWeek(1, 10, 5) !== true) {
                 missing.push('rangeContainsWeek(1,10,5) !== true');
             }
@@ -671,7 +640,6 @@
                 missing.push('rangeContainsWeek null endWeek not treated as ongoing');
             }
 
-            // rangesOverlap — inclusive endpoints, null end means ongoing.
             if (rangesOverlap(1, 10, 5, 15) !== true) {
                 missing.push('rangesOverlap missed a simple overlap');
             }
