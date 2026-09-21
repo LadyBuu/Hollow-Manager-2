@@ -17,24 +17,23 @@
  *   - The legend, the loading state
  *   - The schedule-assign and schedule-instructor modals
  *
- * HORIZONTAL SCROLL (this revision):
- *   The grid's natural minimum width — 44px hour column plus
- *   seven 64px day columns plus 6px of gaps, about 498px on
- *   mobile — exceeds a phone's viewport. Before this revision
- *   the grid had `width: 100%`, so it was clamped to its
- *   parent's width and the seven columns were either squashed
- *   or the overflow escaped to the page. Neither reads well.
- *
- *   The wrapper (`.calendar-grid-wrapper`) now owns horizontal
- *   scrolling. The grid itself sizes to `min-width: max-content`,
- *   so it reaches its natural width and the wrapper scrolls
- *   when that exceeds the viewport.
+ * HORIZONTAL SCROLL:
+ *   The grid's natural minimum width exceeds a phone's viewport.
+ *   The wrapper (`.calendar-grid-wrapper`) owns horizontal
+ *   scrolling. The grid itself sizes to `min-width: max-content`
+ *   so it reaches its natural width, and the wrapper scrolls when
+ *   that exceeds the viewport.
  *
  *   On desktop, the grid's natural width is smaller than the
  *   wrapper, so the day columns expand to fill via their `1fr`
  *   upper bound and no scrollbar appears. On mobile the natural
- *   width exceeds the viewport and the wrapper scrolls. Both
- *   cases share one rule set.
+ *   width exceeds the viewport and the wrapper scrolls.
+ *
+ * HOUR COLUMN:
+ *   The leading hour column is 72px on desktop and 56px on
+ *   mobile. Both are sized to fit a two-digit 24-hour label
+ *   (`00:00` through `23:00`) without truncation at the current
+ *   font size. See calendar-renderer.js for the label format.
  *
  * Loads after shared.css and academy.css.
  */
@@ -110,7 +109,7 @@
 
 .schedule-grid {
     display: grid;
-    grid-template-columns: 64px repeat(7, minmax(0, 1fr));
+    grid-template-columns: 72px repeat(7, minmax(0, 1fr));
     gap: 1px;
     background: var(--border-soft);
     border: 1px solid var(--border);
@@ -141,20 +140,14 @@
     .schedule-grid {
         /* Fixed column widths at mobile.
          *
-         * The desktop template uses `minmax(0, 1fr)` for day
-         * columns, which relies on the grid being wider than its
-         * natural minimum for the tracks to expand
-         * proportionally. On mobile the wrapper is narrower than
-         * the grid, so `1fr` has no room to expand and the
-         * `minmax` lower bound governs. Using fixed widths here
-         * makes the intent explicit: 44px hour column, 64px per
-         * day column, scroll horizontally for the rest.
-         *
-         * 44 + 7×64 + 6×1 gap = 498px minimum grid width. On a
-         * 320px viewport, ~178px of horizontal scroll. On a
-         * 414px viewport, ~84px. Both are comfortable.
+         * The hour column is 56px wide, enough for a 24-hour
+         * label like "23:00" at 0.62rem without truncation.
+         * The day columns are 64px each. Total natural width:
+         *   56 + 7×64 + 6×1 gap = 510px.
+         * On a 375px phone, ~135px of horizontal scroll. The
+         * wrapper (above) provides that scroll.
          */
-        grid-template-columns: 44px repeat(7, 64px);
+        grid-template-columns: 56px repeat(7, 64px);
     }
 }
 
@@ -219,17 +212,23 @@
     color: var(--text-dim);
     font-weight: 500;
     text-align: right;
-    padding-right: 8px;
+    padding-right: 4px;
     align-items: flex-end;
     justify-content: center;
     font-size: 0.62rem;
     white-space: nowrap;
+
+    /* Tabular numerals so every label's digits line up flush
+     * at the right edge. Without it, "1" and "3" occupy
+     * different visual widths and the column looks ragged even
+     * when nothing is clipped. */
+    font-variant-numeric: tabular-nums;
 }
 
 @media (min-width: 768px) {
     .schedule-time {
         font-size: 0.68rem;
-        padding-right: 10px;
+        padding-right: 6px;
     }
 }
 
