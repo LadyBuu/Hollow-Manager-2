@@ -35,13 +35,29 @@
  *                             slot-open.
  *
  *     canEditInstructorSlot   instructor mode: empty cells accept
- *                             schedule-assign-instructor. Occupied
- *                             cells remain clickable for
- *                             remove-group, gated by the cell's
- *                             data-mode.
+ *                             schedule-assign-instructor.
  *
- *   The renderer never infers editability from mode; the
- *   aggregator states it.
+ * HOURS PANEL (student mode):
+ *   The VM carries `disciplineHours`, one entry per discipline
+ *   the student is enrolled in for the class. Each entry has:
+ *
+ *     disciplineId, disciplineName,
+ *     targetHours      discipline.weeklyHours
+ *     scheduledHours   sum of the student's sessions this week
+ *     remainingHours   target - scheduled (may be negative)
+ *
+ *   And a `groups` array: every teaching group for this
+ *   (classId, disciplineId) at the display week, with a
+ *   per-group status for the picker:
+ *
+ *     'green'   every session of the group is free in the
+ *               student's schedule. Adding would succeed.
+ *     'red'     at least one session of the group overlaps one
+ *               of the student's other scheduled sessions.
+ *               Adding would be rejected.
+ *
+ *   Groups the student is already a member of are omitted from
+ *   the array entirely.
  *
  * NULL SEMANTICS:
  *   - character is always present (returns null if not found).
@@ -49,6 +65,8 @@
  *   - instructor.teachingGroups is [] when the instructor has no
  *     enrolments for the selected class, or when no class is
  *     selected.
+ *   - disciplineHours is [] in instructor mode, or when the
+ *     student has no enrolments for the class.
  *   - Display fields use '—' or null rather than invented values.
  *
  * DEPENDENCIES (mandatory):
@@ -69,6 +87,7 @@
  *   - window.TeamQueries
  *   - window.EliminationQueries
  *   - window.AcademyCalendarAggregator
+ *   - window.RangeUtils
  */
 
 (function() {
@@ -199,9 +218,11 @@
     function getAcademyLocations() {
         return window.AcademyLocations || null;
     }
-
     function getAcademyCalendarAggregator() {
         return window.AcademyCalendarAggregator || null;
+    }
+    function getRangeUtils() {
+        return window.RangeUtils || null;
     }
 
     // ============================================================
@@ -230,6 +251,15 @@
         }
         var d = AcademyDisciplines.getDiscipline(disciplineId);
         return d && isNonEmptyString(d.type) ? d.type : '';
+    }
+
+    function getDisciplineWeeklyHours(disciplineId) {
+        if (!isNonEmptyString(disciplineId)) {
+            return 0;
+        }
+        var d = AcademyDisciplines.getDiscipline(disciplineId);
+        if (!d) { return 0; }
+        return isFiniteNumber(d.weeklyHours) ? d.weeklyHours : 0;
     }
 
     function resolveWeek(options) {
@@ -1107,27 +1137,13 @@
     // ============================================================
     // SCHEDULE GRID VIEW MODEL
     // ============================================================
-    //
-    // The controller supplies { week, mode }. The aggregator does
-    // NOT read AcademyUI for the mode; it is a pure function of
-    // its inputs.
-    //
-    // EDITABILITY:
-    //   canEdit               student mode: cells emit assign and
-    //                         slot-open.
-    //   canEditInstructorSlot instructor mode: empty cells emit
-    //                         schedule-assign-instructor. Occupied
-    //                         cells still emit schedule-slot-open
-    //                         with data-mode="remove-group".
-    //
-    //   The renderer reads both flags; it does not derive either
-    //   from mode.
 
     var VALID_SCHEDULE_MODES = ['student', 'instructor'];
 
     function getScheduleGridViewModel(charId, options) {
         var week = null;
         var mode = 'student';
+        var classId = null;
 
         if (options !== undefined && options !== null) {
             if (typeof options === 'object') {
@@ -1136,15 +1152,18 @@
                 if (options.mode !== undefined) {
                     mode = options.mode;
                 }
+                if (isNonEmptyString(options.classId)) {
+                    classId = String(options.classId);
+                }
             } else {
                 week = options;
             }
         }
 
-        return buildScheduleGridViewModel(charId, week, mode);
+        return buildScheduleGridViewModel(charId, week, mode, classId);
     }
 
-    function buildScheduleGridViewModel(charId, week, mode) {
+    function buildScheduleGridViewModel(charId, week, mode, classId) {
         if (!isNonEmptyString(charId)) {
             return null;
         }
@@ -1207,14 +1226,23 @@
             return null;
         }
 
+        var disciplineHours = [];
+
+        // The hours panel is a student-mode affordance. It needs
+        // a class to be meaningful: the targets and the picker
+        // are scoped to the class-discipline set.
+        if (!isInstructor && isNonEmptyString(classId)) {
+            disciplineHours = buildDisciplineHoursVM(
+                charId,
+                classId,
+                weekNum,
+                vm
+            );
+        }
+
         return {
             mode: mode,
             canEdit: !isInstructor,
-
-            // Instructor mode: empty cells accept
-            // schedule-assign-instructor. Always true when the grid
-            // is instructor mode; the modal itself handles the
-            // no-disciplines-for-this-class case.
             canEditInstructorSlot: isInstructor,
 
             schedule: vm.schedule || {},
@@ -1230,8 +1258,364 @@
                     ? 'Instructor Schedule'
                     : 'Student Schedule'),
 
-            hours: Array.isArray(vm.hours) ? vm.hours.slice() : []
+            hours: Array.isArray(vm.hours) ? vm.hours.slice() : [],
+
+            disciplineHours: disciplineHours
         };
+    }
+
+    // ============================================================
+    // DISCIPLINE HOURS VM
+    // ============================================================
+    //
+    // One entry per discipline the student is enrolled in for
+    // the class:
+    //
+    //   {
+    //     disciplineId, disciplineName, disciplineType,
+    //     targetHours,       discipline.weeklyHours
+    //     scheduledHours,    sum of the student's sessions this week
+    //     remainingHours,    target - scheduled
+    //     isOver,            remainingHours < 0
+    //     groups: [ GroupPickVM, ... ]
+    //   }
+    //
+    // GroupPickVM:
+    //   {
+    //     groupId, displayName, memberCount,
+    //     sessions: [ SessionVM, ... ]    (each with a collision
+    //                                      flag)
+    //     status: 'green' | 'red'
+    //     conflict: null | { sessionId, day, startTime, duration,
+    //                        conflictingDisciplineName }
+    //   }
+    //
+    // Groups the student is already a member of are omitted.
+
+    function buildDisciplineHoursVM(charId, classId, week, gridVM) {
+        var enrolledIds = [];
+        try {
+            enrolledIds = AcademyEnrolments.getStudentDisciplineIds(
+                charId, classId
+            ) || [];
+        } catch (e) {
+            enrolledIds = [];
+        }
+
+        if (!Array.isArray(enrolledIds) || enrolledIds.length === 0) {
+            return [];
+        }
+
+        // The student's own schedule for the week. Used both for
+        // the scheduled-hours count and for the collision check.
+        // gridVM.schedule is the same projection the renderer uses.
+        var studentSchedule = gridVM && gridVM.schedule
+            ? gridVM.schedule
+            : {};
+
+        var result = [];
+
+        for (var i = 0; i < enrolledIds.length; i++) {
+            var disciplineId = String(enrolledIds[i]);
+            if (!isNonEmptyString(disciplineId)) { continue; }
+
+            var targetHours = getDisciplineWeeklyHours(disciplineId);
+            var scheduledHours = countScheduledHoursForDiscipline(
+                studentSchedule, disciplineId
+            );
+            var remainingHours = targetHours - scheduledHours;
+
+            var groups = buildDisciplineGroupsForPicker(
+                charId,
+                classId,
+                disciplineId,
+                week,
+                studentSchedule
+            );
+
+            result.push({
+                disciplineId: disciplineId,
+                disciplineName: getDisciplineName(disciplineId),
+                disciplineType: getDisciplineType(disciplineId),
+                targetHours: targetHours,
+                scheduledHours: scheduledHours,
+                remainingHours: remainingHours,
+                isOver: remainingHours < 0,
+                groups: groups
+            });
+        }
+
+        result.sort(function(a, b) {
+            return a.disciplineName.localeCompare(b.disciplineName);
+        });
+
+        return result;
+    }
+
+    /**
+     * Sum the student's scheduled hours for a discipline this
+     * week by walking the grid VM's schedule map.
+     *
+     * The schedule map is keyed day → hour → slot. A multi-hour
+     * slot occupies multiple cells, but the descriptor is the
+     * same reference; count each unique sessionId once.
+     */
+    function countScheduledHoursForDiscipline(schedule, disciplineId) {
+        if (!schedule || !isNonEmptyString(disciplineId)) { return 0; }
+
+        var seen = Object.create(null);
+        var total = 0;
+
+        var dayKeys = Object.keys(schedule);
+        for (var d = 0; d < dayKeys.length; d++) {
+            var daySchedule = schedule[dayKeys[d]];
+            if (!daySchedule || typeof daySchedule !== 'object') { continue; }
+
+            var hourKeys = Object.keys(daySchedule);
+            for (var h = 0; h < hourKeys.length; h++) {
+                var slot = daySchedule[hourKeys[h]];
+                if (!slot || typeof slot !== 'object') { continue; }
+                if (slot.isContinuation) { continue; }
+                if (String(slot.disciplineId) !== disciplineId) {
+                    continue;
+                }
+
+                var key = slot.sessionId
+                    ? 'sid:' + String(slot.sessionId)
+                    : 'cell:' + dayKeys[d] + ':' + hourKeys[h];
+                if (seen[key]) { continue; }
+                seen[key] = true;
+
+                var dur = isFiniteNumber(slot.duration)
+                    ? slot.duration
+                    : 1;
+                total += dur;
+            }
+        }
+
+        return total;
+    }
+
+    /**
+     * Build the picker entries for a (class, discipline).
+     *
+     * Walks every teaching group for the class-discipline.
+     * Omits groups the student is already a member of. For the
+     * rest, computes a per-group status:
+     *
+     *   'green'  every session is free in the student's schedule
+     *   'red'    at least one session collides
+     *
+     * The collision is derived from the student's grid VM: a
+     * group's session at (day, startTime, duration) collides if
+     * any cell it would occupy is already taken by a session
+     * belonging to a different group.
+     */
+    function buildDisciplineGroupsForPicker(
+        charId,
+        classId,
+        disciplineId,
+        week,
+        studentSchedule
+    ) {
+        var allGroups = [];
+        try {
+            allGroups = AcademyTeachingGroups.getGroupsForDiscipline(
+                classId, disciplineId
+            ) || [];
+        } catch (e) {
+            allGroups = [];
+        }
+
+        if (!Array.isArray(allGroups) || allGroups.length === 0) {
+            return [];
+        }
+
+        var result = [];
+
+        for (var i = 0; i < allGroups.length; i++) {
+            var group = allGroups[i];
+            if (!group || !group.id) { continue; }
+
+            // Skip groups the student is already a member of.
+            // Membership is checked at `week`, not all-time.
+            var isMember = false;
+            try {
+                isMember = AcademyTeachingGroups.isMemberOfGroup(
+                    group.id, charId, week
+                ) === true;
+            } catch (e) {
+                isMember = false;
+            }
+            if (isMember) { continue; }
+
+            var sessionVMs = buildTeachingGroupSessionsVM(group);
+
+            // For the picker, filter to sessions active this week.
+            var activeSessions = [];
+            for (var s = 0; s < sessionVMs.length; s++) {
+                var sv = sessionVMs[s];
+                if (!sessionInWeek(sv, week)) { continue; }
+                activeSessions.push(sv);
+            }
+
+            if (activeSessions.length === 0) {
+                // A group with no active sessions this week is not
+                // a slot the student can join. Omit it.
+                continue;
+            }
+
+            var status = 'green';
+            var conflict = null;
+
+            for (var c = 0; c < activeSessions.length; c++) {
+                var conflictFound = detectConflictForSession(
+                    activeSessions[c],
+                    group,
+                    studentSchedule
+                );
+                if (conflictFound) {
+                    status = 'red';
+                    conflict = conflictFound;
+                    break;
+                }
+            }
+
+            result.push({
+                groupId: String(group.id),
+                displayName: buildGroupDisplayName(group),
+                memberCount: getActiveMemberCount(group.id, week),
+                instructorName: getCharacterDisplayName(
+                    group.instructorId
+                ),
+                sessions: activeSessions,
+                status: status,
+                conflict: conflict
+            });
+        }
+
+        result.sort(function(a, b) {
+            if (a.status !== b.status) {
+                return a.status === 'green' ? -1 : 1;
+            }
+            return a.displayName.localeCompare(b.displayName);
+        });
+
+        return result;
+    }
+
+    function sessionInWeek(sessionVM, week) {
+        if (!sessionVM) { return false; }
+        var s = sessionVM.startWeek;
+        var e = sessionVM.endWeek;
+        if (!isFiniteNumber(s)) { return false; }
+
+        // Use RangeUtils for the canonical answer.
+        var RU = getRangeUtils();
+        if (RU && typeof RU.containsWeek === 'function') {
+            return RU.containsWeek(week, s, e) === true;
+        }
+        // Fallback: inclusive bounds, null means ongoing.
+        if (week < s) { return false; }
+        if (e !== null && e !== undefined && week > e) { return false; }
+        return true;
+    }
+
+    function getActiveMemberCount(groupId, week) {
+        try {
+            var ids = AcademyTeachingGroups.getActiveMembers(
+                groupId, week
+            );
+            return Array.isArray(ids) ? ids.length : 0;
+        } catch (e) {
+            return 0;
+        }
+    }
+
+    function getCharacterDisplayName(charId) {
+        if (!isNonEmptyString(charId)) { return ''; }
+        var c = CharacterQueries.getCharacterById(charId);
+        if (!c) { return ''; }
+        return CharacterQueries.getDisplayName(c);
+    }
+
+    function buildGroupDisplayName(group) {
+        if (!group) { return 'Unnamed Group'; }
+        var customName = isNonEmptyString(group.customName)
+            ? String(group.customName).trim()
+            : null;
+        if (customName !== null) { return customName; }
+        var disciplineName = getDisciplineName(group.disciplineId);
+        var num = isFiniteNumber(group.groupNumber)
+            ? group.groupNumber
+            : 0;
+        return disciplineName + (num > 0 ? ' ' + num : '');
+    }
+
+    /**
+     * Does adding the student to `group` collide anywhere in the
+     * group's session set?
+     *
+     * Walk each of the group's sessions. For each, walk the
+     * cells the session would occupy on the student's grid. If
+     * any of those cells is occupied by a session belonging to a
+     * DIFFERENT group, the group is red.
+     *
+     * The student's grid VM is the source of truth for what the
+     * student already has. A cell occupied by a session of THIS
+     * group is not a collision — that's the same session.
+     */
+    function detectConflictForSession(sessionVM, group, studentSchedule) {
+        if (!sessionVM) { return null; }
+
+        var day = sessionVM.day;
+        var startTime = sessionVM.startTime;
+        var duration = isFiniteNumber(sessionVM.duration)
+            ? sessionVM.duration
+            : 1;
+
+        if (!isFiniteNumber(day) || !isFiniteNumber(startTime)) {
+            return null;
+        }
+
+        var daySchedule = studentSchedule[day];
+        if (!daySchedule || typeof daySchedule !== 'object') {
+            return null;
+        }
+
+        var groupId = String(group.id);
+
+        for (var h = 0; h < duration; h++) {
+            var hour = startTime + h;
+            var slot = daySchedule[hour];
+            if (!slot || typeof slot !== 'object') { continue; }
+            if (slot.isContinuation) { continue; }
+
+            var slotGroupId = slot.groupId !== undefined &&
+                              slot.groupId !== null
+                ? String(slot.groupId)
+                : null;
+
+            // Same group → not a conflict.
+            if (slotGroupId !== null && slotGroupId === groupId) {
+                continue;
+            }
+
+            // Different group → conflict.
+            return {
+                sessionId: sessionVM.sessionId,
+                day: day,
+                startTime: startTime,
+                duration: duration,
+                conflictDay: day,
+                conflictStartTime: hour,
+                conflictingDisciplineName:
+                    slot.disciplineName || 'Unknown',
+                conflictingGroupId: slotGroupId
+            };
+        }
+
+        return null;
     }
 
     // ============================================================
