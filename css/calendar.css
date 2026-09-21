@@ -17,6 +17,25 @@
  *   - The legend, the loading state
  *   - The schedule-assign and schedule-instructor modals
  *
+ * HORIZONTAL SCROLL (this revision):
+ *   The grid's natural minimum width — 44px hour column plus
+ *   seven 64px day columns plus 6px of gaps, about 498px on
+ *   mobile — exceeds a phone's viewport. Before this revision
+ *   the grid had `width: 100%`, so it was clamped to its
+ *   parent's width and the seven columns were either squashed
+ *   or the overflow escaped to the page. Neither reads well.
+ *
+ *   The wrapper (`.calendar-grid-wrapper`) now owns horizontal
+ *   scrolling. The grid itself sizes to `min-width: max-content`,
+ *   so it reaches its natural width and the wrapper scrolls
+ *   when that exceeds the viewport.
+ *
+ *   On desktop, the grid's natural width is smaller than the
+ *   wrapper, so the day columns expand to fill via their `1fr`
+ *   upper bound and no scrollbar appears. On mobile the natural
+ *   width exceeds the viewport and the wrapper scrolls. Both
+ *   cases share one rule set.
+ *
  * Loads after shared.css and academy.css.
  */
 
@@ -28,6 +47,7 @@
     width: 100%;
     display: flex;
     flex-direction: column;
+    min-width: 0;
 }
 
 .calendar-grid-wrapper {
@@ -35,6 +55,31 @@
     flex-direction: column;
     gap: 8px;
     width: 100%;
+
+    /* Owns horizontal scroll for the grid.
+     *
+     * The grid's natural minimum width (hour column + 7 day
+     * columns + gaps) exceeds the viewport on phones. Without a
+     * scroll container here, that overflow escapes to the
+     * nearest scrollable ancestor — usually the whole page —
+     * which reads as a broken layout. The wrapper is the
+     * element that knows the grid's intent, so it is the
+     * element that owns the scroll.
+     *
+     * overflow-y: hidden keeps the wrapper from becoming a
+     * vertical scroll container; the page handles vertical
+     * scroll. min-width: 0 lets the wrapper shrink below its
+     * content's natural width so it can be the viewport for
+     * the grid's overflow.
+     *
+     * -webkit-overflow-scrolling: touch is a legacy iOS hint;
+     * it enables momentum scrolling on WebKit browsers that
+     * predate default smooth scrolling. Modern iOS ignores it.
+     */
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    min-width: 0;
 }
 
 .calendar-header {
@@ -71,12 +116,45 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     overflow: hidden;
-    width: 100%;
+
+    /* The grid sizes to its content, not to its parent.
+     *
+     * `width: 100%` was the previous value. It forced the grid
+     * to be exactly as wide as the wrapper, which fought the
+     * grid's own minimum track width and left the day columns
+     * either squashed or overflowing. `min-width: max-content`
+     * lets the grid reach its natural width. The wrapper
+     * (above) scrolls when that exceeds the viewport.
+     *
+     * On desktop, the grid's natural width is usually smaller
+     * than the wrapper, so the tracks expand via their `1fr`
+     * upper bound and the grid fills the wrapper — same visual
+     * result as before.
+     *
+     * On mobile, the grid's natural width exceeds the wrapper,
+     * so the wrapper scrolls and the grid is fully reachable.
+     */
+    min-width: max-content;
 }
 
 @media (max-width: 600px) {
     .schedule-grid {
-        grid-template-columns: 44px repeat(7, minmax(64px, 1fr));
+        /* Fixed column widths at mobile.
+         *
+         * The desktop template uses `minmax(0, 1fr)` for day
+         * columns, which relies on the grid being wider than its
+         * natural minimum for the tracks to expand
+         * proportionally. On mobile the wrapper is narrower than
+         * the grid, so `1fr` has no room to expand and the
+         * `minmax` lower bound governs. Using fixed widths here
+         * makes the intent explicit: 44px hour column, 64px per
+         * day column, scroll horizontally for the rest.
+         *
+         * 44 + 7×64 + 6×1 gap = 498px minimum grid width. On a
+         * 320px viewport, ~178px of horizontal scroll. On a
+         * 414px viewport, ~84px. Both are comfortable.
+         */
+        grid-template-columns: 44px repeat(7, 64px);
     }
 }
 
@@ -985,6 +1063,96 @@
 .academy-schedule-assign-location {
     width: 100%;
     max-width: 320px;
+}
+
+/* ---------- Instructor picker (assign modal) ---------- */
+
+.academy-schedule-assign-instructors {
+    margin-bottom: 12px;
+}
+
+.academy-schedule-assign-instructors-label {
+    display: block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 4px;
+}
+
+.academy-schedule-assign-instructors-hint {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    margin: 0 0 8px 0;
+}
+
+.academy-schedule-assign-instructors-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 8px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+}
+
+.academy-schedule-assign-instructor-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 0.78rem;
+    color: var(--text);
+}
+
+.academy-schedule-assign-instructor-option:hover {
+    background: var(--panel);
+}
+
+.academy-schedule-assign-instructor-radio {
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.academy-schedule-assign-instructor-name {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.academy-schedule-assign-instructors-error {
+    margin-bottom: 12px;
+    padding: 8px 10px;
+    background: var(--warning-soft);
+    border: 1px solid var(--warning);
+    border-radius: 4px;
+}
+
+.academy-schedule-assign-instructors-error-text {
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--warning);
+}
+
+.academy-schedule-assign-instructor-single {
+    margin: 0;
+    padding: 6px 10px;
+    font-size: 0.78rem;
+    color: var(--text);
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+}
+
+.academy-schedule-assign-instructor-single-note {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    font-style: italic;
+    margin-left: 4px;
 }
 
 .academy-schedule-assign-collision {
