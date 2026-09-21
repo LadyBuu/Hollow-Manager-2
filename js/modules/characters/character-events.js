@@ -35,6 +35,25 @@
  *   - CharacterClasses no longer exists. The dependency check and the
  *     module-scope import have been updated accordingly.
  *
+ * PHYSICAL CLASS OVERRIDE:
+ *   The override dropdown is a USER INSTRUCTION, not a hint. Picking
+ *   class X rewrites the stat block via
+ *   CharacterStats.applyPhysicalClass(X), and the derived-class
+ *   display shows X's label directly via
+ *   CharacterStats.getPhysicalClassLabel(X).
+ *
+ *   The handler does NOT re-derive after applying. The derivation is
+ *   a similarity score over the newly-shaped stats, and its tiebreak
+ *   can return a different class than the one that was picked. The
+ *   weight vectors are tuned so this does not happen in practice
+ *   (see character-constants.js's collapse constraint), but the
+ *   override handler does not rely on that property. It shows the
+ *   picked class because that is what the user asked for.
+ *
+ *   The derivation still runs on the LIVE-EDIT path: when the user
+ *   types a stat directly, the derived-class display re-scores. That
+ *   is what the derivation is for.
+ *
  * REFRESH CONTRACT:
  *   - refreshUI(char) is the SINGLE refresh entry point for the
  *     character module.
@@ -1011,7 +1030,22 @@
                 updateStatModifierDisplay(key, newStats[key]);
             });
 
-            updatePhysicalClassDisplayFromInputs();
+            // The override is a user instruction, not a hint.
+            // Show the class the user picked. Do NOT re-derive:
+            // the derivation is a similarity score over the newly-
+            // shaped stats, and its tiebreak can return a different
+            // class from the one that was picked.
+            //
+            // updatePhysicalClassDisplayFromInputs() remains the
+            // derivation path for the LIVE-EDIT case: when the user
+            // types a stat directly, the display re-derives. That is
+            // the correct behaviour there — the user is editing the
+            // profile, not asserting a class.
+            var displayEl = document.getElementById('derived-physical-class');
+            if (displayEl) {
+                displayEl.textContent = CharacterStats.getPhysicalClassLabel(classId);
+            }
+
             target.value = '';
             notify('Stats rewritten to match class.', 'info');
         });
