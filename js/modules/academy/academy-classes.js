@@ -14,7 +14,7 @@
  *   - Instructor-of-class derivation (getClassInstructorIds,
  *     getClassInstructorIdsAllTime), sourced from per-discipline
  *     instructor enrolments
- *   - Class rest days (class.restDays)
+ *   - Class rest days (class.restDays, class.restDaysByWeek)
  *
  * This module is NOT responsible for:
  *   - Class membership STORAGE. Membership lives on
@@ -26,9 +26,9 @@
  *     written by the instructor-side Disciplines tab in the
  *     character detail panel, through AcademyEnrolments.enrol.
  *   - Applying rest days to schedule projections. The calendar
- *     aggregator reads class.restDays and propagates it to the
- *     grid VMs. This module owns the storage and validation of
- *     the field, not its effect.
+ *     aggregator reads rest days and the projector suppresses
+ *     occurrences that fall on them. This module owns the storage
+ *     and validation of the fields, not their effect.
  *
  * IMPORTANT (v15+):
  *   - Character membership is stored on character.classIds[].
@@ -40,20 +40,44 @@
  *   That field was retired. Instructors are per-discipline
  *   enrolments. See getClassInstructorIds below.
  *
- * REST DAYS (v30):
+ * REST DAYS (v30, extended in v31):
  *   class.restDays = [dayNumber, ...]
- *   Day numbers are integers in [CalendarConstants.MIN_DAY,
- *   CalendarConstants.MAX_DAY]. Empty array means no rest days.
+ *     The DEFAULT rest days. Every week not overridden by
+ *     restDaysByWeek uses this array.
  *
- *   A class's rest days are inherited by every student and
- *   instructor of the class: their schedule grids dim the
- *   columns for those days and refuse assignments there. The
- *   location grid does not inherit them (a room is not a class
- *   member).
+ *   class.restDaysByWeek = { [week]: [dayNumber, ...], ... }
+ *     Sparse overrides. When a week key is present, its array is
+ *     the effective rest days for that week. When absent, the
+ *     default applies.
  *
- *   The field is stored, validated, and written here. It is read
- *   by the calendar aggregator, which folds it into the grid VM.
- *   Nothing in this module consults restDays for any decision.
+ *   Day numbers are integers in
+ *   [CalendarConstants.MIN_DAY, CalendarConstants.MAX_DAY].
+ *   Empty array means "no rest days."
+ *
+ *   A class's effective rest days for a given week are:
+ *
+ *     getRestDaysForWeek(classId, week)
+ *
+ *   which returns restDaysByWeek[week] when present, and falls
+ *   back to restDays otherwise. Consumers that need rest days
+ *   for a specific week call this function; they do not read
+ *   class.restDays directly.
+ *
+ *   The calendar aggregator's readClassRestDays wraps
+ *   getRestDaysForWeek. The teaching projector consults it to
+ *   suppress occurrences whose day falls on a rest day for the
+ *   target week. Nothing in this module consults rest days for
+ *   any decision.
+ *
+ *   WHY A SPARSE MAP, NOT A RULE LIST:
+ *     A rule list ("odd weeks: Sat/Sun", "week 7: none")
+ *     expresses the same information more compactly, but
+ *     requires every consumer to resolve a rule chain for every
+ *     query. The sparse map turns the read path into a single
+ *     hash lookup. The rule-list ergonomics live in the class
+ *     form; on save, the form expands rules into per-week
+ *     buckets. The map is the storage shape; the rules are the
+ *     authoring shape.
  *
  * S10.1 MIGRATION:
  *   The four membership mutations (addToClass, removeClassById,
@@ -104,13 +128,15 @@
  *   var result = classes.create('Class of 2026');
  *   var result = classes.update('class_123', {
  *       name: 'New Name',
- *       restDays: [6, 7]
+ *       restDays: [6, 7],
+ *       restDaysByWeek: { 3: [5], 7: [] }
  *   });
  *   var result = classes.delete('class_123');
  *
  *   var cls = classes.getClass('class_123');
  *   var all = classes.getClasses();
  *   var byName = classes.getClassByName('Class of 2026');
+ *   var restDays = classes.getRestDaysForWeek('class_123', 3);
  *
  *   // Membership mutations
  *   classes.addToClass('char_456', 'class_123').then(...);
@@ -747,10 +773,94 @@
     }
 
     // ============================================================
-    // CLASS-LEVEL INSTRUCTOR PAYLOAD GUARD
+    // REST DAYS BY WEEK VALIDATION
     // ============================================================
     //
-    // The retired `instructorId` field is rejected explicitly.
+    // The accepted shape is a plain object whose keys are week
+    // numbers (or digit strings that parse to weeks in
+    // [MIN_WEEK, MAX_WEEK]) and whose values are rest-day arrays.
+    //
+    // Duplicates across weeks are not a problem — each week's array
+    // is independent. Duplicates within a week are collapsed by
+    // validateRestDaysValue.
+    //
+    // Rejections:
+    //   - not a plain object
+    //   - any key that does not parse to a valid week
+    //   - any value that fails validateRestDaysValue
+    //
+    // Silent no-op:
+    //   - a caller who passes `undefined` gets the current value
+    //     preserved. `{}` explicitly clears.
+
+    function validateRestDaysByWeekValue(value) {
+        if (value === undefined) {
+            return { valid: true, value: undefined };
+        }
+
+        if (!isObject(value)) {
+            return {
+                valid: false,
+                value: null,
+                message: 'Rest days by week must be an object.'
+            };
+        }
+
+        var result = {};
+        var keys = Object.keys(value);
+
+        for (var i = 0; i < keys.length; i++) {
+            var rawKey = keys[i];
+            var weekNum = parseWeekStrict(rawKey);
+            if (weekNum === null) {
+                return {
+                    valid: false,
+                    value: null,
+                    message: 'Rest days by week key "' + rawKey +
+                        '" is not a valid week (' +
+                        MIN_WEEK + '-' + MAX_WEEK + ').'
+                };
+            }
+
+            var dayCheck = validateRestDaysValue(value[rawKey]);
+            if (!dayCheck.valid) {
+                return {
+                    valid: false,
+                    value: null,
+                    message: 'Rest days for week ' + weekNum + ': ' +
+                        dayCheck.message
+                };
+            }
+            if (dayCheck.value === undefined) {
+                return {
+                    valid: false,
+                    value: null,
+                    message: 'Rest days for week ' + weekNum +
+                        ' must be an array.'
+                };
+            }
+
+            // Store under canonical string week key.
+            result[String(weekNum)] = dayCheck.value;
+        }
+
+        return { valid: true, value: result };
+    }
+
+    function normaliseRestDaysByWeek(value) {
+        var check = validateRestDaysByWeekValue(value);
+        if (!check.valid) {
+            return {};
+        }
+        if (check.value === undefined) {
+            return {};
+        }
+        return check.value;
+    }
+
+    // ============================================================
+    // CLASS-LEVEL INSTRUCTOR PAYLOAD GUARD
+    // ============================================================
 
     var RETIRED_INSTRUCTOR_MESSAGE =
         'instructorId is not a class field. Instructor assignment is ' +
@@ -771,9 +881,8 @@
     /**
      * Create a new class.
      *
-     * New in v30: restDays.
-     *   options.restDays is an optional array of day numbers. When
-     *   omitted, the created class has restDays: [].
+     * v30: restDays.
+     * v31: restDaysByWeek.
      */
     function create(name, options) {
         if (!isNonEmptyString(name)) {
@@ -809,9 +918,20 @@
             return Promise.resolve(failure(restDaysResult.message));
         }
 
+        var restDaysByWeekResult = validateRestDaysByWeekValue(
+            options.restDaysByWeek
+        );
+        if (!restDaysByWeekResult.valid) {
+            return Promise.resolve(failure(restDaysByWeekResult.message));
+        }
+
         var restDays = restDaysResult.value === undefined
             ? []
             : restDaysResult.value;
+
+        var restDaysByWeek = restDaysByWeekResult.value === undefined
+            ? {}
+            : restDaysByWeekResult.value;
 
         var now = new Date().toISOString();
         var classId = generateId();
@@ -823,6 +943,7 @@
             year: yearResult.value,
             description: options.description || '',
             restDays: restDays,
+            restDaysByWeek: restDaysByWeek,
             createdAt: now,
             updatedAt: now
         };
@@ -869,10 +990,8 @@
     /**
      * Update an existing class.
      *
-     * New in v30: restDays.
-     *   updates.restDays, when present, must be a valid array.
-     *   updates.restDays = [] explicitly clears the field.
-     *   Omitting updates.restDays preserves the current value.
+     * v30: restDays.
+     * v31: restDaysByWeek.
      */
     function update(classId, updates) {
         if (!isNonEmptyString(classId)) {
@@ -900,11 +1019,12 @@
             return Promise.resolve(failure('Failed to clone class data.'));
         }
 
-        // Ensure the candidate always carries restDays; older records
-        // may predate the field even though normaliseDataStructure
-        // backfills it, so guard defensively.
+        // ---- Legacy guards ----
         if (!Array.isArray(candidate.restDays)) {
             candidate.restDays = [];
+        }
+        if (!isObject(candidate.restDaysByWeek)) {
+            candidate.restDaysByWeek = {};
         }
 
         if (updates.name !== undefined) {
@@ -948,6 +1068,16 @@
             candidate.restDays = restDaysResult.value;
         }
 
+        if (updates.restDaysByWeek !== undefined) {
+            var rdwResult = validateRestDaysByWeekValue(
+                updates.restDaysByWeek
+            );
+            if (!rdwResult.valid) {
+                return Promise.resolve(failure(rdwResult.message));
+            }
+            candidate.restDaysByWeek = rdwResult.value;
+        }
+
         candidate.updatedAt = new Date().toISOString();
 
         return MutationPipeline.performMutation({
@@ -980,12 +1110,6 @@
 
     /**
      * Delete a class permanently.
-     *
-     * CASCADE. In a single transaction it:
-     *   1. Strips the classId from every character's classIds array.
-     *   2. Deletes the class entity from academy.graduatingClasses.
-     *   3. Delegates cross-domain cleanup to
-     *      AcademyCascade.classDeleted.
      */
     function deleteClass(classId) {
         if (!isNonEmptyString(classId)) {
@@ -1019,7 +1143,6 @@
                     throw new Error('Class not found in data store.');
                 }
 
-                // ---- 1. Strip classId from every character ----
                 var affectedCharacters = 0;
                 if (Array.isArray(data.characters)) {
                     for (var i = 0; i < data.characters.length; i++) {
@@ -1037,10 +1160,8 @@
                     }
                 }
 
-                // ---- 2. Delete the class entity ----
                 delete data.academy.graduatingClasses[target];
 
-                // ---- 3. Cross-domain cascade ----
                 var cascade = null;
                 var Cascade = getAcademyCascade();
                 if (Cascade && typeof Cascade.classDeleted === 'function') {
@@ -1129,6 +1250,47 @@
             result.push(deepClone(records[i]));
         }
         return result;
+    }
+
+    // ============================================================
+    // REST DAYS RESOLUTION
+    // ============================================================
+    //
+    // The canonical reader: given a class and a week, return the
+    // effective rest days for that week.
+    //
+    // Precedence:
+    //   1. restDaysByWeek[week], when present.
+    //   2. restDays, otherwise.
+    //
+    // Returns a fresh array. The caller cannot mutate the underlying
+    // storage through the returned reference. A malformed entry is
+    // normalised defensively (empty array on any failure).
+
+    function getRestDaysForWeek(classId, week) {
+        var cls = getClassInternal(classId);
+        if (!cls) {
+            return [];
+        }
+
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            // Fall back to the default when the week is malformed.
+            // Callers that need a strict answer can pre-validate
+            // the week themselves.
+            return normaliseRestDays(cls.restDays);
+        }
+
+        if (isObject(cls.restDaysByWeek)) {
+            var key = String(weekNum);
+            if (Object.prototype.hasOwnProperty.call(
+                cls.restDaysByWeek, key
+            )) {
+                return normaliseRestDays(cls.restDaysByWeek[key]);
+            }
+        }
+
+        return normaliseRestDays(cls.restDays);
     }
 
     // ============================================================
@@ -1345,16 +1507,6 @@
         });
     }
 
-    /**
-     * Add a character to a class by class name. Creates the class
-     * entity inside the same transaction when the name does not
-     * already resolve to a class.
-     *
-     * ENTITY SHAPE CONTRACT:
-     *   The created class entity matches AcademyClasses.create's
-     *   shape exactly, including `restDays: []` (v30). Newly
-     *   auto-created classes start with no rest days.
-     */
     function addClassByName(charId, className) {
         if (!charId) {
             return Promise.resolve(failure('Character ID is required.'));
@@ -1438,6 +1590,7 @@
                         year: null,
                         description: '',
                         restDays: [],
+                        restDaysByWeek: {},
                         createdAt: now,
                         updatedAt: now
                     };
@@ -1588,9 +1741,12 @@
         normaliseClassIds: normaliseClassIds,
         getNormalisedClassIds: getNormalisedClassIds,
 
-        // ---- Rest days helpers (v30) ----
+        // ---- Rest days helpers (v30, extended v31) ----
         normaliseRestDays: normaliseRestDays,
         validateRestDays: validateRestDaysValue,
+        normaliseRestDaysByWeek: normaliseRestDaysByWeek,
+        validateRestDaysByWeek: validateRestDaysByWeekValue,
+        getRestDaysForWeek: getRestDaysForWeek,
 
         // ---- Constants ----
         VALID_STATUSES: VALID_STATUSES,
