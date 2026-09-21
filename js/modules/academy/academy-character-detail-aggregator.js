@@ -27,64 +27,21 @@
  *   EliminationQueries            elimination week, reason, state
  *   CalendarConstants             week bounds + day/hour labels
  *
- * TEACHING GROUPS:
- *   The instructor projection carries `teachingGroups` — the
- *   groups the instructor runs, grouped by discipline, scoped to
- *   the currently selected class.
+ * SCHEDULE GRID EDITABILITY:
+ *   The schedule-grid VM carries two flags the renderer reads:
  *
- *   Each group VM now also carries its sessions. A group is a
- *   who and a when; the projection surfaces both. The session
- *   VMs are read-only projections; the session editor lives in
- *   academy-session-form-modal.js and writes through
- *   AcademyTeachingSessions.
+ *     canEdit                 student mode: empty cells accept
+ *                             assign; occupied cells accept
+ *                             slot-open.
  *
- * INSTRUCTOR DISCIPLINES:
- *   An instructor's "disciplines I teach" list is derived from
- *   enrolments. There is no instructor list on the discipline
- *   entity.
+ *     canEditInstructorSlot   instructor mode: empty cells accept
+ *                             schedule-assign-instructor. Occupied
+ *                             cells remain clickable for
+ *                             remove-group, gated by the cell's
+ *                             data-mode.
  *
- * VIEW MODEL SHAPE:
- *
- *   {
- *     character: { id, name, status, age, deceased },
- *     mode: 'student' | 'instructor',
- *     activeTab: string,
- *     tabs: [{ id, label }],
- *     classContext: null | { id, name },
- *     classes: [{ id, name }],
- *     elimination: null | { week, reason, state },
- *     performance: null | { week, academicAverage, socialScore, overallScore },
- *     student: null | {
- *       disciplines: [{ id, name, type }],
- *       grades: { average, count, hasAny },
- *       teams: [{ id, name, typeLabel }]
- *     },
- *     instructor: null | {
- *       disciplines: [{ id, name, type, classIds, classNames }],
- *       teachingGroups: [{
- *         disciplineId,
- *         disciplineName,
- *         groups: [{
- *           groupId,
- *           customName,
- *           groupNumber,
- *           displayName,
- *           memberCount,
- *           members: [{ id, name, status, age, deceased }],
- *           sessionCount,
- *           sessions: [{
- *             sessionId,
- *             day, dayLabel,
- *             startTime, startTimeLabel,
- *             duration, durationLabel,
- *             locationId, locationName,
- *             startWeek, endWeek,
- *             periodDisplay
- *           }]
- *         }]
- *       }]
- *     }
- *   }
+ *   The renderer never infers editability from mode; the
+ *   aggregator states it.
  *
  * NULL SEMANTICS:
  *   - character is always present (returns null if not found).
@@ -93,11 +50,6 @@
  *     enrolments for the selected class, or when no class is
  *     selected.
  *   - Display fields use '—' or null rather than invented values.
- *
- * WEEK SEMANTICS:
- *   - Week is required for class-scoped projections.
- *   - When week is invalid or absent, class-scoped sections return
- *     null or an empty collection rather than defaulting.
  *
  * DEPENDENCIES (mandatory):
  *   - window.CharacterQueries
@@ -110,16 +62,13 @@
  *   - window.CalendarConstants
  *
  * DEPENDENCIES (optional, feature-scoped):
- *   - window.AcademyTeachingSessions  (group session VMs)
- *   - window.AcademyLocations         (session location names)
+ *   - window.AcademyTeachingSessions
+ *   - window.AcademyLocations
  *   - window.AcademyPerformance
  *   - window.AcademySocialScore
  *   - window.TeamQueries
  *   - window.EliminationQueries
  *   - window.AcademyCalendarAggregator
- *
- *   Optional dependencies degrade to null sections or empty
- *   collections, not fabricated data.
  */
 
 (function() {
@@ -582,17 +531,6 @@
     // ============================================================
     // INSTRUCTOR DISCIPLINES
     // ============================================================
-    //
-    // An instructor's disciplines are DERIVED from enrolments.
-    //
-    // Walk:
-    //   For each class the character is a member of:
-    //     For each class-discipline marker:
-    //       If the character has an enrolment in that discipline
-    //       for that class, add (disciplineId, classId).
-    //
-    // Collect distinct disciplineIds. For each, capture the set of
-    // classIds the instructor teaches it for.
 
     function buildInstructorDisciplines(char) {
         var charClasses = AcademyClasses.getCharacterClasses(char) || [];
@@ -678,16 +616,6 @@
     // ============================================================
     // TEACHING GROUPS — SESSION VMs
     // ============================================================
-    //
-    // A group is a who and a when. The roster projection already
-    // lives in buildTeachingGroupVM; this block adds the "when".
-    //
-    // The session's window is the discipline's window. The
-    // aggregator reads both and exposes them on each session VM
-    // so the renderer can display a period string.
-    //
-    // Sessions are sorted by (day, startTime, sessionId) for
-    // determinism, matching the projector's canonical order.
 
     function buildTeachingGroupSessionsVM(group) {
         if (!group || !group.id) { return []; }
@@ -706,9 +634,6 @@
 
         if (!Array.isArray(rawSessions)) { return []; }
 
-        // Resolve the discipline's window once. It is the same
-        // for every session of the group; the per-session window
-        // is a future extension point, not a current override.
         var disciplineStart = null;
         var disciplineEnd = null;
         if (isNonEmptyString(group.disciplineId)) {
@@ -826,25 +751,12 @@
     // ============================================================
     // TEACHING GROUPS — GROUP VMs
     // ============================================================
-    //
-    // The groups the instructor runs for the selected class,
-    // grouped by discipline. Every discipline the instructor has
-    // an instructor-mode enrolment for appears as a container,
-    // even when it has no groups yet.
-    //
-    // SCOPE:
-    //   - Instructor: the character whose detail panel is open.
-    //   - Class:      the currently selected class only.
-    //   - Week:       the display week.
 
     function buildInstructorTeachingGroups(char, classId, week) {
         if (!isNonEmptyString(classId) || week === null) {
             return [];
         }
 
-        // Which disciplines does this instructor teach for this
-        // class? Reuse the derived list, filtered to the selected
-        // class.
         var disciplines = buildInstructorDisciplines(char);
         var teachesForClass = [];
         for (var d = 0; d < disciplines.length; d++) {
@@ -858,9 +770,6 @@
             return [];
         }
 
-        // Fetch this instructor's groups, then filter to the
-        // selected class. getGroupsForInstructor returns every
-        // group this character instructs across every class.
         var allGroups = [];
         try {
             allGroups = AcademyTeachingGroups.getGroupsForInstructor(
@@ -870,7 +779,6 @@
             allGroups = [];
         }
 
-        // Index by disciplineId for the container walk below.
         var groupsByDiscipline = Object.create(null);
         for (var g = 0; g < allGroups.length; g++) {
             var group = allGroups[g];
@@ -999,24 +907,6 @@
     // ============================================================
     // TEACHING GROUP CANDIDATE VIEW MODEL
     // ============================================================
-    //
-    // The candidate pool for adding a student to a specific
-    // teaching group. Called on demand by the controller when the
-    // user opens the inline picker on a group row.
-    //
-    // The candidate set is:
-    //   - students enrolled in (classId, disciplineId) at the week
-    //   - MINUS students already active in THIS group at the week
-    //   - MINUS students already active in any sibling group for
-    //     the same (classId, disciplineId) at the week
-    //   - MINUS students eliminated as of the week
-    //
-    // The strict exclusion of siblings mirrors the resolver in
-    // AcademySchedule.assignStudentToSlot: a student belongs to
-    // at most one active group per class-discipline at a time.
-    //
-    // Returns null when the group does not exist, or when the
-    // character is not the group's instructor.
 
     function getTeachingGroupCandidateViewModel(charId, groupId, options) {
         if (!isNonEmptyString(charId) || !isNonEmptyString(groupId)) {
@@ -1046,7 +936,6 @@
         var classId = String(group.classId);
         var disciplineId = String(group.disciplineId);
 
-        // 1. Enrolled students for the class-discipline at the week.
         var enrolledIds = [];
         try {
             enrolledIds = AcademyEnrolments.getEnrolledStudents(
@@ -1056,7 +945,6 @@
             enrolledIds = [];
         }
 
-        // 2. Exclude students already active in this group.
         var excluded = Object.create(null);
         var thisGroupMembers = [];
         try {
@@ -1072,8 +960,6 @@
             }
         }
 
-        // 3. Exclude students active in any sibling group for the
-        // same (classId, disciplineId).
         var siblingGroups = [];
         try {
             siblingGroups = AcademyTeachingGroups.getGroupsForDiscipline(
@@ -1102,7 +988,6 @@
             }
         }
 
-        // 4. Build the candidate list.
         var EQ = getEliminationQueries();
 
         var candidates = [];
@@ -1227,12 +1112,16 @@
     // NOT read AcademyUI for the mode; it is a pure function of
     // its inputs.
     //
-    // Normalises two API shapes:
+    // EDITABILITY:
+    //   canEdit               student mode: cells emit assign and
+    //                         slot-open.
+    //   canEditInstructorSlot instructor mode: empty cells emit
+    //                         schedule-assign-instructor. Occupied
+    //                         cells still emit schedule-slot-open
+    //                         with data-mode="remove-group".
     //
-    //   getScheduleGridViewModel(charId, 5)                    [legacy]
-    //   getScheduleGridViewModel(charId, { week: 5 })          [legacy]
-    //   getScheduleGridViewModel(charId, { week: 5,
-    //                                      mode: 'student' }) [preferred]
+    //   The renderer reads both flags; it does not derive either
+    //   from mode.
 
     var VALID_SCHEDULE_MODES = ['student', 'instructor'];
 
@@ -1321,6 +1210,12 @@
         return {
             mode: mode,
             canEdit: !isInstructor,
+
+            // Instructor mode: empty cells accept
+            // schedule-assign-instructor. Always true when the grid
+            // is instructor mode; the modal itself handles the
+            // no-disciplines-for-this-class case.
+            canEditInstructorSlot: isInstructor,
 
             schedule: vm.schedule || {},
             restDays: Array.isArray(vm.restDays) ? vm.restDays.slice() : [],
