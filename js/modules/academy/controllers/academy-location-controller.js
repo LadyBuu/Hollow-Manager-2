@@ -4,37 +4,44 @@
  *
  * Path: js/modules/academy/controllers/academy-location-controller.js
  *
- * The Locations feature controller. Owns the Locations view: its
- * render, its row selection, its type/search filters, its week
- * selector, its CRUD modal routing, and the schedule grid mount.
+ * The Locations feature controller. Owns the Locations view.
  *
  * WHAT THIS OWNS:
  *   - Rendering the Locations view into the shell's content host.
  *   - Handling clicks, changes, inputs, and keydowns routed by
- *     the shell for events that occur inside the host.
- *   - The location selection (_selectedLocationId).
- *   - The list filter (_locationFilters).
- *   - The search debounce timer.
+ *     the shell for events inside the host.
+ *   - The location selection.
+ *   - The list filter and search debounce.
  *   - Routing location-* actions to AcademyCRUDModals.
- *   - Mounting the schedule grid into
+ *   - Mounting the read-only schedule grid into
  *     #academy-location-schedule-host.
+ *   - Mounting the co-occupants panel into
+ *     #academy-schedule-co-occupants-host, when a marker is
+ *     clicked.
  *
  * WHAT THIS DOES NOT OWN:
  *   - The content host. The shell provides it.
- *   - The display week. The controller reads and writes it through
- *     AcademyUI.
+ *   - The display week. Read and written through AcademyUI.
  *   - Re-rendering the shell.
  *   - Location domain reads and writes.
  *
+ * CO-OCCUPANTS PANEL:
+ *   The location grid is read-only: cells carry no action. The
+ *   one interactive element inside an occupied cell is the
+ *   co-occupant marker, which emits
+ *   data-action="schedule-co-occupants-open" with the cell's
+ *   day and hour. This controller resolves the slot's
+ *   coOccupants list from the grid VM it already fetched and
+ *   renders a detail panel below the grid.
+ *
+ *   Only one panel is open at a time. Clicking the same marker
+ *   closes it. Clicking a different marker swaps contents.
+ *   Re-rendering the view (week change, location change) clears
+ *   the panel state.
+ *
  * SCHEDULE GRID:
  *   Produced by AcademyCalendarAggregator, handed to
- *   CalendarRenderer. This controller asks for the grid VM and
- *   places the HTML. It does not know how the grid is shaped.
- *
- * WEEK SELECTOR:
- *   The location view's top bar carries a week input. Changing
- *   the week fires AcademyUI.setDisplayWeek and re-renders. The
- *   grid re-mounts on the new week because render is re-entered.
+ *   CalendarRenderer.
  *
  * DEPENDENCIES (mandatory):
  *   - window.AcademyUI
@@ -116,8 +123,33 @@
         return typeof value === 'string' && value.trim() !== '';
     }
 
+    function isFiniteNumber(value) {
+        return typeof value === 'number' && isFinite(value);
+    }
+
     function notify(message, type) {
         NotificationSystem.notify(message, type || 'info');
+    }
+
+    function escapeHtml(value) {
+        var DU = window.DomUtils;
+        if (DU && typeof DU.escapeHtml === 'function') {
+            return DU.escapeHtml(value);
+        }
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    function escapeAttribute(value) {
+        var DU = window.DomUtils;
+        if (DU && typeof DU.escapeAttribute === 'function') {
+            return DU.escapeAttribute(value);
+        }
+        return escapeHtml(value);
     }
 
     // ============================================================
@@ -130,6 +162,20 @@
     var _selectedLocationId = null;
     var _locationFilters = { type: 'all', search: '' };
     var _locationSearchTimer = null;
+
+    // Co-occupants panel state.
+    //
+    //   _openCoOccupantsSlot = { day, hour } | null
+    //
+    // The slot descriptor itself is re-resolved from the grid VM
+    // on every mount, so the panel never holds a stale reference
+    // to a slot.
+    var _openCoOccupantsSlot = null;
+
+    // Cached grid VM per render. Used by the co-occupants
+    // handler to resolve the slot descriptor by (day, hour)
+    // without a second aggregator call.
+    var _currentGridVM = null;
 
     // ============================================================
     // CONTEXT NORMALISATION
@@ -163,6 +209,12 @@
 
         _host = host;
         _context = normaliseContext(rawContext);
+
+        // A re-render invalidates the panel: the grid is about to
+        // be replaced, and the slot it referenced may no longer
+        // exist (different week, different location).
+        _openCoOccupantsSlot = null;
+        _currentGridVM = null;
 
         var week = AcademyUI.getDisplayWeek();
 
@@ -209,8 +261,6 @@
 
         host.innerHTML = html;
 
-        // Mount the schedule grid into its host. Runs after the
-        // innerHTML swap, so the host element is present.
         if (_selectedLocationId) {
             mountLocationScheduleGridIfPresent(_selectedLocationId, week);
         }
@@ -259,16 +309,20 @@
             return;
         }
 
+        // Cache the grid VM so the co-occupants handler can
+        // resolve slot descriptors without a second aggregator
+        // call. Cleared on every render.
+        _currentGridVM = gridVM;
+
         var renderState = {
             selectedId: locationId,
             week: week
         };
 
         var renderVM = {
-            // canEdit is false: the location grid is read-only. A
-            // location is a resource, not an actor; the assign
-            // flow belongs to the character's schedule grid.
+            // canEdit is false: the location grid is read-only.
             canEdit: false,
+            canEditInstructorSlot: false,
 
             mode: null,
             schedule: gridVM.schedule,
@@ -289,7 +343,203 @@
             host.innerHTML = '<p class="empty-state small">' +
                 'Failed to render schedule grid.' +
                 '</p>';
+            return;
         }
+
+        // If the panel was open before this render and the same
+        // slot still exists on the new grid, re-mount it. The
+        // render() entry point clears the panel state, so this
+        // branch is only reached on the initial mount or on a
+        // re-mount triggered without a full render pass.
+        if (_openCoOccupantsSlot) {
+            mountCoOccupantsPanel();
+        }
+    }
+
+    // ============================================================
+    // CO-OCCUPANTS PANEL
+    // ============================================================
+
+    function handleCoOccupantsOpen(el) {
+        if (!el || !el.dataset) { return; }
+
+        var day = parseInt(el.dataset.day, 10);
+        var hour = parseInt(el.dataset.hour, 10);
+
+        if (isNaN(day) || isNaN(hour)) {
+            return;
+        }
+
+        var slot = { day: day, hour: hour };
+
+        // Toggle: clicking the same marker again closes the panel.
+        if (_openCoOccupantsSlot &&
+            _openCoOccupantsSlot.day === day &&
+            _openCoOccupantsSlot.hour === hour) {
+            closeCoOccupantsPanel();
+            return;
+        }
+
+        _openCoOccupantsSlot = slot;
+        mountCoOccupantsPanel();
+    }
+
+    function closeCoOccupantsPanel() {
+        _openCoOccupantsSlot = null;
+        var host = document.getElementById(
+            'academy-schedule-co-occupants-host'
+        );
+        if (host) {
+            host.innerHTML = '';
+        }
+    }
+
+    function resolveSlotDescriptor(day, hour) {
+        if (!_currentGridVM || !_currentGridVM.schedule) {
+            return null;
+        }
+        var daySchedule = _currentGridVM.schedule[day];
+        if (!daySchedule || typeof daySchedule !== 'object') {
+            return null;
+        }
+        var slot = daySchedule[hour];
+        if (!slot || typeof slot !== 'object') {
+            return null;
+        }
+        return slot;
+    }
+
+    function mountCoOccupantsPanel() {
+        var host = document.getElementById(
+            'academy-schedule-co-occupants-host'
+        );
+        if (!host) { return; }
+
+        if (!_openCoOccupantsSlot) {
+            host.innerHTML = '';
+            return;
+        }
+
+        var day = _openCoOccupantsSlot.day;
+        var hour = _openCoOccupantsSlot.hour;
+
+        var slot = resolveSlotDescriptor(day, hour);
+        if (!slot) {
+            host.innerHTML = '';
+            _openCoOccupantsSlot = null;
+            return;
+        }
+
+        host.innerHTML = buildCoOccupantsPanelHTML(slot, day, hour);
+    }
+
+    /**
+     * Build the panel HTML.
+     *
+     * Two slots can share a cell: the primary (the one the
+     * projector placed first) and the co-occupants. Both are
+     * rendered, the primary first, so the panel is a complete
+     * list of who is in the room.
+     */
+    function buildCoOccupantsPanelHTML(slot, day, hour) {
+        var AC = window.CalendarConstants;
+        var dayLabel = AC && typeof AC.getDayName === 'function'
+            ? (AC.getDayName(day) || ('Day ' + day))
+            : ('Day ' + day);
+        var hourLabel = AC && typeof AC.formatHour === 'function'
+            ? (AC.formatHour(hour) || (hour + ':00'))
+            : (hour + ':00');
+
+        var primary = {
+            disciplineName: slot.disciplineName || 'Unknown',
+            instructorName: slot.instructorName || '',
+            duration: isFiniteNumber(slot.duration) ? slot.duration : 1
+        };
+
+        var coOccupants = Array.isArray(slot.coOccupants)
+            ? slot.coOccupants
+            : [];
+
+        var total = 1 + coOccupants.length;
+
+        var html = '';
+        html += '<div class="schedule-co-occupants-panel">';
+
+        html += '<div class="schedule-co-occupants-header">';
+        html += '<span class="schedule-co-occupants-title">' +
+                    escapeHtml(dayLabel) + ', ' +
+                    escapeHtml(hourLabel) +
+                '</span>';
+        html += '<span class="schedule-co-occupants-count">' +
+                    total + ' group' + (total === 1 ? '' : 's') +
+                    ' in this slot' +
+                '</span>';
+        html += '<button type="button" ' +
+                    'class="schedule-co-occupants-close" ' +
+                    'data-action="schedule-co-occupants-close" ' +
+                    'aria-label="Close">&times;</button>';
+        html += '</div>';
+
+        html += '<ul class="schedule-co-occupants-list">';
+        html += renderCoOccupantsRow(primary, true);
+        for (var i = 0; i < coOccupants.length; i++) {
+            html += renderCoOccupantsRow(coOccupants[i], false);
+        }
+        html += '</ul>';
+
+        html += '</div>';
+
+        return html;
+    }
+
+    function renderCoOccupantsRow(occ, isPrimary) {
+        if (!occ) { return ''; }
+
+        var disciplineName = isNonEmptyString(occ.disciplineName)
+            ? occ.disciplineName
+            : 'Unknown Discipline';
+        var instructorName = isNonEmptyString(occ.instructorName)
+            ? occ.instructorName
+            : '';
+        var duration = isFiniteNumber(occ.duration)
+            ? occ.duration
+            : null;
+
+        var rowClass = 'schedule-co-occupants-row';
+        if (isPrimary) {
+            rowClass += ' schedule-co-occupants-row-primary';
+        }
+
+        var html = '';
+        html += '<li class="' + rowClass + '">';
+
+        html += '<span class="schedule-co-occupants-bullet">' +
+                    (isPrimary ? '\u25cf' : '\u25cb') +
+                '</span>';
+
+        html += '<span class="schedule-co-occupants-discipline">' +
+                    escapeHtml(disciplineName) +
+                '</span>';
+
+        if (instructorName) {
+            html += '<span class="schedule-co-occupants-instructor">' +
+                        escapeHtml(instructorName) +
+                    '</span>';
+        } else {
+            html += '<span class="schedule-co-occupants-instructor ' +
+                        'schedule-co-occupants-instructor-empty">' +
+                        'No instructor' +
+                    '</span>';
+        }
+
+        if (duration !== null && duration > 1) {
+            html += '<span class="schedule-co-occupants-duration">' +
+                        duration + 'h' +
+                    '</span>';
+        }
+
+        html += '</li>';
+        return html;
     }
 
     // ============================================================
@@ -302,10 +552,37 @@
             return;
         }
 
+        // ---- Co-occupants panel close button ----
+        if (target.closest('[data-action="schedule-co-occupants-close"]')) {
+            e.preventDefault();
+            closeCoOccupantsPanel();
+            return;
+        }
+
+        // ---- Co-occupants marker ----
+        //
+        // Checked BEFORE the location row and the generic action
+        // dispatch, because the marker lives inside the grid,
+        // which lives inside a detail panel that is inside a
+        // location detail container. The location row check
+        // would not match it (rows live in the sidebar), but
+        // ordering makes the intent explicit.
+        var marker = target.closest(
+            '[data-action="schedule-co-occupants-open"]'
+        );
+        if (marker && marker.dataset) {
+            e.preventDefault();
+            handleCoOccupantsOpen(marker);
+            return;
+        }
+
         // ---- Location row selection ----
         var row = target.closest('.academy-location-row');
         if (row && row.dataset && row.dataset.locationId) {
             e.preventDefault();
+            // Selecting a location invalidates any open panel;
+            // the slot it referenced belongs to the old location.
+            _openCoOccupantsSlot = null;
             handleRowClick(row.dataset.locationId);
             return;
         }
@@ -331,11 +608,6 @@
                 openLocationDelete(actionEl.dataset.locationId);
                 return;
             default:
-                // Diagnostic: a click on an element carrying
-                // data-action that the switch does not recognise.
-                // If you see this in the console when clicking a
-                // location control, the action name is mismatched
-                // between the view and this controller.
                 console.warn(
                     '[AcademyLocationController] unhandled action:',
                     action
@@ -456,6 +728,9 @@
             clearTimeout(_locationSearchTimer);
             _locationSearchTimer = null;
         }
+
+        _openCoOccupantsSlot = null;
+        _currentGridVM = null;
 
         _host = null;
         _context = null;
