@@ -9,7 +9,8 @@
  * delete an entire teaching group from the schedule.
  *
  * MODES:
- *   'assign'          (default) pick a discipline + duration, submit
+ *   'assign'          (default) pick a discipline + duration +
+ *                     optional location, submit
  *                     → AcademySchedule.assignStudentToSlot
  *   'remove-student'  confirm removal of one student from one group
  *                     → AcademyTeachingGroups.removeMemberRecord
@@ -19,33 +20,47 @@
  *
  * WHAT THIS MODULE OWNS:
  *   The modal shell, its content, its listeners, its view model, and
- *   its submission handlers for all three modes. The modal is opened
- *   from the character detail panel's Schedule tab, via the People
- *   controller, when the user clicks a grid cell.
+ *   its submission handlers for all three modes. Opened from the
+ *   character detail panel's Schedule tab, via the People controller,
+ *   when the user clicks a grid cell.
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - The schedule grid. CalendarRenderer produces it.
- *   - The click dispatch. AcademyPeopleController routes
- *     data-action="schedule-assign" (empty cells) and
- *     data-action="schedule-slot-open" (occupied cells) to this
+ *   - The click dispatch. AcademyPeopleController routes to this
  *     module's openModal.
- *   - Group and session resolution. AcademySchedule.assignStudentToSlot
- *     owns it. This modal does not decide which group a student joins,
- *     whether a session should be created, or which instructor
- *     applies. It collects intent and passes it to the domain.
+ *   - Group and session resolution. AcademySchedule owns it.
  *   - Discipline eligibility. The modal offers the class's active
  *     offerings via AcademyClassDisciplinesQueries; whether a given
- *     offering is legal for the student is decided by the domain
- *     when the mutation runs.
+ *     offering is legal for the student is decided by the domain.
+ *   - Location eligibility. The modal offers every location in the
+ *     store; the domain validates the chosen ID. An empty location
+ *     is valid.
  *   - Collision policy. The domain detects collisions; this modal
- *     surfaces the rejection and offers a retry with allowCollisions.
+ *     surfaces the rejection and offers a retry with
+ *     allowCollisions.
+ *
+ * SESSION LOCATION (this revision):
+ *   The 'assign' mode form gains a location dropdown, sourced from
+ *   AcademyLocations.getLocations(). Optional. An empty selection
+ *   sends locationId: null.
+ *
+ *   The location is applied ONLY when the domain creates a new
+ *   session. When the student is assigned to an existing session
+ *   (matching day / start hour / duration on a candidate group),
+ *   the location select is ignored — the session keeps its own
+ *   location. That is the domain's rule and this modal honors it by
+ *   not pretending to override it.
+ *
+ *   To change the location of an existing session, use the session
+ *   form (from the Teaching Groups tab's Sessions list).
  *
  * MODAL SHAPE — ASSIGN MODE:
  *   Header: "Assign discipline"
  *   Body:
- *     - Slot summary line: "Monday, 9:00 AM, Week 5"
- *     - Discipline select (the class's active offerings)
- *     - Duration select (MIN_CLASS_DURATION to MAX_CLASS_DURATION)
+ *     - Slot summary line
+ *     - Discipline select
+ *     - Duration select
+ *     - Location select (optional)
  *   Footer:
  *     - Cancel
  *     - Assign (disabled until a discipline is chosen)
@@ -54,7 +69,7 @@
  *   Header: "Remove student from slot"
  *   Body:
  *     - Slot summary line
- *     - Warning panel: "Remove [Name] from this slot?"
+ *     - Warning panel
  *     - Detail: discipline, duration, member count
  *   Footer:
  *     - Cancel
@@ -64,22 +79,21 @@
  *   Header: "Delete teaching group"
  *   Body:
  *     - Slot summary line
- *     - Warning panel: "Delete this group and every session on it?"
+ *     - Warning panel
  *     - Detail: discipline, duration, member count, session count
  *   Footer:
  *     - Cancel
  *     - Delete Group (danger)
  *
  * COLLISION RETRY:
- *   When AcademySchedule.assignStudentToSlot rejects with
- *   reason: 'student_collision' or reason: 'instructor_collision',
- *   the modal does not close. It shows a confirmation inline.
- *   Other rejections are shown as an error toast.
+ *   When assignStudentToSlot rejects with reason: 'student_collision'
+ *   or reason: 'instructor_collision', the modal shows a
+ *   confirmation inline. Other rejections are shown as an error
+ *   toast.
  *
  * WINDOW SEMANTICS:
  *   The membership window is derived by the domain, not the modal.
- *   The domain caps it at the tighter of the enrolment interval and
- *   the discipline's endWeek. This modal passes only `week`.
+ *   The modal passes only `week`.
  *
  * INPUT VALIDATION:
  *   The modal performs strict numeric validation on the values it
@@ -89,8 +103,7 @@
  * LISTENER DISCIPLINE:
  *   Content listeners are bound ONCE, on the modal's content element,
  *   when the modal is created. Re-rendering replaces innerHTML but
- *   does not rebind. Modal-level listeners are installed by
- *   Modal.modalSetup.
+ *   does not rebind.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -99,47 +112,11 @@
  *   - window.AcademyUI
  *   - window.AcademyClassDisciplinesQueries
  *   - window.AcademyDisciplines
+ *   - window.AcademyLocations
  *   - window.AcademySchedule
  *   - window.AcademyTeachingGroups
  *   - window.CharacterQueries
  *   - window.CalendarConstants
- *
- * USAGE:
- *   // Assign
- *   AcademyScheduleAssignModal.openModal({
- *       charId: 'char_1',
- *       classId: 'class_1',
- *       week: 5, day: 1, startHour: 9,
- *       onClose: function() { ... }
- *   });
- *
- *   // Remove student
- *   AcademyScheduleAssignModal.openModal({
- *       mode: 'remove-student',
- *       charId: 'char_1',
- *       classId: 'class_1',
- *       week: 5, day: 1, startHour: 9,
- *       groupId: 'tgroup_abc',
- *       sessionId: 'tsession_xyz',
- *       disciplineName: 'English',
- *       duration: 2,
- *       memberCount: 4,
- *       onClose: function() { ... }
- *   });
- *
- *   // Remove group
- *   AcademyScheduleAssignModal.openModal({
- *       mode: 'remove-group',
- *       classId: 'class_1',
- *       week: 5, day: 1, startHour: 9,
- *       groupId: 'tgroup_abc',
- *       sessionId: 'tsession_xyz',
- *       disciplineName: 'English',
- *       duration: 2,
- *       memberCount: 4,
- *       sessionCount: 3,
- *       onClose: function() { ... }
- *   });
  */
 
 (function() {
@@ -160,6 +137,7 @@
     var AcademyClassDisciplinesQueries =
         window.AcademyClassDisciplinesQueries;
     var AcademyDisciplines = window.AcademyDisciplines;
+    var AcademyLocations = window.AcademyLocations;
     var AcademySchedule = window.AcademySchedule;
     var AcademyTeachingGroups = window.AcademyTeachingGroups;
     var CharacterQueries = window.CharacterQueries;
@@ -195,6 +173,10 @@
     if (!AcademyDisciplines ||
         typeof AcademyDisciplines.getDiscipline !== 'function') {
         _missing.push('AcademyDisciplines.getDiscipline');
+    }
+    if (!AcademyLocations ||
+        typeof AcademyLocations.getLocations !== 'function') {
+        _missing.push('AcademyLocations.getLocations');
     }
     if (!AcademySchedule ||
         typeof AcademySchedule.assignStudentToSlot !== 'function') {
@@ -252,20 +234,16 @@
     var _contentChangeHandler = null;
     var _contentClickHandler = null;
 
-    // Current form state, mirrored from the DOM on input so the
-    // submit handler has it even if the select element is replaced
-    // by a re-render. Reset on every openModal.
     var _selectedDisciplineId = '';
     var _selectedDuration = DEFAULT_DURATION;
+    var _selectedLocationId = '';
 
     // When the domain rejects with a policy collision, the modal
     // shows a confirm prompt. `_pendingCollision` holds the last
-    // rejection so the retry can carry its reason forward; when
-    // null, the next submit is a fresh attempt.
+    // rejection so the retry can carry its reason forward.
     var _pendingCollision = null;
 
-    // True while a submission is in flight. Clicks that would
-    // issue a second submission are ignored.
+    // True while a submission is in flight.
     var _busy = false;
 
     // ============================================================
@@ -276,14 +254,6 @@
         return typeof value === 'string' && value.trim() !== '';
     }
 
-    /**
-     * Strict integer parse. Accepts an integer or a pure digit
-     * string (optionally signed). Rejects floats, strings with
-     * trailing characters, NaN, undefined, null.
-     *
-     * The domain re-validates every one of these, but the modal
-     * should not accept "5foo" as week 5.
-     */
     function parseStrictInteger(value) {
         if (value === undefined || value === null) { return null; }
 
@@ -346,32 +316,29 @@
     }
 
     // ============================================================
+    // LOCATION LIST
+    // ============================================================
+    //
+    // Read once per render. Sorted alphabetically. The store is
+    // small, so no pagination or filtering.
+
+    function getAvailableLocations() {
+        var all = [];
+        try {
+            all = AcademyLocations.getLocations() || [];
+        } catch (e) {
+            all = [];
+        }
+        all.sort(function(a, b) {
+            return String(a.name || '').localeCompare(String(b.name || ''));
+        });
+        return all;
+    }
+
+    // ============================================================
     // ENTRY POINT
     // ============================================================
 
-    /**
-     * Open the modal.
-     *
-     * @param {object} options
-     * @param {string} [options.mode]        'assign' (default) |
-     *                                       'remove-student' |
-     *                                       'remove-group'
-     * @param {string} [options.charId]      required in 'assign' and
-     *                                       'remove-student' modes
-     * @param {string} options.classId       required in every mode
-     * @param {number} options.week          required, integer
-     * @param {number} options.day           required, integer
-     * @param {number} options.startHour     required, integer
-     * @param {string} [options.groupId]     required in 'remove-*' modes
-     * @param {string} [options.sessionId]   required in 'remove-*' modes
-     * @param {string} [options.disciplineName] display in 'remove-*' modes
-     * @param {number} [options.duration]    display in 'remove-*' modes
-     * @param {number} [options.memberCount] display in 'remove-*' modes
-     * @param {number} [options.sessionCount] display in 'remove-group' mode
-     * @param {function} [options.onClose]   called once when the modal
-     *                                       closes, regardless of reason
-     * @returns {object|null} the modal element, or null on failure
-     */
     function openModal(options) {
         if (!options || typeof options !== 'object') {
             notify('Invalid schedule request.', 'error');
@@ -433,16 +400,11 @@
         }
 
         if (mode === 'remove-student' || mode === 'remove-group') {
-            // sessionId is optional — used for display only in the
-            // confirmation, not for the mutation. The cascade that
-            // removes a group finds its own sessions; removing a
-            // single student does not touch sessions.
             sessionId = isNonEmptyString(options.sessionId)
                 ? String(options.sessionId)
                 : null;
         }
 
-        // Close any prior instance.
         closeModal();
 
         _context = {
@@ -466,6 +428,7 @@
             : null;
         _selectedDisciplineId = '';
         _selectedDuration = DEFAULT_DURATION;
+        _selectedLocationId = '';
         _pendingCollision = null;
         _busy = false;
 
@@ -549,6 +512,7 @@
         _contentClickHandler = null;
         _selectedDisciplineId = '';
         _selectedDuration = DEFAULT_DURATION;
+        _selectedLocationId = '';
         _pendingCollision = null;
         _busy = false;
     }
@@ -557,14 +521,6 @@
     // VIEW MODEL
     // ============================================================
 
-    /**
-     * Build the modal's view model from current context and state.
-     *
-     * In 'assign' mode, the discipline list is the class's active
-     * offerings for the target week.
-     * In 'remove-student' and 'remove-group' modes, the discipline
-     * list is not needed; the context carries the display fields.
-     */
     function buildViewModel() {
         if (!_context) { return null; }
 
@@ -597,6 +553,8 @@
             base.selectedDisciplineId = _selectedDisciplineId;
             base.selectedDuration = _selectedDuration;
             base.durations = buildDurationOptions();
+            base.locations = getAvailableLocations();
+            base.selectedLocationId = _selectedLocationId;
         } else if (_context.mode === 'remove-student') {
             base.charName = getCharacterName(_context.charId);
         }
@@ -691,7 +649,6 @@
     function buildAssignHTML(vm) {
         var html = '';
 
-        // ---- Header ----
         html += '<div class="modal-header">';
         html += '<h3>Assign discipline</h3>';
         html += '<button type="button" class="close-modal" ' +
@@ -699,7 +656,6 @@
                     'aria-label="Close">&times;</button>';
         html += '</div>';
 
-        // ---- Body ----
         html += '<div class="modal-body">';
 
         html += '<p class="academy-schedule-assign-summary">' +
@@ -721,6 +677,7 @@
             return html;
         }
 
+        // ---- Discipline ----
         html += '<div class="form-group">';
         html += '<label for="academy-schedule-assign-discipline">' +
                     'Discipline *' +
@@ -743,6 +700,7 @@
         html += '</select>';
         html += '</div>';
 
+        // ---- Duration ----
         html += '<div class="form-group">';
         html += '<label for="academy-schedule-assign-duration">' +
                     'Duration (hours)' +
@@ -762,15 +720,51 @@
         html += '</select>';
         html += '</div>';
 
+        // ---- Location (optional) ----
+        html += renderLocationSelect(vm);
+
         if (vm.pendingCollision) {
             html += renderCollisionPrompt(vm.pendingCollision);
         }
 
         html += '</div>';
 
-        // ---- Footer ----
         html += renderAssignFooter(vm, false);
 
+        return html;
+    }
+
+    function renderLocationSelect(vm) {
+        var locations = Array.isArray(vm.locations) ? vm.locations : [];
+
+        var html = '';
+        html += '<div class="form-group">';
+        html += '<label for="academy-schedule-assign-location">' +
+                    'Location' +
+                '</label>';
+        html += '<select id="academy-schedule-assign-location" ' +
+                    'class="academy-schedule-assign-location"' +
+                    (vm.busy ? ' disabled' : '') + '>';
+        html += '<option value="">(no location)</option>';
+
+        for (var i = 0; i < locations.length; i++) {
+            var loc = locations[i];
+            if (!loc || !loc.id) { continue; }
+            var isSelected = String(loc.id) ===
+                String(vm.selectedLocationId) ? ' selected' : '';
+            html += '<option value="' +
+                        escapeAttribute(loc.id) + '"' + isSelected + '>' +
+                        escapeHtml(loc.name || 'Unnamed Location') +
+                    '</option>';
+        }
+
+        html += '</select>';
+        html += '<p class="field-hint">' +
+                    'Used only when a new session is created. Adding ' +
+                    'the student to an existing session keeps that ' +
+                    'session\'s location.' +
+                '</p>';
+        html += '</div>';
         return html;
     }
 
@@ -1013,8 +1007,6 @@
             'academy-schedule-assign-discipline'
         )) {
             _selectedDisciplineId = target.value || '';
-            // A change in discipline invalidates any pending
-            // collision prompt. The next submit is fresh.
             if (_pendingCollision) {
                 _pendingCollision = null;
             }
@@ -1029,6 +1021,13 @@
             if (dur !== null) {
                 _selectedDuration = dur;
             }
+            return;
+        }
+
+        if (target.classList.contains(
+            'academy-schedule-assign-location'
+        )) {
+            _selectedLocationId = target.value || '';
             return;
         }
     }
@@ -1098,6 +1097,11 @@
             duration = DEFAULT_DURATION;
         }
 
+        // Optional location. Empty string → null.
+        var locationId = isNonEmptyString(_selectedLocationId)
+            ? String(_selectedLocationId)
+            : null;
+
         _busy = true;
         renderContent();
 
@@ -1109,6 +1113,7 @@
             day: _context.day,
             startHour: _context.startHour,
             duration: duration,
+            locationId: locationId,
             allowCollisions: allowCollisions === true
         };
 
@@ -1118,13 +1123,10 @@
 
                 if (result && result.success) {
                     notify('Slot assigned.', 'success');
-                    // closeModal fires _onClose for us.
                     closeModal();
                     return;
                 }
 
-                // Rejection. Decide between a collision prompt
-                // (retryable) and a structural error (not).
                 if (result && result.reason === 'student_collision') {
                     var studCol = (result.data && result.data.collision)
                         ? result.data.collision
@@ -1143,8 +1145,6 @@
                     return;
                 }
 
-                // Structural rejection. Show the message, leave
-                // the modal open so the user can adjust or close.
                 _pendingCollision = null;
 
                 var msg = (result && result.message)
