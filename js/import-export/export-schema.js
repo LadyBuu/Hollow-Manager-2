@@ -333,6 +333,55 @@
     }
 
     // ============================================================
+    // LOCAL DEEP-CLONE
+    // ============================================================
+    //
+    // ExportSchema is dependency-free by design. This local helper
+    // produces a structurally independent copy of the shapes that
+    // appear in export data: primitives, arrays, plain objects,
+    // and Date. Anything else is passed through unchanged. That is
+    // intentional: export data is JSON-shaped, and a caller who
+    // stores a non-JSON value is going to hit a serialisation
+    // error later regardless.
+    //
+    // WHY THIS EXISTS:
+    //   createEnvelope used to assign `validatedData[key] = data[key]`
+    //   directly, which handed the caller's original array/object
+    //   references back through the envelope. ExportEnvelope.create
+    //   deep-clones via ObjectUtils; createEnvelope did not. The
+    //   inconsistency meant that a caller who created an envelope
+    //   with Schema.createEnvelope and then mutated the envelope's
+    //   data would also mutate their source object. This helper
+    //   makes the two envelope creators behave identically.
+
+    function cloneValue(value) {
+        if (value === null || value === undefined) { return value; }
+
+        var type = typeof value;
+        if (type !== 'object') { return value; }
+
+        if (Array.isArray(value)) {
+            var arr = new Array(value.length);
+            for (var i = 0; i < value.length; i++) {
+                arr[i] = cloneValue(value[i]);
+            }
+            return arr;
+        }
+
+        if (value instanceof Date) {
+            return new Date(value.getTime());
+        }
+
+        var result = {};
+        var keys = Object.keys(value);
+        for (var j = 0; j < keys.length; j++) {
+            var k = keys[j];
+            result[k] = cloneValue(value[k]);
+        }
+        return result;
+    }
+
+    // ============================================================
     // ENVELOPE CREATION
     // ============================================================
 
@@ -356,13 +405,19 @@
         }
 
         // ---- Validate sections ----
+        //
+        // Values are DEEP-CLONED before they enter the envelope.
+        // This mirrors ExportEnvelope.create. Without the clone,
+        // a caller who mutates the returned envelope's data also
+        // mutates their original source object, which is a silent
+        // aliasing bug.
         var validatedData = {};
         var sectionKeys = Object.keys(data);
 
         for (var i = 0; i < sectionKeys.length; i++) {
             var key = sectionKeys[i];
             if (isValidSection(key) || key === APPLICATION_SETTINGS.CURRENT_YEAR || key === APPLICATION_SETTINGS.CURRENT_WEEK) {
-                validatedData[key] = data[key];
+                validatedData[key] = cloneValue(data[key]);
             }
             // Silently ignore unknown sections
         }
