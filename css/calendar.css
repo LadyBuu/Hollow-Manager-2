@@ -6,18 +6,9 @@
  * Styles for the pure calendar renderer in
  * modules/calendar/calendar-renderer.js.
  *
- * Covers:
- *   - The schedule grid and its cells
- *   - Header row (day names, time column)
- *   - Occupied slots
- *   - Empty slots
- *   - Rest-day columns
- *   - Blocked slots
- *   - The co-occupant marker and its detail panel
- *   - The legend
- *   - The loading state
- *   - The schedule-assign modal
- *   - The schedule-instructor modal
+ * Covers the schedule grid, its cells, the co-occupant marker
+ * and its panel, the discipline-hours panel and its picker,
+ * the legend, the loading state, and the two assign modals.
  *
  * Loads after shared.css and academy.css.
  */
@@ -342,14 +333,7 @@
 
 /* ============================================================
    CO-OCCUPANT MARKER
-   ============================================================
-   A small "+N" button in the corner of an occupied cell when
-   the slot descriptor carries a non-empty coOccupants array.
-   Clicking opens the co-occupants panel below the grid.
-
-   The marker stays inside the cell bounds. When a duration
-   badge shares the corner, the marker drops below it.
-*/
+   ============================================================ */
 
 .schedule-co-occupant-marker {
     position: absolute;
@@ -379,12 +363,7 @@
 
 /* ============================================================
    CO-OCCUPANTS PANEL
-   ============================================================
-   Mounted below the grid into
-   #academy-schedule-co-occupants-host. Empty until the user
-   clicks a co-occupant marker. Only one panel is open at a
-   time.
-*/
+   ============================================================ */
 
 .schedule-co-occupants-host {
     display: block;
@@ -504,6 +483,385 @@
     border: 1px solid var(--border-soft);
     white-space: nowrap;
     flex: 0 0 auto;
+}
+
+/* ============================================================
+   DISCIPLINE HOURS PANEL
+   ============================================================
+   Rendered below the grid, above the co-occupants host.
+   One row per discipline the student is enrolled in for the
+   currently selected class.
+
+   Each row is a button: clicking opens the group picker for
+   that discipline.
+
+   Row states:
+     under    scheduled < target   → warning colour
+     met      scheduled === target → accent colour
+     over     scheduled > target   → info colour
+*/
+
+.schedule-hours-panel {
+    margin-top: 10px;
+    padding: 10px 12px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.schedule-hours-header {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding-bottom: 6px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border-soft);
+    flex-wrap: wrap;
+}
+
+.schedule-hours-title {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--accent);
+    margin: 0;
+}
+
+.schedule-hours-hint {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+.schedule-hours-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.schedule-hours-row {
+    margin: 0;
+    padding: 0;
+}
+
+.schedule-hours-row-btn {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-left-width: 3px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-family: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.schedule-hours-row-btn:hover {
+    background: var(--accent-soft);
+}
+
+.schedule-hours-row-under .schedule-hours-row-btn {
+    border-left-color: var(--warning);
+}
+
+.schedule-hours-row-met .schedule-hours-row-btn {
+    border-left-color: var(--accent);
+}
+
+.schedule-hours-row-over .schedule-hours-row-btn {
+    border-left-color: var(--info);
+}
+
+.schedule-hours-discipline {
+    flex: 1;
+    min-width: 0;
+    font-weight: 500;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.schedule-hours-counts {
+    flex: 0 0 auto;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.schedule-hours-scheduled {
+    color: var(--text);
+    font-weight: 600;
+}
+
+.schedule-hours-slash {
+    color: var(--text-dim);
+    padding: 0 2px;
+}
+
+.schedule-hours-target {
+    color: var(--text-dim);
+}
+
+.schedule-hours-unit {
+    color: var(--text-dim);
+    font-size: 0.65rem;
+    padding-left: 1px;
+}
+
+.schedule-hours-remaining {
+    flex: 0 0 auto;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+
+.schedule-hours-row-under .schedule-hours-remaining {
+    color: var(--warning);
+    font-weight: 600;
+}
+
+.schedule-hours-row-met .schedule-hours-remaining {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.schedule-hours-row-over .schedule-hours-remaining {
+    color: var(--info);
+    font-weight: 600;
+}
+
+.schedule-hours-caret {
+    flex: 0 0 auto;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+}
+
+/* ============================================================
+   DISCIPLINE PICKER
+   ============================================================
+   Mounted below the hours panel into
+   #academy-schedule-discipline-picker-host when the user clicks
+   a discipline row. Lists every teaching group for the
+   (class, discipline) the student can join.
+
+   Row states:
+     green    every session of the group is free in the
+              student's schedule. Clickable; adds the student.
+     red      at least one session collides. Disabled.
+*/
+
+.schedule-discipline-picker-host {
+    display: block;
+}
+
+.schedule-discipline-picker-host:empty {
+    display: none;
+}
+
+.schedule-discipline-picker {
+    margin-top: 10px;
+    padding: 10px 12px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius);
+}
+
+.schedule-discipline-picker-header {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding-bottom: 6px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border-soft);
+    flex-wrap: wrap;
+}
+
+.schedule-discipline-picker-title {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--accent);
+    flex: 0 0 auto;
+}
+
+.schedule-discipline-picker-hint {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-style: italic;
+    flex: 1;
+    min-width: 0;
+}
+
+.schedule-discipline-picker-close {
+    flex: 0 0 auto;
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    font-size: 1rem;
+    line-height: 1;
+    padding: 0 4px;
+    cursor: pointer;
+}
+
+.schedule-discipline-picker-close:hover {
+    color: var(--text);
+}
+
+.schedule-discipline-picker-empty {
+    margin: 0;
+    padding: 4px 0;
+}
+
+.schedule-discipline-picker-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.schedule-discipline-picker-row {
+    margin: 0;
+    padding: 0;
+}
+
+.schedule-discipline-picker-row-btn {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 100%;
+    padding: 8px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-left-width: 3px;
+    border-radius: 4px;
+    font-family: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.schedule-discipline-picker-row-btn:hover {
+    background: var(--accent-soft);
+}
+
+.schedule-discipline-picker-row-green
+    .schedule-discipline-picker-row-btn {
+    border-left-color: var(--accent);
+}
+
+.schedule-discipline-picker-row-red
+    .schedule-discipline-picker-row-btn {
+    border-left-color: var(--danger);
+    background: var(--danger-soft);
+    cursor: not-allowed;
+    opacity: 0.85;
+}
+
+.schedule-discipline-picker-row-red
+    .schedule-discipline-picker-row-btn:hover {
+    background: var(--danger-soft);
+}
+
+.schedule-discipline-picker-row-main {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 0.75rem;
+}
+
+.schedule-discipline-picker-group-name {
+    font-weight: 600;
+    color: var(--text);
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.schedule-discipline-picker-instructor {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    flex: 0 1 auto;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.schedule-discipline-picker-members {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    flex: 0 0 auto;
+    margin-left: auto;
+    white-space: nowrap;
+}
+
+.schedule-discipline-picker-sessions {
+    list-style: none;
+    margin: 0;
+    padding: 0 0 0 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.schedule-discipline-picker-session {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 2px 6px;
+    background: var(--bg);
+    border-radius: 3px;
+    font-size: 0.68rem;
+    flex-wrap: wrap;
+}
+
+.schedule-discipline-picker-session-conflict {
+    border-left: 2px solid var(--danger);
+    background: var(--danger-soft);
+}
+
+.schedule-discipline-picker-session-time {
+    color: var(--text);
+    white-space: nowrap;
+}
+
+.schedule-discipline-picker-session-duration {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    background: var(--panel);
+    padding: 0 5px;
+    border-radius: 6px;
+    border: 1px solid var(--border-soft);
+    white-space: nowrap;
+}
+
+.schedule-discipline-picker-session-location {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    font-style: italic;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.schedule-discipline-picker-conflict {
+    font-size: 0.65rem;
+    color: var(--danger);
+    font-weight: 600;
+    padding-top: 2px;
 }
 
 /* ============================================================
@@ -766,6 +1124,34 @@
         flex: 1;
         min-width: 0;
     }
+
+    .schedule-hours-row-btn {
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+
+    .schedule-hours-discipline {
+        flex-basis: 100%;
+        white-space: normal;
+    }
+
+    .schedule-hours-counts {
+        flex: 1;
+    }
+
+    .schedule-hours-remaining {
+        flex: 0 0 auto;
+    }
+
+    .schedule-discipline-picker-row-main {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 2px;
+    }
+
+    .schedule-discipline-picker-members {
+        margin-left: 0;
+    }
 }
 
 /* ============================================================
@@ -775,7 +1161,9 @@
 @media (prefers-reduced-motion: reduce) {
     .schedule-slot,
     .schedule-empty-label,
-    .schedule-continuation {
+    .schedule-continuation,
+    .schedule-hours-row-btn,
+    .schedule-discipline-picker-row-btn {
         transition: none;
     }
 }
