@@ -17,10 +17,22 @@
  *                 Required.
  *   - Duration    dropdown, MIN_CLASS_DURATION to
  *                 MAX_CLASS_DURATION. Required.
+ *   - Location    dropdown, sourced from AcademyLocations.
+ *                 Optional. An empty selection sends null.
  *
  * The slot's (day, startHour) come from the clicked grid cell.
- * The week comes from AcademyUI's display week. Neither is
- * editable in the form.
+ * The week comes from the display week. Neither is editable.
+ *
+ * SESSION LOCATION:
+ *   The location is applied ONLY when the domain creates a new
+ *   session. When the resolver finds an exact-match session
+ *   (same day / start hour / duration on a candidate group), the
+ *   location select is ignored — the session keeps its own
+ *   location. That is the domain's rule and this modal honors it
+ *   by not pretending to override it.
+ *
+ *   To change an existing session's location, use the session
+ *   form (from the Teaching Groups tab's Sessions list).
  *
  * WINDOW:
  *   The session's startWeek / endWeek are the discipline's.
@@ -34,7 +46,7 @@
  * SUBMISSION:
  *   AcademySchedule.scheduleInstructorSlot({
  *       instructorId, classId, disciplineId,
- *       week, day, startHour, duration,
+ *       week, day, startHour, duration, locationId,
  *       allowCollisions
  *   })
  *
@@ -47,6 +59,7 @@
  *   - The schedule coordinator (AcademySchedule owns it)
  *   - The teaching groups and sessions stores
  *   - The instructor's discipline list (derived from enrolments)
+ *   - The location store (AcademyLocations owns it)
  *   - The grid (CalendarRenderer)
  *
  * DEPENDENCIES (MANDATORY):
@@ -55,6 +68,7 @@
  *   - window.NotificationSystem
  *   - window.AcademyAggregator
  *   - window.AcademySchedule
+ *   - window.AcademyLocations
  *   - window.AcademyUI
  *   - window.CalendarConstants
  */
@@ -75,6 +89,7 @@
     var NotificationSystem = window.NotificationSystem;
     var AcademyAggregator = window.AcademyAggregator;
     var AcademySchedule = window.AcademySchedule;
+    var AcademyLocations = window.AcademyLocations;
     var AcademyUI = window.AcademyUI;
     var CalendarConstants = window.CalendarConstants;
 
@@ -103,6 +118,10 @@
     if (!AcademySchedule ||
         typeof AcademySchedule.scheduleInstructorSlot !== 'function') {
         _missing.push('AcademySchedule.scheduleInstructorSlot');
+    }
+    if (!AcademyLocations ||
+        typeof AcademyLocations.getLocations !== 'function') {
+        _missing.push('AcademyLocations.getLocations');
     }
     if (!AcademyUI ||
         typeof AcademyUI.getDisplayWeek !== 'function') {
@@ -148,6 +167,7 @@
 
     var _selectedDisciplineId = '';
     var _selectedDuration = DEFAULT_DURATION;
+    var _selectedLocationId = '';
     var _pendingCollision = null;
     var _busy = false;
 
@@ -204,23 +224,23 @@
         }
     }
 
+    function getAvailableLocations() {
+        var all = [];
+        try {
+            all = AcademyLocations.getLocations() || [];
+        } catch (e) {
+            all = [];
+        }
+        all.sort(function(a, b) {
+            return String(a.name || '').localeCompare(String(b.name || ''));
+        });
+        return all;
+    }
+
     // ============================================================
     // ENTRY POINT
     // ============================================================
 
-    /**
-     * Open the instructor slot modal.
-     *
-     * @param {object} options
-     * @param {string} options.instructorId  required
-     * @param {string} options.classId       required
-     * @param {number} options.week          required
-     * @param {number} options.day           required
-     * @param {number} options.startHour     required
-     * @param {function} [options.onClose]   called once when the
-     *                                       modal closes
-     * @returns {object|null} the modal element, or null on failure
-     */
     function openModal(options) {
         if (!options || typeof options !== 'object') {
             notify('Invalid slot request.', 'error');
@@ -268,6 +288,7 @@
             : null;
         _selectedDisciplineId = '';
         _selectedDuration = DEFAULT_DURATION;
+        _selectedLocationId = '';
         _pendingCollision = null;
         _busy = false;
 
@@ -364,6 +385,7 @@
         _contentSubmitHandler = null;
         _selectedDisciplineId = '';
         _selectedDuration = DEFAULT_DURATION;
+        _selectedLocationId = '';
         _pendingCollision = null;
         _busy = false;
     }
@@ -391,11 +413,6 @@
             disciplines = [];
         }
 
-        // Fallback: if the aggregator does not expose the
-        // dedicated helper, walk the class-discipline markers and
-        // check enrolment ourselves. This keeps the modal usable
-        // even if a downstream deploy has not yet added the
-        // helper.
         if (disciplines.length === 0) {
             disciplines = deriveInstructorDisciplines(
                 _context.classId,
@@ -415,20 +432,13 @@
             selectedDisciplineId: _selectedDisciplineId,
             selectedDuration: _selectedDuration,
             durations: buildDurationOptions(),
+            locations: getAvailableLocations(),
+            selectedLocationId: _selectedLocationId,
             pendingCollision: _pendingCollision,
             busy: _busy
         };
     }
 
-    /**
-     * Derive the instructor's disciplines for a class at a week.
-     * Walk the class-discipline markers; for each, check whether
-     * the character has an instructor-mode enrolment covering the
-     * week.
-     *
-     * Used as a fallback when the aggregator does not expose a
-     * dedicated helper.
-     */
     function deriveInstructorDisciplines(classId, charId, week) {
         var result = [];
 
@@ -593,6 +603,9 @@
         html += '</select>';
         html += '</div>';
 
+        // ---- Location (optional) ----
+        html += renderLocationSelect(vm);
+
         if (vm.pendingCollision) {
             html += renderCollisionPrompt(vm.pendingCollision);
         }
@@ -603,6 +616,39 @@
         html += renderFooter(vm, false);
 
         html += '</form>';
+        return html;
+    }
+
+    function renderLocationSelect(vm) {
+        var locations = Array.isArray(vm.locations) ? vm.locations : [];
+
+        var html = '';
+        html += '<div class="form-group">';
+        html += '<label for="academy-schedule-instructor-location">' +
+                    'Location' +
+                '</label>';
+        html += '<select id="academy-schedule-instructor-location" ' +
+                    'class="academy-schedule-instructor-location"' +
+                    (vm.busy ? ' disabled' : '') + '>';
+        html += '<option value="">(no location)</option>';
+
+        for (var i = 0; i < locations.length; i++) {
+            var loc = locations[i];
+            if (!loc || !loc.id) { continue; }
+            var isSelected = String(loc.id) ===
+                String(vm.selectedLocationId) ? ' selected' : '';
+            html += '<option value="' +
+                        escapeAttribute(loc.id) + '"' + isSelected + '>' +
+                        escapeHtml(loc.name || 'Unnamed Location') +
+                    '</option>';
+        }
+
+        html += '</select>';
+        html += '<p class="field-hint">' +
+                    'Used only when a new session is created. Reusing ' +
+                    'an existing session keeps that session\'s location.' +
+                '</p>';
+        html += '</div>';
         return html;
     }
 
@@ -727,6 +773,13 @@
             }
             return;
         }
+
+        if (target.classList.contains(
+            'academy-schedule-instructor-location'
+        )) {
+            _selectedLocationId = target.value || '';
+            return;
+        }
     }
 
     function handleContentSubmit(e) {
@@ -755,6 +808,10 @@
             duration = DEFAULT_DURATION;
         }
 
+        var locationId = isNonEmptyString(_selectedLocationId)
+            ? String(_selectedLocationId)
+            : null;
+
         _busy = true;
         renderContent();
 
@@ -766,6 +823,7 @@
             day: _context.day,
             startHour: _context.startHour,
             duration: duration,
+            locationId: locationId,
             allowCollisions: allowCollisions === true
         }).then(function(result) {
             _busy = false;
