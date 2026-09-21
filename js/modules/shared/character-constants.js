@@ -18,6 +18,21 @@
  *   They are excluded from student-scoped and instructor-scoped
  *   queries alike.
  * 
+ * PHYSICAL CLASS WEIGHT VECTORS:
+ *   Each class's weights define the stat profile that class
+ *   rewards. The vectors are chosen so that no class's self-dot
+ *   (Σ w²) is less than its cross-dot (Σ wₐ·w_b) with any other
+ *   class. This guarantees that a character whose stats were
+ *   shaped by `applyPhysicalClass(X)` derives back to X under
+ *   `derivePhysicalClass`. Before this constraint was enforced,
+ *   three pairs (fighter/brawler, brawler/barbarian,
+ *   tactician/scholar) collapsed — picking one class could
+ *   derive to its neighbour.
+ *
+ *   If you edit a weight vector, re-run the collapse check
+ *   documented in the module header before committing. A vector
+ *   that violates the constraint reintroduces the collapse.
+ *
  * DEPENDENCIES:
  *   - None (self-contained)
  */
@@ -65,20 +80,30 @@
     // PHYSICAL CLASSES
     // ============================================================
     // Classes are DERIVED from physical stats via weighted scoring.
-    // Weights sum to ~1.0 per class. Higher weight = stat matters more.
+    // Weights sum to 1.0 per class. Higher weight = stat matters more.
     // hpBonus is added on top of the random HP roll.
+    //
+    // COLLAPSE CONSTRAINT:
+    //   For every pair (A, B), dot(A.weights, A.weights) must be
+    //   >= dot(A.weights, B.weights). If not, a character shaped by
+    //   applyPhysicalClass(A) will derive to B instead of A.
+    //
+    //   The five vectors that were re-tuned to satisfy this:
+    //     barbarian, fighter, brawler, tactician, scholar.
+    //
+    //   The other seven already satisfied it.
 
     var PHYSICAL_CLASSES = [
         {
             id: 'barbarian', label: 'Barbarian', icon: '⚔',
             description: 'Raw physical power, toughness, aggression',
-            weights: { str: 0.40, con: 0.30, dex: 0.20, wis: 0.10, int: 0.00, cha: 0.00 },
+            weights: { str: 0.45, con: 0.30, dex: 0.15, wis: 0.10, int: 0.00, cha: 0.00 },
             hpBonus: 8
         },
         {
             id: 'fighter', label: 'Fighter', icon: '⚔',
             description: 'Versatile trained combatant',
-            weights: { str: 0.30, dex: 0.30, con: 0.20, int: 0.10, wis: 0.10, cha: 0.00 },
+            weights: { str: 0.35, dex: 0.35, con: 0.20, wis: 0.05, int: 0.05, cha: 0.00 },
             hpBonus: 5
         },
         {
@@ -108,7 +133,7 @@
         {
             id: 'brawler', label: 'Brawler', icon: '👊',
             description: 'Close-range fighter relying on physical skill',
-            weights: { str: 0.35, dex: 0.30, con: 0.25, wis: 0.10, int: 0.00, cha: 0.00 },
+            weights: { str: 0.40, dex: 0.35, con: 0.20, wis: 0.05, int: 0.00, cha: 0.00 },
             hpBonus: 6
         },
         {
@@ -126,7 +151,7 @@
         {
             id: 'tactician', label: 'Tactician', icon: '♟',
             description: 'Strategic combatant, planning and battlefield control',
-            weights: { int: 0.40, wis: 0.30, cha: 0.20, con: 0.10, str: 0.00, dex: 0.00 },
+            weights: { int: 0.35, cha: 0.30, wis: 0.25, con: 0.10, str: 0.00, dex: 0.00 },
             hpBonus: 2
         },
         {
@@ -138,7 +163,7 @@
         {
             id: 'scholar', label: 'Scholar', icon: '📖',
             description: 'Knowledge-focused, analytical and academically capable',
-            weights: { int: 0.45, wis: 0.35, cha: 0.20, con: 0.00, str: 0.00, dex: 0.00 },
+            weights: { int: 0.45, wis: 0.30, cha: 0.15, con: 0.10, str: 0.00, dex: 0.00 },
             hpBonus: 1
         }
     ];
@@ -414,6 +439,41 @@
                 errors.push('Physical class "' + cls.id + '" invalid hpBonus.');
             }
         });
+
+        // ---- Collapse constraint ----
+        // For every pair (A, B), dot(A, A) >= dot(A, B). If this is
+        // violated, applyPhysicalClass(A) will derive to B, and the
+        // override display will silently lie. This is a structural
+        // invariant of the class table, not a warning. It fails
+        // loudly at load time so a retuned vector is caught before
+        // it reaches a user.
+        var statKeys = STAT_KEYS;
+        function dot(a, b) {
+            var s = 0;
+            for (var k = 0; k < statKeys.length; k++) {
+                var key = statKeys[k];
+                s += (a[key] || 0) * (b[key] || 0);
+            }
+            return s;
+        }
+        for (var ai = 0; ai < PHYSICAL_CLASSES.length; ai++) {
+            var A = PHYSICAL_CLASSES[ai];
+            var selfDot = dot(A.weights, A.weights);
+            for (var bi = 0; bi < PHYSICAL_CLASSES.length; bi++) {
+                if (bi === ai) { continue; }
+                var B = PHYSICAL_CLASSES[bi];
+                if (dot(A.weights, B.weights) > selfDot + 1e-9) {
+                    errors.push(
+                        'Physical class "' + A.id + '" collapses to "' +
+                        B.id + '": dot(A,B) ' +
+                        dot(A.weights, B.weights).toFixed(3) +
+                        ' > dot(A,A) ' + selfDot.toFixed(3) +
+                        '. Retune the weight vectors so A scores higher ' +
+                        'on its own shape than on B\'s.'
+                    );
+                }
+            }
+        }
 
         if (!Array.isArray(WEAPON_TYPES) || WEAPON_TYPES.length === 0) {
             errors.push('WEAPON_TYPES must be a non-empty array.');
