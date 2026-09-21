@@ -16,12 +16,13 @@
  *   - Writes. Schedule mutations are owned by AcademySchedule.
  *   - Collisions. AcademyTeachingCollisions owns them.
  *   - Rendering. CalendarRenderer owns that.
- *   - Rest days as a concept. class.restDays is stored and
- *     validated by AcademyClasses. This module is a pass-through:
- *     it reads the class's restDays for a class-member projection
- *     and copies them onto the VM. The location grid does NOT
- *     inherit class rest days (a room is a resource, not a class
- *     member).
+ *   - Rest days as a concept. class.restDays and
+ *     class.restDaysByWeek are stored and validated by
+ *     AcademyClasses. This module is a pass-through: it resolves
+ *     the week's rest days via
+ *     AcademyClasses.getRestDaysForWeek and copies the result
+ *     onto the VM. The location grid does NOT inherit class rest
+ *     days (a room is a resource, not a class member).
  *
  * ARCHITECTURE:
  *
@@ -158,6 +159,10 @@
     if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function') {
         _missing.push('AcademyClasses.getClass');
     }
+    if (!AcademyClasses ||
+        typeof AcademyClasses.getRestDaysForWeek !== 'function') {
+        _missing.push('AcademyClasses.getRestDaysForWeek');
+    }
 
     if (_missing.length > 0) {
         throw new Error(
@@ -277,72 +282,52 @@
     }
 
     // ============================================================
-    // REST DAYS (v30)
+    // REST DAYS (v30, extended v31)
     // ============================================================
     //
-    // A class carries its restDays. The rest-day concept is a
+    // A class carries its rest days. The rest-day concept is a
     // property of the class, not of the individual student or
     // instructor: a class is a cohort with a shared timetable.
     //
-    // The three class-member projections (student, instructor,
-    // class) read the class's restDays and copy them onto the VM.
-    // The location projection does NOT — a room can be used by
-    // two classes with different rest days, so it cannot inherit
-    // either class's.
+    // Rest days are now WEEK-SCOPED. AcademyClasses resolves the
+    // effective rest days for a given week from the class's
+    // restDays (default) and restDaysByWeek (sparse overrides).
+    // The three class-member projections read the resolved array
+    // and copy it onto the VM. The location projection does NOT —
+    // a room can be used by two classes with different rest days,
+    // so it cannot inherit either class's.
     //
-    // Shape at read time:
-    //   class.restDays = [dayNumber, ...], integers in
-    //   [CalendarConstants.MIN_DAY, CalendarConstants.MAX_DAY],
-    //   no duplicates. AcademyClasses validates on write; the
-    //   reader is defensive anyway.
+    // The projector is where rest days actually suppress
+    // occurrences. By the time a schedule VM reaches this module,
+    // sessions on rest days have already been filtered out of the
+    // occurrence list. The VM's restDays array is a display fact:
+    // the renderer dims those columns and refuses assignments
+    // there.
 
-    function readClassRestDays(classId) {
+    function readClassRestDays(classId, week) {
         if (!isNonEmptyString(classId)) {
             return [];
         }
-        var cls = AcademyClasses.getClass(classId);
-        if (!cls || !Array.isArray(cls.restDays)) {
+        var weekNum = parseWeek(week);
+        if (weekNum === null) {
             return [];
         }
-        return normaliseRestDaysArray(cls.restDays);
-    }
-
-    function normaliseRestDaysArray(raw) {
-        if (!Array.isArray(raw)) { return []; }
-        var seen = Object.create(null);
-        var result = [];
-        for (var i = 0; i < raw.length; i++) {
-            var n = Number(raw[i]);
-            if (!Number.isInteger(n)) { continue; }
-            if (n < CalendarConstants.MIN_DAY ||
-                n > CalendarConstants.MAX_DAY) {
-                continue;
-            }
-            var key = String(n);
-            if (seen[key]) { continue; }
-            seen[key] = true;
-            result.push(n);
+        if (typeof AcademyClasses.getRestDaysForWeek !== 'function') {
+            return [];
         }
-        result.sort(function(a, b) { return a - b; });
-        return result;
+        try {
+            var days = AcademyClasses.getRestDaysForWeek(
+                classId, weekNum
+            );
+            return Array.isArray(days) ? days.slice() : [];
+        } catch (e) {
+            console.warn(
+                '[AcademyCalendarAggregator] getRestDaysForWeek failed:',
+                e
+            );
+            return [];
+        }
     }
-
-    /**
-     * Resolve the class whose rest days apply to a given student
-     * or instructor grid.
-     *
-     * A character may be a member of more than one class. The grid
-     * shows one week's schedule for one character; the character's
-     * own rest days are the ones the class they are viewing in the
-     * Academy People view declares. That class is the currently
-     * selected class.
-     *
-     * The aggregator does not read AcademyUI. The caller (the
-     * character detail aggregator, via the People controller) has
-     * already resolved the classId and passes it in options. When
-     * no class is supplied, restDays is []: the projection does
-     * not guess.
-     */
 
     // ============================================================
     // SLOT DESCRIPTORS
@@ -475,13 +460,6 @@
     // ============================================================
     // STUDENT SCHEDULE VM
     // ============================================================
-    //
-    // REST DAYS:
-    //   The caller passes options.classId when it wants the class's
-    //   rest days applied. The legacy `getStudentScheduleViewModel(
-    //   studentId, week)` two-argument form has no class and yields
-    //   restDays: []. Callers that want rest days use the
-    //   options-object form.
 
     function getStudentScheduleViewModel(studentId, weekOrOptions) {
         if (!isNonEmptyString(studentId)) {
@@ -518,7 +496,7 @@
 
         return {
             schedule: schedule,
-            restDays: readClassRestDays(classId),
+            restDays: readClassRestDays(classId, weekNum),
             entityName: CharacterQueries.getDisplayName(char) || 'Student',
             modeLabel: 'Student Schedule',
             hours: getHoursRange()
@@ -564,7 +542,7 @@
 
         return {
             schedule: schedule,
-            restDays: readClassRestDays(classId),
+            restDays: readClassRestDays(classId, weekNum),
             entityName: CharacterQueries.getDisplayName(char) || 'Instructor',
             modeLabel: 'Instructor Schedule',
             hours: getHoursRange()
@@ -574,12 +552,6 @@
     // ============================================================
     // LOCATION SCHEDULE VM
     // ============================================================
-    //
-    // REST DAYS:
-    //   The location projection does NOT inherit class rest days.
-    //   A room can be used by two classes with different rest days,
-    //   so it cannot inherit either class's. The VM always returns
-    //   restDays: [].
 
     function getLocationScheduleViewModel(locationId, week) {
         if (!isNonEmptyString(locationId)) {
@@ -621,10 +593,6 @@
     // ============================================================
     // CLASS SCHEDULE VM
     // ============================================================
-    //
-    // REST DAYS:
-    //   The class grid is the class's own schedule, so the class's
-    //   rest days apply. Read directly from the class record.
 
     function getClassScheduleViewModel(classId, week) {
         if (!isNonEmptyString(classId)) {
@@ -648,7 +616,7 @@
 
         return {
             schedule: schedule,
-            restDays: readClassRestDays(classId),
+            restDays: readClassRestDays(classId, weekNum),
             entityName: getClassDisplayName(classId),
             modeLabel: 'Class Schedule',
             hours: getHoursRange()
