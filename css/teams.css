@@ -14,6 +14,8 @@
  *   - Stats row (.stats-grid, .stat-card)
  *   - Shared member manager (.member-*) — used by BOTH the Teams
  *     tab and Academy Weekly Teams via the shared manager.
+ *   - Team Matchmaking modal (.matchmaking-*)
+ *   - Page header actions wrapper (.page-header-actions)
  *
  * Load order: shared.css → teams.css
  *
@@ -37,6 +39,12 @@
  *   tab and Academy Weekly Teams render the same markup, so this
  *   block serves both. The academic side has no additional
  *   member-manager CSS; the rules here are the whole story.
+ *
+ * MATCHMAKING MODAL:
+ *   The .matchmaking-* block styles the two-mode matchmaking
+ *   modal. Setup mode is a small form; Proposal mode is a list
+ *   of per-team assignment blocks with an unassigned pool at
+ *   the bottom. Both modes share the standard modal chrome.
  */
 
 /* ============================================================
@@ -125,6 +133,22 @@
 .team-member-count {
     font-size: 0.75rem;
     color: var(--text);
+}
+
+/* ============================================================
+   PAGE HEADER ACTIONS
+   ============================================================
+   The Teams page header carries up to two actions:
+     + Add Team
+     Matchmaking   (only on the Professional tab)
+   They sit in a flex wrapper inside the existing .page-header.
+ */
+
+.page-header-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
 }
 
 /* ============================================================
@@ -450,6 +474,257 @@
     line-height: 1.1;
     font-variant-numeric: tabular-nums;
     margin: 0;
+}
+
+/* ============================================================
+   TEAM MATCHMAKING MODAL
+   ============================================================
+   Two modes:
+     Setup    — a small form (year, target size), one Build button.
+     Proposal — per-team assignment blocks, an unassigned pool,
+                Commit and Back buttons.
+
+   The modal shell comes from Modal.createModal('...'). The
+   content wrapper is `.modal-content.wide.matchmaking-content`.
+   The `wide` class comes from the shared modal stylesheet
+   (max-width: 800px); we do not override it. The extra
+   `.matchmaking-content` class exists so specific tweaks can be
+   scoped without touching the shared rules.
+ */
+
+/* ---------- Shared with both modes ---------- */
+
+.matchmaking-content {
+    /* Deliberately no max-width override here. The wide modal
+       is 800px, which is right for the proposal list. */
+}
+
+.matchmaking-body {
+    /* The proposal list can be long. Cap its height and let it
+       scroll, keeping the footer actions reachable. */
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+.matchmaking-summary {
+    /* The top hint line. Slightly larger than the default
+       field-hint so it reads as a status line. */
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+}
+
+.matchmaking-summary strong {
+    color: var(--text);
+    font-weight: 600;
+}
+
+/* ---------- Proposal mode: assignment blocks ---------- */
+
+.matchmaking-assignments {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.matchmaking-assignment {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 10px;
+}
+
+.matchmaking-assignment-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    padding-bottom: 6px;
+    margin-bottom: 6px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.matchmaking-assignment-name {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.matchmaking-assignment-count {
+    font-size: 0.65rem;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 1px 8px;
+    border-radius: 8px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+/* ---------- Additions inside an assignment ---------- */
+
+.matchmaking-additions {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-bottom: 6px;
+}
+
+.matchmaking-addition {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-rows: auto auto;
+    grid-template-areas:
+        "main    remove"
+        "second  remove";
+    gap: 2px 8px;
+    padding: 5px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    align-items: center;
+}
+
+.matchmaking-addition-main {
+    grid-area: main;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.matchmaking-addition-name {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.matchmaking-addition-status {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    padding: 1px 6px;
+    border-radius: 8px;
+}
+
+.matchmaking-addition-secondary {
+    grid-area: second;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+}
+
+.matchmaking-addition-secondary em {
+    opacity: 0.75;
+}
+
+.matchmaking-remove-addition {
+    grid-area: remove;
+    flex: 0 0 auto;
+    font-size: 0.62rem;
+    padding: 3px 8px;
+    align-self: center;
+    white-space: nowrap;
+}
+
+/* ---------- Add mini-form under each assignment ---------- */
+
+.matchmaking-add-form {
+    display: flex;
+    gap: 4px;
+    align-items: stretch;
+    padding-top: 6px;
+    border-top: 1px dashed var(--border-soft);
+}
+
+.matchmaking-add-select {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 4px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.matchmaking-add-select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.matchmaking-add-form button {
+    flex: 0 0 auto;
+    font-size: 0.62rem;
+    padding: 4px 12px;
+    white-space: nowrap;
+}
+
+/* ---------- Unassigned pool panel ---------- */
+
+.matchmaking-unassigned {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-soft);
+}
+
+.matchmaking-unassigned-header {
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 6px;
+}
+
+.matchmaking-unassigned-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.matchmaking-unassigned-row {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 12px;
+}
+
+.matchmaking-unassigned-name {
+    font-size: 0.7rem;
+    color: var(--text);
+    white-space: nowrap;
+}
+
+/* ---------- Mobile adjustments ---------- */
+
+@media (max-width: 600px) {
+    .page-header-actions {
+        width: 100%;
+    }
+
+    .page-header-actions button {
+        flex: 1 1 auto;
+    }
+
+    .matchmaking-body {
+        max-height: none;
+    }
+
+    .matchmaking-addition {
+        grid-template-columns: 1fr auto;
+    }
+
+    .matchmaking-add-form {
+        flex-direction: column;
+    }
+
+    .matchmaking-add-form button {
+        width: 100%;
+    }
 }
 
 /* ============================================================
