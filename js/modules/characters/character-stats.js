@@ -52,6 +52,20 @@
  *   character-stats-view.js reads char.specialMoves directly for
  *   rendering; it does not go through either module.
  *
+ * PHYSICAL CLASS DERIVATION vs APPLICATION:
+ *   derivePhysicalClass(stats) answers "which class best fits this
+ *   stat block?" via a weighted dot product. It is a similarity
+ *   score and it can return a different class than the one a user
+ *   picked from the override, if the derived scores happen to
+ *   favour a neighbour.
+ *
+ *   applyPhysicalClass(classId) answers "produce a stat block that
+ *   matches this class." Its output is a rewrite, not a hint. A
+ *   caller that has just applied class X should NOT re-derive to
+ *   discover what class it applied; it should display X. This is
+ *   why getPhysicalClassLabel exists — it lets the caller render
+ *   the applied class without going through the derivation.
+ *
  * DEPENDENCIES:
  *   - window.CharacterConstants - MANDATORY
  *   - window.MagicConstants - MANDATORY
@@ -271,6 +285,31 @@
             score: ranked[0].score,
             ranked: ranked
         };
+    }
+
+    /**
+     * Get the display label for a physical class id.
+     *
+     * Returns the class's canonical label, or the em-dash sentinel
+     * for an unknown id. This is the display path for the OVERRIDE
+     * flow: a caller that has just applied class X renders X's
+     * label directly, without asking derivePhysicalClass to
+     * rediscover it.
+     *
+     * derivePhysicalClass is the LIV-EDIT path: when the user types
+     * a stat directly, the derivation re-scores and the display
+     * updates. That is what the derivation is for.
+     *
+     * @param {string} classId
+     * @returns {string}
+     */
+    function getPhysicalClassLabel(classId) {
+        if (!CharacterConstants ||
+            typeof CharacterConstants.getPhysicalClass !== 'function') {
+            return '\u2014';
+        }
+        var cls = CharacterConstants.getPhysicalClass(classId);
+        return cls && cls.label ? cls.label : '\u2014';
     }
 
     /**
@@ -696,6 +735,7 @@
         // Physical class
         derivePhysicalClass: derivePhysicalClass,
         applyPhysicalClass: applyPhysicalClass,
+        getPhysicalClassLabel: getPhysicalClassLabel,
 
         // Magical proficiencies
         getDefaultMagicProficiencies: getDefaultMagicProficiencies,
