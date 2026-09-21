@@ -11,7 +11,8 @@
  * Domain reads composed here:
  *
  *   CharacterQueries              identity, display name, status, age, death
- *   AcademyClasses                class entity, character↔class membership
+ *   AcademyClasses                class entity, character↔class membership,
+ *                                 instructor-of-class derivation
  *   AcademyClassDisciplinesQueries
  *                                 class-discipline marker reads
  *   AcademyEnrolments             student↔discipline enrolment (class-scoped)
@@ -79,6 +80,40 @@
  *   student can join; the current group is not in that list
  *   (members are excluded). The sub-block answers "where am I",
  *   the picker answers "where could I be".
+ *
+ * TEACHING GROUP CANDIDATE FILTERING:
+ *   getTeachingGroupCandidateViewModel produces the candidate
+ *   list for the "add student to this group" picker. It starts
+ *   from the class-discipline's enrolled students and then
+ *   removes:
+ *
+ *     - members of this group,
+ *     - members of any sibling group of the same
+ *       (class, discipline),
+ *     - eliminated characters,
+ *     - instructors.
+ *
+ *   Instructor exclusion is the one this revision adds. Before
+ *   this revision, instructors who are enrolled to teach a
+ *   discipline appeared in the picker alongside students,
+ *   because the pool is built from the enrolment store and the
+ *   enrolment store does not distinguish students from
+ *   instructors. Two signals are now used to exclude them:
+ *
+ *     1. AcademyClasses.getClassInstructorIds(classId, week,
+ *        { disciplineId }) is the domain's answer to "who teaches
+ *        this discipline for this class at this week." Anyone in
+ *        that list is excluded.
+ *
+ *     2. char.mode === 'instructor' is the direct mode flag.
+ *        Anyone whose primary role is instructor is excluded
+ *        regardless of enrolment state.
+ *
+ *   Either signal alone would leave a gap. (1) misses a
+ *   character whose mode is instructor but who has no current
+ *   instructor enrolment for this discipline. (2) misses a
+ *   character whose mode is student but who happens to carry an
+ *   instructor enrolment. Both are excluded now.
  *
  * NULL SEMANTICS:
  *   - character is always present (returns null if not found).
@@ -966,6 +1001,83 @@
     // ============================================================
     // TEACHING GROUP CANDIDATE VIEW MODEL
     // ============================================================
+    //
+    // The candidate pool for the "add student to this group" picker.
+    //
+    // STARTS FROM:
+    //   AcademyEnrolments.getEnrolledStudents(classId, disciplineId, week)
+    //   which returns every character whose enrolment interval covers
+    //   the week for the (class, discipline) pair. That pool includes
+    //   instructors who are enrolled to teach the discipline.
+    //
+    // THEN EXCLUDES:
+    //   - members of this group,
+    //   - members of any sibling group of the same (class, discipline),
+    //   - eliminated characters,
+    //   - instructors.
+    //
+    // INSTRUCTOR EXCLUSION:
+    //   Two signals. Either alone would leave a gap:
+    //
+    //     (1) AcademyClasses.getClassInstructorIds(classId, week,
+    //         { disciplineId }) is the domain's answer. Excludes
+    //         anyone teaching this discipline for this class at
+    //         this week. Handles a character whose mode is student
+    //         but who carries an instructor enrolment.
+    //
+    //     (2) char.mode === 'instructor' is the direct mode flag.
+    //         Handles a character whose mode is instructor but who
+    //         has no current instructor enrolment for this
+    //         discipline.
+    //
+    //   When AcademyClasses.getClassInstructorIds is unavailable
+    //   (older load order, or a test harness), the code falls back
+    //   to mode alone. The fallback is defensive; in production the
+    //   method is always present because AcademyClasses is a
+    //   mandatory dependency and its own module load requires it.
+
+    function buildInstructorExclusionSet(classId, disciplineId, week) {
+        var set = Object.create(null);
+
+        if (!isNonEmptyString(classId) || week === null) {
+            return set;
+        }
+
+        if (typeof AcademyClasses.getClassInstructorIds !== 'function') {
+            return set;
+        }
+
+        var options = isNonEmptyString(disciplineId)
+            ? { disciplineId: String(disciplineId) }
+            : null;
+
+        var instructorIds = [];
+        try {
+            instructorIds = AcademyClasses.getClassInstructorIds(
+                classId, week, options
+            ) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademyCharacterDetailAggregator] ' +
+                'getClassInstructorIds failed:', e
+            );
+            return set;
+        }
+
+        if (!Array.isArray(instructorIds)) {
+            return set;
+        }
+
+        for (var i = 0; i < instructorIds.length; i++) {
+            if (instructorIds[i] === undefined ||
+                instructorIds[i] === null) {
+                continue;
+            }
+            set[String(instructorIds[i])] = true;
+        }
+
+        return set;
+    }
 
     function getTeachingGroupCandidateViewModel(charId, groupId, options) {
         if (!isNonEmptyString(charId) || !isNonEmptyString(groupId)) {
@@ -1005,6 +1117,8 @@
         }
 
         var excluded = Object.create(null);
+
+        // ---- Members of this group ----
         var thisGroupMembers = [];
         try {
             thisGroupMembers = AcademyTeachingGroups.getActiveMembers(
@@ -1019,6 +1133,8 @@
             }
         }
 
+        // ---- Members of sibling groups of the same
+        //      (class, discipline) ----
         var siblingGroups = [];
         try {
             siblingGroups = AcademyTeachingGroups.getGroupsForDiscipline(
@@ -1047,6 +1163,11 @@
             }
         }
 
+        // ---- Instructors ----
+        var instructorSet = buildInstructorExclusionSet(
+            classId, disciplineId, week
+        );
+
         var EQ = getEliminationQueries();
 
         var candidates = [];
@@ -1055,7 +1176,20 @@
             if (!isNonEmptyString(candidateId)) { continue; }
 
             var key = String(candidateId);
+
             if (excluded[key]) { continue; }
+            if (instructorSet[key]) { continue; }
+
+            var c = CharacterQueries.getCharacterById(candidateId);
+            if (!c) { continue; }
+
+            // Belt-and-braces: the domain read above is authoritative
+            // for "who teaches this discipline here", but a character
+            // whose primary role is instructor should never appear as
+            // a candidate to be enrolled into a student group, even
+            // if their instructor enrolment for this specific
+            // discipline is absent or stale.
+            if (c.mode === 'instructor') { continue; }
 
             if (EQ && typeof EQ.isCharacterEliminatedByWeek === 'function') {
                 var eliminated = false;
@@ -1068,9 +1202,6 @@
                 }
                 if (eliminated) { continue; }
             }
-
-            var c = CharacterQueries.getCharacterById(candidateId);
-            if (!c) { continue; }
 
             candidates.push({
                 id: c.id,
@@ -1395,18 +1526,6 @@
         return result;
     }
 
-    /**
-     * Resolve the group the student is a member of for a
-     * (classId, disciplineId) at the display week.
-     *
-     * Uses AcademyTeachingGroups.getGroupForStudentInClassDiscipline
-     * which returns a clone, or null when the student is in no
-     * group.
-     *
-     * `classmateCount` is active members at the display week minus
-     * the student themselves. A member who left last week does not
-     * count this week.
-     */
     function buildCurrentGroupForDiscipline(
         charId,
         classId,
