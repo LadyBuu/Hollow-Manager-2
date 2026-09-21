@@ -443,6 +443,81 @@
                 if (tournament.winner && tournament.winner.id) {
                     tournament.winner.id = updateRef(tournament.winner.id);
                 }
+
+                // ---- Match-level references ----
+                //
+                // Round and match participants are stored as bare
+                // IDs (not { id, type } objects). When a participant
+                // ID is reassigned, the match references must move
+                // with it, or the cross-domain validator will flag
+                // every match as pointing at a missing participant.
+                if (Array.isArray(tournament.rounds)) {
+                    for (var r = 0; r < tournament.rounds.length; r++) {
+                        var round = tournament.rounds[r];
+                        if (!round || !Array.isArray(round.matches)) continue;
+
+                        for (var mt = 0; mt < round.matches.length; mt++) {
+                            var match = round.matches[mt];
+                            if (!match) continue;
+
+                            if (Array.isArray(match.participants)) {
+                                match.participants = updateArrayRefs(
+                                    match.participants
+                                );
+                            }
+
+                            if (match.winner) {
+                                match.winner = updateRef(match.winner);
+                            }
+
+                            if (match.loser) {
+                                match.loser = updateRef(match.loser);
+                            }
+
+                            // Team-vs-team matches carry per-team
+                            // and per-member result maps keyed by
+                            // participant ID. Rewrite the keys.
+                            if (isObject(match.teamResults)) {
+                                var newTeamResults = {};
+                                var trKeys = Object.keys(match.teamResults);
+                                for (var tri = 0; tri < trKeys.length; tri++) {
+                                    var trOldKey = trKeys[tri];
+                                    var trNewKey = updateRef(trOldKey);
+                                    newTeamResults[trNewKey] =
+                                        match.teamResults[trOldKey];
+                                }
+                                match.teamResults = newTeamResults;
+                            }
+
+                            if (isObject(match.individualResults)) {
+                                var newIndividualResults = {};
+                                var irKeys = Object.keys(
+                                    match.individualResults
+                                );
+                                for (var iri = 0; iri < irKeys.length; iri++) {
+                                    var irOldKey = irKeys[iri];
+                                    var irNewKey = updateRef(irOldKey);
+                                    newIndividualResults[irNewKey] =
+                                        match.individualResults[irOldKey];
+                                }
+                                match.individualResults =
+                                    newIndividualResults;
+                            }
+
+                            if (isObject(match.results)) {
+                                var newResults = {};
+                                var resKeys = Object.keys(match.results);
+                                for (var resi = 0; resi < resKeys.length; resi++) {
+                                    var resOldKey = resKeys[resi];
+                                    var resNewKey = updateRef(resOldKey);
+                                    newResults[resNewKey] =
+                                        match.results[resOldKey];
+                                }
+                                match.results = newResults;
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -619,6 +694,8 @@
      * @param {boolean} options.preserveExistingIds - Preserve existing IDs (default: true)
      * @param {boolean} options.autoFixIds - Automatically fix duplicate/missing IDs (default: true)
      * @param {boolean} options.skipValidation - Skip validation (default: false - NOT RECOMMENDED)
+     * @param {boolean} options.allowEmptyRequiredSections - Allow import when every
+     *   required section is empty (default: false). See STAGE 7 for details.
      * @param {string} options.sourceName - Source name for logging (default: 'file')
      * @returns {Promise<object>} Import result
      */
@@ -709,6 +786,8 @@
      * @param {boolean} options.preserveExistingIds - Preserve existing IDs (default: true)
      * @param {boolean} options.autoFixIds - Automatically fix duplicate/missing IDs (default: true)
      * @param {boolean} options.skipValidation - Skip validation (default: false - NOT RECOMMENDED)
+     * @param {boolean} options.allowEmptyRequiredSections - Allow import when every
+     *   required section is empty (default: false). See STAGE 7 for details.
      * @param {string} options.sourceName - Source name for logging (default: 'envelope')
      * @returns {Promise<object>} Import result
      */
@@ -781,17 +860,53 @@
         }
 
         // ---- STAGE 7: Validate required sections have data ----
+        //
+        // IMPORTANT: this stage is a HARD GUARD, not a warning.
+        //
+        // The default envelope created by createEmpty() carries
+        // empty arrays for every required section. A user who
+        // accidentally exports an empty application and then
+        // imports it would otherwise silently replace their
+        // entire dataset with nothing. The guard makes that an
+        // explicit opt-in.
+        //
+        // Pass `options.allowEmptyRequiredSections = true` to
+        // bypass (for callers who deliberately want to wipe a
+        // specific section, e.g. a "reset characters only" flow).
         var requiredSections = Schema.getRequiredSections();
-        var missingSections = [];
+        var emptySections = [];
         for (var s = 0; s < requiredSections.length; s++) {
             var section = requiredSections[s];
-            var data = candidate[section];
-            if (!Array.isArray(data) || data.length === 0) {
-                missingSections.push(section);
+            var sectionData = candidate[section];
+            if (!Array.isArray(sectionData) || sectionData.length === 0) {
+                emptySections.push(section);
             }
         }
-        if (missingSections.length > 0 && missingSections.length < requiredSections.length) {
-            allWarnings.push('Missing data in sections: ' + missingSections.join(', '));
+
+        if (emptySections.length === requiredSections.length &&
+            requiredSections.length > 0 &&
+            options.allowEmptyRequiredSections !== true) {
+            // Every required section is empty. This is almost
+            // always an accident.
+            return Promise.resolve(createFailureResult(
+                [
+                    'Every required section is empty: ' +
+                    emptySections.join(', ') + '. ' +
+                    'Import aborted to avoid wiping existing data. ' +
+                    'Pass { allowEmptyRequiredSections: true } to ' +
+                    'proceed anyway.'
+                ],
+                allWarnings,
+                'Import refused: source file contains no data.'
+            ));
+        }
+
+        if (emptySections.length > 0 &&
+            emptySections.length < requiredSections.length) {
+            allWarnings.push(
+                'Empty required sections: ' + emptySections.join(', ') +
+                '. These will be imported as empty arrays.'
+            );
         }
 
         // ---- STAGE 8: Prepare for commit ----
