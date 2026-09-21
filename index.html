@@ -6,42 +6,6 @@
     <title>Hollow Manager 2</title>
     <link rel="icon" href="data:," />
 
-    <!-- ============================================================
-         CSS
-         ============================================================
-         Load order:
-
-           shared.css      — tokens, reset, buttons, header, tabs,
-                             form primitives, modal shell, badges,
-                             empty state, shared detail furniture,
-                             class-status and role badges.
-
-           dashboard.css   — the Dashboard tab.
-
-           characters.css  — the Characters tab.
-
-           teams.css       — the standalone Teams tab.
-
-           social.css      — the standalone Social tab.
-
-           missions.css    — the standalone Missions tab.
-
-           academy.css     — the Academy shell: view switcher,
-                             top bar, two-panel layouts, sidebar,
-                             list rows, detail-panel frame, shared
-                             Academy badges.
-
-           academy/*.css   — the Academy sub-view splits. Each file
-                             loads AFTER academy.css and narrows
-                             from it. They do not redeclare the
-                             shell's rules.
-
-           calendar.css    — the pure calendar renderer's schedule
-                             grid, cells, occupied/empty/blocked/
-                             rest-day states, and legend. Loads
-                             last so it can override any conflicting
-                             base rule without fighting specificity.
-         ============================================================ -->
     <link rel="stylesheet" href="css/shared.css" />
     <link rel="stylesheet" href="css/dashboard.css" />
     <link rel="stylesheet" href="css/characters.css" />
@@ -105,9 +69,7 @@
         </main>
     </div>
 
-    <!-- ============================================================
-         UTILITIES - MUST LOAD FIRST
-         ============================================================ -->
+    <!-- Utilities -->
     <script src="js/utils/object-utils.js"></script>
     <script src="js/utils/id-utils.js"></script>
     <script src="js/utils/validation-utils.js"></script>
@@ -118,9 +80,7 @@
     <script src="js/utils/modal.js"></script>
     <script src="js/utils/notification.js"></script>
 
-    <!-- ============================================================
-         SHARED CONSTANTS
-         ============================================================ -->
+    <!-- Shared constants -->
     <script src="js/modules/shared/constants.js"></script>
     <script src="js/modules/shared/calendar-constants.js"></script>
     <script src="js/modules/shared/character-constants.js"></script>
@@ -136,34 +96,12 @@
     <script src="js/modules/missions/mission-id.js"></script>
 
     <script src="js/utils/calendar-validation.js"></script>
-	<script src="js/utils/range-utils.js"></script>
+    <script src="js/utils/range-utils.js"></script>
 
-    <!-- ============================================================
-         TOURNAMENT RULES
-         ============================================================
-         TournamentRules must load BEFORE tournament-queries.js.
-
-         TournamentQueries captures TournamentRules at IIFE time
-         and throws if it is absent. Its dependency check is
-         fail-closed; a missing TournamentRules means the whole
-         TournamentQueries export is never assigned, and every
-         downstream consumer (AcademyTournamentAggregator,
-         AcademyTournamentEvents, AcademyExamController,
-         DashboardAggregator) then throws its own dependency
-         check.
-
-         TournamentRules depends only on:
-           - TournamentConstants  (SHARED CONSTANTS block, above)
-           - TournamentSchema     (SHARED CONSTANTS block, above)
-           - CalendarValidation   (loaded just above)
-
-         All three are available at this point.
-         ============================================================ -->
+    <!-- Tournament rules -->
     <script src="js/modules/tournaments/tournament-rules.js"></script>
 
-    <!-- ============================================================
-         SHARED QUERIES
-         ============================================================ -->
+    <!-- Shared queries -->
     <script src="js/modules/shared/queries/character-queries.js"></script>
     <script src="js/modules/shared/queries/team-queries.js"></script>
     <script src="js/modules/shared/queries/tournament-queries.js"></script>
@@ -174,9 +112,7 @@
     <script src="js/modules/shared/queries/elimination-queries.js"></script>
     <script src="js/modules/shared/queries/calendar-queries.js"></script>
 
-    <!-- ============================================================
-         CORE INFRASTRUCTURE
-         ============================================================ -->
+    <!-- Core infrastructure -->
     <script src="js/core/activity-log.js"></script>
     <script src="js/core/database.js"></script>
     <script src="js/core/loader.js"></script>
@@ -184,24 +120,13 @@
     <script src="js/core/tab-manager.js"></script>
     <script src="js/core/mutation-pipeline.js"></script>
 
-    <!-- ============================================================
-         SHARED COMPONENTS
-         ============================================================
-         Cross-domain UI components that do not belong to any single
-         feature. The member manager is used by both the Teams tab
-         and the Academy Weekly Teams view, each through its own
-         adapter. The manager itself has no domain knowledge.
-         ============================================================ -->
+    <!-- Shared components -->
     <script src="js/modules/shared/member-manager.js"></script>
 
-    <!-- ============================================================
-         CALENDAR RENDERER
-         ============================================================ -->
+    <!-- Calendar renderer -->
     <script src="js/modules/calendar/calendar-renderer.js"></script>
 
-    <!-- ============================================================
-         ACADEMY DOMAIN - BASE ENTITIES AND CROSS-CUTTING SERVICES
-         ============================================================ -->
+    <!-- Academy domain -->
     <script src="js/modules/academy/academy-grade-schemes.js"></script>
     <script src="js/modules/academy/academy-classes.js"></script>
     <script src="js/modules/academy/academy-grades.js"></script>
@@ -222,33 +147,7 @@
 
     <script src="js/modules/shared/queries/academy-queries.js"></script>
 
-    <!-- ============================================================
-         ACADEMY TEACHING MODEL
-         ============================================================
-         The class-discipline store is split into two modules:
-
-           academy-class-disciplines-queries.js
-             Read-only surface for the marker store. Loads first;
-             the mutation module captures it at IIFE time.
-
-           academy-class-disciplines.js
-             Mutations (setClassDiscipline, removeClassDiscipline)
-             and cascade helpers (stripClassRefs,
-             stripDisciplineRefs). Captures the queries module and
-             throws if it is absent.
-
-         The read/write split is one-way: queries has no dependency
-         on mutations; mutations depends on queries for preflight
-         reads (validateReference, getRecordInternal), for snapshot
-         store access (getStoreFromSnapshot), and for the shared
-         reference validator.
-
-         Every other module in this block reads through the queries
-         module and writes through the mutation module (or, where
-         a compound transaction requires it, through the mutation
-         module's cascade helpers or through the schedule
-         coordinator).
-         ============================================================ -->
+    <!-- Academy teaching model -->
     <script src="js/modules/academy/academy-class-disciplines-queries.js"></script>
     <script src="js/modules/academy/academy-class-disciplines.js"></script>
     <script src="js/modules/academy/academy-teaching-groups.js"></script>
@@ -257,14 +156,10 @@
     <script src="js/modules/academy/academy-teaching-collisions.js"></script>
     <script src="js/modules/academy/academy-teaching-validation.js"></script>
 
-    <!-- ============================================================
-         ACADEMY SCHEDULE COORDINATOR
-         ============================================================ -->
+    <!-- Academy schedule coordinator -->
     <script src="js/modules/academy/academy-schedule.js"></script>
 
-    <!-- ============================================================
-         ACADEMY CALENDAR AGGREGATOR
-         ============================================================ -->
+    <!-- Academy calendar aggregator -->
     <script src="js/modules/academy/academy-calendar-aggregator.js"></script>
 
     <script src="js/modules/academy/academy-weekly-teams.js"></script>
@@ -272,25 +167,10 @@
     <script src="js/modules/academy/academy-aggregator.js"></script>
     <script src="js/modules/academy/academy-ui.js"></script>
 
-    <!-- ============================================================
-         ACADEMY MEMBER ADAPTER
-         ============================================================
-         Binds the shared MemberManager to the Academy domain.
-
-         Loads AFTER both AcademyWeeklyTeams (mutations) and
-         AcademyAggregator (VM reads), because it captures both at
-         IIFE time. TeamQueries and CalendarConstants are loaded
-         earlier in the SHARED QUERIES and SHARED CONSTANTS blocks.
-
-         AcademyWeeklyTeamsMembers was deleted in BUG-E13. The
-         member manager is now the shared one, wired by this
-         adapter.
-         ============================================================ -->
+    <!-- Academy member adapter -->
     <script src="js/modules/academy/member-adapter-academy.js"></script>
 
-    <!-- ============================================================
-         SOCIAL DOMAIN
-         ============================================================ -->
+    <!-- Social domain -->
     <script src="js/modules/social/social-core.js"></script>
     <script src="js/modules/social/social-aggregator.js"></script>
     <script src="js/modules/social/social-views.js"></script>
@@ -298,45 +178,7 @@
     <script src="js/modules/social/social-events.js"></script>
     <script src="js/modules/social/index.js"></script>
 
-    <!-- ============================================================
-         CHARACTER DOMAIN
-         ============================================================
-         Load order within this block matters:
-
-           character-generator.js
-           character-stats.js       — stat + magic calculation,
-                                      class derivation, HP/MP.
-                                      No move ownership as of S10.2.
-           character-moves.js       — special-move record store.
-                                      Owns char.specialMoves reads
-                                      and mutations. Loads AFTER
-                                      character-stats.js so the
-                                      stats module has no runtime
-                                      dependency on it, and
-                                      BEFORE character-events.js
-                                      so the event handlers can
-                                      resolve CharacterMoves at
-                                      module-init time.
-           character-crud.js
-           character-aggregator.js
-           character-list.js
-           character-form.js
-           character-detail.js
-           character-class-view.js
-           character-stats-view.js
-           character-views.js
-           character-events.js      — depends on both
-                                      CharacterStats (stat rolls)
-                                      and CharacterMoves (move
-                                      add/remove). Loads after
-                                      both.
-           index.js
-
-         Note: character-eliminations.js and
-         character-elimination-view.js were removed in the E-track.
-         character-classes.js was removed in S10.1 (mutations moved
-         to academy-classes.js).
-         ============================================================ -->
+    <!-- Character domain -->
     <script src="js/modules/characters/character-generator.js"></script>
     <script src="js/modules/characters/character-stats.js"></script>
     <script src="js/modules/characters/character-moves.js"></script>
@@ -351,32 +193,13 @@
     <script src="js/modules/characters/character-events.js"></script>
     <script src="js/modules/characters/index.js"></script>
 
-    <!-- ============================================================
-         TOURNAMENT DOMAIN
-         ============================================================
-         tournament-rules.js has been moved up to just after
-         calendar-validation.js, before tournament-queries.js.
-         It is NOT loaded here anymore.
-
-         tournament-cascade.js is the character-deletion cleanup
-         helper for the tournament domain. It composes with
-         tournament-elimination-cascade.js (calls its
-         reverseTournamentEliminations for the character-side
-         elimination mirror). It loads AFTER
-         tournament-elimination-cascade.js, its mandatory
-         dependency, and BEFORE tournament-core.js, so
-         TournamentCore.stripCharacterRefs's lazy lookup resolves
-         on first call without falling through to its zero-count
-         fallback.
-         ============================================================ -->
+    <!-- Tournament domain -->
     <script src="js/modules/tournaments/tournament-elimination-cascade.js"></script>
     <script src="js/modules/tournaments/tournament-cascade.js"></script>
     <script src="js/modules/tournaments/tournament-matches.js"></script>
     <script src="js/modules/tournaments/tournament-core.js"></script>
 
-    <!-- ============================================================
-         ACADEMY VIEW SHELL
-         ============================================================ -->
+    <!-- Academy view shell -->
     <script src="js/modules/academy/academy-character-detail-aggregator.js"></script>
     <script src="js/modules/academy/academy-class-detail.js"></script>
     <script src="js/modules/academy/academy-grades-editor.js"></script>
@@ -392,96 +215,27 @@
     <script src="js/modules/academy/academy-tournament-aggregator.js"></script>
     <script src="js/modules/academy/academy-crud-modals.js"></script>
 
-    <!-- ============================================================
-         ACADEMY CLASS-DISCIPLINES PICKER
-         ============================================================
-         The modal that lets the user say which disciplines a
-         class offers and mark each as mandatory.
-
-         Load order:
-           - AcademyAggregator.getClassDisciplinesPickerViewModel
-             (ACADEMY DOMAIN block, above)
-           - AcademyClassDisciplines.setClassDiscipline /
-             .removeClassDiscipline (ACADEMY TEACHING MODEL block,
-             above)
-           - AcademyClassDisciplinesQueries reads are consumed
-             through AcademyAggregator, so the picker does not
-             import the queries module directly.
-           - AcademyEnrolments.enrol / .leave (ACADEMY DOMAIN
-             block, above)
-           - AcademyDisciplines.getDiscipline (ACADEMY DOMAIN
-             block, above)
-           - Modal, DomUtils, NotificationSystem (UTILITIES block,
-             above)
-
-         All dependencies are loaded before this point.
-
-         The picker is opened from the People view's class detail
-         panel via data-action="edit-class-disciplines". The
-         People controller (in the CONTROLLERS block below) reads
-         it lazily at click time, so this script tag must load
-         BEFORE academy-people-controller.js, or the picker module
-         must be present by the time the user clicks. Loading it
-         here, before the controller, guarantees both.
-         ============================================================ -->
-<!-- Academy — modals -->
-<script src="js/modules/academy/academy-class-disciplines-picker.js"></script>
-<script src="js/modules/academy/academy-enrollment-modal.js"></script>
-<script src="js/modules/academy/academy-schedule-assign-modal.js"></script>
+    <!-- Academy modals -->
+    <script src="js/modules/academy/academy-class-disciplines-picker.js"></script>
+    <script src="js/modules/academy/academy-enrollment-modal.js"></script>
+    <script src="js/modules/academy/academy-schedule-assign-modal.js"></script>
+    <script src="js/modules/academy/academy-schedule-instructor-modal.js"></script>
+    <script src="js/modules/academy/academy-session-form-modal.js"></script>
 
     <script src="js/modules/academy/academy-view.js"></script>
 
-    <!-- ============================================================
-         TEAM DOMAIN
-         ============================================================ -->
+    <!-- Team domain -->
     <script src="js/modules/teams/team-aggregator.js"></script>
     <script src="js/modules/teams/team-ui.js"></script>
     <script src="js/modules/teams/team-render.js"></script>
     <script src="js/modules/teams/team-core.js"></script>
 
-    <!-- ============================================================
-         TEAMS MEMBER ADAPTER
-         ============================================================
-         Binds the shared MemberManager to the Teams domain.
-         Requires TeamAggregator (loaded above), TeamCore (just
-         above), and TeamConstants (loaded earlier).
-         ============================================================ -->
     <script src="js/modules/teams/member-adapter-teams.js"></script>
 
     <script src="js/modules/teams/team-events.js"></script>
     <script src="js/modules/teams/index.js"></script>
 
-    <!-- ============================================================
-         ACADEMY CONTROLLERS
-         ============================================================
-         Load order:
-           1. Contract  — the documented interface + invoke helper.
-           2. Registry  — the view id → controller map.
-           3. One file per controller, in any order. They do not
-              reference each other.
-
-         Controllers capture their domain dependencies at IIFE time.
-         They must load AFTER every module they capture:
-           - TeamCore, TeamQueries, TeamConstants (from TEAM DOMAIN
-             above)
-           - AcademyAggregator, AcademyTournamentAggregator,
-             AcademyCharacterDetailAggregator, renderers (from
-             ACADEMY VIEW SHELL above)
-           - AcademyWeeklyTeams (from ACADEMY DOMAIN above)
-           - AcademyEliminations (from ACADEMY DOMAIN above)
-           - MemberManager, MemberAdapterAcademy (from SHARED
-             COMPONENTS and ACADEMY MEMBER ADAPTER above)
-           - CharacterCRUD (from CHARACTER DOMAIN above) — v27,
-             used by the People controller's mode checkbox handler.
-           - AcademyClassDisciplinesPicker (from ACADEMY VIEW SHELL
-             above) — v27, used by the People controller's
-             edit-class-disciplines dispatch. The People controller
-             reads it lazily at click time, so strict load order is
-             not required, but it is guaranteed by loading the
-             picker before this block.
-
-         Registration happens in modules/academy/index.js below.
-         ============================================================ -->
+    <!-- Academy controllers -->
     <script src="js/modules/academy/controllers/controller-contract.js"></script>
     <script src="js/modules/academy/controllers/academy-controllers.js"></script>
 
@@ -492,21 +246,11 @@
     <script src="js/modules/academy/controllers/academy-discipline-controller.js"></script>
     <script src="js/modules/academy/controllers/academy-location-controller.js"></script>
 
-    <!-- ============================================================
-         ACADEMY WEEKLY TEAMS OPERATIONS
-         ============================================================
-         The auto-distribute algorithm, extracted from the Weekly
-         Teams controller. The controller reads it lazily at call
-         time, so load order relative to the controller does not
-         matter.
-         ============================================================ -->
     <script src="js/modules/academy/academy-weekly-teams-operations.js"></script>
 
     <script src="js/modules/academy/index.js"></script>
 
-    <!-- ============================================================
-         MISSIONS DOMAIN
-         ============================================================ -->
+    <!-- Missions domain -->
     <script src="js/modules/missions/mission-schema.js"></script>
     <script src="js/modules/missions/mission-rules.js"></script>
     <script src="js/modules/missions/mission-cascade.js"></script>
@@ -517,9 +261,7 @@
     <script src="js/modules/missions/mission-ui.js"></script>
     <script src="js/modules/missions/index.js"></script>
 
-    <!-- ============================================================
-         IMPORT / EXPORT DOMAIN
-         ============================================================ -->
+    <!-- Import / export -->
     <script src="js/import-export/export-utils.js"></script>
     <script src="js/import-export/import-result.js"></script>
     <script src="js/import-export/csv-parser.js"></script>
@@ -534,23 +276,17 @@
     <script src="js/import-export/ui.js"></script>
     <script src="js/import-export/index.js"></script>
 
-    <!-- ============================================================
-         APPLICATION SETTINGS
-         ============================================================ -->
+    <!-- Application settings -->
     <script src="js/modules/application/application-settings-core.js"></script>
     <script src="js/modules/application/application-settings-queries.js"></script>
 
-    <!-- ============================================================
-         DASHBOARD
-         ============================================================ -->
+    <!-- Dashboard -->
     <script src="js/modules/dashboard/dashboard-aggregator.js"></script>
     <script src="js/modules/dashboard/dashboard-render.js"></script>
     <script src="js/modules/dashboard/dashboard-ui.js"></script>
     <script src="js/modules/dashboard/index.js"></script>
 
-    <!-- ============================================================
-         BOOTSTRAP + APP SHELL
-         ============================================================ -->
+    <!-- Bootstrap + app shell -->
     <script src="js/core/bootstrap.js"></script>
     <script src="js/app.js"></script>
 
