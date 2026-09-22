@@ -78,36 +78,49 @@
  *     - An action row (Select all / Clear) shown only when expanded.
  *     - A scrollable body of one-character-per-line checkbox rows.
  *
- *   Collapse state is carried as data-expanded="true|false" on the
- *   container root. The header's aria-expanded mirrors it. The caret
- *   glyph is emitted once as U+25B8 (▸) and rotated 90° via CSS when
- *   the container is expanded; the renderer does not swap the glyph.
+ *   INLINE STYLES, NOT CLASSES:
+ *     Every structural element in the picker carries inline styles.
+ *     This is deliberate: the class-based styling in
+ *     css/academy/class-detail.css depends on that stylesheet being
+ *     loaded and its selectors matching. When either fails — a
+ *     missing <link>, a stale cache, a selector typo, a cascade
+ *     override — the picker degrades to labels-in-inline-flow and
+ *     rows run together.
  *
- *   The search box filters rows in BOTH containers. A container
- *   whose rows are all filtered out shows a "No matches" hint inside
- *   its body (visible only when that container is expanded).
+ *     Inline styles on the elements beat every one of those failure
+ *     modes. The trade-off is that the visual values are hard-coded
+ *     instead of driven by the shared CSS tokens. Acceptable for a
+ *     stopgap. Once the stylesheet is verified to load and the
+ *     class-based rules are confirmed to fire, the inline styles can
+ *     be removed and the classes reinstated.
  *
- *   Select-all scopes to the button's own container and to that
- *   container's VISIBLE rows. Clear scopes to the button's own
- *   container's rows, visible or hidden.
+ *     The class names are still emitted alongside the inline styles,
+ *     so the CSS file remains authoritative for anything the inline
+ *     styles do not set. Nothing here prevents a future migration
+ *     back to class-driven styling.
  *
- *   The submit handler reads every checked character ID across both
- *   containers and runs a SEQUENTIAL chain of AcademyClasses.addToClass
- *   calls. Each call is its own MutationPipeline transaction, so this
- *   is not atomic as a whole; a mid-chain failure leaves the earlier
- *   successes committed. The failure mode for "add to class" is almost
- *   always "this character is already a member," which is not worth
- *   rolling the whole batch back over.
+ *   COLLAPSE:
+ *     The container root carries data-expanded="true|false". The
+ *     header is a button; clicking it toggles that attribute AND
+ *     flips the inline display on the action row, the body, and the
+ *     caret's transform. The double application is deliberate:
+ *     data-expanded drives the class-based rules when they load,
+ *     inline styles drive the collapse when they don't.
  *
- *   On completion:
- *     - All succeeded: toast success, close, refresh.
- *     - Some succeeded, some failed: toast warning with counts, log
- *       per-row failures, close, refresh, then REOPEN the modal so
- *       the user can immediately pick up the remaining candidates
- *       (the candidate list shrinks automatically).
- *     - None succeeded: toast error, log per-row failures, close,
- *       refresh. No reopen — the modal would just show the same
- *       candidates with the same failures waiting.
+ *   SEARCH:
+ *     The search box filters rows in BOTH containers. A container
+ *     whose rows are all filtered out shows a "No matches" hint
+ *     inside its body (visible only when that container is
+ *     expanded).
+ *
+ *   SELECT-ALL SCOPING:
+ *     Each container's "Select all" operates only on that
+ *     container's visible rows. "Clear" operates only on that
+ *     container's rows, visible or hidden.
+ *
+ *   SUBMIT:
+ *     Every checked character across both containers is added. The
+ *     chain is sequential; each call is its own transaction.
  *
  * CANDIDATE SOURCING:
  *   The candidate list excludes:
@@ -285,11 +298,6 @@
         return safeName + ' (' + safeAge + ')';
     }
 
-    /**
-     * Escape a value for use in a CSS attribute selector.
-     * Minimal implementation; column keys are 'unassigned' and
-     * 'assigned' in practice, but the helper is defensive.
-     */
     function cssEscape(value) {
         if (value === undefined || value === null) { return ''; }
         return String(value).replace(/(["\\])/g, '\\$1');
@@ -1018,6 +1026,28 @@
     // ============================================================
     // CLASS — ADD CHARACTER (stacked collapsible picker)
     // ============================================================
+    //
+    // All structural elements carry inline styles. This makes the
+    // picker independent of the stylesheet: if class-detail.css
+    // fails to load, has a stale cache, or its selectors do not
+    // match, the inline styles still enforce one-row-per-line and
+    // the collapse.
+    //
+    // The class names remain emitted alongside the inline styles,
+    // so a future migration back to class-driven styling only
+    // requires deleting the inline style attributes.
+
+    var PICKER_COLORS = {
+        bg: '#0a1505',
+        panel: '#0f1f08',
+        panelAlt: '#142a0c',
+        border: '#1f3a10',
+        borderSoft: '#172d0d',
+        text: '#d4e8c8',
+        textDim: '#7a9a6a',
+        accent: '#8cbb3a',
+        accentSoft: 'rgba(140, 187, 58, 0.12)'
+    };
 
     function buildAddCharacterToClassHTML(vm) {
         var free = Array.isArray(vm.candidatesUnassigned)
@@ -1055,14 +1085,23 @@
         }
 
         // ---- Search ----
-        html += '<div class="form-group">';
+        html += '<div class="form-group" ' +
+                    'style="margin-bottom:8px;">';
         html += '<input type="text" id="ac-add-character-search" ' +
                     'class="ac-add-character-search" ' +
-                    'placeholder="Search characters...">';
+                    'placeholder="Search characters..." ' +
+                    'style="width:100%;padding:6px 8px;' +
+                    'background:' + PICKER_COLORS.bg + ';' +
+                    'border:1px solid ' + PICKER_COLORS.border + ';' +
+                    'color:' + PICKER_COLORS.text + ';' +
+                    'border-radius:6px;font-size:0.75rem;' +
+                    'font-family:inherit;box-sizing:border-box;">';
         html += '</div>';
 
         // ---- Stacked collapsible containers ----
-        html += '<div class="ac-add-character-picker">';
+        html += '<div class="ac-add-character-picker" ' +
+                    'style="display:flex;flex-direction:column;' +
+                    'gap:8px;margin-bottom:12px;">';
         html += buildPickerContainer({
             columnKey: 'unassigned',
             title: 'Unassigned',
@@ -1102,49 +1141,144 @@
 
         var expandedAttr = defaultExpanded ? 'true' : 'false';
 
+        // Container root.
+        var containerStyle =
+            'display:block;' +
+            'margin:0;' +
+            'background:' + PICKER_COLORS.bg + ';' +
+            'border:1px solid ' + PICKER_COLORS.border + ';' +
+            'border-radius:10px;' +
+            'overflow:hidden;';
+
+        // Header (button).
+        var headerStyle =
+            'display:flex;' +
+            'align-items:center;' +
+            'gap:8px;' +
+            'width:100%;' +
+            'padding:8px 10px;' +
+            'background:' + PICKER_COLORS.panelAlt + ';' +
+            'border:none;' +
+            'border-bottom:1px solid ' +
+                (defaultExpanded
+                    ? PICKER_COLORS.border
+                    : 'transparent') + ';' +
+            'color:' + PICKER_COLORS.text + ';' +
+            'font:inherit;' +
+            'font-size:0.75rem;' +
+            'text-align:left;' +
+            'cursor:pointer;' +
+            'box-sizing:border-box;';
+
+        // Caret glyph.
+        var caretStyle =
+            'display:inline-block;' +
+            'width:12px;' +
+            'font-size:0.75rem;' +
+            'color:' + PICKER_COLORS.textDim + ';' +
+            'flex:0 0 auto;' +
+            'transition:transform 0.15s ease;' +
+            'transform-origin:50% 50%;' +
+            (defaultExpanded ? 'transform:rotate(90deg);' : '');
+
+        // Title.
+        var titleStyle =
+            'flex:1;' +
+            'min-width:0;' +
+            'font-size:0.72rem;' +
+            'font-weight:600;' +
+            'color:' + (columnKey === 'assigned'
+                ? PICKER_COLORS.textDim
+                : PICKER_COLORS.text) + ';' +
+            'text-transform:uppercase;' +
+            'letter-spacing:0.04em;' +
+            'white-space:nowrap;' +
+            'overflow:hidden;' +
+            'text-overflow:ellipsis;';
+
+        // Count badge.
+        var countStyle =
+            'flex:0 0 auto;' +
+            'font-size:0.62rem;' +
+            'font-weight:600;' +
+            'color:' + PICKER_COLORS.textDim + ';' +
+            'background:' + PICKER_COLORS.panel + ';' +
+            'padding:1px 8px;' +
+            'border-radius:10px;' +
+            'border:1px solid ' + PICKER_COLORS.borderSoft + ';' +
+            'white-space:nowrap;';
+
+        // Action row (Select all / Clear).
+        var actionsStyle =
+            'display:' + (defaultExpanded ? 'flex' : 'none') + ';' +
+            'gap:4px;' +
+            'padding:6px 10px;' +
+            'background:' + PICKER_COLORS.panel + ';' +
+            'border-bottom:1px solid ' + PICKER_COLORS.borderSoft + ';';
+
+        // Body (scrollable list).
+        var bodyStyle =
+            'display:' + (defaultExpanded ? 'block' : 'none') + ';' +
+            'max-height:320px;' +
+            'overflow-y:auto;' +
+            'padding:4px;';
+
         var html = '';
         html += '<div class="ac-add-character-container" ' +
                     'data-column="' + escapeAttribute(columnKey) + '" ' +
-                    'data-expanded="' + expandedAttr + '">';
+                    'data-expanded="' + expandedAttr + '" ' +
+                    'style="' + containerStyle + '">';
 
         // ---- Header (clickable) ----
         html += '<button type="button" ' +
                     'class="ac-add-character-container-header" ' +
                     'data-container-toggle="true" ' +
                     'data-column="' + escapeAttribute(columnKey) + '" ' +
-                    'aria-expanded="' + expandedAttr + '">';
-        html += '<span class="ac-add-character-container-caret">' +
+                    'aria-expanded="' + expandedAttr + '" ' +
+                    'style="' + headerStyle + '">';
+        html += '<span class="ac-add-character-container-caret" ' +
+                    'style="' + caretStyle + '">' +
                     '\u25b8' +
                 '</span>';
-        html += '<span class="ac-add-character-container-title">' +
+        html += '<span class="ac-add-character-container-title" ' +
+                    'style="' + titleStyle + '">' +
                     escapeHtml(title) +
                 '</span>';
         html += '<span class="ac-add-character-container-count" ' +
-                    'data-column-count="' + escapeAttribute(columnKey) + '">' +
+                    'data-column-count="' + escapeAttribute(columnKey) + '" ' +
+                    'style="' + countStyle + '">' +
                     entries.length +
                 '</span>';
         html += '</button>';
 
         // ---- Action row ----
-        html += '<div class="ac-add-character-container-actions">';
+        html += '<div class="ac-add-character-container-actions" ' +
+                    'style="' + actionsStyle + '">';
         html += '<button type="button" class="small secondary" ' +
                     'data-bulk-action="select-all" ' +
-                    'data-column="' + escapeAttribute(columnKey) + '">' +
+                    'data-column="' + escapeAttribute(columnKey) + '" ' +
+                    'style="flex:1;font-size:0.6rem;padding:3px 8px;">' +
                     'Select all' +
                 '</button>';
         html += '<button type="button" class="small secondary" ' +
                     'data-bulk-action="clear-column" ' +
-                    'data-column="' + escapeAttribute(columnKey) + '">' +
+                    'data-column="' + escapeAttribute(columnKey) + '" ' +
+                    'style="flex:1;font-size:0.6rem;padding:3px 8px;">' +
                     'Clear' +
                 '</button>';
         html += '</div>';
 
         // ---- Body ----
         html += '<div class="ac-add-character-container-body" ' +
-                    'data-column-body="' + escapeAttribute(columnKey) + '">';
+                    'data-column-body="' + escapeAttribute(columnKey) + '" ' +
+                    'style="' + bodyStyle + '">';
 
         if (entries.length === 0) {
-            html += '<div class="ac-add-character-container-empty">' +
+            html += '<div class="ac-add-character-container-empty" ' +
+                        'style="padding:16px 10px;text-align:center;' +
+                        'font-size:0.7rem;' +
+                        'color:' + PICKER_COLORS.textDim + ';' +
+                        'font-style:italic;line-height:1.4;">' +
                         escapeHtml(emptyMessage) +
                     '</div>';
         } else {
@@ -1154,7 +1288,6 @@
         }
 
         html += '</div>';
-
         html += '</div>';
         return html;
     }
@@ -1165,14 +1298,48 @@
         var label = formatCharacterOptionLabel(entry.name, entry.age);
         var searchKey = (entry.name || '').toLowerCase();
 
+        // Row: display:flex forces one per line regardless of any
+        // stylesheet presence. The block-level-ness is inherited
+        // from the flex display, which is stronger than inline.
+        var rowStyle =
+            'display:flex;' +
+            'align-items:center;' +
+            'gap:8px;' +
+            'padding:5px 8px;' +
+            'border-radius:3px;' +
+            'font-size:0.74rem;' +
+            'cursor:pointer;' +
+            'user-select:none;' +
+            'width:100%;' +
+            'box-sizing:border-box;' +
+            'text-align:left;';
+
+        var checkboxStyle =
+            'width:auto;' +
+            'margin:0;' +
+            'accent-color:' + PICKER_COLORS.accent + ';' +
+            'cursor:pointer;' +
+            'flex:0 0 auto;';
+
+        var nameStyle =
+            'flex:1;' +
+            'min-width:0;' +
+            'color:' + PICKER_COLORS.text + ';' +
+            'overflow:hidden;' +
+            'text-overflow:ellipsis;' +
+            'white-space:nowrap;';
+
         var html = '';
         html += '<label class="ac-add-character-row" ' +
                     'data-character-id="' + escapeAttribute(entry.id) + '" ' +
                     'data-search-key="' + escapeAttribute(searchKey) + '" ' +
-                    'data-column="' + escapeAttribute(columnKey) + '">';
+                    'data-column="' + escapeAttribute(columnKey) + '" ' +
+                    'style="' + rowStyle + '">';
         html += '<input type="checkbox" class="ac-add-character-checkbox" ' +
-                    'value="' + escapeAttribute(entry.id) + '">';
-        html += '<span class="ac-add-character-name">' +
+                    'value="' + escapeAttribute(entry.id) + '" ' +
+                    'style="' + checkboxStyle + '">';
+        html += '<span class="ac-add-character-name" ' +
+                    'style="' + nameStyle + '">' +
                     escapeHtml(label) +
                 '</span>';
         html += '</label>';
@@ -1267,9 +1434,13 @@
                     : String(total);
 
                 if (checked > 0) {
-                    badge.classList.add('has-selected');
+                    badge.style.color = PICKER_COLORS.accent;
+                    badge.style.background = PICKER_COLORS.accentSoft;
+                    badge.style.borderColor = PICKER_COLORS.accent;
                 } else {
-                    badge.classList.remove('has-selected');
+                    badge.style.color = PICKER_COLORS.textDim;
+                    badge.style.background = PICKER_COLORS.panel;
+                    badge.style.borderColor = PICKER_COLORS.borderSoft;
                 }
             }
         }
@@ -1284,9 +1455,12 @@
                     var key = row.dataset.searchKey || '';
                     var matches = term === '' || key.indexOf(term) !== -1;
                     if (matches) {
-                        row.classList.remove('hidden-by-search');
+                        // Restore the flex display. The row's inline
+                        // style is the source of truth for its normal
+                        // layout; we only ever override it with none.
+                        row.style.display = 'flex';
                     } else {
-                        row.classList.add('hidden-by-search');
+                        row.style.display = 'none';
                     }
                 }
 
@@ -1347,6 +1521,40 @@
 
         container.dataset.expanded = next ? 'true' : 'false';
         headerEl.setAttribute('aria-expanded', next ? 'true' : 'false');
+
+        // Direct DOM manipulation. The inline styles on these
+        // elements are the source of truth, so we flip them
+        // explicitly. This works whether or not the stylesheet
+        // fires the corresponding [data-expanded] selectors.
+        var caret = headerEl.querySelector(
+            '.ac-add-character-container-caret'
+        );
+        if (caret) {
+            caret.style.transform = next
+                ? 'rotate(90deg)'
+                : '';
+        }
+
+        var actions = container.querySelector(
+            '.ac-add-character-container-actions'
+        );
+        if (actions) {
+            actions.style.display = next ? 'flex' : 'none';
+        }
+
+        var body = container.querySelector(
+            '.ac-add-character-container-body'
+        );
+        if (body) {
+            body.style.display = next ? 'block' : 'none';
+        }
+
+        // Header bottom-border is the visual divider between the
+        // header and whatever comes next. When collapsed, the
+        // header abuts the container's bottom edge with no divider.
+        headerEl.style.borderBottom = next
+            ? '1px solid ' + PICKER_COLORS.border
+            : '1px solid transparent';
     }
 
     function selectAllVisibleInContainer(form, columnKey) {
@@ -1358,11 +1566,11 @@
         );
         if (!container) { return; }
 
-        var rows = container.querySelectorAll(
-            '.ac-add-character-row:not(.hidden-by-search)'
-        );
+        var rows = container.querySelectorAll('.ac-add-character-row');
         for (var i = 0; i < rows.length; i++) {
-            var checkbox = rows[i].querySelector(
+            var row = rows[i];
+            if (row.style.display === 'none') { continue; }
+            var checkbox = row.querySelector(
                 '.ac-add-character-checkbox'
             );
             if (checkbox) {
@@ -1409,9 +1617,13 @@
                 continue;
             }
 
-            var visibleRows = body.querySelectorAll(
-                '.ac-add-character-row:not(.hidden-by-search)'
-            ).length;
+            var visibleRows = 0;
+            var rows = body.querySelectorAll('.ac-add-character-row');
+            for (var r = 0; r < rows.length; r++) {
+                if (rows[r].style.display !== 'none') {
+                    visibleRows++;
+                }
+            }
 
             var noMatches = body.querySelector(
                 '.ac-add-character-container-no-matches'
@@ -1423,12 +1635,17 @@
                     noMatches.className =
                         'ac-add-character-container-empty ' +
                         'ac-add-character-container-no-matches';
+                    noMatches.style.cssText =
+                        'padding:16px 10px;text-align:center;' +
+                        'font-size:0.7rem;' +
+                        'color:' + PICKER_COLORS.textDim + ';' +
+                        'font-style:italic;line-height:1.4;';
                     noMatches.textContent = 'No matches.';
                     body.appendChild(noMatches);
                 }
-                noMatches.classList.remove('hidden');
+                noMatches.style.display = 'block';
             } else if (noMatches) {
-                noMatches.classList.add('hidden');
+                noMatches.style.display = 'none';
             }
         }
     }
