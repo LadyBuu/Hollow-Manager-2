@@ -7,7 +7,8 @@
  * RESPONSIBILITIES:
  *   - Build modal HTML for Class, Location, and Discipline CRUD
  *   - Build the Social Score editor modal
- *   - Build the Add Character to Class modal (bulk-select)
+ *   - Build the Add Character to Class modal (stacked, collapsible,
+ *     two-container bulk picker)
  *   - Open the modal via window.Modal
  *   - Wire form submission to the domain mutation
  *   - Close on success; leave open on failure so the user can retry
@@ -66,19 +67,36 @@
  *   returned Promise before removing the element from the DOM.
  *   Prefer Modal.closeModal when available.
  *
- * ADD CHARACTER TO CLASS — BULK SELECT:
- *   The modal is a multi-select checklist. Every candidate is a
- *   checkbox row, grouped into "Unassigned" (no class) and "In
- *   Other Classes". A search box filters rows by substring match on
- *   the display label. "Select all visible" and "Clear" operate on
- *   the current filtered view.
+ * ADD CHARACTER TO CLASS — STACKED COLLAPSIBLE PICKER:
+ *   The modal presents candidates in two stacked containers:
  *
- *   The submit handler reads every checked character ID and runs a
- *   SEQUENTIAL chain of AcademyClasses.addToClass calls. Each call
- *   is its own MutationPipeline transaction, so this is not atomic
- *   as a whole; a mid-chain failure leaves the earlier successes
- *   committed. The failure mode for "add to class" is almost always
- *   "this character is already a member," which is not worth
+ *     TOP     Unassigned.        Expanded by default.
+ *     BOTTOM  In Other Classes.  Collapsed by default.
+ *
+ *   Each container is a self-contained box with:
+ *     - A clickable header (caret + label + count badge).
+ *     - An action row (Select all / Clear) shown only when expanded.
+ *     - A scrollable body of one-character-per-line checkbox rows.
+ *
+ *   Collapse state is carried as data-expanded="true|false" on the
+ *   container root. The header's aria-expanded mirrors it. The caret
+ *   glyph is emitted once as U+25B8 (▸) and rotated 90° via CSS when
+ *   the container is expanded; the renderer does not swap the glyph.
+ *
+ *   The search box filters rows in BOTH containers. A container
+ *   whose rows are all filtered out shows a "No matches" hint inside
+ *   its body (visible only when that container is expanded).
+ *
+ *   Select-all scopes to the button's own container and to that
+ *   container's VISIBLE rows. Clear scopes to the button's own
+ *   container's rows, visible or hidden.
+ *
+ *   The submit handler reads every checked character ID across both
+ *   containers and runs a SEQUENTIAL chain of AcademyClasses.addToClass
+ *   calls. Each call is its own MutationPipeline transaction, so this
+ *   is not atomic as a whole; a mid-chain failure leaves the earlier
+ *   successes committed. The failure mode for "add to class" is almost
+ *   always "this character is already a member," which is not worth
  *   rolling the whole batch back over.
  *
  *   On completion:
@@ -97,8 +115,7 @@
  *     - Characters who teach something in the target class at the
  *       display week (instructors)
  *   Sourced from AcademyAggregator.getClassStudentsViewModel and
- *   AcademyClasses.getClassInstructorIds respectively. This matches
- *   the v29 pattern established elsewhere in the Academy UI.
+ *   AcademyClasses.getClassInstructorIds respectively.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -268,6 +285,16 @@
         return safeName + ' (' + safeAge + ')';
     }
 
+    /**
+     * Escape a value for use in a CSS attribute selector.
+     * Minimal implementation; column keys are 'unassigned' and
+     * 'assigned' in practice, but the helper is defensive.
+     */
+    function cssEscape(value) {
+        if (value === undefined || value === null) { return ''; }
+        return String(value).replace(/(["\\])/g, '\\$1');
+    }
+
     function getDisplayWeek() {
         var AcademyUI = getAcademyUI();
         if (!AcademyUI || typeof AcademyUI.getDisplayWeek !== 'function') {
@@ -359,10 +386,6 @@
         return result;
     }
 
-    /**
-     * Render the seven day checkboxes for one section of the form.
-     * Used by both the default fieldset and each rule row.
-     */
     function renderRestDayCheckboxes(prefix, selectedDays) {
         var selected = normaliseRestDaysForForm(selectedDays);
         var selectedSet = Object.create(null);
@@ -405,24 +428,6 @@
         return html;
     }
 
-    /**
-     * Render the per-week override rules section.
-     *
-     * Each rule carries:
-     *   - a mode select (all / odd / even / range / single)
-     *   - optional week bounds (start and end for range, week for
-     *     single, hidden for all / odd / even)
-     *   - the seven checkboxes
-     *   - a remove button
-     *
-     * Rules are rendered in the order stored on the class. Rules
-     * are evaluated on save in render order; later rules overwrite
-     * earlier ones for the weeks they match.
-     *
-     * The form stores rules as DOM rows. On save, each row's mode
-     * and bounds are read, the row's rest days are collected, and
-     * the whole set of rules is expanded into a per-week map.
-     */
     function buildRestDayRulesFieldset(existingRules) {
         var rules = Array.isArray(existingRules) ? existingRules : [];
 
@@ -521,9 +526,6 @@
         return html;
     }
 
-    /**
-     * Collect the default rest days from the form.
-     */
     function collectDefaultRestDaysFromForm(form) {
         if (!form) { return []; }
         var boxes = form.querySelectorAll(
@@ -532,9 +534,6 @@
         return collectCheckedDays(boxes);
     }
 
-    /**
-     * Collect rest-day rules from the form, in DOM order.
-     */
     function collectRestDayRulesFromForm(form) {
         if (!form) { return []; }
         var list = form.querySelector('#academy-rest-day-rules-list');
@@ -593,27 +592,6 @@
         return result;
     }
 
-    /**
-     * Expand rules into a per-week map.
-     *
-     * Rules are applied in order. Later rules overwrite earlier
-     * ones for the weeks they match. This mirrors CSS and lets a
-     * broad "odd weeks: Sat/Sun" rule be narrowed by a later
-     * "week 7: none" rule without reordering.
-     *
-     * A rule that matches every week is written to every key; the
-     * caller is expected to layer such a rule BEFORE specific
-     * ones, or not at all (since the default fieldset already
-     * covers "all weeks").
-     *
-     * When a rule has empty day array (all checkboxes unchecked),
-     * the expanded value is [] — an explicit "no rest days this
-     * week" entry that overrides the default.
-     *
-     * Malformed rules are skipped. Malformed bounds reject the
-     * whole rule (silently; the domain will not be reached with an
-     * invalid value).
-     */
     function expandRestDayRulesToMap(rules) {
         var map = {};
 
@@ -679,22 +657,6 @@
         return map;
     }
 
-    /**
-     * Rebuild form-friendly rules from an existing restDaysByWeek
-     * map, so the edit form shows the user something coherent.
-     *
-     * The map has already lost the rule structure — it is a
-     * flattened per-week answer. Reconstructing the rules exactly
-     * would be over-engineering; instead, we detect the common
-     * patterns (odd, even, range, single) and show one rule per
-     * pattern.
-     *
-     * A map that does not fit any pattern falls back to a single
-     * "all weeks" rule only if every entry is identical. Otherwise
-     * the reconstruction emits one single-week rule per entry, which
-     * is verbose but lossless. The user can delete them and author
-     * cleaner rules if they want.
-     */
     function deriveRulesFromRestDaysByWeek(map) {
         if (!map || typeof map !== 'object') { return []; }
 
@@ -1054,7 +1016,7 @@
     }
 
     // ============================================================
-    // CLASS — ADD CHARACTER (bulk)
+    // CLASS — ADD CHARACTER (stacked collapsible picker)
     // ============================================================
 
     function buildAddCharacterToClassHTML(vm) {
@@ -1099,40 +1061,22 @@
                     'placeholder="Search characters...">';
         html += '</div>';
 
-        // ---- Bulk-select toolbar ----
-        html += '<div class="ac-add-character-toolbar">';
-        html += '<span class="ac-add-character-count" ' +
-                    'id="ac-add-character-count">0 selected</span>';
-        html += '<button type="button" class="small secondary" ' +
-                    'data-bulk-action="select-all">' +
-                    'Select all visible' +
-                '</button>';
-        html += '<button type="button" class="small secondary" ' +
-                    'data-bulk-action="clear-all">Clear</button>';
-        html += '</div>';
-
-        // ---- Checklist ----
-        html += '<div class="ac-add-character-list" ' +
-                    'id="ac-add-character-list">';
-
-        if (free.length > 0) {
-            html += '<div class="ac-add-character-group-header">' +
-                        'Unassigned' +
-                    '</div>';
-            for (var i = 0; i < free.length; i++) {
-                html += renderCharacterCheckbox(free[i], 'free');
-            }
-        }
-
-        if (assigned.length > 0) {
-            html += '<div class="ac-add-character-group-header">' +
-                        'In Other Classes' +
-                    '</div>';
-            for (var j = 0; j < assigned.length; j++) {
-                html += renderCharacterCheckbox(assigned[j], 'assigned');
-            }
-        }
-
+        // ---- Stacked collapsible containers ----
+        html += '<div class="ac-add-character-picker">';
+        html += buildPickerContainer({
+            columnKey: 'unassigned',
+            title: 'Unassigned',
+            entries: free,
+            emptyMessage: 'No unassigned characters.',
+            defaultExpanded: true
+        });
+        html += buildPickerContainer({
+            columnKey: 'assigned',
+            title: 'In Other Classes',
+            entries: assigned,
+            emptyMessage: 'No characters in other classes.',
+            defaultExpanded: false
+        });
         html += '</div>';
 
         // ---- Footer ----
@@ -1149,7 +1093,73 @@
         return html;
     }
 
-    function renderCharacterCheckbox(entry, group) {
+    function buildPickerContainer(options) {
+        var columnKey = options.columnKey;
+        var title = options.title;
+        var entries = options.entries || [];
+        var emptyMessage = options.emptyMessage || 'No entries.';
+        var defaultExpanded = options.defaultExpanded === true;
+
+        var expandedAttr = defaultExpanded ? 'true' : 'false';
+
+        var html = '';
+        html += '<div class="ac-add-character-container" ' +
+                    'data-column="' + escapeAttribute(columnKey) + '" ' +
+                    'data-expanded="' + expandedAttr + '">';
+
+        // ---- Header (clickable) ----
+        html += '<button type="button" ' +
+                    'class="ac-add-character-container-header" ' +
+                    'data-container-toggle="true" ' +
+                    'data-column="' + escapeAttribute(columnKey) + '" ' +
+                    'aria-expanded="' + expandedAttr + '">';
+        html += '<span class="ac-add-character-container-caret">' +
+                    '\u25b8' +
+                '</span>';
+        html += '<span class="ac-add-character-container-title">' +
+                    escapeHtml(title) +
+                '</span>';
+        html += '<span class="ac-add-character-container-count" ' +
+                    'data-column-count="' + escapeAttribute(columnKey) + '">' +
+                    entries.length +
+                '</span>';
+        html += '</button>';
+
+        // ---- Action row ----
+        html += '<div class="ac-add-character-container-actions">';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-bulk-action="select-all" ' +
+                    'data-column="' + escapeAttribute(columnKey) + '">' +
+                    'Select all' +
+                '</button>';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-bulk-action="clear-column" ' +
+                    'data-column="' + escapeAttribute(columnKey) + '">' +
+                    'Clear' +
+                '</button>';
+        html += '</div>';
+
+        // ---- Body ----
+        html += '<div class="ac-add-character-container-body" ' +
+                    'data-column-body="' + escapeAttribute(columnKey) + '">';
+
+        if (entries.length === 0) {
+            html += '<div class="ac-add-character-container-empty">' +
+                        escapeHtml(emptyMessage) +
+                    '</div>';
+        } else {
+            for (var i = 0; i < entries.length; i++) {
+                html += renderCharacterCheckbox(entries[i], columnKey);
+            }
+        }
+
+        html += '</div>';
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderCharacterCheckbox(entry, columnKey) {
         if (!entry || !entry.id) { return ''; }
 
         var label = formatCharacterOptionLabel(entry.name, entry.age);
@@ -1159,7 +1169,7 @@
         html += '<label class="ac-add-character-row" ' +
                     'data-character-id="' + escapeAttribute(entry.id) + '" ' +
                     'data-search-key="' + escapeAttribute(searchKey) + '" ' +
-                    'data-group="' + escapeAttribute(group) + '">';
+                    'data-column="' + escapeAttribute(columnKey) + '">';
         html += '<input type="checkbox" class="ac-add-character-checkbox" ' +
                     'value="' + escapeAttribute(entry.id) + '">';
         html += '<span class="ac-add-character-name">' +
@@ -1227,97 +1237,199 @@
     }
 
     // ============================================================
-    // CLASS — ADD CHARACTER (bulk) — event wiring
+    // CLASS — ADD CHARACTER (stacked collapsible picker) — events
     // ============================================================
 
     function bindBulkCharacterPickerEvents(form) {
         var searchEl = form.querySelector('#ac-add-character-search');
-        var countEl = form.querySelector('#ac-add-character-count');
 
-        function updateCount() {
-            if (!countEl) { return; }
-            var n = collectSelectedCharacterIds(form).length;
-            countEl.textContent = n + ' selected';
+        function updateCounts() {
+            var containers = form.querySelectorAll(
+                '.ac-add-character-container'
+            );
+            for (var c = 0; c < containers.length; c++) {
+                var container = containers[c];
+                var key = container.dataset.column;
+                var badge = container.querySelector(
+                    '[data-column-count="' + key + '"]'
+                );
+                if (!badge) { continue; }
+
+                var checked = container.querySelectorAll(
+                    '.ac-add-character-checkbox:checked'
+                ).length;
+                var total = container.querySelectorAll(
+                    '.ac-add-character-row'
+                ).length;
+
+                badge.textContent = checked > 0
+                    ? checked + ' / ' + total
+                    : String(total);
+
+                if (checked > 0) {
+                    badge.classList.add('has-selected');
+                } else {
+                    badge.classList.remove('has-selected');
+                }
+            }
         }
 
         if (searchEl) {
             searchEl.addEventListener('input', function() {
                 var term = searchEl.value.toLowerCase().trim();
                 var rows = form.querySelectorAll('.ac-add-character-row');
+
                 for (var i = 0; i < rows.length; i++) {
                     var row = rows[i];
                     var key = row.dataset.searchKey || '';
                     var matches = term === '' || key.indexOf(term) !== -1;
-                    row.style.display = matches ? '' : 'none';
+                    if (matches) {
+                        row.classList.remove('hidden-by-search');
+                    } else {
+                        row.classList.add('hidden-by-search');
+                    }
                 }
-                updateGroupHeaderVisibility(form);
+
+                updateContainerEmptyState(form);
             });
         }
 
         form.addEventListener('change', function(e) {
             if (e.target && e.target.classList &&
                 e.target.classList.contains('ac-add-character-checkbox')) {
-                updateCount();
+                updateCounts();
             }
         });
 
         form.addEventListener('click', function(e) {
-            var actionEl = e.target && e.target.closest
-                ? e.target.closest('[data-bulk-action]')
-                : null;
+            var target = e.target;
+            if (!target || typeof target.closest !== 'function') { return; }
+
+            // ---- Container header toggle ----
+            var headerEl = target.closest(
+                '[data-container-toggle="true"]'
+            );
+            if (headerEl) {
+                e.preventDefault();
+                toggleContainer(headerEl);
+                return;
+            }
+
+            // ---- Bulk actions ----
+            var actionEl = target.closest('[data-bulk-action]');
             if (!actionEl) { return; }
             e.preventDefault();
 
             var action = actionEl.dataset.bulkAction;
+            var columnKey = actionEl.dataset.column;
 
             if (action === 'select-all') {
-                var visible = form.querySelectorAll(
-                    '.ac-add-character-row:not([style*="display: none"]) ' +
-                    '.ac-add-character-checkbox'
-                );
-                for (var i = 0; i < visible.length; i++) {
-                    visible[i].checked = true;
-                }
-                updateCount();
+                selectAllVisibleInContainer(form, columnKey);
+                updateCounts();
                 return;
             }
 
-            if (action === 'clear-all') {
-                var all = form.querySelectorAll(
-                    '.ac-add-character-checkbox'
-                );
-                for (var j = 0; j < all.length; j++) {
-                    all[j].checked = false;
-                }
-                updateCount();
+            if (action === 'clear-column') {
+                clearContainer(form, columnKey);
+                updateCounts();
                 return;
             }
         });
     }
 
-    /**
-     * Hide a group header when every row beneath it (until the next
-     * header) is display:none. With exactly two groups this is O(2n).
-     */
-    function updateGroupHeaderVisibility(form) {
-        var headers = form.querySelectorAll(
-            '.ac-add-character-group-header'
+    function toggleContainer(headerEl) {
+        if (!headerEl) { return; }
+        var container = headerEl.closest('.ac-add-character-container');
+        if (!container) { return; }
+
+        var current = container.dataset.expanded === 'true';
+        var next = !current;
+
+        container.dataset.expanded = next ? 'true' : 'false';
+        headerEl.setAttribute('aria-expanded', next ? 'true' : 'false');
+    }
+
+    function selectAllVisibleInContainer(form, columnKey) {
+        if (!columnKey) { return; }
+
+        var container = form.querySelector(
+            '.ac-add-character-container[data-column="' +
+            cssEscape(columnKey) + '"]'
         );
-        for (var g = 0; g < headers.length; g++) {
-            var header = headers[g];
-            var visibleCount = 0;
-            var node = header.nextElementSibling;
-            while (node &&
-                   !node.classList.contains(
-                       'ac-add-character-group-header'
-                   )) {
-                if (node.classList.contains('ac-add-character-row') &&
-                    node.style.display !== 'none') {
-                    visibleCount++;
-                }
-                node = node.nextElementSibling;
+        if (!container) { return; }
+
+        var rows = container.querySelectorAll(
+            '.ac-add-character-row:not(.hidden-by-search)'
+        );
+        for (var i = 0; i < rows.length; i++) {
+            var checkbox = rows[i].querySelector(
+                '.ac-add-character-checkbox'
+            );
+            if (checkbox) {
+                checkbox.checked = true;
             }
-            header.style.display = visibleCount > 0 ? '' : 'none';
+        }
+    }
+
+    function clearContainer(form, columnKey) {
+        if (!columnKey) { return; }
+
+        var container = form.querySelector(
+            '.ac-add-character-container[data-column="' +
+            cssEscape(columnKey) + '"]'
+        );
+        if (!container) { return; }
+
+        var checkboxes = container.querySelectorAll(
+            '.ac-add-character-checkbox'
+        );
+        for (var i = 0; i < checkboxes.length; i++) {
+            checkboxes[i].checked = false;
+        }
+    }
+
+    function updateContainerEmptyState(form) {
+        var containers = form.querySelectorAll(
+            '.ac-add-character-container'
+        );
+
+        for (var c = 0; c < containers.length; c++) {
+            var container = containers[c];
+            var body = container.querySelector(
+                '.ac-add-character-container-body'
+            );
+            if (!body) { continue; }
+
+            var totalRows = body.querySelectorAll(
+                '.ac-add-character-row'
+            ).length;
+            if (totalRows === 0) {
+                // Container was empty at build time; its build-time
+                // empty hint is already the only content.
+                continue;
+            }
+
+            var visibleRows = body.querySelectorAll(
+                '.ac-add-character-row:not(.hidden-by-search)'
+            ).length;
+
+            var noMatches = body.querySelector(
+                '.ac-add-character-container-no-matches'
+            );
+
+            if (visibleRows === 0) {
+                if (!noMatches) {
+                    noMatches = document.createElement('div');
+                    noMatches.className =
+                        'ac-add-character-container-empty ' +
+                        'ac-add-character-container-no-matches';
+                    noMatches.textContent = 'No matches.';
+                    body.appendChild(noMatches);
+                }
+                noMatches.classList.remove('hidden');
+            } else if (noMatches) {
+                noMatches.classList.add('hidden');
+            }
         }
     }
 
@@ -1419,9 +1531,6 @@
 
             // Reopen on a fresh tick so the user can pick up the
             // remaining candidates without re-clicking the button.
-            // closeModal's teardown removes the modal from the DOM
-            // asynchronously when Modal.hideModal is used, so we
-            // defer by one microtask-turn's worth.
             setTimeout(function() {
                 openAddCharacterToClass(classId);
             }, 0);
