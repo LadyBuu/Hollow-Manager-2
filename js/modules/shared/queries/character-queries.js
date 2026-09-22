@@ -74,6 +74,23 @@
  *   current year. isSeniorByYear is the explicit, year-scoped
  *   form.
  *
+ * JUNIOR-OR-SENIOR-BY-YEAR:
+ *   isJuniorOrSeniorByYear(char, year) answers "has this character
+ *   reached junior OR senior status as of year Y?" Professional
+ *   teams accept juniors and seniors alike; the matchmaking pool
+ *   and the professional-team-eligible roster projection both use
+ *   this predicate.
+ *
+ *   The rule is the same as isSeniorByYear, broadened to accept
+ *   either status string. A blank startYear passes. A startYear
+ *   after Y does not count.
+ *
+ * CAREER STATUS YEAR:
+ *   getJuniorYear(char) and getSeniorYear(char) return the
+ *   earliest startYear across entries with the matching status,
+ *   or null. They exist for display: the Unassigned view in the
+ *   Teams tab shows both years side by side.
+ *
  * DEPENDENCIES:
  *   - window.data                 (canonical state)
  *   - window.CharacterConstants   (canonical status tiers; optional
@@ -418,27 +435,26 @@
     }
 
     // ============================================================
-    // SENIOR-BY-YEAR
+    // CAREER STATUS BY YEAR
     // ============================================================
     //
-    // Answers "has this character reached senior status as of year
-    // Y?" by walking char.careerStatus and looking for a senior
-    // entry whose startYear <= Y.
+    // These three predicates answer "has this character reached the
+    // named status as of year Y?" by walking char.careerStatus.
     //
-    // A blank startYear on a senior entry is treated as "senior from
-    // the beginning of time" and passes. The blank is a
+    // A blank startYear on a matching entry is treated as "in this
+    // status from the beginning of time" and passes. This is a
     // data-quality signal, not a filter reason.
     //
-    // A senior entry whose startYear is after Y does NOT count.
-    // A character who becomes senior in 1919 is not senior in 1918.
+    // An entry whose startYear is after Y does NOT count. A
+    // character who becomes senior in 1919 is not senior in 1918.
     //
     // Returns false when:
     //   - char is missing or malformed
     //   - year is not a positive integer
     //   - char.careerStatus is not an array
-    //   - there is no senior entry with startYear <= year
+    //   - there is no matching entry with startYear <= year
 
-    function isSeniorByYear(char, year) {
+    function isStatusByYear(char, year, statusName) {
         if (!char || typeof char !== 'object') { return false; }
 
         var yearNum = parseInt(year, 10);
@@ -446,15 +462,18 @@
 
         if (!Array.isArray(char.careerStatus)) { return false; }
 
+        var target = String(statusName).trim().toLowerCase();
+
         for (var i = 0; i < char.careerStatus.length; i++) {
             var entry = char.careerStatus[i];
             if (!entry || typeof entry !== 'object') { continue; }
             if (typeof entry.status !== 'string') { continue; }
 
             var statusStr = entry.status.trim().toLowerCase();
-            if (statusStr !== 'senior') { continue; }
+            if (statusStr !== target) { continue; }
 
-            // Blank startYear: senior from the beginning of time.
+            // Blank startYear: in this status from the beginning of
+            // time.
             var startRaw = entry.startYear;
             if (startRaw === undefined ||
                 startRaw === null ||
@@ -464,10 +483,9 @@
 
             var startNum = parseInt(startRaw, 10);
             if (isNaN(startNum)) {
-                // Malformed start year: treated like a blank, i.e.
-                // senior from the beginning of time. The alternative
-                // would be to silently drop a character whose senior
-                // entry has a typo in the year field.
+                // Malformed start year: treated like a blank. The
+                // alternative would be to silently drop a character
+                // whose entry has a typo in the year field.
                 return true;
             }
 
@@ -477,6 +495,86 @@
         }
 
         return false;
+    }
+
+    /**
+     * Has this character reached senior status as of year Y?
+     *
+     * The predicate the matchmaking pool uses (and the senior
+     * display in the Unassigned view reads via getSeniorYear).
+     *
+     * @param {object} char
+     * @param {number|string} year
+     * @returns {boolean}
+     */
+    function isSeniorByYear(char, year) {
+        return isStatusByYear(char, year, 'senior');
+    }
+
+    /**
+     * Has this character reached junior OR senior status as of year Y?
+     *
+     * Professional teams accept juniors and seniors alike. The
+     * matchmaking pool and the professional-team-eligible roster
+     * projection both use this predicate.
+     *
+     * @param {object} char
+     * @param {number|string} year
+     * @returns {boolean}
+     */
+    function isJuniorOrSeniorByYear(char, year) {
+        if (isStatusByYear(char, year, 'junior')) { return true; }
+        return isStatusByYear(char, year, 'senior');
+    }
+
+    // ============================================================
+    // CAREER STATUS YEAR (DISPLAY)
+    // ============================================================
+    //
+    // getJuniorYear and getSeniorYear return the earliest startYear
+    // across entries with the matching status, or null. They exist
+    // for display: the Unassigned view in the Teams tab shows both
+    // years side by side.
+
+    function getCareerStatusYear(char, statusName) {
+        if (!char || typeof char !== 'object') { return null; }
+        if (!Array.isArray(char.careerStatus)) { return null; }
+
+        var target = String(statusName).trim().toLowerCase();
+        var earliest = null;
+
+        for (var i = 0; i < char.careerStatus.length; i++) {
+            var entry = char.careerStatus[i];
+            if (!entry || typeof entry !== 'object') { continue; }
+            if (typeof entry.status !== 'string') { continue; }
+
+            var statusStr = entry.status.trim().toLowerCase();
+            if (statusStr !== target) { continue; }
+
+            var startRaw = entry.startYear;
+            if (startRaw === undefined ||
+                startRaw === null ||
+                String(startRaw).trim() === '') {
+                continue;
+            }
+
+            var startNum = parseInt(startRaw, 10);
+            if (isNaN(startNum) || startNum < 1) { continue; }
+
+            if (earliest === null || startNum < earliest) {
+                earliest = startNum;
+            }
+        }
+
+        return earliest;
+    }
+
+    function getJuniorYear(char) {
+        return getCareerStatusYear(char, 'junior');
+    }
+
+    function getSeniorYear(char) {
+        return getCareerStatusYear(char, 'senior');
     }
 
     // ============================================================
@@ -585,8 +683,14 @@
         isSupport: isSupport,
         isCivilian: isCivilian,
 
-        // Senior-by-year (matchmaking predicate)
+        // Career-status-by-year predicates
         isSeniorByYear: isSeniorByYear,
+        isJuniorOrSeniorByYear: isJuniorOrSeniorByYear,
+
+        // Career-status year display
+        getCareerStatusYear: getCareerStatusYear,
+        getJuniorYear: getJuniorYear,
+        getSeniorYear: getSeniorYear,
 
         // Lists
         getCharacters: getCharacters,
