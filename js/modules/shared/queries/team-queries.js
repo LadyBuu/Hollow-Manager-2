@@ -12,6 +12,7 @@
  *   - Period predicates (team-window, interval, bounds-based)
  *   - Ranking queries (sorted history, current rank, rank at
  *     period, summary)
+ *   - Professional-team-eligible roster (with classification)
  *
  * IMPORTANT:
  *   - READ ONLY. This module never mutates.
@@ -111,10 +112,50 @@
  *   It mirrors AcademyClasses.getClassInstructorIds vs
  *   getClassInstructorIdsAllTime: two queries, two questions.
  *
- * DEPENDENCIES:
+ * PROFESSIONAL-TEAM-ELIGIBLE ROSTER:
+ *   getProfessionalTeamEligibleRoster(year) is the read behind the
+ *   Teams tab's Unassigned view. It answers "who could be on a
+ *   professional team at year Y, and what is their current
+ *   professional-team state?"
+ *
+ *   A character is ELIGIBLE when all of:
+ *     - They have reached junior OR senior status by year Y.
+ *       (isJuniorOrSeniorByYear)
+ *     - They are not deceased as of year Y. (isDeceased)
+ *     - They have no elimination record of any kind, any year, any
+ *       week. Presence-based. (getEliminationWeek returns non-null)
+ *
+ *   Each eligible character is classified into exactly ONE of:
+ *     - 'active'    : active on a professional team at year Y
+ *     - 'future'    : no active stint, but a stint on some
+ *                     professional team has joinPeriod > year Y
+ *     - 'former'    : no active stint, no future stint, but a stint
+ *                     ended strictly before year Y
+ *     - 'available' : no member entry on any professional team
+ *
+ *   Priority: active > future > former > available. A character
+ *   with entries on multiple teams takes the highest
+ *   classification.
+ *
+ *   The 'future' case exists so the Unassigned view can indicate
+ *   that a character is already committed to a professional team
+ *   at a later year. This is the "future stint" indicator.
+ *
+ * DEPENDENCIES (MANDATORY):
  *   - window.data          (canonical state)
  *   - window.TeamConstants (mandatory)
  *   - window.ObjectUtils   (mandatory; for deepClone)
+ *
+ * DEPENDENCIES (LAZY, read at call time):
+ *   - window.CharacterQueries   (junior/senior predicate, display
+ *                                name, deceased predicate)
+ *   - window.EliminationQueries (elimination presence)
+ *
+ *   When either lazy dependency is absent, the corresponding
+ *   filter in getProfessionalTeamEligibleRoster is skipped rather
+ *   than failing closed. This matches the convention used by the
+ *   matchmaking pool (see team-aggregator.js). The roster query
+ *   still returns results; it just returns more of them.
  *
  * USAGE:
  *   var TQ = window.TeamQueries;
@@ -126,6 +167,7 @@
  *   var isFormer = TQ.isMemberFormer(memberEntry, 5);
  *   var inWindow = TQ.windowContains(1, 20, 5);
  *   var everOnTeam = TQ.getTeamsForCharacterAllTime('char_1', 'professional');
+ *   var roster = TQ.getProfessionalTeamEligibleRoster(1926);
  */
 
 (function() {
@@ -177,6 +219,18 @@
     }
 
     window.__teamQueriesLoaded = true;
+
+    // ============================================================
+    // LAZY DEPENDENCY ACCESSORS
+    // ============================================================
+
+    function getCharacterQueries() {
+        return window.CharacterQueries || null;
+    }
+
+    function getEliminationQueries() {
+        return window.EliminationQueries || null;
+    }
 
     // ============================================================
     // HELPERS
@@ -899,6 +953,263 @@
     }
 
     // ============================================================
+    // PROFESSIONAL-TEAM-ELIGIBLE ROSTER
+    // ============================================================
+
+    /**
+     * Classify a character's professional-team state at year Y.
+     *
+     * Returns one of: 'active', 'future', 'former', 'available'.
+     *
+     * Priority order (highest first): active, future, former,
+     * available. A character with entries on multiple professional
+     * teams takes the highest classification, and the returned
+     * team name / join year correspond to that highest entry.
+     *
+     * @param {string} charId
+     * @param {number} yearNum
+     * @returns {{
+     *   classification: string,
+     *   activeTeamName: string|null,
+     *   futureTeamName: string|null,
+     *   futureJoinYear: number|null,
+     *   formerTeamName: string|null
+     * }}
+     */
+    function classifyProfessionalState(charId, yearNum) {
+        var result = {
+            classification: 'available',
+            activeTeamName: null,
+            futureTeamName: null,
+            futureJoinYear: null,
+            formerTeamName: null
+        };
+
+        var teams = getTeamArray();
+        var target = String(charId);
+
+        var earliestFutureYear = null;
+        var earliestFutureTeamName = null;
+
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (!team || typeof team !== 'object') { continue; }
+            if (team.type !== 'professional') { continue; }
+            if (!isTeamOperational(team)) { continue; }
+            if (!Array.isArray(team.members)) { continue; }
+
+            var member = null;
+            for (var m = 0; m < team.members.length; m++) {
+                var entry = team.members[m];
+                if (entry && typeof entry === 'object' &&
+                    String(entry.characterId) === target) {
+                    member = entry;
+                    break;
+                }
+            }
+            if (!member) { continue; }
+            if (!Array.isArray(member.intervals)) { continue; }
+
+            var teamName = team.name || 'Unnamed Team';
+
+            // Active beats everything. First active found wins;
+            // we could pick the highest-priority team, but a
+            // character is normally active on at most one
+            // professional team at a time. If they are on two,
+            // the first in store order is as good as any.
+            if (isMemberActive(member, yearNum)) {
+                result.classification = 'active';
+                result.activeTeamName = teamName;
+                return result;
+            }
+
+            // Future: any interval whose joinPeriod > yearNum.
+            // We keep the earliest such year across all teams so
+            // the display shows the nearest commitment.
+            for (var iv = 0; iv < member.intervals.length; iv++) {
+                var interval = member.intervals[iv];
+                if (!interval || typeof interval !== 'object') {
+                    continue;
+                }
+                var joinRaw = interval.joinPeriod;
+                if (joinRaw === undefined || joinRaw === null ||
+                    String(joinRaw).trim() === '') {
+                    continue;
+                }
+                var joinNum = parsePeriod(joinRaw);
+                if (joinNum === null) { continue; }
+                if (joinNum <= yearNum) { continue; }
+
+                if (earliestFutureYear === null ||
+                    joinNum < earliestFutureYear) {
+                    earliestFutureYear = joinNum;
+                    earliestFutureTeamName = teamName;
+                }
+            }
+
+            // Former: no active interval, but at least one
+            // interval ended strictly before yearNum.
+            if (isMemberFormer(member, yearNum)) {
+                if (result.formerTeamName === null) {
+                    result.formerTeamName = teamName;
+                }
+            }
+        }
+
+        if (earliestFutureYear !== null) {
+            result.classification = 'future';
+            result.futureTeamName = earliestFutureTeamName;
+            result.futureJoinYear = earliestFutureYear;
+            return result;
+        }
+
+        if (result.formerTeamName !== null) {
+            result.classification = 'former';
+            return result;
+        }
+
+        return result;
+    }
+
+    /**
+     * Get every character eligible for a professional team at the
+     * given year, with their current professional-team state.
+     *
+     * ELIGIBILITY:
+     *   - Has reached junior OR senior status by year.
+     *   - Not deceased as of year.
+     *   - No elimination record of any kind, any year, any week.
+     *
+     * See the file header for the full contract.
+     *
+     * @param {number|string} year
+     * @returns {array} Sorted by name ascending
+     */
+    function getProfessionalTeamEligibleRoster(year) {
+        var yearNum = parsePeriod(year);
+        if (yearNum === null) {
+            return [];
+        }
+
+        var CharacterQueries = getCharacterQueries();
+        if (!CharacterQueries ||
+            typeof CharacterQueries.getCharacters !== 'function') {
+            return [];
+        }
+
+        var EliminationQueries = getEliminationQueries();
+        var canCheckElimination = EliminationQueries &&
+            typeof EliminationQueries.getEliminationWeek === 'function';
+
+        var canCheckJuniorOrSenior =
+            typeof CharacterQueries.isJuniorOrSeniorByYear === 'function';
+        var canCheckDeceased =
+            typeof CharacterQueries.isDeceased === 'function';
+        var canGetJuniorYear =
+            typeof CharacterQueries.getJuniorYear === 'function';
+        var canGetSeniorYear =
+            typeof CharacterQueries.getSeniorYear === 'function';
+        var canGetDisplayName =
+            typeof CharacterQueries.getDisplayName === 'function';
+        var canGetCurrentStatus =
+            typeof CharacterQueries.getCurrentStatus === 'function';
+
+        var allChars = CharacterQueries.getCharacters() || [];
+        var rows = [];
+
+        for (var i = 0; i < allChars.length; i++) {
+            var char = allChars[i];
+            if (!char || !char.id) { continue; }
+            var cid = String(char.id);
+
+            // 1. Junior or senior by year.
+            if (canCheckJuniorOrSenior) {
+                var isEligibleStatus = false;
+                try {
+                    isEligibleStatus =
+                        CharacterQueries.isJuniorOrSeniorByYear(
+                            char, yearNum
+                        ) === true;
+                } catch (e) {
+                    isEligibleStatus = false;
+                }
+                if (!isEligibleStatus) { continue; }
+            }
+
+            // 2. Deceased.
+            if (canCheckDeceased) {
+                var deceased = false;
+                try {
+                    deceased =
+                        CharacterQueries.isDeceased(char, yearNum) === true;
+                } catch (e) {
+                    deceased = char.deceased === true;
+                }
+                if (deceased) { continue; }
+            }
+
+            // 3. Elimination (any year, any week, any kind).
+            if (canCheckElimination) {
+                var elimWeek = null;
+                try {
+                    elimWeek = EliminationQueries.getEliminationWeek(cid);
+                } catch (e) {
+                    elimWeek = null;
+                }
+                if (elimWeek !== null && elimWeek !== undefined) {
+                    continue;
+                }
+            }
+
+            // 4. Classification.
+            var state = classifyProfessionalState(cid, yearNum);
+
+            var juniorYear = null;
+            if (canGetJuniorYear) {
+                try { juniorYear = CharacterQueries.getJuniorYear(char); }
+                catch (e) { juniorYear = null; }
+            }
+
+            var seniorYear = null;
+            if (canGetSeniorYear) {
+                try { seniorYear = CharacterQueries.getSeniorYear(char); }
+                catch (e) { seniorYear = null; }
+            }
+
+            var displayName = 'Unknown';
+            if (canGetDisplayName) {
+                try { displayName = CharacterQueries.getDisplayName(char); }
+                catch (e) { displayName = 'Unknown'; }
+            }
+
+            var status = '';
+            if (canGetCurrentStatus) {
+                try { status = CharacterQueries.getCurrentStatus(char); }
+                catch (e) { status = ''; }
+            }
+
+            rows.push({
+                characterId: cid,
+                name: displayName,
+                status: status,
+                juniorYear: juniorYear,
+                seniorYear: seniorYear,
+                classification: state.classification,
+                activeTeamName: state.activeTeamName,
+                futureTeamName: state.futureTeamName,
+                futureJoinYear: state.futureJoinYear,
+                formerTeamName: state.formerTeamName
+            });
+        }
+
+        rows.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
+
+        return rows;
+    }
+
+    // ============================================================
     // RANKINGS
     // ============================================================
 
@@ -1050,6 +1361,9 @@
         getTeamsForCharacterAllTime: getTeamsForCharacterAllTime,
         getCharacterTeamMembership: getCharacterTeamMembership,
 
+        // Professional-team-eligible roster
+        getProfessionalTeamEligibleRoster: getProfessionalTeamEligibleRoster,
+
         // Rankings
         getSortedRankings: getSortedRankings,
         getMostRecentRanking: getMostRecentRanking,
@@ -1080,6 +1394,7 @@
             'getAllTeamMemberRecords',
             'getTeamsForCharacter', 'getTeamsForCharacterAllTime',
             'getCharacterTeamMembership',
+            'getProfessionalTeamEligibleRoster',
             'getSortedRankings', 'getMostRecentRanking', 'getCurrentRank',
             'getRankAtPeriod', 'hasRankings', 'getRankingSummary'
         ];
