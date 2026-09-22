@@ -26,6 +26,26 @@
  *   - Display strings (type label, period display, rank display)
  *     arrive on the VM. The renderer does not derive them.
  *
+ * PAGE HEADER ACTIONS:
+ *   The page header carries three actions on the professional tab:
+ *
+ *     [Export] [Matchmaking] [+ Add Team]
+ *
+ *   - Export opens the team export picker (TeamExportPicker).
+ *     The picker owns the format choice (JSON / CSV) and the
+ *     status filter; the header button does not need to know
+ *     about formats.
+ *
+ *   - Matchmaking opens the matchmaking modal. Professional
+ *     teams only.
+ *
+ *   - + Add Team opens the team form.
+ *
+ *   All three are hidden while the Unassigned view is active,
+ *   because none of them applies to a read-only roster of people.
+ *   They are also hidden on the Temporary and Civilian tabs,
+ *   because matchmaking and export target professional teams.
+ *
  * MEMBER VM:
  *   A member VM carries:
  *     { characterId, memberId, displayName, status, age, deceased,
@@ -52,19 +72,11 @@
  *   with the future-stint indicator rendered as a sub-line under
  *   the character name when present.
  *
- *   The classification field is not rendered directly; it drives
- *   the sub-line's presence and the CSS class on the row. A row
- *   with a future stint gets `.has-future`; otherwise it renders
- *   with no special class.
- *
  * TOGGLE:
  *   The professional tab's filter bar carries a two-button toggle
  *   (Teams | Unassigned). It is rendered by renderFilterBar when
  *   filterVM.tab === 'professional'. The toggle's active state is
  *   passed in as filterVM.showUnassigned (boolean).
- *
- *   The toggle has no state of its own. It is a rendering of the
- *   events layer's in-memory mode flag.
  *
  * NO INLINE STYLES:
  *   All layout lives in CSS classes. The renderer emits class names
@@ -1082,22 +1094,31 @@
 
         // ---- Page header ----
         //
-        // The header contains two primary actions:
-        //   + Add Team        : opens the team form
-        //   Matchmaking       : opens the matchmaking modal
+        // The header contains three actions on the professional tab:
         //
-        // Matchmaking is available only on the professional tab,
-        // because the matchmaking algorithm targets professional
-        // teams only. On other tabs the button is not rendered.
+        //   Export        : opens the team export picker
+        //   Matchmaking   : opens the matchmaking modal
+        //   + Add Team    : opens the team form
         //
-        // The Add Team and Matchmaking buttons are hidden while
-        // the Unassigned view is active, because neither action
-        // applies to a read-only roster of people. The Unassigned
-        // view is informational.
+        // All three are hidden on Temporary and Civilian tabs
+        // because matchmaking and professional-team export target
+        // professional teams only.
+        //
+        // All three are hidden while the Unassigned view is active,
+        // because none of them applies to a read-only roster of
+        // people.
+        //
+        // The page-header action group is stable across tabs; only
+        // its contents change. This keeps the header height
+        // consistent whether the user is on Professional, Temporary,
+        // or Civilian.
         html += '<div class="page-header">';
         html += '<h2>Team Manager</h2>';
         html += '<div class="page-header-actions">';
         if (activeTab === 'professional' && !showUnassigned) {
+            html += '<button type="button" ' +
+                        'id="team-export-btn" ' +
+                        'class="secondary">Export</button>';
             html += '<button type="button" ' +
                         'id="team-matchmaking-btn" ' +
                         'class="secondary">Matchmaking</button>';
