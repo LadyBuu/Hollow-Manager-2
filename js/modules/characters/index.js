@@ -227,7 +227,7 @@
     // HTML GENERATOR
     // ============================================================
 
-    function getCharactersHTML() {
+      function getCharactersHTML() {
         return `
             <div class="characters-layout">
                 <div class="characters-sidebar">
@@ -243,7 +243,53 @@
                         <select id="char-class-filter">
                             <option value="all">All Classes</option>
                         </select>
-                        <div class="filter-checkboxes" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:4px 0;">
+
+                        <!--
+                            Career Status filter.
+                            Each checkbox carries data-status with the
+                            lowercase status key. The list module reads
+                            these via CharacterList.getFilterValues().
+
+                            The statuses mirror CharacterConstants'
+                            CAREER_STATUS_OPTIONS, minus the empty
+                            placeholder. Any new status added there
+                            should be added here too.
+                        -->
+                        <div class="status-filter-group" style="margin-top:6px;">
+                            <div style="font-size:0.6rem;color:var(--text-dim);font-weight:600;margin-bottom:4px;">Career Status</div>
+                            <div id="char-status-filter" style="display:grid;grid-template-columns:1fr 1fr;gap:2px 8px;">
+                                <label class="filter-check" style="display:flex;align-items:center;gap:4px;font-size:0.65rem;color:var(--text-dim);cursor:pointer;">
+                                    <input type="checkbox" data-status="civilian" />
+                                    Civilian
+                                </label>
+                                <label class="filter-check" style="display:flex;align-items:center;gap:4px;font-size:0.65rem;color:var(--text-dim);cursor:pointer;">
+                                    <input type="checkbox" data-status="trainee" />
+                                    Trainee
+                                </label>
+                                <label class="filter-check" style="display:flex;align-items:center;gap:4px;font-size:0.65rem;color:var(--text-dim);cursor:pointer;">
+                                    <input type="checkbox" data-status="rookie" />
+                                    Rookie
+                                </label>
+                                <label class="filter-check" style="display:flex;align-items:center;gap:4px;font-size:0.65rem;color:var(--text-dim);cursor:pointer;">
+                                    <input type="checkbox" data-status="junior" />
+                                    Junior
+                                </label>
+                                <label class="filter-check" style="display:flex;align-items:center;gap:4px;font-size:0.65rem;color:var(--text-dim);cursor:pointer;">
+                                    <input type="checkbox" data-status="senior" />
+                                    Senior
+                                </label>
+                                <label class="filter-check" style="display:flex;align-items:center;gap:4px;font-size:0.65rem;color:var(--text-dim);cursor:pointer;">
+                                    <input type="checkbox" data-status="instructor" />
+                                    Instructor
+                                </label>
+                                <label class="filter-check" style="display:flex;align-items:center;gap:4px;font-size:0.65rem;color:var(--text-dim);cursor:pointer;">
+                                    <input type="checkbox" data-status="support" />
+                                    Support
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="filter-checkboxes" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:4px 0;margin-top:4px;">
                             <label class="filter-check" style="display:flex;align-items:center;gap:4px;font-size:0.65rem;color:var(--text-dim);cursor:pointer;">
                                 <input type="checkbox" id="hide-deceased" checked />
                                 Hide Deceased
