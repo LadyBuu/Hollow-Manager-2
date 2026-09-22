@@ -15,6 +15,7 @@
  *   - Read and write form field values.
  *   - Own the matchmaking modal's proposal state.
  *   - Own the professional tab's Unassigned toggle.
+ *   - Open the team export picker (TeamExportPicker).
  *
  * IMPORTANT:
  *   - Orchestration only. No domain reads beyond TeamQueries,
@@ -31,14 +32,26 @@
  *     appended to document.body and are wired directly by the
  *     function that opens them.
  *
+ * TEAM EXPORT:
+ *   The Export button lives in the Teams page header, next to
+ *   Matchmaking and + Add Team. It opens the team export picker
+ *   (TeamExportPicker). The picker owns the format choice
+ *   (JSON / CSV) and the status filter; this module only opens
+ *   it.
+ *
+ *   The picker is resolved LAZILY at click time so a missing
+ *   module produces a toast, not a boot-time crash.
+ *
+ *   The button is bound with delegate() rather than a direct
+ *   listener because the page header is re-rendered on every
+ *   refreshUI(). A direct listener would be lost on the next
+ *   render. delegate() attaches to the container and matches on
+ *   the selector, so it survives re-renders.
+ *
  * UNASSIGNED MODE:
  *   The professional tab has two modes: Teams (the default) and
  *   Unassigned. The mode is a module-level boolean
- *   (_showUnassigned). It is NOT part of TeamUI's persisted state:
- *   it is a transient view toggle, and persisting it would require
- *   a schema bump on team_ui_state_v1, losing every user's tab and
- *   expand state for a preference that resets naturally when the
- *   page reloads.
+ *   (_showUnassigned). It is NOT part of TeamUI's persisted state.
  *
  *   The toggle is rendered by TeamRender.renderFilterBar as a
  *   two-button control. Clicks on .mode-btn are handled by
@@ -50,37 +63,17 @@
  *                        page VM as pageVM.unassignedVM, set
  *                        pageVM.showUnassigned = true.
  *
- *   When the user leaves the professional tab (clicks Temporary or
- *   Civilian) and comes back, the toggle is reset to Teams. This
- *   keeps the two other tabs free of a control that doesn't apply
- *   to them, and avoids a "why is my professional tab showing
- *   unassigned people" moment after a tab switch.
+ *   When the user leaves the professional tab and comes back, the
+ *   toggle is reset to Teams.
  *
  * MATCHMAKING MODAL:
  *   The matchmaking modal has two modes: Setup and Proposal.
  *   The proposal itself lives in a plain object attached to the
- *   modal element (`modal.__matchmakingState`). The setup mode
- *   has no state: it reads its two inputs, calls the aggregator
- *   and the matcher, and transitions to proposal mode.
- *
- *   Proposal-mode edits mutate the modal's state object in
- *   place and re-render the modal body. Nothing is written to
- *   storage until Commit.
- *
- *   Commit builds the flat assignments array from the state and
- *   calls TeamCore.batchAddMembers.
+ *   modal element (`modal.__matchmakingState`).
  *
  * MEMBER MANAGER:
  *   The professional member manager is the shared
  *   window.MemberManager wired through window.MemberAdapterTeams.
- *
- *   The modal shell is created on demand, appended to
- *   document.body, and removed when the manager closes.
- *
- * MODAL STATE:
- *   TeamUI does not track modal state. The team ID a modal is
- *   acting on lives on the modal's own dataset. Matchmaking
- *   state lives on the modal element itself.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamCore
@@ -94,6 +87,9 @@
  *   - window.MemberManager
  *   - window.MemberAdapterTeams
  *   - window.NotificationSystem
+ *
+ * DEPENDENCIES (LAZY, resolved at click time):
+ *   - window.TeamExportPicker  (Export button)
  */
 
 (function() {
@@ -492,6 +488,7 @@
         bindModeToggle();
         bindAddTeam();
         bindMatchmaking();
+        bindTeamExport();
         bindTeamActions();
         bindFilters();
 
@@ -1121,17 +1118,7 @@
         var candidate = state.candidatesById[charId];
         if (!candidate) { return; }
 
-        // Find the assignment for this team. If it does not
-        // exist (the team was dropped when it became empty),
-        // create it from the candidate's team info — but we
-        // need the team name. Look it up from the assignment
-        // list if it exists; otherwise, the pool VM must have
-        // carried it. Since the target VM is not stored on the
-        // modal state, we rebuild the team name from the
-        // candidate's perspective: it is not available. This
-        // case is prevented because an empty assignment is only
-        // dropped when its last addition is removed; the "Add"
-        // mini-form is only shown for assignments that exist.
+        // Find the assignment for this team.
         var assignment = null;
         for (var i = 0; i < state.assignments.length; i++) {
             if (state.assignments[i].teamId === teamId) {
@@ -1227,6 +1214,48 @@
             return '';
         }
         return String(value).replace(/(["\\])/g, '\\$1');
+    }
+
+    // ============================================================
+    // TEAM EXPORT
+    // ============================================================
+    //
+    // The Export button lives in the Teams page header, next to
+    // Matchmaking and + Add Team. It opens the team export picker
+    // (TeamExportPicker), which owns the format choice (JSON /
+    // CSV) and the status filter.
+    //
+    // The picker is resolved LAZILY at click time so a missing
+    // module produces a toast, not a boot-time crash.
+    //
+    // Bound via delegate() rather than a direct listener because
+    // the page header is re-rendered on every refreshUI(). A
+    // direct listener would be lost on the next render; delegate()
+    // attaches to the container and survives re-renders.
+
+    function bindTeamExport() {
+        delegate('#team-export-btn', 'click', function(e) {
+            e.preventDefault();
+
+            var Picker = window.TeamExportPicker || null;
+            if (!Picker || typeof Picker.openModal !== 'function') {
+                notify('Team export is not available.', 'error');
+                return;
+            }
+
+            try {
+                Picker.openModal();
+            } catch (err) {
+                console.warn(
+                    '[TeamEvents] TeamExportPicker.openModal ' +
+                    'threw:', err
+                );
+                notify(
+                    'Team export failed: ' + err.message,
+                    'error'
+                );
+            }
+        });
     }
 
     // ============================================================
