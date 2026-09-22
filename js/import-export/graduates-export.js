@@ -25,17 +25,35 @@
  *   No academic data — no grades, no enrolments, no teams, no
  *   rankings, no eliminations — is included in the output.
  *
- * GRADUATION YEAR:
- *   Resolution order:
- *     1. options.graduationYear (integer >= 1)
- *     2. class.year           (the class record's own year)
- *     3. window.data.currentYear
- *     4. the current calendar year
+ * GRADUATION YEAR — SOURCE OF TRUTH:
+ *   The graduation year is a fact about the CLASS, not about the
+ *   application's current display year. Resolution order:
  *
+ *     1. options.graduationYear (explicit override from the caller)
+ *     2. class.year             (the class's own year field)
+ *     3. null                   (unresolvable — refuse to export)
+ *
+ *   There is deliberately NO fallback to window.data.currentYear.
+ *   The app's current year is a display cursor for the Academy
+ *   tab; it is not a fact about the class. Substituting it would
+ *   silently produce wrong answers: a class with no year would
+ *   inherit today's year, and a class from a different year would
+ *   be evaluated against the current year's eliminations.
+ *
+ *   When resolution yields null, getGraduates returns a VM with
+ *   graduationYear: null and an empty graduates array. The two
+ *   export functions return an object with
+ *   error: 'graduation_year_required' instead of a file. Callers
+ *   (the UI handler) are expected to prompt the user for a year
+ *   and re-call with options.graduationYear set.
+ *
+ * GRADUATE FILTER:
  *   A character is a graduate when
  *     EliminationQueries.isCharacterEliminatedByYear(charId, year)
- *   returns false. This matches the character list's existing
- *   year-scoped elimination filter.
+ *   returns false. That query accepts either a character object or
+ *   a character ID (it resolves the ID internally), and answers
+ *   "was this character eliminated in the given year or any
+ *   earlier year?"
  *
  *   When EliminationQueries is unavailable, this module refuses to
  *   guess: every roster member is treated as NOT a graduate. A
@@ -48,40 +66,38 @@
  *     {
  *       classId,
  *       className,
- *       graduationYear,
+ *       graduationYear,   // integer, or null when unresolvable
  *       graduates: [GraduateRecord, ...]
  *     }
  *
  *   GraduateRecord:
  *     {
- *       id,                          // character id
- *       // name
+ *       id,
  *       firstName, middleName, lastName, nickname, alias,
  *       previousNames: [string],
- *       displayName,                 // from CharacterQueries
- *       // life
+ *       displayName,
  *       age, birthYear, gender, attraction, sexuality,
- *       // physical
  *       eyes, hair, skin, height, weight, build, appearanceNotes,
- *       // personality (flattened)
  *       traits, ideals, bonds, flaws, alignment,
  *       likes, dislikes, habits, fears, goals,
- *       // combat
- *       stats,                       // { str, dex, ... }
- *       magic,                       // { fire, water, ... }
- *       hp, mp,
- *       weapons,                     // [{ id, name, type, notes }]
- *       specialMoves,                // { physical: [...], magical: [...] }
- *       combatNotes
+ *       stats, magic, hp, mp, weapons, specialMoves, combatNotes
  *     }
  *
  *   exportGraduatesJSON(classId, options) ->
- *     Promise<{ exported, filename, count, error?, wasEnveloped }>
- *     The envelope is created via ExportEnvelope.create with
- *     { graduates: [...] } as the data payload.
+ *     {
+ *       exported, filename, count, error?, wasEnveloped
+ *     }
  *
  *   exportGraduatesCSV(classId, options) ->
- *     { exported, filename, count, error? }
+ *     {
+ *       exported, filename, count, error?
+ *     }
+ *
+ *   Error codes (result.error):
+ *     'Class not found or arguments invalid.'
+ *     'graduation_year_required'
+ *     'No graduates found for this class.'
+ *     (any transport-level failure message from blob/download)
  *
  *   getGraduatesCSVContent(classId, options) -> string
  *   getGraduatesJSONEnvelope(classId, options) -> object | null
@@ -98,6 +114,8 @@
  * DEPENDENCIES (OPTIONAL):
  *   - window.EliminationQueries
  *     Missing -> no character can be a graduate. Fail-closed.
+ *   - window.CharacterConstants  (stat key list)
+ *   - window.MagicConstants      (magic type key list)
  */
 
 (function() {
@@ -165,7 +183,7 @@
     }
 
     // ============================================================
-    // OPTIONAL DEPENDENCIES
+    // OPTIONAL DEPENDENCY ACCESSORS
     // ============================================================
 
     function getEliminationQueries() {
@@ -187,20 +205,17 @@
     var DEFAULT_STAT_KEYS = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
 
     var COLUMNS = [
-        // Name
         'FirstName',
         'MiddleName',
         'LastName',
         'Nickname',
         'Alias',
         'PreviousNames',
-        // Life
         'Age',
         'BirthYear',
         'Gender',
         'Attraction',
         'Sexuality',
-        // Physical
         'Eyes',
         'Hair',
         'Skin',
@@ -208,7 +223,6 @@
         'Weight',
         'Build',
         'AppearanceNotes',
-        // Personality (flattened)
         'Traits',
         'Ideals',
         'Bonds',
@@ -219,7 +233,6 @@
         'Habits',
         'Fears',
         'Goals',
-        // Combat
         'Stats',
         'Magic',
         'HP',
@@ -263,36 +276,22 @@
         }
     }
 
-    function jsonObjectOr(value, fallback) {
-        if (!isObject(value)) { return fallback; }
-        return value;
-    }
-
-    function clonePlainObject(value) {
-        if (!isObject(value)) { return {}; }
-        var result = {};
-        var keys = Object.keys(value);
-        for (var i = 0; i < keys.length; i++) {
-            var k = keys[i];
-            var v = value[k];
-            if (v === null ||
-                v === undefined ||
-                typeof v === 'string' ||
-                typeof v === 'number' ||
-                typeof v === 'boolean') {
-                result[k] = v;
-            } else {
-                result[k] = jsonOrEmpty(v);
-            }
-        }
-        return result;
+    function sanitiseForFilename(value) {
+        return String(value === undefined || value === null ? '' : value)
+            .replace(/[^A-Za-z0-9_-]+/g, '-')
+            .replace(/^-+|-+$/g, '') || 'class';
     }
 
     // ============================================================
     // GRADUATION YEAR RESOLUTION
     // ============================================================
+    //
+    // The class's year is the fact. The app's current year is a
+    // display cursor and is NEVER consulted. See the file header
+    // for the reasoning.
 
     function resolveGraduationYear(cls, options) {
+        // 1. Explicit override from the caller.
         if (options && options.graduationYear !== undefined &&
             options.graduationYear !== null) {
             var explicit = parseInt(options.graduationYear, 10);
@@ -301,46 +300,54 @@
             }
         }
 
-        if (cls && cls.year !== undefined && cls.year !== null && cls.year !== '') {
+        // 2. The class's own year field.
+        if (cls && cls.year !== undefined && cls.year !== null &&
+            cls.year !== '') {
             var classYear = parseInt(cls.year, 10);
             if (!isNaN(classYear) && classYear >= 1) {
                 return classYear;
             }
         }
 
-        var data = window.data || {};
-        if (typeof data.currentYear === 'number' &&
-            isFinite(data.currentYear) &&
-            data.currentYear > 0) {
-            return Math.floor(data.currentYear);
-        }
-
-        return new Date().getFullYear();
+        // 3. Unresolvable. Caller must prompt.
+        return null;
     }
 
     // ============================================================
     // GRADUATE FILTER
     // ============================================================
 
+    // Warn once per session if the query module is missing.
+    var _graduateFilterWarned = false;
+
     function isGraduate(charId, graduationYear) {
         var EQ = getEliminationQueries();
 
-        // Fail-closed: without an elimination authority we cannot
-        // honestly say who passed. Return false for everyone.
         if (!EQ || typeof EQ.isCharacterEliminatedByYear !== 'function') {
+            if (!_graduateFilterWarned) {
+                _graduateFilterWarned = true;
+                console.warn(
+                    '[GraduatesExport] EliminationQueries.' +
+                    'isCharacterEliminatedByYear is not available. ' +
+                    'No character can be classified as a graduate.'
+                );
+            }
             return false;
         }
 
-        var eliminated = false;
+        // The query accepts either a character object or a char ID.
+        // It resolves an ID in the live store internally.
+        var eliminated;
         try {
             eliminated = EQ.isCharacterEliminatedByYear(
                 charId,
                 graduationYear
-            ) === true;
+            );
         } catch (e) {
             console.warn(
                 '[GraduatesExport] isCharacterEliminatedByYear threw:',
-                e
+                e,
+                { charId: charId, year: graduationYear }
             );
             return false;
         }
@@ -495,11 +502,6 @@
         return result;
     }
 
-    /**
-     * Build a single graduate record from a character id.
-     * Every field comes from the character record. Academy is not
-     * consulted here.
-     */
     function buildGraduateRecord(charId) {
         var char = CharacterQueries.getCharacterById(charId);
         if (!char) { return null; }
@@ -528,7 +530,6 @@
         return {
             id: String(char.id),
 
-            // Name
             firstName: safeString(char.firstName),
             middleName: safeString(char.middleName),
             lastName: safeString(char.lastName),
@@ -537,14 +538,12 @@
             previousNames: normalisePreviousNames(char),
             displayName: displayName,
 
-            // Life
             age: age,
             birthYear: safeString(char.birthYear),
             gender: safeString(char.gender),
             attraction: safeString(char.attraction),
             sexuality: safeString(char.sexuality),
 
-            // Physical
             eyes: safeString(char.eyes),
             hair: safeString(char.hair),
             skin: safeString(char.skin),
@@ -553,7 +552,6 @@
             build: safeString(char.build),
             appearanceNotes: safeString(char.appearanceNotes),
 
-            // Personality
             traits: safeString(personality.traits),
             ideals: safeString(personality.ideals),
             bonds: safeString(personality.bonds),
@@ -565,7 +563,6 @@
             fears: safeString(personality.fears),
             goals: safeString(personality.goals),
 
-            // Combat
             stats: normaliseStats(char),
             magic: normaliseMagic(char),
             hp: isFiniteNumber(char.hp) ? char.hp : 0,
@@ -583,11 +580,17 @@
     /**
      * Get the graduate list for a class.
      *
+     * When the graduation year cannot be resolved (no class.year
+     * and no options.graduationYear), the returned VM carries
+     * graduationYear: null and an empty graduates array. Callers
+     * are expected to prompt the user and re-call with an explicit
+     * year.
+     *
      * @param {string} classId
      * @param {object} [options]
-     * @param {number} [options.graduationYear] Override the class year
-     * @returns {object|null} The graduate VM, or null when the class
-     *   does not exist or the arguments are malformed.
+     * @param {number} [options.graduationYear]
+     * @returns {object|null} The graduate VM, or null when the
+     *   class does not exist or the arguments are malformed.
      */
     function getGraduates(classId, options) {
         if (!isNonEmptyString(classId)) {
@@ -602,31 +605,36 @@
         options = options || {};
         var graduationYear = resolveGraduationYear(cls, options);
 
+        var vm = {
+            classId: String(cls.id),
+            className: isNonEmptyString(cls.name)
+                ? String(cls.name)
+                : 'Unnamed Class',
+            graduationYear: graduationYear,
+            graduates: []
+        };
+
+        if (graduationYear === null) {
+            return vm;
+        }
+
         var roster = resolveRoster(String(cls.id));
-        var graduates = [];
 
         for (var i = 0; i < roster.length; i++) {
             var charId = roster[i];
             if (!isGraduate(charId, graduationYear)) { continue; }
             var record = buildGraduateRecord(charId);
             if (record) {
-                graduates.push(record);
+                vm.graduates.push(record);
             }
         }
 
-        graduates.sort(function(a, b) {
+        vm.graduates.sort(function(a, b) {
             return String(a.displayName || '')
                 .localeCompare(String(b.displayName || ''));
         });
 
-        return {
-            classId: String(cls.id),
-            className: isNonEmptyString(cls.name)
-                ? String(cls.name)
-                : 'Unnamed Class',
-            graduationYear: graduationYear,
-            graduates: graduates
-        };
+        return vm;
     }
 
     // ============================================================
@@ -636,9 +644,6 @@
     function buildCSVRows(vm) {
         var rows = [];
 
-        // Section marker + header, matching the CharacterCSV and
-        // MissionCSV patterns so a future importer can be written
-        // against the same conventions.
         rows.push([SECTION_HEADER]);
         rows.push(COLUMNS.slice());
 
@@ -712,6 +717,15 @@
             };
         }
 
+        if (vm.graduationYear === null) {
+            return {
+                exported: false,
+                filename: null,
+                count: 0,
+                error: 'graduation_year_required'
+            };
+        }
+
         if (vm.graduates.length === 0) {
             return {
                 exported: false,
@@ -737,13 +751,9 @@
             type: 'text/csv;charset=utf-8;'
         });
 
-        var sanitisedClass = String(vm.className)
-            .replace(/[^A-Za-z0-9_-]+/g, '-')
-            .replace(/^-+|-+$/g, '') || 'class';
-
         var filename = options.filename ||
-            CSV_FILENAME_PREFIX + '-' + sanitisedClass + '-' +
-            String(vm.graduationYear) + '.csv';
+            CSV_FILENAME_PREFIX + '-' + sanitiseForFilename(vm.className) +
+            '-' + String(vm.graduationYear) + '.csv';
 
         try {
             ExportUtils.downloadBlob(blob, filename);
@@ -775,12 +785,16 @@
      * the envelope's own metadata, the returned envelope carries
      * graduates-specific metadata under `metadata.graduates`:
      *   { classId, className, graduationYear, count }.
+     *
+     * Returns null when the class is missing, the year cannot be
+     * resolved, or ExportEnvelope.create throws.
      */
     function getGraduatesJSONEnvelope(classId, options) {
         options = options || {};
 
         var vm = getGraduates(classId, options);
         if (!vm) { return null; }
+        if (vm.graduationYear === null) { return null; }
 
         var envelope;
         try {
@@ -817,6 +831,37 @@
     function exportGraduatesJSON(classId, options) {
         options = options || {};
 
+        var vm = getGraduates(classId, options);
+        if (!vm) {
+            return {
+                exported: false,
+                filename: null,
+                count: 0,
+                error: 'Class not found or arguments invalid.',
+                wasEnveloped: false
+            };
+        }
+
+        if (vm.graduationYear === null) {
+            return {
+                exported: false,
+                filename: null,
+                count: 0,
+                error: 'graduation_year_required',
+                wasEnveloped: false
+            };
+        }
+
+        if (vm.graduates.length === 0) {
+            return {
+                exported: false,
+                filename: null,
+                count: 0,
+                error: 'No graduates found for this class.',
+                wasEnveloped: false
+            };
+        }
+
         var envelope = getGraduatesJSONEnvelope(classId, options);
         if (!envelope) {
             return {
@@ -825,17 +870,6 @@
                 count: 0,
                 error: 'Could not build a graduate envelope.',
                 wasEnveloped: false
-            };
-        }
-
-        var graduates = envelope.data.graduates;
-        if (!Array.isArray(graduates) || graduates.length === 0) {
-            return {
-                exported: false,
-                filename: null,
-                count: 0,
-                error: 'No graduates found for this class.',
-                wasEnveloped: true
             };
         }
 
@@ -866,15 +900,9 @@
             };
         }
 
-        var sanitisedClass = String(
-            envelope.metadata.graduates.className
-        )
-            .replace(/[^A-Za-z0-9_-]+/g, '-')
-            .replace(/^-+|-+$/g, '') || 'class';
-
         var filename = options.filename ||
-            CSV_FILENAME_PREFIX + '-' + sanitisedClass + '-' +
-            String(envelope.metadata.graduates.graduationYear) + '.json';
+            CSV_FILENAME_PREFIX + '-' + sanitiseForFilename(vm.className) +
+            '-' + String(vm.graduationYear) + '.json';
 
         try {
             var blob = new Blob([serialised.content], {
@@ -894,7 +922,7 @@
         return {
             exported: true,
             filename: filename,
-            count: graduates.length,
+            count: vm.graduates.length,
             error: null,
             wasEnveloped: true
         };
