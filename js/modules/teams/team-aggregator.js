@@ -96,34 +96,13 @@
  *   reads the character's careerStatus array and looks for a
  *   junior or senior entry whose startYear is <= the target year.
  *
- *   Rationale: professional teams are staffed by juniors and
- *   seniors. A character who becomes junior in 1919 is not a
- *   candidate for a 1918 matchmaking run; one who became junior in
- *   1916 is.
- *
- *   HISTORY: the matchmaking pool used to filter on senior status
- *   only. That dropped juniors entirely, which contradicted the
- *   rule that professional teams accept both juniors and seniors.
- *   The predicate was widened to isJuniorOrSeniorByYear.
- *
  *   When CharacterQueries.isJuniorOrSeniorByYear is unavailable,
- *   this filter is skipped rather than failing closed. Matches the
- *   convention used by the deceased filter.
+ *   this filter is skipped rather than failing closed.
  *
  * ELIMINATION IN MATCHMAKING:
  *   The matchmaking pool excludes any character with an
  *   elimination record, regardless of when the elimination
  *   happened. The check is presence-based, not year-scoped.
- *
- *   RATIONALE:
- *     An elimination means the character did not graduate. A
- *     character who did not graduate cannot form professional
- *     teams. There is no year dimension to this fact.
- *
- *   The predicate used here is EliminationQueries.getEliminationWeek,
- *   which returns the earliest elimination week or null when the
- *   character has no elimination records. Null means "never
- *   eliminated."
  *
  *   When EliminationQueries is unavailable, this filter is skipped
  *   rather than failing closed.
@@ -143,23 +122,29 @@
  * UNASSIGNED VIEW SEMANTICS:
  *   getUnassignedViewModel() reads
  *   TeamQueries.getProfessionalTeamEligibleRoster(currentYear) and
- *   filters out characters who are 'active' on a professional team
- *   at that year. The remaining rows are the Unassigned view's
- *   contents.
+ *   splits the result into two lists:
  *
- *   The roster query owns eligibility (junior-or-senior, not
- *   deceased, no eliminations). This projection adds presentation
- *   fields (year display strings, future-stint indicator) and
- *   sorts.
+ *     rows:      candidates. Characters who are not staff and not
+ *                already active on a professional team at the
+ *                current year. This is the existing Unassigned
+ *                list.
  *
- *   The 'future' classification carries the future-stint
- *   indicator: "TeamName from YYYY". This tells the user that a
- *   character who appears unassigned today is already committed
- *   to a professional team at a later year.
+ *     staffRows: staff. Characters who are instructors or support
+ *                at the current year and not already active on a
+ *                professional team at that year. Each staff row
+ *                carries staffRole and staffSince.
+ *
+ *   A character on an active professional team is excluded from
+ *   both lists — they're on a team, they don't need either.
  *
  *   When window.data.currentYear is unavailable, the projection
- *   returns an empty roster and a null year. It does NOT invent a
+ *   returns empty lists and a null year. It does NOT invent a
  *   year.
+ *
+ *   The roster query owns eligibility (junior-or-senior, not
+ *   deceased, no eliminations) and staff classification. This
+ *   projection only splits the result and adds presentation
+ *   fields.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamQueries
@@ -1237,24 +1222,37 @@
     // UNASSIGNED VIEW MODEL
     // ============================================================
     //
-    // The Unassigned view is the "who could be on a professional
-    // team but isn't right now" list, evaluated at the current
-    // application year.
+    // The Unassigned view is the "who isn't on a professional
+    // team right now?" panel, evaluated at the current application
+    // year. It has TWO sections:
     //
-    // ELIGIBILITY lives on TeamQueries.getProfessionalTeamEligibleRoster:
-    //   - junior or senior by currentYear
-    //   - not deceased as of currentYear
-    //   - no eliminations of any kind, any year, any week
+    //   rows       — candidates. Characters eligible for a
+    //                professional team at the current year, who
+    //                aren't already on one. This is the
+    //                traditional Unassigned list.
     //
-    // This projection:
-    //   - drops 'active' rows (they're on a team already)
-    //   - keeps 'future', 'former', and 'available' rows
-    //   - adds presentation fields
-    //   - sorts by name
+    //   staffRows  — staff. Instructors and support who aren't
+    //                already on a professional team at that year.
+    //                Each row carries staffRole and staffSince.
     //
-    // The 'future' rows carry the future-stint indicator: the team
-    // name and the join year, formatted for display. This is the
-    // "committed to a team at a later year" case.
+    // A character already active on a professional team is
+    // excluded from both lists. They don't need either.
+    //
+    // The ELIGIBILITY rules (junior-or-senior, not deceased, no
+    // eliminations) and the STAFF CLASSIFICATION (instructor /
+    // support at the query year) both live on
+    // TeamQueries.getProfessionalTeamEligibleRoster. This
+    // projection only splits the result and adds presentation
+    // fields.
+    //
+    // The 'future' classification carries the future-stint
+    // indicator: "TeamName from YYYY". This tells the user that a
+    // character who appears unassigned today is already committed
+    // to a professional team at a later year.
+    //
+    // When window.data.currentYear is unavailable, both lists are
+    // empty and the year is null. The projection does NOT invent
+    // a year.
 
     function getUnassignedViewModel() {
         var currentYear = null;
@@ -1269,7 +1267,9 @@
             return {
                 year: null,
                 rows: [],
-                total: 0
+                total: 0,
+                staffRows: [],
+                staffTotal: 0
             };
         }
 
@@ -1287,11 +1287,46 @@
         }
 
         var rows = [];
+        var staffRows = [];
+
         for (var i = 0; i < roster.length; i++) {
             var r = roster[i];
             if (!r) { continue; }
+
+            // Already on a professional team: not unassigned, not
+            // staff-of-the-unassigned. Skip both lists.
             if (r.classification === 'active') { continue; }
 
+            // ---- Staff row ----
+            //
+            // staffRole is set by the roster query when the
+            // character is an instructor or support AT the query
+            // year. Staff appear in their own section regardless
+            // of classification — a former instructor who isn't
+            // currently on a team still belongs in the Staff
+            // section, not the candidate list.
+            if (r.staffRole) {
+                staffRows.push({
+                    characterId: r.characterId,
+                    displayName: r.name || 'Unknown',
+                    status: r.status || '',
+                    staffRole: r.staffRole,
+                    staffSince: r.staffSince !== null &&
+                                r.staffSince !== undefined
+                        ? r.staffSince
+                        : null,
+                    staffSinceDisplay: r.staffSince !== null &&
+                                        r.staffSince !== undefined
+                        ? String(r.staffSince)
+                        : '\u2014',
+                    classification: r.classification,
+                    teamName: r.formerTeamName || r.activeTeamName ||
+                              null
+                });
+                continue;
+            }
+
+            // ---- Candidate row ----
             var juniorDisplay = r.juniorYear !== null &&
                                 r.juniorYear !== undefined
                 ? String(r.juniorYear)
@@ -1328,7 +1363,9 @@
         return {
             year: currentYear,
             rows: rows,
-            total: rows.length
+            total: rows.length,
+            staffRows: staffRows,
+            staffTotal: staffRows.length
         };
     }
 
@@ -1369,10 +1406,7 @@
     //   order is a performance call, not a correctness one.
     //
     // JUNIOR-OR-SENIOR:
-    //   The pool accepts juniors and seniors alike. This is the
-    //   correction: the previous version of this projection filtered
-    //   on isSeniorByYear, which dropped every junior from the pool.
-    //   Professional teams accept both.
+    //   The pool accepts juniors and seniors alike.
     //
     // INPUT:
     //   year       : positive integer
@@ -1609,7 +1643,7 @@
         getRankingModalViewModel: getRankingModalViewModel,
         getFilterBarViewModel: getFilterBarViewModel,
 
-        // Unassigned VM
+        // Unassigned VM (candidates + staff)
         getUnassignedViewModel: getUnassignedViewModel,
 
         // Matchmaking VM
