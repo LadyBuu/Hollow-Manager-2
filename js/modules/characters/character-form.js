@@ -35,12 +35,15 @@
  *   randomizable field on the tab.
  *
  * TAB STATE:
- *   - state.currentTab is module-level. It survives across renders so
- *     that re-rendering the SAME character (e.g. after an add-class
- *     mutation, or after a save) keeps the user on the tab they were
- *     working in.
- *   - When the edit ID CHANGES (including from a character ID to null,
- *     or from null to a character ID), the tab resets to 'name'.
+ *   - state.currentTab is module-level. It survives across renders.
+ *   - Switching between two EXISTING characters keeps the current
+ *     tab. If you were on the Professional tab for character A,
+ *     clicking character B leaves you on the Professional tab.
+ *   - Opening a NEW character (editId === null) resets the tab to
+ *     'name'. This is the only reset trigger. A fresh form should
+ *     start at the top.
+ *   - CharacterForm.hide() also resets the tab to 'name', because
+ *     hiding the form is the end of a session.
  *
  * FORM TAB BUTTONS (BUG-E12):
  *   - getTabsHTML() emits <button type="button"> for every tab.
@@ -212,22 +215,6 @@
     // ============================================================
     // PER-FIELD RANDOM BUTTON
     // ============================================================
-    //
-    // The button emits a small ⟳ next to a field label. The click
-    // is handled via delegation in character-events.js, keyed on
-    // the data-field attribute.
-    //
-    // data-field values:
-    //   Physical:   gender | eyes | hair | skin | height | weight | build
-    //   Personality: traits | ideals | bonds | flaws | alignment |
-    //                likes | dislikes | habits | fears | goals |
-    //                authority | conflictStyle | socialStyle | quirks
-    //
-    // The button is deliberately placed INSIDE the <label> so a
-    // click on the glyph does not need a separate hit-target, and
-    // so screen readers announce it as part of the field's label.
-    // The button carries its own aria-label so it can be reached
-    // by keyboard Tab.
 
     function renderFieldRandomBtn(field) {
         return '<button type="button" ' +
@@ -253,6 +240,10 @@
 
     var state = { currentTab: 'name' };
 
+    // Tracks the edit ID from the last render() call. Used to detect
+    // transitions to a new-character session. `undefined` means no
+    // render has happened yet, which is distinct from `null` (a
+    // "new character" session).
     var _lastRenderedEditId = undefined;
 
     var VALID_TABS = ['name', 'physical', 'personality', 'academic', 'professional', 'combat', 'social', 'notes'];
@@ -460,14 +451,30 @@
             if (!char) { return; }
         }
 
+        // ---- TAB SESSION RULE ----
+        //
+        // Switching between two EXISTING characters keeps the current
+        // tab. Opening a NEW character (editId null) resets to the
+        // Name tab.
+        //
+        // The reset fires only when the previous render was for an
+        // existing character and the new render is for a null editId.
+        // It does NOT fire when transitioning between two existing
+        // characters, and it does NOT fire on the first render after
+        // page load (when _lastRenderedEditId is undefined).
         var normalizedEditId = editId === undefined || editId === null || editId === ''
             ? null
             : String(editId);
 
-        if (_lastRenderedEditId !== normalizedEditId) {
+        var openingNewCharacter = (_lastRenderedEditId !== undefined &&
+                                   _lastRenderedEditId !== null &&
+                                   normalizedEditId === null);
+
+        if (openingNewCharacter) {
             state.currentTab = 'name';
-            _lastRenderedEditId = normalizedEditId;
         }
+
+        _lastRenderedEditId = normalizedEditId;
 
         var title = document.getElementById('form-title');
         if (title) {
@@ -817,9 +824,6 @@
     // ============================================================
     // PHYSICAL TAB
     // ============================================================
-    //
-    // Every pool-backed field carries a ⟳ button. Appearance Notes
-    // is free text and does not.
 
     function getPhysicalTabHTML(c) {
         var active = state.currentTab === 'physical' ? 'block' : 'none';
@@ -882,12 +886,6 @@
     // ============================================================
     // PERSONALITY TAB
     // ============================================================
-    //
-    // Fourteen fields. The first ten are the original set. The
-    // last four (authority, conflictStyle, socialStyle, quirks)
-    // are new and grouped under a "Social & Behavioural" heading
-    // so the reader can tell them apart from the classic
-    // D&D-style block above.
 
     function getPersonalityTabHTML(c) {
         var active = state.currentTab === 'personality' ? 'block' : 'none';
@@ -1283,7 +1281,6 @@
             FormUtils.setField('char-personality-fears', char.personality.fears);
             FormUtils.setField('char-personality-goals', char.personality.goals);
 
-            // New fields
             FormUtils.setField('char-personality-authority', char.personality.authority);
             FormUtils.setField('char-personality-conflictStyle', char.personality.conflictStyle);
             FormUtils.setField('char-personality-socialStyle', char.personality.socialStyle);
@@ -1524,7 +1521,6 @@
                 fears: FormUtils.getField('char-personality-fears') || '',
                 goals: FormUtils.getField('char-personality-goals') || '',
 
-                // New fields
                 authority: FormUtils.getField('char-personality-authority') || '',
                 conflictStyle: FormUtils.getField('char-personality-conflictStyle') || '',
                 socialStyle: FormUtils.getField('char-personality-socialStyle') || '',
