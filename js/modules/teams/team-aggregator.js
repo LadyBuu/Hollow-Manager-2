@@ -76,6 +76,8 @@
  * MATCHMAKING CANDIDATE SEMANTICS:
  *   FILTER:
  *     - EXCLUDE deceased characters (as of the target year).
+ *     - EXCLUDE characters who have not reached senior status by
+ *       the target year. See "SENIOR STATUS" below.
  *     - EXCLUDE characters eliminated at any point, in any year,
  *       by any cause. Presence-based. See "ELIMINATION IN
  *       MATCHMAKING" below.
@@ -85,6 +87,21 @@
  *   SORT:
  *     Alphabetical by name.
  *
+ * SENIOR STATUS:
+ *   The matchmaking pool only includes characters who have
+ *   reached senior status as of the target year. The predicate is
+ *   CharacterQueries.isSeniorByYear(char, year), which reads the
+ *   character's careerStatus array and looks for a senior entry
+ *   whose startYear is <= the target year.
+ *
+ *   Rationale: professional teams are staffed by seniors.
+ *   A character who becomes senior in 1919 is not a candidate for
+ *   a 1918 matchmaking run; one who became senior in 1916 is.
+ *
+ *   When CharacterQueries.isSeniorByYear is unavailable, this
+ *   filter is skipped rather than failing closed. Matches the
+ *   convention used by the deceased filter.
+ *
  * ELIMINATION IN MATCHMAKING:
  *   The matchmaking pool excludes any character with an
  *   elimination record, regardless of when the elimination
@@ -93,31 +110,15 @@
  *   RATIONALE:
  *     An elimination means the character did not graduate. A
  *     character who did not graduate cannot form professional
- *     teams. There is no year dimension to this fact: a
- *     character eliminated in year 1920 is not a candidate for
- *     matchmaking in 1925, because being eliminated is a
- *     permanent fact about their academic record, not a
- *     state that resets.
- *
- *   This is deliberately different from:
- *     - The character list's filter, which is YEAR-scoped
- *       (isCharacterEliminatedByYear). A character is shown as
- *       eliminated in the year they were eliminated and every
- *       year after, because the list answers "what is this
- *       character's state as of year Y."
- *     - The member-modal candidate filter, which is also
- *       YEAR-scoped for the same reason.
+ *     teams. There is no year dimension to this fact.
  *
  *   The predicate used here is EliminationQueries.getEliminationWeek,
  *   which returns the earliest elimination week or null when the
  *   character has no elimination records. Null means "never
- *   eliminated." This is the same predicate GraduatesExport uses
- *   to identify graduates, for the same semantic reason.
+ *   eliminated."
  *
- *   When EliminationQueries is unavailable, this filter is
- *   skipped rather than failing closed. The pool still works
- *   without the elimination module; skipping a filter is not the
- *   same as asserting every candidate is a graduate.
+ *   When EliminationQueries is unavailable, this filter is skipped
+ *   rather than failing closed.
  *
  * CLASS MEMBERSHIP SIGNAL (v29):
  *   The "in class" tier signal for the member modal reads class
@@ -129,13 +130,7 @@
  *        which derives the class's instructors from per-discipline
  *        instructor enrolments.
  *
- *   The retired `class.instructorId` field is not consulted. It was
- *   removed in v29; the relationship is expressed through
- *   instructor enrolments.
- *
- *   The all-time query is used here (not the week-scoped
- *   getClassInstructorIds) because the tier signal is a statement
- *   about class membership, not about a specific week's schedule.
+ *   The retired `class.instructorId` field is not consulted.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamQueries
@@ -1164,9 +1159,6 @@
         return candidate.onAnotherTeam ? 3 : 2;
     }
 
-    /**
-     * Get a view model for the ranking modal.
-     */
     function getRankingModalViewModel(teamId) {
         if (!isNonEmptyString(teamId)) {
             return null;
@@ -1214,14 +1206,13 @@
     // This is the ONE projection in this file that walks the team
     // store directly. The walk builds two things:
     //
-    //   1. The candidate pool: every character alive at year Y who
-    //      is NOT active on a professional team at Y and who has
-    //      NEVER been eliminated.
+    //   1. The candidate pool: every character alive at year Y, who
+    //      has reached senior status by Y, who has NEVER been
+    //      eliminated, and who is NOT active on a professional
+    //      team at Y.
     //   2. The history map: for every character in the candidate
     //      pool, the years in which they have appeared on any
-    //      professional team. Built from ALL professional teams,
-    //      current or historical, by reading every member entry's
-    //      intervals.
+    //      professional team.
     //
     // WHY ONE WALK:
     //   The history map must cover every candidate. Deriving it by
@@ -1239,11 +1230,10 @@
     //   canonical query surface. The aggregator owns the projection;
     //   the walk lives here.
     //
-    // ELIMINATION:
-    //   All-time, presence-based. A character with any elimination
-    //   record is not a candidate, regardless of when the
-    //   elimination happened. See the file header for the
-    //   reasoning.
+    // FILTER ORDER:
+    //   Deceased -> Senior -> Elimination -> Active-on-a-team.
+    //   Cheapest checks first. All four are independent, so the
+    //   order is a performance call, not a correctness one.
     //
     // INPUT:
     //   year       : positive integer
@@ -1257,14 +1247,6 @@
     //     targets:    [ { teamId, teamName, currentMemberCount,
     //                     classDisplay, periodDisplay } ]
     //   }
-    //
-    //   `history` is an array of year strings (ascending). Empty
-    //   when the character has never been on a professional team.
-    //
-    //   `targets` is sorted least-full first, ties by name. The
-    //   matchmaking algorithm re-sorts defensively, but the VM
-    //   presents the same order the algorithm will use so the modal
-    //   can render before running the algorithm.
 
     function getTeamMatchmakingViewModel(year, targetSize) {
         var yearNum = TeamConstants.parsePeriod(year);
@@ -1279,26 +1261,15 @@
             };
         }
 
-        // ---- Elimination predicate, resolved once. ----
-        //
-        // Presence-based, all-time. getEliminationWeek returns the
-        // earliest elimination week or null when the character has
-        // no elimination records. Null means "never eliminated."
-        //
-        // This is the same predicate GraduatesExport uses to
-        // identify graduates, and it answers the same question:
-        // did this character ever get eliminated?
+        // ---- Lazy predicates, resolved once. ----
+        var canCheckSenior = typeof CharacterQueries.isSeniorByYear ===
+            'function';
+
         var EQ = getEliminationQueries();
         var canCheckElimination = EQ &&
             typeof EQ.getEliminationWeek === 'function';
 
         // ---- Walk every professional team once. ----
-        //
-        // getAllTeamMemberRecords is the raw member list — no
-        // period filter, no window filter, no clone-per-call from
-        // a filtered query. This is what makes the history
-        // derivation complete: we see every member entry and every
-        // interval, current or historical.
         var allProfessionalTeams = TeamQueries.getTeams(
             'professional',
             null,
@@ -1315,7 +1286,6 @@
 
             var teamId = String(team.id);
             var members = TeamQueries.getAllTeamMemberRecords(team);
-            var activeHere = 0;
 
             for (var m = 0; m < members.length; m++) {
                 var member = members[m];
@@ -1336,11 +1306,6 @@
                         interval.leavePeriod
                     );
 
-                    // Skip intervals whose join is malformed. A
-                    // blank join means "unbounded on the left",
-                    // which for history purposes we treat as
-                    // starting at the earliest possible year.
-                    // The interval is still usable for history.
                     var lo = (joinNum !== null)
                         ? joinNum
                         : 1;
@@ -1348,10 +1313,6 @@
                         ? leaveNum
                         : yearNum;
 
-                    // Only extend history up to the queried
-                    // year. Years after the query are not
-                    // relevant to "has this character been on a
-                    // professional team by year Y".
                     if (lo > yearNum) { continue; }
                     var hiClamped = Math.min(hi, yearNum);
                     if (hiClamped < lo) { continue; }
@@ -1364,7 +1325,6 @@
                         historyByChar[charId][y] = true;
                     }
 
-                    // Active-at-year check for THIS interval.
                     if (lo <= yearNum && hiClamped >= yearNum) {
                         activeAtYearByChar[charId] = true;
                     }
@@ -1375,15 +1335,9 @@
                 TeamQueries.getActiveTeamMembers(
                     team, yearNum
                 ).length;
-
-            void activeHere;
         }
 
         // ---- Build the candidate pool. ----
-        //
-        // Every character alive at year Y, who has NEVER been
-        // eliminated, and who is NOT active on a professional team
-        // at Y.
         var allChars = CharacterQueries.getCharacters() || [];
         var candidates = [];
 
@@ -1393,7 +1347,7 @@
 
             var cid = String(char.id);
 
-            // ---- Deceased check (year-scoped). ----
+            // 1. Deceased (year-scoped).
             var deceased = false;
             try {
                 deceased =
@@ -1404,14 +1358,20 @@
             }
             if (deceased) { continue; }
 
-            // ---- Elimination check (all-time, presence-based). ----
-            //
-            // A character with any elimination record is not a
-            // candidate, regardless of when the elimination
-            // happened. Elimination means the character did not
-            // graduate, and a character who did not graduate
-            // cannot form professional teams. Year is not
-            // consulted.
+            // 2. Senior status (year-scoped).
+            if (canCheckSenior) {
+                var isSenior = false;
+                try {
+                    isSenior = CharacterQueries.isSeniorByYear(
+                        char, yearNum
+                    ) === true;
+                } catch (e) {
+                    isSenior = false;
+                }
+                if (!isSenior) { continue; }
+            }
+
+            // 3. Elimination (all-time, presence-based).
             if (canCheckElimination) {
                 var earliest = null;
                 try {
@@ -1424,7 +1384,7 @@
                 }
             }
 
-            // ---- Active-on-a-team check (year-scoped). ----
+            // 4. Active on a professional team (year-scoped).
             if (activeAtYearByChar[cid] === true) { continue; }
 
             var historyYears = [];
@@ -1452,9 +1412,6 @@
         });
 
         // ---- Build the target list. ----
-        //
-        // Professional teams active at year Y whose active member
-        // count is below targetSize.
         var targets = [];
         for (var tt = 0; tt < allProfessionalTeams.length; tt++) {
             var tTeam = allProfessionalTeams[tt];
