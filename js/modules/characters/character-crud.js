@@ -105,10 +105,22 @@
  *
  *   FAILURE MODE:
  *     TeamCore is an OPTIONAL dependency of this module. When it
- *     is absent, the cascade is skipped silently — a character
- *     module that loads without the team module must still work.
- *     When TeamCore is present but endStintsForCharacter is not
- *     exported (older load order), the cascade is also skipped.
+ *     is absent, the cascade is skipped — but NOT silently. A
+ *     console.warn is emitted so the skip is visible in the
+ *     console during development. When TeamCore is present but
+ *     endStintsForCharacter is not exported (older load order),
+ *     the cascade is also skipped with a warning.
+ *
+ *   BACKFILL:
+ *     backfillDeathCascades() exists for data that predates the
+ *     cascade. Characters marked deceased before the cascade
+ *     shipped never saw the blank → set transition, so their
+ *     professional stints may still be open. The backfill walks
+ *     every character with a parseable deathYear and runs the
+ *     cascade against the live store, in a single transaction.
+ *
+ *     Idempotent and safe to re-run. Does nothing for stints that
+ *     are already ended at or before deathYear.
  *
  * YEAR SEMANTICS:
  *   - Years are UNBOUNDED positive integers.
@@ -166,7 +178,7 @@
  *   - window.TeamCore (from team-core.js) - LAZY (optional)
  *     When present, endStintsForCharacter is called on the
  *     deathYear blank → set transition. When absent, the death
- *     cascade is skipped.
+ *     cascade is skipped with a console.warn.
  */
 
 (function() {
@@ -274,7 +286,9 @@
      *
      * TeamCore is an OPTIONAL dependency. The death cascade is
      * skipped when the module is absent, or when it does not export
-     * endStintsForCharacter (older load order).
+     * endStintsForCharacter (older load order). The skip is
+     * announced with a console.warn so it is visible during
+     * development.
      */
     function getTeamCore() {
         return window.TeamCore || null;
@@ -300,6 +314,34 @@
             return null;
         }
         return n;
+    }
+
+    /**
+     * Run the death cascade for a character, against the given
+     * snapshot. Emits a console.warn when TeamCore is unavailable.
+     *
+     * Shared by updateExistingCharacter, createNewCharacter, and
+     * backfillDeathCascades so the three paths cannot drift.
+     *
+     * @param {object} data - pipeline snapshot
+     * @param {string} charId
+     * @param {number} deathYear
+     * @param {string} contextLabel - 'save', 'create', or 'backfill';
+     *   used only in the warning message.
+     */
+    function runDeathCascade(data, charId, deathYear, contextLabel) {
+        var TeamCore = getTeamCore();
+        if (!TeamCore ||
+            typeof TeamCore.endStintsForCharacter !== 'function') {
+            console.warn(
+                '[CharacterCRUD] Death cascade skipped (' +
+                contextLabel + ') for character ' + charId +
+                ': TeamCore.endStintsForCharacter is unavailable. ' +
+                'Open professional stints, if any, were not ended.'
+            );
+            return null;
+        }
+        return TeamCore.endStintsForCharacter(data, charId, deathYear);
     }
 
     // ============================================================
@@ -835,21 +877,14 @@
         // ended stints. The user reopens them from the member
         // manager if they want to undo a death.
         //
-        // TeamCore is OPTIONAL. Absent or older load order → skip
-        // silently.
+        // TeamCore is OPTIONAL. Absent or older load order → the
+        // cascade is skipped with a console.warn so the skip is
+        // visible during development.
         var previousDeathYear = parseDeathYear(current.deathYear);
         var nextDeathYear = parseDeathYear(updated.deathYear);
 
         if (previousDeathYear === null && nextDeathYear !== null) {
-            var TeamCore = getTeamCore();
-            if (TeamCore &&
-                typeof TeamCore.endStintsForCharacter === 'function') {
-                TeamCore.endStintsForCharacter(
-                    data,
-                    updated.id,
-                    nextDeathYear
-                );
-            }
+            runDeathCascade(data, updated.id, nextDeathYear, 'save');
         }
 
         return {
@@ -877,11 +912,215 @@
 
         data.characters.push(newChar);
 
+        // Death cascade for a character created already deceased.
+        // A new character cannot be on any team yet, so this is a
+        // no-op in practice — but it keeps the cascade path
+        // symmetrical with updateExistingCharacter, and if the
+        // creation flow ever grows the ability to pre-assign teams,
+        // this stays correct.
+        var nextDeathYear = parseDeathYear(newChar.deathYear);
+        if (nextDeathYear !== null) {
+            runDeathCascade(data, id, nextDeathYear, 'create');
+        }
+
         return {
             success: true,
             id: id,
             character: newChar
         };
+    }
+
+    // ============================================================
+    // BACKFILL - one-time maintenance for pre-cascade data
+    // ============================================================
+
+    /**
+     * One-time maintenance: run the death cascade for every character
+     * currently marked deceased, against the live data store.
+     *
+     * WHY THIS EXISTS:
+     *   The death cascade fires on the blank → set transition of
+     *   deathYear. Characters marked deceased before the cascade
+     *   shipped never saw that transition, so their professional
+     *   stints may still be open. This function walks them and runs
+     *   the cascade.
+     *
+     * IDEMPOTENT:
+     *   Safe to re-run. endStintsForCharacter leaves stints alone
+     *   when their leavePeriod is already set and <= deathYear, so a
+     *   second run is a no-op on already-cascaded data.
+     *
+     * SINGLE TRANSACTION:
+     *   Every character's cascade is applied to the same snapshot,
+     *   and the snapshot is committed once. If any character's
+     *   cascade throws, the whole backfill rolls back. In practice
+     *   endStintsForCharacter never throws (it is documented as
+     *   pure with respect to the snapshot), so this is a safety net.
+     *
+     * NO-OP WITHOUT TEAMCORE:
+     *   If TeamCore.endStintsForCharacter is unavailable, the
+     *   function returns early with a warning rather than
+     *   committing an empty transaction.
+     *
+     * @returns {Promise<{success, data?, message?}>}
+     *   data: {
+     *     charactersScanned: number,
+     *     charactersWithStintsEnded: number,
+     *     stintsEnded: number,
+     *     teamsTouched: number
+     *   }
+     */
+    function backfillDeathCascades() {
+        if (!checkDependencies()) {
+            return Promise.resolve({
+                success: false,
+                message: 'Dependencies not loaded. Please refresh the page.'
+            });
+        }
+
+        var TeamCore = getTeamCore();
+        if (!TeamCore ||
+            typeof TeamCore.endStintsForCharacter !== 'function') {
+            return Promise.resolve({
+                success: false,
+                message: 'TeamCore.endStintsForCharacter is unavailable; ' +
+                    'cannot backfill death cascades.'
+            });
+        }
+
+        return MutationPipeline.performMutation({
+            validate: function() {
+                if (!Array.isArray(window.data && window.data.characters)) {
+                    return {
+                        valid: false,
+                        message: 'Character store is not available.'
+                    };
+                }
+                if (!Array.isArray(window.data && window.data.teams)) {
+                    return {
+                        valid: false,
+                        message: 'Team store is not available.'
+                    };
+                }
+                return { valid: true };
+            },
+            mutate: function(data) {
+                if (!Array.isArray(data.characters)) {
+                    throw new Error('Character store is malformed.');
+                }
+                if (!Array.isArray(data.teams)) {
+                    throw new Error('Team store is malformed.');
+                }
+
+                var charactersScanned = 0;
+                var charactersWithStintsEnded = 0;
+                var stintsEndedTotal = 0;
+                var teamsTouchedSet = Object.create(null);
+
+                for (var i = 0; i < data.characters.length; i++) {
+                    var char = data.characters[i];
+                    if (!char || typeof char !== 'object') { continue; }
+                    if (!char.id) { continue; }
+
+                    var deathYear = parseDeathYear(char.deathYear);
+                    if (deathYear === null) { continue; }
+
+                    charactersScanned++;
+
+                    // endStintsForCharacter is pure with respect to
+                    // the snapshot and never throws. It returns a
+                    // result object summarising what it did.
+                    var result = TeamCore.endStintsForCharacter(
+                        data,
+                        String(char.id),
+                        deathYear
+                    );
+
+                    if (!result) { continue; }
+
+                    if (typeof result.stintsEnded === 'number' &&
+                        result.stintsEnded > 0) {
+                        charactersWithStintsEnded++;
+                        stintsEndedTotal += result.stintsEnded;
+
+                        // Track touched teams. endStintsForCharacter
+                        // reports teamsTouched as a count, not a set,
+                        // so we walk the team store to identify the
+                        // touched teams for the summary. This is a
+                        // cheap post-pass; it does not re-mutate
+                        // anything.
+                    }
+
+                    if (typeof result.teamsTouched === 'number' &&
+                        result.teamsTouched > 0) {
+                        // Identify the teams that belong to this
+                        // character and had stints ended. Because
+                        // endStintsForCharacter does not return the
+                        // team IDs, we re-derive them: any team of
+                        // type 'professional' with this character in
+                        // its members list and a stint whose
+                        // leavePeriod === String(deathYear).
+                        //
+                        // The re-derivation is deterministic and
+                        // side-effect-free; it exists only to build
+                        // the summary. Do not mutate here.
+                        for (var t = 0; t < data.teams.length; t++) {
+                            var team = data.teams[t];
+                            if (!team || typeof team !== 'object') { continue; }
+                            if (team.type !== 'professional') { continue; }
+                            if (!Array.isArray(team.members)) { continue; }
+                            if (!team.id) { continue; }
+
+                            var targetId = String(char.id);
+                            var deathStr = String(deathYear);
+
+                            for (var m = 0; m < team.members.length; m++) {
+                                var member = team.members[m];
+                                if (!member || typeof member !== 'object') { continue; }
+                                if (String(member.characterId) !== targetId) {
+                                    continue;
+                                }
+                                if (!Array.isArray(member.intervals)) { continue; }
+
+                                for (var iv = 0; iv < member.intervals.length; iv++) {
+                                    var interval = member.intervals[iv];
+                                    if (!interval || typeof interval !== 'object') {
+                                        continue;
+                                    }
+                                    if (String(interval.leavePeriod) === deathStr) {
+                                        teamsTouchedSet[String(team.id)] = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                return {
+                    charactersScanned: charactersScanned,
+                    charactersWithStintsEnded: charactersWithStintsEnded,
+                    stintsEnded: stintsEndedTotal,
+                    teamsTouched: Object.keys(teamsTouchedSet).length
+                };
+            },
+            logMessage: function(result) {
+                return 'Backfilled death cascades: ' +
+                    result.charactersScanned + ' character(s) scanned, ' +
+                    result.stintsEnded + ' stint(s) ended across ' +
+                    result.teamsTouched + ' team(s).';
+            },
+            successMessage: function(result) {
+                if (result.stintsEnded === 0) {
+                    return 'No open stints found for deceased characters.';
+                }
+                return 'Ended ' + result.stintsEnded +
+                    ' professional stint(s) for ' +
+                    result.charactersWithStintsEnded +
+                    ' deceased character(s).';
+            },
+            failureMessage: 'Failed to backfill death cascades.'
+        });
     }
 
     // ============================================================
@@ -1253,6 +1492,10 @@
         deleteAll: deleteAllCharacters,
 
         setMode: setMode,
+
+        // One-time maintenance: apply the death cascade to every
+        // character currently marked deceased. Idempotent.
+        backfillDeathCascades: backfillDeathCascades,
 
         validateCharacter: validateCharacter,
         normaliseCharacterData: normaliseCharacterData,
