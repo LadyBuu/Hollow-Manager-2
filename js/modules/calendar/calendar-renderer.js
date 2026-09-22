@@ -32,6 +32,17 @@
  *     Empty. Mounted by the controller when a discipline row
  *     is clicked.
  *
+ * GROUP LABEL:
+ *   Each occupied cell carries a groupLabel sub-line. The label
+ *   is resolved by AcademyCalendarAggregator from the group's
+ *   customName or, failing that, `Discipline + Letter`. When the
+ *   label is empty AND the slot carries a groupId, the renderer
+ *   falls back to a short id stub so two cells from the same
+ *   discipline are never visually identical. The fallback is
+ *   deliberately terse; a group with a broken display-name
+ *   pipeline should be obvious at a glance, not silently
+ *   indistinguishable.
+ *
  * HOURS PANEL — CURRENT GROUP:
  *   Each discipline-hours row optionally carries a
  *   `currentGroup` sub-block, listing the group the student is
@@ -102,6 +113,47 @@
             return 'remove-group';
         }
         return 'remove-student';
+    }
+
+    // ============================================================
+    // GROUP LABEL FALLBACK
+    // ============================================================
+    //
+    // The aggregator resolves groupLabel from the group record.
+    // When that lookup fails — missing group, missing
+    // AcademyTeachingGroups, a malformed record — the slot's
+    // groupLabel is empty. Two groups of the same discipline would
+    // then render as identical cells.
+    //
+    // The renderer's fallback: when groupLabel is empty but the
+    // slot carries a groupId, render the last six characters of
+    // the id. This is ugly on purpose. It is not a display name;
+    // it is a signal that the display-name pipeline is broken.
+    // A developer glancing at the calendar will see the stub and
+    // know to look at the aggregator, rather than assuming two
+    // groups are one.
+
+    function getGroupLabelForRender(slotData) {
+        if (!slotData) { return ''; }
+
+        if (isFiniteNumber(slotData.duration) &&
+            typeof slotData.groupLabel === 'string' &&
+            slotData.groupLabel.trim() !== '') {
+            return slotData.groupLabel;
+        }
+
+        // Fall through to the id stub. A slot without a groupId
+        // gets no label at all.
+        if (typeof slotData.groupId === 'string' &&
+            slotData.groupId !== '') {
+            var gid = slotData.groupId;
+            if (gid.length > 6) {
+                return gid.slice(-6);
+            }
+            return gid;
+        }
+
+        return '';
     }
 
     // ============================================================
@@ -322,12 +374,7 @@
             return '';
         }
 
-        var displayName = isFiniteNumber(currentGroup.classmateCount) ||
-                          typeof currentGroup.classmateCount === 'number'
-            ? currentGroup.displayName
-            : null;
-        // Guard above is defensive; the VM always carries a
-        // displayName. If it is missing, skip the block.
+        var displayName;
         if (typeof currentGroup.displayName !== 'string' ||
             currentGroup.displayName === '') {
             displayName = 'Unnamed Group';
@@ -471,7 +518,7 @@
                     var label = slotData.label || '';
                     var duration = slotData.duration || 1;
                     var instructorName = slotData.instructorName || '';
-                    var groupLabel = slotData.groupLabel || '';
+                    var groupLabel = getGroupLabelForRender(slotData);
 
                     html += '<div class="schedule-discipline-name">' + escapeHtml(disciplineName) + '</div>';
                     if (label) { html += '<div class="schedule-label">[' + escapeHtml(label) + ']</div>'; }
