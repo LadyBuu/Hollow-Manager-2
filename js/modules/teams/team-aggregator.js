@@ -76,8 +76,9 @@
  * MATCHMAKING CANDIDATE SEMANTICS:
  *   FILTER:
  *     - EXCLUDE deceased characters (as of the target year).
- *     - EXCLUDE characters who have not reached senior status by
- *       the target year. See "SENIOR STATUS" below.
+ *     - EXCLUDE characters who have not reached junior OR senior
+ *       status by the target year. See "JUNIOR-OR-SENIOR STATUS"
+ *       below.
  *     - EXCLUDE characters eliminated at any point, in any year,
  *       by any cause. Presence-based. See "ELIMINATION IN
  *       MATCHMAKING" below.
@@ -87,19 +88,26 @@
  *   SORT:
  *     Alphabetical by name.
  *
- * SENIOR STATUS:
- *   The matchmaking pool only includes characters who have
- *   reached senior status as of the target year. The predicate is
- *   CharacterQueries.isSeniorByYear(char, year), which reads the
- *   character's careerStatus array and looks for a senior entry
- *   whose startYear is <= the target year.
+ * JUNIOR-OR-SENIOR STATUS:
+ *   The matchmaking pool only includes characters who have reached
+ *   junior OR senior status as of the target year. Professional
+ *   teams accept both. The predicate is
+ *   CharacterQueries.isJuniorOrSeniorByYear(char, year), which
+ *   reads the character's careerStatus array and looks for a
+ *   junior or senior entry whose startYear is <= the target year.
  *
- *   Rationale: professional teams are staffed by seniors.
- *   A character who becomes senior in 1919 is not a candidate for
- *   a 1918 matchmaking run; one who became senior in 1916 is.
+ *   Rationale: professional teams are staffed by juniors and
+ *   seniors. A character who becomes junior in 1919 is not a
+ *   candidate for a 1918 matchmaking run; one who became junior in
+ *   1916 is.
  *
- *   When CharacterQueries.isSeniorByYear is unavailable, this
- *   filter is skipped rather than failing closed. Matches the
+ *   HISTORY: the matchmaking pool used to filter on senior status
+ *   only. That dropped juniors entirely, which contradicted the
+ *   rule that professional teams accept both juniors and seniors.
+ *   The predicate was widened to isJuniorOrSeniorByYear.
+ *
+ *   When CharacterQueries.isJuniorOrSeniorByYear is unavailable,
+ *   this filter is skipped rather than failing closed. Matches the
  *   convention used by the deceased filter.
  *
  * ELIMINATION IN MATCHMAKING:
@@ -131,6 +139,27 @@
  *        instructor enrolments.
  *
  *   The retired `class.instructorId` field is not consulted.
+ *
+ * UNASSIGNED VIEW SEMANTICS:
+ *   getUnassignedViewModel() reads
+ *   TeamQueries.getProfessionalTeamEligibleRoster(currentYear) and
+ *   filters out characters who are 'active' on a professional team
+ *   at that year. The remaining rows are the Unassigned view's
+ *   contents.
+ *
+ *   The roster query owns eligibility (junior-or-senior, not
+ *   deceased, no eliminations). This projection adds presentation
+ *   fields (year display strings, future-stint indicator) and
+ *   sorts.
+ *
+ *   The 'future' classification carries the future-stint
+ *   indicator: "TeamName from YYYY". This tells the user that a
+ *   character who appears unassigned today is already committed
+ *   to a professional team at a later year.
+ *
+ *   When window.data.currentYear is unavailable, the projection
+ *   returns an empty roster and a null year. It does NOT invent a
+ *   year.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamQueries
@@ -200,6 +229,11 @@
     if (!TeamQueries ||
         typeof TeamQueries.getAllTeamMemberRecords !== 'function') {
         _missing.push('TeamQueries.getAllTeamMemberRecords');
+    }
+    if (!TeamQueries ||
+        typeof TeamQueries.getProfessionalTeamEligibleRoster !==
+            'function') {
+        _missing.push('TeamQueries.getProfessionalTeamEligibleRoster');
     }
 
     if (!TeamConstants ||
@@ -1200,6 +1234,105 @@
     }
 
     // ============================================================
+    // UNASSIGNED VIEW MODEL
+    // ============================================================
+    //
+    // The Unassigned view is the "who could be on a professional
+    // team but isn't right now" list, evaluated at the current
+    // application year.
+    //
+    // ELIGIBILITY lives on TeamQueries.getProfessionalTeamEligibleRoster:
+    //   - junior or senior by currentYear
+    //   - not deceased as of currentYear
+    //   - no eliminations of any kind, any year, any week
+    //
+    // This projection:
+    //   - drops 'active' rows (they're on a team already)
+    //   - keeps 'future', 'former', and 'available' rows
+    //   - adds presentation fields
+    //   - sorts by name
+    //
+    // The 'future' rows carry the future-stint indicator: the team
+    // name and the join year, formatted for display. This is the
+    // "committed to a team at a later year" case.
+
+    function getUnassignedViewModel() {
+        var currentYear = null;
+        if (window.data &&
+            typeof window.data.currentYear === 'number' &&
+            isFinite(window.data.currentYear) &&
+            window.data.currentYear > 0) {
+            currentYear = Math.floor(window.data.currentYear);
+        }
+
+        if (currentYear === null) {
+            return {
+                year: null,
+                rows: [],
+                total: 0
+            };
+        }
+
+        var roster = [];
+        try {
+            roster = TeamQueries.getProfessionalTeamEligibleRoster(
+                currentYear
+            ) || [];
+        } catch (e) {
+            console.warn(
+                '[TeamAggregator] getProfessionalTeamEligibleRoster ' +
+                'failed:', e
+            );
+            roster = [];
+        }
+
+        var rows = [];
+        for (var i = 0; i < roster.length; i++) {
+            var r = roster[i];
+            if (!r) { continue; }
+            if (r.classification === 'active') { continue; }
+
+            var juniorDisplay = r.juniorYear !== null &&
+                                r.juniorYear !== undefined
+                ? String(r.juniorYear)
+                : '\u2014';
+
+            var seniorDisplay = r.seniorYear !== null &&
+                                r.seniorYear !== undefined
+                ? String(r.seniorYear)
+                : '\u2014';
+
+            var futureDisplay = '';
+            if (r.futureTeamName && r.futureJoinYear !== null &&
+                r.futureJoinYear !== undefined) {
+                futureDisplay = r.futureTeamName +
+                    ' from ' + String(r.futureJoinYear);
+            }
+
+            rows.push({
+                characterId: r.characterId,
+                displayName: r.name || 'Unknown',
+                status: r.status || '',
+                juniorDisplay: juniorDisplay,
+                seniorDisplay: seniorDisplay,
+                classification: r.classification,
+                futureDisplay: futureDisplay,
+                futureTeamName: r.futureTeamName || null,
+                futureJoinYear: r.futureJoinYear !== null &&
+                                r.futureJoinYear !== undefined
+                    ? r.futureJoinYear
+                    : null
+            });
+        }
+
+        return {
+            year: currentYear,
+            rows: rows,
+            total: rows.length
+        };
+    }
+
+    // ============================================================
     // MATCHMAKING VIEW MODEL
     // ============================================================
     //
@@ -1207,8 +1340,8 @@
     // store directly. The walk builds two things:
     //
     //   1. The candidate pool: every character alive at year Y, who
-    //      has reached senior status by Y, who has NEVER been
-    //      eliminated, and who is NOT active on a professional
+    //      has reached JUNIOR OR SENIOR status by Y, who has NEVER
+    //      been eliminated, and who is NOT active on a professional
     //      team at Y.
     //   2. The history map: for every character in the candidate
     //      pool, the years in which they have appeared on any
@@ -1231,9 +1364,15 @@
     //   the walk lives here.
     //
     // FILTER ORDER:
-    //   Deceased -> Senior -> Elimination -> Active-on-a-team.
+    //   Deceased -> Junior-or-senior -> Elimination -> Active-on-a-team.
     //   Cheapest checks first. All four are independent, so the
     //   order is a performance call, not a correctness one.
+    //
+    // JUNIOR-OR-SENIOR:
+    //   The pool accepts juniors and seniors alike. This is the
+    //   correction: the previous version of this projection filtered
+    //   on isSeniorByYear, which dropped every junior from the pool.
+    //   Professional teams accept both.
     //
     // INPUT:
     //   year       : positive integer
@@ -1262,8 +1401,9 @@
         }
 
         // ---- Lazy predicates, resolved once. ----
-        var canCheckSenior = typeof CharacterQueries.isSeniorByYear ===
-            'function';
+        var canCheckJuniorOrSenior =
+            typeof CharacterQueries.isJuniorOrSeniorByYear ===
+                'function';
 
         var EQ = getEliminationQueries();
         var canCheckElimination = EQ &&
@@ -1358,17 +1498,18 @@
             }
             if (deceased) { continue; }
 
-            // 2. Senior status (year-scoped).
-            if (canCheckSenior) {
-                var isSenior = false;
+            // 2. Junior-or-senior status (year-scoped).
+            if (canCheckJuniorOrSenior) {
+                var isEligibleStatus = false;
                 try {
-                    isSenior = CharacterQueries.isSeniorByYear(
-                        char, yearNum
-                    ) === true;
+                    isEligibleStatus =
+                        CharacterQueries.isJuniorOrSeniorByYear(
+                            char, yearNum
+                        ) === true;
                 } catch (e) {
-                    isSenior = false;
+                    isEligibleStatus = false;
                 }
-                if (!isSenior) { continue; }
+                if (!isEligibleStatus) { continue; }
             }
 
             // 3. Elimination (all-time, presence-based).
@@ -1467,6 +1608,9 @@
         getMemberModalViewModel: getMemberModalViewModel,
         getRankingModalViewModel: getRankingModalViewModel,
         getFilterBarViewModel: getFilterBarViewModel,
+
+        // Unassigned VM
+        getUnassignedViewModel: getUnassignedViewModel,
 
         // Matchmaking VM
         getTeamMatchmakingViewModel: getTeamMatchmakingViewModel,
