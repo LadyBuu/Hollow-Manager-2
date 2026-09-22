@@ -80,6 +80,36 @@
  *   - deathAge is auto-filled from birthYear + deathYear on save if missing
  *   - deathWeek is preserved for legacy data but not actively collected
  *
+ * DEATH → PROFESSIONAL TEAM CASCADE:
+ *   When a save transitions deathYear from blank to a parseable
+ *   year, updateExistingCharacter calls
+ *   TeamCore.endStintsForCharacter(data, charId, deathYear) inside
+ *   the same pipeline transaction.
+ *
+ *   SCOPE:
+ *     Professional teams only. Academic teams are managed by the
+ *     Academy module; temporary and civilian team membership does
+ *     not participate in this cascade.
+ *
+ *   TRIGGER:
+ *     blank → parseable year. A save that changes deathYear from
+ *     one non-blank year to another does NOT re-end stints (they
+ *     were already ended on the first transition). A save that
+ *     edits an unrelated field does not fire the cascade.
+ *
+ *   NON-REVERSIBLE:
+ *     Clearing deathYear does NOT restore the ended stints. The
+ *     user reopens stints by hand from the member manager if they
+ *     want to undo a death. This matches the semantics of
+ *     TeamCore.endMemberInterval.
+ *
+ *   FAILURE MODE:
+ *     TeamCore is an OPTIONAL dependency of this module. When it
+ *     is absent, the cascade is skipped silently — a character
+ *     module that loads without the team module must still work.
+ *     When TeamCore is present but endStintsForCharacter is not
+ *     exported (older load order), the cascade is also skipped.
+ *
  * YEAR SEMANTICS:
  *   - Years are UNBOUNDED positive integers.
  *   - There is no MIN_YEAR or MAX_YEAR.
@@ -133,10 +163,10 @@
  *   - window.IdUtils (from id-utils.js) - MANDATORY
  *   - window.CharacterConstants (from character-constants.js) - MANDATORY
  *   - window.AcademyCascade (from academy-cascade.js) - LAZY (optional)
- *     When present, cross-domain cleanup routes through it. When
- *     absent, the corresponding cleanup is skipped. The cascade
- *     coordinator is the single owner of the "what needs to be
- *     cleaned up when a character is deleted" list.
+ *   - window.TeamCore (from team-core.js) - LAZY (optional)
+ *     When present, endStintsForCharacter is called on the
+ *     deathYear blank → set transition. When absent, the death
+ *     cascade is skipped.
  */
 
 (function() {
@@ -182,10 +212,6 @@
     var MAX_WEAPON_NOTES_LENGTH = CharacterConstants.MAX_WEAPON_NOTES_LENGTH;
     var DEFAULT_WEAPON_TYPE = CharacterConstants.DEFAULT_WEAPON_TYPE;
 
-    // Character mode is a v27 domain fact. The canonical values live
-    // here, not in a separate constants module, because no other
-    // module owns this vocabulary and no other module needs it beyond
-    // reading `char.mode`.
     var VALID_MODES = ['student', 'instructor'];
     var DEFAULT_MODE = 'student';
 
@@ -233,10 +259,6 @@
         return new Date().getFullYear();
     }
 
-    /**
-     * Compute the cached `deceased` boolean from the death fields
-     * relative to the current application year.
-     */
     function computeCachedDeceased(data) {
         var deathYear = parseInt(data.deathYear, 10);
         if (isNaN(deathYear)) { return false; }
@@ -247,8 +269,37 @@
         return window.AcademyCascade || null;
     }
 
+    /**
+     * Lazy accessor for TeamCore.
+     *
+     * TeamCore is an OPTIONAL dependency. The death cascade is
+     * skipped when the module is absent, or when it does not export
+     * endStintsForCharacter (older load order).
+     */
+    function getTeamCore() {
+        return window.TeamCore || null;
+    }
+
     function isValidMode(mode) {
         return mode === 'student' || mode === 'instructor';
+    }
+
+    /**
+     * Parse a deathYear string. Returns an integer >= 1 or null.
+     * Blank, malformed, and sub-1 values all return null.
+     *
+     * Used by the death cascade trigger and by the cascade call
+     * itself, so the two agree on what "a parseable year" means.
+     */
+    function parseDeathYear(value) {
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+        var n = parseInt(String(value).trim(), 10);
+        if (isNaN(n) || n < 1) {
+            return null;
+        }
+        return n;
     }
 
     // ============================================================
@@ -771,6 +822,36 @@
 
         data.characters[index] = updated;
 
+        // ---- Death → professional team cascade ----
+        //
+        // Trigger: deathYear transitions from blank to a parseable
+        // year. A save that changes deathYear from one non-blank
+        // year to another does NOT re-end stints; they were already
+        // ended on the first transition.
+        //
+        // Scope: professional teams only. See the file header.
+        //
+        // Non-reversible: clearing deathYear does not restore the
+        // ended stints. The user reopens them from the member
+        // manager if they want to undo a death.
+        //
+        // TeamCore is OPTIONAL. Absent or older load order → skip
+        // silently.
+        var previousDeathYear = parseDeathYear(current.deathYear);
+        var nextDeathYear = parseDeathYear(updated.deathYear);
+
+        if (previousDeathYear === null && nextDeathYear !== null) {
+            var TeamCore = getTeamCore();
+            if (TeamCore &&
+                typeof TeamCore.endStintsForCharacter === 'function') {
+                TeamCore.endStintsForCharacter(
+                    data,
+                    updated.id,
+                    nextDeathYear
+                );
+            }
+        }
+
         return {
             success: true,
             id: updated.id,
@@ -783,14 +864,8 @@
 
         var newChar = Object.assign({}, normalised, {
             id: id,
-
-            // Class membership: initialised empty.
             classIds: [],
-
-            // Character mode: initialised to the default. It is set
-            // through CharacterCRUD.setMode, not through save.
             mode: DEFAULT_MODE,
-
             hp: normalised.hp || 0,
             mp: normalised.mp || 0,
             weapons: Array.isArray(normalised.weapons) ? normalised.weapons : [],
@@ -831,13 +906,6 @@
     // If the mode ever needs to trigger side effects, they are added
     // here, in one place, rather than scattered across call sites.
 
-    /**
-     * Set a character's mode.
-     *
-     * @param {string} charId
-     * @param {string} mode - 'student' | 'instructor'
-     * @returns {Promise<{success, data?, message?}>}
-     */
     function setMode(charId, mode) {
         if (!checkDependencies()) {
             return Promise.resolve({
@@ -870,10 +938,6 @@
             });
         }
 
-        // No-op when the mode is already the requested value.
-        // Returning success without a transaction avoids an activity
-        // log entry for a no-change action, which is what the
-        // discipline editor does for its own no-op saves.
         var currentMode = (char.mode === 'student' || char.mode === 'instructor')
             ? char.mode
             : DEFAULT_MODE;
@@ -1045,7 +1109,6 @@
                 };
 
                 // ---- Character-side: team entity rosters ----
-                // Persistent Team entities keep a members array.
                 if (Array.isArray(data.teams)) {
                     data.teams.forEach(function(team) {
                         if (!team || !Array.isArray(team.members)) {
@@ -1060,9 +1123,6 @@
                 }
 
                 // ---- Cross-domain: academy cascade ----
-                // Routes through AcademyCascade.characterDeleted. This
-                // handles enrolments, grades, rankings, social scores,
-                // weekly teams, auto-groups, social, missions, tournaments.
                 var Cascade = getAcademyCascade();
                 if (Cascade && typeof Cascade.characterDeleted === 'function') {
                     cascade.academyCascade = Cascade.characterDeleted(data, targetId);
@@ -1161,7 +1221,6 @@
             mutate: function(data) {
                 var count = Array.isArray(data.characters) ? data.characters.length : 0;
 
-                // Clear team entity rosters.
                 if (Array.isArray(data.teams)) {
                     data.teams.forEach(function(team) {
                         if (Array.isArray(team.members)) {
@@ -1170,7 +1229,6 @@
                     });
                 }
 
-                // Clear the character array.
                 data.characters = [];
 
                 return { deletedCount: count };
@@ -1194,16 +1252,11 @@
         delete: deleteCharacter,
         deleteAll: deleteAllCharacters,
 
-        // v27: dedicated mutation for the character mode. Routes
-        // through MutationPipeline. No side effects.
         setMode: setMode,
 
         validateCharacter: validateCharacter,
         normaliseCharacterData: normaliseCharacterData,
 
-        // Mode vocabulary, exposed read-only so callers (the Academy
-        // controller's checkbox handler, aggregators, tests) do not
-        // hard-code the strings.
         VALID_MODES: Object.freeze(VALID_MODES.slice()),
         DEFAULT_MODE: DEFAULT_MODE
     });
