@@ -1,14 +1,16 @@
 /**
  * js/import-export/ui.js - Import/Export UI Wiring
  * UI binding for import/export operations - no business logic
- * 
+ *
+ * Path: js/import-export/ui.js
+ *
  * This module wires up export/import UI controls to the underlying
  * import/export pipeline functions. It handles:
  *   - Button click handlers
  *   - File input triggers
  *   - Notifications
  *   - UI refresh after operations
- * 
+ *
  * IMPORTANT:
  *   - NO business logic - delegates to pipeline modules
  *   - NO data mutation
@@ -16,23 +18,22 @@
  *   - Uses NotificationSystem for user feedback
  *   - Uses TabManager for UI refresh
  *   - Self-contained UI lifecycle
- * 
+ *
  * GRADUATES EXPORT:
  *   The two graduate buttons (JSON, CSV) open a picker modal
  *   listing every class. The user picks a class, then chooses
  *   JSON or CSV. The picker owns the download; ui.js only opens
  *   it.
- * 
+ *
  *   Both buttons open the SAME picker. The format is chosen
- *   inside the modal, not on the header. This lets the user
- *   change their mind about format without reopening the modal,
- *   and keeps the header from growing a button for every
- *   (kind, format) pair.
- * 
- *   The picker is resolved lazily at click time. If it is
- *   missing, the handler reports "not available" rather than
- *   throwing at IIFE time.
- * 
+ *   inside the modal, not on the header.
+ *
+ * TEAMS EXPORT:
+ *   The two team buttons (JSON, CSV) open a picker modal showing
+ *   a pre-flight count of professional teams, members, and stints,
+ *   with an optional status filter. Both buttons open the SAME
+ *   picker. Same rationale as graduates.
+ *
  * DEPENDENCIES:
  *   - window.ExportUtils (from export-utils.js) - MANDATORY
  *   - window.NotificationSystem (from notification.js) - MANDATORY
@@ -43,10 +44,11 @@
  *   - window.JSONIO (from json-io.js) - MANDATORY
  *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
  *   - window.ActivityLog (from activity-log.js) - MANDATORY
- * 
+ *
  * DEPENDENCIES (LAZY, resolved at click time):
- *   - window.GraduatesExportPicker  (graduates: the picker modal)
- * 
+ *   - window.GraduatesExportPicker
+ *   - window.TeamExportPicker
+ *
  * USAGE:
  *   // Auto-initializes on DOM ready
  *   // Or manually:
@@ -84,7 +86,6 @@
 
     if (missing.length > 0) {
         console.warn('[ImportExportUI] Missing dependencies (will use fallbacks):', missing.join(', '));
-        // Continue - some features may not work, but we don't throw
     }
 
     // ============================================================
@@ -147,7 +148,6 @@
             } else if (typeof window.renderAllFeatures === 'function') {
                 window.renderAllFeatures();
             } else {
-                // No refresh mechanism found - that's okay
             }
         } catch (e) {
             console.warn('[ImportExportUI] UI refresh failed:', e.message);
@@ -295,9 +295,7 @@
                     return;
                 }
 
-                // Use ImportPipeline if available
                 if (Pipeline && typeof Pipeline.importFromEnvelope === 'function') {
-                    // If the data is an envelope, use it directly
                     if (result.data.format && result.data.format === 'hollow-blades') {
                         return Pipeline.importFromEnvelope(result.data, {
                             sourceName: file.name,
@@ -306,7 +304,6 @@
                             skipValidation: false
                         });
                     } else {
-                        // Otherwise, wrap in an envelope
                         return Pipeline.importFromJSON(JSON.stringify(result.data), {
                             sourceName: file.name,
                             preserveExistingIds: true,
@@ -315,7 +312,6 @@
                         });
                     }
                 } else {
-                    // Fallback: use MutationPipeline directly
                     return new Promise(function(resolve, reject) {
                         deps.MutationPipeline.performMutation({
                             validate: function() {
@@ -440,11 +436,9 @@
 
                 if (!confirm(confirmMsg)) return;
 
-                // Use CharacterCore if available
                 if (window.CharacterCore && typeof window.CharacterCore.importCharacters === 'function') {
                     return window.CharacterCore.importCharacters(candidates);
                 } else {
-                    // Fallback: use MutationPipeline
                     return new Promise(function(resolve, reject) {
                         deps.MutationPipeline.performMutation({
                             validate: function(data) {
@@ -457,7 +451,6 @@
                                 for (var j = 0; j < candidates.length; j++) {
                                     var candidate = candidates[j];
                                     if (candidate.id) {
-                                        // Update existing
                                         var found = false;
                                         for (var k = 0; k < data.characters.length; k++) {
                                             if (String(data.characters[k].id) === String(candidate.id)) {
@@ -470,7 +463,6 @@
                                             data.characters.push(candidate);
                                         }
                                     } else {
-                                        // Add new
                                         data.characters.push(candidate);
                                     }
                                 }
@@ -594,11 +586,9 @@
 
                 if (!confirm(confirmMsg)) return;
 
-                // Use MissionCore if available
                 if (window.MissionCore && typeof window.MissionCore.importMissions === 'function') {
                     return window.MissionCore.importMissions(candidates);
                 } else {
-                    // Fallback: use MutationPipeline
                     return new Promise(function(resolve, reject) {
                         deps.MutationPipeline.performMutation({
                             validate: function(data) {
@@ -674,14 +664,6 @@
     // ============================================================
     // HANDLERS - Graduates Export
     // ============================================================
-    //
-    // Both buttons open the same picker. The picker lists classes
-    // and offers JSON / CSV export for the selected one. The
-    // header does not carry a per-format button because the format
-    // is a decision made inside the modal.
-    //
-    // The picker is resolved lazily at click time. A missing
-    // module produces a toast, not a crash.
 
     function getGraduatesExportPicker() {
         return window.GraduatesExportPicker || null;
@@ -714,6 +696,44 @@
     }
 
     // ============================================================
+    // HANDLERS - Teams Export
+    // ============================================================
+    //
+    // Both buttons open the same picker. The picker shows a
+    // pre-flight count and offers JSON / CSV export. The format
+    // is a decision made inside the modal, not on the header.
+
+    function getTeamExportPicker() {
+        return window.TeamExportPicker || null;
+    }
+
+    function handleTeamsJSONExport() {
+        var Picker = getTeamExportPicker();
+        if (!Picker || typeof Picker.openModal !== 'function') {
+            notifyError('Team export not available');
+            return;
+        }
+        try {
+            Picker.openModal();
+        } catch (err) {
+            notifyError('Team export failed: ' + err.message);
+        }
+    }
+
+    function handleTeamsCSVExport() {
+        var Picker = getTeamExportPicker();
+        if (!Picker || typeof Picker.openModal !== 'function') {
+            notifyError('Team export not available');
+            return;
+        }
+        try {
+            Picker.openModal();
+        } catch (err) {
+            notifyError('Team export failed: ' + err.message);
+        }
+    }
+
+    // ============================================================
     // INITIALIZATION
     // ============================================================
 
@@ -721,7 +741,6 @@
         if (_initialized) return;
         _initialized = true;
 
-        // Check dependencies
         if (!deps.ExportUtils) {
             console.warn('[ImportExportUI] ExportUtils not available - exports will not work');
         }
@@ -753,10 +772,12 @@
         bindButton('template-missions-csv-btn', handleMissionTemplate);
 
         // ---- Graduates Export ----
-        // Both header buttons open the same picker.
         bindButton('export-graduates-json-btn', handleGraduatesJSONExport);
         bindButton('export-graduates-csv-btn', handleGraduatesCSVExport);
 
+        // ---- Teams Export ----
+        bindButton('export-teams-json-btn', handleTeamsJSONExport);
+        bindButton('export-teams-csv-btn', handleTeamsCSVExport);
     }
 
     // ============================================================
@@ -769,7 +790,7 @@
     }
 
     // ============================================================
-    // LIFEYCYCLE
+    // LIFECYCLE
     // ============================================================
 
     function tryInit() {
@@ -799,6 +820,8 @@
         handleMissionTemplate: handleMissionTemplate,
         handleGraduatesJSONExport: handleGraduatesJSONExport,
         handleGraduatesCSVExport: handleGraduatesCSVExport,
+        handleTeamsJSONExport: handleTeamsJSONExport,
+        handleTeamsCSVExport: handleTeamsCSVExport,
 
         // Utilities
         bindButton: bindButton,
@@ -814,7 +837,6 @@
 
     tryInit();
 
-    // Also listen for data readiness (re-bind if needed)
     document.addEventListener('dataReady', function() {
         if (!_initialized) {
             init();
