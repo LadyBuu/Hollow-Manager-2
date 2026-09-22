@@ -24,6 +24,27 @@
  *     load-bearing: without it, calling the Social tab with the
  *     default 'all'/'all' filters reorders the store on every render.
  *
+ * ELIMINATION ENRICHMENT:
+ *   The character VMs produced by this module carry both:
+ *     - `everEliminated`  : boolean. True when the character has any
+ *                            elimination record at all, any year,
+ *                            any kind. Presence-based.
+ *     - `eliminationYear` : number | null. The earliest elimination
+ *                            year, for display.
+ *     - `eliminationWeek` : number | null. The earliest elimination
+ *                            week, for display.
+ *     - `eliminationReason` : string. Reason from the earliest
+ *                            elimination, or '' when none.
+ *
+ *   This is enrichment, not a re-implementation. The reads route
+ *   through EliminationQueries, which owns the semantics. When that
+ *   module is unavailable, all four fields fall back to the
+ *   non-eliminated shape and the projection proceeds.
+ *
+ *   Consumers that just need "is this character eliminated?" should
+ *   check `everEliminated`. It is a fact about the character record,
+ *   not about the current application year.
+ *
  * API:
  *   - getRelationshipViewModel(relationship, contextCharId)
  *   - getCharacterRelationshipsViewModel(characterId)
@@ -36,6 +57,11 @@
  *   - window.SocialQueries (from social-queries.js) - MANDATORY
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.SocialConstants (from social-constants.js) - MANDATORY
+ *
+ * DEPENDENCIES (LAZY):
+ *   - window.EliminationQueries (from elimination-queries.js)
+ *     Missing -> elimination fields stay in their non-eliminated
+ *     shape; the projection proceeds.
  *
  * USAGE:
  *   var vm = SocialAggregator.getCharacterRelationshipsViewModel('char_123');
@@ -58,6 +84,14 @@
     var SocialQueries = window.SocialQueries;
     var CharacterQueries = window.CharacterQueries;
     var SocialConstants = window.SocialConstants;
+
+    // ============================================================
+    // LAZY DEPENDENCY ACCESSORS
+    // ============================================================
+
+    function getEliminationQueries() {
+        return window.EliminationQueries || null;
+    }
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -151,6 +185,97 @@
         var char = CharacterQueries.getCharacterById(charId);
         if (!char) { return false; }
         return char.deceased || false;
+    }
+
+    /**
+     * Read elimination facts for a character.
+     *
+     * Returns a plain object with four fields. When
+     * EliminationQueries is unavailable, all fields fall back to
+     * their non-eliminated shape. When the character has no
+     * eliminations, the same shape is returned.
+     *
+     * This function is the SINGLE place in the aggregator that
+     * reads EliminationQueries. Consumers use the returned fields
+     * directly; they do not reach for the query module themselves.
+     *
+     * @param {string|object} charIdOrObject
+     * @returns {{
+     *   eliminated: boolean,
+     *   everEliminated: boolean,
+     *   eliminationYear: number|null,
+     *   eliminationWeek: number|null,
+     *   eliminationReason: string
+     * }}
+     */
+    function readEliminationFacts(charIdOrObject) {
+        var result = {
+            eliminated: false,
+            everEliminated: false,
+            eliminationYear: null,
+            eliminationWeek: null,
+            eliminationReason: ''
+        };
+
+        if (!charIdOrObject) { return result; }
+
+        var EQ = getEliminationQueries();
+        if (!EQ) { return result; }
+
+        try {
+            if (typeof EQ.getEliminationYear === 'function') {
+                var year = EQ.getEliminationYear(charIdOrObject);
+                if (year !== null && year !== undefined) {
+                    result.eliminationYear = year;
+                    result.everEliminated = true;
+                }
+            }
+
+            if (typeof EQ.getEliminationWeek === 'function') {
+                var week = EQ.getEliminationWeek(charIdOrObject);
+                if (week !== null && week !== undefined) {
+                    result.eliminationWeek = week;
+                    // A week without a year is unusual but
+                    // possible on legacy data. Treat it as an
+                    // elimination for the "ever" flag.
+                    if (!result.everEliminated) {
+                        result.everEliminated = true;
+                    }
+                }
+            }
+
+            if (typeof EQ.getEliminationReason === 'function') {
+                var reason = EQ.getEliminationReason(charIdOrObject);
+                if (typeof reason === 'string' && reason !== 'Unknown') {
+                    result.eliminationReason = reason;
+                }
+            }
+
+            // `eliminated` is year-scoped: is the character eliminated
+            // as of the current application year? This is distinct
+            // from `everEliminated` (presence-based). Callers that
+            // need the year-scoped answer check `eliminated`.
+            if (typeof EQ.isCharacterEliminatedByYear === 'function') {
+                var data = window.data || {};
+                var currentYear = null;
+                if (typeof data.currentYear === 'number' &&
+                    isFinite(data.currentYear) &&
+                    data.currentYear > 0) {
+                    currentYear = Math.floor(data.currentYear);
+                }
+                if (currentYear !== null) {
+                    result.eliminated = EQ.isCharacterEliminatedByYear(
+                        charIdOrObject,
+                        currentYear
+                    ) === true;
+                }
+            }
+        } catch (e) {
+            // Fail-open: leave the default shape. Elimination is
+            // enrichment, not a required fact for the projection.
+        }
+
+        return result;
     }
 
     function getOtherCharacterId(relationship, charId) {
@@ -347,6 +472,10 @@
     /**
      * Get a view model for all characters connected to a character.
      *
+     * Each connection record carries the same character facts the
+     * social page VM carries, under the `character*` prefix:
+     * name, status, age, deceased, and the elimination fields.
+     *
      * @param {string} characterId - Character ID
      * @returns {object} Connected characters view model
      */
@@ -371,12 +500,32 @@
             if (!otherId) { return; }
 
             if (!connectionMap[otherId]) {
+                var otherChar = CharacterQueries.getCharacterById(otherId);
+                var elimFacts = otherChar
+                    ? readEliminationFacts(otherChar)
+                    : {
+                        eliminated: false,
+                        everEliminated: false,
+                        eliminationYear: null,
+                        eliminationWeek: null,
+                        eliminationReason: ''
+                    };
+
                 connectionMap[otherId] = {
                     characterId: otherId,
                     characterName: getCharacterDisplayName(otherId),
                     characterStatus: getCharacterStatus(otherId),
                     characterAge: getCharacterAge(otherId),
                     characterDeceased: getCharacterDeceased(otherId),
+
+                    // Elimination enrichment, prefixed to match the
+                    // character* naming convention on this VM.
+                    characterEliminated: elimFacts.eliminated,
+                    characterEverEliminated: elimFacts.everEliminated,
+                    characterEliminationYear: elimFacts.eliminationYear,
+                    characterEliminationWeek: elimFacts.eliminationWeek,
+                    characterEliminationReason: elimFacts.eliminationReason,
+
                     relationships: []
                 };
             }
@@ -414,6 +563,18 @@
      *   final .sort() reorders the copy, not the store. Without this,
      *   the default 'all'/'all' filter path would reorder
      *   window.data.social.relationships on every render.
+     *
+     * CHARACTER VM SHAPE:
+     *   Each character in the `characters` array carries:
+     *     id, name, status, age, deceased,                       // original
+     *     eliminated, everEliminated,                            // v2 addition
+     *     eliminationYear, eliminationWeek, eliminationReason    // v2 addition
+     *
+     *   Consumers building pickers or lists check `everEliminated`
+     *   for "has this character ever been eliminated?" — a fact
+     *   about the record. They check `eliminated` for "is this
+     *   character eliminated as of the current year?" — a fact
+     *   about the current state.
      *
      * @param {object} options - Options
      * @param {string} options.characterFilter - Filter by character ID
@@ -465,12 +626,32 @@
 
         var characters = Object.keys(characterIds).map(function(id) {
             var char = CharacterQueries.getCharacterById(id);
+
+            // Elimination enrichment. When the character record is
+            // missing, we skip the query and return the default shape.
+            var elimFacts = char
+                ? readEliminationFacts(char)
+                : {
+                    eliminated: false,
+                    everEliminated: false,
+                    eliminationYear: null,
+                    eliminationWeek: null,
+                    eliminationReason: ''
+                };
+
             return {
                 id: id,
                 name: char ? CharacterQueries.getDisplayName(char) : 'Unknown',
                 status: char ? CharacterQueries.getCurrentStatus(char) : '',
                 age: char ? CharacterQueries.getCharacterAge(char) : '',
-                deceased: char ? (char.deceased || false) : false
+                deceased: char ? (char.deceased || false) : false,
+
+                // Elimination enrichment
+                eliminated: elimFacts.eliminated,
+                everEliminated: elimFacts.everEliminated,
+                eliminationYear: elimFacts.eliminationYear,
+                eliminationWeek: elimFacts.eliminationWeek,
+                eliminationReason: elimFacts.eliminationReason
             };
         }).sort(function(a, b) {
             return a.name.localeCompare(b.name);
