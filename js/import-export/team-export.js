@@ -16,75 +16,51 @@
  *   disbanded in 1912 is still in the export. A member who left in
  *   1915 is still in the member list.
  *
- * WHAT A MEMBER RECORD CONTAINS:
- *   The member's role, every stint (join/leave interval), and the
- *   member's character stats:
- *     - identity  (name fields, previousNames, displayName)
- *     - physical  (age, birthYear, gender, eyes, hair, skin,
- *                  height, weight, build, appearanceNotes)
- *     - personality (traits, ideals, bonds, flaws, alignment,
- *                  likes, dislikes, habits, fears, goals)
- *     - combat    (stats, magic, hp, mp, weapons, specialMoves,
- *                  combatNotes)
+ * TWO OUTPUT FORMATS:
+ *
+ *   TEXT (the primary format):
+ *     A human-readable plain-text document. Designed to be opened
+ *     in a text editor and read. Sparse: a line is emitted only
+ *     when the field it describes has content. Sections collapse
+ *     when empty. Sub-objects (stats, magic, weapons, moves) are
+ *     flattened into prose. Stints collapse onto one line per
+ *     member.
+ *
+ *     This is a PROJECTION, not a backup. It is deliberately lossy
+ *     in structure — a reader who wants to re-import data should
+ *     use the JSON envelope export at the application level.
+ *
+ *   CSV (the secondary format):
+ *     A flat grid, one row per stint. Useful for spreadsheet work
+ *     and scripting. JSON-shaped fields remain JSON-encoded,
+ *     because a spreadsheet consumer expects to parse them.
  *
  * FAIL-CLOSED:
  *   When CharacterQueries is unavailable, the module cannot build
  *   member records. Every export function returns an error result.
- *   It does NOT emit partial rows.
+ *   It does NOT emit partial output.
  *
- *   When ObjectUtils is unavailable, cloning falls back to a local
- *   structural clone. The module still works.
+ * TEXT SHAPE:
  *
- * JSON SHAPE (deliberately NOT the application envelope):
- *   A team export is a projection over state, not a backup of it.
- *   It gets its own top-level shape, so it cannot be fed to
- *   ImportPipeline (which is correct — importing a team export as
- *   application state would be nonsense).
+ *   Hollow Blades — Professional Teams Export
+ *   Exported 2026-09-22
+ *   3 teams · 11 members · 14 stints
  *
- *     {
- *       exportedAt: ISO string,
- *       teamCount:  number,
- *       teams:      [TeamRecord, ...]
- *     }
+ *   ============================================================
+ *   CRIMSON BLADES
+ *   ============================================================
+ *   Status:   Active (professional)
+ *   Period:   1910 – present
+ *   Class:    Class of 1910
+ *   Team #:   3
  *
- *   TeamRecord:
- *     {
- *       id, name, type, status,
- *       startPeriod, endPeriod,
- *       classId, classDisplay, teamNumber,
- *       temporaryMission,
- *       nameHistory: [ { name, startPeriod, endPeriod } ],
- *       memberCount: number,
- *       members: [MemberRecord, ...]
- *     }
- *
- *   MemberRecord:
- *     {
- *       memberId, characterId, role, displayName,
- *       stints: [ { joinPeriod, leavePeriod } ],
- *       // full character projection:
- *       firstName, middleName, lastName, nickname, alias,
- *       previousNames: [string],
- *       age, birthYear, gender, attraction, sexuality,
- *       eyes, hair, skin, height, weight, build, appearanceNotes,
- *       traits, ideals, bonds, flaws, alignment,
- *       likes, dislikes, habits, fears, goals,
- *       stats, magic, hp, mp, weapons, specialMoves, combatNotes
- *     }
- *
- * CSV SHAPE (flat, one row per stint):
- *   A member with two stints produces two rows. Both rows carry
- *   the same character data; only JoinPeriod and LeavePeriod
- *   differ. This is the flattening CSV requires.
- *
- *   Columns:
- *     TeamName, TeamStatus, TeamStartPeriod, TeamEndPeriod,
- *     MemberName, MemberRole, JoinPeriod, LeavePeriod,
- *     Age, BirthYear, Gender, Eyes, Hair, Skin, Height, Weight,
- *     Build, Traits, Ideals, Bonds, Flaws, Alignment,
- *     Likes, Dislikes, Habits, Fears, Goals,
- *     Stats, Magic, HP, MP, Weapons, SpecialMoves,
- *     AppearanceNotes, CombatNotes
+ *   --- Aldric Blackwood  (Captain) ----------------------------
+ *   Stints:   1910 – present
+ *   Age:      32
+ *   Gender:   Male
+ *   Build:    Athletic · 5'11" · 78kg
+ *   Eyes:     Grey
+ *   ...
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamQueries
@@ -94,9 +70,9 @@
  *   - window.ExportUtils
  *
  * DEPENDENCIES (OPTIONAL):
- *   - window.AcademyQueries   (class display name)
+ *   - window.AcademyQueries     (class display name)
  *   - window.CharacterConstants (stat key list)
- *   - window.MagicConstants   (magic type key list)
+ *   - window.MagicConstants     (magic type key list)
  */
 
 (function() {
@@ -176,24 +152,30 @@
         return window.MagicConstants || null;
     }
 
-    function getObjectUtils() {
-        return window.ObjectUtils || null;
-    }
-
     // ============================================================
     // CONSTANTS
     // ============================================================
 
     var DEFAULT_STAT_KEYS = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
 
+    var TEXT_FILENAME_PREFIX = 'teams';
     var CSV_FILENAME_PREFIX = 'teams';
-    var JSON_FILENAME_PREFIX = 'teams';
-    var SECTION_HEADER = '# TEAMS';
 
     var PROFESSIONAL_TYPE = 'professional';
 
-    // CSV columns. Grouped by owner so a reader can see at a glance
-    // which fields belong to the team and which to the member.
+    // Text formatting constants. Separators are chosen so a reader
+    // scanning vertically can tell team boundaries from member
+    // boundaries at a glance.
+    var TEAM_SEPARATOR = '='.repeat(64);
+    var MEMBER_SEPARATOR_LEN = 64;
+    var SECTION_HEADER = '# TEAMS';
+
+    // Header labels are padded to this width so values line up
+    // within a block. Long labels (e.g. 'Appearance') are not
+    // padded; the colon still anchors the value.
+    var LABEL_WIDTH = 10;
+
+    // CSV columns.
     var COLUMNS = [
         // ---- Team ----
         'TeamId',
@@ -277,49 +259,22 @@
         }
     }
 
-    function sanitiseForFilename(value) {
-        return String(value === undefined || value === null ? '' : value)
-            .replace(/[^A-Za-z0-9_-]+/g, '-')
-            .replace(/^-+|-+$/g, '') || 'teams';
-    }
-
     /**
-     * Local structural clone. Used when ObjectUtils is unavailable.
-     * Mirrors the shape of ObjectUtils.deepClone for the JSON-shaped
-     * values this module handles.
+     * Is this value non-empty for text-output purposes?
+     * A missing field is not emitted. An empty string is not
+     * emitted. A zero is emitted (0 is data). A false is emitted
+     * (false is data).
      */
-    function localClone(value) {
-        if (value === null || value === undefined) { return value; }
-        var type = typeof value;
-        if (type !== 'object') { return value; }
-        if (Array.isArray(value)) {
-            var arr = new Array(value.length);
-            for (var i = 0; i < value.length; i++) {
-                arr[i] = localClone(value[i]);
-            }
-            return arr;
+    function hasText(value) {
+        if (value === undefined || value === null) { return false; }
+        if (typeof value === 'string') { return value.trim() !== ''; }
+        if (typeof value === 'number') { return isFinite(value); }
+        if (typeof value === 'boolean') { return true; }
+        if (Array.isArray(value)) { return value.length > 0; }
+        if (typeof value === 'object') {
+            return Object.keys(value).length > 0;
         }
-        if (value instanceof Date) {
-            return new Date(value.getTime());
-        }
-        var result = {};
-        var keys = Object.keys(value);
-        for (var j = 0; j < keys.length; j++) {
-            result[keys[j]] = localClone(value[keys[j]]);
-        }
-        return result;
-    }
-
-    function cloneValue(value) {
-        var OU = getObjectUtils();
-        if (OU && typeof OU.deepClone === 'function') {
-            try {
-                return OU.deepClone(value);
-            } catch (e) {
-                // fall through to local
-            }
-        }
-        return localClone(value);
+        return false;
     }
 
     // ============================================================
@@ -467,6 +422,60 @@
     // MEMBER RECORD PROJECTION
     // ============================================================
 
+    function buildMissingCharacterStub(member) {
+        return {
+            memberId: isNonEmptyString(member.memberId)
+                ? String(member.memberId)
+                : '',
+            characterId: String(member.characterId),
+            role: isNonEmptyString(member.role)
+                ? String(member.role)
+                : 'Member',
+            displayName: '(missing character)',
+            stints: normaliseStints(member),
+
+            firstName: '',
+            middleName: '',
+            lastName: '',
+            nickname: '',
+            alias: '',
+            previousNames: [],
+
+            age: '',
+            birthYear: '',
+            gender: '',
+            attraction: '',
+            sexuality: '',
+
+            eyes: '',
+            hair: '',
+            skin: '',
+            height: '',
+            weight: '',
+            build: '',
+            appearanceNotes: '',
+
+            traits: '',
+            ideals: '',
+            bonds: '',
+            flaws: '',
+            alignment: '',
+            likes: '',
+            dislikes: '',
+            habits: '',
+            fears: '',
+            goals: '',
+
+            stats: {},
+            magic: {},
+            hp: 0,
+            mp: 0,
+            weapons: [],
+            specialMoves: { physical: [], magical: [] },
+            combatNotes: ''
+        };
+    }
+
     function buildMemberRecord(member) {
         if (!member || !isNonEmptyString(member.characterId)) {
             return null;
@@ -476,62 +485,7 @@
         var char = CharacterQueries.getCharacterById(charId);
 
         if (!char) {
-            // The team references a character that no longer exists.
-            // Emit a stub so the team's member list is not silently
-            // shortened. The stub carries the ID and role from the
-            // member entry, plus the stints; every character field
-            // is empty.
-            return {
-                memberId: isNonEmptyString(member.memberId)
-                    ? String(member.memberId)
-                    : '',
-                characterId: charId,
-                role: isNonEmptyString(member.role)
-                    ? String(member.role)
-                    : 'Member',
-                displayName: '(missing character)',
-                stints: normaliseStints(member),
-
-                firstName: '',
-                middleName: '',
-                lastName: '',
-                nickname: '',
-                alias: '',
-                previousNames: [],
-
-                age: '',
-                birthYear: '',
-                gender: '',
-                attraction: '',
-                sexuality: '',
-
-                eyes: '',
-                hair: '',
-                skin: '',
-                height: '',
-                weight: '',
-                build: '',
-                appearanceNotes: '',
-
-                traits: '',
-                ideals: '',
-                bonds: '',
-                flaws: '',
-                alignment: '',
-                likes: '',
-                dislikes: '',
-                habits: '',
-                fears: '',
-                goals: '',
-
-                stats: {},
-                magic: {},
-                hp: 0,
-                mp: 0,
-                weapons: [],
-                specialMoves: { physical: [], magical: [] },
-                combatNotes: ''
-            };
+            return buildMissingCharacterStub(member);
         }
 
         var personality = isObject(char.personality)
@@ -566,7 +520,6 @@
             displayName: displayName,
             stints: normaliseStints(member),
 
-            // ---- Identity ----
             firstName: safeString(char.firstName),
             middleName: safeString(char.middleName),
             lastName: safeString(char.lastName),
@@ -574,7 +527,6 @@
             alias: safeString(char.alias),
             previousNames: normalisePreviousNames(char),
 
-            // ---- Physical ----
             age: age,
             birthYear: safeString(char.birthYear),
             gender: safeString(char.gender),
@@ -589,7 +541,6 @@
             build: safeString(char.build),
             appearanceNotes: safeString(char.appearanceNotes),
 
-            // ---- Personality ----
             traits: safeString(personality.traits),
             ideals: safeString(personality.ideals),
             bonds: safeString(personality.bonds),
@@ -601,7 +552,6 @@
             fears: safeString(personality.fears),
             goals: safeString(personality.goals),
 
-            // ---- Combat ----
             stats: normaliseStats(char),
             magic: normaliseMagic(char),
             hp: isFiniteNumber(char.hp) ? char.hp : 0,
@@ -627,7 +577,6 @@
             if (m) { members.push(m); }
         }
 
-        // Sort members by display name, then by earliest join.
         members.sort(function(a, b) {
             var nameCmp = String(a.displayName || '')
                 .localeCompare(String(b.displayName || ''));
@@ -691,8 +640,7 @@
      *
      * @param {object} [options]
      * @param {string} [options.status] - Optional status filter
-     *   ('active' | 'inactive' | 'operational'). Default: no filter
-     *   (deprecated already excluded by TeamQueries).
+     *   ('active' | 'inactive' | 'operational'). Default: no filter.
      * @returns {{
      *   teamCount: number,
      *   memberCount: number,
@@ -746,13 +694,675 @@
     }
 
     // ============================================================
+    // TEXT FORMAT
+    // ============================================================
+    //
+    // The text format is the primary export. It is designed to be
+    // read, not parsed. Every design decision favours the reader:
+    //
+    //   - Sparse: a field line is emitted only when the field has
+    //     content. No "Weapons: (none)" filler.
+    //   - Sections collapse: a member with no personality data
+    //     does not get a "Personality" header with empty lines.
+    //   - Sub-objects flatten: stats become "STR 14 · DEX 12 · ..."
+    //     not a JSON blob.
+    //   - Stints on one line: "1910 – 1915, 1918 – present".
+    //   - Separators carry hierarchy: === for teams, --- for
+    //     members. No indentation to track.
+    //   - Labels are padded to a fixed width so values line up
+    //     within a member block.
+
+    function padLabel(label) {
+        var str = String(label);
+        while (str.length < LABEL_WIDTH) {
+            str += ' ';
+        }
+        return str;
+    }
+
+    /**
+     * Emit a labelled line, or nothing if the value is empty.
+     * The label is padded; the value is escaped to a single line
+     * (newlines become spaces) so a multi-line notes field does
+     * not break the block layout.
+     */
+    function textLine(label, value) {
+        if (!hasText(value)) { return ''; }
+        var v = String(value).replace(/\s+/g, ' ').trim();
+        if (v === '') { return ''; }
+        return padLabel(label) + ': ' + v + '\n';
+    }
+
+    /**
+     * Format a stint list onto one line:
+     *   "1910 – present"
+     *   "1912 – 1915"
+     *   "1912 – 1915, 1918 – present"
+     *   "From 1910"
+     *   "Until 1915"
+     */
+    function formatStints(stints) {
+        if (!Array.isArray(stints) || stints.length === 0) {
+            return '';
+        }
+
+        var parts = [];
+        for (var i = 0; i < stints.length; i++) {
+            var s = stints[i];
+            var join = isNonEmptyString(s.joinPeriod)
+                ? String(s.joinPeriod).trim()
+                : '';
+            var leave = isNonEmptyString(s.leavePeriod)
+                ? String(s.leavePeriod).trim()
+                : '';
+
+            if (join && leave) {
+                parts.push(join + ' \u2013 ' + leave);
+            } else if (join) {
+                parts.push(join + ' \u2013 present');
+            } else if (leave) {
+                parts.push('until ' + leave);
+            } else {
+                parts.push('(no dates)');
+            }
+        }
+
+        return parts.join(', ');
+    }
+
+    /**
+     * Format stats as "STR 14 · DEX 12 · ..." with each key
+     * uppercased. Empty (all-zero) stats are treated as empty.
+     */
+    function formatStats(stats) {
+        if (!isObject(stats)) { return ''; }
+
+        var keys = Object.keys(stats);
+        if (keys.length === 0) { return ''; }
+
+        var any = false;
+        for (var i = 0; i < keys.length; i++) {
+            if (stats[keys[i]] !== 0) { any = true; break; }
+        }
+        if (!any) { return ''; }
+
+        var parts = [];
+        for (var j = 0; j < keys.length; j++) {
+            var k = keys[j];
+            parts.push(k.toUpperCase() + ' ' + stats[k]);
+        }
+        return parts.join(' \u00b7 ');
+    }
+
+    /**
+     * Format magic as "Fire 8 · Water 3" with only non-zero
+     * entries shown.
+     */
+    function formatMagic(magic) {
+        if (!isObject(magic)) { return ''; }
+
+        var parts = [];
+        var keys = Object.keys(magic);
+        for (var i = 0; i < keys.length; i++) {
+            var k = keys[i];
+            var v = magic[k];
+            if (!isFiniteNumber(v) || v === 0) { continue; }
+            var label = k.charAt(0).toUpperCase() + k.slice(1);
+            parts.push(label + ' ' + v);
+        }
+        return parts.join(' \u00b7 ');
+    }
+
+    /**
+     * Format weapons as "Longsword (sharp), Dagger (sharp)".
+     */
+    function formatWeapons(weapons) {
+        if (!Array.isArray(weapons) || weapons.length === 0) {
+            return '';
+        }
+
+        var parts = [];
+        for (var i = 0; i < weapons.length; i++) {
+            var w = weapons[i];
+            if (!isObject(w)) { continue; }
+            var name = isNonEmptyString(w.name) ? String(w.name) : '';
+            if (name === '') { continue; }
+            if (isNonEmptyString(w.type)) {
+                name += ' (' + w.type + ')';
+            }
+            if (isNonEmptyString(w.notes)) {
+                name += ' \u2014 ' + w.notes;
+            }
+            parts.push(name);
+        }
+        return parts.join('; ');
+    }
+
+    /**
+     * Format special moves as "Physical: A, B · Magical: C".
+     */
+    function formatSpecialMoves(moves) {
+        if (!isObject(moves)) { return ''; }
+
+        var parts = [];
+
+        function listOf(list) {
+            if (!Array.isArray(list) || list.length === 0) {
+                return '';
+            }
+            var names = [];
+            for (var i = 0; i < list.length; i++) {
+                var m = list[i];
+                if (!isObject(m)) { continue; }
+                if (!isNonEmptyString(m.name)) { continue; }
+                var s = String(m.name);
+                if (isNonEmptyString(m.description)) {
+                    s += ' (' + m.description + ')';
+                }
+                names.push(s);
+            }
+            return names.join(', ');
+        }
+
+        var phys = listOf(moves.physical);
+        var mag = listOf(moves.magical);
+
+        if (phys) { parts.push('Physical \u2014 ' + phys); }
+        if (mag) { parts.push('Magical \u2014 ' + mag); }
+
+        return parts.join(' \u00b7 ');
+    }
+
+    /**
+     * Format a physical composite line:
+     *   "Athletic · 5'11" · 78kg"
+     * Only non-empty components appear.
+     */
+    function formatPhysicalComposite(member) {
+        var parts = [];
+        if (isNonEmptyString(member.build)) {
+            parts.push(String(member.build));
+        }
+        if (isNonEmptyString(member.height)) {
+            parts.push(String(member.height));
+        }
+        if (isNonEmptyString(member.weight)) {
+            parts.push(String(member.weight));
+        }
+        return parts.join(' \u00b7 ');
+    }
+
+    /**
+     * Format eyes/hair/skin as one line if any of them has content.
+     *   "Grey / Black / Fair"
+     */
+    function formatColourComposite(member) {
+        var parts = [];
+        if (isNonEmptyString(member.eyes)) {
+            parts.push(String(member.eyes));
+        }
+        if (isNonEmptyString(member.hair)) {
+            parts.push(String(member.hair));
+        }
+        if (isNonEmptyString(member.skin)) {
+            parts.push(String(member.skin));
+        }
+        return parts.join(' / ');
+    }
+
+    /**
+     * Format a team status line:
+     *   "Active (professional)"
+     *   "Inactive (professional)"
+     *   "Active (academic)"
+     */
+    function formatTeamStatus(team) {
+        var status = isNonEmptyString(team.status)
+            ? team.status
+            : 'active';
+        var capitalised = status.charAt(0).toUpperCase() +
+            status.slice(1);
+        var type = isNonEmptyString(team.type)
+            ? team.type
+            : '';
+        if (type) {
+            return capitalised + ' (' + type + ')';
+        }
+        return capitalised;
+    }
+
+    /**
+     * Format a team period:
+     *   "1910 – present"
+     *   "1910 – 1915"
+     *   "From 1910"
+     *   "Until 1915"
+     *   "(no period)"
+     */
+    function formatTeamPeriod(team) {
+        var start = isNonEmptyString(team.startPeriod)
+            ? String(team.startPeriod)
+            : '';
+        var end = isNonEmptyString(team.endPeriod)
+            ? String(team.endPeriod)
+            : '';
+
+        if (start && end) { return start + ' \u2013 ' + end; }
+        if (start) { return 'From ' + start; }
+        if (end) { return 'Until ' + end; }
+        return '';
+    }
+
+    /**
+     * Build the header banner line for a member:
+     *   "--- Aldric Blackwood  (Captain) ----------------------------"
+     * The trailing dashes pad the line to MEMBER_SEPARATOR_LEN.
+     */
+    function buildMemberHeader(member) {
+        var name = isNonEmptyString(member.displayName)
+            ? member.displayName
+            : 'Unknown';
+
+        var roleSuffix = '';
+        if (isNonEmptyString(member.role) && member.role !== 'Member') {
+            roleSuffix = '  (' + member.role + ')';
+        }
+
+        var prefix = '--- ' + name + roleSuffix + ' ';
+        if (prefix.length >= MEMBER_SEPARATOR_LEN) {
+            return prefix;
+        }
+        return prefix + '-'.repeat(MEMBER_SEPARATOR_LEN - prefix.length);
+    }
+
+    /**
+     * Emit the member's identity block.
+     * Returns an empty string when the member has no identity
+     * fields worth showing beyond the display name.
+     */
+    function emitIdentityLines(member) {
+        var out = '';
+
+        // Stints go first: they describe the member's relationship
+        // to the team, which is the most important context.
+        var stints = formatStints(member.stints);
+        if (stints) {
+            out += textLine('Stints', stints);
+        }
+
+        // Full name, if different from display name.
+        var fullName = [member.firstName, member.middleName, member.lastName]
+            .filter(isNonEmptyString)
+            .join(' ');
+        if (fullName && fullName !== member.displayName) {
+            out += textLine('Name', fullName);
+        }
+
+        if (isNonEmptyString(member.nickname)) {
+            out += textLine('Nickname', member.nickname);
+        }
+        if (isNonEmptyString(member.alias)) {
+            out += textLine('Alias', member.alias);
+        }
+
+        if (Array.isArray(member.previousNames) &&
+            member.previousNames.length > 0) {
+            out += textLine(
+                'Also',
+                member.previousNames.join(', ')
+            );
+        }
+
+        if (isNonEmptyString(member.age)) {
+            out += textLine('Age', member.age);
+        }
+        if (isNonEmptyString(member.birthYear)) {
+            out += textLine('Born', member.birthYear);
+        }
+        if (isNonEmptyString(member.gender)) {
+            out += textLine('Gender', member.gender);
+        }
+
+        return out;
+    }
+
+    /**
+     * Emit the physical block. Collapses entirely when empty.
+     */
+    function emitPhysicalLines(member) {
+        var out = '';
+
+        var composite = formatPhysicalComposite(member);
+        if (composite) {
+            out += textLine('Physical', composite);
+        }
+
+        var colours = formatColourComposite(member);
+        if (colours) {
+            out += textLine('Eyes/Hair', colours);
+        }
+
+        if (isNonEmptyString(member.appearanceNotes)) {
+            out += textLine('Appearance', member.appearanceNotes);
+        }
+
+        return out;
+    }
+
+    /**
+     * Emit the personality block. Collapses entirely when empty.
+     */
+    function emitPersonalityLines(member) {
+        var out = '';
+
+        if (isNonEmptyString(member.traits)) {
+            out += textLine('Traits', member.traits);
+        }
+        if (isNonEmptyString(member.ideals)) {
+            out += textLine('Ideals', member.ideals);
+        }
+        if (isNonEmptyString(member.bonds)) {
+            out += textLine('Bonds', member.bonds);
+        }
+        if (isNonEmptyString(member.flaws)) {
+            out += textLine('Flaws', member.flaws);
+        }
+        if (isNonEmptyString(member.alignment)) {
+            out += textLine('Alignment', member.alignment);
+        }
+        if (isNonEmptyString(member.likes)) {
+            out += textLine('Likes', member.likes);
+        }
+        if (isNonEmptyString(member.dislikes)) {
+            out += textLine('Dislikes', member.dislikes);
+        }
+        if (isNonEmptyString(member.habits)) {
+            out += textLine('Habits', member.habits);
+        }
+        if (isNonEmptyString(member.fears)) {
+            out += textLine('Fears', member.fears);
+        }
+        if (isNonEmptyString(member.goals)) {
+            out += textLine('Goals', member.goals);
+        }
+
+        return out;
+    }
+
+    /**
+     * Emit the combat block. Collapses entirely when empty.
+     *
+     * Stats go on one line, HP and MP on another, weapons on
+     * another, moves on another, combat notes on another. Only
+     * the lines with content appear.
+     */
+    function emitCombatLines(member) {
+        var out = '';
+
+        var stats = formatStats(member.stats);
+        if (stats) {
+            out += textLine('Stats', stats);
+        }
+
+        var hpmp = '';
+        if (isFiniteNumber(member.hp) && member.hp !== 0) {
+            hpmp += 'HP ' + member.hp;
+        }
+        if (isFiniteNumber(member.mp) && member.mp !== 0) {
+            if (hpmp) { hpmp += ' \u00b7 '; }
+            hpmp += 'MP ' + member.mp;
+        }
+        if (hpmp) {
+            out += textLine('Combat', hpmp);
+        }
+
+        var magic = formatMagic(member.magic);
+        if (magic) {
+            out += textLine('Magic', magic);
+        }
+
+        var weapons = formatWeapons(member.weapons);
+        if (weapons) {
+            out += textLine('Weapons', weapons);
+        }
+
+        var moves = formatSpecialMoves(member.specialMoves);
+        if (moves) {
+            out += textLine('Moves', moves);
+        }
+
+        if (isNonEmptyString(member.combatNotes)) {
+            out += textLine('Notes', member.combatNotes);
+        }
+
+        return out;
+    }
+
+    /**
+     * Emit one member block. Sections are separated by a blank
+     * line if there is more than one section with content, so the
+     * reader's eye can group them.
+     */
+    function emitMemberBlock(member) {
+        var out = '';
+
+        out += buildMemberHeader(member) + '\n';
+
+        var identity = emitIdentityLines(member);
+        var physical = emitPhysicalLines(member);
+        var personality = emitPersonalityLines(member);
+        var combat = emitCombatLines(member);
+
+        var sections = [identity, physical, personality, combat]
+            .filter(function(s) { return s !== ''; });
+
+        for (var i = 0; i < sections.length; i++) {
+            if (i > 0) { out += '\n'; }
+            out += sections[i];
+        }
+
+        return out;
+    }
+
+    /**
+     * Emit the header block for a team:
+     *   ============================================================
+     *   CRIMSON BLADES
+     *   ============================================================
+     *   Status:   Active (professional)
+     *   Period:   1910 – present
+     *   Class:    Class of 1910
+     *   Team #:   3
+     */
+    function emitTeamHeader(team) {
+        var out = '';
+
+        out += TEAM_SEPARATOR + '\n';
+        out += String(team.name).toUpperCase() + '\n';
+        out += TEAM_SEPARATOR + '\n';
+
+        out += textLine('Status', formatTeamStatus(team));
+
+        var period = formatTeamPeriod(team);
+        if (period) {
+            out += textLine('Period', period);
+        }
+
+        if (isNonEmptyString(team.classDisplay)) {
+            out += textLine('Class', team.classDisplay);
+        }
+
+        if (isNonEmptyString(team.teamNumber)) {
+            out += textLine('Team #', team.teamNumber);
+        }
+
+        if (isNonEmptyString(team.temporaryMission)) {
+            out += textLine('Mission', team.temporaryMission);
+        }
+
+        if (Array.isArray(team.nameHistory) &&
+            team.nameHistory.length > 0) {
+            var history = team.nameHistory.map(function(h) {
+                var s = h.name;
+                if (h.startPeriod || h.endPeriod) {
+                    s += ' (' +
+                        (h.startPeriod || '?') +
+                        ' \u2013 ' +
+                        (h.endPeriod || 'present') +
+                        ')';
+                }
+                return s;
+            }).join(', ');
+            out += textLine('Formerly', history);
+        }
+
+        out += textLine(
+            'Members',
+            team.memberCount === 1
+                ? '1 member'
+                : team.memberCount + ' members'
+        );
+
+        out += '\n';
+
+        return out;
+    }
+
+    /**
+     * Build the full text export.
+     *
+     * @param {object} vm - The VM from getTeams()
+     * @returns {string}
+     */
+    function buildTeamsText(vm) {
+        var out = '';
+
+        // ---- Header ----
+        out += 'Hollow Blades \u2014 Professional Teams Export\n';
+        out += 'Exported ' + new Date().toISOString().slice(0, 10) + '\n';
+        out += vm.teamCount + ' team' +
+            (vm.teamCount === 1 ? '' : 's') +
+            ' \u00b7 ' + vm.memberCount + ' member' +
+            (vm.memberCount === 1 ? '' : 's') +
+            ' \u00b7 ' + vm.stintCount + ' stint' +
+            (vm.stintCount === 1 ? '' : 's') +
+            '\n\n';
+
+        if (vm.teamCount === 0) {
+            out += '(No professional teams match this filter.)\n';
+            return out;
+        }
+
+        // ---- Teams ----
+        for (var t = 0; t < vm.teams.length; t++) {
+            var team = vm.teams[t];
+
+            if (t > 0) {
+                out += '\n';
+            }
+
+            out += emitTeamHeader(team);
+
+            if (team.members.length === 0) {
+                out += '(No members recorded.)\n';
+                continue;
+            }
+
+            for (var m = 0; m < team.members.length; m++) {
+                if (m > 0) {
+                    out += '\n';
+                }
+                out += emitMemberBlock(team.members[m]);
+            }
+        }
+
+        return out;
+    }
+
+    /**
+     * Get the plain-text content as a string. No download.
+     *
+     * @param {object} [options]
+     * @returns {string}
+     */
+    function getTeamsTextContent(options) {
+        var vm = getTeams(options);
+        return buildTeamsText(vm);
+    }
+
+    /**
+     * Export the team list as a plain-text file.
+     *
+     * @param {object} [options]
+     * @param {string} [options.filename]
+     * @param {string} [options.status]
+     * @returns {{
+     *   exported: boolean,
+     *   filename: string|null,
+     *   teamCount: number,
+     *   memberCount: number,
+     *   error: string|null
+     * }}
+     */
+    function exportTeamsText(options) {
+        options = options || {};
+
+        var vm = getTeams(options);
+
+        if (vm.teamCount === 0) {
+            return {
+                exported: false,
+                filename: null,
+                teamCount: 0,
+                memberCount: 0,
+                error: 'No professional teams found.'
+            };
+        }
+
+        var content = buildTeamsText(vm);
+
+        // No BOM. A BOM is a Windows Notepad convention for CSV
+        // files, and it produces a phantom character in vim, less,
+        // and most Unix tooling. Plain text does not need it.
+        var blob = new Blob([content], {
+            type: 'text/plain;charset=utf-8'
+        });
+
+        var filename = options.filename ||
+            TEXT_FILENAME_PREFIX + '-' +
+            new Date().toISOString().slice(0, 10) + '.txt';
+
+        try {
+            ExportUtils.downloadBlob(blob, filename);
+        } catch (e) {
+            return {
+                exported: false,
+                filename: null,
+                teamCount: vm.teamCount,
+                memberCount: vm.memberCount,
+                error: 'Failed to download text: ' + e.message
+            };
+        }
+
+        return {
+            exported: true,
+            filename: filename,
+            teamCount: vm.teamCount,
+            memberCount: vm.memberCount,
+            error: null
+        };
+    }
+
+    // ============================================================
     // CSV
     // ============================================================
     //
-    // One row per (team, member, stint). A member with zero stints
-    // still produces one row with blank JoinPeriod / LeavePeriod,
-    // because the member's identity and stats are worth exporting
-    // even when the stint data is missing.
+    // CSV is the secondary format. It is a flat grid — one row per
+    // stint — that a spreadsheet or scripting tool can consume.
+    // JSON-shaped fields (stats, magic, weapons, moves) remain
+    // JSON-encoded, because a consumer of CSV expects to parse
+    // them. Rows are separated by \r\n and the file carries a BOM,
+    // both because Excel expects them.
 
     function buildMemberCSVRow(team, member, stint) {
         return [
@@ -835,33 +1445,12 @@
         return rows;
     }
 
-    /**
-     * Get the CSV content as a string. No download.
-     *
-     * @param {object} [options]
-     * @returns {string}
-     */
     function getTeamsCSVContent(options) {
         var vm = getTeams(options);
         var rows = buildCSVRows(vm);
         return CSV.arrayToCSV(rows);
     }
 
-    /**
-     * Export the team list as a CSV file.
-     *
-     * @param {object} [options]
-     * @param {string} [options.filename]
-     * @param {string} [options.status]
-     * @returns {{
-     *   exported: boolean,
-     *   filename: string|null,
-     *   teamCount: number,
-     *   memberCount: number,
-     *   rowCount: number,
-     *   error: string|null
-     * }}
-     */
     function exportTeamsCSV(options) {
         options = options || {};
 
@@ -913,8 +1502,6 @@
             };
         }
 
-        // Row count = team rows + one per stint (or one for
-        // stintless members).
         var rowCount = 0;
         for (var t = 0; t < vm.teams.length; t++) {
             for (var m = 0; m < vm.teams[t].members.length; m++) {
@@ -934,106 +1521,6 @@
     }
 
     // ============================================================
-    // JSON
-    // ============================================================
-
-    /**
-     * Build the JSON document object without downloading.
-     *
-     * @param {object} [options]
-     * @returns {object}
-     */
-    function getTeamsJSONDocument(options) {
-        options = options || {};
-        var vm = getTeams(options);
-
-        return {
-            exportedAt: new Date().toISOString(),
-            teamCount: vm.teamCount,
-            memberCount: vm.memberCount,
-            stintCount: vm.stintCount,
-            teams: vm.teams
-        };
-    }
-
-    /**
-     * Export the team list as a JSON file.
-     *
-     * @param {object} [options]
-     * @param {string} [options.filename]
-     * @param {boolean} [options.pretty] - Pretty print (default: true)
-     * @param {string} [options.status]
-     * @returns {{
-     *   exported: boolean,
-     *   filename: string|null,
-     *   teamCount: number,
-     *   memberCount: number,
-     *   error: string|null
-     * }}
-     */
-    function exportTeamsJSON(options) {
-        options = options || {};
-
-        var vm = getTeams(options);
-
-        if (vm.teamCount === 0) {
-            return {
-                exported: false,
-                filename: null,
-                teamCount: 0,
-                memberCount: 0,
-                error: 'No professional teams found.'
-            };
-        }
-
-        var document = getTeamsJSONDocument(options);
-
-        var serialised;
-        try {
-            serialised = JSON.stringify(
-                document,
-                null,
-                options.pretty !== false ? 2 : 0
-            );
-        } catch (e) {
-            return {
-                exported: false,
-                filename: null,
-                teamCount: vm.teamCount,
-                memberCount: vm.memberCount,
-                error: 'Failed to serialize JSON: ' + e.message
-            };
-        }
-
-        var filename = options.filename ||
-            JSON_FILENAME_PREFIX + '-' +
-            new Date().toISOString().slice(0, 10) + '.json';
-
-        try {
-            var blob = new Blob([serialised], {
-                type: 'application/json'
-            });
-            ExportUtils.downloadBlob(blob, filename);
-        } catch (e) {
-            return {
-                exported: false,
-                filename: null,
-                teamCount: vm.teamCount,
-                memberCount: vm.memberCount,
-                error: 'Failed to download JSON: ' + e.message
-            };
-        }
-
-        return {
-            exported: true,
-            filename: filename,
-            teamCount: vm.teamCount,
-            memberCount: vm.memberCount,
-            error: null
-        };
-    }
-
-    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -1041,11 +1528,11 @@
         // Projection
         getTeams: getTeams,
 
-        // JSON
-        getTeamsJSONDocument: getTeamsJSONDocument,
-        exportTeamsJSON: exportTeamsJSON,
+        // Text (primary)
+        getTeamsTextContent: getTeamsTextContent,
+        exportTeamsText: exportTeamsText,
 
-        // CSV
+        // CSV (secondary)
         getTeamsCSVContent: getTeamsCSVContent,
         exportTeamsCSV: exportTeamsCSV,
 
@@ -1054,18 +1541,14 @@
         SECTION_HEADER: SECTION_HEADER
     });
 
-    // ============================================================
-    // VERIFICATION
-    // ============================================================
-
     (function verify() {
         var exports = window.TeamExport;
         var missing = [];
 
         var required = [
             'getTeams',
-            'getTeamsJSONDocument',
-            'exportTeamsJSON',
+            'getTeamsTextContent',
+            'exportTeamsText',
             'getTeamsCSVContent',
             'exportTeamsCSV'
         ];
