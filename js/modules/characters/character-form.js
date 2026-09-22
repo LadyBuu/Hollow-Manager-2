@@ -10,6 +10,8 @@
  *   - Physical stats, HP, MP, weapons rendered inline
  *   - Combat Notes (char.combatNotes) is SEPARATE from Notes tab (char.notes)
  *   - Social tab rendering delegates to CharacterViews.renderCharacterSocial
+ *   - Professional tab team section delegates to
+ *     CharacterViews.renderCharacterProfessional
  *   - Academic tab rendering delegates to
  *     CharacterClassView.renderAcademicTab
  *
@@ -34,6 +36,24 @@
  *     prevents the form submission.
  *   - This is the ONLY bare <button> emitted inside #character-form.
  *     Every other button in this file already carries type="button".
+ *
+ * PROFESSIONAL TAB (this revision):
+ *   The Professional tab carries an empty
+ *   <div id="professional-view"> container. After the form HTML
+ *   is written into the DOM, render() delegates to
+ *   CharacterViews.renderCharacterProfessional(char), which fills
+ *   that container with the character's professional-team
+ *   memberships (active and former).
+ *
+ *   The renderer is resolved lazily at render time. When
+ *   CharacterViews is absent, or does not export the renderer,
+ *   the container stays empty — matching the previous behaviour.
+ *   The call is wrapped in try/catch so a renderer failure does
+ *   not blank the rest of the form.
+ *
+ *   This mirrors how the Social tab delegates to
+ *   renderCharacterSocial, and how the Academic tab delegates to
+ *   CharacterClassView.renderAcademicTab.
  *
  * EDIT ID RESOLUTION:
  *   - getCurrentEditId() / setCurrentEditId() prefer the global
@@ -514,6 +534,32 @@
             }
         }
 
+        // Professional tab — delegate to CharacterViews.
+        //
+        // The Professional tab carries an empty
+        // <div id="professional-view"> container that the renderer
+        // fills with the character's professional-team memberships,
+        // split into active and former stints. The renderer reads its
+        // data through TeamQueries.getTeamsForCharacterAllTime; the
+        // form does not touch the team store.
+        //
+        // The call is optional: when CharacterViews is absent or does
+        // not export the renderer, the container stays empty. Wrapped
+        // in try/catch so a renderer failure does not blank the rest
+        // of the form.
+        var CharacterViewsForProfessional = getCharacterViews();
+        if (CharacterViewsForProfessional &&
+            typeof CharacterViewsForProfessional.renderCharacterProfessional === 'function') {
+            var professionalContainer = document.getElementById('professional-view');
+            if (professionalContainer) {
+                try {
+                    CharacterViewsForProfessional.renderCharacterProfessional(char);
+                } catch (e) {
+                    console.warn('[CharacterForm] renderCharacterProfessional failed:', e);
+                }
+            }
+        }
+
         // Social tab — delegate to CharacterViews
         var CharacterViews = getCharacterViews();
         if (CharacterViews && typeof CharacterViews.renderCharacterSocial === 'function') {
@@ -908,6 +954,18 @@
     // ============================================================
     // PROFESSIONAL TAB
     // ============================================================
+    //
+    // The tab carries:
+    //   - Specialty (text input)
+    //   - Career Status History (dynamic rows)
+    //   - An empty <div id="professional-view"> that the renderer
+    //     fills after the form HTML has been written to the DOM.
+    //
+    // The empty container is deliberate: the renderer is a separate
+    // module (CharacterViews.renderCharacterProfessional), and the
+    // form's job is only to provide the host element. This matches
+    // how the Academic tab hosts #academic-class-view and the Social
+    // tab hosts #character-social-view.
 
     function getProfessionalTabHTML(c) {
         var active = state.currentTab === 'professional' ? 'block' : 'none';
@@ -1465,6 +1523,38 @@
             var isActive = panel.dataset.tab === tab;
             panel.style.display = isActive ? 'block' : 'none';
         });
+
+        // Re-render the Professional tab's team section when the
+        // user switches TO it. The host container is rebuilt by
+        // every getProfessionalTabHTML call, so the renderer must
+        // run again to repopulate it. The other tabs use the same
+        // pattern: the Social tab is re-filled on every render(),
+        // and the Academic tab is re-filled on every render().
+        //
+        // We do this here because switchTab only toggles panel
+        // visibility; it does not re-run render(). A user who
+        // switches to Professional after the initial render would
+        // otherwise see an empty container if the renderer had
+        // never been called.
+        if (tab === 'professional') {
+            var CharacterQueries = getCharacterQueries();
+            var charId = getCurrentEditId();
+            if (charId && CharacterQueries) {
+                var char = CharacterQueries.getCharacterById(charId);
+                var CharacterViews = getCharacterViews();
+                if (char && CharacterViews &&
+                    typeof CharacterViews.renderCharacterProfessional === 'function') {
+                    var professionalContainer = document.getElementById('professional-view');
+                    if (professionalContainer) {
+                        try {
+                            CharacterViews.renderCharacterProfessional(char);
+                        } catch (e) {
+                            console.warn('[CharacterForm] renderCharacterProfessional failed on tab switch:', e);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // ============================================================
