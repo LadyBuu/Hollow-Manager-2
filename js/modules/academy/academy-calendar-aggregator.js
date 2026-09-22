@@ -55,12 +55,34 @@
  *       groupLabel:      string,
  *       instructorId:    string | null,
  *       instructorName:  string,
+ *       classId:         string | null,
+ *       className:       string,
  *       groupId:         string | null,
  *       sessionId:       string | null,
  *       coOccupants:     [{ groupId, disciplineName,
  *                           instructorName }, ...],
  *       isContinuation:  boolean
  *     }
+ *
+ * GROUP LABELS:
+ *   Every teaching group has a display name. The name comes from
+ *   the group record:
+ *
+ *     - customName when the user has set one.
+ *     - otherwise `${discipline.name} ${letterFromNumber(groupNumber)}`.
+ *
+ *   The letter is derived from the group's monotonic groupNumber,
+ *   which is scoped to (classId, disciplineId, instructorId). Group
+ *   1 → A, 2 → B, ... 26 → Z, 27 → AA, and so on.
+ *
+ *   The resolver is built ONCE per public VM call, as a
+ *   groupId → displayName map. This keeps the cost at O(groups)
+ *   regardless of how many occurrences the week produces, and it
+ *   avoids a per-slot deep clone of the group record.
+ *
+ *   The map is used by buildSlotDescriptor to populate groupLabel.
+ *   Without it, two groups of the same discipline taught by the
+ *   same instructor would render as identical cells.
  *
  * CO-OCCUPANCY:
  *   Two teaching groups can share a location. When two occurrences
@@ -72,7 +94,10 @@
  *
  *   Co-occupancy is a LOCATION fact. The projectForStudent /
  *   projectForInstructor / projectForClass projections are scoped
- *   to one entity's own occurrences.
+ *   to one entity's own occurrences. An instructor's grid should
+ *   never merge two of their own groups into one cell; if it does,
+ *   the two sessions are colliding and the collision detector
+ *   should have flagged it.
  *
  * NULL SEMANTICS:
  *   Every public function returns null when:
@@ -92,7 +117,8 @@
  *   - window.AcademyClasses
  *
  * DEPENDENCIES (LAZY, used only if present):
- *   - window.AcademyLocations
+ *   - window.AcademyTeachingGroups   (group display-name resolution)
+ *   - window.AcademyLocations        (location display-name)
  */
 
 (function() {
@@ -179,6 +205,10 @@
 
     function getAcademyLocations() {
         return window.AcademyLocations || null;
+    }
+
+    function getAcademyTeachingGroups() {
+        return window.AcademyTeachingGroups || null;
     }
 
     // ============================================================
@@ -282,6 +312,107 @@
     }
 
     // ============================================================
+    // GROUP DISPLAY NAMES
+    // ============================================================
+    //
+    // The display name for a group is:
+    //
+    //   customName if set
+    //   otherwise `${discipline.name} ${letterFromNumber(groupNumber)}`
+    //
+    // The letter is derived from the group's monotonic groupNumber,
+    // scoped to (classId, disciplineId, instructorId). Group 1 → A,
+    // 2 → B, ..., 26 → Z, 27 → AA, and so on.
+    //
+    // The resolver is built once per VM call. It walks every group
+    // that shares a discipline with the occurrence set and produces
+    // a plain groupId → displayName map. This is O(groups), not
+    // O(occurrences), so the cost does not scale with the week's
+    // schedule density.
+    //
+    // getGroup returns a DEEP CLONE. To avoid cloning every group
+    // on every VM call, we only fetch the groups we actually need:
+    // the ones whose IDs appear in the occurrence set. The caller
+    // passes in the set of groupIds it has seen.
+
+    function letterFromNumber(n) {
+        var num = parseInt(n, 10);
+        if (isNaN(num) || num < 1) {
+            return '';
+        }
+        var result = '';
+        while (num > 0) {
+            var rem = (num - 1) % 26;
+            result = String.fromCharCode(65 + rem) + result;
+            num = Math.floor((num - 1) / 26);
+        }
+        return result;
+    }
+
+    /**
+     * Build a map from groupId to displayName for the given set of
+     * group IDs. Groups that cannot be resolved (missing record,
+     * missing AcademyTeachingGroups, missing discipline) get an
+     * empty string. The caller decides what to render in that case.
+     *
+     * @param {object} groupIds - object whose keys are the group IDs
+     * @returns {object} groupId → displayName
+     */
+    function buildGroupDisplayNameMap(groupIds) {
+        var result = Object.create(null);
+        var Groups = getAcademyTeachingGroups();
+        if (!Groups || typeof Groups.getGroup !== 'function') {
+            return result;
+        }
+
+        var keys = Object.keys(groupIds || {});
+        for (var i = 0; i < keys.length; i++) {
+            var gid = keys[i];
+            var g = null;
+            try {
+                g = Groups.getGroup(gid);
+            } catch (e) {
+                g = null;
+            }
+            if (!g) {
+                result[gid] = '';
+                continue;
+            }
+
+            if (isNonEmptyString(g.customName)) {
+                result[gid] = String(g.customName);
+                continue;
+            }
+
+            var disciplineName = getDisciplineName(g.disciplineId);
+            var letter = letterFromNumber(g.groupNumber);
+            if (letter !== '') {
+                result[gid] = disciplineName + ' ' + letter;
+            } else {
+                result[gid] = disciplineName;
+            }
+        }
+
+        return result;
+    }
+
+    function collectGroupIds(occurrences) {
+        var ids = Object.create(null);
+        if (!Array.isArray(occurrences)) {
+            return ids;
+        }
+        for (var i = 0; i < occurrences.length; i++) {
+            var occ = occurrences[i];
+            if (!occ) { continue; }
+            var gid = toIdOrNull(occ.groupId);
+            if (gid !== null) {
+                ids[gid] = true;
+            }
+        }
+        return ids;
+    }
+
+    // ============================================================
     // REST DAYS (v30, extended v31)
     // ============================================================
     //
@@ -289,7 +420,7 @@
     // property of the class, not of the individual student or
     // instructor: a class is a cohort with a shared timetable.
     //
-    // Rest days are now WEEK-SCOPED. AcademyClasses resolves the
+    // Rest days are WEEK-SCOPED. AcademyClasses resolves the
     // effective rest days for a given week from the class's
     // restDays (default) and restDaysByWeek (sparse overrides).
     // The three class-member projections read the resolved array
@@ -333,15 +464,21 @@
     // SLOT DESCRIPTORS
     // ============================================================
 
-    function buildCoOccupant(occurrence) {
+    function buildCoOccupant(occurrence, groupNames) {
+        var gid = toIdOrNull(occurrence.groupId);
+        var groupLabel = '';
+        if (gid !== null && groupNames && groupNames[gid]) {
+            groupLabel = groupNames[gid];
+        }
         return {
-            groupId: toIdOrNull(occurrence.groupId),
+            groupId: gid,
+            groupLabel: groupLabel,
             disciplineName: getDisciplineName(occurrence.disciplineId),
             instructorName: getCharacterDisplayName(occurrence.instructorId)
         };
     }
 
-    function buildSlotDescriptor(occurrence) {
+    function buildSlotDescriptor(occurrence, groupNames) {
         if (!occurrence || typeof occurrence !== 'object') {
             return null;
         }
@@ -357,6 +494,18 @@
             duration = Math.round(occurrence.duration);
         }
 
+        var gid = toIdOrNull(occurrence.groupId);
+        var groupLabel = '';
+        if (gid !== null && groupNames && groupNames[gid]) {
+            groupLabel = groupNames[gid];
+        }
+
+        var cid = toIdOrNull(occurrence.classId);
+        var className = '';
+        if (cid !== null) {
+            className = getClassDisplayName(cid);
+        }
+
         return {
             day: occurrence.day,
             startHour: occurrence.startTime,
@@ -366,10 +515,12 @@
                 disciplineName: getDisciplineName(occurrence.disciplineId),
                 duration: duration,
                 label: '',
-                groupLabel: '',
+                groupLabel: groupLabel,
                 instructorId: occurrence.instructorId || null,
                 instructorName: getCharacterDisplayName(occurrence.instructorId),
-                groupId: toIdOrNull(occurrence.groupId),
+                classId: cid,
+                className: className,
+                groupId: gid,
                 sessionId: toIdOrNull(occurrence.sessionId),
                 coOccupants: [],
                 isContinuation: false
@@ -377,7 +528,7 @@
         };
     }
 
-    function pivotOccurrencesToSchedule(occurrences) {
+    function pivotOccurrencesToSchedule(occurrences, groupNames) {
         var schedule = {};
 
         if (!Array.isArray(occurrences) || occurrences.length === 0) {
@@ -386,7 +537,7 @@
 
         for (var i = 0; i < occurrences.length; i++) {
             var occ = occurrences[i];
-            var expanded = buildSlotDescriptor(occ);
+            var expanded = buildSlotDescriptor(occ, groupNames);
             if (!expanded) { continue; }
 
             var day = expanded.day;
@@ -417,6 +568,8 @@
                             groupLabel: slot.groupLabel,
                             instructorId: slot.instructorId,
                             instructorName: slot.instructorName,
+                            classId: slot.classId,
+                            className: slot.className,
                             groupId: slot.groupId,
                             sessionId: slot.sessionId,
                             coOccupants: [],
@@ -435,7 +588,7 @@
                 if (!Array.isArray(cell.coOccupants)) {
                     cell.coOccupants = [];
                 }
-                cell.coOccupants.push(buildCoOccupant(occ));
+                cell.coOccupants.push(buildCoOccupant(occ, groupNames));
             }
         }
 
@@ -492,7 +645,10 @@
             return Projector.projectForStudent(studentId, weekNum);
         }, 'projectForStudent');
 
-        var schedule = pivotOccurrencesToSchedule(occurrences);
+        var groupNames = buildGroupDisplayNameMap(
+            collectGroupIds(occurrences)
+        );
+        var schedule = pivotOccurrencesToSchedule(occurrences, groupNames);
 
         return {
             schedule: schedule,
@@ -538,7 +694,10 @@
             return Projector.projectForInstructor(instructorId, weekNum);
         }, 'projectForInstructor');
 
-        var schedule = pivotOccurrencesToSchedule(occurrences);
+        var groupNames = buildGroupDisplayNameMap(
+            collectGroupIds(occurrences)
+        );
+        var schedule = pivotOccurrencesToSchedule(occurrences, groupNames);
 
         return {
             schedule: schedule,
@@ -579,7 +738,10 @@
             return Projector.projectForLocation(locationId, weekNum);
         }, 'projectForLocation');
 
-        var schedule = pivotOccurrencesToSchedule(occurrences);
+        var groupNames = buildGroupDisplayNameMap(
+            collectGroupIds(occurrences)
+        );
+        var schedule = pivotOccurrencesToSchedule(occurrences, groupNames);
 
         return {
             schedule: schedule,
@@ -612,7 +774,10 @@
             return Projector.projectForClass(classId, weekNum);
         }, 'projectForClass');
 
-        var schedule = pivotOccurrencesToSchedule(occurrences);
+        var groupNames = buildGroupDisplayNameMap(
+            collectGroupIds(occurrences)
+        );
+        var schedule = pivotOccurrencesToSchedule(occurrences, groupNames);
 
         return {
             schedule: schedule,
@@ -718,6 +883,40 @@
             console.warn(
                 '[AcademyCalendarAggregator] Verification - some exports ' +
                 'may be missing:', missing.join(', ')
+            );
+        }
+
+        // Smoke test the letter conversion. Group 1 → A, 26 → Z,
+        // 27 → AA. This is the fallback naming scheme, and a
+        // regression here would produce empty labels for every
+        // group in the schedule.
+        try {
+            if (letterFromNumber(1) !== 'A') {
+                missing.push('letterFromNumber(1) !== A');
+            }
+            if (letterFromNumber(2) !== 'B') {
+                missing.push('letterFromNumber(2) !== B');
+            }
+            if (letterFromNumber(26) !== 'Z') {
+                missing.push('letterFromNumber(26) !== Z');
+            }
+            if (letterFromNumber(27) !== 'AA') {
+                missing.push('letterFromNumber(27) !== AA');
+            }
+            if (letterFromNumber(0) !== '') {
+                missing.push('letterFromNumber(0) !== ""');
+            }
+            if (letterFromNumber(null) !== '') {
+                missing.push('letterFromNumber(null) !== ""');
+            }
+        } catch (e) {
+            missing.push('letter-conversion smoke test threw: ' + e.message);
+        }
+
+        if (missing.length > 0) {
+            console.warn(
+                '[AcademyCalendarAggregator] Verification failed:',
+                missing.join(', ')
             );
         }
     })();
