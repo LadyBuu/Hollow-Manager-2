@@ -1,13 +1,13 @@
 /**
  * js/import-export/csv/character-csv.js - Character CSV
  * Canonical source for all character CSV operations
- * 
+ *
  * This module consolidates:
  *   - Character CSV schema (column definitions, field mapping)
  *   - Character CSV export (serialization)
  *   - Character CSV import (parsing)
  *   - Character CSV template generation
- * 
+ *
  * IMPORTANT:
  *   - This is the SINGLE SOURCE OF TRUTH for character CSV
  *   - All character CSV operations use this module
@@ -15,7 +15,7 @@
  *   - No persistence, no DOM, no state
  *   - Import returns candidates (does NOT mutate)
  *   - Export is read-only (does NOT access window.data)
- * 
+ *
  * SECTION MARKER HANDLING:
  *   The section marker is compared via normalizeSectionMarker, which:
  *     - strips a leading UTF-8 BOM if one survived the CSV parser
@@ -25,45 +25,52 @@
  *   This makes "# CHARACTERS", "#CHARACTERS", "# characters", and
  *   "﻿# CHARACTERS" all match. The old strict `===` comparison failed
  *   on any variation, silently skipping every row in the file.
- * 
+ *
  * ROW ACCEPTANCE:
  *   A data row is accepted when at least one cell has content. The
  *   CharacterId column may be empty — that is the normal case for a
  *   newly exported template or a hand-authored file, where the ID is
  *   assigned at import time. The old check required the first cell
  *   (CharacterId) to be non-empty, which dropped every fresh row.
- * 
+ *
  * ID ASSIGNMENT:
  *   When a row is accepted and its CharacterId cell is empty, this
  *   module assigns a fresh ID via IdUtils.generateId('char') BEFORE
  *   adding the candidate to the valid list. This matches the prefix
  *   used by CharacterCRUD.createNewCharacter, so imported characters
  *   are indistinguishable from ones created through the form.
- * 
- *   Without this assignment, imported characters enter the store with
- *   id: null, and every consumer that routes through
- *   CharacterQueries.getCharacterById(id) silently fails — including
- *   the character list click handler, which reads data-id from the
- *   rendered row and passes it to getCharacterById.
- * 
+ *
+ * PERSONALITY FIELDS (v2):
+ *   The character record's personality object has grown from ten
+ *   fields to fourteen. The four new fields are:
+ *
+ *     authority       relationship to authority
+ *     conflictStyle   how they handle conflict
+ *     socialStyle     how they relate to others
+ *     quirks          a behavioural oddity
+ *
+ *   These are appended to the CSV as columns 22-25. Existing files
+ *   that lack these columns import with empty strings for the four
+ *   fields, which is the correct default.
+ *
  * DEPENDENCIES:
  *   - window.CSV (from csv-parser.js) - MANDATORY
  *   - window.ImportResult (from import-result.js) - MANDATORY
  *   - window.ExportUtils (from export-utils.js) - MANDATORY
  *   - window.IdUtils (from id-utils.js) - MANDATORY
- * 
+ *
  * USAGE:
  *   var CharacterCSV = window.CharacterCSV;
- *   
+ *
  *   // Export
  *   var result = CharacterCSV.export(characters);
  *   // or
  *   var result = CharacterCSV.exportFromData();
- *   
+ *
  *   // Import
  *   var result = CharacterCSV.import(csvText);
  *   var candidates = result.getValid();
- *   
+ *
  *   // Template
  *   var result = CharacterCSV.exportTemplate();
  *   var content = CharacterCSV.getTemplateContent();
@@ -109,6 +116,14 @@
     // ============================================================
     // COLUMN DEFINITIONS
     // ============================================================
+    //
+    // Twenty-six columns. The first twenty-two are the original set.
+    // Columns 22-25 are the four new personality fields added when
+    // the personality model grew.
+    //
+    // Column order matters: FIELD_MAP uses numeric indices, and both
+    // parseRow and toRow read/write by index. Appending new columns
+    // is safe; reordering existing ones is a breaking change.
 
     var COLUMNS = [
         'CharacterId',
@@ -132,7 +147,12 @@
         'DeathAge',
         'Specialty',
         'CareerStatus',
-        'EliminatedWeeks'
+        'EliminatedWeeks',
+        // ---- New personality fields ----
+        'Authority',
+        'ConflictStyle',
+        'SocialStyle',
+        'Quirks'
     ];
 
     var FIELD_MAP = {
@@ -157,7 +177,11 @@
         18: 'deathAge',
         19: 'specialty',
         20: 'careerStatus',
-        21: 'eliminatedWeeks'
+        21: 'eliminatedWeeks',
+        22: 'authority',
+        23: 'conflictStyle',
+        24: 'socialStyle',
+        25: 'quirks'
     };
 
     // ============================================================
@@ -292,7 +316,7 @@
 
     /**
      * Parse a CSV row into a character candidate object.
-     * 
+     *
      * @param {Array} row - CSV row as array of strings
      * @param {Function} warnFn - Optional warning callback
      * @returns {Object} { valid: boolean, character: object|null, errors: string[], warnings: string[] }
@@ -313,6 +337,18 @@
         var deceased = parseBooleanField(row[15]);
         var careerStatus = parseJSONField(row[20], [], warnFn, 'CareerStatus');
         var eliminatedWeeks = parseJSONField(row[21], [], warnFn, 'EliminatedWeeks');
+
+        // ---- Personality fields ----
+        //
+        // The classic ten are embedded on the character record under
+        // `personality`. The four new ones (authority, conflictStyle,
+        // socialStyle, quirks) are in columns 22-25. Both sets end up
+        // on the same nested object.
+        //
+        // The CSV column layout does NOT expose the full personality
+        // schema — only these four new fields plus the existing ten
+        // (which are not in the CSV at all; they were never exported).
+        // If you later want the classic ten in CSV, add columns 26+.
 
         var character = {
             id: id,
@@ -336,7 +372,14 @@
             deathAge: String(row[18] || '').trim(),
             specialty: String(row[19] || '').trim(),
             careerStatus: careerStatus,
-            eliminatedWeeks: eliminatedWeeks
+            eliminatedWeeks: eliminatedWeeks,
+
+            personality: {
+                authority: String(row[22] || '').trim(),
+                conflictStyle: String(row[23] || '').trim(),
+                socialStyle: String(row[24] || '').trim(),
+                quirks: String(row[25] || '').trim()
+            }
         };
 
         return {
@@ -353,7 +396,7 @@
 
     /**
      * Convert a character object to a CSV row.
-     * 
+     *
      * @param {Object} character - Character object
      * @returns {Array} CSV row as array of strings
      */
@@ -361,6 +404,8 @@
         if (!character || typeof character !== 'object') {
             return COLUMNS.map(function() { return ''; });
         }
+
+        var personality = character.personality || {};
 
         return [
             character.id != null ? character.id : '',
@@ -384,13 +429,17 @@
             character.deathAge != null ? character.deathAge : '',
             character.specialty != null ? character.specialty : '',
             JSON.stringify(character.careerStatus != null ? character.careerStatus : []),
-            JSON.stringify(character.eliminatedWeeks != null ? character.eliminatedWeeks : [])
+            JSON.stringify(character.eliminatedWeeks != null ? character.eliminatedWeeks : []),
+            personality.authority != null ? personality.authority : '',
+            personality.conflictStyle != null ? personality.conflictStyle : '',
+            personality.socialStyle != null ? personality.socialStyle : '',
+            personality.quirks != null ? personality.quirks : ''
         ];
     }
 
     /**
      * Convert an array of character objects to CSV rows.
-     * 
+     *
      * @param {Array} characters - Array of character objects
      * @returns {Array} Array of CSV rows (including section and header)
      */
@@ -417,7 +466,7 @@
 
     /**
      * Export characters to CSV and download.
-     * 
+     *
      * @param {Array} characters - Array of character objects
      * @param {Object} options - Export options
      * @param {string} options.filename - Custom filename
@@ -450,7 +499,7 @@
 
     /**
      * Export characters from the current application data.
-     * 
+     *
      * @param {Object} options - Export options
      * @returns {Object} { count: number, filename: string, message: string|null }
      */
@@ -478,7 +527,7 @@
 
     /**
      * Get CSV content as a string without downloading.
-     * 
+     *
      * @param {Array} characters - Array of character objects
      * @returns {string} CSV content
      */
@@ -554,7 +603,7 @@
 
     /**
      * Parse CSV text into character candidates.
-     * 
+     *
      * @param {string} csvText - CSV file content
      * @param {Object} options - Import options
      * @param {boolean} options.strict - Reject rows with errors (default: false)
@@ -619,11 +668,6 @@
                     // Assign a stable ID here so the candidate enters the
                     // store with a valid identifier, matching the prefix
                     // and format used by CharacterCRUD.createNewCharacter.
-                    //
-                    // Without this, the character would be persisted with
-                    // id: null, and every lookup that routes through
-                    // CharacterQueries.getCharacterById(id) would silently
-                    // fail — including the character list click handler.
                     if (!parsed.character.id) {
                         parsed.character.id = IdUtils.generateId(ID_PREFIX);
                     }
@@ -664,7 +708,7 @@
 
     /**
      * Parse a character CSV file from a File object.
-     * 
+     *
      * @param {File} file - CSV file
      * @param {Object} options - Import options
      * @returns {Promise<ImportResult>} Promise resolving to ImportResult
@@ -698,7 +742,7 @@
 
     /**
      * Get template characters as objects.
-     * 
+     *
      * @param {Object} options - Template options
      * @param {number} options.count - Number of examples (default: 2)
      * @returns {Array} Array of character objects
@@ -730,7 +774,13 @@
                 deathAge: '',
                 specialty: '',
                 careerStatus: [{ status: 'trainee', startYear: 1920, endYear: 1923 }],
-                eliminatedWeeks: []
+                eliminatedWeeks: [],
+                personality: {
+                    authority: 'Cooperative but independent',
+                    conflictStyle: 'Negotiates first',
+                    socialStyle: 'Warm with strangers',
+                    quirks: 'Collects information they have no use for'
+                }
             },
             {
                 id: null,
@@ -754,7 +804,13 @@
                 deathAge: '',
                 specialty: '',
                 careerStatus: [{ status: 'trainee', startYear: 1920, endYear: 1923 }],
-                eliminatedWeeks: []
+                eliminatedWeeks: [],
+                personality: {
+                    authority: 'Suspicious of authority',
+                    conflictStyle: 'Lets resentment build quietly',
+                    socialStyle: 'Reserved until trust is earned',
+                    quirks: 'Hates owing anyone a favour'
+                }
             }
         ];
 
@@ -763,7 +819,7 @@
 
     /**
      * Get template rows as an array.
-     * 
+     *
      * @param {Object} options - Template options
      * @param {Array} options.exampleData - Custom example data
      * @param {number} options.exampleCount - Number of examples (default: 2)
@@ -784,7 +840,7 @@
 
     /**
      * Get template CSV content as a string.
-     * 
+     *
      * @param {Object} options - Template options
      * @returns {string} CSV content
      */
@@ -795,7 +851,7 @@
 
     /**
      * Export character CSV template.
-     * 
+     *
      * @param {Object} options - Template options
      * @param {string} options.filename - Custom filename
      * @param {Array} options.exampleData - Custom example data
@@ -821,7 +877,7 @@
 
     /**
      * Get template preview for display.
-     * 
+     *
      * @param {Object} options - Template options
      * @param {number} options.previewRows - Number of example rows to show (default: 2)
      * @returns {Object} { headers: Array, examples: Array }
@@ -850,7 +906,7 @@
 
     /**
      * Validate character candidates against the schema.
-     * 
+     *
      * @param {Array} candidates - Character candidates
      * @returns {Object} { valid: Array, invalid: Array }
      */
@@ -880,7 +936,7 @@
 
     /**
      * Get a preview of the import result.
-     * 
+     *
      * @param {ImportResult} result - Import result
      * @param {number} limit - Number of records to preview (default: 5)
      * @returns {Object} { preview: Array, total: number, hasMore: boolean }
@@ -904,7 +960,7 @@
 
     /**
      * Get a summary of the import result for display.
-     * 
+     *
      * @param {ImportResult} result - Import result
      * @returns {Object} Formatted summary
      */
