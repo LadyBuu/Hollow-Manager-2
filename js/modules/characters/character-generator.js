@@ -9,6 +9,8 @@
  *   - Generating random stats
  *   - Generating random magic proficiencies
  *   - Generating complete random characters (for testing/quick creation)
+ *   - Regenerating a SINGLE physical field, biased toward the
+ *     character's current build / complexion tier
  *
  * IMPORTANT:
  *   - This module GENERATES DATA only - it does NOT save or mutate state
@@ -20,19 +22,56 @@
  *   - No ID generation here - that belongs to IdUtils at creation time
  *   - No display name formatting here - that belongs to CharacterQueries
  *
- * POOLS:
- *   The pools are plain flat arrays of strings. The generators pick one
- *   entry at random from each applicable pool, with no coherence logic
- *   between fields. The comments inside each pool group entries by theme
- *   so a reader can see how the vocabulary is organised; the grouping
- *   has no runtime effect. The picker draws from the whole array.
+ * TIER MODEL:
+ *   The old generator picked height, weight, and build independently
+ *   from flat pools. That produced implausible combinations:
+ *   190cm + 55kg + Rugged. Skin, hair, and eyes had the same problem
+ *   in a different domain: Porcelain + Ebony + Violet on uniform
+ *   sampling.
  *
- *   This design is deliberate. The primary consumer is a "fill fields
- *   randomly" button: the user clicks, the form populates, the user
- *   edits whatever they don't like. Coherence between fields would get
- *   in the way of a per-field fill, because coherence is a
- *   whole-character property and the button operates one field at a
- *   time.
+ *   The current model groups the physical attributes into two
+ *   independent tier systems:
+ *
+ *     BUILD_TIERS      (slight / average / sturdy / heavy)
+ *       Each tier carries its own heights, weights, and build words.
+ *       A 190cm pick comes from the sturdy tier, whose weight pool
+ *       starts at 78kg and whose build pool does not contain
+ *       "Willowy".
+ *
+ *     COMPLEXION_TIERS (fair / medium / deep)
+ *       Each tier carries its own skin tones, hair colours, and eye
+ *       colours. A porcelain-skin pick comes from the fair tier,
+ *       whose eye pool does not contain "Jet" and whose hair pool
+ *       weights dark colours low.
+ *
+ *   The two tier systems are INDEPENDENT. Real people span every
+ *   combination of build and complexion. The implausibility was
+ *   always within a domain, never across.
+ *
+ *   Values CAN appear in more than one tier. A build word like
+ *   "Athletic" fits a slight gymnast AND a sturdy weightlifter.
+ *   The pools reflect reality, not a clean partition.
+ *
+ *   Within a tier, picks are uniform. Repetition in the pool
+ *   array weights a value up (Jet Black listed once in the fair
+ *   hair pool against thirty other entries is rare; listing it
+ *   three times would make it common).
+ *
+ * FIELD REROLL:
+ *   generatePhysicalField(field, current) rerolls ONE field.
+ *   For the seven physical fields, it uses a 70/30 bias: 70%
+ *   from the current tier, 30% from the full union of all tiers.
+ *   This makes a single click a plausible nudge, and two or
+ *   three clicks a real change.
+ *
+ *   For the ten personality fields, it is a uniform pick from
+ *   that field's pool. There is no tier system for personality.
+ *
+ * PERSONALITY IS UNCHANGED:
+ *   The personality pools are whole-phrase entries (e.g. "Brave,
+ *   Honest, Loyal"). Each pool entry is a coherent set on its
+ *   own. Field reroll replaces the value with another entry from
+ *   the same pool. No coherence logic is applied.
  *
  * DEPENDENCIES:
  *   - window.CharacterConstants (from character-constants.js) - MANDATORY
@@ -42,6 +81,17 @@
  *   var stats = generator.generateStats3d6();
  *   var magic = generator.generateMagic('elemental');
  *   var character = generator.generateCharacter({ currentYear: 1927 });
+ *
+ *   // Per-field reroll
+ *   var newHeight = generator.generatePhysicalField('height', {
+ *       height: '175cm',
+ *       weight: '72kg',
+ *       build: 'Athletic',
+ *       skin: 'Olive',
+ *       hair: 'Brown',
+ *       eyes: 'Brown',
+ *       gender: 'Male'
+ *   });
  */
 
 (function() {
@@ -86,205 +136,281 @@
     }
 
     // ============================================================
-    // GENERATION POOLS (Internal - not exposed)
+    // GENDER POOL
     // ============================================================
 
-    var PHYSICAL_POOLS = {
-        genders: [
-            // Traditional binary
-            'Male',
-            'Female',
-            // Non-binary umbrella
-            'Non-binary',
-            'Genderfluid',
-            'Genderqueer',
-            'Agender',
-            'Bigender',
-            // Specific identities
-            'Demiboy',
-            'Demigirl',
-            'Two-Spirit',
-            // Neutral / open
-            'Questioning',
-            'Prefer not to say',
-            'Other'
-        ],
+    var GENDERS = [
+        // Traditional binary
+        'Male',
+        'Female',
+        // Non-binary umbrella
+        'Non-binary',
+        'Genderfluid',
+        'Genderqueer',
+        'Agender',
+        'Bigender',
+        // Specific identities
+        'Demiboy',
+        'Demigirl',
+        'Two-Spirit',
+        // Neutral / open
+        'Questioning',
+        'Prefer not to say',
+        'Other'
+    ];
 
-        eyeColours: [
-            // Common
-            'Brown',
-            'Blue',
-            'Green',
-            'Grey',
-            'Hazel',
-            // Warm / amber family
-            'Amber',
-            'Honey',
-            'Gold',
-            'Copper',
-            'Bronze',
-            // Cool / unusual
-            'Ice Blue',
-            'Storm Grey',
-            'Steel',
-            'Silver',
-            // Rare / extraordinary
-            'Violet',
-            'Rose',
-            'Wine',
-            'Tea-coloured',
-            // Dark
-            'Black',
-            'Jet',
-            // Special states
-            'Heterochromia'
-        ],
+    // ============================================================
+    // COMPLEXION TIERS
+    // ============================================================
+    //
+    // Skin tone, hair colour, and eye colour are correlated. Fair
+    // skin tends to pair with lighter hair and eyes; deep skin
+    // tends to pair with darker hair and eyes. The tiers below
+    // encode those tendencies WITHOUT excluding unusual
+    // combinations — an unusual pair is simply one entry among
+    // many instead of the whole pool being uniform.
+    //
+    // Values may appear in more than one tier where they are
+    // plausible. A value listed more than once in the same pool
+    // is weighted up.
 
-        hairColours: [
-            // Brown family
-            'Brown',
-            'Chestnut',
-            'Auburn',
-            'Chocolate',
-            'Mahogany',
-            'Walnut',
-            // Blonde family
-            'Blonde',
-            'Platinum Blonde',
-            'Ash Blonde',
-            'Strawberry Blonde',
-            'Honey Blonde',
-            'Golden',
-            // Red family
-            'Red',
-            'Ginger',
-            'Copper',
-            'Oxblood',
-            // Dark family
-            'Black',
-            'Raven',
-            'Jet Black',
-            'Blue-Black',
-            // Grey / white family
-            'Grey',
-            'Silver',
-            'Iron Grey',
-            'White',
-            'Milk White',
-            'Salt and Pepper',
-            // Mixed
-            'Two-tone',
-            'Streaked'
-        ],
+    var COMPLEXION_TIERS = {
+        fair: {
+            weight: 30,
 
-        skinTones: [
-            // Fair / pale
-            'Porcelain',
-            'Pale',
-            'Fair',
-            'Ivory',
-            // Light neutral
-            'Cool Beige',
-            'Warm Beige',
-            'Neutral Beige',
-            // Olive
-            'Olive',
-            'Warm Olive',
-            'Cool Olive',
-            // Tan
-            'Tan',
-            'Golden',
-            'Warm Sand',
-            // Medium browns
-            'Light Brown',
-            'Sienna',
-            'Amber',
-            'Bronze',
-            // Deeper browns
-            'Dark Brown',
-            'Cocoa',
-            'Umber',
-            'Chestnut',
-            // Deepest
-            'Espresso',
-            'Ebony',
-            'Mahogany',
-            // Neutral / unusual
-            'Neutral',
-            'Cool Grey',
-            'Warm Rose'
-        ],
+            skinTones: [
+                'Porcelain', 'Pale', 'Fair', 'Ivory',
+                'Cool Beige', 'Warm Beige', 'Neutral Beige'
+            ],
 
-        builds: [
-            // Thin
-            'Slim',
-            'Slight',
-            'Willowy',
-            'Wispy',
-            'Lean',
-            'Lithe',
-            // Athletic
-            'Athletic',
-            'Wiry',
-            'Muscular',
-            'Broad-Shouldered',
-            'Statuesque',
-            'Well-Built',
-            // Soft / rounded
-            'Soft',
-            'Plush',
-            'Full-figured',
-            'Round',
-            // Angular
-            'Angular',
-            'Sharp',
-            'Compact',
-            // Heavy
-            'Stocky',
-            'Heavy',
-            'Burly',
-            'Rugged',
-            // Specific shapes
-            'Hourglass',
-            'Pear-shaped',
-            'Apple-shaped',
-            'Inverted Triangle',
-            // Neutral
-            'Average'
-        ],
+            hairColours: [
+                // Blonde family, weighted up
+                'Blonde', 'Blonde',
+                'Platinum Blonde', 'Ash Blonde',
+                'Strawberry Blonde', 'Honey Blonde',
+                'Golden', 'Golden',
+                // Brown family, weighted up
+                'Brown', 'Brown', 'Brown',
+                'Chestnut', 'Chestnut',
+                'Auburn', 'Chocolate', 'Mahogany', 'Walnut',
+                // Red family
+                'Red', 'Ginger', 'Copper', 'Oxblood',
+                // Grey / white
+                'Grey', 'Silver', 'Iron Grey',
+                'White', 'Milk White', 'Salt and Pepper',
+                // Mixed
+                'Two-tone', 'Streaked',
+                // Dark hair with fair skin is common in reality.
+                // Included, but weighted low (single entries in a
+                // pool of ~30).
+                'Jet Black', 'Blue-Black', 'Espresso'
+            ],
 
-        heights: [
-            // Short
-            '145cm', '148cm', '150cm', '152cm', '155cm', '158cm',
-            // Below average
-            '160cm', '162cm', '163cm', '165cm', '167cm', '168cm',
-            // Average
-            '170cm', '172cm', '173cm', '175cm', '177cm', '178cm',
-            // Above average
-            '180cm', '182cm', '183cm', '185cm', '187cm', '188cm',
-            // Tall
-            '190cm', '193cm', '195cm', '198cm', '200cm',
-            // Very tall
-            '203cm', '205cm', '208cm', '210cm'
-        ],
+            eyeColours: [
+                // Common
+                'Brown', 'Brown',
+                'Blue', 'Blue',
+                'Green', 'Green',
+                'Grey', 'Hazel',
+                // Warm
+                'Amber', 'Honey', 'Gold', 'Copper',
+                // Cool / unusual
+                'Ice Blue', 'Storm Grey', 'Steel', 'Silver',
+                // Rare (single entries against the pool size)
+                'Violet', 'Rose', 'Wine', 'Tea-coloured',
+                'Heterochromia',
+                'Black'
+            ]
+        },
 
-        weights: [
-            // Very light
-            '45kg', '48kg', '50kg', '52kg',
-            // Light
-            '55kg', '57kg', '58kg', '60kg', '62kg',
-            // Below average
-            '65kg', '67kg', '68kg', '70kg', '72kg',
-            // Average
-            '75kg', '77kg', '78kg', '80kg', '82kg',
-            // Above average
-            '85kg', '87kg', '88kg', '90kg', '92kg',
-            // Heavy
-            '95kg', '98kg', '100kg', '105kg', '110kg',
-            // Very heavy
-            '115kg', '120kg', '125kg', '130kg'
-        ]
+        medium: {
+            weight: 45,
+
+            skinTones: [
+                'Olive', 'Olive', 'Warm Olive', 'Cool Olive',
+                'Tan', 'Tan',
+                'Golden', 'Warm Sand',
+                'Neutral', 'Neutral Beige'
+            ],
+
+            hairColours: [
+                // Brown family, weighted up
+                'Brown', 'Brown', 'Brown',
+                'Chestnut', 'Chestnut', 'Auburn',
+                'Chocolate', 'Mahogany', 'Walnut',
+                // Dark family, weighted up
+                'Black', 'Black', 'Black',
+                'Raven', 'Jet Black', 'Blue-Black',
+                // Red family
+                'Red', 'Ginger', 'Copper', 'Oxblood',
+                // Blonde is present but less common
+                'Blonde', 'Ash Blonde', 'Honey Blonde', 'Golden',
+                // Grey / white
+                'Grey', 'Silver', 'Salt and Pepper',
+                // Mixed
+                'Two-tone', 'Streaked'
+            ],
+
+            eyeColours: [
+                // Common
+                'Brown', 'Brown', 'Brown',
+                'Hazel', 'Hazel',
+                'Green', 'Green',
+                // Warm
+                'Amber', 'Honey', 'Gold',
+                // Dark
+                'Black', 'Jet',
+                'Copper', 'Bronze',
+                // Rare
+                'Violet',
+                'Heterochromia'
+            ]
+        },
+
+        deep: {
+            weight: 25,
+
+            skinTones: [
+                'Light Brown', 'Sienna', 'Amber', 'Bronze',
+                'Dark Brown', 'Dark Brown',
+                'Cocoa', 'Umber', 'Chestnut',
+                'Espresso', 'Ebony', 'Mahogany',
+                'Cool Grey', 'Warm Rose'
+            ],
+
+            hairColours: [
+                // Black family, weighted up
+                'Black', 'Black', 'Black', 'Black',
+                'Raven', 'Jet Black', 'Blue-Black',
+                // Dark brown
+                'Dark Brown', 'Dark Brown',
+                'Cocoa', 'Espresso',
+                // Brown family
+                'Brown', 'Chestnut', 'Mahogany', 'Walnut',
+                // Red family
+                'Red', 'Ginger', 'Copper', 'Oxblood',
+                // Grey / white
+                'Grey', 'Silver', 'Salt and Pepper',
+                // Mixed
+                'Streaked'
+            ],
+
+            eyeColours: [
+                // Brown family, weighted up
+                'Brown', 'Brown', 'Brown', 'Brown',
+                'Dark Brown', 'Dark Brown',
+                // Dark
+                'Black', 'Jet',
+                'Hazel',
+                // Warm
+                'Amber', 'Copper', 'Bronze',
+                // Rare
+                'Heterochromia'
+            ]
+        }
     };
+
+    // ============================================================
+    // BUILD TIERS
+    // ============================================================
+    //
+    // Height, weight, and build word are correlated. A 190cm
+    // person is not described as "Willowy"; a 145cm person is not
+    // described as "Rugged". The tiers group these attributes
+    // into plausible neighbourhoods.
+    //
+    // Values can appear in more than one tier. A build word like
+    // "Athletic" fits a slight gymnast AND a sturdy weightlifter.
+    // That overlap is deliberate: it keeps the model from
+    // over-fitting to a single body shape per height.
+
+    var BUILD_TIERS = {
+        slight: {
+            weight: 25,
+
+            heights: [
+                '145cm', '148cm', '150cm', '152cm', '155cm',
+                '158cm', '160cm', '162cm', '163cm', '165cm'
+            ],
+
+            weights: [
+                '45kg', '48kg', '50kg', '52kg', '55kg',
+                '57kg', '58kg', '60kg', '62kg', '65kg',
+                '67kg', '68kg'
+            ],
+
+            builds: [
+                'Slim', 'Slight', 'Willowy', 'Wispy',
+                'Lean', 'Lithe', 'Wiry', 'Compact',
+                'Athletic'
+            ]
+        },
+
+        average: {
+            weight: 50,
+
+            heights: [
+                '167cm', '168cm', '170cm', '172cm', '173cm',
+                '175cm', '177cm', '178cm', '180cm', '182cm'
+            ],
+
+            weights: [
+                '60kg', '62kg', '65kg', '67kg', '68kg',
+                '70kg', '72kg', '75kg', '77kg', '78kg',
+                '80kg', '82kg', '85kg', '87kg', '88kg'
+            ],
+
+            builds: [
+                'Athletic', 'Soft', 'Plush', 'Angular',
+                'Hourglass', 'Pear-shaped', 'Apple-shaped',
+                'Inverted Triangle', 'Average', 'Rugged'
+            ]
+        },
+
+        sturdy: {
+            weight: 20,
+
+            heights: [
+                '183cm', '185cm', '187cm', '188cm',
+                '190cm', '193cm', '195cm', '198cm', '200cm'
+            ],
+
+            weights: [
+                '78kg', '80kg', '82kg', '85kg', '87kg', '88kg',
+                '90kg', '92kg', '95kg', '98kg', '100kg',
+                '105kg', '110kg'
+            ],
+
+            builds: [
+                'Muscular', 'Broad-Shouldered', 'Statuesque',
+                'Well-Built', 'Stocky', 'Burly', 'Rugged',
+                'Athletic'
+            ]
+        },
+
+        heavy: {
+            weight: 5,
+
+            heights: [
+                '155cm', '160cm', '165cm', '168cm', '170cm',
+                '173cm', '175cm', '178cm', '180cm', '183cm', '185cm'
+            ],
+
+            weights: [
+                '95kg', '98kg', '100kg', '105kg',
+                '110kg', '115kg', '120kg', '125kg', '130kg'
+            ],
+
+            builds: [
+                'Heavy', 'Round', 'Full-figured',
+                'Stocky', 'Burly', 'Plush', 'Athletic'
+            ]
+        }
+    };
+
+    // ============================================================
+    // PERSONALITY POOLS (unchanged)
+    // ============================================================
 
     var PERSONALITY_POOLS = {
         traits: [
@@ -715,28 +841,231 @@
         return Math.floor(Math.random() * (max - min + 1)) + min;
     }
 
+    /**
+     * Pick a tier from a tier map, weighted by each tier's .weight.
+     */
+    function pickWeightedTier(tiers) {
+        var keys = Object.keys(tiers);
+        if (keys.length === 0) { return null; }
+
+        var total = 0;
+        for (var i = 0; i < keys.length; i++) {
+            total += tiers[keys[i]].weight;
+        }
+        if (total <= 0) { return tiers[keys[0]]; }
+
+        var roll = Math.random() * total;
+        var acc = 0;
+        for (var j = 0; j < keys.length; j++) {
+            acc += tiers[keys[j]].weight;
+            if (roll < acc) {
+                return tiers[keys[j]];
+            }
+        }
+        return tiers[keys[keys.length - 1]];
+    }
+
+    /**
+     * Which build tier contains this height value?
+     * Returns the tier key, or null.
+     */
+    function findBuildTierForHeight(height) {
+        if (typeof height !== 'string') { return null; }
+        var keys = Object.keys(BUILD_TIERS);
+        for (var i = 0; i < keys.length; i++) {
+            var heights = BUILD_TIERS[keys[i]].heights;
+            if (heights.indexOf(height) !== -1) {
+                return keys[i];
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Which complexion tier contains this skin tone?
+     * Returns the tier key, or null.
+     */
+    function findComplexionTierForSkin(skin) {
+        if (typeof skin !== 'string') { return null; }
+        var keys = Object.keys(COMPLEXION_TIERS);
+        for (var i = 0; i < keys.length; i++) {
+            var tones = COMPLEXION_TIERS[keys[i]].skinTones;
+            if (tones.indexOf(skin) !== -1) {
+                return keys[i];
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Union of a named array across all build tiers.
+     * Deduplicated.
+     */
+    function unionBuildField(fieldName) {
+        var seen = Object.create(null);
+        var out = [];
+        var keys = Object.keys(BUILD_TIERS);
+        for (var i = 0; i < keys.length; i++) {
+            var list = BUILD_TIERS[keys[i]][fieldName] || [];
+            for (var j = 0; j < list.length; j++) {
+                var v = list[j];
+                if (!seen[v]) {
+                    seen[v] = true;
+                    out.push(v);
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Union of a named array across all complexion tiers.
+     * Deduplicated.
+     */
+    function unionComplexionField(fieldName) {
+        var seen = Object.create(null);
+        var out = [];
+        var keys = Object.keys(COMPLEXION_TIERS);
+        for (var i = 0; i < keys.length; i++) {
+            var list = COMPLEXION_TIERS[keys[i]][fieldName] || [];
+            for (var j = 0; j < list.length; j++) {
+                var v = list[j];
+                if (!seen[v]) {
+                    seen[v] = true;
+                    out.push(v);
+                }
+            }
+        }
+        return out;
+    }
+
     // ============================================================
     // GENERATION FUNCTIONS
     // ============================================================
 
     /**
      * Generate random physical appearance data.
+     *
+     * Picks a complexion tier and a build tier independently,
+     * then picks each field from within its tier. The two tier
+     * picks are independent — a fair-skinned weightlifter is as
+     * plausible as a deep-skinned one.
+     *
      * @returns {object} Physical appearance data
      */
     function generatePhysical() {
+        var complexion = pickWeightedTier(COMPLEXION_TIERS);
+        var build = pickWeightedTier(BUILD_TIERS);
+
         return {
-            gender: pickRandom(PHYSICAL_POOLS.genders) || 'Other',
-            eyes: pickRandom(PHYSICAL_POOLS.eyeColours) || 'Brown',
-            hair: pickRandom(PHYSICAL_POOLS.hairColours) || 'Brown',
-            skin: pickRandom(PHYSICAL_POOLS.skinTones) || 'Fair',
-            height: pickRandom(PHYSICAL_POOLS.heights) || '175cm',
-            weight: pickRandom(PHYSICAL_POOLS.weights) || '70kg',
-            build: pickRandom(PHYSICAL_POOLS.builds) || 'Slim'
+            gender: pickRandom(GENDERS) || 'Other',
+            eyes: pickRandom(complexion.eyeColours) || 'Brown',
+            hair: pickRandom(complexion.hairColours) || 'Brown',
+            skin: pickRandom(complexion.skinTones) || 'Fair',
+            height: pickRandom(build.heights) || '175cm',
+            weight: pickRandom(build.weights) || '70kg',
+            build: pickRandom(build.builds) || 'Average'
         };
     }
 
     /**
+     * Reroll ONE physical field, biased toward the character's
+     * current tier.
+     *
+     * BIAS:
+     *   For build-tier fields (height, weight, build), 70% of
+     *   picks come from the current build tier; 30% from the full
+     *   union of all tiers. If the current height cannot be
+     *   located in any tier, the bias is skipped and the pick is
+     *   uniform from the union.
+     *
+     *   Same pattern for complexion-tier fields (skin, hair,
+     *   eyes), keyed off the current skin tone.
+     *
+     *   The gender field is a flat pick — no tier applies.
+     *
+     * EFFECT:
+     *   One click = a plausible variation of the current shape.
+     *   Two or three clicks = a real change of shape, because the
+     *   30% full-pool branch keeps coming up.
+     *
+     * @param {string} field - 'height' | 'weight' | 'build' |
+     *                         'skin' | 'hair' | 'eyes' | 'gender'
+     * @param {object} current - The current physical object
+     * @returns {string|null} The new value, or null if the field
+     *   is unrecognised
+     */
+    function generatePhysicalField(field, current) {
+        current = current || {};
+
+        // ---- Flat pick ----
+        if (field === 'gender') {
+            return pickRandom(GENDERS) || 'Other';
+        }
+
+        // ---- Build-tier fields ----
+        if (field === 'height' || field === 'weight' || field === 'build') {
+            var buildTierKey = findBuildTierForHeight(current.height);
+            var buildTier = buildTierKey
+                ? BUILD_TIERS[buildTierKey]
+                : null;
+
+            if (buildTier && Math.random() < 0.7) {
+                return pickRandom(buildTier[field + 's']) ||
+                    pickRandom(buildTier[field === 'build' ? 'builds' : field + 's']);
+            }
+
+            var buildPool = unionBuildField(
+                field === 'build' ? 'builds' : field + 's'
+            );
+            return pickRandom(buildPool);
+        }
+
+        // ---- Complexion-tier fields ----
+        if (field === 'skin' || field === 'hair' || field === 'eyes') {
+            var complexionKey = findComplexionTierForSkin(current.skin);
+            var complexion = complexionKey
+                ? COMPLEXION_TIERS[complexionKey]
+                : null;
+
+            var poolName = field === 'skin'
+                ? 'skinTones'
+                : (field === 'hair' ? 'hairColours' : 'eyeColours');
+
+            if (complexion && Math.random() < 0.7) {
+                return pickRandom(complexion[poolName]);
+            }
+
+            var complexionPool = unionComplexionField(poolName);
+            return pickRandom(complexionPool);
+        }
+
+        return null;
+    }
+
+    /**
+     * Reroll ONE personality field. Pure pool pick; no tier
+     * logic applies.
+     *
+     * @param {string} field - one of the PERSONALITY_POOLS keys
+     * @returns {string|null}
+     */
+    function generatePersonalityField(field) {
+        var pool = PERSONALITY_POOLS[field];
+        if (!Array.isArray(pool)) { return null; }
+        return pickRandom(pool);
+    }
+
+    /**
      * Generate random personality data.
+     *
+     * Each field is picked independently from its pool. No
+     * coherence logic is applied: the pools hold whole-phrase
+     * entries, and each entry is coherent on its own. A
+     * contradictory pairing across fields (Chaotic Evil with a
+     * soft spot for orphans) is left to the user to reroll if
+     * they dislike it.
+     *
      * @returns {object} Personality data
      */
     function generatePersonality() {
@@ -1027,7 +1356,7 @@
     // ============================================================
 
     window.CharacterGenerator = {
-        // Generation
+        // Full-object generation
         generatePhysical: generatePhysical,
         generatePersonality: generatePersonality,
         generateStats3d6: generateStats3d6,
@@ -1035,6 +1364,10 @@
         generateMagic: generateMagic,
         generateMagicCategory: generateMagicCategory,
         generateCharacter: generateCharacter,
+
+        // Per-field reroll
+        generatePhysicalField: generatePhysicalField,
+        generatePersonalityField: generatePersonalityField,
 
         // Utility (internal helpers exposed for testing/extensibility)
         pickRandom: pickRandom,
