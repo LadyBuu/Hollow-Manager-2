@@ -23,7 +23,6 @@
  *   - Elimination reads            (EliminationQueries)
  *   - Character data               (CharacterQueries)
  *   - CSV parsing                  (CSV)
- *   - Envelope creation            (ExportEnvelope)
  *   - File download                (ExportUtils)
  *
  * SCOPE:
@@ -38,6 +37,27 @@
  *   guess: every roster member is treated as NOT a graduate. A
  *   fail-closed answer is the honest one; "everyone passed" would
  *   be a lie.
+ *
+ * JSON SHAPE (deliberately NOT the application envelope):
+ *   The graduate list is a standalone document, not a backup of
+ *   application state. It is NOT wrapped in the "hollow-blades"
+ *   envelope. The envelope's section filter (Schema.getSections)
+ *   would silently drop a `graduates` key, because `graduates` is
+ *   not part of the application state shape. A graduate list is a
+ *   projection over state, not a copy of it, so it gets its own
+ *   top-level shape:
+ *
+ *     {
+ *       exportedAt: ISO string,
+ *       classId:    string,
+ *       className:  string,
+ *       count:      number,
+ *       graduates:  [GraduateRecord, ...]
+ *     }
+ *
+ *   The consequence: this file cannot be fed to ImportPipeline.
+ *   That is correct. Importing a graduate list as application
+ *   state would be nonsense.
  *
  * OUTPUT SHAPES:
  *
@@ -63,7 +83,7 @@
  *
  *   exportGraduatesJSON(classId, options) ->
  *     {
- *       exported, filename, count, error?, wasEnveloped
+ *       exported, filename, count, error?
  *     }
  *
  *   exportGraduatesCSV(classId, options) ->
@@ -77,7 +97,7 @@
  *     (any transport-level failure message from blob/download)
  *
  *   getGraduatesCSVContent(classId) -> string
- *   getGraduatesJSONEnvelope(classId, options) -> object | null
+ *   getGraduatesJSONDocument(classId, options) -> object | null
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.CharacterQueries
@@ -85,8 +105,6 @@
  *   - window.AcademyAggregator
  *   - window.CSV
  *   - window.ExportUtils
- *   - window.ExportEnvelope
- *   - window.JSONIO
  *
  * DEPENDENCIES (OPTIONAL):
  *   - window.EliminationQueries
@@ -112,8 +130,6 @@
     var AcademyAggregator = window.AcademyAggregator;
     var CSV = window.CSV;
     var ExportUtils = window.ExportUtils;
-    var ExportEnvelope = window.ExportEnvelope;
-    var JSONIO = window.JSONIO;
 
     var _missing = [];
 
@@ -142,14 +158,6 @@
 
     if (!ExportUtils || typeof ExportUtils.downloadBlob !== 'function') {
         _missing.push('ExportUtils.downloadBlob');
-    }
-
-    if (!ExportEnvelope || typeof ExportEnvelope.create !== 'function') {
-        _missing.push('ExportEnvelope.create');
-    }
-
-    if (!JSONIO || typeof JSONIO.serializeJSON !== 'function') {
-        _missing.push('JSONIO.serializeJSON');
     }
 
     if (_missing.length > 0) {
@@ -702,43 +710,29 @@
     // ============================================================
 
     /**
-     * Build the JSON envelope object without downloading.
+     * Build the JSON document object without downloading.
      *
-     * Returns null when the class is missing or ExportEnvelope.create
-     * throws.
+     * This is deliberately NOT an application envelope. The
+     * envelope's section filter would drop `graduates`, because
+     * `graduates` is not part of the application state shape.
+     * A graduate list is a projection, not a backup, so it gets
+     * its own top-level document shape.
+     *
+     * Returns null when the class is missing.
      */
-    function getGraduatesJSONEnvelope(classId, options) {
+    function getGraduatesJSONDocument(classId, options) {
         options = options || {};
 
         var vm = getGraduates(classId);
         if (!vm) { return null; }
 
-        var envelope;
-        try {
-            envelope = ExportEnvelope.create(
-                { graduates: vm.graduates },
-                {
-                    applicationName: options.applicationName,
-                    applicationVersion: options.applicationVersion,
-                    dataVersion: options.dataVersion,
-                    exportedBy: options.exportedBy,
-                    extraMetadata: {
-                        graduates: {
-                            classId: vm.classId,
-                            className: vm.className,
-                            count: vm.graduates.length
-                        }
-                    }
-                }
-            );
-        } catch (e) {
-            console.warn(
-                '[GraduatesExport] ExportEnvelope.create threw:', e
-            );
-            return null;
-        }
-
-        return envelope;
+        return {
+            exportedAt: new Date().toISOString(),
+            classId: vm.classId,
+            className: vm.className,
+            count: vm.graduates.length,
+            graduates: vm.graduates
+        };
     }
 
     /**
@@ -753,8 +747,7 @@
                 exported: false,
                 filename: null,
                 count: 0,
-                error: 'Class not found or arguments invalid.',
-                wasEnveloped: false
+                error: 'Class not found or arguments invalid.'
             };
         }
 
@@ -763,46 +756,33 @@
                 exported: false,
                 filename: null,
                 count: 0,
-                error: 'No graduates found for this class.',
-                wasEnveloped: false
+                error: 'No graduates found for this class.'
             };
         }
 
-        var envelope = getGraduatesJSONEnvelope(classId, options);
-        if (!envelope) {
+        var document = getGraduatesJSONDocument(classId, options);
+        if (!document) {
             return {
                 exported: false,
                 filename: null,
                 count: 0,
-                error: 'Could not build a graduate envelope.',
-                wasEnveloped: false
+                error: 'Could not build a graduate document.'
             };
         }
 
         var serialised;
         try {
-            serialised = JSONIO.serializeJSON(envelope, {
-                envelope: false,
-                pretty: options.pretty !== false
-            });
+            serialised = JSON.stringify(
+                document,
+                null,
+                options.pretty !== false ? 2 : 0
+            );
         } catch (e) {
             return {
                 exported: false,
                 filename: null,
                 count: 0,
-                error: 'Failed to serialize JSON: ' + e.message,
-                wasEnveloped: true
-            };
-        }
-
-        if (!serialised || !serialised.valid) {
-            return {
-                exported: false,
-                filename: null,
-                count: 0,
-                error: (serialised && serialised.error) ||
-                    'Serialization failed.',
-                wasEnveloped: true
+                error: 'Failed to serialize JSON: ' + e.message
             };
         }
 
@@ -811,7 +791,7 @@
             '.json';
 
         try {
-            var blob = new Blob([serialised.content], {
+            var blob = new Blob([serialised], {
                 type: 'application/json'
             });
             ExportUtils.downloadBlob(blob, filename);
@@ -820,8 +800,7 @@
                 exported: false,
                 filename: null,
                 count: 0,
-                error: 'Failed to download JSON: ' + e.message,
-                wasEnveloped: true
+                error: 'Failed to download JSON: ' + e.message
             };
         }
 
@@ -829,8 +808,7 @@
             exported: true,
             filename: filename,
             count: vm.graduates.length,
-            error: null,
-            wasEnveloped: true
+            error: null
         };
     }
 
@@ -843,7 +821,7 @@
         getGraduates: getGraduates,
 
         // JSON
-        getGraduatesJSONEnvelope: getGraduatesJSONEnvelope,
+        getGraduatesJSONDocument: getGraduatesJSONDocument,
         exportGraduatesJSON: exportGraduatesJSON,
 
         // CSV
@@ -865,7 +843,7 @@
 
         var required = [
             'getGraduates',
-            'getGraduatesJSONEnvelope',
+            'getGraduatesJSONDocument',
             'exportGraduatesJSON',
             'getGraduatesCSVContent',
             'exportGraduatesCSV'
