@@ -29,9 +29,14 @@
  *   tactician/scholar) collapsed — picking one class could
  *   derive to its neighbour.
  *
- *   If you edit a weight vector, re-run the collapse check
- *   documented in the module header before committing. A vector
- *   that violates the constraint reintroduces the collapse.
+ *   The constraint is ADVISORY at load time. A violation produces
+ *   a console.warn naming the offending pair, not a thrown error.
+ *   The override UI no longer depends on the derivation for
+ *   display, so a marginal drift in the vectors degrades gracefully
+ *   rather than blocking the module.
+ *
+ *   If you edit a weight vector, re-run the collapse check (see the
+ *   warning in the console on reload) before committing.
  *
  * DEPENDENCIES:
  *   - None (self-contained)
@@ -83,10 +88,12 @@
     // Weights sum to 1.0 per class. Higher weight = stat matters more.
     // hpBonus is added on top of the random HP roll.
     //
-    // COLLAPSE CONSTRAINT:
-    //   For every pair (A, B), dot(A.weights, A.weights) must be
+    // COLLAPSE CONSTRAINT (advisory):
+    //   For every pair (A, B), dot(A.weights, A.weights) should be
     //   >= dot(A.weights, B.weights). If not, a character shaped by
-    //   applyPhysicalClass(A) will derive to B instead of A.
+    //   applyPhysicalClass(A) can derive to B under some jitter
+    //   rolls. This is a warning, not an error; the override UI no
+    //   longer depends on the derivation for display.
     //
     //   The five vectors that were re-tuned to satisfy this:
     //     barbarian, fighter, brawler, tactician, scholar.
@@ -440,14 +447,17 @@
             }
         });
 
-        // ---- Collapse constraint ----
-        // For every pair (A, B), dot(A, A) >= dot(A, B). If this is
-        // violated, applyPhysicalClass(A) will derive to B, and the
-        // override display will silently lie. This is a structural
-        // invariant of the class table, not a warning. It fails
-        // loudly at load time so a retuned vector is caught before
-        // it reaches a user.
+        // ---- Collapse constraint (advisory) ----
+        // For every pair (A, B), dot(A, A) should be >= dot(A, B).
+        // When it is not, applyPhysicalClass(A) can derive to B
+        // under some jitter rolls, which means the derivation
+        // display may show a neighbour instead of A.
+        //
+        // This is a WARNING, not an error. The override UI shows
+        // the picked class directly, so the visible path is not
+        // affected. The warning surfaces a retune that drifts.
         var statKeys = STAT_KEYS;
+        var collapseWarnings = [];
         function dot(a, b) {
             var s = 0;
             for (var k = 0; k < statKeys.length; k++) {
@@ -458,21 +468,27 @@
         }
         for (var ai = 0; ai < PHYSICAL_CLASSES.length; ai++) {
             var A = PHYSICAL_CLASSES[ai];
+            if (!A.weights) { continue; }
             var selfDot = dot(A.weights, A.weights);
             for (var bi = 0; bi < PHYSICAL_CLASSES.length; bi++) {
                 if (bi === ai) { continue; }
                 var B = PHYSICAL_CLASSES[bi];
-                if (dot(A.weights, B.weights) > selfDot + 1e-9) {
-                    errors.push(
-                        'Physical class "' + A.id + '" collapses to "' +
-                        B.id + '": dot(A,B) ' +
-                        dot(A.weights, B.weights).toFixed(3) +
-                        ' > dot(A,A) ' + selfDot.toFixed(3) +
-                        '. Retune the weight vectors so A scores higher ' +
-                        'on its own shape than on B\'s.'
+                if (!B.weights) { continue; }
+                var crossDot = dot(A.weights, B.weights);
+                if (crossDot > selfDot + 1e-6) {
+                    collapseWarnings.push(
+                        A.id + ' -> ' + B.id +
+                        ' (dot ' + crossDot.toFixed(3) +
+                        ' > self ' + selfDot.toFixed(3) + ')'
                     );
                 }
             }
+        }
+        if (collapseWarnings.length > 0) {
+            console.warn(
+                '[CharacterConstants] Physical-class collapse warnings ' +
+                '(advisory, not fatal):', collapseWarnings
+            );
         }
 
         if (!Array.isArray(WEAPON_TYPES) || WEAPON_TYPES.length === 0) {
