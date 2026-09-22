@@ -113,20 +113,36 @@
  *
  *   WHAT IT WRITES:
  *     interval.leavePeriod is set to String(deathYear) on every
- *     active stint whose joinPeriod is before deathYear.
+ *     active stint whose joinPeriod is strictly before deathYear.
  *
  *     - A stint whose leavePeriod is already set and <= deathYear
- *       is left alone.
- *     - A stint whose joinPeriod is >= deathYear is left alone.
- *       Ending it would create a stint with leave before join,
- *       which validateMemberIntervals would reject. A stint that
- *       starts on or after the death year is a data error for the
- *       user to fix, not something the cascade silently rewrites.
+ *       is left alone. This makes the cascade idempotent: running
+ *       it twice on the same character does nothing the second
+ *       time.
+ *
+ *     - A stint whose joinPeriod is strictly greater than
+ *       deathYear is left alone. Ending it would create a stint
+ *       with leave before join, which validateMemberIntervals
+ *       would reject. A stint that starts after the death year is
+ *       a data error for the user to fix, not something the
+ *       cascade silently rewrites.
+ *
+ *     - A stint whose joinPeriod EQUALS deathYear IS ended at
+ *       deathYear. The result is a one-year stint [Y, Y]. This is
+ *       a legitimate record: the character joined and died in the
+ *       same year. Ending it at deathYear honours the rule that
+ *       every professional stint a deceased character held ends
+ *       at their death year.
  *
  *   PURITY:
  *     Pure with respect to `appData`. Mutates the snapshot. Never
  *     touches window.data. Never throws. Runs inside another
  *     module's pipeline transaction (CharacterCRUD.save).
+ *
+ *   IDEMPOTENCY:
+ *     The cascade is idempotent. Running it twice on the same
+ *     snapshot produces the same result. This is what makes
+ *     CharacterCRUD.backfillDeathCascades safe to re-run.
  *
  * DEPENDENCIES:
  *   - window.TeamConstants    (from team-constants.js) - MANDATORY
@@ -2690,12 +2706,14 @@
     /**
      * End every active PROFESSIONAL-team stint for a character at
      * the given year. Called from CharacterCRUD when a character's
-     * deathYear transitions from blank to a parseable year.
+     * deathYear transitions from blank to a parseable year, and
+     * from CharacterCRUD.backfillDeathCascades for data that
+     * predates the cascade.
      *
      * SCOPE:
      *   Professional teams only. Academic teams are managed by the
-     *   Academy module; temporary and civilian team membership
-     *   does not participate in the death cascade.
+     *   Academy module; temporary and civilian team membership does
+     *   not participate in the death cascade.
      *
      * GRANULARITY:
      *   Year. Professional team stints use year strings. There is
@@ -2707,17 +2725,23 @@
      *   `leave`. The user reopens stints by hand if they want to
      *   undo a death.
      *
+     * IDEMPOTENT:
+     *   Running twice on the same snapshot produces the same
+     *   result. A stint already ended at or before deathYear is
+     *   left alone.
+     *
      * SEMANTICS:
      *   For each professional team:
      *     For each member entry with characterId === charId:
      *       For each interval:
      *         - Skip if leavePeriod is already set and <= deathYear.
-     *         - Skip if joinPeriod is >= deathYear. Ending it would
-     *           produce leave < join, which is invalid; a stint
-     *           starting at or after the death year is a data error
-     *           for the user to fix, not something this cascade
-     *           silently rewrites.
+     *         - Skip if joinPeriod is strictly greater than
+     *           deathYear. A stint starting after death cannot be
+     *           ended at death without producing leave < join.
      *         - Otherwise, set leavePeriod = String(deathYear).
+     *           This includes the joinPeriod === deathYear case:
+     *           a stint that starts in the death year is ended at
+     *           the death year, producing a one-year stint [Y, Y].
      *
      * PURE with respect to `appData`:
      *   - Mutates the snapshot.
@@ -2807,9 +2831,14 @@
                         : String(iv.joinPeriod);
                     var joinNum = parsePeriod(joinRaw);
 
-                    // Stint starts at or after the death year.
+                    // Stint starts strictly after the death year.
                     // Ending it would be leave < join.
-                    if (joinNum !== null && joinNum >= deathNum) {
+                    //
+                    // NOTE: joinNum === deathNum is NOT skipped.
+                    // A stint that starts the year the character
+                    // dies is ended at the death year, producing a
+                    // one-year stint [Y, Y].
+                    if (joinNum !== null && joinNum > deathNum) {
                         result.skippedStartsAfterDeath++;
                         continue;
                     }
