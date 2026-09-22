@@ -7,6 +7,7 @@
  * Provides:
  *   - renderContainer(vm)          full page shell
  *   - renderList(teams, options)   team rows
+ *   - renderUnassigned(vm)         unassigned-character rows
  *   - renderExpandedMembers(vm)    expanded member section
  *   - renderTeamCard(vm)           compact card (single team)
  *   - renderTeamSummary(vm)        single-line summary
@@ -35,6 +36,35 @@
  *
  *   renderExpandedMembers iterates `intervals` to produce one line
  *   per stint.
+ *
+ * UNASSIGNED VM:
+ *   The Unassigned view model carries:
+ *     { year, total,
+ *       rows: [ {
+ *         characterId, displayName, status,
+ *         juniorDisplay, seniorDisplay,
+ *         classification, futureDisplay, futureTeamName,
+ *         futureJoinYear
+ *       } ] }
+ *
+ *   renderUnassigned emits a four-column row:
+ *     Character | Status | Junior Since | Senior Since
+ *   with the future-stint indicator rendered as a sub-line under
+ *   the character name when present.
+ *
+ *   The classification field is not rendered directly; it drives
+ *   the sub-line's presence and the CSS class on the row. A row
+ *   with a future stint gets `.has-future`; otherwise it renders
+ *   with no special class.
+ *
+ * TOGGLE:
+ *   The professional tab's filter bar carries a two-button toggle
+ *   (Teams | Unassigned). It is rendered by renderFilterBar when
+ *   filterVM.tab === 'professional'. The toggle's active state is
+ *   passed in as filterVM.showUnassigned (boolean).
+ *
+ *   The toggle has no state of its own. It is a rendering of the
+ *   events layer's in-memory mode flag.
  *
  * NO INLINE STYLES:
  *   All layout lives in CSS classes. The renderer emits class names
@@ -257,6 +287,104 @@
             if (isExpanded && expandedMembersVM) {
                 html += renderExpandedMembers(expandedMembersVM);
             }
+        }
+
+        return html;
+    }
+
+    // ============================================================
+    // UNASSIGNED LIST
+    // ============================================================
+
+    /**
+     * Render the Unassigned view.
+     *
+     * Rows are professional-team-eligible characters who are not
+     * currently active on a professional team at the current
+     * application year. The future-stint indicator appears as a
+     * sub-line under the character name when the row's
+     * classification is 'future'.
+     *
+     * @param {object} vm - Unassigned view model
+     * @returns {string}
+     */
+    function renderUnassigned(vm) {
+        if (!vm || !Array.isArray(vm.rows)) {
+            return '';
+        }
+
+        var yearLabel = vm.year !== null && vm.year !== undefined
+            ? String(vm.year)
+            : '';
+
+        if (vm.rows.length === 0) {
+            return '<p class="empty-state team-list-empty">' +
+                        'No unassigned characters' +
+                        (yearLabel ? ' for ' + escapeHtml(yearLabel) : '') +
+                        '.' +
+                    '</p>';
+        }
+
+        var html = '';
+
+        html += '<div class="unassigned-summary">' +
+                    'Unassigned at year ' +
+                    '<strong>' + escapeHtml(yearLabel) + '</strong>' +
+                    ' &mdash; ' +
+                    '<strong>' + safeCount(vm.total) + '</strong>' +
+                    ' character' +
+                    (vm.total === 1 ? '' : 's') +
+                '</div>';
+
+        html += '<div class="list-header unassigned-header">';
+        html += '<span>Character</span>';
+        html += '<span>Status</span>';
+        html += '<span>Junior Since</span>';
+        html += '<span>Senior Since</span>';
+        html += '</div>';
+
+        for (var i = 0; i < vm.rows.length; i++) {
+            var row = vm.rows[i];
+            if (!row || !row.characterId) { continue; }
+
+            var rowClass = 'list-item unassigned-item';
+            var hasFuture = isNonEmptyString(row.futureDisplay);
+            if (hasFuture) {
+                rowClass += ' has-future';
+            }
+
+            html += '<div class="' + rowClass + '" ' +
+                        'data-id="' +
+                            escapeAttribute(row.characterId) + '">';
+
+            // Character cell (with optional future indicator)
+            html += '<span class="unassigned-name-cell">';
+            html += '<strong class="unassigned-name">' +
+                        escapeHtml(row.displayName || 'Unknown') +
+                    '</strong>';
+            if (hasFuture) {
+                html += '<span class="unassigned-future" ' +
+                            'title="Already committed to a ' +
+                                'professional team in a future year">' +
+                            '&rarr; ' +
+                            escapeHtml(row.futureDisplay) +
+                        '</span>';
+            }
+            html += '</span>';
+
+            html += '<span class="unassigned-status">' +
+                        escapeHtml(row.status || '') +
+                    '</span>';
+
+            html += '<span class="unassigned-junior">' +
+                        escapeHtml(row.juniorDisplay || '\u2014') +
+                    '</span>';
+
+            html += '<span class="unassigned-senior">' +
+                        escapeHtml(row.seniorDisplay || '\u2014') +
+                    '</span>';
+
+            html += '</div>';
         }
 
         return html;
@@ -505,6 +633,64 @@
 
         var html = '';
 
+        // ---- Professional tab: mode toggle + filters ----
+        if (tab === 'professional') {
+            var showUnassigned = filterVM.showUnassigned === true;
+
+            html += '<div class="filter-row filter-row-professional">';
+
+            // Mode toggle
+            html += '<div class="mode-toggle" role="tablist">';
+            html += '<button type="button" ' +
+                        'class="mode-btn' +
+                            (showUnassigned ? '' : ' active') + '" ' +
+                        'data-mode="teams" ' +
+                        'role="tab" ' +
+                        'aria-selected="' +
+                            (showUnassigned ? 'false' : 'true') + '">' +
+                        'Teams' +
+                    '</button>';
+            html += '<button type="button" ' +
+                        'class="mode-btn' +
+                            (showUnassigned ? ' active' : '') + '" ' +
+                        'data-mode="unassigned" ' +
+                        'role="tab" ' +
+                        'aria-selected="' +
+                            (showUnassigned ? 'true' : 'false') + '">' +
+                        'Unassigned' +
+                    '</button>';
+            html += '</div>';
+
+            // Filters are only meaningful in Teams mode. When the
+            // user is looking at Unassigned, the year and status
+            // filters do not apply, so we hide them.
+            if (!showUnassigned) {
+                html += '<div class="filter-group">';
+                html += '<label for="team-filter-year">' +
+                            escapeHtml(periodLabel) + ':' +
+                        '</label>';
+                html += '<input type="number" id="team-filter-year" ' +
+                            'value="' +
+                                escapeAttribute(safeString(yearValue)) +
+                            '" placeholder="All">';
+                html += '</div>';
+                html += '<div class="filter-group">';
+                html += '<label for="' + escapeAttribute(tab) +
+                            '-show-inactive">Show Inactive:</label>';
+                html += '<input type="checkbox" id="' +
+                            escapeAttribute(tab) + '-show-inactive"' +
+                            (status === 'inactive' ? ' checked' : '') +
+                        '>';
+                html += '</div>';
+                html += '<button type="button" id="apply-filter-btn" ' +
+                            'class="small primary">Apply</button>';
+            }
+
+            html += '</div>';
+            return html;
+        }
+
+        // ---- Civilian tab: only the inactive checkbox ----
         if (tab === 'civilian') {
             html += '<div class="filter-row">';
             html += '<div class="filter-group">';
@@ -522,6 +708,7 @@
             return html;
         }
 
+        // ---- Temporary tab: year + inactive ----
         html += '<div class="filter-row">';
         html += '<div class="filter-group">';
         html += '<label for="team-filter-year">' +
@@ -878,6 +1065,8 @@
         var expandedTeamId = pageVM.expandedTeamId || null;
         var expandedTeam = pageVM.expandedTeam || null;
         var period = pageVM.period;
+        var showUnassigned = pageVM.showUnassigned === true;
+        var unassignedVM = pageVM.unassignedVM || null;
 
         var expandedMembersVM = null;
         if (expandedTeam && Array.isArray(expandedTeam.members)) {
@@ -900,16 +1089,21 @@
         // Matchmaking is available only on the professional tab,
         // because the matchmaking algorithm targets professional
         // teams only. On other tabs the button is not rendered.
+        //
+        // The Add Team and Matchmaking buttons are hidden while
+        // the Unassigned view is active, because neither action
+        // applies to a read-only roster of people. The Unassigned
+        // view is informational.
         html += '<div class="page-header">';
         html += '<h2>Team Manager</h2>';
         html += '<div class="page-header-actions">';
-        if (activeTab === 'professional') {
+        if (activeTab === 'professional' && !showUnassigned) {
             html += '<button type="button" ' +
                         'id="team-matchmaking-btn" ' +
                         'class="secondary">Matchmaking</button>';
+            html += '<button type="button" id="add-team-btn" ' +
+                        'class="primary">+ Add Team</button>';
         }
-        html += '<button type="button" id="add-team-btn" ' +
-                    'class="primary">+ Add Team</button>';
         html += '</div>';
         html += '</div>';
 
@@ -922,11 +1116,18 @@
 
         html += '<div id="team-list-container" ' +
                     'class="team-list-container">';
-        html += renderList(teams, {
-            type: activeTab,
-            expandedTeamId: expandedTeamId,
-            expandedMembersVM: expandedMembersVM
-        });
+
+        // ---- Body: either the team list or the unassigned list ----
+        if (activeTab === 'professional' && showUnassigned) {
+            html += renderUnassigned(unassignedVM);
+        } else {
+            html += renderList(teams, {
+                type: activeTab,
+                expandedTeamId: expandedTeamId,
+                expandedMembersVM: expandedMembersVM
+            });
+        }
+
         html += '</div>';
 
         return html;
@@ -987,6 +1188,7 @@
 
         // Lists / detail
         renderList: renderList,
+        renderUnassigned: renderUnassigned,
         renderExpandedMembers: renderExpandedMembers,
         renderTeamCard: renderTeamCard,
         renderTeamSummary: renderTeamSummary,
