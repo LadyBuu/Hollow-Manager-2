@@ -7,7 +7,7 @@
  * RESPONSIBILITIES:
  *   - Build modal HTML for Class, Location, and Discipline CRUD
  *   - Build the Social Score editor modal
- *   - Build the Add Character to Class modal
+ *   - Build the Add Character to Class modal (bulk-select)
  *   - Open the modal via window.Modal
  *   - Wire form submission to the domain mutation
  *   - Close on success; leave open on failure so the user can retry
@@ -66,20 +66,39 @@
  *   returned Promise before removing the element from the DOM.
  *   Prefer Modal.closeModal when available.
  *
- * ADD CHARACTER TO CLASS — SORTING AND OPTGROUP:
- *   The candidate list excludes characters who are already in the
- *   target class (as students or as instructors). It is partitioned:
+ * ADD CHARACTER TO CLASS — BULK SELECT:
+ *   The modal is a multi-select checklist. Every candidate is a
+ *   checkbox row, grouped into "Unassigned" (no class) and "In
+ *   Other Classes". A search box filters rows by substring match on
+ *   the display label. "Select all visible" and "Clear" operate on
+ *   the current filtered view.
  *
- *     1. Characters with no class membership — first.
- *     2. Characters with at least one class membership — second.
+ *   The submit handler reads every checked character ID and runs a
+ *   SEQUENTIAL chain of AcademyClasses.addToClass calls. Each call
+ *   is its own MutationPipeline transaction, so this is not atomic
+ *   as a whole; a mid-chain failure leaves the earlier successes
+ *   committed. The failure mode for "add to class" is almost always
+ *   "this character is already a member," which is not worth
+ *   rolling the whole batch back over.
  *
- *   Within each partition, alphabetical by display name.
+ *   On completion:
+ *     - All succeeded: toast success, close, refresh.
+ *     - Some succeeded, some failed: toast warning with counts, log
+ *       per-row failures, close, refresh, then REOPEN the modal so
+ *       the user can immediately pick up the remaining candidates
+ *       (the candidate list shrinks automatically).
+ *     - None succeeded: toast error, log per-row failures, close,
+ *       refresh. No reopen — the modal would just show the same
+ *       candidates with the same failures waiting.
  *
- * ADD CHARACTER TO CLASS — INSTRUCTOR EXCLUSION (v29):
- *   The candidate list excludes both the class's current students
- *   AND every character who teaches something in the class at the
- *   current display week. Sourced from
- *   AcademyClasses.getClassInstructorIds(classId, week).
+ * CANDIDATE SOURCING:
+ *   The candidate list excludes:
+ *     - Characters already in the target class (students)
+ *     - Characters who teach something in the target class at the
+ *       display week (instructors)
+ *   Sourced from AcademyAggregator.getClassStudentsViewModel and
+ *   AcademyClasses.getClassInstructorIds respectively. This matches
+ *   the v29 pattern established elsewhere in the Academy UI.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -672,14 +691,9 @@
      *
      * A map that does not fit any pattern falls back to a single
      * "all weeks" rule only if every entry is identical. Otherwise
-     * the reconstruction is skipped and the map is left as-is; the
-     * form shows no rules and the map is preserved unless the user
-     * explicitly edits.
-     *
-     * Wait — that would lose data. Instead: the form always shows
-     * the map as a list of single-week rules when no pattern is
-     * detected. That is verbose but lossless. The user can delete
-     * them and author cleaner rules if they want.
+     * the reconstruction emits one single-week rule per entry, which
+     * is verbose but lossless. The user can delete them and author
+     * cleaner rules if they want.
      */
     function deriveRulesFromRestDaysByWeek(map) {
         if (!map || typeof map !== 'object') { return []; }
@@ -1040,16 +1054,24 @@
     }
 
     // ============================================================
-    // CLASS — ADD CHARACTER
+    // CLASS — ADD CHARACTER (bulk)
     // ============================================================
 
     function buildAddCharacterToClassHTML(vm) {
+        var free = Array.isArray(vm.candidatesUnassigned)
+            ? vm.candidatesUnassigned
+            : [];
+        var assigned = Array.isArray(vm.candidatesAssigned)
+            ? vm.candidatesAssigned
+            : [];
+        var total = free.length + assigned.length;
+
         var html = '';
         html += '<form id="academy-add-character-form" ' +
                     'data-class-id="' + escapeAttribute(vm.classId) + '">';
 
         html += '<div class="modal-header">';
-        html += '<h3>Add Character to ' +
+        html += '<h3>Add Characters to ' +
                     escapeHtml(vm.className || 'Class') +
                 '</h3>';
         html += '<button type="button" class="close-modal">&times;</button>';
@@ -1057,84 +1079,68 @@
 
         html += '<div class="modal-body">';
 
-        html += '<div class="form-group">';
-        html += '<label for="ac-add-character-select">Character</label>';
-        html += '<select id="ac-add-character-select" ' +
-                    'class="ac-add-character-select" required>';
-
-        var hasGroups =
-            Array.isArray(vm.candidatesUnassigned) ||
-            Array.isArray(vm.candidatesAssigned);
-
-        if (hasGroups) {
-            var free = Array.isArray(vm.candidatesUnassigned)
-                ? vm.candidatesUnassigned
-                : [];
-            var assigned = Array.isArray(vm.candidatesAssigned)
-                ? vm.candidatesAssigned
-                : [];
-            var total = free.length + assigned.length;
-
-            html += '<option value="">Select a character...</option>';
-
-            if (total > 0 && free.length > 0 && assigned.length > 0) {
-                html += renderCharacterOptgroup('Unassigned', free);
-                html += renderCharacterOptgroup('In Other Classes', assigned);
-            } else if (free.length > 0) {
-                html += renderCharacterOptions(free);
-            } else if (assigned.length > 0) {
-                html += renderCharacterOptgroup('In Other Classes', assigned);
-            }
-
-            html += '</select>';
-
-            if (total === 0) {
-                html += '<p class="field-hint">' +
-                            'All characters are already in this class.' +
-                        '</p>';
-            } else if (free.length === 0 && assigned.length > 0) {
-                html += '<p class="field-hint">' +
-                            'Every available character is already a member ' +
-                            'of another class.' +
-                        '</p>';
-            }
-
-            html += '</div>';
-
-            html += '<div class="form-actions">';
-            html += '<button type="button" ' +
-                        'class="cancel-modal-btn secondary">Cancel</button>';
-            html += '<button type="submit" class="primary"' +
-                        (total === 0 ? ' disabled' : '') +
-                        '>Add Character</button>';
-            html += '</div>';
-
-            html += '</div>';
-            html += '</form>';
-
-            return html;
-        }
-
-        var candidates = Array.isArray(vm.candidates) ? vm.candidates : [];
-
-        html += '<option value="">Select a character...</option>';
-        html += renderCharacterOptions(candidates);
-        html += '</select>';
-
-        if (candidates.length === 0) {
+        if (total === 0) {
             html += '<p class="field-hint">' +
                         'All characters are already in this class.' +
                     '</p>';
+            html += '<div class="form-actions">';
+            html += '<button type="button" ' +
+                        'class="cancel-modal-btn secondary">Close</button>';
+            html += '</div>';
+            html += '</div>';
+            html += '</form>';
+            return html;
+        }
+
+        // ---- Search ----
+        html += '<div class="form-group">';
+        html += '<input type="text" id="ac-add-character-search" ' +
+                    'class="ac-add-character-search" ' +
+                    'placeholder="Search characters...">';
+        html += '</div>';
+
+        // ---- Bulk-select toolbar ----
+        html += '<div class="ac-add-character-toolbar">';
+        html += '<span class="ac-add-character-count" ' +
+                    'id="ac-add-character-count">0 selected</span>';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-bulk-action="select-all">' +
+                    'Select all visible' +
+                '</button>';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-bulk-action="clear-all">Clear</button>';
+        html += '</div>';
+
+        // ---- Checklist ----
+        html += '<div class="ac-add-character-list" ' +
+                    'id="ac-add-character-list">';
+
+        if (free.length > 0) {
+            html += '<div class="ac-add-character-group-header">' +
+                        'Unassigned' +
+                    '</div>';
+            for (var i = 0; i < free.length; i++) {
+                html += renderCharacterCheckbox(free[i], 'free');
+            }
+        }
+
+        if (assigned.length > 0) {
+            html += '<div class="ac-add-character-group-header">' +
+                        'In Other Classes' +
+                    '</div>';
+            for (var j = 0; j < assigned.length; j++) {
+                html += renderCharacterCheckbox(assigned[j], 'assigned');
+            }
         }
 
         html += '</div>';
 
+        // ---- Footer ----
         html += '<div class="form-actions">';
         html += '<button type="button" ' +
                     'class="cancel-modal-btn secondary">Cancel</button>';
-        html += '<button type="submit" class="primary"' +
-                    (candidates.length === 0 ? ' disabled' : '') +
-                    '>Add Character</button>';
+        html += '<button type="submit" class="primary" ' +
+                    'id="ac-add-character-submit">Add Selected</button>';
         html += '</div>';
 
         html += '</div>';
@@ -1143,25 +1149,25 @@
         return html;
     }
 
-    function renderCharacterOptions(candidates) {
-        var html = '';
-        for (var i = 0; i < candidates.length; i++) {
-            var cand = candidates[i];
-            if (!cand || !cand.id) { continue; }
-            var label = formatCharacterOptionLabel(cand.name, cand.age);
-            html += '<option value="' + escapeAttribute(cand.id) + '">' +
-                        escapeHtml(label) +
-                    '</option>';
-        }
-        return html;
-    }
+    function renderCharacterCheckbox(entry, group) {
+        if (!entry || !entry.id) { return ''; }
 
-    function renderCharacterOptgroup(label, candidates) {
-        var inner = renderCharacterOptions(candidates);
-        if (inner === '') { return ''; }
-        return '<optgroup label="' + escapeAttribute(label) + '">' +
-                    inner +
-                '</optgroup>';
+        var label = formatCharacterOptionLabel(entry.name, entry.age);
+        var searchKey = (entry.name || '').toLowerCase();
+
+        var html = '';
+        html += '<label class="ac-add-character-row" ' +
+                    'data-character-id="' + escapeAttribute(entry.id) + '" ' +
+                    'data-search-key="' + escapeAttribute(searchKey) + '" ' +
+                    'data-group="' + escapeAttribute(group) + '">';
+        html += '<input type="checkbox" class="ac-add-character-checkbox" ' +
+                    'value="' + escapeAttribute(entry.id) + '">';
+        html += '<span class="ac-add-character-name">' +
+                    escapeHtml(label) +
+                '</span>';
+        html += '</label>';
+
+        return html;
     }
 
     function buildAddCharacterToClassViewModel(classId) {
@@ -1218,6 +1224,243 @@
             candidatesAssigned: assigned,
             candidates: free.concat(assigned)
         };
+    }
+
+    // ============================================================
+    // CLASS — ADD CHARACTER (bulk) — event wiring
+    // ============================================================
+
+    function bindBulkCharacterPickerEvents(form) {
+        var searchEl = form.querySelector('#ac-add-character-search');
+        var countEl = form.querySelector('#ac-add-character-count');
+
+        function updateCount() {
+            if (!countEl) { return; }
+            var n = collectSelectedCharacterIds(form).length;
+            countEl.textContent = n + ' selected';
+        }
+
+        if (searchEl) {
+            searchEl.addEventListener('input', function() {
+                var term = searchEl.value.toLowerCase().trim();
+                var rows = form.querySelectorAll('.ac-add-character-row');
+                for (var i = 0; i < rows.length; i++) {
+                    var row = rows[i];
+                    var key = row.dataset.searchKey || '';
+                    var matches = term === '' || key.indexOf(term) !== -1;
+                    row.style.display = matches ? '' : 'none';
+                }
+                updateGroupHeaderVisibility(form);
+            });
+        }
+
+        form.addEventListener('change', function(e) {
+            if (e.target && e.target.classList &&
+                e.target.classList.contains('ac-add-character-checkbox')) {
+                updateCount();
+            }
+        });
+
+        form.addEventListener('click', function(e) {
+            var actionEl = e.target && e.target.closest
+                ? e.target.closest('[data-bulk-action]')
+                : null;
+            if (!actionEl) { return; }
+            e.preventDefault();
+
+            var action = actionEl.dataset.bulkAction;
+
+            if (action === 'select-all') {
+                var visible = form.querySelectorAll(
+                    '.ac-add-character-row:not([style*="display: none"]) ' +
+                    '.ac-add-character-checkbox'
+                );
+                for (var i = 0; i < visible.length; i++) {
+                    visible[i].checked = true;
+                }
+                updateCount();
+                return;
+            }
+
+            if (action === 'clear-all') {
+                var all = form.querySelectorAll(
+                    '.ac-add-character-checkbox'
+                );
+                for (var j = 0; j < all.length; j++) {
+                    all[j].checked = false;
+                }
+                updateCount();
+                return;
+            }
+        });
+    }
+
+    /**
+     * Hide a group header when every row beneath it (until the next
+     * header) is display:none. With exactly two groups this is O(2n).
+     */
+    function updateGroupHeaderVisibility(form) {
+        var headers = form.querySelectorAll(
+            '.ac-add-character-group-header'
+        );
+        for (var g = 0; g < headers.length; g++) {
+            var header = headers[g];
+            var visibleCount = 0;
+            var node = header.nextElementSibling;
+            while (node &&
+                   !node.classList.contains(
+                       'ac-add-character-group-header'
+                   )) {
+                if (node.classList.contains('ac-add-character-row') &&
+                    node.style.display !== 'none') {
+                    visibleCount++;
+                }
+                node = node.nextElementSibling;
+            }
+            header.style.display = visibleCount > 0 ? '' : 'none';
+        }
+    }
+
+    function collectSelectedCharacterIds(form) {
+        var checks = form.querySelectorAll(
+            '.ac-add-character-checkbox:checked'
+        );
+        var ids = [];
+        for (var i = 0; i < checks.length; i++) {
+            if (checks[i].value) {
+                ids.push(checks[i].value);
+            }
+        }
+        return ids;
+    }
+
+    /**
+     * Sequential chain of addToClass calls. Not atomic: each call is
+     * its own MutationPipeline transaction. Earlier successes are
+     * committed even if a later call fails.
+     *
+     * On completion:
+     *   - all success  → toast, close, refresh
+     *   - partial      → warn, log failures, close, refresh, reopen
+     *   - none success → error, log failures, close, refresh
+     */
+    function runBulkAddCharacters(ids, classId, closeModalFn) {
+        var failures = [];
+        var succeeded = 0;
+
+        var submitBtn = document.getElementById('ac-add-character-submit');
+        if (submitBtn) { submitBtn.disabled = true; }
+
+        var chain = Promise.resolve();
+
+        ids.forEach(function(charId) {
+            chain = chain.then(function() {
+                return AcademyClasses.addToClass(charId, classId)
+                    .then(function(result) {
+                        if (result && result.success) {
+                            succeeded++;
+                        } else {
+                            failures.push({
+                                characterId: charId,
+                                message: (result && result.message) ||
+                                    'Unknown error'
+                            });
+                        }
+                    })
+                    .catch(function(err) {
+                        failures.push({
+                            characterId: charId,
+                            message: String(err && err.message || err)
+                        });
+                    });
+            });
+        });
+
+        chain.then(function() {
+            var total = succeeded + failures.length;
+
+            if (failures.length === 0) {
+                notify(
+                    'Added ' + succeeded + ' character' +
+                    (succeeded === 1 ? '' : 's') + ' to the class.',
+                    'success'
+                );
+                closeModalFn();
+                notifyChange();
+                return;
+            }
+
+            for (var i = 0; i < failures.length; i++) {
+                console.warn(
+                    '[AcademyCRUDModals] bulk add-character failure:',
+                    failures[i]
+                );
+            }
+
+            if (succeeded === 0) {
+                notify(
+                    'Could not add any of the ' + total +
+                    ' selected character(s). See console for details.',
+                    'error'
+                );
+                closeModalFn();
+                notifyChange();
+                return;
+            }
+
+            notify(
+                'Added ' + succeeded + ' of ' + total +
+                ' character(s). Some failed. See console for details.',
+                'warning'
+            );
+
+            closeModalFn();
+            notifyChange();
+
+            // Reopen on a fresh tick so the user can pick up the
+            // remaining candidates without re-clicking the button.
+            // closeModal's teardown removes the modal from the DOM
+            // asynchronously when Modal.hideModal is used, so we
+            // defer by one microtask-turn's worth.
+            setTimeout(function() {
+                openAddCharacterToClass(classId);
+            }, 0);
+        });
+    }
+
+    // ============================================================
+    // CLASS — ADD CHARACTER (entry point)
+    // ============================================================
+
+    function openAddCharacterToClass(classId) {
+        var vm = buildAddCharacterToClassViewModel(classId);
+        if (!vm) {
+            notify('Class not found.', 'error');
+            return;
+        }
+
+        var html = buildAddCharacterToClassHTML(vm);
+
+        openModal('academy-add-character-modal', html, function(modal, close) {
+            bindCommonModalControls(modal, close);
+
+            var form = modal.querySelector('#academy-add-character-form');
+            if (!form) { return; }
+
+            bindBulkCharacterPickerEvents(form);
+
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+
+                var ids = collectSelectedCharacterIds(form);
+                if (ids.length === 0) {
+                    notify('Select at least one character.', 'error');
+                    return;
+                }
+
+                runBulkAddCharacters(ids, vm.classId, close);
+            });
+        });
     }
 
     // ============================================================
@@ -1549,48 +1792,6 @@
                 }).catch(function(err) {
                     console.warn('[AcademyCRUDModals] Class delete failed:', err);
                     notify('Failed to delete class.', 'error');
-                });
-            });
-        });
-    }
-
-    // ============================================================
-    // OPEN — ADD CHARACTER TO CLASS
-    // ============================================================
-
-    function openAddCharacterToClass(classId) {
-        var vm = buildAddCharacterToClassViewModel(classId);
-        if (!vm) {
-            notify('Class not found.', 'error');
-            return;
-        }
-
-        var html = buildAddCharacterToClassHTML(vm);
-
-        openModal('academy-add-character-modal', html, function(modal, close) {
-            bindCommonModalControls(modal, close);
-
-            var form = modal.querySelector('#academy-add-character-form');
-            if (!form) { return; }
-
-            form.addEventListener('submit', function(e) {
-                e.preventDefault();
-
-                var select = form.querySelector('.ac-add-character-select');
-                var charId = select ? select.value : '';
-                if (!charId) {
-                    notify('Please select a character.', 'error');
-                    return;
-                }
-
-                AcademyClasses.addToClass(charId, vm.classId).then(function(result) {
-                    if (result && result.success) {
-                        close();
-                        notifyChange();
-                    }
-                }).catch(function(err) {
-                    console.warn('[AcademyCRUDModals] Add character failed:', err);
-                    notify('Failed to add character.', 'error');
                 });
             });
         });
