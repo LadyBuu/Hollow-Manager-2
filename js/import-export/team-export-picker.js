@@ -19,6 +19,17 @@
  *   CSV - a flat grid, one row per stint. Useful for spreadsheet
  *     work and scripting. JSON-shaped fields remain encoded.
  *
+ * WHAT THIS MODULE OWNS:
+ *   - The modal shell
+ *   - The status-filter dropdown
+ *   - The pre-flight count
+ *   - The two export buttons and their result reporting
+ *
+ * WHAT THIS MODULE DOES NOT OWN:
+ *   - The team list        (TeamQueries, via TeamExport)
+ *   - The download         (ExportUtils, via TeamExport)
+ *   - The header buttons   (ui.js)
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
  *   - window.Modal
@@ -56,11 +67,18 @@
         typeof NotificationSystem.notify !== 'function') {
         _missing.push('NotificationSystem.notify');
     }
-    if (!TeamExport ||
-        typeof TeamExport.exportTeamsText !== 'function' ||
-        typeof TeamExport.exportTeamsCSV !== 'function' ||
-        typeof TeamExport.getTeams !== 'function') {
-        _missing.push('TeamExport API');
+    if (!TeamExport) {
+        _missing.push('TeamExport (module missing)');
+    } else {
+        if (typeof TeamExport.exportTeamsText !== 'function') {
+            _missing.push('TeamExport.exportTeamsText');
+        }
+        if (typeof TeamExport.exportTeamsCSV !== 'function') {
+            _missing.push('TeamExport.exportTeamsCSV');
+        }
+        if (typeof TeamExport.getTeams !== 'function') {
+            _missing.push('TeamExport.getTeams');
+        }
     }
 
     if (_missing.length > 0) {
@@ -108,6 +126,14 @@
     // ENTRY POINT
     // ============================================================
 
+    /**
+     * Open the team export picker.
+     *
+     * @param {object} [options]
+     * @param {string} [options.initialStatus] - Preselect a status
+     * @param {function} [options.onClose]     - Called once on close
+     * @returns {object|null} The modal element, or null on failure
+     */
     function openModal(options) {
         options = options || {};
 
@@ -406,8 +432,11 @@
         try {
             if (format === 'text') {
                 result = TeamExport.exportTeamsText(options);
-            } else {
+            } else if (format === 'csv') {
                 result = TeamExport.exportTeamsCSV(options);
+            } else {
+                notify('Unknown export format.', 'error');
+                return;
             }
         } catch (err) {
             console.warn(
@@ -450,6 +479,10 @@
         openModal: openModal,
         closeModal: closeModal
     });
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
 
     (function verify() {
         var exports = window.TeamExportPicker;
