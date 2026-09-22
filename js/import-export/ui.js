@@ -23,9 +23,15 @@
  *   class in the Academy tab's People view, then clicks a graduate
  *   button. If no class is selected, the handler notifies and stops.
  * 
- *   GraduatesExport is resolved lazily at click time. If the module
- *   is missing, the handler reports "not available" rather than
- *   throwing at IIFE time and taking the rest of ui.js with it.
+ *   The graduation year is a FACT ABOUT THE CLASS, not about the
+ *   application's current display year. The exporter resolves it
+ *   from class.year. When the class has no year, the exporter
+ *   returns error: 'graduation_year_required' and this handler
+ *   prompts the user for a year, then retries with an explicit
+ *   options.graduationYear.
+ * 
+ *   GraduatesExport and AcademyUI are resolved lazily at click time.
+ *   A missing module produces a toast, not a crash.
  * 
  * DEPENDENCIES:
  *   - window.ExportUtils (from export-utils.js) - MANDATORY
@@ -88,6 +94,14 @@
 
     var _initialized = false;
     var _handlers = {};
+
+    // ============================================================
+    // SMALL HELPERS
+    // ============================================================
+
+    function isNonEmptyString(value) {
+        return typeof value === 'string' && value.trim() !== '';
+    }
 
     // ============================================================
     // NOTIFICATION HELPERS
@@ -671,10 +685,20 @@
     // ============================================================
     //
     // Reads the currently selected Academy class from AcademyUI.
-    // If no class is selected, the handler notifies and stops.
     //
-    // GraduatesExport and AcademyUI are resolved lazily at click
-    // time. A missing module produces a toast, not a crash.
+    // GRADUATION YEAR:
+    //   The class's year is the source of truth. When the class has
+    //   no year and no override is supplied, the exporter returns
+    //   error: 'graduation_year_required'. The handler prompts the
+    //   user for a year and retries with options.graduationYear.
+    //
+    //   The prompt uses window.prompt for simplicity. A future
+    //   revision can replace it with a proper modal; the handler's
+    //   contract (ask, retry, or abort) stays the same.
+    //
+    //   The prompt is skipped when the exporter's result is any
+    //   other error. In particular, "No graduates found" means the
+    //   year was resolved and the roster simply had no graduates.
 
     function getGraduatesExport() {
         return window.GraduatesExport || null;
@@ -691,13 +715,123 @@
         }
         try {
             var classId = UI.getSelectedClassId();
-            if (typeof classId === 'string' && classId.trim() !== '') {
+            if (isNonEmptyString(classId)) {
                 return classId;
             }
             return null;
         } catch (e) {
             return null;
         }
+    }
+
+    /**
+     * Prompt the user for a graduation year.
+     *
+     * Returns an integer >= 1, or null when the user cancels or
+     * supplies input that does not parse as a positive integer.
+     */
+    function promptForGraduationYear(className) {
+        var label = isNonEmptyString(className) ? className : 'this class';
+
+        var raw = window.prompt(
+            'This class has no year set. Enter the graduation year ' +
+            'for "' + label + '":',
+            ''
+        );
+
+        if (raw === null) {
+            return null;
+        }
+
+        var trimmed = String(raw).trim();
+        if (trimmed === '' || !/^\d+$/.test(trimmed)) {
+            return null;
+        }
+
+        var year = Number(trimmed);
+        if (!Number.isInteger(year) || year < 1) {
+            return null;
+        }
+
+        return year;
+    }
+
+    /**
+     * Resolve the class's display name for the prompt label. Falls
+     * back to reading through AcademyClasses if AcademyUI does not
+     * expose a direct class-name accessor.
+     */
+    function resolveSelectedClassName(classId) {
+        // Try AcademyQueries first (it has getClassDisplayName).
+        var AQ = window.AcademyQueries;
+        if (AQ && typeof AQ.getClassDisplayName === 'function') {
+            try {
+                var name = AQ.getClassDisplayName(classId);
+                if (isNonEmptyString(name) && name !== 'Unknown Class') {
+                    return name;
+                }
+            } catch (e) {
+                // fall through
+            }
+        }
+        // Try AcademyClasses directly.
+        var AC = window.AcademyClasses;
+        if (AC && typeof AC.getDisplayName === 'function') {
+            try {
+                var name2 = AC.getDisplayName(classId);
+                if (isNonEmptyString(name2) && name2 !== 'Unknown Class') {
+                    return name2;
+                }
+            } catch (e) {
+                // fall through
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Report a graduate export result.
+     *
+     * Returns true when the result was handled (success or terminal
+     * failure). Returns false when the caller should prompt for a
+     * year and retry.
+     */
+    function handleGraduatesResult(result, classId, format) {
+        if (result && result.exported) {
+            notifySuccess(
+                'Exported ' + result.count + ' graduate(s): ' +
+                result.filename
+            );
+            try {
+                deps.ActivityLog.record(
+                    'Exported ' + result.count +
+                    ' graduates (' + format + ') for class ' + classId,
+                    'export'
+                );
+            } catch (e) {
+                // Non-fatal
+            }
+            return true;
+        }
+
+        var error = (result && result.error) ? result.error : '';
+
+        if (error === 'graduation_year_required') {
+            return false;
+        }
+
+        if (error === 'No graduates found for this class.') {
+            notifyWarning(error);
+            return true;
+        }
+
+        if (error === 'Class not found or arguments invalid.') {
+            notifyError(error);
+            return true;
+        }
+
+        notifyError('Graduates export failed: ' + (error || 'Unknown error'));
+        return true;
     }
 
     function handleGraduatesJSONExport() {
@@ -718,29 +852,26 @@
 
         try {
             var result = GE.exportGraduatesJSON(classId);
-            if (result && result.exported) {
-                notifySuccess(
-                    'Exported ' + result.count + ' graduate(s): ' +
-                    result.filename
-                );
-                try {
-                    deps.ActivityLog.record(
-                        'Exported ' + result.count +
-                        ' graduates (JSON) for class ' + classId,
-                        'export'
-                    );
-                } catch (e) {
-                    // Non-fatal
-                }
-            } else if (result && result.error) {
-                if (result.error === 'No graduates found for this class.') {
-                    notifyWarning(result.error);
-                } else {
-                    notifyError('Graduates export failed: ' + result.error);
-                }
-            } else {
-                notifyError('Graduates export failed.');
+
+            // Success or terminal failure: report and return.
+            if (handleGraduatesResult(result, classId, 'JSON')) {
+                return;
             }
+
+            // Year required: prompt, then retry.
+            var className = resolveSelectedClassName(classId);
+            var year = promptForGraduationYear(className);
+
+            if (year === null) {
+                notifyInfo('Graduates export cancelled.');
+                return;
+            }
+
+            var retryResult = GE.exportGraduatesJSON(classId, {
+                graduationYear: year
+            });
+
+            handleGraduatesResult(retryResult, classId, 'JSON');
         } catch (err) {
             notifyError('Graduates export failed: ' + err.message);
         }
@@ -764,29 +895,24 @@
 
         try {
             var result = GE.exportGraduatesCSV(classId);
-            if (result && result.exported) {
-                notifySuccess(
-                    'Exported ' + result.count + ' graduate(s): ' +
-                    result.filename
-                );
-                try {
-                    deps.ActivityLog.record(
-                        'Exported ' + result.count +
-                        ' graduates (CSV) for class ' + classId,
-                        'export'
-                    );
-                } catch (e) {
-                    // Non-fatal
-                }
-            } else if (result && result.error) {
-                if (result.error === 'No graduates found for this class.') {
-                    notifyWarning(result.error);
-                } else {
-                    notifyError('Graduates export failed: ' + result.error);
-                }
-            } else {
-                notifyError('Graduates export failed.');
+
+            if (handleGraduatesResult(result, classId, 'CSV')) {
+                return;
             }
+
+            var className = resolveSelectedClassName(classId);
+            var year = promptForGraduationYear(className);
+
+            if (year === null) {
+                notifyInfo('Graduates export cancelled.');
+                return;
+            }
+
+            var retryResult = GE.exportGraduatesCSV(classId, {
+                graduationYear: year
+            });
+
+            handleGraduatesResult(retryResult, classId, 'CSV');
         } catch (err) {
             notifyError('Graduates export failed: ' + err.message);
         }
