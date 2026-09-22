@@ -1,7 +1,8 @@
 /**
  * css/teams.css - Hollow Blades Manager
  *
- * The Teams tab (Professional / Temporary / Civilian).
+ * The Teams tab (Professional / Temporary / Civilian) plus the
+ * professional tab's Unassigned view.
  *
  * Covers:
  *   - Team list header + rows (#team-list-container,
@@ -11,6 +12,9 @@
  *   - Team form modal contents (.name-history-entry)
  *   - Team tab nav (.tab-nav, .tab-btn)
  *   - Filter bar (#filter-container, .filter-row, .filter-group)
+ *     including the professional tab's Teams | Unassigned mode
+ *     toggle (.mode-toggle, .mode-btn)
+ *   - Unassigned view (.unassigned-*)
  *   - Stats row (.stats-grid, .stat-card)
  *   - Shared member manager (.member-*) — used by BOTH the Teams
  *     tab and Academy Weekly Teams via the shared manager.
@@ -19,7 +23,7 @@
  *
  * Load order: shared.css → teams.css
  *
- * GRID MODEL:
+ * GRID MODEL (team list):
  *   The desktop layout is a five-column grid:
  *     Name | Period | Rank | Members | Actions
  *
@@ -28,10 +32,20 @@
  *   and the team rows read --team-columns from that container
  *   through the cascade.
  *
+ * GRID MODEL (unassigned view):
+ *   The desktop layout is a four-column grid:
+ *     Character | Status | Junior Since | Senior Since
+ *
+ *   Same pattern: the container declares --unassigned-columns,
+ *   and both the header row and the item rows read it. The
+ *   unassigned view shares the container with the team list —
+ *   only one of the two renders at a time, chosen by
+ *   TeamEvents based on the professional tab's mode toggle.
+ *
  * MOBILE MODEL:
- *   Below 600px the grid becomes a card list. One card per team:
- *   name row, meta rows, action row. The column header is hidden.
- *   The desktop grid is untouched.
+ *   Below 600px the team list becomes a card list and the
+ *   unassigned header hides (rows keep their four labels as
+ *   inline prefixes). The desktop grids are untouched.
  *
  * MEMBER MANAGER:
  *   The .member-* block at the bottom styles the shared member
@@ -417,6 +431,247 @@
     font-size: 0.68rem;
     padding: 4px 14px;
 }
+
+/*
+ * The professional tab's filter row carries the mode toggle plus
+ * the year and status filters. The mode toggle is the first
+ * element; the filters follow. The base .filter-row already
+ * provides flex-wrap and gap, so this class only exists so a
+ * future change can narrow the row's behaviour without touching
+ * the other tabs' filter bars.
+ *
+ * Deliberately empty of layout rules — the base rule covers
+ * everything today. Kept as a named hook.
+ */
+.filter-row-professional {
+    /* intentionally empty; see comment */
+}
+
+/* ============================================================
+   MODE TOGGLE (Professional tab: Teams | Unassigned)
+   ============================================================
+   Two buttons side by side. The active one carries the accent
+   colour; the inactive one is muted. The toggle drives a
+   module-level boolean in team-events.js (not a persisted
+   filter), so this is presentation only.
+ */
+
+.mode-toggle {
+    display: inline-flex;
+    align-items: stretch;
+    gap: 0;
+    padding: 2px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.mode-btn {
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    font-weight: 500;
+    padding: 4px 14px;
+    cursor: pointer;
+    transition: 0.15s;
+    white-space: nowrap;
+}
+
+.mode-btn:hover {
+    color: var(--text);
+    background: var(--panel-alt);
+}
+
+.mode-btn.active {
+    color: var(--accent);
+    background: var(--accent-soft);
+    font-weight: 600;
+}
+
+@media (max-width: 480px) {
+    .mode-toggle {
+        width: 100%;
+    }
+
+    .mode-btn {
+        flex: 1;
+        padding: 5px 8px;
+        font-size: 0.68rem;
+    }
+}
+
+/* ============================================================
+   UNASSIGNED VIEW
+   ============================================================
+   The professional tab's alternate roster: characters who are
+   eligible for a professional team at the current year but are
+   not active on one.
+
+   Rendered by team-render.js's renderUnassigned. Shares the
+   list container with the team list — only one of the two
+   renders at a time.
+
+   Layout is a four-column grid:
+     Character | Status | Junior Since | Senior Since
+
+   The Character column carries an optional sub-line for the
+   future-stint indicator ("→ TeamName from YYYY").
+ */
+
+#team-list-container.unassigned,
+.team-list-container.unassigned {
+    /* Same hook pattern as the team list. Declared here for
+       completeness; the renderer emits this class on the
+       container when the unassigned view is active, so a future
+       change can narrow behaviour without touching the team
+       list's container. */
+    --unassigned-columns: 2fr 1fr 0.8fr 0.8fr;
+}
+
+/* Fallback: the renderer may not add a modifier class to the
+   container. Declare the columns on the header and rows
+   directly so the grid works either way. */
+.list-header.unassigned-header,
+.list-item.unassigned-item {
+    --unassigned-columns: 2fr 1fr 0.8fr 0.8fr;
+}
+
+/* ---------- Summary line ---------- */
+
+.unassigned-summary {
+    padding: 6px 12px;
+    margin-bottom: 8px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 0.72rem;
+    color: var(--text-dim);
+}
+
+.unassigned-summary strong {
+    color: var(--text);
+    font-weight: 600;
+}
+
+/* ---------- Header row ---------- */
+
+.list-header.unassigned-header {
+    display: grid;
+    grid-template-columns: var(--unassigned-columns);
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-bottom: none;
+    border-radius: 6px 6px 0 0;
+    font-weight: 600;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+}
+
+/* ---------- Item row ---------- */
+
+.list-item.unassigned-item {
+    display: grid;
+    grid-template-columns: var(--unassigned-columns);
+    gap: 8px;
+    padding: 6px 12px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-top: none;
+    align-items: center;
+    transition: background 0.15s;
+}
+
+.list-item.unassigned-item:last-child {
+    border-radius: 0 0 var(--radius) var(--radius);
+}
+
+.list-item.unassigned-item:hover {
+    background: var(--panel-alt);
+}
+
+/*
+ * A row with a future stint carries .has-future. The indicator
+ * itself is styled below; this class exists so a future change
+ * can give the row a subtle tint or a left border without
+ * touching the indicator's own rules.
+ */
+.list-item.unassigned-item.has-future {
+    /* intentionally empty; see comment */
+}
+
+/* ---------- Character cell ---------- */
+
+.unassigned-name-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.unassigned-name {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/*
+ * The future-stint indicator. Rendered beneath the character
+ * name when the row's classification is 'future': the character
+ * is not currently active on a professional team but has a
+ * stint on some other team whose joinPeriod is later than the
+ * current year.
+ *
+ * Example text: "→ Team Ravens from 1926"
+ *
+ * The arrow is emitted as an HTML entity (&rarr;) by the
+ * renderer; the class only handles layout and colour.
+ */
+.unassigned-future {
+    font-size: 0.65rem;
+    color: var(--warning);
+    font-style: italic;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: help;
+}
+
+/* ---------- Status cell ---------- */
+
+.unassigned-status {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ---------- Year cells ---------- */
+
+.unassigned-junior,
+.unassigned-senior {
+    font-size: 0.72rem;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    white-space: nowrap;
+}
+
+/*
+ * Em-dash placeholder when a year is missing. The renderer emits
+ * the em-dash as a text node (U+2014). We do not add a distinct
+ * class for the placeholder; the font-size and colour above are
+ * the same for a year and a dash. If you later want the dash
+ * muted relative to a real year, wrap the dash in a span and add
+ * a class here.
+ */
 
 /* ============================================================
    TEAM MODAL OVERRIDES
@@ -1033,10 +1288,14 @@
 }
 
 /* ============================================================
-   MOBILE — CARD LAYOUT
+   MOBILE — TEAM LIST CARD LAYOUT + UNASSIGNED COLLAPSE
    ============================================================ */
 
 @media (max-width: 600px) {
+    /* =========================================================
+       TEAM LIST — CARD LAYOUT
+       ========================================================= */
+
     /* ---- Hide the column header — cards don't need it ---- */
     .list-header.team-header {
         display: none;
@@ -1158,6 +1417,91 @@
         font-size: 0.68rem;
     }
 
+    /* =========================================================
+       UNASSIGNED VIEW — CARD LAYOUT
+       =========================================================
+       Same treatment as the team list: hide the four-column
+       header, stack each row as a card, and prefix the year
+       values with their column labels so the meaning survives
+       without the header row.
+       */
+
+    .list-header.unassigned-header {
+        display: none;
+    }
+
+    .list-item.unassigned-item {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 10px 12px;
+        margin-bottom: 8px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-top: 1px solid var(--border);
+        border-radius: var(--radius);
+    }
+
+    .list-item.unassigned-item:last-child {
+        border-radius: var(--radius);
+    }
+
+    /* ---- Row 1: name + future indicator ---- */
+    .unassigned-name-cell {
+        gap: 3px;
+    }
+
+    .unassigned-name {
+        font-size: 0.85rem;
+        font-weight: 700;
+        white-space: normal;
+    }
+
+    .unassigned-future {
+        font-size: 0.68rem;
+        white-space: normal;
+    }
+
+    /* ---- Row 2: status + year inline ---- */
+    .list-item.unassigned-item > .unassigned-status,
+    .list-item.unassigned-item > .unassigned-junior,
+    .list-item.unassigned-item > .unassigned-senior {
+        display: inline-block;
+        text-align: left;
+        font-size: 0.72rem;
+        color: var(--text-dim);
+        white-space: nowrap;
+    }
+
+    .list-item.unassigned-item > .unassigned-status::before {
+        content: "";
+    }
+
+    .list-item.unassigned-item > .unassigned-junior::before {
+        content: "Junior since: ";
+        color: var(--text-dim);
+    }
+
+    .list-item.unassigned-item > .unassigned-senior::before {
+        content: "Senior since: ";
+        color: var(--text-dim);
+    }
+
+    .list-item.unassigned-item > .unassigned-junior,
+    .list-item.unassigned-item > .unassigned-senior {
+        color: var(--text);
+        font-weight: 500;
+    }
+
+    .unassigned-summary {
+        font-size: 0.7rem;
+        padding: 5px 10px;
+    }
+
+    /* =========================================================
+       OTHER MOBILE RULES
+       ========================================================= */
+
     /* ---- Stats row ---- */
     .stats-grid {
         grid-template-columns: repeat(3, 1fr);
@@ -1191,6 +1535,9 @@
         margin-left: 0;
         width: 100%;
     }
+
+    /* The mode toggle already has its own mobile rule above
+       (full-width, flex-1 buttons). No override needed here. */
 
     /* ---- Tab nav wraps and shrinks ---- */
     .tab-btn {
