@@ -11,7 +11,9 @@
  *   - Batch member mutation: batchAddMembers
  *   - Ranking mutation (add, remove)
  *   - Configuration (characterProvider injection)
- *   - Cross-domain cascade helper (stripCharacterRefs)
+ *   - Cross-domain cascade helpers:
+ *       stripCharacterRefs      (hard delete of a character)
+ *       endStintsForCharacter   (death of a character; see below)
  *
  * IMPORTANT:
  *   - This is the CANONICAL mutation API for teams.
@@ -87,6 +89,45 @@
  *   - Role is a free-form string. Omission defaults to
  *     TeamConstants.DEFAULT_ROLE.
  *
+ * DEATH CASCADE (endStintsForCharacter):
+ *   When a character's deathYear transitions from blank to a
+ *   parseable year, every active PROFESSIONAL-team stint for that
+ *   character is ended at that year.
+ *
+ *   SCOPE:
+ *     Professional teams only. Academic, temporary, and civilian
+ *     teams are not touched by this cascade. Academic teams are
+ *     managed by the Academy module; temporary and civilian team
+ *     membership does not participate in the death cascade.
+ *
+ *   GRANULARITY:
+ *     Year. Professional team stints use year strings; there is no
+ *     week concept. The helper ends at deathYear, full stop. It
+ *     does not read deathWeek.
+ *
+ *   NON-REVERSIBLE:
+ *     Clearing deathYear does NOT restore the ended stints.
+ *     Ending a stint is a fact. If the user wants to undo a death,
+ *     they also reopen the stints by hand from the member manager.
+ *     This matches the semantics of `leave`.
+ *
+ *   WHAT IT WRITES:
+ *     interval.leavePeriod is set to String(deathYear) on every
+ *     active stint whose joinPeriod is before deathYear.
+ *
+ *     - A stint whose leavePeriod is already set and <= deathYear
+ *       is left alone.
+ *     - A stint whose joinPeriod is >= deathYear is left alone.
+ *       Ending it would create a stint with leave before join,
+ *       which validateMemberIntervals would reject. A stint that
+ *       starts on or after the death year is a data error for the
+ *       user to fix, not something the cascade silently rewrites.
+ *
+ *   PURITY:
+ *     Pure with respect to `appData`. Mutates the snapshot. Never
+ *     touches window.data. Never throws. Runs inside another
+ *     module's pipeline transaction (CharacterCRUD.save).
+ *
  * DEPENDENCIES:
  *   - window.TeamConstants    (from team-constants.js) - MANDATORY
  *   - window.IdUtils          (from id-utils.js) - MANDATORY
@@ -94,7 +135,7 @@
  *   - window.ObjectUtils      (from object-utils.js) - MANDATORY
  *
  *   characterProvider is injected via configure(). Only member
- *   mutations require it.
+ *   mutations require it. Cascade helpers do not.
  */
 
 (function() {
@@ -1529,10 +1570,6 @@
         }
 
         // ---- Pre-flight against window.data. ----
-        //
-        // Fast-fail for obvious problems. This is not
-        // authoritative; the snapshot validate() re-checks
-        // everything.
         var preflightStore = getDataStore();
         if (!preflightStore) {
             return Promise.resolve(failure(
@@ -1558,10 +1595,6 @@
         }
 
         // ---- Validation + mutation, snapshot-scoped. ----
-        //
-        // We clone the rows for the closure so subsequent
-        // mutations of the input array by the caller cannot
-        // affect what we commit.
         var rowsCopy = deepClone(cleanRows);
 
         return runMutation({
@@ -1573,10 +1606,6 @@
                     };
                 }
 
-                // Track what each (team, character) pair would
-                // look like once the batch lands, so we can
-                // detect (a) overlap with existing intervals and
-                // (b) intra-batch overlap for the same pair.
                 var pendingByPair = Object.create(null);
 
                 for (var v = 0; v < rowsCopy.length; v++) {
@@ -1607,8 +1636,6 @@
                         leavePeriod: row.leavePeriod
                     };
 
-                    // Existing intervals for this (team, character)
-                    // pair.
                     if (Array.isArray(team.members)) {
                         for (var m = 0;
                              m < team.members.length;
@@ -1642,7 +1669,6 @@
                         }
                     }
 
-                    // Intra-batch overlap for the same pair.
                     var pairKey = row.teamId + '::' + row.charId;
                     var prior = pendingByPair[pairKey];
                     if (prior) {
@@ -1681,10 +1707,6 @@
 
                     var team = findTeamInData(snapshot, row.teamId);
                     if (!team) {
-                        // Should be impossible: validate()
-                        // checked this against the same
-                        // snapshot. Throw so the pipeline
-                        // rolls back.
                         throw new Error(
                             'Team not found in data store: ' +
                             row.teamId
@@ -1707,12 +1729,6 @@
                     }
 
                     if (entry) {
-                        // Append the interval to the existing
-                        // entry. Role on the existing entry is
-                        // preserved; a new role on the incoming
-                        // batch row is ignored for existing
-                        // entries. (Role edits have their own
-                        // path via updateMember.)
                         if (!Array.isArray(entry.intervals)) {
                             entry.intervals = [];
                         }
@@ -2668,8 +2684,152 @@
     }
 
     // ============================================================
-    // CASCADE HELPER
+    // CASCADE HELPERS
     // ============================================================
+
+    /**
+     * End every active PROFESSIONAL-team stint for a character at
+     * the given year. Called from CharacterCRUD when a character's
+     * deathYear transitions from blank to a parseable year.
+     *
+     * SCOPE:
+     *   Professional teams only. Academic teams are managed by the
+     *   Academy module; temporary and civilian team membership
+     *   does not participate in the death cascade.
+     *
+     * GRANULARITY:
+     *   Year. Professional team stints use year strings. There is
+     *   no week concept on this side. deathWeek is NOT read.
+     *
+     * NON-REVERSIBLE:
+     *   Clearing deathYear does NOT restore the ended stints.
+     *   Ending a stint is a fact, matching the semantics of
+     *   `leave`. The user reopens stints by hand if they want to
+     *   undo a death.
+     *
+     * SEMANTICS:
+     *   For each professional team:
+     *     For each member entry with characterId === charId:
+     *       For each interval:
+     *         - Skip if leavePeriod is already set and <= deathYear.
+     *         - Skip if joinPeriod is >= deathYear. Ending it would
+     *           produce leave < join, which is invalid; a stint
+     *           starting at or after the death year is a data error
+     *           for the user to fix, not something this cascade
+     *           silently rewrites.
+     *         - Otherwise, set leavePeriod = String(deathYear).
+     *
+     * PURE with respect to `appData`:
+     *   - Mutates the snapshot.
+     *   - Never touches window.data.
+     *   - Never throws.
+     *
+     * @param {object} appData
+     * @param {string} charId
+     * @param {number|string} deathYear
+     * @returns {object} {
+     *   stintsEnded: number,
+     *   teamsTouched: number,
+     *   skippedAlreadyEnded: number,
+     *   skippedStartsAfterDeath: number
+     * }
+     */
+    function endStintsForCharacter(appData, charId, deathYear) {
+        var result = {
+            stintsEnded: 0,
+            teamsTouched: 0,
+            skippedAlreadyEnded: 0,
+            skippedStartsAfterDeath: 0
+        };
+
+        if (!appData || !isNonEmptyString(charId)) {
+            return result;
+        }
+        if (!Array.isArray(appData.teams)) {
+            return result;
+        }
+
+        var deathNum = parsePeriod(deathYear);
+        if (deathNum === null) {
+            return result;
+        }
+
+        var target = String(charId);
+        var deathStr = String(deathNum);
+
+        var teamsTouchedSet = Object.create(null);
+
+        for (var t = 0; t < appData.teams.length; t++) {
+            var team = appData.teams[t];
+            if (!team || typeof team !== 'object') {
+                continue;
+            }
+            if (team.type !== 'professional') {
+                continue;
+            }
+            if (!Array.isArray(team.members)) {
+                continue;
+            }
+
+            for (var m = 0; m < team.members.length; m++) {
+                var member = team.members[m];
+                if (!member || typeof member !== 'object') {
+                    continue;
+                }
+                if (String(member.characterId) !== target) {
+                    continue;
+                }
+                if (!Array.isArray(member.intervals)) {
+                    continue;
+                }
+
+                for (var i = 0; i < member.intervals.length; i++) {
+                    var iv = member.intervals[i];
+                    if (!iv || typeof iv !== 'object') {
+                        continue;
+                    }
+
+                    var leaveRaw = (iv.leavePeriod === undefined ||
+                                    iv.leavePeriod === null)
+                        ? ''
+                        : String(iv.leavePeriod);
+                    var leaveNum = parsePeriod(leaveRaw);
+
+                    // Already ended at or before the death year.
+                    if (leaveNum !== null && leaveNum <= deathNum) {
+                        result.skippedAlreadyEnded++;
+                        continue;
+                    }
+
+                    var joinRaw = (iv.joinPeriod === undefined ||
+                                   iv.joinPeriod === null)
+                        ? ''
+                        : String(iv.joinPeriod);
+                    var joinNum = parsePeriod(joinRaw);
+
+                    // Stint starts at or after the death year.
+                    // Ending it would be leave < join.
+                    if (joinNum !== null && joinNum >= deathNum) {
+                        result.skippedStartsAfterDeath++;
+                        continue;
+                    }
+
+                    iv.leavePeriod = deathStr;
+                    result.stintsEnded++;
+                    teamsTouchedSet[String(team.id)] = true;
+                }
+
+                // Touch the team's updatedAt only if we changed
+                // something on it.
+                if (teamsTouchedSet[String(team.id)]) {
+                    team.updatedAt = new Date().toISOString();
+                }
+            }
+        }
+
+        result.teamsTouched = Object.keys(teamsTouchedSet).length;
+        return result;
+    }
 
     function stripCharacterRefs(appData, charId) {
         var result = { membershipsRemoved: 0 };
@@ -2728,7 +2888,8 @@
         removeRanking: removeRanking,
 
         // Cross-domain cascade
-        stripCharacterRefs: stripCharacterRefs
+        stripCharacterRefs: stripCharacterRefs,
+        endStintsForCharacter: endStintsForCharacter
     };
 
 })();
