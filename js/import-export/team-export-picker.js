@@ -1,17 +1,23 @@
 /**
  * js/import-export/team-export-picker.js - Team Export Picker
- * Modal that offers JSON / CSV export of all professional teams.
+ * Modal that offers plain-text / CSV export of all professional
+ * teams.
  *
  * Path: js/import-export/team-export-picker.js
  *
  * WHY A PICKER FOR A NON-PARAMETERIZED EXPORT:
- *   The graduates picker existed because graduates are scoped to
- *   a class — the user must pick which class. Teams are not scoped;
- *   "all professional teams" is a single well-defined set.
- *
- *   This picker exists for a different reason: it is the place
- *   where the user chooses JSON or CSV, and where they see a
+ *   Teams are not scoped the way graduates are. "All professional
+ *   teams" is a single well-defined set. The picker exists as the
+ *   place where the user chooses the format, and where they see a
  *   pre-flight count before downloading.
+ *
+ * FORMATS:
+ *   Text (default) - a plain-text document designed to be read.
+ *     Sparse; sections collapse when empty; sub-objects are
+ *     flattened into prose. This is the primary format.
+ *
+ *   CSV - a flat grid, one row per stint. Useful for spreadsheet
+ *     work and scripting. JSON-shaped fields remain encoded.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -51,7 +57,7 @@
         _missing.push('NotificationSystem.notify');
     }
     if (!TeamExport ||
-        typeof TeamExport.exportTeamsJSON !== 'function' ||
+        typeof TeamExport.exportTeamsText !== 'function' ||
         typeof TeamExport.exportTeamsCSV !== 'function' ||
         typeof TeamExport.getTeams !== 'function') {
         _missing.push('TeamExport API');
@@ -299,8 +305,8 @@
                     '</span>';
             html += '</div>';
             html += '<p class="field-hint team-export-picker-note">' +
-                        'CSV format produces one row per stint. ' +
-                        'JSON format is nested.' +
+                        'Text format is a human-readable document. ' +
+                        'CSV format is a flat grid for spreadsheets.' +
                     '</p>';
         }
         html += '</div>';
@@ -318,16 +324,16 @@
 
         html += '<span class="team-export-picker-footer-spacer"></span>';
 
-        html += '<button type="button" class="primary" ' +
-                    'data-picker-action="export-json"' +
-                    (hasTeams ? '' : ' disabled') + '>' +
-                    'Export JSON' +
-                '</button>';
-
-        html += '<button type="button" class="primary" ' +
+        html += '<button type="button" class="secondary" ' +
                     'data-picker-action="export-csv"' +
                     (hasTeams ? '' : ' disabled') + '>' +
                     'Export CSV' +
+                '</button>';
+
+        html += '<button type="button" class="primary" ' +
+                    'data-picker-action="export-text"' +
+                    (hasTeams ? '' : ' disabled') + '>' +
+                    'Export Text' +
                 '</button>';
 
         html += '</div>';
@@ -354,9 +360,9 @@
             return;
         }
 
-        if (action === 'export-json') {
+        if (action === 'export-text') {
             e.preventDefault();
-            handleExport('json');
+            handleExport('text');
             return;
         }
 
@@ -398,8 +404,8 @@
         var result;
 
         try {
-            if (format === 'json') {
-                result = TeamExport.exportTeamsJSON(options);
+            if (format === 'text') {
+                result = TeamExport.exportTeamsText(options);
             } else {
                 result = TeamExport.exportTeamsCSV(options);
             }
