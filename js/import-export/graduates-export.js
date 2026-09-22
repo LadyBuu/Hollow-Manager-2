@@ -17,20 +17,45 @@
  *   The elimination check is presence-based: has this character
  *   ever been eliminated at all?
  *
- * WHAT THIS MODULE DOES NOT OWN:
- *   - The class entity             (AcademyClasses)
- *   - The roster derivation        (AcademyAggregator)
- *   - Elimination reads            (EliminationQueries)
- *   - Character data               (CharacterQueries)
- *   - CSV parsing                  (CSV)
- *   - File download                (ExportUtils)
+ * TWO OUTPUT FORMATS:
  *
- * SCOPE:
- *   Academy is used ONLY to determine WHICH characters appear in
- *   the export. Once the graduate list is resolved, every column
- *   comes from the character record via CharacterQueries.
- *   No academic data — no grades, no enrolments, no teams, no
- *   rankings, no eliminations — is included in the output.
+ *   TEXT (the primary format):
+ *     A human-readable plain-text document. Designed to be opened
+ *     in a text editor and read. Sparse: a line is emitted only
+ *     when the field it describes has content. Sub-objects (stats,
+ *     magic, weapons, moves) are flattened into prose.
+ *
+ *     This is a PROJECTION, not a backup. It is deliberately lossy
+ *     in structure — a reader who wants to re-import data should
+ *     use the JSON envelope export at the application level.
+ *
+ *   CSV (the secondary format):
+ *     A flat grid, one row per graduate. Useful for spreadsheet
+ *     work and scripting. JSON-shaped fields remain JSON-encoded,
+ *     because a spreadsheet consumer expects to parse them.
+ *
+ * TEXT SHAPE:
+ *
+ *   Hollow Blades — Graduates of Class of 1926
+ *   Exported 2026-09-22
+ *   12 graduates
+ *
+ *   ============================================================
+ *   Aldric Blackwood
+ *   ============================================================
+ *   Age      : 32
+ *   Gender   : Male
+ *   Physical : Athletic · 5'11" · 78kg
+ *   Eyes/Hair: Grey / Black / Fair
+ *   Traits   : Brave, Honest, Loyal
+ *   Stats    : STR 14 · DEX 12 · CON 13 · INT 10 · WIS 11 · CHA 9
+ *   Combat   : HP 45 · MP 20
+ *   Weapons  : Longsword (sharp); Dagger (sharp)
+ *
+ *   ============================================================
+ *   Mira Vale
+ *   ============================================================
+ *   ...
  *
  * FAIL-CLOSED ELIGIBILITY:
  *   When EliminationQueries is unavailable, this module refuses to
@@ -38,66 +63,13 @@
  *   fail-closed answer is the honest one; "everyone passed" would
  *   be a lie.
  *
- * JSON SHAPE (deliberately NOT the application envelope):
- *   The graduate list is a standalone document, not a backup of
- *   application state. It is NOT wrapped in the "hollow-blades"
- *   envelope. The envelope's section filter (Schema.getSections)
- *   would silently drop a `graduates` key, because `graduates` is
- *   not part of the application state shape. A graduate list is a
- *   projection over state, not a copy of it, so it gets its own
- *   top-level shape:
- *
- *     {
- *       exportedAt: ISO string,
- *       classId:    string,
- *       className:  string,
- *       count:      number,
- *       graduates:  [GraduateRecord, ...]
- *     }
- *
- *   The consequence: this file cannot be fed to ImportPipeline.
- *   That is correct. Importing a graduate list as application
- *   state would be nonsense.
- *
- * OUTPUT SHAPES:
- *
- *   getGraduates(classId) ->
- *     {
- *       classId,
- *       className,
- *       graduates: [GraduateRecord, ...]
- *     }
- *
- *   GraduateRecord:
- *     {
- *       id,
- *       firstName, middleName, lastName, nickname, alias,
- *       previousNames: [string],
- *       displayName,
- *       age, birthYear, gender, attraction, sexuality,
- *       eyes, hair, skin, height, weight, build, appearanceNotes,
- *       traits, ideals, bonds, flaws, alignment,
- *       likes, dislikes, habits, fears, goals,
- *       stats, magic, hp, mp, weapons, specialMoves, combatNotes
- *     }
- *
- *   exportGraduatesJSON(classId, options) ->
- *     {
- *       exported, filename, count, error?
- *     }
- *
- *   exportGraduatesCSV(classId, options) ->
- *     {
- *       exported, filename, count, error?
- *     }
- *
- *   Error codes (result.error):
- *     'Class not found or arguments invalid.'
- *     'No graduates found for this class.'
- *     (any transport-level failure message from blob/download)
- *
- *   getGraduatesCSVContent(classId) -> string
- *   getGraduatesJSONDocument(classId, options) -> object | null
+ * WHAT THIS MODULE DOES NOT OWN:
+ *   - The class entity             (AcademyClasses)
+ *   - The roster derivation        (AcademyAggregator)
+ *   - Elimination reads            (EliminationQueries)
+ *   - Character data               (CharacterQueries)
+ *   - CSV parsing                  (CSV)
+ *   - File download                (ExportUtils)
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.CharacterQueries
@@ -189,6 +161,13 @@
 
     var DEFAULT_STAT_KEYS = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
 
+    var TEXT_FILENAME_PREFIX = 'graduates';
+    var CSV_FILENAME_PREFIX = 'graduates';
+    var SECTION_HEADER = '# GRADUATES';
+
+    var GRADUATE_SEPARATOR = '='.repeat(64);
+    var LABEL_WIDTH = 10;
+
     var COLUMNS = [
         'FirstName',
         'MiddleName',
@@ -227,9 +206,6 @@
         'CombatNotes'
     ];
 
-    var CSV_FILENAME_PREFIX = 'graduates';
-    var SECTION_HEADER = '# GRADUATES';
-
     // ============================================================
     // SMALL HELPERS
     // ============================================================
@@ -267,6 +243,22 @@
             .replace(/^-+|-+$/g, '') || 'class';
     }
 
+    /**
+     * Is this value non-empty for text-output purposes?
+     * Zero is data (it is emitted). An empty string is not.
+     */
+    function hasText(value) {
+        if (value === undefined || value === null) { return false; }
+        if (typeof value === 'string') { return value.trim() !== ''; }
+        if (typeof value === 'number') { return isFinite(value); }
+        if (typeof value === 'boolean') { return true; }
+        if (Array.isArray(value)) { return value.length > 0; }
+        if (typeof value === 'object') {
+            return Object.keys(value).length > 0;
+        }
+        return false;
+    }
+
     // ============================================================
     // GRADUATE FILTER
     // ============================================================
@@ -291,12 +283,6 @@
             return false;
         }
 
-        // getEliminationWeek returns the earliest elimination week,
-        // or null when the character has no elimination records.
-        // Null means "never eliminated" — that is a graduate.
-        //
-        // The query accepts either a character object or a char ID
-        // and resolves an ID in the live store internally.
         var earliest;
         try {
             earliest = EQ.getEliminationWeek(charId);
@@ -378,11 +364,7 @@
         for (var i = 0; i < keys.length; i++) {
             var k = keys[i];
             var v = source[k];
-            if (isFiniteNumber(v)) {
-                result[k] = v;
-            } else {
-                result[k] = 0;
-            }
+            result[k] = isFiniteNumber(v) ? v : 0;
         }
         return result;
     }
@@ -394,11 +376,7 @@
         for (var i = 0; i < keys.length; i++) {
             var k = keys[i];
             var v = source[k];
-            if (isFiniteNumber(v)) {
-                result[k] = v;
-            } else {
-                result[k] = 0;
-            }
+            result[k] = isFiniteNumber(v) ? v : 0;
         }
         return result;
     }
@@ -578,8 +556,486 @@
     }
 
     // ============================================================
+    // TEXT FORMAT
+    // ============================================================
+    //
+    // The text format is the primary export. It is designed to be
+    // read, not parsed. Every design decision favours the reader:
+    //
+    //   - Sparse: a field line is emitted only when the field has
+    //     content. No "Traits: (none)" filler.
+    //   - Sections collapse: a graduate with no personality data
+    //     does not get a "Personality" header with empty lines.
+    //   - Sub-objects flatten: stats become "STR 14 · DEX 12 · ..."
+    //     not a JSON blob.
+    //   - Separators carry hierarchy: === for each graduate.
+    //   - Labels are padded to a fixed width so values line up
+    //     within a graduate block.
+
+    function padLabel(label) {
+        var str = String(label);
+        while (str.length < LABEL_WIDTH) {
+            str += ' ';
+        }
+        return str;
+    }
+
+    /**
+     * Emit a labelled line, or nothing if the value is empty.
+     * Whitespace within the value is collapsed to single spaces so
+     * a multi-line notes field does not break the block layout.
+     */
+    function textLine(label, value) {
+        if (!hasText(value)) { return ''; }
+        var v = String(value).replace(/\s+/g, ' ').trim();
+        if (v === '') { return ''; }
+        return padLabel(label) + ': ' + v + '\n';
+    }
+
+    /**
+     * Format stats as "STR 14 · DEX 12 · ..." with each key
+     * uppercased. All-zero stats are treated as empty.
+     */
+    function formatStats(stats) {
+        if (!isObject(stats)) { return ''; }
+
+        var keys = Object.keys(stats);
+        if (keys.length === 0) { return ''; }
+
+        var any = false;
+        for (var i = 0; i < keys.length; i++) {
+            if (stats[keys[i]] !== 0) { any = true; break; }
+        }
+        if (!any) { return ''; }
+
+        var parts = [];
+        for (var j = 0; j < keys.length; j++) {
+            var k = keys[j];
+            parts.push(k.toUpperCase() + ' ' + stats[k]);
+        }
+        return parts.join(' \u00b7 ');
+    }
+
+    /**
+     * Format magic as "Fire 8 · Water 3" with only non-zero
+     * entries shown.
+     */
+    function formatMagic(magic) {
+        if (!isObject(magic)) { return ''; }
+
+        var parts = [];
+        var keys = Object.keys(magic);
+        for (var i = 0; i < keys.length; i++) {
+            var k = keys[i];
+            var v = magic[k];
+            if (!isFiniteNumber(v) || v === 0) { continue; }
+            var label = k.charAt(0).toUpperCase() + k.slice(1);
+            parts.push(label + ' ' + v);
+        }
+        return parts.join(' \u00b7 ');
+    }
+
+    /**
+     * Format weapons as "Longsword (sharp); Dagger (sharp)".
+     */
+    function formatWeapons(weapons) {
+        if (!Array.isArray(weapons) || weapons.length === 0) {
+            return '';
+        }
+
+        var parts = [];
+        for (var i = 0; i < weapons.length; i++) {
+            var w = weapons[i];
+            if (!isObject(w)) { continue; }
+            var name = isNonEmptyString(w.name) ? String(w.name) : '';
+            if (name === '') { continue; }
+            if (isNonEmptyString(w.type)) {
+                name += ' (' + w.type + ')';
+            }
+            if (isNonEmptyString(w.notes)) {
+                name += ' \u2014 ' + w.notes;
+            }
+            parts.push(name);
+        }
+        return parts.join('; ');
+    }
+
+    /**
+     * Format special moves as "Physical — A, B · Magical — C".
+     */
+    function formatSpecialMoves(moves) {
+        if (!isObject(moves)) { return ''; }
+
+        var parts = [];
+
+        function listOf(list) {
+            if (!Array.isArray(list) || list.length === 0) {
+                return '';
+            }
+            var names = [];
+            for (var i = 0; i < list.length; i++) {
+                var m = list[i];
+                if (!isObject(m)) { continue; }
+                if (!isNonEmptyString(m.name)) { continue; }
+                var s = String(m.name);
+                if (isNonEmptyString(m.description)) {
+                    s += ' (' + m.description + ')';
+                }
+                names.push(s);
+            }
+            return names.join(', ');
+        }
+
+        var phys = listOf(moves.physical);
+        var mag = listOf(moves.magical);
+
+        if (phys) { parts.push('Physical \u2014 ' + phys); }
+        if (mag) { parts.push('Magical \u2014 ' + mag); }
+
+        return parts.join(' \u00b7 ');
+    }
+
+    function formatPhysicalComposite(grad) {
+        var parts = [];
+        if (isNonEmptyString(grad.build)) {
+            parts.push(String(grad.build));
+        }
+        if (isNonEmptyString(grad.height)) {
+            parts.push(String(grad.height));
+        }
+        if (isNonEmptyString(grad.weight)) {
+            parts.push(String(grad.weight));
+        }
+        return parts.join(' \u00b7 ');
+    }
+
+    function formatColourComposite(grad) {
+        var parts = [];
+        if (isNonEmptyString(grad.eyes)) {
+            parts.push(String(grad.eyes));
+        }
+        if (isNonEmptyString(grad.hair)) {
+            parts.push(String(grad.hair));
+        }
+        if (isNonEmptyString(grad.skin)) {
+            parts.push(String(grad.skin));
+        }
+        return parts.join(' / ');
+    }
+
+    /**
+     * Emit the header banner for a graduate.
+     *   ============================================================
+     *   Aldric Blackwood
+     *   ============================================================
+     */
+    function emitGraduateHeader(grad) {
+        var out = '';
+        out += GRADUATE_SEPARATOR + '\n';
+        out += (isNonEmptyString(grad.displayName)
+            ? grad.displayName
+            : 'Unknown') + '\n';
+        out += GRADUATE_SEPARATOR + '\n';
+        return out;
+    }
+
+    function emitIdentityLines(grad) {
+        var out = '';
+
+        // Full name, if different from display name.
+        var fullName = [grad.firstName, grad.middleName, grad.lastName]
+            .filter(isNonEmptyString)
+            .join(' ');
+        if (fullName && fullName !== grad.displayName) {
+            out += textLine('Name', fullName);
+        }
+
+        if (isNonEmptyString(grad.nickname)) {
+            out += textLine('Nickname', grad.nickname);
+        }
+        if (isNonEmptyString(grad.alias)) {
+            out += textLine('Alias', grad.alias);
+        }
+
+        if (Array.isArray(grad.previousNames) &&
+            grad.previousNames.length > 0) {
+            out += textLine(
+                'Also',
+                grad.previousNames.join(', ')
+            );
+        }
+
+        if (isNonEmptyString(grad.age)) {
+            out += textLine('Age', grad.age);
+        }
+        if (isNonEmptyString(grad.birthYear)) {
+            out += textLine('Born', grad.birthYear);
+        }
+        if (isNonEmptyString(grad.gender)) {
+            out += textLine('Gender', grad.gender);
+        }
+        if (isNonEmptyString(grad.attraction)) {
+            out += textLine('Attraction', grad.attraction);
+        }
+        if (isNonEmptyString(grad.sexuality)) {
+            out += textLine('Sexuality', grad.sexuality);
+        }
+
+        return out;
+    }
+
+    function emitPhysicalLines(grad) {
+        var out = '';
+
+        var composite = formatPhysicalComposite(grad);
+        if (composite) {
+            out += textLine('Physical', composite);
+        }
+
+        var colours = formatColourComposite(grad);
+        if (colours) {
+            out += textLine('Eyes/Hair', colours);
+        }
+
+        if (isNonEmptyString(grad.appearanceNotes)) {
+            out += textLine('Appearance', grad.appearanceNotes);
+        }
+
+        return out;
+    }
+
+    function emitPersonalityLines(grad) {
+        var out = '';
+
+        if (isNonEmptyString(grad.traits)) {
+            out += textLine('Traits', grad.traits);
+        }
+        if (isNonEmptyString(grad.ideals)) {
+            out += textLine('Ideals', grad.ideals);
+        }
+        if (isNonEmptyString(grad.bonds)) {
+            out += textLine('Bonds', grad.bonds);
+        }
+        if (isNonEmptyString(grad.flaws)) {
+            out += textLine('Flaws', grad.flaws);
+        }
+        if (isNonEmptyString(grad.alignment)) {
+            out += textLine('Alignment', grad.alignment);
+        }
+        if (isNonEmptyString(grad.likes)) {
+            out += textLine('Likes', grad.likes);
+        }
+        if (isNonEmptyString(grad.dislikes)) {
+            out += textLine('Dislikes', grad.dislikes);
+        }
+        if (isNonEmptyString(grad.habits)) {
+            out += textLine('Habits', grad.habits);
+        }
+        if (isNonEmptyString(grad.fears)) {
+            out += textLine('Fears', grad.fears);
+        }
+        if (isNonEmptyString(grad.goals)) {
+            out += textLine('Goals', grad.goals);
+        }
+
+        return out;
+    }
+
+    function emitCombatLines(grad) {
+        var out = '';
+
+        var stats = formatStats(grad.stats);
+        if (stats) {
+            out += textLine('Stats', stats);
+        }
+
+        var hpmp = '';
+        if (isFiniteNumber(grad.hp) && grad.hp !== 0) {
+            hpmp += 'HP ' + grad.hp;
+        }
+        if (isFiniteNumber(grad.mp) && grad.mp !== 0) {
+            if (hpmp) { hpmp += ' \u00b7 '; }
+            hpmp += 'MP ' + grad.mp;
+        }
+        if (hpmp) {
+            out += textLine('Combat', hpmp);
+        }
+
+        var magic = formatMagic(grad.magic);
+        if (magic) {
+            out += textLine('Magic', magic);
+        }
+
+        var weapons = formatWeapons(grad.weapons);
+        if (weapons) {
+            out += textLine('Weapons', weapons);
+        }
+
+        var moves = formatSpecialMoves(grad.specialMoves);
+        if (moves) {
+            out += textLine('Moves', moves);
+        }
+
+        if (isNonEmptyString(grad.combatNotes)) {
+            out += textLine('Notes', grad.combatNotes);
+        }
+
+        return out;
+    }
+
+    /**
+     * Emit one graduate block. Sections are separated by a blank
+     * line if there is more than one section with content, so the
+     * reader's eye can group them.
+     */
+    function emitGraduateBlock(grad) {
+        var out = '';
+
+        out += emitGraduateHeader(grad);
+
+        var identity = emitIdentityLines(grad);
+        var physical = emitPhysicalLines(grad);
+        var personality = emitPersonalityLines(grad);
+        var combat = emitCombatLines(grad);
+
+        var sections = [identity, physical, personality, combat]
+            .filter(function(s) { return s !== ''; });
+
+        if (sections.length === 0) {
+            // A graduate with no data beyond the name. Emit a
+            // single placeholder so the block is not just a banner.
+            out += '(No further details recorded.)\n';
+            return out;
+        }
+
+        for (var i = 0; i < sections.length; i++) {
+            if (i > 0) { out += '\n'; }
+            out += sections[i];
+        }
+
+        return out;
+    }
+
+    /**
+     * Build the full text export for a graduate VM.
+     *
+     * @param {object} vm - The VM from getGraduates()
+     * @returns {string}
+     */
+    function buildGraduatesText(vm) {
+        var out = '';
+
+        var count = vm.graduates.length;
+
+        // ---- Header ----
+        out += 'Hollow Blades \u2014 Graduates of ' + vm.className + '\n';
+        out += 'Exported ' + new Date().toISOString().slice(0, 10) + '\n';
+        out += count + ' graduate' + (count === 1 ? '' : 's') + '\n\n';
+
+        if (count === 0) {
+            out += '(No graduates in this class.)\n';
+            return out;
+        }
+
+        // ---- Graduates ----
+        for (var i = 0; i < vm.graduates.length; i++) {
+            if (i > 0) {
+                out += '\n';
+            }
+            out += emitGraduateBlock(vm.graduates[i]);
+        }
+
+        return out;
+    }
+
+    /**
+     * Get the plain-text content as a string. No download.
+     *
+     * @param {string} classId
+     * @returns {string} Empty string when the class does not exist.
+     */
+    function getGraduatesTextContent(classId) {
+        var vm = getGraduates(classId);
+        if (!vm) { return ''; }
+        return buildGraduatesText(vm);
+    }
+
+    /**
+     * Export the graduate list as a plain-text file.
+     *
+     * @param {string} classId
+     * @param {object} [options]
+     * @param {string} [options.filename]
+     * @returns {{
+     *   exported: boolean,
+     *   filename: string|null,
+     *   count: number,
+     *   error: string|null
+     * }}
+     */
+    function exportGraduatesText(classId, options) {
+        options = options || {};
+
+        var vm = getGraduates(classId);
+        if (!vm) {
+            return {
+                exported: false,
+                filename: null,
+                count: 0,
+                error: 'Class not found or arguments invalid.'
+            };
+        }
+
+        if (vm.graduates.length === 0) {
+            return {
+                exported: false,
+                filename: null,
+                count: 0,
+                error: 'No graduates found for this class.'
+            };
+        }
+
+        var content = buildGraduatesText(vm);
+
+        // No BOM. Plain text does not need it, and it produces a
+        // phantom character in most Unix tooling.
+        var blob = new Blob([content], {
+            type: 'text/plain;charset=utf-8'
+        });
+
+        var filename = options.filename ||
+            TEXT_FILENAME_PREFIX + '-' +
+            sanitiseForFilename(vm.className) + '.txt';
+
+        try {
+            ExportUtils.downloadBlob(blob, filename);
+        } catch (e) {
+            return {
+                exported: false,
+                filename: null,
+                count: 0,
+                error: 'Failed to download text: ' + e.message
+            };
+        }
+
+        return {
+            exported: true,
+            filename: filename,
+            count: vm.graduates.length,
+            error: null
+        };
+    }
+
+    // ============================================================
     // CSV
     // ============================================================
+    //
+    // CSV is the secondary format. It is a flat grid — one row per
+    // graduate — that a spreadsheet or scripting tool can consume.
+    // JSON-shaped fields (stats, magic, weapons, moves) remain
+    // JSON-encoded, because a consumer of CSV expects to parse
+    // them. Rows are separated by \r\n and the file carries a BOM,
+    // both because Excel expects them.
 
     function buildCSVRows(vm) {
         var rows = [];
@@ -706,113 +1162,6 @@
     }
 
     // ============================================================
-    // JSON
-    // ============================================================
-
-    /**
-     * Build the JSON document object without downloading.
-     *
-     * This is deliberately NOT an application envelope. The
-     * envelope's section filter would drop `graduates`, because
-     * `graduates` is not part of the application state shape.
-     * A graduate list is a projection, not a backup, so it gets
-     * its own top-level document shape.
-     *
-     * Returns null when the class is missing.
-     */
-    function getGraduatesJSONDocument(classId, options) {
-        options = options || {};
-
-        var vm = getGraduates(classId);
-        if (!vm) { return null; }
-
-        return {
-            exportedAt: new Date().toISOString(),
-            classId: vm.classId,
-            className: vm.className,
-            count: vm.graduates.length,
-            graduates: vm.graduates
-        };
-    }
-
-    /**
-     * Export the graduate list as a JSON file.
-     */
-    function exportGraduatesJSON(classId, options) {
-        options = options || {};
-
-        var vm = getGraduates(classId);
-        if (!vm) {
-            return {
-                exported: false,
-                filename: null,
-                count: 0,
-                error: 'Class not found or arguments invalid.'
-            };
-        }
-
-        if (vm.graduates.length === 0) {
-            return {
-                exported: false,
-                filename: null,
-                count: 0,
-                error: 'No graduates found for this class.'
-            };
-        }
-
-        var document = getGraduatesJSONDocument(classId, options);
-        if (!document) {
-            return {
-                exported: false,
-                filename: null,
-                count: 0,
-                error: 'Could not build a graduate document.'
-            };
-        }
-
-        var serialised;
-        try {
-            serialised = JSON.stringify(
-                document,
-                null,
-                options.pretty !== false ? 2 : 0
-            );
-        } catch (e) {
-            return {
-                exported: false,
-                filename: null,
-                count: 0,
-                error: 'Failed to serialize JSON: ' + e.message
-            };
-        }
-
-        var filename = options.filename ||
-            CSV_FILENAME_PREFIX + '-' + sanitiseForFilename(vm.className) +
-            '.json';
-
-        try {
-            var blob = new Blob([serialised], {
-                type: 'application/json'
-            });
-            ExportUtils.downloadBlob(blob, filename);
-        } catch (e) {
-            return {
-                exported: false,
-                filename: null,
-                count: 0,
-                error: 'Failed to download JSON: ' + e.message
-            };
-        }
-
-        return {
-            exported: true,
-            filename: filename,
-            count: vm.graduates.length,
-            error: null
-        };
-    }
-
-    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -820,11 +1169,11 @@
         // Projection
         getGraduates: getGraduates,
 
-        // JSON
-        getGraduatesJSONDocument: getGraduatesJSONDocument,
-        exportGraduatesJSON: exportGraduatesJSON,
+        // Text (primary)
+        getGraduatesTextContent: getGraduatesTextContent,
+        exportGraduatesText: exportGraduatesText,
 
-        // CSV
+        // CSV (secondary)
         getGraduatesCSVContent: getGraduatesCSVContent,
         exportGraduatesCSV: exportGraduatesCSV,
 
@@ -843,8 +1192,8 @@
 
         var required = [
             'getGraduates',
-            'getGraduatesJSONDocument',
-            'exportGraduatesJSON',
+            'getGraduatesTextContent',
+            'exportGraduatesText',
             'getGraduatesCSVContent',
             'exportGraduatesCSV'
         ];
