@@ -14,6 +14,7 @@
  *   - Open and close modals.
  *   - Read and write form field values.
  *   - Own the matchmaking modal's proposal state.
+ *   - Own the professional tab's Unassigned toggle.
  *
  * IMPORTANT:
  *   - Orchestration only. No domain reads beyond TeamQueries,
@@ -29,6 +30,31 @@
  *   - Delegation is scoped to the container. Modal shells are
  *     appended to document.body and are wired directly by the
  *     function that opens them.
+ *
+ * UNASSIGNED MODE:
+ *   The professional tab has two modes: Teams (the default) and
+ *   Unassigned. The mode is a module-level boolean
+ *   (_showUnassigned). It is NOT part of TeamUI's persisted state:
+ *   it is a transient view toggle, and persisting it would require
+ *   a schema bump on team_ui_state_v1, losing every user's tab and
+ *   expand state for a preference that resets naturally when the
+ *   page reloads.
+ *
+ *   The toggle is rendered by TeamRender.renderFilterBar as a
+ *   two-button control. Clicks on .mode-btn are handled by
+ *   bindModeToggle.
+ *
+ *   refreshUI() branches on the mode:
+ *     - Teams mode:      existing behaviour.
+ *     - Unassigned mode: getUnassignedViewModel, attach it to the
+ *                        page VM as pageVM.unassignedVM, set
+ *                        pageVM.showUnassigned = true.
+ *
+ *   When the user leaves the professional tab (clicks Temporary or
+ *   Civilian) and comes back, the toggle is reset to Teams. This
+ *   keeps the two other tabs free of a control that doesn't apply
+ *   to them, and avoids a "why is my professional tab showing
+ *   unassigned people" moment after a tab switch.
  *
  * MATCHMAKING MODAL:
  *   The matchmaking modal has two modes: Setup and Proposal.
@@ -146,6 +172,13 @@
             'function') {
         _missing.push(
             'TeamAggregator.getTeamMatchmakingViewModel'
+        );
+    }
+    if (!TeamAggregator ||
+        typeof TeamAggregator.getUnassignedViewModel !==
+            'function') {
+        _missing.push(
+            'TeamAggregator.getUnassignedViewModel'
         );
     }
 
@@ -280,6 +313,11 @@
     var _memberManagerModal = null;
     var _matchmakingModal = null;
 
+    // Professional-tab view mode. See the file header's
+    // UNASSIGNED MODE block for why this is module-level rather
+    // than persisted in TeamUI.
+    var _showUnassigned = false;
+
     // ============================================================
     // LISTENER BOOKKEEPING
     // ============================================================
@@ -367,14 +405,49 @@
         var period = getCurrentPeriod(currentTab);
         var expandedTeamId = TeamUI.getExpandedTeamId();
 
+        // The unassigned toggle is only meaningful on the
+        // professional tab. If the user has switched away and back,
+        // or is on a different tab entirely, force Teams mode.
+        // This keeps the toggle from leaking state across tabs.
+        if (currentTab !== 'professional') {
+            _showUnassigned = false;
+        }
+
         var pageVM = TeamAggregator.getTeamPageViewModel({
             type: currentTab,
             period: period,
-            expandedTeamId: expandedTeamId
+            expandedTeamId: _showUnassigned ? null : expandedTeamId
         });
 
-        if (pageVM.expandedTeamId !== expandedTeamId) {
+        // The expanded team is not shown while the Unassigned view
+        // is active. When we come back to Teams mode, the persisted
+        // expandedTeamId is restored by the aggregator on the next
+        // call. We pass `null` while unassigned to avoid expanding
+        // a team behind the unassigned rows.
+        if (!_showUnassigned &&
+            pageVM.expandedTeamId !== expandedTeamId) {
             TeamUI.setExpandedTeamId(pageVM.expandedTeamId);
+        }
+
+        // Attach the unassigned VM when the toggle is on and we are
+        // on the professional tab. The aggregator returns null for
+        // other tabs; we only call it here when it is relevant.
+        if (currentTab === 'professional' && _showUnassigned) {
+            var unassignedVM = null;
+            try {
+                unassignedVM =
+                    TeamAggregator.getUnassignedViewModel();
+            } catch (e) {
+                console.warn(
+                    '[TeamEvents] getUnassignedViewModel failed:', e
+                );
+                unassignedVM = null;
+            }
+            pageVM.unassignedVM = unassignedVM;
+            pageVM.showUnassigned = true;
+        } else {
+            pageVM.unassignedVM = null;
+            pageVM.showUnassigned = false;
         }
 
         _container.innerHTML =
@@ -385,6 +458,8 @@
         if (filterContainer) {
             var filterVM =
                 TeamAggregator.getFilterBarViewModel(currentTab);
+            filterVM.showUnassigned =
+                (currentTab === 'professional') && _showUnassigned;
             filterContainer.innerHTML =
                 TeamRender.renderFilterBar(filterVM);
         }
@@ -410,7 +485,11 @@
         _container = container;
         removeAllEventListeners();
 
+        // Reset the view mode on init. A remount is a fresh start.
+        _showUnassigned = false;
+
         bindTabSwitching();
+        bindModeToggle();
         bindAddTeam();
         bindMatchmaking();
         bindTeamActions();
@@ -441,6 +520,7 @@
         removeAllEventListeners();
         _initialized = false;
         _container = null;
+        _showUnassigned = false;
     }
 
     // ============================================================
@@ -452,7 +532,53 @@
             var tab = target.dataset.tab;
             if (!tab) { return; }
 
+            // Leaving the professional tab resets the unassigned
+            // toggle. Coming back lands in Teams mode. The user
+            // asked for "just professional" so the toggle is a
+            // professional-tab-only control.
+            if (tab !== 'professional') {
+                _showUnassigned = false;
+            }
+
             TeamUI.setCurrentTab(tab);
+            refreshUI();
+        });
+    }
+
+    // ============================================================
+    // MODE TOGGLE (professional tab only)
+    // ============================================================
+
+    function bindModeToggle() {
+        delegate('.mode-btn', 'click', function(e, target) {
+            e.preventDefault();
+
+            // Guard: the toggle only makes sense on the
+            // professional tab. If a stale button somehow gets
+            // clicked on another tab, ignore it.
+            if (TeamUI.getCurrentTab() !== 'professional') {
+                return;
+            }
+
+            var mode = target.dataset.mode;
+            if (mode !== 'teams' && mode !== 'unassigned') {
+                return;
+            }
+
+            var next = (mode === 'unassigned');
+            if (next === _showUnassigned) {
+                return;
+            }
+
+            _showUnassigned = next;
+
+            // When entering Unassigned mode, collapse any expanded
+            // team. The expanded team is not rendered there, and
+            // leaving it expanded would be a surprise on return.
+            if (_showUnassigned) {
+                TeamUI.setExpandedTeamId(null);
+            }
+
             refreshUI();
         });
     }
