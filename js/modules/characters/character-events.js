@@ -501,6 +501,22 @@
             });
         }
 
+        // Career status filter: a container of checkboxes.
+        // Delegated so the handler survives even if the checkboxes
+        // are re-rendered (they aren't currently, but the delegation
+        // keeps the pattern consistent with the rest of the file).
+        var statusFilter = document.getElementById('char-status-filter');
+        if (statusFilter) {
+            addSafeEventListener(statusFilter, 'change', function(e) {
+                var target = e.target;
+                if (!target || !target.dataset) { return; }
+                if (target.dataset.status === undefined) { return; }
+                if (window.CharacterList && typeof window.CharacterList.render === 'function') {
+                    window.CharacterList.render();
+                }
+            });
+        }
+
         var hideDeceased = document.getElementById('hide-deceased');
         if (hideDeceased) {
             addSafeEventListener(hideDeceased, 'change', function() {
@@ -528,9 +544,17 @@
                 var hideElimEl = document.getElementById('hide-eliminated');
 
                 if (nameEl) { nameEl.value = ''; }
-                if (classEl) { classEl.value = ''; classEl.value = 'all'; }
+                if (classEl) { classEl.value = 'all'; }
                 if (hideDeadEl) { hideDeadEl.checked = true; }
                 if (hideElimEl) { hideElimEl.checked = true; }
+
+                // Uncheck every career-status checkbox.
+                var statusBoxes = document.querySelectorAll(
+                    '#char-status-filter input[type="checkbox"][data-status]'
+                );
+                for (var i = 0; i < statusBoxes.length; i++) {
+                    statusBoxes[i].checked = false;
+                }
 
                 if (window.CharacterList && typeof window.CharacterList.render === 'function') {
                     window.CharacterList.render();
