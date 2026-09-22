@@ -53,13 +53,32 @@
  *   alike. isCivilian does not report support as civilian; support
  *   is not civilian, it is support.
  *
+ * SENIOR-BY-YEAR:
+ *   isSeniorByYear(char, year) answers "has this character reached
+ *   senior status as of year Y?" It reads char.careerStatus, looks
+ *   for an entry whose status normalises to 'senior', and checks
+ *   that entry's startYear is <= Y.
+ *
+ *   A blank startYear on a senior entry is treated as "senior from
+ *   the beginning of time" and passes. This is a data-quality
+ *   signal, not a filter reason.
+ *
+ *   A senior entry whose startYear is after Y does NOT count. A
+ *   character who becomes senior in 1919 is not senior in 1918.
+ *
+ *   This is the predicate the matchmaking pool uses: professional
+ *   teams only accept members who have reached senior status.
+ *
+ *   The predicate is distinct from isSenior(char), which would
+ *   answer "is this character senior right now?" against the
+ *   current year. isSeniorByYear is the explicit, year-scoped
+ *   form.
+ *
  * DEPENDENCIES:
  *   - window.data                 (canonical state)
- *   - window.CharacterConstants   (canonical status tiers;
- *                                  optional at load, but the
- *                                  predicates degrade gracefully
- *                                  with a hardcoded fallback that
- *                                  mirrors the canonical tiers)
+ *   - window.CharacterConstants   (canonical status tiers; optional
+ *                                  at load, with a hardcoded fallback
+ *                                  that mirrors the canonical tiers)
  */
 
 (function() {
@@ -334,14 +353,6 @@
     // ============================================================
     // STATUS TIER CLASSIFICATION
     // ============================================================
-    //
-    // The canonical tier classifier lives on CharacterConstants.
-    // This module does not reimplement it.
-    //
-    // Fallback logic is preserved so this module works even when
-    // CharacterConstants has not loaded. The fallback MIRRORS the
-    // canonical tier membership exactly, including `senior` in the
-    // student tier. It is NOT the legacy pre-fix membership.
 
     var FALLBACK_STUDENT = ['trainee', 'rookie', 'junior', 'senior', 'student'];
     var FALLBACK_INSTRUCTOR = ['instructor', 'teacher', 'professor'];
@@ -365,13 +376,11 @@
     function classifyStatusTier(status) {
         if (!status || typeof status !== 'string') { return null; }
 
-        // Prefer the canonical classifier.
         if (CharacterConstants &&
             typeof CharacterConstants.classifyStatus === 'function') {
             return CharacterConstants.classifyStatus(status);
         }
 
-        // Fallback: mirror the canonical tier membership.
         var base = status.toLowerCase();
         var formerIndex = base.indexOf(' (former)');
         if (formerIndex !== -1) {
@@ -387,20 +396,6 @@
     // ============================================================
     // STATUS PREDICATES
     // ============================================================
-    //
-    // These delegate to classifyStatusTier, which in turn delegates
-    // to CharacterConstants.classifyStatus.
-    //
-    // THE THREE TIERS ARE DISJOINT. A character is at most one of
-    // student, instructor, support. A character whose status is
-    // neither (e.g. civilian, or an unrecognised string) is none
-    // of them.
-    //
-    // `senior` is a STUDENT status. It was previously misclassified
-    // as an instructor; that bug is fixed.
-    //
-    // `support` is its own tier. Support staff are neither students
-    // nor instructors.
 
     function isStudent(char) {
         if (!char || typeof char !== 'object') { return false; }
@@ -417,24 +412,71 @@
         return classifyStatusTier(getCurrentStatus(char)) === 'support';
     }
 
-    /**
-     * Is the character a civilian?
-     *
-     * A civilian is a character whose current status is the literal
-     * string 'Civilian' (case-insensitive). This is distinct from
-     * "not a student and not an instructor": a support staffer is
-     * not a civilian, and neither is a character with an
-     * unrecognised status string.
-     *
-     * The predicate answers a positive question: "is this character
-     * recorded as a civilian?" It does not answer "is this
-     * character a non-combatant?" — that is a different question
-     * with a different answer, and it belongs to whichever feature
-     * is asking it.
-     */
     function isCivilian(char) {
         if (!char || typeof char !== 'object') { return false; }
         return getCurrentStatus(char).toLowerCase() === 'civilian';
+    }
+
+    // ============================================================
+    // SENIOR-BY-YEAR
+    // ============================================================
+    //
+    // Answers "has this character reached senior status as of year
+    // Y?" by walking char.careerStatus and looking for a senior
+    // entry whose startYear <= Y.
+    //
+    // A blank startYear on a senior entry is treated as "senior from
+    // the beginning of time" and passes. The blank is a
+    // data-quality signal, not a filter reason.
+    //
+    // A senior entry whose startYear is after Y does NOT count.
+    // A character who becomes senior in 1919 is not senior in 1918.
+    //
+    // Returns false when:
+    //   - char is missing or malformed
+    //   - year is not a positive integer
+    //   - char.careerStatus is not an array
+    //   - there is no senior entry with startYear <= year
+
+    function isSeniorByYear(char, year) {
+        if (!char || typeof char !== 'object') { return false; }
+
+        var yearNum = parseInt(year, 10);
+        if (isNaN(yearNum) || yearNum < 1) { return false; }
+
+        if (!Array.isArray(char.careerStatus)) { return false; }
+
+        for (var i = 0; i < char.careerStatus.length; i++) {
+            var entry = char.careerStatus[i];
+            if (!entry || typeof entry !== 'object') { continue; }
+            if (typeof entry.status !== 'string') { continue; }
+
+            var statusStr = entry.status.trim().toLowerCase();
+            if (statusStr !== 'senior') { continue; }
+
+            // Blank startYear: senior from the beginning of time.
+            var startRaw = entry.startYear;
+            if (startRaw === undefined ||
+                startRaw === null ||
+                String(startRaw).trim() === '') {
+                return true;
+            }
+
+            var startNum = parseInt(startRaw, 10);
+            if (isNaN(startNum)) {
+                // Malformed start year: treated like a blank, i.e.
+                // senior from the beginning of time. The alternative
+                // would be to silently drop a character whose senior
+                // entry has a typo in the year field.
+                return true;
+            }
+
+            if (startNum <= yearNum) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // ============================================================
@@ -542,6 +584,9 @@
         isInstructor: isInstructor,
         isSupport: isSupport,
         isCivilian: isCivilian,
+
+        // Senior-by-year (matchmaking predicate)
+        isSeniorByYear: isSeniorByYear,
 
         // Lists
         getCharacters: getCharacters,
