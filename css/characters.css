@@ -9,6 +9,7 @@
  *   - Character form shell (.form-header, .form-tabs, .form-tab-btn)
  *   - Form panels (name, physical, personality, professional, combat,
  *     social, notes, academic)
+ *   - Per-field random buttons (.field-random-btn)
  *   - Class chips (#class-tag-container, .class-tag)
  *   - Career status entries (.career-status-entry)
  *   - Weapons (.weapon-entry)
@@ -318,6 +319,70 @@
 .tab-panel[style*="display:block"],
 .tab-panel[style*="display: block"] {
     display: block;
+}
+
+/* ============================================================
+   PER-FIELD RANDOM BUTTONS
+   ============================================================
+   A small ⟳ rendered inside the <label> of every pool-backed
+   field on the Physical and Personality tabs. Clicking it rerolls
+   only that field.
+
+   The button inherits the label's colour by default and darkens
+   to the accent on hover. It is inline so it sits flush against
+   the label text without shifting baseline.
+
+   Because the button is inside the <label>, it is keyboard-
+   reachable (Tab) and announces via its aria-label. The focus
+   outline is a subtle accent ring rather than the browser
+   default, so it does not clash with the surrounding typography.
+   ============================================================ */
+
+.field-random-btn {
+    display: inline;
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 0 0 0 3px;
+    color: var(--text-dim);
+    font-size: 0.75em;
+    line-height: 1;
+    cursor: pointer;
+    vertical-align: baseline;
+    transition: color 0.15s, transform 0.1s;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.field-random-btn:hover {
+    color: var(--accent);
+}
+
+.field-random-btn:active {
+    color: var(--accent);
+    transform: scale(0.85);
+}
+
+.field-random-btn:focus {
+    outline: none;
+    color: var(--accent);
+    text-shadow: 0 0 4px var(--accent);
+}
+
+.field-random-btn:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 3px;
+}
+
+/* Respect the user's motion preference. */
+@media (prefers-reduced-motion: reduce) {
+    .field-random-btn {
+        transition: none;
+    }
+    .field-random-btn:active {
+        transform: none;
+    }
 }
 
 /* ============================================================
