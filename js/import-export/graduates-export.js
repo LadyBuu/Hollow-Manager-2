@@ -1,18 +1,26 @@
 /**
  * js/import-export/graduates-export.js - Graduates Export
- * Exports characters who PASSED a class.
+ * Exports the characters who GRADUATED from a class.
  *
  * Path: js/import-export/graduates-export.js
  *
  * WHAT THIS MODULE OWNS:
  *   The projection + serialization of "graduates of class X".
- *   A graduate is a roster member of the class who has NEVER
- *   been eliminated — by any means.
+ *
+ * WHAT "GRADUATE" MEANS HERE:
+ *   A graduate is a character who is a member of the class and has
+ *   NO eliminations of any kind. Neither tournament-driven nor
+ *   standalone. A character with even one elimination record is
+ *   not a graduate.
+ *
+ *   There is no year filter. Classes are not connected to years.
+ *   The elimination check is presence-based: has this character
+ *   ever been eliminated at all?
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - The class entity             (AcademyClasses)
  *   - The roster derivation        (AcademyAggregator)
- *   - Elimination semantics        (EliminationQueries)
+ *   - Elimination reads            (EliminationQueries)
  *   - Character data               (CharacterQueries)
  *   - CSV parsing                  (CSV)
  *   - Envelope creation            (ExportEnvelope)
@@ -23,43 +31,15 @@
  *   the export. Once the graduate list is resolved, every column
  *   comes from the character record via CharacterQueries.
  *   No academic data — no grades, no enrolments, no teams, no
- *   rankings, no elimination records — is included in the output.
+ *   rankings, no eliminations — is included in the output.
  *
- * CLASSES HAVE NO YEAR:
- *   A class is an entity with an id, a name, a status, and a
- *   description. There is no graduation year, no academic year,
- *   no week boundary. The module does not invent one.
- *
- *   The picker shows every existing class and lets the user
- *   choose. Class choice is a UI concern; this module exposes
- *   getClassChoices() to feed it.
- *
- * GRADUATE FILTER — "NEVER ELIMINATED":
- *   A character is a graduate of a class when:
- *     1. the class is on their classIds list, AND
- *     2. they are not the class's instructor at any week, AND
- *     3. they have ZERO elimination records.
- *
- *   Condition 3 is the whole "passed" test. An elimination is an
- *   elimination: tournament-driven and standalone are both
- *   elimination records on character.eliminations[], and the
- *   presence of ANY record disqualifies the character.
- *
- *   No year. No week. No boundary. If a character has ever been
- *   eliminated, they did not pass; if they have never been
- *   eliminated, they passed.
- *
- *   The instructor exclusion in condition 2 uses the ALL-TIME
- *   instructor query (AcademyClasses.getClassInstructorIdsAllTime),
- *   because there is no week context in this export. A character
- *   who taught the class during weeks 1-8 and stopped is still
- *   excluded from the roster: the export is "students who passed
- *   this class," and an instructor is not a student.
+ * FAIL-CLOSED ELIGIBILITY:
+ *   When EliminationQueries is unavailable, this module refuses to
+ *   guess: every roster member is treated as NOT a graduate. A
+ *   fail-closed answer is the honest one; "everyone passed" would
+ *   be a lie.
  *
  * OUTPUT SHAPES:
- *
- *   getClassChoices() ->
- *     [ { id, name }, ... ]  sorted by name
  *
  *   getGraduates(classId) ->
  *     {
@@ -67,7 +47,6 @@
  *       className,
  *       graduates: [GraduateRecord, ...]
  *     }
- *     or null when classId is missing / unknown
  *
  *   GraduateRecord:
  *     {
@@ -83,10 +62,14 @@
  *     }
  *
  *   exportGraduatesJSON(classId, options) ->
- *     { exported, filename, count, error?, wasEnveloped }
+ *     {
+ *       exported, filename, count, error?, wasEnveloped
+ *     }
  *
  *   exportGraduatesCSV(classId, options) ->
- *     { exported, filename, count, error? }
+ *     {
+ *       exported, filename, count, error?
+ *     }
  *
  *   Error codes (result.error):
  *     'Class not found or arguments invalid.'
@@ -106,6 +89,8 @@
  *   - window.JSONIO
  *
  * DEPENDENCIES (OPTIONAL):
+ *   - window.EliminationQueries
+ *     Missing -> no character can be a graduate. Fail-closed.
  *   - window.CharacterConstants  (stat key list)
  *   - window.MagicConstants      (magic type key list)
  */
@@ -145,9 +130,6 @@
     if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function') {
         _missing.push('AcademyClasses.getClass');
     }
-    if (!AcademyClasses || typeof AcademyClasses.getClasses !== 'function') {
-        _missing.push('AcademyClasses.getClasses');
-    }
 
     if (!AcademyAggregator ||
         typeof AcademyAggregator.getClassStudentsViewModel !== 'function') {
@@ -180,6 +162,10 @@
     // ============================================================
     // OPTIONAL DEPENDENCY ACCESSORS
     // ============================================================
+
+    function getEliminationQueries() {
+        return window.EliminationQueries || null;
+    }
 
     function getCharacterConstants() {
         return window.CharacterConstants || null;
@@ -274,105 +260,48 @@
     }
 
     // ============================================================
-    // CLASS CHOICES (for the picker)
+    // GRADUATE FILTER
     // ============================================================
+    //
+    // A graduate is a roster member with NO eliminations at all.
+    // Presence, not year. See the file header for the reasoning.
 
-    /**
-     * Every existing class as a simple { id, name } pair, sorted
-     * by name. The UI uses this to build the picker menu.
-     *
-     * Returns an empty array when there are no classes. Never null.
-     */
-    function getClassChoices() {
-        var classes = [];
+    var _graduateFilterWarned = false;
+
+    function isGraduate(charId) {
+        var EQ = getEliminationQueries();
+
+        if (!EQ || typeof EQ.getEliminationWeek !== 'function') {
+            if (!_graduateFilterWarned) {
+                _graduateFilterWarned = true;
+                console.warn(
+                    '[GraduatesExport] EliminationQueries.' +
+                    'getEliminationWeek is not available. ' +
+                    'No character can be classified as a graduate.'
+                );
+            }
+            return false;
+        }
+
+        // getEliminationWeek returns the earliest elimination week,
+        // or null when the character has no elimination records.
+        // Null means "never eliminated" — that is a graduate.
+        //
+        // The query accepts either a character object or a char ID
+        // and resolves an ID in the live store internally.
+        var earliest;
         try {
-            classes = AcademyClasses.getClasses() || [];
+            earliest = EQ.getEliminationWeek(charId);
         } catch (e) {
             console.warn(
-                '[GraduatesExport] AcademyClasses.getClasses threw:', e
+                '[GraduatesExport] getEliminationWeek threw:',
+                e,
+                { charId: charId }
             );
-            return [];
+            return false;
         }
 
-        if (!Array.isArray(classes)) { return []; }
-
-        var result = [];
-        for (var i = 0; i < classes.length; i++) {
-            var cls = classes[i];
-            if (!cls || !cls.id) { continue; }
-            result.push({
-                id: String(cls.id),
-                name: isNonEmptyString(cls.name)
-                    ? String(cls.name)
-                    : 'Unnamed Class'
-            });
-        }
-
-        result.sort(function(a, b) {
-            return a.name.localeCompare(b.name);
-        });
-
-        return result;
-    }
-
-    // ============================================================
-    // ELIMINATION TEST
-    // ============================================================
-    //
-    // "Never eliminated" is a direct property of the character
-    // record: character.eliminations[] is empty.
-    //
-    // Both standalone and tournament eliminations are records on
-    // that array. There is no year, no week, no boundary; the
-    // presence of any record disqualifies the character.
-
-    function hasNoEliminations(charId) {
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) { return false; }
-
-        if (!Array.isArray(char.eliminations)) {
-            return true;
-        }
-
-        return char.eliminations.length === 0;
-    }
-
-    // ============================================================
-    // INSTRUCTOR EXCLUSION (ALL-TIME)
-    // ============================================================
-    //
-    // The export is "students who passed this class." A character
-    // who has ever been an instructor for the class is not a
-    // student for the class, regardless of whether they also carry
-    // the classId on their own record.
-    //
-    // The all-time query is used because there is no week context
-    // in this export.
-
-    function getClassInstructorIdSet(classId) {
-        if (typeof AcademyClasses.getClassInstructorIdsAllTime !== 'function') {
-            return Object.create(null);
-        }
-
-        var ids;
-        try {
-            ids = AcademyClasses.getClassInstructorIdsAllTime(classId);
-        } catch (e) {
-            console.warn(
-                '[GraduatesExport] getClassInstructorIdsAllTime threw:', e
-            );
-            return Object.create(null);
-        }
-
-        var set = Object.create(null);
-        if (!Array.isArray(ids)) { return set; }
-        for (var i = 0; i < ids.length; i++) {
-            if (ids[i] === undefined || ids[i] === null) { continue; }
-            var key = String(ids[i]);
-            if (key === '') { continue; }
-            set[key] = true;
-        }
-        return set;
+        return earliest === null || earliest === undefined;
     }
 
     // ============================================================
@@ -598,15 +527,11 @@
     // ============================================================
 
     /**
-     * Get the graduates of a class.
-     *
-     * A graduate is a roster member of the class who:
-     *   - is not an instructor (all-time) for the class
-     *   - has zero elimination records of any kind
+     * Get the graduate list for a class.
      *
      * @param {string} classId
      * @returns {object|null} The graduate VM, or null when the
-     *   class does not exist or the classId is malformed.
+     *   class does not exist or the arguments are malformed.
      */
     function getGraduates(classId) {
         if (!isNonEmptyString(classId)) {
@@ -618,15 +543,12 @@
             return null;
         }
 
-        var classIdStr = String(cls.id);
-        var instructorSet = getClassInstructorIdSet(classIdStr);
-        var roster = resolveRoster(classIdStr);
-
+        var roster = resolveRoster(String(cls.id));
         var graduates = [];
+
         for (var i = 0; i < roster.length; i++) {
             var charId = roster[i];
-            if (instructorSet[charId]) { continue; }
-            if (!hasNoEliminations(charId)) { continue; }
+            if (!isGraduate(charId)) { continue; }
             var record = buildGraduateRecord(charId);
             if (record) {
                 graduates.push(record);
@@ -639,7 +561,7 @@
         });
 
         return {
-            classId: classIdStr,
+            classId: String(cls.id),
             className: isNonEmptyString(cls.name)
                 ? String(cls.name)
                 : 'Unnamed Class',
@@ -782,10 +704,8 @@
     /**
      * Build the JSON envelope object without downloading.
      *
-     * The envelope payload is `{ graduates: [...] }`. On top of
-     * the envelope's own metadata, the returned envelope carries
-     * graduates-specific metadata under `metadata.graduates`:
-     *   { classId, className, count }.
+     * Returns null when the class is missing or ExportEnvelope.create
+     * throws.
      */
     function getGraduatesJSONEnvelope(classId, options) {
         options = options || {};
@@ -919,9 +839,6 @@
     // ============================================================
 
     window.GraduatesExport = Object.freeze({
-        // Picker feed
-        getClassChoices: getClassChoices,
-
         // Projection
         getGraduates: getGraduates,
 
@@ -947,7 +864,6 @@
         var missing = [];
 
         var required = [
-            'getClassChoices',
             'getGraduates',
             'getGraduatesJSONEnvelope',
             'exportGraduatesJSON',
