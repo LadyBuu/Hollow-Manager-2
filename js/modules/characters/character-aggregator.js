@@ -19,8 +19,7 @@
  *   - List projections avoid per-character N+1 aggregation
  *
  * ACADEMY READS:
- *   This module used to route academy reads through AcademyQueries.
- *   That facade is gone. Academy reads now go directly to:
+ *   Academy reads go directly to:
  *     - AcademyClasses       (class entities, character↔class membership)
  *     - AcademyGrades        (grade records)
  *     - AcademyDisciplines   (discipline entities, names)
@@ -28,6 +27,23 @@
  *
  *   The class roster is DERIVED from character.classIds. There is no
  *   separate roster store; AcademyClasses owns the derivation.
+ *
+ * TEAM READS:
+ *   The list projection reads team membership through TeamQueries.
+ *   For each character it answers two questions:
+ *
+ *     getTeamsForCharacter(charId, currentYear, 'professional')
+ *       → the teams the character is ACTIVE on right now.
+ *
+ *     getTeamsForCharacterAllTime(charId, 'professional')
+ *       → every professional team the character has EVER been on.
+ *
+ *   The list row shows the current teams only. Former teams are a
+ *   detail-panel concern.
+ *
+ *   Team reads are wrapped in try/catch and default to empty arrays
+ *   when TeamQueries is unavailable. This matches the convention
+ *   used elsewhere in the module for optional dependencies.
  *
  * ELIMINATION READS (year-scoped for the list):
  *   Elimination is a year-scoped concept for the character list. A
@@ -379,13 +395,6 @@
      *
      * Grade shape comes from AcademyGrades:
      *   { id, studentId, classId, disciplineId, week, score, maxScore, type, date, notes }
-     *
-     * Percentage is derived. Passing is scheme-aware — but this display
-     * projection shows the raw score and a numeric threshold check. The
-     * scheme-aware passing flag is available on AcademyGrades.decorateGrade,
-     * which is not called here because the aggregator is not the layer
-     * that decides what "passing" means for a given discipline. Callers
-     * that need the scheme-aware flag call AcademyGrades directly.
      */
     function formatGrade(grade) {
         var scoreNum = Number(grade.score);
@@ -416,20 +425,6 @@
 
     /**
      * Format a tournament or standalone elimination for display.
-     *
-     * TournamentQueries exposes getTournament(id), NOT
-     * getTournamentById(id). This function resolves the tournament
-     * name defensively: a missing method or a thrown error degrades
-     * to the fallback 'Unknown Tournament' name instead of killing
-     * the whole character detail render.
-     *
-     * The elimination record now carries a `year` (v25+). It is
-     * passed through as-is; display callers decide whether to show
-     * year, week, or both.
-     *
-     * @param {object} elim - Elimination record
-     * @param {string} charId - Character ID (unused but kept for symmetry)
-     * @returns {object|null} Formatted elimination or null
      */
     function formatElimination(elim, charId) {
         if (!elim) { return null; }
@@ -552,13 +547,8 @@
     }
 
     // ============================================================
-    // ACADEMY READS - Direct calls to the domain modules
+    // ACADEMY READS
     // ============================================================
-    //
-    // These small wrappers centralise the null-guard pattern so the
-    // projections below stay readable. They do NOT add behavior on
-    // top of the domain modules; they are pass-throughs with a
-    // missing-module guard.
 
     function academyGetCharacterClasses(char) {
         var AcademyClasses = getAcademyClasses();
@@ -601,6 +591,64 @@
     }
 
     // ============================================================
+    // TEAM READS (list projection helpers)
+    // ============================================================
+
+    /**
+     * Current professional teams for a character, evaluated at the
+     * given year.
+     *
+     * Returns a compact projection: { id, name }. The list row only
+     * needs the name to display; full team detail lives on the
+     * Professional tab of the form.
+     *
+     * Fail-open: when TeamQueries is unavailable or the read throws,
+     * returns an empty array.
+     *
+     * @param {string} charId
+     * @param {number} year
+     * @returns {array} [{ id, name }]
+     */
+    function getCurrentProfessionalTeamsForList(charId, year) {
+        if (!charId) { return []; }
+
+        var TeamQueries = getTeamQueries();
+        if (!TeamQueries ||
+            typeof TeamQueries.getTeamsForCharacter !== 'function') {
+            return [];
+        }
+
+        var yearNum = parseInt(year, 10);
+        if (isNaN(yearNum) || yearNum < 1) { return []; }
+
+        var teams = [];
+        try {
+            teams = TeamQueries.getTeamsForCharacter(
+                charId, yearNum, 'professional'
+            ) || [];
+        } catch (e) {
+            teams = [];
+        }
+
+        var result = [];
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (!team || !team.id) { continue; }
+            if (team.status === 'deprecated') { continue; }
+            result.push({
+                id: String(team.id),
+                name: team.name || 'Unnamed Team'
+            });
+        }
+
+        result.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
+
+        return result;
+    }
+
+    // ============================================================
     // CHARACTER DETAIL PROJECTION
     // ============================================================
 
@@ -609,13 +657,6 @@
      *
      * @param {string} characterId - Character ID
      * @param {object} options - Options
-     * @param {number} options.week - Week number (default: current)
-     * @param {boolean} options.includeSchedule - Include schedule data (default: false)
-     * @param {boolean} options.includeGrades - Include grades (default: true)
-     * @param {boolean} options.includeRelationships - Include relationships (default: true)
-     * @param {boolean} options.includeMissions - Include missions (default: true)
-     * @param {boolean} options.includeTeams - Include teams (default: true)
-     * @param {boolean} options.includeEliminations - Include eliminations (default: true)
      * @returns {object|null} Character detail projection or null
      */
     function getCharacterDetail(characterId, options) {
@@ -863,7 +904,6 @@
 
         // ---- Result ----
         return {
-            // Character basics
             character: char,
             id: char.id,
             name: displayName,
@@ -874,39 +914,27 @@
             isInstructor: isInstructor,
             isCivilian: isCivilian,
 
-            // Death timeline (computed)
             deceased: deceasedNow,
             deathYear: deathYear,
             deathCause: deathCause,
             deathAge: deathAge,
             deathWeek: deathWeek,
 
-            // Stats
             stats: statsWithModifiers,
-
-            // Magic
             magic: magic,
 
-            // Classes
             classes: classes,
             classNames: classNames,
 
-            // Teams
             academicTeams: academicTeams,
             professionalTeams: professionalTeams,
             temporaryTeams: temporaryTeams,
             civilianTeams: civilianTeams,
 
-            // Grades
             grades: grades,
-
-            // Missions
             missions: missions,
-
-            // Relationships
             relationships: relationships,
 
-            // Eliminations
             isEliminated: isEliminated,
             eliminationWeek: eliminationWeek,
             eliminationYear: eliminationYear,
@@ -914,24 +942,18 @@
             tournamentEliminations: tournamentEliminations,
             standaloneEliminations: standaloneEliminations,
 
-            // Schedule
             scheduleCount: scheduleCount,
 
-            // Career
             careerStatus: char.careerStatus || [],
             careerHistory: careerHistory,
             specialty: char.specialty || '',
 
-            // Personality
             personality: personality,
 
-            // Special moves
             specialMoves: specialMoves,
 
-            // Notes
             notes: char.notes || '',
 
-            // Week
             week: weekNum
         };
     }
@@ -944,13 +966,39 @@
      * Get character list view model.
      * Collection-level projection that avoids per-character N+1 aggregation.
      *
+     * OPTIONS:
+     *   - classFilter     : class ID, or 'all'
+     *   - statusFilter    : array of status strings, or null / empty
+     *                       for "all statuses". Matched against
+     *                       getCurrentStatus(char). Case-insensitive
+     *                       comparison against the base status name
+     *                       (the '(Former)' suffix, when present, is
+     *                       stripped before matching).
+     *   - nameFilter      : substring, case-insensitive
+     *   - hideDeceased    : boolean
+     *   - hideEliminated  : boolean
+     *   - week            : current week (for schedule-related reads)
+     *   - year            : elimination filter year
+     *
+     * FILTER COMBINATION:
+     *   AND across filter categories. OR within statusFilter.
+     *   A character passes when they match name AND class AND
+     *   (status OR no status filter) AND pass the hide-* checks.
+     *
+     * ROW SHAPE:
+     *   Each row carries:
+     *     - classNames      : display names of classes the character
+     *                         is a member of (kept for backward
+     *                         compatibility; not shown in the row)
+     *     - classIds        : raw class IDs
+     *     - teamNames       : names of the character's CURRENT
+     *                         professional teams, at window.data
+     *                         .currentYear
+     *     - teamIds         : raw IDs of those teams
+     *     - teamObjects     : [{ id, name }] for callers that want
+     *                         to render links
+     *
      * @param {object} options - Options
-     * @param {string} options.classFilter - Filter by class ID
-     * @param {string} options.nameFilter - Filter by name
-     * @param {boolean} options.hideDeceased - Hide deceased characters
-     * @param {boolean} options.hideEliminated - Hide eliminated characters
-     * @param {number} options.week - Week number (default: current)
-     * @param {number} options.year - Elimination filter year (default: currentYear)
      * @returns {Array} Array of character list items
      */
     function getCharacterListViewModel(options) {
@@ -969,6 +1017,17 @@
         var nameFilter = options.nameFilter || '';
         var hideDeceased = options.hideDeceased !== false;
         var hideEliminated = options.hideEliminated !== false;
+
+        // Status filter is an array of lowercase status names. An
+        // empty array, null, or undefined means "no status filter".
+        var statusFilter = null;
+        if (Array.isArray(options.statusFilter) &&
+            options.statusFilter.length > 0) {
+            statusFilter = options.statusFilter.map(function(s) {
+                return String(s).toLowerCase().trim();
+            }).filter(function(s) { return s !== ''; });
+            if (statusFilter.length === 0) { statusFilter = null; }
+        }
 
         var characters = CharacterQueries.getCharacters() || [];
 
@@ -992,11 +1051,6 @@
         }
 
         // ---- Pre-compute elimination status for all characters ----
-        //
-        // Year, not week. The character list is year-scoped; a
-        // character eliminated in year Y is filtered as eliminated
-        // for year Y and every year after. The filter year comes from
-        // resolveFilterYear (options.year, then currentYear).
         var filterYear = resolveFilterYear(options);
         var eliminationStatus = {};
         if (EliminationQueries) {
@@ -1032,6 +1086,20 @@
             deceasedStatus[char.id] = isDeceased(char);
         });
 
+        // ---- Pre-compute current professional teams for all characters ----
+        //
+        // Read at the current application year, once per character.
+        // A character can be on zero, one, or (rarely) more than one
+        // professional team at a time.
+        var teamStatus = {};
+        var currentYear = resolveFilterYear(options);
+        characters.forEach(function(char) {
+            if (!char || !char.id) { return; }
+            teamStatus[char.id] = getCurrentProfessionalTeamsForList(
+                char.id, currentYear
+            );
+        });
+
         // ---- Filter ----
         var filtered = characters.filter(function(char) {
             if (!char || typeof char !== 'object') { return false; }
@@ -1053,6 +1121,28 @@
                     }
                 }
                 if (!found) {
+                    return false;
+                }
+            }
+
+            if (statusFilter !== null) {
+                var charStatus = '';
+                if (typeof CharacterQueries.getCurrentStatus === 'function') {
+                    charStatus = CharacterQueries.getCurrentStatus(char) || '';
+                }
+
+                // Strip the ' (Former)' suffix, lowercase, trim.
+                // The filter matches against the base status name,
+                // not the display variant.
+                var baseStatus = String(charStatus).toLowerCase();
+                var formerIdx = baseStatus.indexOf(' (former)');
+                if (formerIdx !== -1) {
+                    baseStatus = baseStatus.substring(0, formerIdx).trim();
+                } else {
+                    baseStatus = baseStatus.trim();
+                }
+
+                if (statusFilter.indexOf(baseStatus) === -1) {
                     return false;
                 }
             }
@@ -1089,6 +1179,10 @@
                 reason: 'Unknown'
             };
 
+            var teams = teamStatus[char.id] || [];
+            var teamNames = teams.map(function(t) { return t.name; });
+            var teamIds = teams.map(function(t) { return t.id; });
+
             return {
                 id: char.id,
                 name: CharacterQueries.getDisplayName(char),
@@ -1098,8 +1192,13 @@
                 eliminationYear: elimStatus.year,
                 eliminationWeek: elimStatus.week,
                 eliminationReason: elimStatus.reason,
+
                 classNames: classNames,
-                classIds: charClasses
+                classIds: charClasses,
+
+                teamNames: teamNames,
+                teamIds: teamIds,
+                teamObjects: teams
             };
         });
     }
