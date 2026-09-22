@@ -12,6 +12,675 @@
  *
  * Covers:
  *   - Two-panel layout and top bar
+ *   - Orphan teams section ("unassigned teams")
+ *   - List panel (actions, list, rows)
+ *   - Detail panel (header, members section)
+ *   - Type and status badges
+ *
+ * Load order: shared.css → academy.css → academy/weekly-teams.css
+ *
+ * UNASSIGNED TEAMS SECTION:
+ *   The renderer emits a compact collapsible block at the top of
+ *   the sidebar when one or more academic teams exist with
+ *   classId === null. The block starts collapsed
+ *   (`data-expanded="false"` on the outer section) and expands on
+ *   click. The section disappears entirely when no orphans exist.
+ *
+ *   Caret rotation is driven by `data-expanded` on the outer
+ *   section, so the renderer only needs to flip that attribute on
+ *   toggle — the CSS handles the visual transition. If the
+ *   renderer instead replaces the caret glyph inline, the
+ *   rotation rule below is a no-op and the glyph swap wins; both
+ *   approaches coexist without conflict.
+ *
+ * LIST ACTIONS:
+ *   Three buttons share the sidebar's action row:
+ *     + Create Team        — primary action
+ *     Auto-Distribute      — bulk action
+ *     Clear Rosters        — removes the display week's members
+ *                            across every academic team of the
+ *                            class. Past and future stints
+ *                            survive. The hover tint is a
+ *                            deliberate danger cue because the
+ *                            action is destructive-adjacent.
+ *
+ * REMOVED (BUG-E13):
+ *   The .awtm-* member manager and restore modal rules. Those
+ *   styled the old academic member manager, which has been
+ *   replaced by the shared manager. The shared manager's markup
+ *   is emitted with .member-* class names and is styled by
+ *   css/teams.css. Nothing emits .awtm-* any more.
+ */
+
+/* ============================================================
+   LAYOUT
+   ============================================================ */
+
+.academy-weekly-teams-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.academy-weekly-teams-empty {
+    padding: 30px 12px;
+    text-align: center;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+/* ---------- Top bar ---------- */
+
+.academy-weekly-teams-top-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.academy-weekly-teams-top-left,
+.academy-weekly-teams-top-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+/* ---------- Two-panel grid ---------- */
+
+.academy-weekly-teams-panels {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 12px;
+    align-items: start;
+}
+
+@media (max-width: 768px) {
+    .academy-weekly-teams-panels {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* ============================================================
+   UNASSIGNED (ORPHAN) TEAMS SECTION
+   ============================================================
+   Compact section at the top of the sidebar. Hidden by default;
+   the toggle button expands it. Disappears entirely when no
+   orphans exist.
+
+   The outer section carries `data-expanded="true"` or
+   `"false"`. The renderer flips this attribute on toggle; the
+   caret rotation below reads it. If the renderer instead swaps
+   the caret glyph inline, the rotation is a harmless no-op.
+ */
+
+.academy-weekly-teams-orphan-section {
+    margin-bottom: 10px;
+    padding: 6px 8px;
+    background: var(--warning-soft);
+    border: 1px solid var(--warning);
+    border-radius: var(--radius);
+}
+
+.academy-orphan-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: var(--warning);
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 2px 0;
+    cursor: pointer;
+    text-align: left;
+}
+
+.academy-orphan-toggle:hover {
+    color: var(--text);
+    background: transparent;
+}
+
+.academy-orphan-toggle-icon {
+    display: inline-block;
+    width: 12px;
+    font-size: 0.75rem;
+    flex: 0 0 auto;
+    transition: transform 0.15s ease;
+    transform-origin: 50% 50%;
+}
+
+/*
+ * Caret rotation driven by the section's data-expanded attribute.
+ *
+ * The renderer emits a fixed right-pointing caret (▸) and flips
+ * `data-expanded` on the outer section. When the section is
+ * expanded, the caret rotates 90° to point down (▾).
+ *
+ * If a future renderer swaps the glyph instead of rotating, this
+ * rule has no visible effect because the swapped glyph will
+ * already be pointing the right way, and the transform origin
+ * stays centred either way. Both approaches are safe.
+ */
+.academy-weekly-teams-orphan-section[data-expanded="true"]
+    .academy-orphan-toggle-icon {
+    transform: rotate(90deg);
+}
+
+.academy-orphan-toggle-text {
+    flex: 1;
+    min-width: 0;
+}
+
+.academy-orphan-toggle-hint {
+    font-size: 0.6rem;
+    font-weight: 400;
+    color: var(--text-dim);
+    font-style: italic;
+    white-space: nowrap;
+}
+
+/* ---------- Orphan list (expanded) ---------- */
+
+.academy-orphan-list {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px dashed var(--warning);
+}
+
+.academy-orphan-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 4px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-orphan-row:last-child {
+    border-bottom: none;
+}
+
+.academy-orphan-row-main {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.academy-orphan-name {
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: var(--text);
+    flex: 1;
+    min-width: 0;
+}
+
+.academy-orphan-members {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+
+.academy-orphan-row-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+}
+
+.academy-orphan-class-select {
+    flex: 1;
+    min-width: 100px;
+    padding: 3px 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.68rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.academy-orphan-class-select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.academy-orphan-suggestion {
+    font-size: 0.6rem;
+    color: var(--warning);
+    font-style: italic;
+    white-space: nowrap;
+}
+
+.academy-orphan-suggestion-none {
+    color: var(--text-dim);
+}
+
+.academy-orphan-row-controls button.small {
+    font-size: 0.62rem;
+    padding: 3px 10px;
+}
+
+/* ============================================================
+   LIST PANEL (sidebar)
+   ============================================================ */
+
+.academy-weekly-teams-sidebar {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px;
+    max-height: 640px;
+    overflow-y: auto;
+}
+
+@media (max-width: 768px) {
+    .academy-weekly-teams-sidebar {
+        max-height: 320px;
+    }
+}
+
+/* ---------- List actions ---------- */
+
+.academy-weekly-teams-list-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+.academy-weekly-teams-list-actions button {
+    font-size: 0.65rem;
+    padding: 4px 10px;
+    white-space: nowrap;
+}
+
+/*
+ * The three list-action buttons share the row width proportionally.
+ *   + Create Team        — primary action, widest
+ *   Auto-Distribute      — bulk action
+ *   Clear Rosters        — removes the display week's members
+ *                          across every academic team of the class;
+ *                          past and future stints survive.
+ */
+.academy-add-team-btn,
+.academy-auto-distribute-btn,
+.academy-clear-rosters-btn {
+    flex: 1 1 auto;
+}
+
+/*
+ * Clear Rosters is destructive-adjacent. A subtle danger tint on
+ * hover distinguishes it from the other two, matching the visual
+ * language used elsewhere for actions that remove data (Delete
+ * Exam, Remove Match, Delete Team). The base colour stays
+ * secondary so it does not draw the eye until the user reaches
+ * for it.
+ */
+.academy-clear-rosters-btn:hover {
+    border-color: var(--danger);
+    color: var(--danger);
+    background: var(--danger-soft);
+}
+
+/* ---------- List header ---------- */
+
+.academy-weekly-teams-list-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+    padding-bottom: 4px;
+    margin-bottom: 6px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-weekly-teams-list-title {
+    font-size: 0.8rem;
+    color: var(--accent);
+    margin: 0;
+}
+
+.academy-weekly-teams-list-count {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    padding: 1px 6px;
+    border-radius: 8px;
+}
+
+/* ---------- List ---------- */
+
+.academy-weekly-teams-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.academy-weekly-team-row {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border-soft);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.academy-weekly-team-row:hover {
+    background: var(--panel-alt);
+}
+
+.academy-weekly-team-row.selected {
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    padding-left: 6px;
+}
+
+.academy-weekly-team-row-main {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.academy-weekly-team-name {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text);
+}
+
+.academy-weekly-team-row-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin-top: 3px;
+    font-size: 0.6rem;
+    color: var(--text-dim);
+}
+
+.academy-weekly-team-members {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+}
+
+.academy-weekly-team-period {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+/* ============================================================
+   DETAIL PANEL
+   ============================================================ */
+
+.academy-weekly-teams-detail {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px;
+    min-height: 200px;
+    max-height: 640px;
+    overflow-y: auto;
+}
+
+@media (max-width: 768px) {
+    .academy-weekly-teams-detail {
+        max-height: none;
+    }
+}
+
+/* ---------- Detail header ---------- */
+
+.academy-weekly-team-detail-header {
+    padding-bottom: 10px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-weekly-team-detail-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+
+.academy-weekly-team-detail-title {
+    font-size: 1.05rem;
+    color: var(--accent);
+    margin: 0;
+    flex: 1;
+    min-width: 0;
+}
+
+.academy-weekly-team-detail-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-size: 0.7rem;
+}
+
+.academy-weekly-team-detail-meta-item .meta-label {
+    color: var(--text-dim);
+    font-size: 0.65rem;
+}
+
+.academy-weekly-team-detail-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+/* ---------- Members section ---------- */
+
+.academy-weekly-team-members-section {
+    margin-top: 4px;
+}
+
+.academy-weekly-team-members-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding-bottom: 4px;
+    margin-bottom: 6px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-weekly-team-members-title {
+    font-size: 0.85rem;
+    color: var(--accent);
+    margin: 0;
+}
+
+.academy-weekly-team-members-count {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    padding: 1px 6px;
+    border-radius: 8px;
+}
+
+.academy-weekly-team-members-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.academy-weekly-team-member-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 8px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.academy-weekly-team-member-row:hover {
+    background: var(--accent-soft);
+}
+
+.academy-weekly-team-member-row.former {
+    border-left-color: var(--text-dim);
+    opacity: 0.75;
+}
+
+.academy-weekly-team-member-row.deceased {
+    border-left-color: var(--danger);
+    opacity: 0.6;
+}
+
+.academy-weekly-team-member-main {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.academy-weekly-team-member-name {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text);
+}
+
+.academy-weekly-team-member-secondary {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+}
+
+.academy-weekly-team-member-period {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+.academy-weekly-team-member-status-badge {
+    font-size: 0.55rem;
+    color: var(--text-dim);
+    background: var(--panel);
+    padding: 1px 6px;
+    border-radius: 8px;
+    border: 1px solid var(--border-soft);
+}
+
+/* ============================================================
+   TYPE AND STATUS BADGES
+   ============================================================ */
+
+.academy-team-type-badge,
+.academy-team-status-badge {
+    display: inline-block;
+    font-size: 0.55rem;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 8px;
+    border: 1px solid;
+    white-space: nowrap;
+}
+
+.academy-team-type-academic {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.academy-team-type-professional {
+    color: var(--info);
+    background: var(--info-soft);
+    border-color: var(--info);
+}
+
+.academy-team-type-temporary {
+    color: var(--warning);
+    background: var(--warning-soft);
+    border-color: var(--warning);
+}
+
+.academy-team-type-civilian {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+.academy-team-type-unknown {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+.academy-team-status-active {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.academy-team-status-inactive {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+.academy-team-status-deprecated {
+    color: var(--danger);
+    background: var(--danger-soft);
+    border-color: var(--danger);
+}
+
+.academy-team-status-unknown {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+/* ============================================================
+   MOBILE
+   ============================================================ */
+
+@media (max-width: 600px) {
+    .academy-weekly-teams-top-bar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .academy-weekly-teams-list-actions {
+        flex-direction: column;
+    }
+
+    .academy-weekly-teams-list-actions button {
+        width: 100%;
+    }
+
+    .academy-weekly-team-detail-title {
+        font-size: 0.9rem;
+    }
+}/**
+ * css/academy/weekly-teams.css - Academy Weekly Teams sub-view
+ *
+ * The Weekly Teams view of the Academy tab.
+ *   - Rendered by academy-weekly-teams-view.js (main view)
+ *   - The member manager is the SHARED manager
+ *     (js/modules/shared/member-manager.js), which renders into a
+ *     modal owned by academy-weekly-teams-controller.js. That
+ *     manager's markup is styled by css/teams.css's SHARED MEMBER
+ *     MANAGER block. This file no longer contains any member
+ *     manager rules.
+ *
+ * Covers:
+ *   - Two-panel layout and top bar
  *   - Orphan teams section
  *   - List panel (actions, list, rows)
  *   - Detail panel (header, members section)
