@@ -31,20 +31,24 @@
  *
  *     [Export] [Matchmaking] [+ Add Team]
  *
- *   - Export opens the team export picker (TeamExportPicker).
- *     The picker owns the format choice (JSON / CSV) and the
- *     status filter; the header button does not need to know
- *     about formats.
+ *   All three are hidden while the Unassigned view is active, and
+ *   on the Temporary and Civilian tabs.
  *
- *   - Matchmaking opens the matchmaking modal. Professional
- *     teams only.
+ * UNASSIGNED VIEW:
+ *   The Unassigned view has TWO sections:
  *
- *   - + Add Team opens the team form.
+ *     - Candidates: characters eligible for a professional team
+ *       at the current year, not already on one. Four columns:
+ *       Character | Status | Junior Since | Senior Since.
  *
- *   All three are hidden while the Unassigned view is active,
- *   because none of them applies to a read-only roster of people.
- *   They are also hidden on the Temporary and Civilian tabs,
- *   because matchmaking and export target professional teams.
+ *     - Staff: instructors and support at the current year, not
+ *       already on a professional team. Four columns:
+ *       Character | Status | Role | Since.
+ *
+ *   The staff section is only rendered when staffRows is non-empty.
+ *
+ *   The 'future' classification on a candidate row renders a
+ *   sub-line under the name: "→ TeamName from YYYY".
  *
  * MEMBER VM:
  *   A member VM carries:
@@ -57,30 +61,10 @@
  *   renderExpandedMembers iterates `intervals` to produce one line
  *   per stint.
  *
- * UNASSIGNED VM:
- *   The Unassigned view model carries:
- *     { year, total,
- *       rows: [ {
- *         characterId, displayName, status,
- *         juniorDisplay, seniorDisplay,
- *         classification, futureDisplay, futureTeamName,
- *         futureJoinYear
- *       } ] }
- *
- *   renderUnassigned emits a four-column row:
- *     Character | Status | Junior Since | Senior Since
- *   with the future-stint indicator rendered as a sub-line under
- *   the character name when present.
- *
- * TOGGLE:
- *   The professional tab's filter bar carries a two-button toggle
- *   (Teams | Unassigned). It is rendered by renderFilterBar when
- *   filterVM.tab === 'professional'. The toggle's active state is
- *   passed in as filterVM.showUnassigned (boolean).
- *
  * NO INLINE STYLES:
- *   All layout lives in CSS classes. The renderer emits class names
- *   only. The classes are defined in the Teams module stylesheet.
+ *   Layout lives in CSS classes where possible. The renderer emits
+ *   class names. A few presentation-only inline styles remain for
+ *   elements that predate the stylesheet split.
  *
  * DEPENDENCIES:
  *   - window.DomUtils      (escaping)
@@ -305,21 +289,16 @@
     }
 
     // ============================================================
-    // UNASSIGNED LIST
+    // UNASSIGNED VIEW
     // ============================================================
+    //
+    // Two sections. The renderer delegates each to its own
+    // sub-function and concatenates the result.
+    //
+    // The staff section is only emitted when staffRows is a
+    // non-empty array. When the roster has no staff at the current
+    // year, only the candidate section appears.
 
-    /**
-     * Render the Unassigned view.
-     *
-     * Rows are professional-team-eligible characters who are not
-     * currently active on a professional team at the current
-     * application year. The future-stint indicator appears as a
-     * sub-line under the character name when the row's
-     * classification is 'future'.
-     *
-     * @param {object} vm - Unassigned view model
-     * @returns {string}
-     */
     function renderUnassigned(vm) {
         if (!vm || !Array.isArray(vm.rows)) {
             return '';
@@ -329,10 +308,24 @@
             ? String(vm.year)
             : '';
 
+        var html = '';
+
+        html += renderUnassignedCandidates(vm, yearLabel);
+
+        if (Array.isArray(vm.staffRows) && vm.staffRows.length > 0) {
+            html += renderUnassignedStaff(vm, yearLabel);
+        }
+
+        return html;
+    }
+
+    function renderUnassignedCandidates(vm, yearLabel) {
         if (vm.rows.length === 0) {
             return '<p class="empty-state team-list-empty">' +
                         'No unassigned characters' +
-                        (yearLabel ? ' for ' + escapeHtml(yearLabel) : '') +
+                        (yearLabel
+                            ? ' for ' + escapeHtml(yearLabel)
+                            : '') +
                         '.' +
                     '</p>';
         }
@@ -369,7 +362,6 @@
                         'data-id="' +
                             escapeAttribute(row.characterId) + '">';
 
-            // Character cell (with optional future indicator)
             html += '<span class="unassigned-name-cell">';
             html += '<strong class="unassigned-name">' +
                         escapeHtml(row.displayName || 'Unknown') +
@@ -394,6 +386,71 @@
 
             html += '<span class="unassigned-senior">' +
                         escapeHtml(row.seniorDisplay || '\u2014') +
+                    '</span>';
+
+            html += '</div>';
+        }
+
+        return html;
+    }
+
+    function renderUnassignedStaff(vm, yearLabel) {
+        var rows = vm.staffRows;
+
+        var html = '';
+
+        html += '<div class="unassigned-summary unassigned-staff-summary">' +
+                    'Staff at year ' +
+                    '<strong>' + escapeHtml(yearLabel) + '</strong>' +
+                    ' &mdash; ' +
+                    '<strong>' + safeCount(vm.staffTotal) + '</strong>' +
+                    ' character' +
+                    (vm.staffTotal === 1 ? '' : 's') +
+                '</div>';
+
+        html += '<div class="list-header unassigned-header ' +
+                    'unassigned-staff-header">';
+        html += '<span>Character</span>';
+        html += '<span>Status</span>';
+        html += '<span>Role</span>';
+        html += '<span>Since</span>';
+        html += '</div>';
+
+        for (var i = 0; i < rows.length; i++) {
+            var row = rows[i];
+            if (!row || !row.characterId) { continue; }
+
+            var roleLabel = row.staffRole === 'support'
+                ? 'Support'
+                : 'Instructor';
+
+            html += '<div class="list-item unassigned-item ' +
+                        'unassigned-staff-item" ' +
+                        'data-id="' +
+                            escapeAttribute(row.characterId) + '">';
+
+            html += '<span class="unassigned-name-cell">';
+            html += '<strong class="unassigned-name">' +
+                        escapeHtml(row.displayName || 'Unknown') +
+                    '</strong>';
+            if (isNonEmptyString(row.teamName)) {
+                html += '<span class="unassigned-future" ' +
+                            'title="Former professional team">' +
+                            escapeHtml(row.teamName) +
+                        '</span>';
+            }
+            html += '</span>';
+
+            html += '<span class="unassigned-status">' +
+                        escapeHtml(row.status || '') +
+                    '</span>';
+
+            html += '<span class="unassigned-role">' +
+                        escapeHtml(roleLabel) +
+                    '</span>';
+
+            html += '<span class="unassigned-since">' +
+                        escapeHtml(row.staffSinceDisplay || '\u2014') +
                     '</span>';
 
             html += '</div>';
@@ -673,9 +730,7 @@
                     '</button>';
             html += '</div>';
 
-            // Filters are only meaningful in Teams mode. When the
-            // user is looking at Unassigned, the year and status
-            // filters do not apply, so we hide them.
+            // Filters are only meaningful in Teams mode.
             if (!showUnassigned) {
                 html += '<div class="filter-group">';
                 html += '<label for="team-filter-year">' +
@@ -1093,25 +1148,6 @@
         var html = '';
 
         // ---- Page header ----
-        //
-        // The header contains three actions on the professional tab:
-        //
-        //   Export        : opens the team export picker
-        //   Matchmaking   : opens the matchmaking modal
-        //   + Add Team    : opens the team form
-        //
-        // All three are hidden on Temporary and Civilian tabs
-        // because matchmaking and professional-team export target
-        // professional teams only.
-        //
-        // All three are hidden while the Unassigned view is active,
-        // because none of them applies to a read-only roster of
-        // people.
-        //
-        // The page-header action group is stable across tabs; only
-        // its contents change. This keeps the header height
-        // consistent whether the user is on Professional, Temporary,
-        // or Civilian.
         html += '<div class="page-header">';
         html += '<h2>Team Manager</h2>';
         html += '<div class="page-header-actions">';
