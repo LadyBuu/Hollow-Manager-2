@@ -25,15 +25,24 @@
  *   (.field-random-btn) next to each pool-backed field. Clicking
  *   one rerolls only that field.
  *
- *   For physical fields, the reroll is biased 70/30 toward the
- *   current tier (see character-generator.js). For personality
- *   fields, it is a uniform pick from the field's pool.
+ *   Physical fields (gender / eyes / hair / skin / height /
+ *   weight / build): the reroll reads the current body from the
+ *   form and passes it to CharacterGenerator.generatePhysicalField.
+ *   The generator respects the current shape where possible.
+ *
+ *   Personality fields (traits / ideals / bonds / flaws /
+ *   alignment / likes / dislikes / habits / fears / goals /
+ *   authority / conflictStyle / socialStyle / quirks): a uniform
+ *   pick from the field's pool via
+ *   CharacterGenerator.generatePersonalityField.
  *
  *   The buttons are inside the re-rendered form content, so the
  *   handler is delegated.
  *
  * SPECIAL MOVES (S10.2):
  *   - Move mutations moved from CharacterStats to CharacterMoves.
+ *     The add and remove handlers call CharacterMoves.addSpecialMove
+ *     and CharacterMoves.removeSpecialMove.
  *
  * CLASS MEMBERSHIP (S10.1):
  *   - Class mutations moved from CharacterClasses to AcademyClasses.
@@ -52,7 +61,7 @@
  * EDIT FLOW (characterEdit event):
  *   - CharacterDetail dispatches a `characterEdit` CustomEvent on
  *     document when the user clicks "Edit Character" in the detail
- *     modal.
+ *     modal. The event carries { characterId }.
  */
 
 (function() {
@@ -393,7 +402,7 @@
         bindDeceasedToggle();
         bindBirthYearListener();
         bindRandomButtons();
-        bindFieldRandomButtons();          // <-- NEW
+        bindFieldRandomButtons();
         bindPreviousNameButtons();
         bindCareerButtons();
         bindClassDropdown();
@@ -631,16 +640,14 @@
     // one rerolls only that field via CharacterGenerator.
     //
     // Physical fields (gender / eyes / hair / skin / height /
-    // weight / build): the reroll is biased toward the current
-    // tier. See generatePhysicalField in character-generator.js.
+    // weight / build): the reroll reads the current body from the
+    // form and passes it to generatePhysicalField. The generator
+    // then respects the current shape where possible.
     //
     // Personality fields (traits / ideals / bonds / flaws /
-    // alignment / likes / dislikes / habits / fears / goals):
-    // a uniform pick from the field's pool.
-    //
-    // The handler reads the current physical values off the form
-    // so that the tier bias has something to key off. If the form
-    // isn't loaded, physical rerolls fall back to uniform picks.
+    // alignment / likes / dislikes / habits / fears / goals /
+    // authority / conflictStyle / socialStyle / quirks): a uniform
+    // pick from the field's pool.
 
     var PHYSICAL_FIELDS = {
         gender: 'char-gender',
@@ -653,16 +660,20 @@
     };
 
     var PERSONALITY_FIELDS = {
-        traits:    'char-personality-traits',
-        ideals:    'char-personality-ideals',
-        bonds:     'char-personality-bonds',
-        flaws:     'char-personality-flaws',
-        alignment: 'char-personality-alignment',
-        likes:     'char-personality-likes',
-        dislikes:  'char-personality-dislikes',
-        habits:    'char-personality-habits',
-        fears:     'char-personality-fears',
-        goals:     'char-personality-goals'
+        traits:        'char-personality-traits',
+        ideals:        'char-personality-ideals',
+        bonds:         'char-personality-bonds',
+        flaws:         'char-personality-flaws',
+        alignment:     'char-personality-alignment',
+        likes:         'char-personality-likes',
+        dislikes:      'char-personality-dislikes',
+        habits:        'char-personality-habits',
+        fears:         'char-personality-fears',
+        goals:         'char-personality-goals',
+        authority:     'char-personality-authority',
+        conflictStyle: 'char-personality-conflictStyle',
+        socialStyle:   'char-personality-socialStyle',
+        quirks:        'char-personality-quirks'
     };
 
     function readCurrentPhysicalFromForm() {
@@ -1890,6 +1901,7 @@
 
     function fillRandomPersonality() {
         var personality = CharacterGenerator.generatePersonality();
+
         FormUtils.setField('char-personality-traits', personality.traits);
         FormUtils.setField('char-personality-ideals', personality.ideals);
         FormUtils.setField('char-personality-bonds', personality.bonds);
@@ -1900,6 +1912,12 @@
         FormUtils.setField('char-personality-habits', personality.habits);
         FormUtils.setField('char-personality-fears', personality.fears);
         FormUtils.setField('char-personality-goals', personality.goals);
+
+        FormUtils.setField('char-personality-authority', personality.authority);
+        FormUtils.setField('char-personality-conflictStyle', personality.conflictStyle);
+        FormUtils.setField('char-personality-socialStyle', personality.socialStyle);
+        FormUtils.setField('char-personality-quirks', personality.quirks);
+
         notify('Random personality generated!', 'info');
     }
 
