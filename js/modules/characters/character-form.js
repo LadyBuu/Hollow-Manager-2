@@ -15,52 +15,46 @@
  *   - Academic tab rendering delegates to
  *     CharacterClassView.renderAcademicTab
  *
+ * PER-FIELD RANDOM:
+ *   Physical and personality fields sourced from fixed pools carry a
+ *   small ⟳ button (class .field-random-btn) that rerolls only that
+ *   field. The button is bound via delegation in character-events.js;
+ *   this file only emits the markup.
+ *
+ *   The button is emitted next to:
+ *
+ *     Physical tab:   gender, eyes, hair, skin, height, weight, build
+ *     Personality:    traits, ideals, bonds, flaws, alignment, likes,
+ *                     dislikes, habits, fears, goals
+ *
+ *   Free-text fields (names, appearance notes) do NOT carry the
+ *   button. Nor do combat notes, HP, MP, weapons, or academic fields.
+ *
+ *   The tab-level ⟳ Random button is unchanged: it rerolls every
+ *   randomizable field on the tab.
+ *
  * TAB STATE:
  *   - state.currentTab is module-level. It survives across renders so
  *     that re-rendering the SAME character (e.g. after an add-class
  *     mutation, or after a save) keeps the user on the tab they were
  *     working in.
  *   - When the edit ID CHANGES (including from a character ID to null,
- *     or from null to a character ID), the tab resets to 'name'. This
- *     is the "session boundary" rule: a new character means a fresh
- *     form.
- *   - The reset runs BEFORE getCharacterFormHTML so the initial HTML
- *     reflects the reset tab.
+ *     or from null to a character ID), the tab resets to 'name'.
  *
  * FORM TAB BUTTONS (BUG-E12):
  *   - getTabsHTML() emits <button type="button"> for every tab.
  *     Without type="button", a button inside a <form> defaults to
- *     type="submit", so clicking a tab submits the form, which fires
- *     the submit handler in character-events.js (handleSave), which
- *     shows a success toast on every tab switch. The explicit type
- *     prevents the form submission.
- *   - This is the ONLY bare <button> emitted inside #character-form.
- *     Every other button in this file already carries type="button".
+ *     type="submit".
  *
- * PROFESSIONAL TAB (this revision):
+ * PROFESSIONAL TAB:
  *   The Professional tab carries an empty
  *   <div id="professional-view"> container. After the form HTML
  *   is written into the DOM, render() delegates to
- *   CharacterViews.renderCharacterProfessional(char), which fills
- *   that container with the character's professional-team
- *   memberships (active and former).
- *
- *   The renderer is resolved lazily at render time. When
- *   CharacterViews is absent, or does not export the renderer,
- *   the container stays empty — matching the previous behaviour.
- *   The call is wrapped in try/catch so a renderer failure does
- *   not blank the rest of the form.
- *
- *   This mirrors how the Social tab delegates to
- *   renderCharacterSocial, and how the Academic tab delegates to
- *   CharacterClassView.renderAcademicTab.
+ *   CharacterViews.renderCharacterProfessional(char).
  *
  * EDIT ID RESOLUTION:
  *   - getCurrentEditId() / setCurrentEditId() prefer the global
  *     functions exposed by characters/index.js.
- *   - The window._currentEditId fallback is dead code in the current
- *     architecture (index.js keeps the ID in a closure), but is kept
- *     for safety in case the module is loaded standalone in a test.
  */
 
 (function() {
@@ -215,15 +209,48 @@
     }
 
     // ============================================================
+    // PER-FIELD RANDOM BUTTON
+    // ============================================================
+    //
+    // The button emits a small ⟳ next to a field label. The click
+    // is handled via delegation in character-events.js, keyed on
+    // the data-field attribute.
+    //
+    // data-field values:
+    //   Physical:   gender | eyes | hair | skin | height | weight | build
+    //   Personality: traits | ideals | bonds | flaws | alignment |
+    //                likes | dislikes | habits | fears | goals
+    //
+    // The button is deliberately placed INSIDE the <label> so a
+    // click on the glyph does not need a separate hit-target, and
+    // so screen readers announce it as part of the field's label.
+    // The button carries its own aria-label so it can be reached
+    // by keyboard Tab.
+
+    function renderFieldRandomBtn(field) {
+        return '<button type="button" ' +
+                    'class="field-random-btn" ' +
+                    'data-field="' + escapeAttribute(field) + '" ' +
+                    'title="Reroll this field" ' +
+                    'aria-label="Reroll ' + escapeAttribute(field) + '">' +
+                    '\u27f3' +
+                '</button>';
+    }
+
+    function renderLabelWithRandom(labelText, field, extraStyle) {
+        var style = extraStyle || 'font-size:0.7rem;color:var(--text-dim);';
+        return '<label style="' + style + '">' +
+                    escapeHtml(labelText) +
+                    ' ' + renderFieldRandomBtn(field) +
+                '</label>';
+    }
+
+    // ============================================================
     // STATE
     // ============================================================
 
     var state = { currentTab: 'name' };
 
-    // Tracks the edit ID from the last render() call. Used to detect
-    // "session boundaries" and reset the tab. `undefined` means no
-    // render has happened yet, which is distinct from `null` (which
-    // means a "new character" session).
     var _lastRenderedEditId = undefined;
 
     var VALID_TABS = ['name', 'physical', 'personality', 'academic', 'professional', 'combat', 'social', 'notes'];
@@ -431,13 +458,6 @@
             if (!char) { return; }
         }
 
-        // ---- FIX: Tab session boundary ----
-        // Reset the active tab to 'name' when the edit ID changes.
-        // Re-rendering the SAME character (after a save, after an
-        // add-class mutation) keeps the current tab. Comparing against
-        // the raw editId argument preserves the null-vs-id distinction:
-        // null (new character) and 'char_abc' are different sessions,
-        // and null -> null is the same session.
         var normalizedEditId = editId === undefined || editId === null || editId === ''
             ? null
             : String(editId);
@@ -467,8 +487,6 @@
         var content = document.getElementById('character-form-content');
         if (!content) { return; }
 
-        // NOTE: getCharacterFormHTML reads state.currentTab. It MUST be
-        // called after the tab-reset block above. Do not reorder.
         var html = getCharacterFormHTML(char, editId, currentYear);
         content.innerHTML = html;
 
@@ -492,7 +510,6 @@
             applyDeceasedState(false);
         }
 
-        // Combat tab — delegate to CharacterStatsView
         var CharacterStatsView = getCharacterStatsView();
         if (CharacterStatsView) {
             if (char) {
@@ -521,7 +538,6 @@
             }
         }
 
-        // Academic tab — delegate to CharacterClassView
         var CharacterClassView = getCharacterClassView();
         if (CharacterClassView && typeof CharacterClassView.renderAcademicTab === 'function') {
             var academicContainer = document.getElementById('academic-class-view');
@@ -534,19 +550,6 @@
             }
         }
 
-        // Professional tab — delegate to CharacterViews.
-        //
-        // The Professional tab carries an empty
-        // <div id="professional-view"> container that the renderer
-        // fills with the character's professional-team memberships,
-        // split into active and former stints. The renderer reads its
-        // data through TeamQueries.getTeamsForCharacterAllTime; the
-        // form does not touch the team store.
-        //
-        // The call is optional: when CharacterViews is absent or does
-        // not export the renderer, the container stays empty. Wrapped
-        // in try/catch so a renderer failure does not blank the rest
-        // of the form.
         var CharacterViewsForProfessional = getCharacterViews();
         if (CharacterViewsForProfessional &&
             typeof CharacterViewsForProfessional.renderCharacterProfessional === 'function') {
@@ -560,7 +563,6 @@
             }
         }
 
-        // Social tab — delegate to CharacterViews
         var CharacterViews = getCharacterViews();
         if (CharacterViews && typeof CharacterViews.renderCharacterSocial === 'function') {
             try {
@@ -591,7 +593,6 @@
             content.innerHTML = '<p class="empty-state">Select a character from the list to view and edit details.</p>';
         }
 
-        // Clear the session so the next render starts fresh on 'name'.
         _lastRenderedEditId = undefined;
         state.currentTab = 'name';
     }
@@ -814,6 +815,9 @@
     // ============================================================
     // PHYSICAL TAB
     // ============================================================
+    //
+    // Every pool-backed field carries a ⟳ button. Appearance Notes
+    // is free text and does not.
 
     function getPhysicalTabHTML(c) {
         var active = state.currentTab === 'physical' ? 'block' : 'none';
@@ -826,35 +830,43 @@
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Eyes</label>
+                        ${renderLabelWithRandom('Gender', 'gender')}
+                        <input type="text" id="char-gender" value="${escapeHtml(c.gender || '')}" placeholder="Gender" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        ${renderLabelWithRandom('Eyes', 'eyes')}
                         <input type="text" id="char-eyes" value="${escapeHtml(c.eyes || '')}" placeholder="Eye color" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
+                </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Hair</label>
+                        ${renderLabelWithRandom('Hair', 'hair')}
                         <input type="text" id="char-hair" value="${escapeHtml(c.hair || '')}" placeholder="Hair color/style" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
-                </div>
-
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Skin</label>
+                        ${renderLabelWithRandom('Skin', 'skin')}
                         <input type="text" id="char-skin" value="${escapeHtml(c.skin || '')}" placeholder="Skin tone" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
+                </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Height</label>
+                        ${renderLabelWithRandom('Height', 'height')}
                         <input type="text" id="char-height" value="${escapeHtml(c.height || '')}" placeholder="Height" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        ${renderLabelWithRandom('Weight', 'weight')}
+                        <input type="text" id="char-weight" value="${escapeHtml(c.weight || '')}" placeholder="Weight" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Weight</label>
-                        <input type="text" id="char-weight" value="${escapeHtml(c.weight || '')}" placeholder="Weight" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
-                    </div>
-                    <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Build</label>
+                        ${renderLabelWithRandom('Build', 'build')}
                         <input type="text" id="char-build" value="${escapeHtml(c.build || '')}" placeholder="Body type" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
+                    <div class="form-group"></div>
                 </div>
 
                 <div class="form-group">
@@ -868,6 +880,10 @@
     // ============================================================
     // PERSONALITY TAB
     // ============================================================
+    //
+    // Every personality field carries a ⟳ button. The pools are
+    // whole-phrase entries; the button replaces the value with
+    // another entry from the same pool.
 
     function getPersonalityTabHTML(c) {
         var active = state.currentTab === 'personality' ? 'block' : 'none';
@@ -881,55 +897,55 @@
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Traits</label>
+                        ${renderLabelWithRandom('Traits', 'traits')}
                         <input type="text" id="char-personality-traits" value="${escapeHtml(p.traits || '')}" placeholder="e.g., Brave, Cunning, Loyal" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Ideals</label>
+                        ${renderLabelWithRandom('Ideals', 'ideals')}
                         <input type="text" id="char-personality-ideals" value="${escapeHtml(p.ideals || '')}" placeholder="What they believe in" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Bonds</label>
+                        ${renderLabelWithRandom('Bonds', 'bonds')}
                         <input type="text" id="char-personality-bonds" value="${escapeHtml(p.bonds || '')}" placeholder="Who/what they care about" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Flaws</label>
+                        ${renderLabelWithRandom('Flaws', 'flaws')}
                         <input type="text" id="char-personality-flaws" value="${escapeHtml(p.flaws || '')}" placeholder="Weaknesses, vices" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Alignment</label>
+                        ${renderLabelWithRandom('Alignment', 'alignment')}
                         <input type="text" id="char-personality-alignment" value="${escapeHtml(p.alignment || '')}" placeholder="e.g., Lawful Good, Chaotic Neutral" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Likes</label>
+                        ${renderLabelWithRandom('Likes', 'likes')}
                         <input type="text" id="char-personality-likes" value="${escapeHtml(p.likes || '')}" placeholder="Things they enjoy" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Dislikes</label>
+                        ${renderLabelWithRandom('Dislikes', 'dislikes')}
                         <input type="text" id="char-personality-dislikes" value="${escapeHtml(p.dislikes || '')}" placeholder="Things they avoid" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Fears</label>
+                        ${renderLabelWithRandom('Fears', 'fears')}
                         <input type="text" id="char-personality-fears" value="${escapeHtml(p.fears || '')}" placeholder="What they're afraid of" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Habits</label>
+                        ${renderLabelWithRandom('Habits', 'habits')}
                         <input type="text" id="char-personality-habits" value="${escapeHtml(p.habits || '')}" placeholder="Quirks, routines" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Goals</label>
+                        ${renderLabelWithRandom('Goals', 'goals')}
                         <input type="text" id="char-personality-goals" value="${escapeHtml(p.goals || '')}" placeholder="What they want to achieve" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
@@ -954,18 +970,6 @@
     // ============================================================
     // PROFESSIONAL TAB
     // ============================================================
-    //
-    // The tab carries:
-    //   - Specialty (text input)
-    //   - Career Status History (dynamic rows)
-    //   - An empty <div id="professional-view"> that the renderer
-    //     fills after the form HTML has been written to the DOM.
-    //
-    // The empty container is deliberate: the renderer is a separate
-    // module (CharacterViews.renderCharacterProfessional), and the
-    // form's job is only to provide the host element. This matches
-    // how the Academic tab hosts #academic-class-view and the Social
-    // tab hosts #character-social-view.
 
     function getProfessionalTabHTML(c) {
         var active = state.currentTab === 'professional' ? 'block' : 'none';
@@ -1524,18 +1528,6 @@
             panel.style.display = isActive ? 'block' : 'none';
         });
 
-        // Re-render the Professional tab's team section when the
-        // user switches TO it. The host container is rebuilt by
-        // every getProfessionalTabHTML call, so the renderer must
-        // run again to repopulate it. The other tabs use the same
-        // pattern: the Social tab is re-filled on every render(),
-        // and the Academic tab is re-filled on every render().
-        //
-        // We do this here because switchTab only toggles panel
-        // visibility; it does not re-run render(). A user who
-        // switches to Professional after the initial render would
-        // otherwise see an empty container if the renderer had
-        // never been called.
         if (tab === 'professional') {
             var CharacterQueries = getCharacterQueries();
             var charId = getCurrentEditId();
