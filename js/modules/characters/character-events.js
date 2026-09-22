@@ -20,20 +20,23 @@
  *   - Modals are HIDDEN (not destroyed) so they can be reused:
  *     use Modal.hideModal() not Modal.closeModal().
  *
+ * PER-FIELD RANDOM:
+ *   The Physical and Personality tabs render a small ⟳ button
+ *   (.field-random-btn) next to each pool-backed field. Clicking
+ *   one rerolls only that field.
+ *
+ *   For physical fields, the reroll is biased 70/30 toward the
+ *   current tier (see character-generator.js). For personality
+ *   fields, it is a uniform pick from the field's pool.
+ *
+ *   The buttons are inside the re-rendered form content, so the
+ *   handler is delegated.
+ *
  * SPECIAL MOVES (S10.2):
  *   - Move mutations moved from CharacterStats to CharacterMoves.
- *     The add and remove handlers call CharacterMoves.addSpecialMove
- *     and CharacterMoves.removeSpecialMove.
- *   - The dependency check requires CharacterMoves for those paths.
- *     CharacterStats is still required for stat rolling, HP/MP, and
- *     class derivation, but it is no longer the move authority.
  *
  * CLASS MEMBERSHIP (S10.1):
  *   - Class mutations moved from CharacterClasses to AcademyClasses.
- *     handleAddClassById, handleAddClassByName, and handleRemoveClass
- *     call AcademyClasses.{addToClass, addClassByName, removeClassById}.
- *   - CharacterClasses no longer exists. The dependency check and the
- *     module-scope import have been updated accordingly.
  *
  * PHYSICAL CLASS OVERRIDE:
  *   The override dropdown is a USER INSTRUCTION, not a hint. Picking
@@ -42,51 +45,14 @@
  *   display shows X's label directly via
  *   CharacterStats.getPhysicalClassLabel(X).
  *
- *   The handler does NOT re-derive after applying. The derivation is
- *   a similarity score over the newly-shaped stats, and its tiebreak
- *   can return a different class than the one that was picked. The
- *   weight vectors are tuned so this does not happen in practice
- *   (see character-constants.js's collapse constraint), but the
- *   override handler does not rely on that property. It shows the
- *   picked class because that is what the user asked for.
- *
- *   The derivation still runs on the LIVE-EDIT path: when the user
- *   types a stat directly, the derived-class display re-scores. That
- *   is what the derivation is for.
- *
  * REFRESH CONTRACT:
  *   - refreshUI(char) is the SINGLE refresh entry point for the
  *     character module.
- *   - It re-renders the class filter dropdown, the character list,
- *     the academic tab, and the dashboard stats. It does NOT
- *     re-render the whole character form — the caller is responsible
- *     for that via CharacterForm.render(id), because some handlers
- *     (add class, remove class) want to re-render the form itself to
- *     refresh the dropdown + tag list.
- *   - The academic tab refresh delegates to
- *     CharacterClassView.renderAcademicTab, which is the SINGLE
- *     rendering entry point for the academic tab. It now renders the
- *     elimination status banner and both elimination lists as part
- *     of its output.
- *
- * ELIMINATION OWNERSHIP:
- *   Standalone eliminations are managed by AcademyEliminations
- *   (js/modules/academy/academy-eliminations.js). The Drop Out action
- *   routes through there (initiated from the Academy People view).
- *   The academic tab's standalone-eliminations list emits
- *   [data-action="remove-standalone-elim"] buttons; this module
- *   handles the click and calls AcademyEliminations.removeStandalone.
  *
  * EDIT FLOW (characterEdit event):
  *   - CharacterDetail dispatches a `characterEdit` CustomEvent on
  *     document when the user clicks "Edit Character" in the detail
- *     modal. The event carries { characterId }.
- *   - This module listens for that event and drives the edit flow:
- *     setCurrentEditId, CharacterForm.render, refreshUI.
- *   - Without this listener, the detail modal's edit button is dead.
- *   - The listener is registered once at init time. It is idempotent
- *     (guarded by a module-level flag) so re-initialising does not
- *     stack handlers.
+ *     modal.
  */
 
 (function() {
@@ -131,13 +97,9 @@
     var _eventListeners = [];
     var _filterDebounceTimer = null;
 
-    // Social modal state
     var _socialEditId = null;
     var _socialCoreInitialized = false;
 
-    // Guard against duplicate characterEdit listeners across
-    // re-inits. The listener lives on document and outlives container
-    // swaps, so we install it once and never re-add.
     var _characterEditListenerInstalled = false;
 
     // ============================================================
@@ -220,7 +182,6 @@
             missing.push('UI_CONSTANTS.MOBILE_BREAKPOINT');
         }
 
-        // Social dependencies — warn but don't fail
         var socialMissing = [];
         if (!SocialConstants) socialMissing.push('SocialConstants');
         if (!SocialQueries) socialMissing.push('SocialQueries');
@@ -242,10 +203,6 @@
     // SOCIAL CORE INITIALIZATION
     // ============================================================
 
-    /**
-     * Ensure SocialCore has been initialized with a characterProvider.
-     * Idempotent — safe to call multiple times.
-     */
     function ensureSocialCoreInitialized() {
         if (_socialCoreInitialized) { return true; }
 
@@ -289,33 +246,7 @@
     // ============================================================
     // UI REFRESH
     // ============================================================
-    //
-    // This is the SINGLE refresh entry point for the character module.
-    //
-    // REFRESH SCOPE:
-    //   - Character list panel
-    //   - Academic tab (via CharacterClassView.renderAcademicTab,
-    //     which renders the class chips, enrollment, grades, the
-    //     elimination status banner, and both elimination lists)
-    //   - Dashboard stats
-    //
-    // NOT IN SCOPE:
-    //   - The character form's other tabs. Callers that mutate
-    //     form-visible state on those tabs must call
-    //     CharacterForm.render(id) themselves.
-    //
-    // CHARACTER CLASS VIEW CONTRACT:
-    //   - renderAcademicTab(char, container) is the ONLY entry point
-    //     for the academic tab. It internally dispatches to
-    //     renderAddClassSection / renderClassesSection /
-    //     renderEliminationStatusSection / renderAcademicTeamsSection /
-    //     renderEnrollmentSection / renderGradesSection /
-    //     renderTournamentEliminationsSection /
-    //     renderStandaloneEliminationsSection.
-    //   - Do NOT call the individual section renderers from here.
-    //     They are implementation details of renderAcademicTab.
-    //
-    // @param {object|null} char - Character object (or null to clear)
+
     function refreshUI(char) {
         if (window.CharacterList && typeof window.CharacterList.render === 'function') {
             try { window.CharacterList.render(); } catch (e) {}
@@ -379,22 +310,8 @@
     }
 
     // ============================================================
-    // CHARACTER EDIT EVENT - consumed by CharacterDetail's edit button
+    // CHARACTER EDIT EVENT
     // ============================================================
-    //
-    // CharacterDetail dispatches this event when the user clicks
-    // "Edit Character" in the detail modal. The detail modal is
-    // owned by CharacterDetail, so it closes itself before dispatching.
-    // Here we only need to:
-    //   1. Set the current edit ID.
-    //   2. Render the character form for that ID.
-    //   3. Refresh the surrounding UI so the list selection highlights.
-    //
-    // The listener is installed ONCE for the lifetime of the page. It
-    // is NOT added to _eventListeners because destroy() should not
-    // remove it — the detail modal outlives container swaps, and if we
-    // removed and re-added the listener on every init we would risk
-    // dropping an edit event fired during the swap window.
 
     function installCharacterEditListener() {
         if (_characterEditListenerInstalled) {
@@ -457,11 +374,8 @@
 
         removeAllEventListeners();
 
-        // Ensure SocialCore has a characterProvider so relationship
-        // mutations work even if the top-level Social tab was never opened.
         ensureSocialCoreInitialized();
 
-        // Install the characterEdit listener exactly once.
         installCharacterEditListener();
 
         // Static container elements
@@ -479,6 +393,7 @@
         bindDeceasedToggle();
         bindBirthYearListener();
         bindRandomButtons();
+        bindFieldRandomButtons();          // <-- NEW
         bindPreviousNameButtons();
         bindCareerButtons();
         bindClassDropdown();
@@ -502,9 +417,6 @@
         removeAllEventListeners();
         _initialized = false;
         _socialEditId = null;
-        // Note: _characterEditListenerInstalled intentionally stays true.
-        // The document-level listener survives container teardown so the
-        // detail modal's edit button keeps working across remounts.
     }
 
     // ============================================================
@@ -607,7 +519,7 @@
                 var hideElimEl = document.getElementById('hide-eliminated');
 
                 if (nameEl) { nameEl.value = ''; }
-                if (classEl) { classEl.value = 'all'; }
+                if (classEl) { classEl.value = ''; classEl.value = 'all'; }
                 if (hideDeadEl) { hideDeadEl.checked = true; }
                 if (hideElimEl) { hideElimEl.checked = true; }
 
@@ -710,6 +622,115 @@
         });
     }
 
+    // ============================================================
+    // PER-FIELD RANDOM
+    // ============================================================
+    //
+    // The Physical and Personality tabs render a small ⟳ button
+    // (.field-random-btn) next to each pool-backed field. Clicking
+    // one rerolls only that field via CharacterGenerator.
+    //
+    // Physical fields (gender / eyes / hair / skin / height /
+    // weight / build): the reroll is biased toward the current
+    // tier. See generatePhysicalField in character-generator.js.
+    //
+    // Personality fields (traits / ideals / bonds / flaws /
+    // alignment / likes / dislikes / habits / fears / goals):
+    // a uniform pick from the field's pool.
+    //
+    // The handler reads the current physical values off the form
+    // so that the tier bias has something to key off. If the form
+    // isn't loaded, physical rerolls fall back to uniform picks.
+
+    var PHYSICAL_FIELDS = {
+        gender: 'char-gender',
+        eyes:   'char-eyes',
+        hair:   'char-hair',
+        skin:   'char-skin',
+        height: 'char-height',
+        weight: 'char-weight',
+        build:  'char-build'
+    };
+
+    var PERSONALITY_FIELDS = {
+        traits:    'char-personality-traits',
+        ideals:    'char-personality-ideals',
+        bonds:     'char-personality-bonds',
+        flaws:     'char-personality-flaws',
+        alignment: 'char-personality-alignment',
+        likes:     'char-personality-likes',
+        dislikes:  'char-personality-dislikes',
+        habits:    'char-personality-habits',
+        fears:     'char-personality-fears',
+        goals:     'char-personality-goals'
+    };
+
+    function readCurrentPhysicalFromForm() {
+        var FormUtils = window.FormUtils;
+        if (!FormUtils || typeof FormUtils.getField !== 'function') {
+            return {};
+        }
+        var physical = {};
+        var keys = Object.keys(PHYSICAL_FIELDS);
+        for (var i = 0; i < keys.length; i++) {
+            var field = keys[i];
+            var formId = PHYSICAL_FIELDS[field];
+            physical[field] = FormUtils.getField(formId) || '';
+        }
+        return physical;
+    }
+
+    function bindFieldRandomButtons() {
+        addSafeDelegatedListener('.field-random-btn', 'click', function(e, target) {
+            e.preventDefault();
+            e.stopPropagation();
+
+            var field = target.dataset ? target.dataset.field : null;
+            if (!field) { return; }
+
+            var Generator = window.CharacterGenerator;
+            var FormUtils = window.FormUtils;
+            if (!Generator || !FormUtils) {
+                notify('Generator not available.', 'error');
+                return;
+            }
+
+            // ---- Physical field ----
+            if (PHYSICAL_FIELDS[field]) {
+                if (typeof Generator.generatePhysicalField !== 'function') {
+                    notify('Generator does not support field reroll.', 'error');
+                    return;
+                }
+
+                var current = readCurrentPhysicalFromForm();
+                var newValue = Generator.generatePhysicalField(field, current);
+
+                if (newValue === null || newValue === undefined) {
+                    return;
+                }
+
+                FormUtils.setField(PHYSICAL_FIELDS[field], newValue);
+                return;
+            }
+
+            // ---- Personality field ----
+            if (PERSONALITY_FIELDS[field]) {
+                if (typeof Generator.generatePersonalityField !== 'function') {
+                    notify('Generator does not support field reroll.', 'error');
+                    return;
+                }
+
+                var newPersonalityValue = Generator.generatePersonalityField(field);
+                if (newPersonalityValue === null || newPersonalityValue === undefined) {
+                    return;
+                }
+
+                FormUtils.setField(PERSONALITY_FIELDS[field], newPersonalityValue);
+                return;
+            }
+        });
+    }
+
     function bindPreviousNameButtons() {
         addSafeDelegatedListener('#add-previous-name-btn', 'click', function(e, target) {
             var containerEl = document.getElementById('previous-names-container');
@@ -809,23 +830,8 @@
     }
 
     // ============================================================
-    // ACADEMIC TAB - Class dropdown + tag removal + elimination removal
+    // ACADEMIC TAB
     // ============================================================
-    //
-    // The Academic tab no longer uses a free-text class tag input.
-    // Instead it uses a dropdown (#academic-class-select) plus an Add
-    // button (#academic-class-add-btn). The Add button reads the
-    // selected classId and calls AcademyClasses.addToClass, which
-    // goes through MutationPipeline and is Promise-based.
-    //
-    // Removal of a class tag still uses the same .remove-class-tag
-    // buttons rendered by CharacterClassView.
-    //
-    // Standalone elimination removal uses
-    // [data-action="remove-standalone-elim"] buttons rendered by
-    // CharacterClassView. The click routes to
-    // AcademyEliminations.removeStandalone, which is the character-
-    // side mutation authority for standalone eliminations.
 
     function bindClassDropdown() {
         addSafeDelegatedListener('#academic-class-add-btn', 'click', function(e, target) {
@@ -1030,17 +1036,6 @@
                 updateStatModifierDisplay(key, newStats[key]);
             });
 
-            // The override is a user instruction, not a hint.
-            // Show the class the user picked. Do NOT re-derive:
-            // the derivation is a similarity score over the newly-
-            // shaped stats, and its tiebreak can return a different
-            // class from the one that was picked.
-            //
-            // updatePhysicalClassDisplayFromInputs() remains the
-            // derivation path for the LIVE-EDIT case: when the user
-            // types a stat directly, the display re-derives. That is
-            // the correct behaviour there — the user is editing the
-            // profile, not asserting a class.
             var displayEl = document.getElementById('derived-physical-class');
             if (displayEl) {
                 displayEl.textContent = CharacterStats.getPhysicalClassLabel(classId);
@@ -1249,12 +1244,6 @@
     // ============================================================
     // COMBAT - SPECIAL MOVES
     // ============================================================
-    //
-    // S10.2: the move record store moved to CharacterMoves. These two
-    // handlers now call CharacterMoves.addSpecialMove and
-    // CharacterMoves.removeSpecialMove. The rendering path is
-    // unchanged — CharacterStatsView.renderMovesSection still reads
-    // char.specialMoves directly.
 
     function bindSpecialMoveButtons() {
         addSafeDelegatedListener('#add-physical-move-btn', 'click', function(e, target) {
@@ -1790,16 +1779,6 @@
         }
     }
 
-    /**
-     * Add a class to the character by class ID (via the dropdown).
-     *
-     * Uses AcademyClasses.addToClass, which is Promise-based and
-     * goes through MutationPipeline. On success, MutationPipeline has
-     * already shown the success toast, so this handler does not notify
-     * again — it just refreshes the affected UI.
-     *
-     * @param {string} classId - Class ID
-     */
     function handleAddClassById(classId) {
         var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
         if (!charId) {
@@ -1826,16 +1805,10 @@
         AcademyClasses.addToClass(charId, classId)
             .then(function(result) {
                 if (result && result.success) {
-                    // MutationPipeline already showed the success toast.
-                    // Re-render the character form so the Academic tab
-                    // picks up the new class (dropdown loses it, tag
-                    // list gains it). Then refresh the surrounding
-                    // character UI (list, tags, etc).
                     CharacterForm.render(charId);
                     var refreshedChar = CharacterQueries.getCharacterById(charId);
                     refreshUI(refreshedChar);
                 }
-                // On failure, MutationPipeline already showed the toast.
             })
             .catch(function(err) {
                 notify('Failed to add class.', 'error');
@@ -1843,15 +1816,6 @@
             });
     }
 
-    /**
-     * Add a class to the character by name.
-     *
-     * Kept for backward compatibility. It is still called from places
-     * that have a name rather than an ID. Uses AcademyClasses.addClassByName,
-     * which is Promise-based and goes through MutationPipeline.
-     *
-     * @param {string} name - Class name
-     */
     function handleAddClassByName(name) {
         var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
         if (!charId) {
@@ -1873,7 +1837,6 @@
         AcademyClasses.addClassByName(charId, name)
             .then(function(result) {
                 if (result && result.success) {
-                    // MutationPipeline already showed the success toast.
                     CharacterForm.render(charId);
                     var refreshedChar = CharacterQueries.getCharacterById(charId);
                     refreshUI(refreshedChar);
@@ -1899,14 +1862,10 @@
         AcademyClasses.removeClassById(charId, classId)
             .then(function(result) {
                 if (result && result.success) {
-                    // MutationPipeline already showed the success toast.
-                    // Re-render the form so the tag is removed and the
-                    // class reappears in the dropdown.
                     CharacterForm.render(charId);
                     var refreshedChar = CharacterQueries.getCharacterById(charId);
                     refreshUI(refreshedChar);
                 }
-                // On failure, MutationPipeline already showed the toast.
             })
             .catch(function(err) {
                 notify('Failed to remove class.', 'error');
@@ -1915,7 +1874,7 @@
     }
 
     // ============================================================
-    // RANDOM FILLERS (Physical tab / Personality tab)
+    // RANDOM FILLERS
     // ============================================================
 
     function fillRandomPhysical() {
