@@ -5,10 +5,11 @@
  *
  * This module is responsible for:
  *   - Rendering the character list
- *   - Filtering characters by name, class, deceased status,
- *     elimination status
+ *   - Filtering characters by name, class, career status,
+ *     deceased status, elimination status
  *   - Sorting characters by name
- *   - Displaying character status badges (deceased, eliminated, class)
+ *   - Displaying character status badges (deceased, eliminated,
+ *     current professional team)
  *   - Handling character selection (delegates to index.js)
  *
  * IMPORTANT:
@@ -21,17 +22,24 @@
  *   - Uses DomUtils for safe DOM operations
  *   - Uses State for current week (delegates to CalendarConstants)
  *
- * ELIMINATION BADGE:
- *   The row VM carries `eliminationYear` and `eliminationWeek`. The
- *   badge shows the year when available, and appends the week when
- *   the week is also known:
- *     "Eliminated 2026 Wk5"   (year and week)
- *     "Eliminated 2026"       (year only)
- *     "Eliminated"            (neither)
+ * ROW CONTENT:
+ *   Each row shows:
+ *     - Character name
+ *     - Current status string (right-aligned)
+ *     - Badge line:
+ *         * team name (if the character is on a professional team
+ *           right now)
+ *         * "Deceased" (if applicable)
+ *         * "Eliminated YYYY WkN" (if applicable)
  *
- *   The year is the primary fact. Elimination is year-scoped for the
- *   character list; a character eliminated in year Y is filtered as
- *   eliminated for year Y and every year after.
+ *   Team name replaces the class badge that used to appear here.
+ *   Class membership is still computed by the aggregator and is
+ *   used by the class filter, but is no longer displayed.
+ *
+ * STATUS FILTER:
+ *   The sidebar contains a "Career Status" group of checkboxes.
+ *   Read in getFilterValues() as an array of lowercase status
+ *   names. An empty array means "no status filter".
  *
  * DEPENDENCIES (lazily loaded):
  *   - window.CharacterAggregator (from character-aggregator.js)
@@ -45,7 +53,6 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__characterListLoaded) {
         return;
     }
@@ -75,12 +82,6 @@
         return window.CalendarConstants || null;
     }
 
-    /**
-     * Get the current edit ID from the global state.
-     * This is lazily loaded from characters/index.js
-     *
-     * @returns {string|null} Current edit ID or null
-     */
     function getCurrentEditId() {
         if (typeof window.getCurrentEditId === 'function') {
             return window.getCurrentEditId();
@@ -167,6 +168,39 @@
     // FILTER HELPERS
     // ============================================================
 
+    /**
+     * Read the career status filter checkboxes.
+     *
+     * The sidebar renders one checkbox per status, each carrying
+     * data-status="<status>". The value of the filter is the set
+     * of checked statuses, as an array of lowercase strings.
+     *
+     * An empty array means "no status filter".
+     */
+    function getStatusFilterValues() {
+        var container = document.getElementById('char-status-filter');
+        if (!container) {
+            return [];
+        }
+
+        var checkboxes = container.querySelectorAll(
+            'input[type="checkbox"][data-status]'
+        );
+        var values = [];
+
+        for (var i = 0; i < checkboxes.length; i++) {
+            var cb = checkboxes[i];
+            if (cb.checked) {
+                var raw = cb.dataset ? cb.dataset.status : null;
+                if (raw) {
+                    values.push(String(raw).toLowerCase().trim());
+                }
+            }
+        }
+
+        return values;
+    }
+
     function getFilterValues() {
         var nameFilter = document.getElementById('char-name-filter');
         var classFilter = document.getElementById('char-class-filter');
@@ -176,6 +210,7 @@
         return {
             name: nameFilter ? nameFilter.value : '',
             classId: classFilter ? classFilter.value : 'all',
+            statusFilter: getStatusFilterValues(),
             hideDeceased: hideDeceased ? hideDeceased.checked : true,
             hideEliminated: hideEliminated ? hideEliminated.checked : true
         };
@@ -267,6 +302,7 @@
         try {
             items = CharacterAggregator.getCharacterListViewModel({
                 classFilter: filters.classId,
+                statusFilter: filters.statusFilter,
                 nameFilter: filters.name,
                 hideDeceased: filters.hideDeceased,
                 hideEliminated: filters.hideEliminated,
@@ -315,10 +351,28 @@
             html += '<span style="font-size:0.55rem;color:var(--text-dim);">' + safeStatus + '</span>';
             html += '</div>';
 
+            // ---- Badge line ----
+            //
+            // Order: team names first (most useful context), then
+            // status flags. A character can be on multiple teams at
+            // once; every active team gets a badge.
             var badges = [];
+
+            var teams = Array.isArray(item.teamObjects) ? item.teamObjects : [];
+            for (var t = 0; t < teams.length; t++) {
+                var team = teams[t];
+                if (!team || !team.name) { continue; }
+                badges.push(
+                    '<span style="font-size:0.5rem;color:var(--info);">' +
+                        escapeHtml(team.name) +
+                    '</span>'
+                );
+            }
+
             if (item.deceased) {
                 badges.push('<span style="font-size:0.5rem;color:var(--danger);">Deceased</span>');
             }
+
             if (item.eliminated) {
                 var elimText = 'Eliminated';
                 if (item.eliminationYear) {
@@ -330,12 +384,6 @@
                     elimText += ' Wk' + escapeHtml(String(item.eliminationWeek));
                 }
                 badges.push('<span style="font-size:0.5rem;color:var(--warning);">' + elimText + '</span>');
-            }
-            if (item.classNames && Array.isArray(item.classNames) && item.classNames.length > 0) {
-                var classBadges = item.classNames.map(function(name) {
-                    return '<span style="font-size:0.5rem;color:var(--accent);">' + escapeHtml(name) + '</span>';
-                }).join(' ');
-                badges.push(classBadges);
             }
 
             if (badges.length > 0) {
