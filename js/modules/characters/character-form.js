@@ -25,7 +25,8 @@
  *
  *     Physical tab:   gender, eyes, hair, skin, height, weight, build
  *     Personality:    traits, ideals, bonds, flaws, alignment, likes,
- *                     dislikes, habits, fears, goals
+ *                     dislikes, habits, fears, goals, authority,
+ *                     conflictStyle, socialStyle, quirks
  *
  *   Free-text fields (names, appearance notes) do NOT carry the
  *   button. Nor do combat notes, HP, MP, weapons, or academic fields.
@@ -219,7 +220,8 @@
     // data-field values:
     //   Physical:   gender | eyes | hair | skin | height | weight | build
     //   Personality: traits | ideals | bonds | flaws | alignment |
-    //                likes | dislikes | habits | fears | goals
+    //                likes | dislikes | habits | fears | goals |
+    //                authority | conflictStyle | socialStyle | quirks
     //
     // The button is deliberately placed INSIDE the <label> so a
     // click on the glyph does not need a separate hit-target, and
@@ -881,9 +883,11 @@
     // PERSONALITY TAB
     // ============================================================
     //
-    // Every personality field carries a ⟳ button. The pools are
-    // whole-phrase entries; the button replaces the value with
-    // another entry from the same pool.
+    // Fourteen fields. The first ten are the original set. The
+    // last four (authority, conflictStyle, socialStyle, quirks)
+    // are new and grouped under a "Social & Behavioural" heading
+    // so the reader can tell them apart from the classic
+    // D&D-style block above.
 
     function getPersonalityTabHTML(c) {
         var active = state.currentTab === 'personality' ? 'block' : 'none';
@@ -947,6 +951,32 @@
                     <div class="form-group">
                         ${renderLabelWithRandom('Goals', 'goals')}
                         <input type="text" id="char-personality-goals" value="${escapeHtml(p.goals || '')}" placeholder="What they want to achieve" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                </div>
+
+                <div class="form-group" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border-soft);">
+                    <label style="font-size:0.75rem;color:var(--accent);font-weight:600;display:block;margin-bottom:8px;">Social &amp; Behavioural</label>
+
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                        <div class="form-group">
+                            ${renderLabelWithRandom('Authority', 'authority')}
+                            <input type="text" id="char-personality-authority" value="${escapeHtml(p.authority || '')}" placeholder="Relationship to authority" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        </div>
+                        <div class="form-group">
+                            ${renderLabelWithRandom('Social', 'socialStyle')}
+                            <input type="text" id="char-personality-socialStyle" value="${escapeHtml(p.socialStyle || '')}" placeholder="How they relate to others" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        </div>
+                    </div>
+
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                        <div class="form-group">
+                            ${renderLabelWithRandom('Conflict', 'conflictStyle')}
+                            <input type="text" id="char-personality-conflictStyle" value="${escapeHtml(p.conflictStyle || '')}" placeholder="How they handle conflict" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        </div>
+                        <div class="form-group">
+                            ${renderLabelWithRandom('Quirks', 'quirks')}
+                            <input type="text" id="char-personality-quirks" value="${escapeHtml(p.quirks || '')}" placeholder="A behavioural oddity" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1252,6 +1282,12 @@
             FormUtils.setField('char-personality-habits', char.personality.habits);
             FormUtils.setField('char-personality-fears', char.personality.fears);
             FormUtils.setField('char-personality-goals', char.personality.goals);
+
+            // New fields
+            FormUtils.setField('char-personality-authority', char.personality.authority);
+            FormUtils.setField('char-personality-conflictStyle', char.personality.conflictStyle);
+            FormUtils.setField('char-personality-socialStyle', char.personality.socialStyle);
+            FormUtils.setField('char-personality-quirks', char.personality.quirks);
         }
 
         // Professional Tab
@@ -1486,7 +1522,13 @@
                 dislikes: FormUtils.getField('char-personality-dislikes') || '',
                 habits: FormUtils.getField('char-personality-habits') || '',
                 fears: FormUtils.getField('char-personality-fears') || '',
-                goals: FormUtils.getField('char-personality-goals') || ''
+                goals: FormUtils.getField('char-personality-goals') || '',
+
+                // New fields
+                authority: FormUtils.getField('char-personality-authority') || '',
+                conflictStyle: FormUtils.getField('char-personality-conflictStyle') || '',
+                socialStyle: FormUtils.getField('char-personality-socialStyle') || '',
+                quirks: FormUtils.getField('char-personality-quirks') || ''
             }
         };
 
