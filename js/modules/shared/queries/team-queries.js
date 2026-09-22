@@ -49,9 +49,6 @@
  *   are the canonical answers to "is this member entry active or
  *   former at this period?" They wrap the interval predicate.
  *
- *   Consumers: getActiveTeamMembers, TeamAggregator.buildMemberVM,
- *   MemberAdapterTeams.buildVM, AcademyWeeklyTeams.
- *
  * YEAR SEMANTICS:
  *   - Years are UNBOUNDED positive integers.
  *   - Academic teams use bounded weeks (1-52) from CalendarConstants
@@ -91,61 +88,40 @@
  *   before P. The two predicates are mutually exclusive; an entry
  *   with no intervals or with only future intervals is neither.
  *
- *   The team's own window (startPeriod / endPeriod) is checked
- *   before the member list is returned. A team whose own window
- *   does not contain the queried period has no active members at
- *   that period, regardless of member-level intervals.
- *
- * WEEK-SCOPED vs ALL-TIME MEMBERSHIP READS:
- *   getTeamsForCharacter(charId, period, type) is WEEK-SCOPED (or
- *   year-scoped for non-academic teams). It answers "which teams is
- *   this character a member of AT period P?"
- *
- *   getTeamsForCharacterAllTime(charId, type) is ALL-TIME. It
- *   answers "which teams has this character EVER been a member of?"
- *   It does not consult team windows or member interval containment.
- *   The character is a member of a team if the team's members array
- *   contains any entry with their characterId.
- *
- *   The all-time variant exists because the character detail panel
- *   needs to show the full history, not just the current period.
- *   It mirrors AcademyClasses.getClassInstructorIds vs
- *   getClassInstructorIdsAllTime: two queries, two questions.
- *
  * PROFESSIONAL-TEAM-ELIGIBLE ROSTER:
  *   getProfessionalTeamEligibleRoster(year) is the read behind the
- *   Teams tab's Unassigned view. It answers "who could be on a
- *   professional team at year Y, and what is their current
- *   professional-team state?"
+ *   Teams tab's Unassigned view. It answers "who is a candidate for
+ *   a professional team at year Y, and who is staff instead?"
  *
- *   A character is ELIGIBLE when all of:
+ *   A character is a CANDIDATE when all of:
  *     - They have reached junior OR senior status by year Y.
  *       (isJuniorOrSeniorByYear)
  *     - They are not deceased as of year Y. (isDeceased)
  *     - They have no elimination record of any kind, any year, any
  *       week. Presence-based. (getEliminationWeek returns non-null)
- *     - They are NOT staff at year Y. Instructors and support
- *       staff who have never been on a professional team are
- *       excluded: they are not professional-team candidates, they
- *       are staff. The exclusion is year-scoped via
- *       CharacterQueries.getStatusAtYear, so a character who
- *       becomes an instructor in 1910 is still a candidate for
- *       the 1905 roster. A former instructor who was actually on
- *       a professional team is classified 'former' (not
- *       'available') and passes through the exclusion unchanged —
- *       their history is real.
  *
- *   Each eligible character is classified into exactly ONE of:
- *     - 'active'    : active on a professional team at year Y
- *     - 'future'    : no active stint, but a stint on some
- *                     professional team has joinPeriod > year Y
- *     - 'former'    : no active stint, no future stint, but a stint
- *                     ended strictly before year Y
- *     - 'available' : no member entry on any professional team
+ *   A character is STAFF when they are an instructor or support
+ *   member AT YEAR Y. This is evaluated via getStatusAtYear, so it
+ *   is year-scoped: a character who becomes an instructor in 1910
+ *   is a candidate for the 1905 roster and staff for the 1915
+ *   roster. Same character, two answers.
  *
- *   Priority: active > future > former > available. A character
- *   with entries on multiple teams takes the highest
- *   classification.
+ *   Every character who passes the candidate filters is returned,
+ *   with exactly ONE of:
+ *
+ *     classification:  'active' | 'future' | 'former' | 'available'
+ *
+ *   And OPTIONALLY a staff tag:
+ *
+ *     staffRole:  'instructor' | 'support' | null
+ *     staffSince: year | null  (earliest year the character held
+ *                               the staff role; may predate year Y)
+ *
+ *   The consumer decides whether to split the roster into
+ *   candidates and staff. The Unassigned view does; other callers
+ *   may not.
+ *
+ *   CLASSIFICATION PRIORITY: active > future > former > available.
  *
  *   The 'future' case exists so the Unassigned view can indicate
  *   that a character is already committed to a professional team
@@ -157,16 +133,15 @@
  *   - window.ObjectUtils   (mandatory; for deepClone)
  *
  * DEPENDENCIES (LAZY, read at call time):
- *   - window.CharacterQueries   (junior/senior predicate, status at
- *                                year, display name, deceased
- *                                predicate)
- *   - window.EliminationQueries (elimination presence)
+ *   - window.CharacterQueries    (junior/senior predicate, status at
+ *                                 year, career status year, display
+ *                                 name, deceased predicate)
+ *   - window.CharacterConstants  (staff tier classifier)
+ *   - window.EliminationQueries  (elimination presence)
  *
- *   When a lazy dependency is absent, the corresponding filter in
- *   getProfessionalTeamEligibleRoster is skipped rather than failing
- *   closed. This matches the convention used by the matchmaking pool
- *   (see team-aggregator.js). The roster query still returns results;
- *   it just returns more of them.
+ *   When a lazy dependency is absent, the corresponding filter or
+ *   tag is skipped rather than failing closed. The roster query
+ *   still returns results; the staff tag is simply null.
  *
  * USAGE:
  *   var TQ = window.TeamQueries;
@@ -1027,20 +1002,12 @@
 
             var teamName = team.name || 'Unnamed Team';
 
-            // Active beats everything. First active found wins;
-            // we could pick the highest-priority team, but a
-            // character is normally active on at most one
-            // professional team at a time. If they are on two,
-            // the first in store order is as good as any.
             if (isMemberActive(member, yearNum)) {
                 result.classification = 'active';
                 result.activeTeamName = teamName;
                 return result;
             }
 
-            // Future: any interval whose joinPeriod > yearNum.
-            // We keep the earliest such year across all teams so
-            // the display shows the nearest commitment.
             for (var iv = 0; iv < member.intervals.length; iv++) {
                 var interval = member.intervals[iv];
                 if (!interval || typeof interval !== 'object') {
@@ -1062,8 +1029,6 @@
                 }
             }
 
-            // Former: no active interval, but at least one
-            // interval ended strictly before yearNum.
             if (isMemberFormer(member, yearNum)) {
                 if (result.formerTeamName === null) {
                     result.formerTeamName = teamName;
@@ -1096,23 +1061,45 @@
      * who becomes an instructor in 1910 is not staff in 1905.
      *
      * Fail-open: when CharacterQueries or CharacterConstants is
-     * unavailable, returns false. The caller proceeds as if the
-     * character is not staff, which means the roster includes them.
-     * Matching the module's convention for optional predicates.
+     * unavailable, returns false.
      *
      * @param {object} char
      * @param {number} yearNum
      * @returns {boolean}
      */
     function isCharacterStaffAtYear(char, yearNum) {
+        var info = getStaffInfoAtYear(char, yearNum);
+        return info.role !== null;
+    }
+
+    /**
+     * Get the character's staff classification at the given year.
+     *
+     * Returns:
+     *   { role: 'instructor' | 'support' | null, since: year | null }
+     *
+     * `role` is null when the character is not staff at the query
+     * year. `since` is the earliest year the character held that
+     * role (from getCareerStatusYear), or null when unavailable.
+     *
+     * Fail-open: when the year-scoped status query or the tier
+     * classifier is unavailable, returns { role: null, since: null }.
+     *
+     * @param {object} char
+     * @param {number} yearNum
+     * @returns {{ role: string|null, since: number|null }}
+     */
+    function getStaffInfoAtYear(char, yearNum) {
+        var result = { role: null, since: null };
+
         if (!char || typeof char !== 'object') {
-            return false;
+            return result;
         }
 
         var CharacterQueries = getCharacterQueries();
         if (!CharacterQueries ||
             typeof CharacterQueries.getStatusAtYear !== 'function') {
-            return false;
+            return result;
         }
 
         var statusAtYear = null;
@@ -1121,12 +1108,12 @@
                 char, yearNum
             );
         } catch (e) {
-            return false;
+            return result;
         }
 
         if (typeof statusAtYear !== 'string' ||
             statusAtYear.trim() === '') {
-            return false;
+            return result;
         }
 
         var CC = getCharacterConstants();
@@ -1140,9 +1127,7 @@
             }
         }
 
-        // Fallback when CharacterConstants is missing: match the
-        // status string against the known tier vocabulary. Less
-        // accurate but better than skipping the check entirely.
+        // Fallback when CharacterConstants is missing: string match.
         if (tier === null) {
             var lowered = statusAtYear.toLowerCase();
             if (lowered.indexOf('instructor') !== -1 ||
@@ -1154,21 +1139,52 @@
             }
         }
 
-        return tier === 'instructor' || tier === 'support';
+        if (tier !== 'instructor' && tier !== 'support') {
+            return result;
+        }
+
+        result.role = tier;
+
+        // Earliest year the character held this role, if the
+        // query is available.
+        if (typeof CharacterQueries.getCareerStatusYear === 'function') {
+            var statusName = tier === 'instructor'
+                ? 'instructor'
+                : 'support';
+            try {
+                var since = CharacterQueries.getCareerStatusYear(
+                    char, statusName
+                );
+                if (since !== null && since !== undefined) {
+                    result.since = since;
+                }
+            } catch (e) {
+                // Leave since null.
+            }
+        }
+
+        return result;
     }
 
     /**
      * Get every character eligible for a professional team at the
-     * given year, with their current professional-team state.
+     * given year, with their professional-team state and staff
+     * classification.
      *
-     * ELIGIBILITY:
-     *   - Has reached junior OR senior status by year.
-     *   - Not deceased as of year.
+     * The roster returns EVERY candidate: characters who pass the
+     * eligibility filters, plus characters who are staff at the
+     * query year but would otherwise be candidates. Staff are
+     * tagged with `staffRole` and `staffSince` so the consumer can
+     * split the list.
+     *
+     * ELIGIBILITY (candidate filters — same for everyone):
+     *   - Has reached junior OR senior status by year Y.
+     *   - Not deceased as of year Y.
      *   - No elimination record of any kind, any year, any week.
-     *   - Not staff (instructor or support) at year Y, UNLESS they
-     *     have professional-team history (in which case they are
-     *     classified 'former' / 'active' / 'future', not
-     *     'available', and pass through).
+     *
+     * ADDITIONAL TAGS:
+     *   - staffRole:  'instructor' | 'support' | null
+     *   - staffSince: year | null
      *
      * See the file header for the full contract.
      *
@@ -1254,35 +1270,16 @@
             // 4. Classification.
             var state = classifyProfessionalState(cid, yearNum);
 
-            // 5. Exclude instructors and support staff who have no
-            //    professional-team history, evaluated AT THE QUERY
-            //    YEAR.
+            // 5. Staff classification.
             //
-            //    An 'available' classification means the character
-            //    has never been on a professional team, at any
-            //    year. If they are also staff as of the query
-            //    year, they are not a professional-team candidate
-            //    for that year.
+            //    Year-scoped: a character who becomes an instructor
+            //    in 1910 is a candidate for the 1905 roster and
+            //    staff for the 1915 roster.
             //
-            //    The year-scoping matters. A character who was a
-            //    senior in 1905 and later became an instructor in
-            //    1910 is a candidate for the 1905 roster, but not
-            //    for the 1915 roster. Same character, two answers.
-            //
-            //    A former instructor who WAS on a professional
-            //    team is classified 'former' (or 'active' /
-            //    'future'), not 'available', and passes through
-            //    unchanged — their history is real, and the
-            //    'former' bucket is where it belongs.
-            //
-            //    Fail-open: when getStatusAtYear or classifyStatus
-            //    is unavailable, isCharacterStaffAtYear returns
-            //    false and the exclusion is skipped.
-            if (state.classification === 'available') {
-                if (isCharacterStaffAtYear(char, yearNum)) {
-                    continue;
-                }
-            }
+            //    Staff are NOT excluded. They are returned with the
+            //    staffRole / staffSince fields populated. The
+            //    consumer decides whether to split the list.
+            var staffInfo = getStaffInfoAtYear(char, yearNum);
 
             var juniorYear = null;
             if (canGetJuniorYear) {
@@ -1318,7 +1315,12 @@
                 activeTeamName: state.activeTeamName,
                 futureTeamName: state.futureTeamName,
                 futureJoinYear: state.futureJoinYear,
-                formerTeamName: state.formerTeamName
+                formerTeamName: state.formerTeamName,
+
+                // Staff tag. Null when the character is not staff
+                // at the query year.
+                staffRole: staffInfo.role,
+                staffSince: staffInfo.since
             });
         }
 
@@ -1484,8 +1486,9 @@
         // Professional-team-eligible roster
         getProfessionalTeamEligibleRoster: getProfessionalTeamEligibleRoster,
 
-        // Staff predicate (exposed for consumers that need it)
+        // Staff classification helpers (exposed for consumers)
         isCharacterStaffAtYear: isCharacterStaffAtYear,
+        getStaffInfoAtYear: getStaffInfoAtYear,
 
         // Rankings
         getSortedRankings: getSortedRankings,
@@ -1518,7 +1521,7 @@
             'getTeamsForCharacter', 'getTeamsForCharacterAllTime',
             'getCharacterTeamMembership',
             'getProfessionalTeamEligibleRoster',
-            'isCharacterStaffAtYear',
+            'isCharacterStaffAtYear', 'getStaffInfoAtYear',
             'getSortedRankings', 'getMostRecentRanking', 'getCurrentRank',
             'getRankAtPeriod', 'hasRankings', 'getRankingSummary'
         ];
