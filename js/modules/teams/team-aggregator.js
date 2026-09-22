@@ -73,6 +73,52 @@
  *
  *     Deceased status does not affect the tier.
  *
+ * MATCHMAKING CANDIDATE SEMANTICS:
+ *   FILTER:
+ *     - EXCLUDE deceased characters (as of the target year).
+ *     - EXCLUDE characters eliminated at any point, in any year,
+ *       by any cause. Presence-based. See "ELIMINATION IN
+ *       MATCHMAKING" below.
+ *     - EXCLUDE characters already active on a professional team
+ *       at the target year.
+ *
+ *   SORT:
+ *     Alphabetical by name.
+ *
+ * ELIMINATION IN MATCHMAKING:
+ *   The matchmaking pool excludes any character with an
+ *   elimination record, regardless of when the elimination
+ *   happened. The check is presence-based, not year-scoped.
+ *
+ *   RATIONALE:
+ *     An elimination means the character did not graduate. A
+ *     character who did not graduate cannot form professional
+ *     teams. There is no year dimension to this fact: a
+ *     character eliminated in year 1920 is not a candidate for
+ *     matchmaking in 1925, because being eliminated is a
+ *     permanent fact about their academic record, not a
+ *     state that resets.
+ *
+ *   This is deliberately different from:
+ *     - The character list's filter, which is YEAR-scoped
+ *       (isCharacterEliminatedByYear). A character is shown as
+ *       eliminated in the year they were eliminated and every
+ *       year after, because the list answers "what is this
+ *       character's state as of year Y."
+ *     - The member-modal candidate filter, which is also
+ *       YEAR-scoped for the same reason.
+ *
+ *   The predicate used here is EliminationQueries.getEliminationWeek,
+ *   which returns the earliest elimination week or null when the
+ *   character has no elimination records. Null means "never
+ *   eliminated." This is the same predicate GraduatesExport uses
+ *   to identify graduates, for the same semantic reason.
+ *
+ *   When EliminationQueries is unavailable, this filter is
+ *   skipped rather than failing closed. The pool still works
+ *   without the elimination module; skipping a filter is not the
+ *   same as asserting every candidate is a graduate.
+ *
  * CLASS MEMBERSHIP SIGNAL (v29):
  *   The "in class" tier signal for the member modal reads class
  *   membership from two sources:
@@ -100,7 +146,7 @@
  *
  * DEPENDENCIES (LAZY, read at call time):
  *   - window.TeamUI             (filter bar VM defaults)
- *   - window.EliminationQueries (candidate elimination filter)
+ *   - window.EliminationQueries (candidate elimination filters)
  *   - window.MissionQueries     (mission options for the team form)
  */
 
@@ -1169,7 +1215,8 @@
     // store directly. The walk builds two things:
     //
     //   1. The candidate pool: every character alive at year Y who
-    //      is NOT an active member of any professional team at Y.
+    //      is NOT active on a professional team at Y and who has
+    //      NEVER been eliminated.
     //   2. The history map: for every character in the candidate
     //      pool, the years in which they have appeared on any
     //      professional team. Built from ALL professional teams,
@@ -1191,6 +1238,12 @@
     //   TeamQueries would put a matchmaking-shaped read on the
     //   canonical query surface. The aggregator owns the projection;
     //   the walk lives here.
+    //
+    // ELIMINATION:
+    //   All-time, presence-based. A character with any elimination
+    //   record is not a candidate, regardless of when the
+    //   elimination happened. See the file header for the
+    //   reasoning.
     //
     // INPUT:
     //   year       : positive integer
@@ -1225,6 +1278,19 @@
                 targets: []
             };
         }
+
+        // ---- Elimination predicate, resolved once. ----
+        //
+        // Presence-based, all-time. getEliminationWeek returns the
+        // earliest elimination week or null when the character has
+        // no elimination records. Null means "never eliminated."
+        //
+        // This is the same predicate GraduatesExport uses to
+        // identify graduates, and it answers the same question:
+        // did this character ever get eliminated?
+        var EQ = getEliminationQueries();
+        var canCheckElimination = EQ &&
+            typeof EQ.getEliminationWeek === 'function';
 
         // ---- Walk every professional team once. ----
         //
@@ -1315,8 +1381,9 @@
 
         // ---- Build the candidate pool. ----
         //
-        // Every character alive at year Y who is NOT active on a
-        // professional team at Y.
+        // Every character alive at year Y, who has NEVER been
+        // eliminated, and who is NOT active on a professional team
+        // at Y.
         var allChars = CharacterQueries.getCharacters() || [];
         var candidates = [];
 
@@ -1326,6 +1393,7 @@
 
             var cid = String(char.id);
 
+            // ---- Deceased check (year-scoped). ----
             var deceased = false;
             try {
                 deceased =
@@ -1336,6 +1404,27 @@
             }
             if (deceased) { continue; }
 
+            // ---- Elimination check (all-time, presence-based). ----
+            //
+            // A character with any elimination record is not a
+            // candidate, regardless of when the elimination
+            // happened. Elimination means the character did not
+            // graduate, and a character who did not graduate
+            // cannot form professional teams. Year is not
+            // consulted.
+            if (canCheckElimination) {
+                var earliest = null;
+                try {
+                    earliest = EQ.getEliminationWeek(cid);
+                } catch (e) {
+                    earliest = null;
+                }
+                if (earliest !== null && earliest !== undefined) {
+                    continue;
+                }
+            }
+
+            // ---- Active-on-a-team check (year-scoped). ----
             if (activeAtYearByChar[cid] === true) { continue; }
 
             var historyYears = [];
