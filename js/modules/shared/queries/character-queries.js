@@ -66,9 +66,6 @@
  *   A senior entry whose startYear is after Y does NOT count. A
  *   character who becomes senior in 1919 is not senior in 1918.
  *
- *   This is the predicate the matchmaking pool uses: professional
- *   teams only accept members who have reached senior status.
- *
  *   The predicate is distinct from isSenior(char), which would
  *   answer "is this character senior right now?" against the
  *   current year. isSeniorByYear is the explicit, year-scoped
@@ -90,6 +87,33 @@
  *   earliest startYear across entries with the matching status,
  *   or null. They exist for display: the Unassigned view in the
  *   Teams tab shows both years side by side.
+ *
+ * STATUS-AT-YEAR:
+ *   getStatusAtYear(char, year) answers "what career status did
+ *   this character hold at year Y?" by walking char.careerStatus
+ *   and picking the entry whose [startYear, endYear] window
+ *   contains Y. When multiple entries overlap, the same
+ *   tie-breaking rule getCurrentStatus uses is applied: prefer an
+ *   active entry, then the latest endYear, then the latest
+ *   startYear.
+ *
+ *   Unlike getCurrentStatus, this function does NOT append a
+ *   " (Former)" suffix. The suffix exists because at a single
+ *   point in time, "they held this status but it has ended" is
+ *   useful information. Across a year-scoped query, the framing
+ *   changes: at year Y, the character either held a status or
+ *   did not. A year that falls inside a status window returns
+ *   the bare status name; a year outside all windows returns
+ *   'Civilian' (the same fallback getCurrentStatus uses when no
+ *   entry matches).
+ *
+ *   Callers that want a tier ('student' | 'instructor' |
+ *   'support') pass the result through
+ *   CharacterConstants.classifyStatus.
+ *
+ *   Usage:
+ *     var status = CharacterQueries.getStatusAtYear(char, 1915);
+ *     var tier   = CharacterConstants.classifyStatus(status);
  *
  * DEPENDENCIES:
  *   - window.data                 (canonical state)
@@ -328,43 +352,183 @@
     // STATUS
     // ============================================================
 
+    /**
+     * Get the character's current career status.
+     *
+     * Reads char.careerStatus and picks the best-matching entry
+     * against window.data.currentYear. When the winning entry has
+     * ended, appends ' (Former)' so the caller can distinguish
+     * "senior" from "was a senior, now not".
+     *
+     * See getStatusAtYear for the year-scoped variant.
+     *
+     * @param {object} char
+     * @returns {string} Display status
+     */
     function getCurrentStatus(char) {
+        return getStatusAtYearInternal(char, getCurrentYear(), true);
+    }
+
+    /**
+     * Get the character's career status as of a specific year.
+     *
+     * Unlike getCurrentStatus, this function does NOT append a
+     * ' (Former)' suffix. The suffix exists because at a single
+     * point in time, "they held this status but it has ended" is
+     * useful information. Across a year-scoped query, the framing
+     * changes: at year Y, the character either held a status or
+     * did not.
+     *
+     * Returns 'Civilian' when no careerStatus entry covers the
+     * year, which is the same fallback getCurrentStatus uses.
+     *
+     * @param {object} char
+     * @param {number|string} year
+     * @returns {string} Display status at that year
+     */
+    function getStatusAtYear(char, year) {
+        var yearNum = parseInt(year, 10);
+        if (isNaN(yearNum) || yearNum < 1) {
+            return 'Civilian';
+        }
+        return getStatusAtYearInternal(char, yearNum, false);
+    }
+
+    /**
+     * Shared implementation for getCurrentStatus and getStatusAtYear.
+     *
+     * The two callers differ only in the year they pass and whether
+     * the ' (Former)' suffix is appended. The tie-breaking logic is
+     * identical.
+     *
+     * PICKING RULE:
+     *   Among all entries whose [startYear, endYear] window contains
+     *   the given year, pick:
+     *     1. an entry with no endYear (currently active at that year)
+     *     2. otherwise, the entry with the latest endYear
+     *     3. otherwise, the entry with the latest startYear
+     *     4. otherwise, the lowest index in char.careerStatus
+     *
+     *   Entries whose startYear is blank are treated as "active
+     *   since the beginning of time" and are included in the window
+     *   check. Entries whose startYear is malformed are skipped.
+     *
+     *   Entries whose startYear is strictly after the given year are
+     *   excluded — a character who becomes an instructor in 1915
+     *   was not an instructor in 1905.
+     *
+     * SUFFIX BEHAVIOUR (appendFormer):
+     *   When appendFormer is true and the winning entry has a
+     *   non-blank endYear that is strictly before the check year,
+     *   the return value is `Status + ' (Former)'`. When
+     *   appendFormer is false, the bare status is returned
+     *   regardless.
+     *
+     *   The check is `endYear < year`, not `endYear <= year`. An
+     *   entry that ends in year Y is still held during Y.
+     *
+     * @param {object} char
+     * @param {number} yearNum
+     * @param {boolean} appendFormer
+     * @returns {string}
+     */
+    function getStatusAtYearInternal(char, yearNum, appendFormer) {
         if (!char || !char.careerStatus || char.careerStatus.length === 0) {
             return 'Civilian';
         }
-        var currentYear = getCurrentYear();
-        var bestStatus = 'Civilian';
-        var bestScore = { isActive: false, endYear: -Infinity, startYear: -Infinity, index: Infinity };
 
-        char.careerStatus.forEach(function(status, index) {
-            if (!status || !status.status) { return; }
-            var start = parseInt(status.startYear, 10);
-            if (isNaN(start) || start > currentYear) { return; }
-            var end = parseInt(status.endYear, 10);
-            var isActive = isNaN(end) || currentYear <= end;
-            var endYear = isNaN(end) ? Infinity : end;
+        var bestStatus = null;
+        var bestScore = null;
 
-            var isBetter = false;
-            if (isActive !== bestScore.isActive) {
-                isBetter = isActive;
-            } else if (endYear !== bestScore.endYear) {
-                isBetter = endYear > bestScore.endYear;
-            } else if (start !== bestScore.startYear) {
-                isBetter = start > bestScore.startYear;
+        for (var i = 0; i < char.careerStatus.length; i++) {
+            var entry = char.careerStatus[i];
+            if (!entry || typeof entry !== 'object') { continue; }
+            if (!entry.status) { continue; }
+
+            // Parse start year. Blank is treated as "since the
+            // beginning of time" for the window check below.
+            var startRaw = entry.startYear;
+            var startNum = null;
+            if (startRaw !== undefined &&
+                startRaw !== null &&
+                String(startRaw).trim() !== '') {
+                startNum = parseInt(startRaw, 10);
+                if (isNaN(startNum)) {
+                    // Malformed start year: skip. The alternative
+                    // would be to silently treat a typo as "since
+                    // the beginning of time", which would silently
+                    // include the entry in every query.
+                    continue;
+                }
+            }
+
+            // Exclude entries that begin after the query year.
+            // A character who becomes an instructor in 1915 was
+            // not an instructor in 1905.
+            if (startNum !== null && startNum > yearNum) {
+                continue;
+            }
+
+            // Parse end year. Blank means "still active".
+            var endRaw = entry.endYear;
+            var endNum = null;
+            if (endRaw !== undefined &&
+                endRaw !== null &&
+                String(endRaw).trim() !== '') {
+                endNum = parseInt(endRaw, 10);
+                if (isNaN(endNum)) {
+                    endNum = null;
+                }
+            }
+
+            // Exclude entries that ended before the query year.
+            // endYear < yearNum, not <=: an entry that ends in
+            // year Y is still held during Y.
+            if (endNum !== null && endNum < yearNum) {
+                continue;
+            }
+
+            // Score this entry for the tie-break.
+            var score = {
+                isActive: endNum === null,
+                endYear: endNum === null ? Infinity : endNum,
+                startYear: startNum === null ? 0 : startNum,
+                index: i
+            };
+
+            var better = false;
+            if (!bestScore) {
+                better = true;
+            } else if (score.isActive !== bestScore.isActive) {
+                better = score.isActive;
+            } else if (score.endYear !== bestScore.endYear) {
+                better = score.endYear > bestScore.endYear;
+            } else if (score.startYear !== bestScore.startYear) {
+                better = score.startYear > bestScore.startYear;
             } else {
-                isBetter = index < bestScore.index;
+                better = score.index < bestScore.index;
             }
 
-            if (isBetter) {
-                bestScore = { isActive: isActive, endYear: endYear, startYear: start, index: index };
-                var statusName = String(status.status);
-                bestStatus = statusName.charAt(0).toUpperCase() + statusName.slice(1);
+            if (better) {
+                bestScore = score;
+                var statusName = String(entry.status);
+                bestStatus = statusName.charAt(0).toUpperCase() +
+                             statusName.slice(1);
             }
-        });
+        }
 
-        if (bestScore.isActive) { return bestStatus; }
-        if (bestScore.endYear > -Infinity) { return bestStatus + ' (Former)'; }
-        return 'Civilian';
+        if (!bestStatus) {
+            return 'Civilian';
+        }
+
+        if (appendFormer &&
+            bestScore &&
+            bestScore.endYear !== Infinity &&
+            bestScore.endYear < yearNum) {
+            return bestStatus + ' (Former)';
+        }
+
+        return bestStatus;
     }
 
     // ============================================================
@@ -678,6 +842,7 @@
 
         // Status
         getCurrentStatus: getCurrentStatus,
+        getStatusAtYear: getStatusAtYear,
         isStudent: isStudent,
         isInstructor: isInstructor,
         isSupport: isSupport,
