@@ -6,10 +6,10 @@
  *
  * WHAT THIS MODULE OWNS:
  *   The modal that opens when the user clicks a graduate export
- *   button in the header. The modal:
+ *   button. The modal:
  *     1. Lists every class by name.
  *     2. Lets the user select one.
- *     3. Provides two actions: Export JSON and Export CSV.
+ *     3. Provides two actions: Export Text and Export CSV.
  *     4. Closes on success or on user cancel.
  *
  * WHAT THIS MODULE DOES NOT OWN:
@@ -18,21 +18,28 @@
  *   - The download mechanism    (ExportUtils, via GraduatesExport)
  *   - The header buttons        (ui.js)
  *
+ * FORMATS:
+ *   Text (default) - a plain-text document designed to be read.
+ *     Sparse; sections collapse when empty; sub-objects are
+ *     flattened into prose. This is the primary format.
+ *
+ *   CSV - a flat grid, one row per graduate. Useful for
+ *     spreadsheet work and scripting. JSON-shaped fields remain
+ *     encoded.
+ *
  * MODAL LIFECYCLE:
  *   - The picker creates its own .modal shell, appended to
  *     document.body.
  *   - It closes on the Close button, on backdrop click, and on
- *     Escape.
+ *     Escape (the last is handled by Modal).
  *   - Only one picker is open at a time. Opening a second closes
  *     the first.
  *
  * RESULT REPORTING:
  *   Both export buttons route through GraduatesExport and dispatch
- *   the result via NotificationSystem. The modal itself does not
- *   toast success or failure — GraduatesExport's caller contract
- *   says the caller reports. The picker reports, then closes on
- *   success. On "no graduates" it stays open so the user can pick
- *   a different class.
+ *   the result via NotificationSystem. The picker reports, then
+ *   closes on success. On "no graduates" it stays open so the user
+ *   can pick a different class.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -77,10 +84,15 @@
         typeof AcademyClasses.getClasses !== 'function') {
         _missing.push('AcademyClasses.getClasses');
     }
-    if (!GraduatesExport ||
-        typeof GraduatesExport.exportGraduatesJSON !== 'function' ||
-        typeof GraduatesExport.exportGraduatesCSV !== 'function') {
-        _missing.push('GraduatesExport API');
+    if (!GraduatesExport) {
+        _missing.push('GraduatesExport (module missing)');
+    } else {
+        if (typeof GraduatesExport.exportGraduatesText !== 'function') {
+            _missing.push('GraduatesExport.exportGraduatesText');
+        }
+        if (typeof GraduatesExport.exportGraduatesCSV !== 'function') {
+            _missing.push('GraduatesExport.exportGraduatesCSV');
+        }
     }
 
     if (_missing.length > 0) {
@@ -323,13 +335,17 @@
             }
             html += '</select>';
             html += '</div>';
+
+            html += '<p class="field-hint graduates-picker-note">' +
+                        'Text format is a human-readable document. ' +
+                        'CSV format is a flat grid for spreadsheets.' +
+                    '</p>';
         }
 
         html += '</div>';
 
         // ---- Footer ----
         var hasSelection = isNonEmptyString(vm.selectedClassId);
-        var hasClasses = classes.length > 0;
 
         html += '<div class="modal-footer graduates-picker-footer">';
 
@@ -340,24 +356,19 @@
 
         html += '<span class="graduates-picker-footer-spacer"></span>';
 
-        html += '<button type="button" class="primary" ' +
-                    'data-picker-action="export-json"' +
-                    (hasSelection ? '' : ' disabled') + '>' +
-                    'Export JSON' +
-                '</button>';
-
-        html += '<button type="button" class="primary" ' +
+        html += '<button type="button" class="secondary" ' +
                     'data-picker-action="export-csv"' +
                     (hasSelection ? '' : ' disabled') + '>' +
                     'Export CSV' +
                 '</button>';
 
-        html += '</div>';
+        html += '<button type="button" class="primary" ' +
+                    'data-picker-action="export-text"' +
+                    (hasSelection ? '' : ' disabled') + '>' +
+                    'Export Text' +
+                '</button>';
 
-        // hasClasses is kept for symmetry; the disabled state of
-        // the export buttons is driven by hasSelection, which
-        // implies hasClasses.
-        void hasClasses;
+        html += '</div>';
 
         return html;
     }
@@ -381,9 +392,9 @@
             return;
         }
 
-        if (action === 'export-json') {
+        if (action === 'export-text') {
             e.preventDefault();
-            handleExport('json');
+            handleExport('text');
             return;
         }
 
@@ -420,10 +431,13 @@
         var result;
 
         try {
-            if (format === 'json') {
-                result = GraduatesExport.exportGraduatesJSON(classId);
-            } else {
+            if (format === 'text') {
+                result = GraduatesExport.exportGraduatesText(classId);
+            } else if (format === 'csv') {
                 result = GraduatesExport.exportGraduatesCSV(classId);
+            } else {
+                notify('Unknown export format.', 'error');
+                return;
             }
         } catch (err) {
             console.warn(
