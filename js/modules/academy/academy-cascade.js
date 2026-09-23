@@ -75,16 +75,41 @@
  *     mission, and tournament references are delegated to their
  *     respective domains.
  *
+ *     Instructor commitments (this revision):
+ *       academyInstructorCommitments.stripCharacterRefs is called
+ *       for the deleted character. It handles two distinct roles
+ *       in one pass:
+ *
+ *         - Commitments the character OWNED as instructor are
+ *           deleted. The block was theirs; it goes with them.
+ *
+ *         - Commitments where the character was the SUBJECT of a
+ *           tutoring block are kept, with characterId nulled. The
+ *           block still belongs to the instructor; the reference
+ *           to the deleted character is the only thing removed.
+ *
+ *       No separate stripInstructorRefs call is needed here. The
+ *       single stripCharacterRefs handles both roles.
+ *
  *   classDeleted(appData, classId):
  *     Hard-deletes enrolments, grades, rankings, social scores,
  *     weekly-team windows, teaching sessions, and teaching groups.
  *     The class never existed as a historical record from the
  *     cascade's point of view; hard delete is correct.
  *
+ *     Instructor commitments (this revision):
+ *       academyInstructorCommitments.stripClassRefs is called for
+ *       the deleted class. Every commitment attached to the class
+ *       is removed. Commitments are class-scoped, so a class
+ *       deletion takes its commitments with it.
+ *
  *   disciplineDeleted(appData, disciplineId):
  *     Hard-deletes enrolments, teaching sessions for the
  *     discipline's groups, and the groups themselves. Same
  *     reasoning: the discipline is gone.
+ *
+ *     No new call in this revision. Instructor commitments are not
+ *     attached to disciplines.
  *
  *   locationDeleted(appData, locationId):
  *     Nulls the locationId on every teaching session that
@@ -92,16 +117,24 @@
  *     decommissioned room does not end the class; it needs a new
  *     room.
  *
+ *     Instructor commitments (this revision):
+ *       The commitments module does not own a location strip
+ *       helper. The reason: a commitment's locationId is a
+ *       reference, not a foreign key with cascade semantics. When
+ *       a location is deleted, the commitment should have its
+ *       locationId nulled, exactly as a teaching session does.
+ *       That helper is not exposed by
+ *       academyInstructorCommitments in this turn. Until it is,
+ *       commitments retain a stale locationId after a location
+ *       delete; reads fall back to the null display path when the
+ *       referenced location cannot be resolved. Adding the strip
+ *       helper is a small follow-up.
+ *
  *   teamDeleted(appData, teamId):
  *     Removes the teamId from every class-week assignment map.
  *
- * WEEKLY-TEAMS CASCADE:
- *   characterDeleted names AcademyWeeklyTeams.stripCharacterRefs,
- *   not endCharacterMemberships. The two are not interchangeable:
- *   stripCharacterRefs takes no effective week and ends every open
- *   interval with leavePeriod = MAX_WEEK; endCharacterMemberships
- *   requires an explicit week. Character deletion has no week-bound
- *   meaning.
+ *     No new call in this revision. Instructor commitments have
+ *     no teamId.
  *
  * RETURN SHAPE:
  *   {
@@ -316,26 +349,28 @@
      * Called from CharacterCRUD.deleteCharacter's pipeline mutate.
      *
      * Ordering:
-     *   1. Academy enrolments (hard delete)
-     *   2. Academy grades (hard delete)
-     *   3. Academy rankings (hard delete)
-     *   4. Academy social scores (hard delete)
-     *   5. Academy weekly teams (memberships ended, leavePeriod =
-     *      MAX_WEEK; the character existed, and the ending is a
-     *      historical fact)
-     *   6. Academy auto-groups (instructor groups removed; student
-     *      memberships removed)
-     *   7. Academy teaching groups (membership windows ended; groups
-     *      instructed by the character have their endWeek set;
-     *      sessions are NOT touched, because the group survives)
-     *   8. Social relationships (SocialCore.stripCharacterRefs)
-     *   9. Mission support personnel and report authors
-     *      (MissionCore.stripCharacterRefs, delegating to
-     *      MissionCascade)
-     *  10. Tournament participants, eliminations, match participant
-     *      slots, and match result maps
-     *      (TournamentCore.stripCharacterRefs, delegating to
-     *      TournamentCascade)
+     *   1.  Academy enrolments (hard delete)
+     *   2.  Academy grades (hard delete)
+     *   3.  Academy rankings (hard delete)
+     *   4.  Academy social scores (hard delete)
+     *   5.  Academy weekly teams (memberships ended, leavePeriod =
+     *       MAX_WEEK; the character existed, and the ending is a
+     *       historical fact)
+     *   6.  Academy auto-groups (instructor groups removed; student
+     *       memberships removed)
+     *   7.  Academy teaching groups (membership windows ended; groups
+     *       instructed by the character have their endWeek set;
+     *       sessions are NOT touched, because the group survives)
+     *   8.  Academy instructor commitments (owned commitments
+     *       deleted; subject references nulled)       [this revision]
+     *   9.  Social relationships (SocialCore.stripCharacterRefs)
+     *   10. Mission support personnel and report authors
+     *       (MissionCore.stripCharacterRefs, delegating to
+     *       MissionCascade)
+     *   11. Tournament participants, eliminations, match participant
+     *       slots, and match result maps
+     *       (TournamentCore.stripCharacterRefs, delegating to
+     *       TournamentCascade)
      *
      * @param {object} appData - Pipeline snapshot
      * @param {string} charId - Character ID
@@ -405,6 +440,27 @@
             )
         });
 
+        // ---- Instructor commitments (this revision) ----
+        //
+        // One call handles both roles:
+        //   - the character as instructor: their commitments are
+        //     deleted
+        //   - the character as tutoring subject: characterId is
+        //     nulled, the commitment survives
+        //
+        // The helper is idempotent and safe to call before the
+        // commitments module has been loaded. When it is not
+        // loaded, runStripHelper warns once and the cascade
+        // proceeds.
+        entries.push({
+            module: 'academyInstructorCommitments',
+            result: runStripHelper(
+                'academyInstructorCommitments',
+                'AcademyInstructorCommitments',
+                'stripCharacterRefs', appData, target
+            )
+        });
+
         entries.push({
             module: 'socialCore',
             result: runStripHelper(
@@ -450,6 +506,11 @@
      * characters, because AcademyClasses owns that data
      * relationship. This coordinator does not touch character
      * records.
+     *
+     * Instructor commitments (this revision) are class-scoped.
+     * They are stripped after the groups, because the order
+     * relative to groups does not matter for them and grouping the
+     * "class-owned" strips together reads more clearly.
      */
     function classDeleted(appData, classId) {
         if (!appData || !isNonEmptyString(classId)) {
@@ -517,6 +578,20 @@
             )
         });
 
+        // ---- Instructor commitments (this revision) ----
+        //
+        // Every commitment attached to the class is removed. The
+        // strip is independent of groups and sessions; it walks
+        // its own store and matches on classId.
+        entries.push({
+            module: 'academyInstructorCommitments',
+            result: runStripHelper(
+                'academyInstructorCommitments',
+                'AcademyInstructorCommitments',
+                'stripClassRefs', appData, target
+            )
+        });
+
         return summarise(entries);
     }
 
@@ -534,6 +609,9 @@
      * stripped per group, then the groups themselves are stripped.
      * Reversing the order leaves no way to enumerate the groups to
      * clean sessions for.
+     *
+     * Instructor commitments have no discipline reference; they
+     * are not part of this cascade.
      */
     function disciplineDeleted(appData, disciplineId) {
         if (!appData || !isNonEmptyString(disciplineId)) {
@@ -637,6 +715,14 @@
      * The location is nulled on every teaching session that
      * referenced it. Sessions are not deleted; the room was a
      * property of the session, not its identity.
+     *
+     * Instructor commitments may reference a location. The
+     * commitments module does not currently expose a
+     * stripLocationRefs helper. When the helper is added, this
+     * function gains a second entry. Until then, a commitment
+     * whose location is deleted retains a stale locationId; reads
+     * fall back to the null display path when the referenced
+     * location cannot be resolved.
      */
     function locationDeleted(appData, locationId) {
         if (!appData || !isNonEmptyString(locationId)) {
@@ -667,6 +753,9 @@
      * Called from TeamCore.deleteTeam's pipeline mutate.
      *
      * The teamId is removed from every class-week assignment map.
+     *
+     * Instructor commitments have no teamId reference; they are
+     * not part of this cascade.
      */
     function teamDeleted(appData, teamId) {
         if (!appData || !isNonEmptyString(teamId)) {
@@ -751,6 +840,25 @@
                           (ts.sessionsCleared || 0);
             if (tsTotal > 0) {
                 parts.push(tsTotal + ' teaching-session reference(s)');
+            }
+        }
+
+        // ---- Instructor commitments (this revision) ----
+        //
+        // Two counters are summed under one label:
+        //   commitmentsRemoved  - the commitment block was deleted
+        //   referencesCleared   - the subject reference was nulled
+        //
+        // They are both "the cascade touched this many commitment
+        // records." Splitting them in the summary would be noise;
+        // the details object carries both separately for
+        // programmatic consumers.
+        if (details.academyInstructorCommitments) {
+            var ic = details.academyInstructorCommitments;
+            var icTotal = (ic.commitmentsRemoved || 0) +
+                          (ic.referencesCleared || 0);
+            if (icTotal > 0) {
+                parts.push(icTotal + ' instructor commitment(s)');
             }
         }
 
