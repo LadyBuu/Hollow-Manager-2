@@ -5,24 +5,28 @@
  *
  * Path: js/modules/academy/academy-character-detail.js
  *
- * (Header unchanged from the version you have. The changes in this
- * file are:
+ * TEACHING GROUPS CANDIDATE PICKER:
+ *   The inline "add student to this group" picker is a
+ *   searchable single-select list with two sections:
  *
- *   1. Every taught discipline renders with a "+ New Group" button
- *      in its discipline header, even when it has zero groups.
+ *     Eligible       radios, selectable.
+ *     Blocked        no radios, not selectable, each row shows
+ *                    a conflict reason.
  *
- *   2. The empty-groups message is now truthful: "No groups yet"
- *      is followed by a button that actually creates one.
+ *   Typing in the search box filters both sections. A section
+ *   whose visible rows drop to zero hides itself entirely;
+ *   a "no matches" hint appears only when the whole picker has
+ *   no visible rows.
  *
- *   3. A new function, openCreateGroupModal, opens a small modal
- *      that lets the user name the new group (optional) and then
- *      calls AcademySchedule.createTeachingGroup. On success the
- *      caller-supplied onChanged callback fires.
+ *   The blocked list is the SURVIVORS of the eligibility filters
+ *   who would collide if added. See
+ *   AcademyCharacterDetailAggregator.getTeachingGroupCandidateViewModel.
  *
- *   No new dependencies: Modal, NotificationSystem, DomUtils, and
- *   AcademySchedule are all already on the Academy load path. If
- *   AcademySchedule is missing, the button is hidden and the old
- *   empty-state message stands.)
+ * (Rest of the header unchanged.)
+ *
+ * DEPENDENCIES:
+ *   - window.DomUtils (MANDATORY)
+ *   - window.AcademyUI (for collapse state reads)
  */
 
 (function() {
@@ -844,17 +848,6 @@
     // ============================================================
     // TEACHING GROUPS TAB
     // ============================================================
-    //
-    // The instructor's teaching groups for the selected class,
-    // grouped by discipline. Every taught discipline appears as a
-    // collapsible container, even when it has no groups yet.
-    //
-    // Each discipline header carries a "+ New Group" button. It
-    // calls into openCreateGroupModal, which is defined further
-    // down this file and drives AcademySchedule.createTeachingGroup.
-    //
-    // The button is hidden when AcademySchedule is not loaded, so a
-    // partial Academy load does not render a dead control.
 
     function renderTeachingGroupsTab(vm) {
         var instructor = vm.instructor;
@@ -957,7 +950,6 @@
                     'data-discipline-id="' +
                         escapeAttribute(discipline.disciplineId) + '">';
 
-        // ---- Discipline header (toggle) + "+ New Group" ----
         html += '<div class="academy-teaching-group-discipline-header-row">';
 
         html += '<button type="button" ' +
@@ -1007,7 +999,6 @@
             return html;
         }
 
-        // ---- Body ----
         html += '<div class="academy-teaching-group-discipline-body">';
 
         if (groups.length === 0) {
@@ -1052,7 +1043,6 @@
                     'data-group-id="' +
                         escapeAttribute(group.groupId) + '">';
 
-        // ---- Group header ----
         html += '<div class="academy-teaching-group-header">';
         html += '<span class="academy-teaching-group-name">' +
                     escapeHtml(group.displayName) +
@@ -1073,7 +1063,6 @@
         }
         html += '</div>';
 
-        // ---- Inline candidate picker ----
         if (isPickerOpen) {
             html += renderCandidatePicker(
                 group,
@@ -1082,7 +1071,6 @@
             );
         }
 
-        // ---- Roster ----
         if (members.length === 0) {
             html += '<p class="empty-state small ' +
                         'academy-teaching-group-roster-empty">' +
@@ -1099,7 +1087,6 @@
             html += '</div>';
         }
 
-        // ---- Sessions ----
         html += renderTeachingGroupSessionsList(group);
 
         html += '</div>';
@@ -1137,60 +1124,269 @@
         return html;
     }
 
+    // ============================================================
+    // CANDIDATE PICKER
+    // ============================================================
+    //
+    // Two sections in one picker:
+    //
+    //   eligible  radios. Add button becomes enabled when one is
+    //             checked.
+    //   blocked   no radios, not selectable, each row shows a
+    //             conflict reason.
+    //
+    // Search filters both sections. A section with zero visible
+    // rows hides itself. The "no matches" hint appears when the
+    // whole picker has no visible rows.
+    //
+    // Both lists come from the same candidate VM:
+    //   pickerCandidates.candidates  eligible
+    //   pickerCandidates.blocked     blocked
+    //
+    // When the VM is not yet available (pickerCandidates is null),
+    // the picker renders a "loading" message.
+
     function renderCandidatePicker(group, charId, pickerCandidates) {
-        var candidates = Array.isArray(pickerCandidates)
-            ? pickerCandidates
+        var hasVM = pickerCandidates &&
+            typeof pickerCandidates === 'object' &&
+            !Array.isArray(pickerCandidates);
+
+        var eligible = hasVM && Array.isArray(pickerCandidates.candidates)
+            ? pickerCandidates.candidates
             : null;
+        var blocked = hasVM && Array.isArray(pickerCandidates.blocked)
+            ? pickerCandidates.blocked
+            : [];
 
         var html = '';
         html += '<div class="academy-teaching-group-candidate-picker" ' +
                     'data-group-id="' +
                         escapeAttribute(group.groupId) + '">';
 
-        if (candidates === null) {
+        if (!hasVM) {
             html += '<p class="empty-state small">' +
                         'Loading candidates...' +
                     '</p>';
-        } else if (candidates.length === 0) {
+            html += '</div>';
+            return html;
+        }
+
+        var totalEligible = eligible.length;
+        var totalBlocked = blocked.length;
+
+        if (totalEligible === 0 && totalBlocked === 0) {
             html += '<p class="empty-state small">' +
                         'No eligible students. Every enrolled student ' +
                         'is either already in a group for this ' +
                         'discipline, or unavailable this week.' +
                     '</p>';
-        } else {
-            html += '<label class="academy-teaching-group-candidate-label">' +
-                        'Add student' +
-                    '</label>';
-            html += '<select class="academy-teaching-group-candidate-select">';
-            html += '<option value="">Select a student...</option>';
-            for (var i = 0; i < candidates.length; i++) {
-                var c = candidates[i];
-                if (!c || !c.id) { continue; }
-                html += '<option value="' +
-                            escapeAttribute(c.id) + '">' +
-                            escapeHtml(c.name) +
-                        '</option>';
-            }
-            html += '</select>';
+            html += '</div>';
+            return html;
+        }
 
-            html += '<div class="academy-teaching-group-candidate-actions">';
-            html += '<button type="button" class="small secondary" ' +
-                        'data-action="teaching-groups-add-student-cancel" ' +
-                        'data-group-id="' +
-                            escapeAttribute(group.groupId) + '">' +
-                        'Cancel' +
-                    '</button>';
-            html += '<button type="button" class="small primary" ' +
-                        'data-action="teaching-groups-add-student-submit" ' +
-                        'data-group-id="' +
-                            escapeAttribute(group.groupId) + '">' +
-                        'Add' +
-                    '</button>';
+        // ---- Header ----
+        html += '<div class="academy-teaching-group-candidate-header">';
+        html += '<span class="academy-teaching-group-candidate-title">' +
+                    'Add student to ' +
+                    escapeHtml(group.displayName) +
+                '</span>';
+        html += '</div>';
+
+        // ---- Search box ----
+        html += '<input type="text" ' +
+                    'class="academy-teaching-group-candidate-search" ' +
+                    'placeholder="Search candidates..." ' +
+                    'autocomplete="off" ' +
+                    'spellcheck="false">';
+
+        // ---- Scrollable body ----
+        html += '<div class="academy-teaching-group-candidate-body">';
+
+        // Eligible section
+        if (totalEligible > 0) {
+            html += '<div class="academy-teaching-group-candidate-section ' +
+                        'academy-teaching-group-candidate-section-eligible" ' +
+                        'data-section="eligible">';
+            html += '<div class="academy-teaching-group-candidate-section-header">';
+            html += '<span class="academy-teaching-group-candidate-section-title">' +
+                        'Eligible' +
+                    '</span>';
+            html += '<span class="academy-teaching-group-candidate-section-count">' +
+                        totalEligible +
+                    '</span>';
+            html += '</div>';
+
+            html += '<div class="academy-teaching-group-candidate-list">';
+            for (var i = 0; i < eligible.length; i++) {
+                html += renderEligibleCandidateRow(eligible[i]);
+            }
+            html += '</div>';
             html += '</div>';
         }
 
+        // Blocked section
+        if (totalBlocked > 0) {
+            html += '<div class="academy-teaching-group-candidate-section ' +
+                        'academy-teaching-group-candidate-section-blocked" ' +
+                        'data-section="blocked">';
+            html += '<div class="academy-teaching-group-candidate-section-header">';
+            html += '<span class="academy-teaching-group-candidate-section-title">' +
+                        'Would conflict' +
+                    '</span>';
+            html += '<span class="academy-teaching-group-candidate-section-count">' +
+                        totalBlocked +
+                    '</span>';
+            html += '</div>';
+
+            html += '<div class="academy-teaching-group-candidate-list">';
+            for (var j = 0; j < blocked.length; j++) {
+                html += renderBlockedCandidateRow(blocked[j]);
+            }
+            html += '</div>';
+            html += '</div>';
+        }
+
+        html += '<p class="academy-teaching-group-candidate-no-matches" ' +
+                    'data-no-matches ' +
+                    'style="display:none;">' +
+                    'No matches.' +
+                '</p>';
+
+        html += '</div>';
+
+        // ---- Footer ----
+        html += '<div class="academy-teaching-group-candidate-actions">';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-action="teaching-groups-add-student-cancel" ' +
+                    'data-group-id="' +
+                        escapeAttribute(group.groupId) + '">' +
+                    'Cancel' +
+                '</button>';
+        html += '<button type="button" class="small primary" ' +
+                    'data-action="teaching-groups-add-student-submit" ' +
+                    'data-group-id="' +
+                        escapeAttribute(group.groupId) + '" ' +
+                    'disabled="disabled">' +
+                    'Add' +
+                '</button>';
+        html += '</div>';
+
         html += '</div>';
         return html;
+    }
+
+    function renderEligibleCandidateRow(candidate) {
+        if (!candidate || !candidate.id) { return ''; }
+
+        var searchKey = String(candidate.name || '').toLowerCase();
+
+        var html = '';
+        html += '<label class="academy-teaching-group-candidate-row" ' +
+                    'data-character-id="' +
+                        escapeAttribute(candidate.id) + '" ' +
+                    'data-search-key="' +
+                        escapeAttribute(searchKey) + '">';
+        html += '<input type="radio" ' +
+                    'class="academy-teaching-group-candidate-radio" ' +
+                    'name="academy-teaching-group-candidate" ' +
+                    'value="' +
+                        escapeAttribute(candidate.id) + '">';
+        html += '<span class="academy-teaching-group-candidate-name">' +
+                    escapeHtml(candidate.name) +
+                '</span>';
+        if (isNonEmptyString(candidate.status)) {
+            html += '<span class="academy-teaching-group-candidate-status">' +
+                        escapeHtml(candidate.status) +
+                    '</span>';
+        }
+        html += '</label>';
+        return html;
+    }
+
+    function renderBlockedCandidateRow(candidate) {
+        if (!candidate || !candidate.id) { return ''; }
+
+        var searchKey = String(candidate.name || '').toLowerCase();
+        var reason = buildBlockedReason(candidate.conflict);
+
+        var html = '';
+        html += '<div class="academy-teaching-group-candidate-row ' +
+                    'academy-teaching-group-candidate-row-blocked" ' +
+                    'data-character-id="' +
+                        escapeAttribute(candidate.id) + '" ' +
+                    'data-search-key="' +
+                        escapeAttribute(searchKey) + '" ' +
+                    'aria-disabled="true">';
+        html += '<span class="academy-teaching-group-candidate-blocked-icon">' +
+                    '\u26a0' +
+                '</span>';
+        html += '<span class="academy-teaching-group-candidate-blocked-main">';
+        html += '<span class="academy-teaching-group-candidate-blocked-name">' +
+                    escapeHtml(candidate.name) +
+                '</span>';
+        if (reason) {
+            html += '<span class="academy-teaching-group-candidate-blocked-reason">' +
+                        escapeHtml(reason) +
+                    '</span>';
+        }
+        html += '</span>';
+        html += '</div>';
+        return html;
+    }
+
+    function buildBlockedReason(conflict) {
+        if (!conflict) { return ''; }
+
+        var dayLabel = '';
+        var CalendarConstants = window.CalendarConstants;
+        if (CalendarConstants &&
+            typeof CalendarConstants.getDayName === 'function' &&
+            isFiniteNumber(conflict.day)) {
+            try {
+                dayLabel = CalendarConstants.getDayName(conflict.day) || '';
+            } catch (e) {
+                dayLabel = '';
+            }
+        }
+
+        var timeLabel = '';
+        if (CalendarConstants &&
+            typeof CalendarConstants.formatHour === 'function' &&
+            isFiniteNumber(conflict.startTime)) {
+            try {
+                timeLabel = CalendarConstants.formatHour(
+                    conflict.startTime
+                ) || '';
+            } catch (e) {
+                timeLabel = '';
+            }
+        }
+
+        var disciplineName = isNonEmptyString(
+            conflict.conflictingDisciplineName
+        )
+            ? conflict.conflictingDisciplineName
+            : '';
+
+        // Prefer the aggregator-provided discipline name if we get
+        // a richer conflict shape later; for now the conflict
+        // object carries what the check produced.
+        if (!disciplineName && isNonEmptyString(
+            conflict.conflictingDisciplineId
+        )) {
+            disciplineName = '';
+        }
+
+        var parts = [];
+        if (disciplineName) { parts.push(disciplineName); }
+        if (dayLabel) { parts.push(dayLabel); }
+        if (timeLabel) { parts.push(timeLabel); }
+
+        if (parts.length === 0) {
+            return 'Conflicts with an existing session.';
+        }
+
+        return 'Conflicts with ' + parts.join(' ');
     }
 
     // ============================================================
@@ -1315,18 +1511,8 @@
     }
 
     // ============================================================
-    // CREATE-GROUP MODAL
+    // CREATE-GROUP MODAL (unchanged)
     // ============================================================
-    //
-    // Called by the AcademyView dispatcher when the user clicks the
-    // "+ New Group" button emitted above.
-    //
-    // Reads its context from the clicked button's data attributes,
-    // so the renderer does not need to thread any state through the
-    // VM beyond what is already there.
-    //
-    // On success, closes the modal and calls the supplied onChanged
-    // callback so the panel re-renders with the new group present.
 
     function canOpenCreateGroupModal() {
         var Schedule = window.AcademySchedule;
@@ -1499,10 +1685,6 @@
                         ? result.data.groupId
                         : null;
 
-                    // If the user supplied a custom name, apply it
-                    // now. This is a second mutation; failure here
-                    // does not roll back the creation. The user can
-                    // rename from the group block later.
                     var Groups = window.AcademyTeachingGroups;
                     if (customName && newGroupId &&
                         Groups &&
