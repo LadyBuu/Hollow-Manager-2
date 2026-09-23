@@ -4,17 +4,49 @@
  *
  * Path: js/modules/academy/academy-character-detail-aggregator.js
  *
- * (Header unchanged from the version you have. The two edits in
- * this file are:
+ * Produces the view model consumed by AcademyCharacterDetail.
  *
- *   1. The returned VM now carries `week` at the top level, so the
- *      renderer's "+ New Group" affordance can pass it through
- *      without needing to thread options from the controller.
+ * HOURS PANEL — ACTIVE-DISCIPLINE GUARD (this revision):
+ *   The discipline-hours panel lists one row per discipline the
+ *   student is enrolled in for the class. Before this revision,
+ *   every enrolled discipline appeared, regardless of whether it
+ *   was running in the queried week.
  *
- *   2. `buildInstructorProjection` now also carries `week` on the
- *      instructor sub-VM.
+ *   A discipline that starts in week 5 and a query of week 1
+ *   produced a row showing "0 / 3h, 3h left", as though the
+ *   student had failed to attend a course that had not begun.
  *
- * Everything else is unchanged.)
+ *   The row is now omitted entirely for weeks the discipline does
+ *   not run. The check is
+ *   AcademyClassDisciplinesQueries.isActiveInWeek(classId,
+ *   disciplineId, week), which reads the discipline's own
+ *   startWeek / endWeek. This is the same predicate the projector
+ *   uses to filter occurrences, so the two sides stay in sync.
+ *
+ *   See academy-teaching-validation.js for the same fix applied to
+ *   the weekly-hours report.
+ *
+ * (Rest of the header unchanged.)
+ *
+ * DEPENDENCIES (mandatory):
+ *   - window.CharacterQueries
+ *   - window.AcademyClasses
+ *   - window.AcademyClassDisciplinesQueries
+ *   - window.AcademyDisciplines
+ *   - window.AcademyEnrolments
+ *   - window.AcademyGrades
+ *   - window.AcademyTeachingGroups
+ *   - window.CalendarConstants
+ *
+ * DEPENDENCIES (optional, feature-scoped):
+ *   - window.AcademyTeachingSessions
+ *   - window.AcademyLocations
+ *   - window.AcademyPerformance
+ *   - window.AcademySocialScore
+ *   - window.TeamQueries
+ *   - window.EliminationQueries
+ *   - window.AcademyCalendarAggregator
+ *   - window.RangeUtils
  */
 
 (function() {
@@ -68,6 +100,12 @@
         typeof AcademyClassDisciplinesQueries.getClassDisciplinesForClass !== 'function') {
         missing.push(
             'AcademyClassDisciplinesQueries.getClassDisciplinesForClass'
+        );
+    }
+    if (!AcademyClassDisciplinesQueries ||
+        typeof AcademyClassDisciplinesQueries.isActiveInWeek !== 'function') {
+        missing.push(
+            'AcademyClassDisciplinesQueries.isActiveInWeek'
         );
     }
 
@@ -1112,12 +1150,6 @@
             classContext: classContext,
             classes: classes,
 
-            // The renderer's "+ New Group" affordance needs the
-            // resolved week and classId to call
-            // AcademySchedule.createTeachingGroup. Both are already
-            // resolved above; surfacing them at the top level saves
-            // the renderer from re-deriving them and keeps the
-            // renderer stateless.
             week: week,
 
             elimination: elimination,
@@ -1267,6 +1299,32 @@
     // ============================================================
     // DISCIPLINE HOURS VM
     // ============================================================
+    //
+    // One entry per discipline the student is enrolled in for
+    // the class AND that is active in the display week.
+    //
+    // ACTIVE-DISCIPLINE GUARD:
+    //   A discipline that starts in week 5 does not appear in a
+    //   week-1 hours panel. Its absence is the answer: this
+    //   discipline is not part of the student's week.
+    //
+    //   The check is AcademyClassDisciplinesQueries.isActiveInWeek,
+    //   the same predicate the projector uses to filter
+    //   occurrences. Keeping both sides on the same predicate
+    //   avoids drift between "what the grid shows" and "what the
+    //   hours panel counts."
+    //
+    // Each entry shape:
+    //   {
+    //     disciplineId, disciplineName, disciplineType,
+    //     targetHours,       discipline.weeklyHours
+    //     scheduledHours,    sum of the student's sessions this week
+    //     remainingHours,    target - scheduled
+    //     isOver,            remainingHours < 0
+    //     currentGroup,      the group the student is already in,
+    //                        or null
+    //     groups: [ GroupPickVM, ... ]
+    //   }
 
     function buildDisciplineHoursVM(charId, classId, week, gridVM) {
         var enrolledIds = [];
@@ -1291,6 +1349,23 @@
         for (var i = 0; i < enrolledIds.length; i++) {
             var disciplineId = String(enrolledIds[i]);
             if (!isNonEmptyString(disciplineId)) { continue; }
+
+            // ---- ACTIVE-DISCIPLINE GUARD ----
+            //
+            // Skip disciplines that are not running in this week.
+            var isActive = false;
+            try {
+                isActive = AcademyClassDisciplinesQueries
+                    .isActiveInWeek(
+                        classId, disciplineId, week
+                    ) === true;
+            } catch (e) {
+                isActive = false;
+            }
+
+            if (!isActive) {
+                continue;
+            }
 
             var targetHours = getDisciplineWeeklyHours(disciplineId);
             var scheduledHours = countScheduledHoursForDiscipline(
