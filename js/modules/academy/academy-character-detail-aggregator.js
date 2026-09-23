@@ -6,25 +6,31 @@
  *
  * Produces the view model consumed by AcademyCharacterDetail.
  *
- * HOURS PANEL — ACTIVE-DISCIPLINE GUARD (this revision):
- *   The discipline-hours panel lists one row per discipline the
- *   student is enrolled in for the class. Before this revision,
- *   every enrolled discipline appeared, regardless of whether it
- *   was running in the queried week.
+ * TEACHING GROUP CANDIDATE VIEW MODEL (this revision):
+ *   The candidate picker for "add a student to this group" now
+ *   returns two lists:
  *
- *   A discipline that starts in week 5 and a query of week 1
- *   produced a row showing "0 / 3h, 3h left", as though the
- *   student had failed to attend a course that had not begun.
+ *     candidates  — students who can be added.
+ *     blocked     — students who would collide if added, i.e.
+ *                   adding them to this group's sessions would
+ *                   put them in two places at once.
  *
- *   The row is now omitted entirely for weeks the discipline does
- *   not run. The check is
- *   AcademyClassDisciplinesQueries.isActiveInWeek(classId,
- *   disciplineId, week), which reads the discipline's own
- *   startWeek / endWeek. This is the same predicate the projector
- *   uses to filter occurrences, so the two sides stay in sync.
+ *   The blocked list is not excluded from the picker; it is
+ *   shown below the eligible list so the user can see who they
+ *   cannot add and why. Blocked rows are not selectable.
  *
- *   See academy-teaching-validation.js for the same fix applied to
- *   the weekly-hours report.
+ *   The eligibility filters (already a member, member of a
+ *   sibling group, eliminated, instructor, deceased-shape) are
+ *   unchanged. They remove a student from the picker entirely.
+ *   The blocked list is a SUBSET of the survivors: students who
+ *   pass every eligibility filter but fail the collision check.
+ *
+ *   The collision check is run once per picker-open. It uses a
+ *   single projector call to build a week-wide schedule map
+ *   (charId → occurrences[]), then a small per-candidate
+ *   comparison against the target group's sessions. This avoids
+ *   one projector call per candidate, which would be O(N ×
+ *   groups × sessions).
  *
  * (Rest of the header unchanged.)
  *
@@ -46,6 +52,7 @@
  *   - window.TeamQueries
  *   - window.EliminationQueries
  *   - window.AcademyCalendarAggregator
+ *   - window.AcademyTeachingProjector
  *   - window.RangeUtils
  */
 
@@ -191,6 +198,9 @@
     }
     function getAcademyCalendarAggregator() {
         return window.AcademyCalendarAggregator || null;
+    }
+    function getAcademyTeachingProjector() {
+        return window.AcademyTeachingProjector || null;
     }
     function getRangeUtils() {
         return window.RangeUtils || null;
@@ -909,6 +919,10 @@
     // ============================================================
     // TEACHING GROUP CANDIDATE VIEW MODEL
     // ============================================================
+    //
+    // See the file header for the shape. Two lists are returned:
+    // candidates (selectable) and blocked (visible, not
+    // selectable, with a conflict reason).
 
     function buildInstructorExclusionSet(classId, disciplineId, week) {
         var set = Object.create(null);
@@ -951,6 +965,186 @@
         }
 
         return set;
+    }
+
+    /**
+     * Build the schedule map for a whole week in one projector
+     * call. The map is charId → occurrences[].
+     *
+     * Used by the candidate picker to check collisions for every
+     * candidate at once. The projector walks the whole teaching
+     * model once; the per-candidate comparison is then a small
+     * in-memory loop.
+     *
+     * Returns an empty object when the projector is unavailable or
+     * the call throws.
+     */
+    function buildWeekScheduleMapForCandidates(week) {
+        var Projector = getAcademyTeachingProjector();
+        if (!Projector || typeof Projector.projectWeek !== 'function') {
+            return Object.create(null);
+        }
+
+        var occurrences = [];
+        try {
+            occurrences = Projector.projectWeek(week) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademyCharacterDetailAggregator] ' +
+                'projectWeek failed while building candidate map:', e
+            );
+            return Object.create(null);
+        }
+
+        var map = Object.create(null);
+
+        for (var i = 0; i < occurrences.length; i++) {
+            var occ = occurrences[i];
+            if (!occ || typeof occ !== 'object') { continue; }
+            if (!Array.isArray(occ.studentIds)) { continue; }
+
+            for (var s = 0; s < occ.studentIds.length; s++) {
+                var id = occ.studentIds[s];
+                if (!isNonEmptyString(id)) { continue; }
+                var key = String(id);
+                if (!map[key]) { map[key] = []; }
+                map[key].push(occ);
+            }
+        }
+
+        return map;
+    }
+
+    /**
+     * Return the target group's sessions, filtered to those active
+     * in the display week.
+     *
+     * The session records are the raw ones from the sessions
+     * store; the picker only needs day, startTime, duration.
+     * Session startWeek / endWeek is checked against the query
+     * week before the session is included.
+     */
+    function readTargetGroupSessions(group, week) {
+        if (!group || !group.id) { return []; }
+
+        var TS = getAcademyTeachingSessions();
+        if (!TS || typeof TS.getSessionsForGroup !== 'function') {
+            return [];
+        }
+
+        var raw = [];
+        try {
+            raw = TS.getSessionsForGroup(group.id) || [];
+        } catch (e) {
+            raw = [];
+        }
+
+        if (!Array.isArray(raw)) { return []; }
+
+        // Discipline window: when a session does not carry its own
+        // week range, the discipline's range is the fallback.
+        var discStart = null;
+        var discEnd = null;
+        if (isNonEmptyString(group.disciplineId)) {
+            var disc = AcademyDisciplines.getDiscipline(
+                group.disciplineId
+            );
+            if (disc) {
+                if (isFiniteNumber(disc.startWeek)) {
+                    discStart = disc.startWeek;
+                }
+                if (disc.endWeek !== undefined && disc.endWeek !== null) {
+                    discEnd = disc.endWeek;
+                }
+            }
+        }
+
+        var result = [];
+
+        for (var i = 0; i < raw.length; i++) {
+            var s = raw[i];
+            if (!s || typeof s !== 'object') { continue; }
+            if (!isFiniteNumber(s.day)) { continue; }
+            if (!isFiniteNumber(s.startTime)) { continue; }
+
+            var startWeek = isFiniteNumber(s.startWeek)
+                ? s.startWeek : discStart;
+            var endWeek = (s.endWeek !== undefined && s.endWeek !== null)
+                ? s.endWeek : discEnd;
+
+            if (startWeek !== null &&
+                startWeek !== undefined &&
+                week < startWeek) {
+                continue;
+            }
+            if (endWeek !== null &&
+                endWeek !== undefined &&
+                week > endWeek) {
+                continue;
+            }
+
+            result.push({
+                sessionId: s.id || null,
+                day: s.day,
+                startTime: s.startTime,
+                duration: isFiniteNumber(s.duration) ? s.duration : 1
+            });
+        }
+
+        return result;
+    }
+
+    /**
+     * Does any of the candidate's occurrences overlap any of the
+     * target group's sessions?
+     *
+     * Time overlap: same day, and [start, start + duration)
+     * intersect. Back-to-back sessions do not overlap.
+     *
+     * Returns the first collision found, or null.
+     */
+    function findCandidateConflict(
+        candidateOccurrences,
+        targetSessions
+    ) {
+        if (!Array.isArray(candidateOccurrences) ||
+            !Array.isArray(targetSessions)) {
+            return null;
+        }
+
+        for (var i = 0; i < candidateOccurrences.length; i++) {
+            var occ = candidateOccurrences[i];
+            if (!occ) { continue; }
+            if (!isFiniteNumber(occ.day)) { continue; }
+            if (!isFiniteNumber(occ.startTime)) { continue; }
+
+            var occStart = occ.startTime;
+            var occEnd = occ.startTime +
+                (isFiniteNumber(occ.duration) ? occ.duration : 1);
+
+            for (var j = 0; j < targetSessions.length; j++) {
+                var s = targetSessions[j];
+                if (!s) { continue; }
+                if (s.day !== occ.day) { continue; }
+
+                var sStart = s.startTime;
+                var sEnd = s.startTime +
+                    (isFiniteNumber(s.duration) ? s.duration : 1);
+
+                if (occStart < sEnd && sStart < occEnd) {
+                    return {
+                        day: occ.day,
+                        startTime: occ.startTime,
+                        endTime: occEnd,
+                        conflictingSessionId: occ.sessionId || null,
+                        conflictingGroupId: occ.groupId || null,
+                        conflictingDisciplineId: occ.disciplineId || null
+                    };
+                }
+            }
+        }
+
+        return null;
     }
 
     function getTeachingGroupCandidateViewModel(charId, groupId, options) {
@@ -1038,9 +1232,18 @@
             classId, disciplineId, week
         );
 
+        // ---- Collision context ----
+        //
+        // One projector call, one schedule map. Then per candidate
+        // a small in-memory overlap check.
+        var scheduleMap = buildWeekScheduleMapForCandidates(week);
+        var targetSessions = readTargetGroupSessions(group, week);
+
         var EQ = getEliminationQueries();
 
         var candidates = [];
+        var blocked = [];
+
         for (var e = 0; e < enrolledIds.length; e++) {
             var candidateId = enrolledIds[e];
             if (!isNonEmptyString(candidateId)) { continue; }
@@ -1067,16 +1270,47 @@
                 if (eliminated) { continue; }
             }
 
-            candidates.push({
+            var baseEntry = {
                 id: c.id,
                 name: CharacterQueries.getDisplayName(c),
                 status: CharacterQueries.getCurrentStatus(c),
                 age: CharacterQueries.getCharacterAge(c),
                 deceased: c.deceased === true
-            });
+            };
+
+            // ---- Collision check ----
+            //
+            // The candidate's occurrences for the display week,
+            // cross-checked against the target group's sessions.
+            //
+            // targetSessions is empty when the group has no
+            // sessions yet — in that case there is nothing to
+            // collide with and the candidate goes straight into
+            // candidates.
+            var candidateOccurrences = scheduleMap[key] || [];
+            var conflict = findCandidateConflict(
+                candidateOccurrences, targetSessions
+            );
+
+            if (conflict) {
+                blocked.push({
+                    id: baseEntry.id,
+                    name: baseEntry.name,
+                    status: baseEntry.status,
+                    age: baseEntry.age,
+                    deceased: baseEntry.deceased,
+                    conflict: conflict
+                });
+                continue;
+            }
+
+            candidates.push(baseEntry);
         }
 
         candidates.sort(function(a, b) {
+            return String(a.name || '').localeCompare(String(b.name || ''));
+        });
+        blocked.sort(function(a, b) {
             return String(a.name || '').localeCompare(String(b.name || ''));
         });
 
@@ -1099,7 +1333,8 @@
             groupDisplayName: groupDisplayName,
             disciplineId: disciplineId,
             disciplineName: disciplineName,
-            candidates: candidates
+            candidates: candidates,
+            blocked: blocked
         };
     }
 
@@ -1299,32 +1534,6 @@
     // ============================================================
     // DISCIPLINE HOURS VM
     // ============================================================
-    //
-    // One entry per discipline the student is enrolled in for
-    // the class AND that is active in the display week.
-    //
-    // ACTIVE-DISCIPLINE GUARD:
-    //   A discipline that starts in week 5 does not appear in a
-    //   week-1 hours panel. Its absence is the answer: this
-    //   discipline is not part of the student's week.
-    //
-    //   The check is AcademyClassDisciplinesQueries.isActiveInWeek,
-    //   the same predicate the projector uses to filter
-    //   occurrences. Keeping both sides on the same predicate
-    //   avoids drift between "what the grid shows" and "what the
-    //   hours panel counts."
-    //
-    // Each entry shape:
-    //   {
-    //     disciplineId, disciplineName, disciplineType,
-    //     targetHours,       discipline.weeklyHours
-    //     scheduledHours,    sum of the student's sessions this week
-    //     remainingHours,    target - scheduled
-    //     isOver,            remainingHours < 0
-    //     currentGroup,      the group the student is already in,
-    //                        or null
-    //     groups: [ GroupPickVM, ... ]
-    //   }
 
     function buildDisciplineHoursVM(charId, classId, week, gridVM) {
         var enrolledIds = [];
@@ -1350,9 +1559,6 @@
             var disciplineId = String(enrolledIds[i]);
             if (!isNonEmptyString(disciplineId)) { continue; }
 
-            // ---- ACTIVE-DISCIPLINE GUARD ----
-            //
-            // Skip disciplines that are not running in this week.
             var isActive = false;
             try {
                 isActive = AcademyClassDisciplinesQueries
