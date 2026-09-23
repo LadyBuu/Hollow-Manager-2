@@ -3,21 +3,60 @@
  *
  * Path: css/calendar.css
  *
- * (Header unchanged from the previous version.)
+ * Styles for the pure calendar renderer in
+ * modules/calendar/calendar-renderer.js.
  *
- * TEACHING GROUP CANDIDATE PICKER (this revision):
- *   Two sections, both scrollable together inside one bounded
- *   body:
+ * Covers:
+ *   - The schedule grid and its cells
+ *   - Header row
+ *   - Occupied slots, empty slots, rest-day columns, blocked slots
+ *   - Group color coding
+ *   - The co-occupant marker and its detail panel
+ *   - The discipline-hours panel, its rows, and its current-group
+ *     sub-block
+ *   - The discipline picker
+ *   - The legend, the loading state
+ *   - The schedule-assign and schedule-instructor modals
+ *   - The teaching group candidate picker
  *
- *     Eligible        radios; selectable.
- *     Would conflict  no radios; not selectable; each row shows
- *                     a conflict reason.
+ * HORIZONTAL SCROLL:
+ *   The grid's natural minimum width exceeds a phone's viewport.
+ *   The wrapper (`.calendar-grid-wrapper`) owns horizontal
+ *   scrolling. The grid itself sizes to `min-width: max-content`
+ *   so it reaches its natural width, and the wrapper scrolls when
+ *   that exceeds the viewport.
  *
- *   Search filters both sections. A section with zero visible
- *   rows hides itself. A picker with zero visible rows shows a
- *   single "no matches" hint.
+ * HOUR COLUMN:
+ *   The leading hour column is 72px on desktop and 56px on
+ *   mobile. Both are sized to fit a two-digit 24-hour label
+ *   (`00:00` through `23:00`) without truncation.
  *
- *   Add button starts disabled. Enabled when a radio is checked.
+ * GROUP COLOR CODING:
+ *   Each occupied cell carries a `.acad-group-color-N` class
+ *   resolved by the aggregator from the group's groupNumber.
+ *   The palette below defines 0 through 7. The classes override
+ *   `background` and `border-left-color` on `.schedule-occupied`.
+ *
+ * RADIO LISTS (instructor picker, candidate picker):
+ *   Both lists share the same defensive layout:
+ *
+ *     display: flex !important;
+ *     flex-direction: row !important;
+ *     align-items: flex-start !important;
+ *     justify-content: flex-start !important;
+ *
+ *   and a fixed 14x14 radio whose width, height, margin, and
+ *   min/max-width are pinned so a global `input { width: 100% }`
+ *   rule cannot stretch it. The name span is `flex: 1 1 auto;
+ *   min-width: auto` with `overflow-wrap: break-word` (never
+ *   `anywhere`) so the name never wraps one character per line.
+ *
+ *   Do NOT change these without also changing the sibling block.
+ *   The two radio lists must stay in sync; a divergence is the
+ *   bug that shipped a centered radio and a right-shoved name
+ *   twice in a row.
+ *
+ * Loads after shared.css and academy.css.
  */
 
 /* ============================================================
@@ -1050,10 +1089,34 @@
     max-width: 320px;
 }
 
-/* ---------- Instructor picker (assign modal) ---------- */
+/* ---------- Instructor picker (assign modal) ----------
+ *
+ * A radio list of instructors. Each option is a flex row:
+ *
+ *   [radio] [name]
+ *
+ * The radio is a fixed-size square at the left. The name fills
+ * the rest and may wrap. Nothing in this block centers its
+ * content horizontally.
+ *
+ * HARD RESETS:
+ *   - `input[type=radio]` gets an explicit width and height so
+ *     a global `input { width: 100% }` rule elsewhere cannot
+ *     stretch it.
+ *   - `text-align: left` on the option defeats a centered
+ *     parent's inherited alignment.
+ *   - `box-sizing: border-box` on the option so its padding
+ *     cannot push past a fixed parent width.
+ *   - `min-width: 0` is NOT set on the name span; the name must
+ *     be allowed to demand its natural width.
+ *   - `overflow-wrap: anywhere` is NOT set on the name span;
+ *     `break-word` is used instead, which only breaks at word
+ *     boundaries.
+ */
 
 .academy-schedule-assign-instructors {
     margin-bottom: 12px;
+    text-align: left;         /* defeat a centered parent */
 }
 
 .academy-schedule-assign-instructors-label {
@@ -1062,12 +1125,14 @@
     font-weight: 600;
     color: var(--text);
     margin-bottom: 4px;
+    text-align: left;
 }
 
 .academy-schedule-assign-instructors-hint {
     font-size: 0.7rem;
     color: var(--text-dim);
     margin: 0 0 8px 0;
+    text-align: left;
 }
 
 .academy-schedule-assign-instructors-list {
@@ -1080,19 +1145,27 @@
     border-radius: 4px;
     width: 100%;
     box-sizing: border-box;
+    text-align: left;
 }
 
 .academy-schedule-assign-instructor-option {
-    display: flex;
-    align-items: flex-start;
+    /* Flex row, left-aligned, never centered. */
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: flex-start !important;
+    justify-content: flex-start !important;
     gap: 8px;
+
     padding: 6px 8px;
+    margin: 0;
     border-radius: 3px;
     cursor: pointer;
     font-size: 0.78rem;
     color: var(--text);
     min-height: 28px;
     box-sizing: border-box;
+    width: 100%;
+    text-align: left;
 }
 
 .academy-schedule-assign-instructor-option:hover {
@@ -1100,18 +1173,33 @@
 }
 
 .academy-schedule-assign-instructor-radio {
+    /* Pin the control's size and reset every default that could
+       stretch it. `flex: 0 0 auto` means the radio demands its
+       natural size and never grows. */
     flex: 0 0 auto;
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    min-width: 14px;
+    max-width: 14px;
     margin: 0;
     margin-top: 2px;
+    padding: 0;
     accent-color: var(--accent);
     cursor: pointer;
+    box-sizing: border-box;
 }
 
 .academy-schedule-assign-instructor-name {
+    /* Fills the remaining width. Never shrinks below its natural
+       content width. Wraps at word boundaries. Left-aligned. */
     flex: 1 1 auto;
     min-width: auto;
+    display: inline-block;
     white-space: normal;
     overflow-wrap: break-word;
+    word-break: normal;
+    text-align: left;
     line-height: 1.3;
     color: var(--text);
 }
@@ -1122,12 +1210,14 @@
     background: var(--warning-soft);
     border: 1px solid var(--warning);
     border-radius: 4px;
+    text-align: left;
 }
 
 .academy-schedule-assign-instructors-error-text {
     margin: 0;
     font-size: 0.75rem;
     color: var(--warning);
+    text-align: left;
 }
 
 .academy-schedule-assign-instructor-single {
@@ -1138,6 +1228,7 @@
     background: var(--panel-alt);
     border: 1px solid var(--border-soft);
     border-radius: 4px;
+    text-align: left;
 }
 
 .academy-schedule-assign-instructor-single-note {
@@ -1313,6 +1404,14 @@
    Layout rules mirror the instructor radio list: name spans
    never shrink below their natural width. min-width: auto plus
    overflow-wrap: break-word (never `anywhere`).
+
+   HARD RESETS:
+     - The row is a flex container with `!important` on its
+       layout properties, so a rule elsewhere cannot center it.
+     - The radio is a fixed 14x14 box. Same reasoning as the
+       instructor radio above.
+     - text-align: left everywhere; a centered ancestor cannot
+       shove the name to the right.
  */
 
 .academy-teaching-group-candidate-picker {
@@ -1322,6 +1421,7 @@
     border: 1px solid var(--border);
     border-left: 3px solid var(--accent);
     border-radius: var(--radius);
+    text-align: left;
 }
 
 .academy-teaching-group-candidate-header {
@@ -1341,6 +1441,7 @@
     min-width: 0;
     white-space: normal;
     overflow-wrap: break-word;
+    text-align: left;
 }
 
 .academy-teaching-group-candidate-search {
@@ -1354,6 +1455,7 @@
     font-family: inherit;
     margin-bottom: 8px;
     box-sizing: border-box;
+    text-align: left;
 }
 
 .academy-teaching-group-candidate-search:focus {
@@ -1367,6 +1469,7 @@
     padding: 2px;
     background: var(--bg);
     border-radius: 4px;
+    text-align: left;
 }
 
 .academy-teaching-group-candidate-section + 
@@ -1382,6 +1485,7 @@
     gap: 8px;
     padding: 4px 6px;
     margin-bottom: 4px;
+    text-align: left;
 }
 
 .academy-teaching-group-candidate-section-title {
@@ -1392,6 +1496,7 @@
     color: var(--text-dim);
     flex: 1;
     min-width: 0;
+    text-align: left;
 }
 
 .academy-teaching-group-candidate-section-blocked 
@@ -1418,16 +1523,22 @@
 }
 
 .academy-teaching-group-candidate-row {
-    display: flex;
-    align-items: center;
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: flex-start !important;
+    justify-content: flex-start !important;
     gap: 8px;
+
     padding: 5px 8px;
+    margin: 0;
     border-radius: 3px;
     cursor: pointer;
     font-size: 0.74rem;
     color: var(--text);
     min-height: 26px;
     box-sizing: border-box;
+    width: 100%;
+    text-align: left;
 }
 
 .academy-teaching-group-candidate-row:hover {
@@ -1436,16 +1547,27 @@
 
 .academy-teaching-group-candidate-radio {
     flex: 0 0 auto;
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    min-width: 14px;
+    max-width: 14px;
     margin: 0;
+    margin-top: 2px;
+    padding: 0;
     accent-color: var(--accent);
     cursor: pointer;
+    box-sizing: border-box;
 }
 
 .academy-teaching-group-candidate-name {
     flex: 1 1 auto;
     min-width: auto;
+    display: inline-block;
     white-space: normal;
     overflow-wrap: break-word;
+    word-break: normal;
+    text-align: left;
     line-height: 1.3;
     color: var(--text);
 }
@@ -1488,6 +1610,7 @@
     display: flex;
     flex-direction: column;
     gap: 1px;
+    text-align: left;
 }
 
 .academy-teaching-group-candidate-blocked-name {
@@ -1496,6 +1619,7 @@
     white-space: normal;
     overflow-wrap: break-word;
     line-height: 1.3;
+    text-align: left;
 }
 
 .academy-teaching-group-candidate-blocked-reason {
@@ -1505,6 +1629,7 @@
     line-height: 1.3;
     white-space: normal;
     overflow-wrap: break-word;
+    text-align: left;
 }
 
 /* ---- No-matches hint ---- */
@@ -1527,7 +1652,7 @@
 }
 
 .academy-teaching-group-candidate-actions 
-.academy-teaching-group-candidate-actions button[disabled] {
+button[disabled] {
     opacity: 0.5;
     cursor: not-allowed;
 }
