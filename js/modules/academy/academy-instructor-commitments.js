@@ -129,7 +129,6 @@
  * USAGE:
  *   var C = window.AcademyInstructorCommitments;
  *
- *   // Office hours
  *   C.createCommitment({
  *       classId: 'class_1',
  *       instructorId: 'char_1',
@@ -143,7 +142,6 @@
  *       endWeek: null
  *   }).then(function (r) { ... });
  *
- *   // Tutoring (with a mentor relationship ensured)
  *   C.createCommitment({
  *       classId: 'class_1',
  *       instructorId: 'char_1',
@@ -466,17 +464,6 @@
     // VALIDATION
     // ============================================================
 
-    /**
-     * Validate a commitment payload.
-     *
-     * The payload is either a full candidate (create) or a partial
-     * set of fields (update). The `isPartial` flag switches the
-     * "required fields" checks.
-     *
-     * @param {object} payload
-     * @param {boolean} isPartial
-     * @returns {{ valid: boolean, message?: string, normalised?: object }}
-     */
     function validateCommitmentPayload(payload, isPartial) {
         if (!isPlainObject(payload)) {
             return {
@@ -578,11 +565,6 @@
         }
 
         // ---- end of day check ----
-        //
-        // Only run when both are present in the same payload. A
-        // partial update that only changes `duration` re-checks the
-        // combination against the existing record in the pipeline
-        // mutate() callback.
         if (normalised.startTime !== undefined &&
             normalised.duration !== undefined) {
             if (normalised.startTime + normalised.duration >
@@ -673,9 +655,6 @@
         }
 
         // ---- characterId ----
-        //
-        // Only meaningful for tutoring. Rejected on office hours at
-        // write time, not silently dropped. See the module header.
         if (payload.characterId !== undefined) {
             if (payload.characterId === null ||
                 payload.characterId === '') {
@@ -688,7 +667,6 @@
                     };
                 }
 
-                // Refuse characterId on office hours.
                 var effectiveKind = normalised.kind !== undefined
                     ? normalised.kind
                     : (payload.kind !== undefined ? String(payload.kind) : null);
@@ -726,14 +704,6 @@
         return { valid: true, normalised: normalised };
     }
 
-    /**
-     * Validate a completed candidate record before commit.
-     * This is the final gate; it re-checks the cross-field
-     * invariants the partial validator cannot check in isolation.
-     *
-     * @param {object} candidate
-     * @returns {{ valid: boolean, message?: string }}
-     */
     function validateCandidate(candidate) {
         if (!isPlainObject(candidate)) {
             return { valid: false, message: 'Candidate is not an object.' };
@@ -837,13 +807,6 @@
     // ============================================================
     // MENTOR RELATIONSHIP HOOK
     // ============================================================
-    //
-    // Called AFTER the commitment pipeline commits. Checks for an
-    // existing forward-direction mentor relationship from the
-    // instructor to the character. If none exists, creates one.
-    //
-    // Failure of this hook does not roll back the commitment. The
-    // user sees a warning and can retry from the Social tab.
 
     function ensureMentorRelationship(instructorId, characterId) {
         if (!isNonEmptyString(instructorId) ||
@@ -935,16 +898,6 @@
         });
     }
 
-    /**
-     * Apply the mentor-relationship hook to a commitment result.
-     *
-     * Called from the .then() of a successful commitment write
-     * when the commitment is a tutoring session with a character.
-     * On failure, notifies the user without rolling back.
-     *
-     * @param {object} commitment
-     * @returns {Promise<void>}
-     */
     function applyMentorHook(commitment) {
         if (!commitment) { return Promise.resolve(); }
         if (commitment.kind !== KIND_TUTORING) {
@@ -1062,7 +1015,6 @@
             }
         }
 
-        // Re-validate the combination.
         if (candidate.startTime + candidate.duration >
             CALENDAR_END_HOUR + 1) {
             return Promise.resolve(failure(
@@ -1211,12 +1163,6 @@
         return result;
     }
 
-    /**
-     * Every commitment the instructor owns for the class that is
-     * active at the given week.
-     *
-     * Week-in-range delegates to RangeUtils.containsWeek.
-     */
     function getActiveCommitmentsForInstructor(
         instructorId,
         week
@@ -1281,10 +1227,6 @@
     // ============================================================
     // CASCADE HELPERS
     // ============================================================
-    //
-    // Pure with respect to appData. Mutate the snapshot. Never
-    // touch window.data. Never throw. Run inside another module's
-    // pipeline transaction (AcademyCascade).
 
     function stripClassRefs(appData, classId) {
         var result = { commitmentsRemoved: 0 };
@@ -1416,6 +1358,54 @@
         return result;
     }
 
+    /**
+     * Null the locationId on every commitment that references the
+     * deleted location.
+     *
+     * The commitment survives. The room was a property of the
+     * block, not its identity. A decommissioned room does not
+     * delete the block; it needs a new room.
+     *
+     * Symmetric with AcademyTeachingSessions.stripLocationRefs.
+     *
+     * @param {object} appData
+     * @param {string} locationId
+     * @returns {object} { referencesCleared }
+     */
+    function stripLocationRefs(appData, locationId) {
+        var result = { referencesCleared: 0 };
+
+        if (!appData || !isNonEmptyString(locationId)) {
+            return result;
+        }
+
+        var store = getStoreFromSnapshot(appData);
+        if (!store) {
+            return result;
+        }
+
+        var target = String(locationId);
+        var keys = Object.keys(store);
+
+        for (var i = 0; i < keys.length; i++) {
+            var c = store[keys[i]];
+            if (!isPlainObject(c)) {
+                continue;
+            }
+            if (!isNonEmptyString(c.locationId)) {
+                continue;
+            }
+            if (String(c.locationId) !== target) {
+                continue;
+            }
+            c.locationId = null;
+            c.updatedAt = new Date().toISOString();
+            result.referencesCleared++;
+        }
+
+        return result;
+    }
+
     // ============================================================
     // EXPOSE
     // ============================================================
@@ -1439,6 +1429,7 @@
         stripClassRefs: stripClassRefs,
         stripCharacterRefs: stripCharacterRefs,
         stripInstructorRefs: stripInstructorRefs,
+        stripLocationRefs: stripLocationRefs,
 
         // Constants (read-only)
         KIND_OFFICE_HOURS: KIND_OFFICE_HOURS,
@@ -1467,7 +1458,8 @@
             'getActiveCommitmentsForClass',
             'stripClassRefs',
             'stripCharacterRefs',
-            'stripInstructorRefs'
+            'stripInstructorRefs',
+            'stripLocationRefs'
         ];
 
         for (var i = 0; i < required.length; i++) {
