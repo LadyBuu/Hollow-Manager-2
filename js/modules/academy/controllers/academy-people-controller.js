@@ -4,8 +4,28 @@
  *
  * Path: js/modules/academy/controllers/academy-people-controller.js
  *
- * (Header unchanged; the additions in this revision are the
- * candidate-picker search and the radio-state tracking.)
+ * The People feature controller. Owns the People view.
+ *
+ * CO-OCCUPANTS PANEL (this revision):
+ *   The `+N` badge on an occupied cell in the student's or the
+ *   instructor's schedule grid is a collision disclosure. Clicking
+ *   it opens an inline panel below the grid listing the primary
+ *   slot and every co-occupant of the same (day, hour) cell.
+ *
+ *   On a character grid, co-occupancy means the character is
+ *   double-booked: the projector filters to the character's own
+ *   occurrences, so two different sessions landing in the same
+ *   cell is a collision. The panel answers "what is colliding?"
+ *
+ *   The panel is display-only. It has no actions; its only
+ *   interactive element is the close button.
+ *
+ *   The panel is a peer of the discipline picker: both live in a
+ *   host element that CalendarRenderer emits below the grid, and
+ *   both are remounted after the grid re-renders so they survive
+ *   the panel-scroll restore path.
+ *
+ * (Rest of the header unchanged.)
  */
 
 (function() {
@@ -134,12 +154,18 @@
     var _searchTimer = null;
 
     var _openPickerGroupId = null;
-    // _pickerCandidates is now an object { candidates, blocked }
-    // or null while the picker VM is loading.
+    // _pickerCandidates is an object { candidates, blocked } or
+    // null while the picker VM is loading.
     var _pickerCandidates = null;
 
     var _openDisciplinePicker = null;
     var _currentGridVM = null;
+
+    // Co-occupants panel state.
+    //   _openCoOccupantsCell = { day, hour } | null
+    // The panel is mounted into #academy-schedule-co-occupants-host,
+    // which CalendarRenderer emits below the grid.
+    var _openCoOccupantsCell = null;
 
     // ============================================================
     // CONTEXT NORMALISATION
@@ -175,6 +201,7 @@
         _context = normaliseContext(rawContext);
 
         _openDisciplinePicker = null;
+        _openCoOccupantsCell = null;
         _currentGridVM = null;
 
         var classId = AcademyUI.getSelectedClassId();
@@ -579,6 +606,7 @@
             _activeCharacterTab = tabBtn.dataset.tab;
             clearPickerState();
             _openDisciplinePicker = null;
+            _openCoOccupantsCell = null;
             var ctx = getContext();
             ctx.onChange();
             return;
@@ -724,9 +752,15 @@
                 handleScheduleSlotOpen(el);
                 return;
 
+            // ---- Co-occupants panel ----
             case 'schedule-co-occupants-open':
+                handleScheduleCoOccupantsOpen(
+                    el.dataset.day,
+                    el.dataset.hour
+                );
                 return;
             case 'schedule-co-occupants-close':
+                handleScheduleCoOccupantsClose();
                 return;
 
             case 'schedule-discipline-picker-open':
@@ -970,6 +1004,7 @@
 
         clearPickerState();
         _openDisciplinePicker = null;
+        _openCoOccupantsCell = null;
 
         CharacterCRUD.setMode(charId, newMode)
             .then(function(result) {
@@ -1291,8 +1326,16 @@
             return;
         }
 
+        // Remount the discipline picker if it was open.
         if (_openDisciplinePicker) {
             mountDisciplinePickerPanel();
+        }
+
+        // Remount the co-occupants panel if it was open. Same
+        // rationale: the panel host lives inside the grid's DOM,
+        // and the grid was just rebuilt.
+        if (_openCoOccupantsCell) {
+            mountCoOccupantsPanel();
         }
     }
 
@@ -1602,6 +1645,225 @@
             );
             notify('Failed to open the slot editor.', 'error');
         }
+    }
+
+    // ============================================================
+    // CO-OCCUPANTS PANEL
+    // ============================================================
+    //
+    // The `+N` badge on an occupied cell means N+1 sessions are
+    // scheduled in the same (day, hour) cell of the character's
+    // grid. On a character grid the projector filters to the
+    // character's own occurrences, so this is a collision: the
+    // character is double-booked.
+    //
+    // The panel lists the primary slot and every co-occupant so
+    // the user can see exactly what is colliding.
+    //
+    // Data source: _currentGridVM.schedule[day][hour], which is
+    // the slot descriptor produced by AcademyCalendarAggregator.
+    // It carries:
+    //   disciplineName, instructorName, groupLabel, duration,
+    //   sessionId
+    // plus a coOccupants array whose entries carry the same shape.
+    //
+    // The panel is display-only. Its only interactive element is
+    // the close button.
+
+    function handleScheduleCoOccupantsOpen(dayRaw, hourRaw) {
+        var day = parseInt(dayRaw, 10);
+        var hour = parseInt(hourRaw, 10);
+        if (isNaN(day) || isNaN(hour)) { return; }
+
+        // Toggle: clicking the same badge again closes the panel.
+        if (_openCoOccupantsCell &&
+            _openCoOccupantsCell.day === day &&
+            _openCoOccupantsCell.hour === hour) {
+            handleScheduleCoOccupantsClose();
+            return;
+        }
+
+        _openCoOccupantsCell = { day: day, hour: hour };
+        mountCoOccupantsPanel();
+    }
+
+    function handleScheduleCoOccupantsClose() {
+        _openCoOccupantsCell = null;
+        var host = document.getElementById(
+            'academy-schedule-co-occupants-host'
+        );
+        if (host) { host.innerHTML = ''; }
+    }
+
+    function mountCoOccupantsPanel() {
+        var host = document.getElementById(
+            'academy-schedule-co-occupants-host'
+        );
+        if (!host) { return; }
+
+        if (!_openCoOccupantsCell) {
+            host.innerHTML = '';
+            return;
+        }
+
+        if (!_currentGridVM || !_currentGridVM.schedule) {
+            host.innerHTML = '';
+            return;
+        }
+
+        var day = _openCoOccupantsCell.day;
+        var hour = _openCoOccupantsCell.hour;
+
+        var daySchedule = _currentGridVM.schedule[day];
+        if (!daySchedule || typeof daySchedule !== 'object') {
+            host.innerHTML = '';
+            _openCoOccupantsCell = null;
+            return;
+        }
+
+        var slot = daySchedule[hour];
+        if (!slot || typeof slot !== 'object') {
+            host.innerHTML = '';
+            _openCoOccupantsCell = null;
+            return;
+        }
+
+        // A cell with no co-occupants is not a collision; the
+        // badge would not have rendered. Defensive check.
+        if (!Array.isArray(slot.coOccupants) ||
+            slot.coOccupants.length === 0) {
+            host.innerHTML = '';
+            _openCoOccupantsCell = null;
+            return;
+        }
+
+        host.innerHTML = buildCoOccupantsPanelHTML(day, hour, slot);
+    }
+
+    function buildCoOccupantsPanelHTML(day, hour, slot) {
+        var coOccupants = Array.isArray(slot.coOccupants)
+            ? slot.coOccupants
+            : [];
+
+        var totalCount = 1 + coOccupants.length;
+
+        var html = '';
+        html += '<div class="schedule-co-occupants-panel">';
+
+        // ---- Header ----
+        html += '<div class="schedule-co-occupants-header">';
+        html += '<span class="schedule-co-occupants-title">' +
+                    'Collision' +
+                '</span>';
+        html += '<span class="schedule-co-occupants-count">' +
+                    escapeHtml(
+                        formatCoOccupantHeader(day, hour, totalCount)
+                    ) +
+                '</span>';
+        html += '<button type="button" ' +
+                    'class="schedule-co-occupants-close" ' +
+                    'data-action="schedule-co-occupants-close" ' +
+                    'aria-label="Close">&times;</button>';
+        html += '</div>';
+
+        // ---- List ----
+        html += '<ul class="schedule-co-occupants-list">';
+        html += renderCoOccupantRow(slot, true);
+        for (var i = 0; i < coOccupants.length; i++) {
+            html += renderCoOccupantRow(coOccupants[i], false);
+        }
+        html += '</ul>';
+
+        html += '</div>';
+        return html;
+    }
+
+    function formatCoOccupantHeader(day, hour, count) {
+        var dayLabel = 'Day ' + day;
+        var startLabel = hour + ':00';
+
+        var CC = window.CalendarConstants;
+        if (CC) {
+            if (typeof CC.getDayName === 'function') {
+                try {
+                    var n = CC.getDayName(day);
+                    if (isNonEmptyString(n)) { dayLabel = n; }
+                } catch (e) { /* ignore */ }
+            }
+            if (typeof CC.formatHour === 'function') {
+                try {
+                    var s = CC.formatHour(hour);
+                    if (isNonEmptyString(s)) { startLabel = s; }
+                } catch (e) { /* ignore */ }
+            }
+        }
+
+        return dayLabel + ', ' + startLabel + ' \u00b7 ' +
+            count + ' scheduled';
+    }
+
+    function renderCoOccupantRow(entry, isPrimary) {
+        if (!entry || typeof entry !== 'object') { return ''; }
+
+        var rowClass = 'schedule-co-occupants-row';
+        if (isPrimary) {
+            rowClass += ' schedule-co-occupants-row-primary';
+        }
+
+        var disciplineName = isNonEmptyString(entry.disciplineName)
+            ? entry.disciplineName
+            : 'Unknown';
+        var instructorName = isNonEmptyString(entry.instructorName)
+            ? entry.instructorName
+            : '';
+        var groupLabel = isNonEmptyString(entry.groupLabel)
+            ? entry.groupLabel
+            : '';
+        var duration = isFiniteNumber(entry.duration)
+            ? entry.duration
+            : 1;
+
+        var bullet = isPrimary ? '\u25cf' : '\u25cb';
+
+        var html = '';
+        html += '<li class="' + rowClass + '">';
+
+        html += '<span class="schedule-co-occupants-bullet">' +
+                    bullet +
+                '</span>';
+
+        html += '<span class="schedule-co-occupants-discipline">' +
+                    escapeHtml(disciplineName) +
+                '</span>';
+
+        if (instructorName) {
+            html += '<span class="schedule-co-occupants-instructor">' +
+                        escapeHtml(instructorName) +
+                    '</span>';
+        } else {
+            html += '<span class="schedule-co-occupants-instructor ' +
+                        'schedule-co-occupants-instructor-empty">' +
+                        '\u2014' +
+                    '</span>';
+        }
+
+        // Group label: rendered as an inline chip after the
+        // instructor, before the duration. Not a separate CSS
+        // class in the sheet, so it reuses the instructor class
+        // with a lighter style. If this grows into a proper
+        // element later, add a dedicated class.
+        if (groupLabel) {
+            html += '<span class="schedule-co-occupants-instructor">' +
+                        escapeHtml(groupLabel) +
+                    '</span>';
+        }
+
+        html += '<span class="schedule-co-occupants-duration">' +
+                    escapeHtml(duration + 'h') +
+                '</span>';
+
+        html += '</li>';
+        return html;
     }
 
     // ============================================================
@@ -2027,8 +2289,6 @@
         }
 
         _openPickerGroupId = String(groupId);
-        // Store the WHOLE VM (candidates + blocked) so the
-        // renderer can show both sections.
         _pickerCandidates = {
             candidates: Array.isArray(vm.candidates)
                 ? vm.candidates
@@ -2054,8 +2314,6 @@
     function handleSubmitTeachingGroupAdd(groupId) {
         if (!isNonEmptyString(groupId)) { return; }
 
-        // Read from the eligible list. Blocked rows have no radios,
-        // so this query can never find a blocked student.
         var picker = document.querySelector(
             '.academy-teaching-group-candidate-picker' +
             '[data-group-id="' + cssEscape(groupId) + '"]'
@@ -2163,14 +2421,6 @@
     // CANDIDATE PICKER — SEARCH + SELECTION STATE
     // ============================================================
 
-    /**
-     * Filter the candidate rows in a picker by search term.
-     *
-     * Filters both sections at once. A section whose visible rows
-     * drop to zero hides itself entirely. The picker-level "no
-     * matches" hint appears only when the whole picker has no
-     * visible rows.
-     */
     function applyCandidateSearchFilter(inputEl) {
         if (!inputEl) { return; }
         var picker = inputEl.closest(
@@ -2190,23 +2440,16 @@
             row.style.display = matches ? '' : 'none';
         }
 
-        // Hide empty sections.
         var sections = picker.querySelectorAll(
             '.academy-teaching-group-candidate-section'
         );
         var totalVisible = 0;
         for (var s = 0; s < sections.length; s++) {
             var section = sections[s];
-            var visibleInSection = section.querySelectorAll(
-                '.academy-teaching-group-candidate-row' +
-                ':not([style*="display: none"])'
-            ).length;
-            // The :not selector above is not reliable for inline
-            // display toggling; count manually.
-            visibleInSection = 0;
             var sectionRows = section.querySelectorAll(
                 '.academy-teaching-group-candidate-row'
             );
+            var visibleInSection = 0;
             for (var r = 0; r < sectionRows.length; r++) {
                 if (sectionRows[r].style.display !== 'none') {
                     visibleInSection++;
@@ -2222,10 +2465,6 @@
         }
     }
 
-    /**
-     * Toggle the Add button between disabled and enabled as the
-     * user picks a candidate radio.
-     */
     function updateCandidateAddButtonState(radioEl) {
         if (!radioEl) { return; }
         var picker = radioEl.closest(
@@ -2397,6 +2636,7 @@
         clearPickerState();
 
         _openDisciplinePicker = null;
+        _openCoOccupantsCell = null;
         _currentGridVM = null;
 
         _host = null;
