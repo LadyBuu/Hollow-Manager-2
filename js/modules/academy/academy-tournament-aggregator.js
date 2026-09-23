@@ -85,11 +85,25 @@
  *
  * POOL MEMBERSHIP:
  *   Character pool: students only. Instructors do NOT appear.
- *   Team pool: persistent academic Team entities active this week.
+ *
+ *   The character pool is built from
+ *   AcademyAggregator.getClassStudentsViewModel(classId, week). The
+ *   `week` is REQUIRED for this call: the aggregator's
+ *   deriveClassRoster resolves the week's instructor set via
+ *   AcademyClasses.getClassInstructorIds and excludes them from the
+ *   roster. Passing no week (or a null week) makes that exclusion
+ *   set empty, and every instructor of the class — whether they
+ *   teach this week or not — leaks back into the pool. This was a
+ *   live bug; see the pass-through in buildCharacterPoolForClass.
+ *
  *   The pool is filtered against eliminations when EliminationQueries
  *   is available. When it is not, the pool does not fabricate
  *   "everyone is eligible" and does not fabricate "everyone is
  *   eliminated"; it defers the elimination flag entirely.
+ *
+ * TEAM POOL:
+ *   Persistent academic Team entities active this week. Not affected
+ *   by the instructor roster rule above; teams are a separate shape.
  *
  * PRIOR-ROUND OUTCOMES (C8):
  *   The pool is opened by the Add-Match / Edit-Match modals, which
@@ -766,6 +780,25 @@
     // state: characters are included, and the `eliminated` flag is
     // false because we do not know. That is the honest answer.
     //
+    // INSTRUCTOR EXCLUSION:
+    //   Instructors must not appear in the character pool at all —
+    //   they are not students, they cannot be picked as participants,
+    //   and they cannot be eliminated.
+    //
+    //   The exclusion is performed upstream, by
+    //   AcademyAggregator.getClassStudentsViewModel(classId, week),
+    //   which derives the roster via AcademyAggregator.deriveClassRoster
+    //   and drops anyone in the class's instructor set for that week.
+    //
+    //   The `week` argument is REQUIRED for that call to work.
+    //   deriveClassRoster resolves instructors via
+    //   AcademyClasses.getClassInstructorIds(classId, weekNum), and
+    //   getClassInstructorIds returns [] for a null/undefined week.
+    //   Passing no week (or a null week) makes the exclusion set
+    //   empty, and every instructor of the class leaks back into the
+    //   pool. This was a live bug; the fix is the week pass-through
+    //   in buildCharacterPoolForClass below.
+    //
     // PRIOR-ROUND OUTCOMES (C8):
     //   When `currentRoundId` is provided AND an exam exists, this
     //   function calls TournamentQueries.getPriorRoundOutcomes(examId,
@@ -858,8 +891,25 @@
         inExamSet,
         priorOutcomes
     ) {
+        // ------------------------------------------------------------------
+        // THE FIX
+        // ------------------------------------------------------------------
+        //
+        // `week` MUST be threaded through to the aggregator. The
+        // aggregator's deriveClassRoster resolves the class's
+        // instructor set for that week and excludes it from the
+        // roster. Passing no week (the previous behaviour) made the
+        // exclusion set empty, and every instructor of the class —
+        // including the ones actively teaching this week — leaked
+        // into the exam pool.
+        //
+        // Instructors are not students. They must not appear in the
+        // pool, must not be pickable as participants, and must not
+        // be eliminable.
+        // ------------------------------------------------------------------
         var students = AcademyAggregator.getClassStudentsViewModel(
-            classId
+            classId,
+            week
         ) || [];
 
         var EQ = getEliminationQueries();
