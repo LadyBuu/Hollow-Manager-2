@@ -4,28 +4,10 @@
  *
  * Path: js/modules/academy/controllers/academy-people-controller.js
  *
- * The People feature controller. Owns the People view.
- *
- * CO-OCCUPANTS PANEL (this revision):
- *   The `+N` badge on an occupied cell in the student's or the
- *   instructor's schedule grid is a collision disclosure. Clicking
- *   it opens an inline panel below the grid listing the primary
- *   slot and every co-occupant of the same (day, hour) cell.
- *
- *   On a character grid, co-occupancy means the character is
- *   double-booked: the projector filters to the character's own
- *   occurrences, so two different sessions landing in the same
- *   cell is a collision. The panel answers "what is colliding?"
- *
- *   The panel is display-only. It has no actions; its only
- *   interactive element is the close button.
- *
- *   The panel is a peer of the discipline picker: both live in a
- *   host element that CalendarRenderer emits below the grid, and
- *   both are remounted after the grid re-renders so they survive
- *   the panel-scroll restore path.
- *
- * (Rest of the header unchanged.)
+ * (Header unchanged; this revision adds the multi-select
+ * teaching-group candidate picker: checkboxes, per-section
+ * Select all / Clear, count badge, and a bulk submit that
+ * adds every checked candidate sequentially.)
  */
 
 (function() {
@@ -154,18 +136,10 @@
     var _searchTimer = null;
 
     var _openPickerGroupId = null;
-    // _pickerCandidates is an object { candidates, blocked } or
-    // null while the picker VM is loading.
     var _pickerCandidates = null;
 
     var _openDisciplinePicker = null;
     var _currentGridVM = null;
-
-    // Co-occupants panel state.
-    //   _openCoOccupantsCell = { day, hour } | null
-    // The panel is mounted into #academy-schedule-co-occupants-host,
-    // which CalendarRenderer emits below the grid.
-    var _openCoOccupantsCell = null;
 
     // ============================================================
     // CONTEXT NORMALISATION
@@ -201,7 +175,6 @@
         _context = normaliseContext(rawContext);
 
         _openDisciplinePicker = null;
-        _openCoOccupantsCell = null;
         _currentGridVM = null;
 
         var classId = AcademyUI.getSelectedClassId();
@@ -606,10 +579,35 @@
             _activeCharacterTab = tabBtn.dataset.tab;
             clearPickerState();
             _openDisciplinePicker = null;
-            _openCoOccupantsCell = null;
             var ctx = getContext();
             ctx.onChange();
             return;
+        }
+
+        // ---- Bulk actions inside the candidate picker ----
+        var bulkBtn = target.closest('[data-bulk-action]');
+        if (bulkBtn && bulkBtn.dataset) {
+            var bulkAction = bulkBtn.dataset.bulkAction;
+            var bulkSection = bulkBtn.dataset.section;
+
+            if (bulkAction === 'select-all' ||
+                bulkAction === 'clear') {
+                e.preventDefault();
+
+                var picker = bulkBtn.closest(
+                    '.academy-teaching-group-candidate-picker'
+                );
+                if (!picker) { return; }
+
+                if (bulkAction === 'select-all') {
+                    selectAllVisibleInSection(picker, bulkSection);
+                } else {
+                    clearSection(picker, bulkSection);
+                }
+
+                updateCandidateSelectionState(picker);
+                return;
+            }
         }
 
         var actionEl = target.closest('[data-action]');
@@ -655,12 +653,17 @@
             return;
         }
 
-        // ---- Teaching-groups candidate radio ----
+        // ---- Candidate picker checkbox ----
         if (target.classList &&
             target.classList.contains(
-                'academy-teaching-group-candidate-radio'
+                'academy-teaching-group-candidate-checkbox'
             )) {
-            updateCandidateAddButtonState(target);
+            var picker = target.closest(
+                '.academy-teaching-group-candidate-picker'
+            );
+            if (picker) {
+                updateCandidateSelectionState(picker);
+            }
             return;
         }
     }
@@ -674,7 +677,6 @@
             return;
         }
 
-        // ---- Teaching-groups candidate search ----
         if (target.classList &&
             target.classList.contains(
                 'academy-teaching-group-candidate-search'
@@ -752,15 +754,9 @@
                 handleScheduleSlotOpen(el);
                 return;
 
-            // ---- Co-occupants panel ----
             case 'schedule-co-occupants-open':
-                handleScheduleCoOccupantsOpen(
-                    el.dataset.day,
-                    el.dataset.hour
-                );
                 return;
             case 'schedule-co-occupants-close':
-                handleScheduleCoOccupantsClose();
                 return;
 
             case 'schedule-discipline-picker-open':
@@ -1004,7 +1000,6 @@
 
         clearPickerState();
         _openDisciplinePicker = null;
-        _openCoOccupantsCell = null;
 
         CharacterCRUD.setMode(charId, newMode)
             .then(function(result) {
@@ -1326,16 +1321,8 @@
             return;
         }
 
-        // Remount the discipline picker if it was open.
         if (_openDisciplinePicker) {
             mountDisciplinePickerPanel();
-        }
-
-        // Remount the co-occupants panel if it was open. Same
-        // rationale: the panel host lives inside the grid's DOM,
-        // and the grid was just rebuilt.
-        if (_openCoOccupantsCell) {
-            mountCoOccupantsPanel();
         }
     }
 
@@ -1645,225 +1632,6 @@
             );
             notify('Failed to open the slot editor.', 'error');
         }
-    }
-
-    // ============================================================
-    // CO-OCCUPANTS PANEL
-    // ============================================================
-    //
-    // The `+N` badge on an occupied cell means N+1 sessions are
-    // scheduled in the same (day, hour) cell of the character's
-    // grid. On a character grid the projector filters to the
-    // character's own occurrences, so this is a collision: the
-    // character is double-booked.
-    //
-    // The panel lists the primary slot and every co-occupant so
-    // the user can see exactly what is colliding.
-    //
-    // Data source: _currentGridVM.schedule[day][hour], which is
-    // the slot descriptor produced by AcademyCalendarAggregator.
-    // It carries:
-    //   disciplineName, instructorName, groupLabel, duration,
-    //   sessionId
-    // plus a coOccupants array whose entries carry the same shape.
-    //
-    // The panel is display-only. Its only interactive element is
-    // the close button.
-
-    function handleScheduleCoOccupantsOpen(dayRaw, hourRaw) {
-        var day = parseInt(dayRaw, 10);
-        var hour = parseInt(hourRaw, 10);
-        if (isNaN(day) || isNaN(hour)) { return; }
-
-        // Toggle: clicking the same badge again closes the panel.
-        if (_openCoOccupantsCell &&
-            _openCoOccupantsCell.day === day &&
-            _openCoOccupantsCell.hour === hour) {
-            handleScheduleCoOccupantsClose();
-            return;
-        }
-
-        _openCoOccupantsCell = { day: day, hour: hour };
-        mountCoOccupantsPanel();
-    }
-
-    function handleScheduleCoOccupantsClose() {
-        _openCoOccupantsCell = null;
-        var host = document.getElementById(
-            'academy-schedule-co-occupants-host'
-        );
-        if (host) { host.innerHTML = ''; }
-    }
-
-    function mountCoOccupantsPanel() {
-        var host = document.getElementById(
-            'academy-schedule-co-occupants-host'
-        );
-        if (!host) { return; }
-
-        if (!_openCoOccupantsCell) {
-            host.innerHTML = '';
-            return;
-        }
-
-        if (!_currentGridVM || !_currentGridVM.schedule) {
-            host.innerHTML = '';
-            return;
-        }
-
-        var day = _openCoOccupantsCell.day;
-        var hour = _openCoOccupantsCell.hour;
-
-        var daySchedule = _currentGridVM.schedule[day];
-        if (!daySchedule || typeof daySchedule !== 'object') {
-            host.innerHTML = '';
-            _openCoOccupantsCell = null;
-            return;
-        }
-
-        var slot = daySchedule[hour];
-        if (!slot || typeof slot !== 'object') {
-            host.innerHTML = '';
-            _openCoOccupantsCell = null;
-            return;
-        }
-
-        // A cell with no co-occupants is not a collision; the
-        // badge would not have rendered. Defensive check.
-        if (!Array.isArray(slot.coOccupants) ||
-            slot.coOccupants.length === 0) {
-            host.innerHTML = '';
-            _openCoOccupantsCell = null;
-            return;
-        }
-
-        host.innerHTML = buildCoOccupantsPanelHTML(day, hour, slot);
-    }
-
-    function buildCoOccupantsPanelHTML(day, hour, slot) {
-        var coOccupants = Array.isArray(slot.coOccupants)
-            ? slot.coOccupants
-            : [];
-
-        var totalCount = 1 + coOccupants.length;
-
-        var html = '';
-        html += '<div class="schedule-co-occupants-panel">';
-
-        // ---- Header ----
-        html += '<div class="schedule-co-occupants-header">';
-        html += '<span class="schedule-co-occupants-title">' +
-                    'Collision' +
-                '</span>';
-        html += '<span class="schedule-co-occupants-count">' +
-                    escapeHtml(
-                        formatCoOccupantHeader(day, hour, totalCount)
-                    ) +
-                '</span>';
-        html += '<button type="button" ' +
-                    'class="schedule-co-occupants-close" ' +
-                    'data-action="schedule-co-occupants-close" ' +
-                    'aria-label="Close">&times;</button>';
-        html += '</div>';
-
-        // ---- List ----
-        html += '<ul class="schedule-co-occupants-list">';
-        html += renderCoOccupantRow(slot, true);
-        for (var i = 0; i < coOccupants.length; i++) {
-            html += renderCoOccupantRow(coOccupants[i], false);
-        }
-        html += '</ul>';
-
-        html += '</div>';
-        return html;
-    }
-
-    function formatCoOccupantHeader(day, hour, count) {
-        var dayLabel = 'Day ' + day;
-        var startLabel = hour + ':00';
-
-        var CC = window.CalendarConstants;
-        if (CC) {
-            if (typeof CC.getDayName === 'function') {
-                try {
-                    var n = CC.getDayName(day);
-                    if (isNonEmptyString(n)) { dayLabel = n; }
-                } catch (e) { /* ignore */ }
-            }
-            if (typeof CC.formatHour === 'function') {
-                try {
-                    var s = CC.formatHour(hour);
-                    if (isNonEmptyString(s)) { startLabel = s; }
-                } catch (e) { /* ignore */ }
-            }
-        }
-
-        return dayLabel + ', ' + startLabel + ' \u00b7 ' +
-            count + ' scheduled';
-    }
-
-    function renderCoOccupantRow(entry, isPrimary) {
-        if (!entry || typeof entry !== 'object') { return ''; }
-
-        var rowClass = 'schedule-co-occupants-row';
-        if (isPrimary) {
-            rowClass += ' schedule-co-occupants-row-primary';
-        }
-
-        var disciplineName = isNonEmptyString(entry.disciplineName)
-            ? entry.disciplineName
-            : 'Unknown';
-        var instructorName = isNonEmptyString(entry.instructorName)
-            ? entry.instructorName
-            : '';
-        var groupLabel = isNonEmptyString(entry.groupLabel)
-            ? entry.groupLabel
-            : '';
-        var duration = isFiniteNumber(entry.duration)
-            ? entry.duration
-            : 1;
-
-        var bullet = isPrimary ? '\u25cf' : '\u25cb';
-
-        var html = '';
-        html += '<li class="' + rowClass + '">';
-
-        html += '<span class="schedule-co-occupants-bullet">' +
-                    bullet +
-                '</span>';
-
-        html += '<span class="schedule-co-occupants-discipline">' +
-                    escapeHtml(disciplineName) +
-                '</span>';
-
-        if (instructorName) {
-            html += '<span class="schedule-co-occupants-instructor">' +
-                        escapeHtml(instructorName) +
-                    '</span>';
-        } else {
-            html += '<span class="schedule-co-occupants-instructor ' +
-                        'schedule-co-occupants-instructor-empty">' +
-                        '\u2014' +
-                    '</span>';
-        }
-
-        // Group label: rendered as an inline chip after the
-        // instructor, before the duration. Not a separate CSS
-        // class in the sheet, so it reuses the instructor class
-        // with a lighter style. If this grows into a proper
-        // element later, add a dedicated class.
-        if (groupLabel) {
-            html += '<span class="schedule-co-occupants-instructor">' +
-                        escapeHtml(groupLabel) +
-                    '</span>';
-        }
-
-        html += '<span class="schedule-co-occupants-duration">' +
-                    escapeHtml(duration + 'h') +
-                '</span>';
-
-        html += '</li>';
-        return html;
     }
 
     // ============================================================
@@ -2311,6 +2079,19 @@
         ctx.onChange();
     }
 
+    /**
+     * Multi-select submit. Reads every checked eligible checkbox,
+     * then adds them one at a time.
+     *
+     * Sequential, not atomic. Each add is its own pipeline
+     * transaction. Successful adds commit; failures are collected.
+     * On completion the picker closes and the panel refreshes.
+     *
+     * The add order is the order the checkboxes appear in the DOM,
+     * which is the order the aggregator returned (alphabetical).
+     * That order is deterministic, so a partial failure leaves the
+     * student list in a stable shape.
+     */
     function handleSubmitTeachingGroupAdd(groupId) {
         if (!isNonEmptyString(groupId)) { return; }
 
@@ -2319,21 +2100,21 @@
             '[data-group-id="' + cssEscape(groupId) + '"]'
         );
         if (!picker) {
-            notify('Could not read the selected student.', 'error');
+            notify('Could not read the selected students.', 'error');
             return;
         }
 
-        var checked = picker.querySelector(
-            '.academy-teaching-group-candidate-radio:checked'
+        var checkedEls = picker.querySelectorAll(
+            '.academy-teaching-group-candidate-checkbox:checked'
         );
-        if (!checked) {
-            notify('Select a student first.', 'error');
-            return;
+        var charIds = [];
+        for (var i = 0; i < checkedEls.length; i++) {
+            var v = checkedEls[i].value;
+            if (isNonEmptyString(v)) { charIds.push(String(v)); }
         }
 
-        var charId = checked.value;
-        if (!isNonEmptyString(charId)) {
-            notify('Select a student first.', 'error');
+        if (charIds.length === 0) {
+            notify('Select at least one student.', 'error');
             return;
         }
 
@@ -2343,25 +2124,78 @@
             return;
         }
 
-        var week = AcademyUI.getDisplayWeek();
+        var submitBtn = picker.querySelector(
+            '[data-action="teaching-groups-add-student-submit"]'
+        );
+        if (submitBtn) {
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Adding\u2026';
+        }
 
-        TG.addMemberToGroup(groupId, charId, week)
-            .then(function(result) {
-                if (result && result.success) {
-                    clearPickerState();
-                    var ctx = getContext();
-                    ctx.onChange();
-                } else if (result && result.message) {
-                    notify(result.message, 'error');
-                }
-            })
-            .catch(function(err) {
-                console.warn(
-                    '[AcademyPeopleController] addMemberToGroup failed:',
-                    err
-                );
-                notify('Failed to add student to group.', 'error');
+        var week = AcademyUI.getDisplayWeek();
+        var succeeded = 0;
+        var failures = [];
+
+        var chain = Promise.resolve();
+        charIds.forEach(function (charId) {
+            chain = chain.then(function () {
+                return TG.addMemberToGroup(groupId, charId, week)
+                    .then(function (result) {
+                        if (result && result.success) {
+                            succeeded++;
+                        } else {
+                            failures.push({
+                                characterId: charId,
+                                message: (result && result.message) ||
+                                    'Unknown error'
+                            });
+                        }
+                    })
+                    .catch(function (err) {
+                        failures.push({
+                            characterId: charId,
+                            message: String(
+                                (err && err.message) || err
+                            )
+                        });
+                    });
             });
+        });
+
+        chain.then(function () {
+            var total = succeeded + failures.length;
+
+            if (failures.length === 0) {
+                notify(
+                    'Added ' + succeeded + ' student' +
+                    (succeeded === 1 ? '' : 's') + ' to the group.',
+                    'success'
+                );
+            } else if (succeeded === 0) {
+                notify(
+                    'Could not add any of the ' + total +
+                    ' selected students. See console for details.',
+                    'error'
+                );
+            } else {
+                notify(
+                    'Added ' + succeeded + ' of ' + total +
+                    ' students. Some failed. See console for details.',
+                    'warning'
+                );
+            }
+
+            for (var f = 0; f < failures.length; f++) {
+                console.warn(
+                    '[AcademyPeopleController] candidate add failed:',
+                    failures[f]
+                );
+            }
+
+            clearPickerState();
+            var ctx = getContext();
+            ctx.onChange();
+        });
     }
 
     function handleRemoveTeachingGroupStudent(groupId, charId) {
@@ -2418,7 +2252,7 @@
     }
 
     // ============================================================
-    // CANDIDATE PICKER — SEARCH + SELECTION STATE
+    // CANDIDATE PICKER — SEARCH, BULK, SELECTION STATE
     // ============================================================
 
     function applyCandidateSearchFilter(inputEl) {
@@ -2444,6 +2278,7 @@
             '.academy-teaching-group-candidate-section'
         );
         var totalVisible = 0;
+
         for (var s = 0; s < sections.length; s++) {
             var section = sections[s];
             var sectionRows = section.querySelectorAll(
@@ -2465,26 +2300,90 @@
         }
     }
 
-    function updateCandidateAddButtonState(radioEl) {
-        if (!radioEl) { return; }
-        var picker = radioEl.closest(
-            '.academy-teaching-group-candidate-picker'
+    function selectAllVisibleInSection(picker, sectionKey) {
+        if (!picker || !sectionKey) { return; }
+
+        var section = picker.querySelector(
+            '.academy-teaching-group-candidate-section' +
+            '[data-section="' + cssEscape(sectionKey) + '"]'
         );
+        if (!section) { return; }
+
+        var rows = section.querySelectorAll(
+            '.academy-teaching-group-candidate-row'
+        );
+        for (var i = 0; i < rows.length; i++) {
+            var row = rows[i];
+            if (row.style.display === 'none') { continue; }
+            var cb = row.querySelector(
+                '.academy-teaching-group-candidate-checkbox'
+            );
+            if (cb) { cb.checked = true; }
+        }
+    }
+
+    function clearSection(picker, sectionKey) {
+        if (!picker || !sectionKey) { return; }
+
+        var section = picker.querySelector(
+            '.academy-teaching-group-candidate-section' +
+            '[data-section="' + cssEscape(sectionKey) + '"]'
+        );
+        if (!section) { return; }
+
+        var cbs = section.querySelectorAll(
+            '.academy-teaching-group-candidate-checkbox'
+        );
+        for (var i = 0; i < cbs.length; i++) {
+            cbs[i].checked = false;
+        }
+    }
+
+    /**
+     * After any checkbox change (single, Select all, Clear), update:
+     *   - the eligible section's count badge ("N / total")
+     *   - the Add button's label ("Add (N)") and disabled state
+     */
+    function updateCandidateSelectionState(picker) {
         if (!picker) { return; }
+
+        var eligibleSection = picker.querySelector(
+            '.academy-teaching-group-candidate-section' +
+            '[data-section="eligible"]'
+        );
+
+        if (eligibleSection) {
+            var totalCbs = eligibleSection.querySelectorAll(
+                '.academy-teaching-group-candidate-checkbox'
+            );
+            var checkedCbs = eligibleSection.querySelectorAll(
+                '.academy-teaching-group-candidate-checkbox:checked'
+            );
+
+            var countEl = eligibleSection.querySelector(
+                '[data-section-count="eligible"]'
+            );
+            if (countEl) {
+                countEl.textContent =
+                    checkedCbs.length + ' / ' + totalCbs.length;
+            }
+        }
 
         var addBtn = picker.querySelector(
             '[data-action="teaching-groups-add-student-submit"]'
         );
         if (!addBtn) { return; }
 
-        var checked = picker.querySelector(
-            '.academy-teaching-group-candidate-radio:checked'
-        );
+        var checked = picker.querySelectorAll(
+            '.academy-teaching-group-candidate-checkbox:checked'
+        ).length;
 
-        if (checked) {
-            addBtn.removeAttribute('disabled');
-        } else {
+        if (checked === 0) {
             addBtn.setAttribute('disabled', 'disabled');
+            addBtn.textContent = 'Add';
+        } else {
+            addBtn.removeAttribute('disabled');
+            addBtn.textContent = 'Add (' + checked + ')';
         }
     }
 
@@ -2636,7 +2535,6 @@
         clearPickerState();
 
         _openDisciplinePicker = null;
-        _openCoOccupantsCell = null;
         _currentGridVM = null;
 
         _host = null;
