@@ -3,8 +3,98 @@
  *
  * Path: js/modules/academy/academy-schedule.js
  *
- * (Header unchanged from the version you have. The only edit in this
- * file is inside resolveOrCreateGroupAndSession, documented inline.)
+ * The compound-mutation coordinator for the Academy teaching model.
+ *
+ * WHAT THIS MODULE OWNS:
+ *   Operations that touch two or more of the teaching-model stores
+ *   in a single transaction:
+ *
+ *     addClassDiscipline        create a class-discipline marker and
+ *                               auto-enrol every active student
+ *     removeClassDiscipline     remove a class-discipline marker and
+ *                               end every downstream window
+ *     scheduleGroupMeeting      create a teaching session with a
+ *                               blocking collision check
+ *     scheduleInstructorSlot    resolve-or-create the group and
+ *                               session implied by an instructor
+ *                               staking a claim on a slot
+ *     addStudentToTeachingGroup add a member to a group, validating
+ *                               enrolment and elimination
+ *     dropStudentFromClass      end every enrolment and membership
+ *                               for a character in a class
+ *     assignStudentToSlot       resolve-or-create the group and
+ *                               session implied by a student
+ *                               assignment, then add the membership
+ *     removeTeachingGroup       delete a teaching group and every
+ *                               session owned by it, in one
+ *                               transaction
+ *     createTeachingGroup       explicit new-group allocation
+ *     createInstructorCommitment   forward to the commitments module
+ *     updateInstructorCommitment   forward to the commitments module
+ *     removeInstructorCommitment   forward to the commitments module
+ *
+ * WHAT THIS MODULE DOES NOT OWN:
+ *   - Single-store reads             (the queries modules)
+ *   - Single-store writes            (the same domain modules)
+ *   - Projection                     (AcademyTeachingProjector)
+ *   - Collision reporting            (AcademyTeachingCollisions)
+ *   - Validation warnings            (AcademyTeachingValidation)
+ *   - Rendering                      (views)
+ *   - Location entities              (AcademyLocations)
+ *   - Instructor commitments store   (AcademyInstructorCommitments)
+ *
+ * TRANSACTION MODEL:
+ *   Every public function here is a single MutationPipeline.performMutation
+ *   call, EXCEPT the three commitment forwarders, which delegate to
+ *   the commitments module's own pipelines. Either way: full success
+ *   or full rollback per store.
+ *
+ * INSTRUCTOR COMMITMENTS (this revision):
+ *   The three forwarders exist so that the schedule module remains
+ *   the single documented entry point for anything that shapes the
+ *   instructor's weekly time. Callers that only want to create a
+ *   commitment may reach for AcademyInstructorCommitments directly;
+ *   the forwarders are convenience and, more importantly, a future
+ *   place to hang coordination.
+ *
+ *   No collision preflight runs on commitment create. Commitments
+ *   may overlap class sessions and other commitments; the grid
+ *   renders the overlap, the collision detector reports it, and the
+ *   user decides. This mirrors how `allowCollisions: true` behaves
+ *   on the student and instructor assign flows.
+ *
+ *   Collision on the OTHER direction — a new class session that
+ *   overlaps an existing commitment — IS rejected as an instructor
+ *   collision. The instructor is already committed; a class session
+ *   has no business claiming that slot.
+ *
+ * (Rest of the header unchanged.)
+ *
+ * DEPENDENCIES (MANDATORY):
+ *   - window.ObjectUtils
+ *   - window.ValidationUtils
+ *   - window.CalendarValidation
+ *   - window.CalendarConstants
+ *   - window.RangeUtils
+ *   - window.MutationPipeline
+ *   - window.IdUtils
+ *   - window.AcademyClasses
+ *   - window.AcademyDisciplines
+ *   - window.AcademyClassDisciplinesQueries
+ *   - window.AcademyEnrolments
+ *   - window.AcademyTeachingGroups
+ *   - window.AcademyTeachingSessions
+ *   - window.CharacterQueries
+ *   - window.EliminationQueries
+ *
+ * DEPENDENCIES (LAZY):
+ *   - window.AcademyAggregator
+ *   - window.AcademyTeachingProjector
+ *   - window.AcademyLocations     (validates locationId on the two
+ *                                  slot-setting entry points)
+ *   - window.AcademyInstructorCommitments
+ *                                 (commitment forwarders and the
+ *                                  instructor-collision extension)
  */
 
 (function() {
@@ -49,6 +139,10 @@
 
     function getAcademyLocations() {
         return window.AcademyLocations || null;
+    }
+
+    function getAcademyInstructorCommitments() {
+        return window.AcademyInstructorCommitments || null;
     }
 
     // ============================================================
@@ -296,11 +390,35 @@
         }
     }
 
+    /**
+     * Does the instructor have a collision at the candidate slot?
+     *
+     * Walks two sources:
+     *   1. Every existing teaching session whose group belongs to
+     *      the instructor.
+     *   2. Every instructor commitment (office hours, tutoring)
+     *      whose instructor is this instructor.
+     *
+     * Both sources count. A new class session that overlaps the
+     * instructor's office hours is a collision; the instructor is
+     * already committed during that time.
+     *
+     * `excludeGroupId` excludes sessions belonging to the named
+     * group. Used when re-checking a slot that is already claimed
+     * by the same group.
+     *
+     * @param {string} instructorId
+     * @param {object} candidate - { day, startTime, duration,
+     *                               startWeek, endWeek }
+     * @param {string|null} excludeGroupId
+     * @returns {object|null} { session, group } | { commitment } | null
+     */
     function findInstructorCollision(instructorId, candidate, excludeGroupId) {
         if (!isNonEmptyString(instructorId)) {
             return null;
         }
 
+        // ---- Source 1: class sessions ----
         var allSessions = AcademyTeachingSessions.getAllSessions() || [];
 
         for (var i = 0; i < allSessions.length; i++) {
@@ -327,6 +445,39 @@
                 return {
                     session: session,
                     group: group
+                };
+            }
+        }
+
+        // ---- Source 2: instructor commitments ----
+        var Commitments = getAcademyInstructorCommitments();
+        if (!Commitments ||
+            typeof Commitments.getCommitmentsForInstructor !== 'function') {
+            return null;
+        }
+
+        var commitments = [];
+        try {
+            commitments = Commitments.getCommitmentsForInstructor(
+                instructorId
+            ) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademySchedule] getCommitmentsForInstructor failed:',
+                e
+            );
+            return null;
+        }
+
+        for (var j = 0; j < commitments.length; j++) {
+            var c = commitments[j];
+            if (!isPlainObject(c)) { continue; }
+
+            if (sessionsOverlap(c, candidate)) {
+                return {
+                    session: null,
+                    group: null,
+                    commitment: c
                 };
             }
         }
@@ -437,18 +588,33 @@
                 // Keep the fallback name.
             }
 
+            // The collision may be a class session or a commitment.
+            // The message differs.
+            var message;
+            if (instructorCollision.commitment) {
+                message = instructorName +
+                    ' is already committed to a ' +
+                    (instructorCollision.commitment.kind === 'tutoring'
+                        ? 'tutoring block'
+                        : 'office-hours block') +
+                    ' during this time slot.';
+            } else {
+                message = instructorName +
+                    ' is already teaching during this time slot.';
+            }
+
             return {
                 success: false,
                 reason: 'instructor_collision',
-                message: instructorName +
-                    ' is already teaching during this time slot.',
+                message: message,
                 data: {
                     collision: {
                         type: 'instructor',
                         instructorId: instructorId,
                         instructorName: instructorName,
                         conflictingSession: instructorCollision.session,
-                        conflictingGroup: instructorCollision.group
+                        conflictingGroup: instructorCollision.group,
+                        conflictingCommitment: instructorCollision.commitment || null
                     }
                 }
             };
@@ -1951,7 +2117,6 @@
             ));
         }
 
-        // Optional location. Validated fail-closed.
         var locationResult = resolveLocationId(payload.locationId);
         if (!locationResult.ok) {
             return Promise.resolve(rejection(
@@ -1971,17 +2136,10 @@
             ? String(payload.instructorId)
             : null;
 
-        // Optional explicit group. When present, the resolver uses it
-        // directly, bypassing candidate-walking.
         var explicitGroupId = isNonEmptyString(payload.groupId)
             ? String(payload.groupId)
             : null;
 
-        // Optional flag: force creation of a NEW group for this
-        // (class, discipline, instructor) triple, ignoring any
-        // existing candidate. Used by the "+ New Group" affordance
-        // in the instructor Teaching Groups panel, which wants a
-        // fresh group even if others already exist.
         var forceNewGroup = payload.forceNewGroup === true;
 
         // ---- Preflight (live reads for early UX feedback) ----
@@ -2167,7 +2325,6 @@
                 if (explicitInstructor !== null) {
                     targetInstructor = explicitInstructor;
                 } else if (explicitGroupId !== null) {
-                    // An explicit group pins the instructor.
                     var pinnedGroup = isPlainObject(academy.teachingGroups)
                         ? academy.teachingGroups[String(explicitGroupId)]
                         : null;
@@ -2257,10 +2414,14 @@
                                 '__instructor_collision__:' +
                                 JSON.stringify({
                                     session: instructorCollision.session,
-                                    group: {
-                                        id: instructorCollision.group.id,
-                                        name: instructorCollision.group.name
-                                    }
+                                    group: instructorCollision.group
+                                        ? {
+                                            id: instructorCollision.group.id,
+                                            name: instructorCollision.group.name
+                                          }
+                                        : null,
+                                    commitment: instructorCollision.commitment
+                                        || null
                                 })
                             );
                         }
@@ -2632,10 +2793,14 @@
                                 '__instructor_collision__:' +
                                 JSON.stringify({
                                     session: instructorCollision.session,
-                                    group: {
-                                        id: instructorCollision.group.id,
-                                        name: instructorCollision.group.name
-                                    }
+                                    group: instructorCollision.group
+                                        ? {
+                                            id: instructorCollision.group.id,
+                                            name: instructorCollision.group.name
+                                          }
+                                        : null,
+                                    commitment: instructorCollision.commitment
+                                        || null
                                 })
                             );
                         }
@@ -2682,51 +2847,6 @@
     // ============================================================
     // SHARED RESOLVERS
     // ============================================================
-    //
-    // Resolve-or-create the teaching group and the session that
-    // satisfy a (day, startHour, duration) intent for a given
-    // (classId, disciplineId, instructorId). Used by both
-    // assignStudentToSlot and scheduleInstructorSlot.
-    //
-    // FOUR RESOLUTION MODES (precedence):
-    //
-    //   1. explicitGroupId supplied.
-    //        The resolver validates the group matches the triple and
-    //        uses it directly. Session resolution happens against
-    //        that group only.
-    //
-    //   2. forceNewGroup === true.
-    //        The resolver skips candidate-walking entirely and
-    //        creates a fresh group. Used by the "+ New Group"
-    //        affordance, whose whole purpose is to allocate a new
-    //        groupNumber even when earlier groups exist.
-    //
-    //   3. Candidate-walking (default).
-    //        The resolver walks the candidate groups for the triple
-    //        and picks:
-    //          - the first candidate with an EXACT session match
-    //            (day + startHour + duration), if any;
-    //          - otherwise the first candidate with no session
-    //            overlap, as a fallback;
-    //          - otherwise, if every candidate overlaps, no
-    //            candidate is chosen and a new group is created.
-    //
-    //        Earlier revisions broke out of the walk on the first
-    //        candidate that had neither an exact match nor an
-    //        overlap, which meant the resolver always picked the
-    //        earliest-created candidate and never examined the rest.
-    //        That behaviour made a second group unreachable: once a
-    //        group existed, it was always the first candidate, and
-    //        the resolver always selected it.
-    //
-    //   4. No candidate (or mode 3 found nothing suitable).
-    //        A new group is created with the next groupNumber.
-    //
-    // LOCATION SEMANTICS:
-    //   `locationId` is applied ONLY when a new session is created.
-    //   When an existing session is reused (exact match on day /
-    //   startHour / duration, active at `week`), its location is
-    //   left as-is; the payload's locationId is ignored.
 
     function resolveOrCreateGroupAndSession(
         academy,
@@ -2840,26 +2960,16 @@
                 }
 
                 if (exactMatch) {
-                    // A perfect slot match. Prefer it over any other
-                    // candidate and stop the walk.
                     resolvedGroup = candidateGroup;
                     resolvedSession = exactMatch;
                     break;
                 }
 
                 if (overlapping) {
-                    // This candidate's existing sessions collide
-                    // with the requested slot. Note it and try the
-                    // next candidate; a later one might be a clean
-                    // fit. If every candidate overlaps, we fall
-                    // through to the group-creation branch below.
                     sawOverlapOnly = true;
                     continue;
                 }
 
-                // No exact match, no overlap: valid fallback.
-                // Remember the first such candidate; keep walking
-                // in case a later one has an exact match.
                 if (fallbackGroup === null) {
                     fallbackGroup = candidateGroup;
                     fallbackSession = null;
@@ -2871,16 +2981,10 @@
                 resolvedSession = fallbackSession;
             }
 
-            // If every candidate overlapped and none matched
-            // exactly, we intentionally do NOT reuse any of them.
-            // Falling through creates a fresh group, which is the
-            // only way to place a session at a slot where all
-            // existing groups already meet at conflicting times.
             void sawOverlapOnly;
         }
 
-        // ---- Session resolution for the resolved group (modes 1
-        //      and 3 when a group was picked but no session was) ----
+        // ---- Session resolution for the resolved group ----
 
         if (resolvedGroup !== null && resolvedSession === null) {
             var groupSessions = collectSessionsForGroup(
@@ -2915,10 +3019,6 @@
             if (sessionExact) {
                 resolvedSession = sessionExact;
             } else if (sessionOverlapping) {
-                // The chosen group already meets at an overlapping
-                // time. This is a hard structural conflict for the
-                // group the resolver settled on; the caller should
-                // surface it.
                 throw new Error(
                     '__group_session_overlap__:' +
                     String(sessionOverlapping.id)
@@ -3008,25 +3108,6 @@
     // ============================================================
     // createTeachingGroup
     // ============================================================
-    //
-    // Explicit "create a new group" entry point, for the "+ New
-    // Group" affordance in the instructor Teaching Groups panel.
-    //
-    // Unlike resolveOrCreateGroupAndSession, this ALWAYS creates a
-    // fresh group. It does not consult candidates, does not walk
-    // sessions, does not create a session. It allocates a new
-    // groupNumber from the per-triple sequence and stops.
-    //
-    // Preconditions verified live and again inside the transaction:
-    //   - class exists
-    //   - discipline exists
-    //   - instructor exists and is in instructor mode
-    //   - the class offers the discipline
-    //   - the instructor is enrolled to teach it during `week`
-    //
-    // The new group starts at `week`, has no members, no sessions,
-    // and no custom name. The caller's next action is to add
-    // sessions or members to it.
 
     function createTeachingGroup(payload) {
         if (!isPlainObject(payload)) {
@@ -3054,7 +3135,6 @@
         var targetDiscipline = String(payload.disciplineId);
         var targetInstructor = String(payload.instructorId);
 
-        // Live preflight.
         var cls = AcademyClasses.getClass(targetClass);
         if (!cls) {
             return Promise.resolve(failure('Class not found.'));
@@ -3196,11 +3276,55 @@
                     groupNumber: groupNumber
                 };
             },
-            logMessage: 'Created teaching group #' + ' for ' +
+            logMessage: 'Created teaching group for ' +
                 targetDiscipline + ' / ' + targetInstructor,
             successMessage: 'Teaching group created.',
             failureMessage: 'Failed to create teaching group.'
         });
+    }
+
+    // ============================================================
+    // INSTRUCTOR COMMITMENT FORWARDERS
+    // ============================================================
+    //
+    // Thin forwarders to AcademyInstructorCommitments. The
+    // schedule module remains the documented entry point for
+    // anything that shapes the instructor's weekly time.
+    //
+    // No preflight collision check. Commitments are the
+    // instructor's own time blocks; they may overlap class
+    // sessions and other commitments. The collision detector
+    // reports those overlaps; the user decides. This mirrors
+    // `allowCollisions: true` on the assign flows.
+
+    function createInstructorCommitment(payload) {
+        var C = getAcademyInstructorCommitments();
+        if (!C || typeof C.createCommitment !== 'function') {
+            return Promise.resolve(failure(
+                'Instructor commitments module is not available.'
+            ));
+        }
+        return C.createCommitment(payload);
+    }
+
+    function updateInstructorCommitment(commitmentId, updates) {
+        var C = getAcademyInstructorCommitments();
+        if (!C || typeof C.updateCommitment !== 'function') {
+            return Promise.resolve(failure(
+                'Instructor commitments module is not available.'
+            ));
+        }
+        return C.updateCommitment(commitmentId, updates);
+    }
+
+    function removeInstructorCommitment(commitmentId) {
+        var C = getAcademyInstructorCommitments();
+        if (!C || typeof C.removeCommitment !== 'function') {
+            return Promise.resolve(failure(
+                'Instructor commitments module is not available.'
+            ));
+        }
+        return C.removeCommitment(commitmentId);
     }
 
     // ============================================================
@@ -3310,16 +3434,23 @@
         if (result.message.indexOf(
             '__instructor_collision__:'
         ) === 0) {
+            var parsed = parseSentinelJson(
+                result.message,
+                '__instructor_collision__:'
+            );
+            var message = 'The instructor is already teaching at an ' +
+                'overlapping time.';
+            if (parsed && parsed.commitment) {
+                message = 'The instructor is already committed to a ' +
+                    (parsed.commitment.kind === 'tutoring'
+                        ? 'tutoring block'
+                        : 'office-hours block') +
+                    ' during this time slot.';
+            }
             return rejection(
                 'instructor_collision',
-                'The instructor is already teaching at an ' +
-                'overlapping time.',
-                {
-                    collision: parseSentinelJson(
-                        result.message,
-                        '__instructor_collision__:'
-                    )
-                }
+                message,
+                { collision: parsed }
             );
         }
 
@@ -3350,6 +3481,11 @@
         removeTeachingGroup: removeTeachingGroup,
         createTeachingGroup: createTeachingGroup,
 
+        // Instructor-commitment forwarders
+        createInstructorCommitment: createInstructorCommitment,
+        updateInstructorCommitment: updateInstructorCommitment,
+        removeInstructorCommitment: removeInstructorCommitment,
+
         MIN_WEEK: MIN_WEEK,
         MAX_WEEK: MAX_WEEK
     });
@@ -3371,7 +3507,10 @@
             'dropStudentFromClass',
             'assignStudentToSlot',
             'removeTeachingGroup',
-            'createTeachingGroup'
+            'createTeachingGroup',
+            'createInstructorCommitment',
+            'updateInstructorCommitment',
+            'removeInstructorCommitment'
         ];
 
         for (var i = 0; i < required.length; i++) {
