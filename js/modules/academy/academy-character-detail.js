@@ -6,21 +6,23 @@
  * Path: js/modules/academy/academy-character-detail.js
  *
  * TEACHING GROUPS CANDIDATE PICKER:
- *   The inline "add student to this group" picker is a
- *   searchable single-select list with two sections:
+ *   The inline "add students to this group" picker is a
+ *   multi-select picker with two sections:
  *
- *     Eligible       radios, selectable.
- *     Blocked        no radios, not selectable, each row shows
- *                    a conflict reason.
+ *     Eligible        checkboxes, selectable.
+ *     Would conflict  no checkboxes; not selectable; each row
+ *                     shows a conflict reason.
  *
- *   Typing in the search box filters both sections. A section
- *   whose visible rows drop to zero hides itself entirely;
- *   a "no matches" hint appears only when the whole picker has
- *   no visible rows.
+ *   Each section carries an action row:
+ *     [Select all]  checks every visible row in that section
+ *     [Clear]       unchecks every row in that section
  *
- *   The blocked list is the SURVIVORS of the eligibility filters
- *   who would collide if added. See
- *   AcademyCharacterDetailAggregator.getTeachingGroupCandidateViewModel.
+ *   Search filters rows in both sections. A section with zero
+ *   visible rows hides itself, INCLUDING its action row. A
+ *   picker with zero visible rows shows a "no matches" hint.
+ *
+ *   Footer Add button shows the count of checked candidates
+ *   and is disabled when the count is zero.
  *
  * (Rest of the header unchanged.)
  *
@@ -1125,26 +1127,21 @@
     }
 
     // ============================================================
-    // CANDIDATE PICKER
+    // CANDIDATE PICKER (multi-select)
     // ============================================================
     //
-    // Two sections in one picker:
+    // Two sections, each with a header, an action row, and a list:
     //
-    //   eligible  radios. Add button becomes enabled when one is
-    //             checked.
-    //   blocked   no radios, not selectable, each row shows a
-    //             conflict reason.
+    //   eligible       checkboxes. Select all / Clear.
+    //   blocked        no checkboxes. Warning icon + reason.
     //
     // Search filters both sections. A section with zero visible
-    // rows hides itself. The "no matches" hint appears when the
-    // whole picker has no visible rows.
+    // rows hides itself entirely (header + actions + list). The
+    // "no matches" hint appears when the whole picker has zero
+    // visible rows.
     //
-    // Both lists come from the same candidate VM:
-    //   pickerCandidates.candidates  eligible
-    //   pickerCandidates.blocked     blocked
-    //
-    // When the VM is not yet available (pickerCandidates is null),
-    // the picker renders a "loading" message.
+    // The Add button label reflects the currently-checked count.
+    // Its `disabled` attribute toggles with that count.
 
     function renderCandidatePicker(group, charId, pickerCandidates) {
         var hasVM = pickerCandidates &&
@@ -1187,7 +1184,7 @@
         // ---- Header ----
         html += '<div class="academy-teaching-group-candidate-header">';
         html += '<span class="academy-teaching-group-candidate-title">' +
-                    'Add student to ' +
+                    'Add students to ' +
                     escapeHtml(group.displayName) +
                 '</span>';
         html += '</div>';
@@ -1207,13 +1204,28 @@
             html += '<div class="academy-teaching-group-candidate-section ' +
                         'academy-teaching-group-candidate-section-eligible" ' +
                         'data-section="eligible">';
+
             html += '<div class="academy-teaching-group-candidate-section-header">';
             html += '<span class="academy-teaching-group-candidate-section-title">' +
                         'Eligible' +
                     '</span>';
-            html += '<span class="academy-teaching-group-candidate-section-count">' +
-                        totalEligible +
+            html += '<span class="academy-teaching-group-candidate-section-count" ' +
+                        'data-section-count="eligible">' +
+                        '0 / ' + totalEligible +
                     '</span>';
+            html += '</div>';
+
+            html += '<div class="academy-teaching-group-candidate-section-actions">';
+            html += '<button type="button" class="small secondary" ' +
+                        'data-bulk-action="select-all" ' +
+                        'data-section="eligible">' +
+                        'Select all' +
+                    '</button>';
+            html += '<button type="button" class="small secondary" ' +
+                        'data-bulk-action="clear" ' +
+                        'data-section="eligible">' +
+                        'Clear' +
+                    '</button>';
             html += '</div>';
 
             html += '<div class="academy-teaching-group-candidate-list">';
@@ -1221,6 +1233,7 @@
                 html += renderEligibleCandidateRow(eligible[i]);
             }
             html += '</div>';
+
             html += '</div>';
         }
 
@@ -1229,6 +1242,7 @@
             html += '<div class="academy-teaching-group-candidate-section ' +
                         'academy-teaching-group-candidate-section-blocked" ' +
                         'data-section="blocked">';
+
             html += '<div class="academy-teaching-group-candidate-section-header">';
             html += '<span class="academy-teaching-group-candidate-section-title">' +
                         'Would conflict' +
@@ -1243,6 +1257,7 @@
                 html += renderBlockedCandidateRow(blocked[j]);
             }
             html += '</div>';
+
             html += '</div>';
         }
 
@@ -1262,7 +1277,8 @@
                         escapeAttribute(group.groupId) + '">' +
                     'Cancel' +
                 '</button>';
-        html += '<button type="button" class="small primary" ' +
+        html += '<button type="button" class="small primary ' +
+                    'academy-teaching-group-candidate-submit" ' +
                     'data-action="teaching-groups-add-student-submit" ' +
                     'data-group-id="' +
                         escapeAttribute(group.groupId) + '" ' +
@@ -1286,9 +1302,8 @@
                         escapeAttribute(candidate.id) + '" ' +
                     'data-search-key="' +
                         escapeAttribute(searchKey) + '">';
-        html += '<input type="radio" ' +
-                    'class="academy-teaching-group-candidate-radio" ' +
-                    'name="academy-teaching-group-candidate" ' +
+        html += '<input type="checkbox" ' +
+                    'class="academy-teaching-group-candidate-checkbox" ' +
                     'value="' +
                         escapeAttribute(candidate.id) + '">';
         html += '<span class="academy-teaching-group-candidate-name">' +
@@ -1362,23 +1377,7 @@
             }
         }
 
-        var disciplineName = isNonEmptyString(
-            conflict.conflictingDisciplineName
-        )
-            ? conflict.conflictingDisciplineName
-            : '';
-
-        // Prefer the aggregator-provided discipline name if we get
-        // a richer conflict shape later; for now the conflict
-        // object carries what the check produced.
-        if (!disciplineName && isNonEmptyString(
-            conflict.conflictingDisciplineId
-        )) {
-            disciplineName = '';
-        }
-
         var parts = [];
-        if (disciplineName) { parts.push(disciplineName); }
         if (dayLabel) { parts.push(dayLabel); }
         if (timeLabel) { parts.push(timeLabel); }
 
@@ -1386,7 +1385,7 @@
             return 'Conflicts with an existing session.';
         }
 
-        return 'Conflicts with ' + parts.join(' ');
+        return 'Conflicts with a session on ' + parts.join(' at ');
     }
 
     // ============================================================
@@ -1511,7 +1510,7 @@
     }
 
     // ============================================================
-    // CREATE-GROUP MODAL (unchanged)
+    // CREATE-GROUP MODAL
     // ============================================================
 
     function canOpenCreateGroupModal() {
