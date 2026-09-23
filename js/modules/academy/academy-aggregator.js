@@ -44,34 +44,46 @@
  *     does NOT carry an instructor field; see INSTRUCTOR-OF-CLASS
  *     below.
  *
- * INSTRUCTOR-OF-CLASS (v29):
- *   A class does not carry an instructor field. The instructors of
- *   a class are whoever has an instructor-mode enrolment in one of
- *   the class's offerings, during the requested week.
+ * INSTRUCTOR-OF-CLASS — TWO QUERIES, TWO QUESTIONS:
  *
- *   The canonical query is AcademyClasses.getClassInstructorIds(
- *   classId, week, { disciplineId }). This aggregator reads through
- *   that query. It does NOT read `cls.instructorId`; the field no
- *   longer exists on class records.
+ *   "Who is an instructor of this class?"
  *
- *   WEEK-SCOPED vs ALL-TIME:
- *     getClassInstructorIds(classId, week)         week-scoped
- *     getClassInstructorIdsAllTime(classId)        not week-scoped
+ *     character.mode === 'instructor'
+ *       AND this class is in character.classIds
  *
- *   This aggregator uses the WEEK-SCOPED query. The roster question
- *   is "who is a student in this class this week?", and the
- *   instructor-exclusion set must answer the same question at the
- *   same scope. A character who taught weeks 1-8 and stopped is
- *   not an instructor for week 12.
+ *   That is the whole rule. It is a YEAR-LEVEL fact. It does not
+ *   change when a discipline stops running for the term. It does
+ *   not change week to week. A character who taught this class
+ *   during weeks 1-4 and stopped is still an instructor of this
+ *   class in week 12. The role is theirs until the class or the
+ *   role itself changes.
  *
- *   The all-time query answers a different question — "is this
- *   character, by role, an instructor for this class?" — and is
- *   used by the character suite's class-role label, not here.
- *   Both are correct for their respective questions.
+ *   This is the answer used for roster derivation, role
+ *   classification, the People sidebar, the Weekly Teams candidate
+ *   pool, and the Add-Character-to-Class picker.
  *
- *   Where the aggregator previously stitched the class's single
- *   instructor into the roster or excluded it from a set, it now
- *   works with the plural list returned by the query.
+ *   "Who is actively teaching this class this week?"
+ *
+ *     AcademyClasses.getClassInstructorIds(classId, week)
+ *
+ *   Week-scoped. Reads per-discipline instructor enrolments and
+ *   filters by week. A character who taught weeks 1-4 is NOT in the
+ *   week-12 answer, even though they are still an instructor of
+ *   this class.
+ *
+ *   This is the answer used for schedule collision detection, the
+ *   teaching projector, the ranking view's instructor-exclusion
+ *   list (ranking eligibility is a live-schedule question), and
+ *   anywhere else that needs to know what is actually running.
+ *
+ *   The two are deliberately separate. They used to be conflated:
+ *   the roster derivation, role classification, and candidate
+ *   pools all reached for the week-scoped query, which meant an
+ *   instructor whose disciplines had ended for the term silently
+ *   became a student in every derived view. The character's stored
+ *   mode was correct throughout; only the views were wrong. That
+ *   bug is fixed here: those views now consult the year-level
+ *   rule.
  *
  * RANGE PREDICATES:
  *   The "does this range contain this week" question is owned by
@@ -178,13 +190,13 @@
  *   throws. It does NOT silently treat the candidate as eligible.
  *
  * DEPENDENCIES (MANDATORY):
- *   - AcademyClasses                 (class entities + instructor
- *                                     derivation via
+ *   - AcademyClasses                 (class entities + active-week
+ *                                     instructor derivation via
  *                                     getClassInstructorIds)
  *   - AcademyDisciplines             (discipline entities)
  *   - AcademyClassDisciplinesQueries (class-discipline marker reads,
  *                                     v27)
- *   - CharacterQueries               (character identity)
+ *   - CharacterQueries               (character identity + mode)
  *   - AcademyLocations               (location entities for the
  *                                     Locations view)
  *   - TeamQueries                    (persistent Team entities)
@@ -392,18 +404,33 @@
     }
 
     /**
-     * Return the IDs of every instructor teaching in this class at
-     * the given week.
+     * Return the IDs of every instructor actively teaching in this
+     * class at the given week.
      *
      * Delegates to AcademyClasses.getClassInstructorIds, which is
-     * the canonical query. Returns an empty array when the query is
-     * unavailable or the class has no instructors.
+     * the canonical WEEK-SCOPED query. Returns an empty array when
+     * the query is unavailable or the class has no active
+     * instructors that week.
      *
      * The optional disciplineId narrows the result to instructors
      * enrolled in that specific discipline.
      *
      * The returned IDs are strings. They are deduplicated by the
      * query, so callers can treat them as a set.
+     *
+     * USE THIS FOR:
+     *   - Schedule collision detection
+     *   - "Who is teaching this class this week?" displays
+     *   - Anything that needs to know what is actually running
+     *
+     * DO NOT USE THIS FOR:
+     *   - Roster derivation
+     *   - Role classification
+     *   - Candidate pools
+     *   - Anything that answers "who is an instructor OF this class?"
+     *
+     * Those questions are YEAR-LEVEL and use
+     * getClassInstructorSetForClass below. See the file header.
      */
     function getClassInstructorIds(classId, week, disciplineId) {
         if (!isNonEmptyString(classId)) {
@@ -430,6 +457,57 @@
             );
             return [];
         }
+    }
+
+    /**
+     * Return the set of characters who are instructors OF THIS CLASS.
+     *
+     * THE RULE (year-level, not week-scoped):
+     *
+     *     character.mode === 'instructor'
+     *       AND this class is in character.classIds
+     *
+     * That is the whole rule. A character who is an instructor of
+     * this class stays an instructor of this class when their
+     * disciplines stop running for the term. The role is theirs
+     * until the class or the role itself changes.
+     *
+     * Returns an object shaped as a set for O(1) membership tests:
+     *   { [charId: string]: true }
+     *
+     * USE THIS FOR:
+     *   - Roster derivation (excluding instructors from students)
+     *   - Role classification on the People sidebar
+     *   - Candidate pools (Weekly Teams, Add-Character-to-Class)
+     *
+     * DO NOT USE THIS FOR:
+     *   - "Who is teaching this class this week?" — that is
+     *     getClassInstructorIds above, week-scoped.
+     */
+    function getClassInstructorSetForClass(classId) {
+        var set = Object.create(null);
+        if (!isNonEmptyString(classId)) {
+            return set;
+        }
+
+        var target = String(classId);
+        var all = CharacterQueries.getCharacters() || [];
+
+        for (var i = 0; i < all.length; i++) {
+            var c = all[i];
+            if (!c || !c.id) { continue; }
+            if (c.mode !== 'instructor') { continue; }
+            if (!Array.isArray(c.classIds)) { continue; }
+
+            for (var j = 0; j < c.classIds.length; j++) {
+                if (String(c.classIds[j]) === target) {
+                    set[String(c.id)] = true;
+                    break;
+                }
+            }
+        }
+
+        return set;
     }
 
     /**
@@ -494,23 +572,27 @@
     // classId, minus the instructors of the class.
     //
     // The instructor exclusion is sourced from
-    // getClassInstructorIds(classId, week), which is the derived
-    // instructor query. It returns an array of character IDs.
+    // getClassInstructorSetForClass(classId), which implements the
+    // YEAR-LEVEL rule:
     //
-    // SCOPE:
-    //   The exclusion is WEEK-SCOPED. A character who taught this
-    //   class during weeks 1-8 and stopped is not excluded from
-    //   the week-12 roster. The roster question is "who is a
-    //   student this week?", and the exclusion must answer the
-    //   same question at the same scope.
+    //     character.mode === 'instructor'
+    //       AND this class is in character.classIds
     //
-    //   The all-time query (getClassInstructorIdsAllTime) answers
-    //   a different question — "is this character, by role, an
-    //   instructor for this class?" — and is not used here.
+    // It is NOT week-scoped. A character who taught this class
+    // during weeks 1-4 and stopped is still an instructor of this
+    // class in week 12, and is still excluded from the student
+    // roster.
     //
-    // A character who both has the class in their classIds AND
-    // teaches something in the class this week is an instructor
-    // here and is excluded from the student roster.
+    // A character who is an instructor of this class is never a
+    // student of this class. This is the whole point: the roster
+    // answers "who are the students?", and an instructor is not a
+    // student, at any week, ever.
+    //
+    // WHAT THE WEEK PARAMETER IS STILL FOR:
+    //   The `week` argument is passed through to readEliminationState,
+    //   which stamps each roster row with the character's elimination
+    //   status AS OF that week. It has nothing to do with the
+    //   instructor exclusion.
 
     function deriveClassRoster(classId, week) {
         if (!isNonEmptyString(classId)) {
@@ -524,10 +606,9 @@
 
         var weekNum = resolveWeek(week);
 
-        // Build the instructor exclusion set from the derived list.
-        // The list is plural; every ID in it is excluded.
-        var instructorIds = getClassInstructorIds(classId, weekNum);
-        var instructorSet = buildIdSet(instructorIds);
+        // YEAR-LEVEL instructor exclusion. Not week-scoped.
+        // See getClassInstructorSetForClass.
+        var instructorSet = getClassInstructorSetForClass(classId);
 
         var all = CharacterQueries.getCharacters() || [];
         var target = String(classId);
@@ -611,10 +692,17 @@
     //
     // A class does not have a singular instructor. Its instructors
     // are per-discipline and are derived from the instructor-mode
-    // enrolments in the class's offerings. Callers that need that
-    // list call AcademyClasses.getClassInstructorIds(classId, week)
-    // directly. The class VM is deliberately small: header fields
-    // only.
+    // enrolments in the class's offerings. Callers that need the
+    // WEEK-SCOPED list ("who is teaching this class this week?")
+    // call AcademyClasses.getClassInstructorIds(classId, week)
+    // directly. Callers that need the YEAR-LEVEL list ("who are the
+    // instructors of this class?") walk
+    // character.mode === 'instructor' AND classIds, or use the
+    // exported getClassInstructorsForClass helper below.
+    //
+    // studentCount is the number of STUDENTS. Instructors are
+    // excluded from the roster at all weeks, so this number reflects
+    // students only.
 
     function getClassViewModel(classId, week) {
         if (!classId) { return null; }
@@ -641,18 +729,30 @@
     // ============================================================
     //
     // The People roster is the class's students PLUS every
-    // instructor who teaches something in the class at the display
-    // week.
+    // instructor OF this class.
     //
-    // Instructors are sourced from getClassInstructorIds(classId,
-    // week), which is the derived, plural query. They are NOT
-    // sourced from a class-level instructor field.
+    // Instructors are sourced from getClassInstructorSetForClass,
+    // which is the YEAR-LEVEL rule:
+    //
+    //     character.mode === 'instructor'
+    //       AND this class is in character.classIds
+    //
+    // They are NOT sourced from the week-scoped
+    // getClassInstructorIds(classId, week). An instructor whose
+    // disciplines stopped running in week 4 is still an instructor
+    // of this class in week 12, and still appears on the People
+    // sidebar with the instructor role and badge.
     //
     // A character is stitched at most once. If a character is both
-    // a member of classIds AND an instructor of one of the class's
-    // offerings at the display week, deriveClassRoster already
-    // excluded them from the student list; the stitch loop does
-    // not add them back as a duplicate.
+    // a member of classIds AND an instructor of the class,
+    // deriveClassRoster already excluded them from the student list;
+    // the stitch loop does not add them back as a duplicate.
+    //
+    // SORT ORDER:
+    //   Students first (alphabetical), then instructors
+    //   (alphabetical). This is unchanged; the only change is that
+    //   the instructor set is now correctly populated at all weeks,
+    //   so instructors actually reach the second group.
 
     function getPeopleViewModel(classId, options) {
         options = options || {};
@@ -697,17 +797,18 @@
             weekNum
         );
 
-        // Stitch every instructor who teaches in this class at the
-        // display week. The instructor set comes from the derived
-        // query; a character appears at most once regardless of how
-        // many disciplines they teach.
-        var instructorIds = getClassInstructorIds(
-            selectedClass.id, weekNum
+        // YEAR-LEVEL instructors of this class. Not week-scoped.
+        // An instructor whose disciplines stopped running for the
+        // term is still an instructor of this class.
+        var instructorSet = getClassInstructorSetForClass(
+            selectedClass.id
         );
+
         var alreadyPresent = buildIdSet(
             students.map(function(s) { return s.id; })
         );
 
+        var instructorIds = Object.keys(instructorSet);
         for (var ii = 0; ii < instructorIds.length; ii++) {
             var instrId = String(instructorIds[ii]);
             if (alreadyPresent[instrId]) { continue; }
@@ -1060,10 +1161,21 @@
     // ============================================================
     //
     // The ranking entries exclude instructors. A character who
-    // teaches anything in this class at the display week is not a
+    // teaches anything in this class AT THE DISPLAY WEEK is not a
     // ranking entry, even if they also appear in the class's
-    // character.classIds. The exclusion set is sourced from
-    // getClassInstructorIds(classId, week).
+    // character.classIds.
+    //
+    // Ranking eligibility is a LIVE-SCHEDULE question, not a role
+    // question. It uses the WEEK-SCOPED getClassInstructorIds, not
+    // the year-level set. An instructor whose disciplines stopped
+    // running for the term is not currently teaching, so they are
+    // not excluded from the ranking by the instructor rule; they
+    // are excluded (or included) by whatever ranking rules apply
+    // to their grades.
+    //
+    // This is deliberate and distinct from the roster derivation,
+    // role classification, and candidate pools, which all use the
+    // year-level rule.
 
     function getRankingViewModel(classId, week) {
         var classList = getClassListViewModel();
@@ -1114,10 +1226,9 @@
             return [];
         }
 
-        // Build the instructor exclusion set once. A character who
-        // teaches something in this class at this week is excluded
-        // from ranking, even if they also appear in character
-        // classIds.
+        // WEEK-SCOPED instructor exclusion. Ranking eligibility is
+        // "is this character currently teaching this class?", which
+        // is a live-schedule question. See the header comment above.
         var weekNum = resolveWeek(week);
         var instructorIds = getClassInstructorIds(classId, weekNum);
         var instructorSet = buildIdSet(instructorIds);
@@ -1818,11 +1929,10 @@
             }
         }
 
-        // Exclude the class's instructors from the candidate pool.
-        // Instructors teach, they are not candidates for team
-        // membership as students.
-        var instructorIds = getClassInstructorIds(classId, weekNum);
-        var instructorSet = buildIdSet(instructorIds);
+        // YEAR-LEVEL instructor exclusion. Not week-scoped.
+        // Instructors are never team-member candidates, at any week.
+        // See getClassInstructorSetForClass.
+        var instructorSet = getClassInstructorSetForClass(classId);
 
         var roster = deriveClassRoster(classId, weekNum);
 
@@ -1902,7 +2012,13 @@
         // Weekly teams
         getWeeklyTeamsViewModel: getWeeklyTeamsViewModel,
         getWeeklyTeamMemberManagerViewModel: getWeeklyTeamMemberManagerViewModel,
-        getUnassignedTeamsViewModel: getUnassignedTeamsViewModel
+        getUnassignedTeamsViewModel: getUnassignedTeamsViewModel,
+
+        // Instructor-of-class (YEAR-LEVEL rule). Exposed so
+        // external callers that need "who are the instructors of
+        // this class?" do not have to re-derive it. Returns a set
+        // shaped as { [charId: string]: true }.
+        getClassInstructorSetForClass: getClassInstructorSetForClass
     });
 
     // ============================================================
@@ -1927,7 +2043,8 @@
             'getLocationViewModel',
             'getWeeklyTeamsViewModel',
             'getWeeklyTeamMemberManagerViewModel',
-            'getUnassignedTeamsViewModel'
+            'getUnassignedTeamsViewModel',
+            'getClassInstructorSetForClass'
         ];
 
         for (var i = 0; i < required.length; i++) {
