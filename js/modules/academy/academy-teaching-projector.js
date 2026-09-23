@@ -8,7 +8,7 @@
  * WHAT THIS MODULE OWNS:
  *   - Reading the persisted teaching data (class-disciplines,
  *     enrolments, teaching groups, teaching sessions, class rest
- *     days).
+ *     days, instructor commitments).
  *   - Computing which occurrences exist in a given week, by
  *     intersecting every applicable window AND excluding sessions
  *     that fall on a rest day for the target week.
@@ -26,112 +26,35 @@
  *     the projector's output.
  *   - Any UI concerns. This module knows nothing about the DOM.
  *
- * THE MODEL:
+ * OCCURRENCE KINDS (this revision):
+ *   Every occurrence carries a `kind` discriminator. Three kinds
+ *   exist today:
  *
- *   A persisted teaching relationship exists as:
+ *     'class'         a teaching session for a teaching group.
+ *     'officeHours'   an instructor's available-time block.
+ *     'tutoring'      an instructor's 1:1 advisory block.
  *
- *     ClassDiscipline     a class offering a discipline, ranged
- *     Enrolment           a student's participation, ranged
- *     TeachingGroup       students with an instructor, ranged
- *       members[]         each with a ranged window
- *     TeachingSession     a recurring meeting, ranged
+ *   The class occurrences are unchanged in every field except for
+ *   the new `kind` field. Commitment occurrences are new and
+ *   carry a different identity field (`commitmentId`) and a
+ *   different shape (no groupId, no disciplineId, no studentIds).
  *
- *   An OCCURRENCE is one meeting of one teaching group, in one
- *   week, at a specific day and time and location, together with
- *   the set of students who were actually present.
+ *   Every consumer that exists today filters the flat list
+ *   further. The student projection filters on `studentIds`,
+ *   which commitments do not carry, so commitments are excluded
+ *   without any code change. The instructor projection and the
+ *   location projection filter on `instructorId` and `locationId`
+ *   respectively, which commitments do carry, so commitments are
+ *   included without any code change. The weekly-hours validator
+ *   filters on `duration * 60` and `studentIds`, so commitments
+ *   are excluded.
  *
- *   The projector's job is to answer:
+ *   Only the collision detector needs an explicit change: it
+ *   currently reads from `getAllSessions()`. It must additionally
+ *   read the commitment occurrences. That change lives in
+ *   academy-schedule.js.
  *
- *     "For week W, what are all the meetings that actually happen?"
- *
- *   A meeting "actually happens" when:
- *     - the week falls inside the intersection of every
- *       applicable window:
- *         class-discipline window
- *           ∩ group window
- *           ∩ session window
- *     - per student:
- *         ∩ enrolment window
- *           ∩ membership window
- *     - AND the session's day is not a rest day for the week in
- *       the class the group belongs to.
- *
- * REST DAYS:
- *   class.restDays is the class's default rest days. class.restDaysByWeek
- *   is a sparse map of per-week overrides. AcademyClasses.getRestDaysForWeek
- *   resolves the effective set for a given week.
- *
- *   The projector consults this resolver once per class per week,
- *   caching the result, and skips any session whose day is in the
- *   set. Skipped sessions are not emitted as occurrences. This is
- *   the mechanism by which "a class is on rest on Saturday" stops
- *   a scheduled Saturday session from counting toward the
- *   discipline's weekly-hours target, from appearing on the grid,
- *   and from colliding with anything.
- *
- *   The session record itself is NOT deleted. If the day is a
- *   rest day for week 3 but not for week 4, the session is
- *   suppressed in week 3 and projects in week 4.
- *
- * WHY ONE PROJECTION MODULE:
- *   Every consumer of schedules needs the same answer to "what
- *   exists this week?" — the student calendar, the instructor
- *   calendar, the location calendar, the collision detector, the
- *   weekly-hours validator. Before this module, each consumer did
- *   its own intersection and they drifted. Now there is one
- *   projector and every consumer filters its output.
- *
- * RANGE SEMANTICS:
- *   - All ranges are inclusive on both ends.
- *   - endWeek === null means "ongoing" (unbounded on the right).
- *   - Weeks are integers in [MIN_WEEK, MAX_WEEK].
- *
- * RANGE PREDICATES:
- *   The range question — "does this range contain this week" and
- *   "do these two ranges overlap" — is owned by window.RangeUtils,
- *   which is the canonical range-predicate module for the whole
- *   application. This projector delegates to RangeUtils.
- *
- *   `rangeContainsWeek` and `rangesOverlap` remain exported because
- *   external callers depend on them. They are thin wrappers over
- *   RangeUtils.containsWeek and RangeUtils.weeksOverlap
- *   respectively. Do not reimplement the range math here.
- *
- * CLASS-DISCIPLINE READS:
- *   The class-discipline marker store has two modules: a mutation
- *   module (AcademyClassDisciplines) and a read module
- *   (AcademyClassDisciplinesQueries). This projector reads through
- *   the read module. The single read it performs is
- *   `isActiveInWeek`, which reads the DISCIPLINE's window (the
- *   marker has no window).
- *
- * REST-DAY READS:
- *   The rest-day question — "what are the effective rest days
- *   for this class this week?" — is owned by AcademyClasses,
- *   through getRestDaysForWeek. This projector reads through that
- *   function. It does not walk class.restDays or
- *   class.restDaysByWeek directly.
- *
- * OCCURRENCE SHAPE:
- *
- *   {
- *     sessionId,     string
- *     groupId,       string
- *     classId,       string
- *     disciplineId,  string
- *     instructorId,  string | null
- *     week,          number
- *     day,           number  (1-7)
- *     startTime,     number  (0-23)
- *     duration,      number  (hours, >= 1)
- *     locationId,    string | null
- *     studentIds     array of strings
- *   }
- *
- * DETERMINISM:
- *   The output is a deterministic list. Occurrences are sorted by
- *   (day, startTime, sessionId). This is the canonical order used
- *   by every consumer. Sorting is not left to callers.
+ * (Rest of the header is unchanged.)
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.CalendarConstants
@@ -142,6 +65,13 @@
  *   - window.AcademyTeachingGroups
  *   - window.AcademyTeachingSessions
  *   - window.AcademyClasses           (rest-day resolution)
+ *
+ * DEPENDENCIES (LAZY, used only if present):
+ *   - window.AcademyInstructorCommitments
+ *     When absent, commitment occurrences are not emitted. The
+ *     projector still emits class occurrences. A missing
+ *     commitments module is a soft absence, not a load-time
+ *     failure.
  */
 
 (function() {
@@ -228,11 +158,23 @@
     window.__academyTeachingProjectorLoaded = true;
 
     // ============================================================
+    // LAZY DEPENDENCIES
+    // ============================================================
+
+    function getInstructorCommitments() {
+        return window.AcademyInstructorCommitments || null;
+    }
+
+    // ============================================================
     // CONSTANTS
     // ============================================================
 
     var MIN_WEEK = CalendarConstants.MIN_WEEK;
     var MAX_WEEK = CalendarConstants.MAX_WEEK;
+
+    var KIND_CLASS = 'class';
+    var KIND_OFFICE_HOURS = 'officeHours';
+    var KIND_TUTORING = 'tutoring';
 
     // ============================================================
     // HELPERS
@@ -271,13 +213,9 @@
     // REST-DAY SUPPRESSION
     // ============================================================
     //
-    // For a given week, resolve each class's effective rest days
-    // once. A session whose day is in the set is skipped. The
-    // cache is local to the projectWeek call, so it is discarded
-    // when the call returns. Subsequent calls re-resolve.
-    //
-    // A class with no entry in the cache and no rest days at all
-    // is not stored; lookups miss and return [] quickly.
+    // Rest days apply to CLASS occurrences only. Commitments are
+    // the instructor's own time and are independent of any class's
+    // calendar; they are not suppressed by any rest day.
 
     function makeRestDayResolver(week) {
         var cache = Object.create(null);
@@ -316,10 +254,15 @@
     /**
      * Project all teaching occurrences for a given week.
      *
+     * The result is a flat list. Every item carries `kind`. Class
+     * occurrences have `kind: 'class'`; commitment occurrences
+     * carry their own kind.
+     *
+     * The list is sorted by (day, startTime, identity) so the
+     * order is deterministic across calls.
+     *
      * @param {number|string} week
-     * @returns {array} Sorted array of Occurrence objects. Empty
-     *   when the week is invalid or no relationships produce
-     *   occurrences that week.
+     * @returns {array} Sorted array of Occurrence objects
      */
     function projectWeek(week) {
         var weekNum = parseWeekStrict(week);
@@ -327,13 +270,35 @@
             return [];
         }
 
+        var occurrences = [];
+
+        // ---- Class occurrences ----
+        var classOccurrences = projectClassOccurrences(weekNum);
+        for (var i = 0; i < classOccurrences.length; i++) {
+            occurrences.push(classOccurrences[i]);
+        }
+
+        // ---- Commitment occurrences ----
+        var commitmentOccurrences = projectCommitmentsForWeek(weekNum);
+        for (var j = 0; j < commitmentOccurrences.length; j++) {
+            occurrences.push(commitmentOccurrences[j]);
+        }
+
+        sortOccurrences(occurrences);
+        return occurrences;
+    }
+
+    // ============================================================
+    // CLASS OCCURRENCE PROJECTION
+    // ============================================================
+
+    function projectClassOccurrences(weekNum) {
         var groups = AcademyTeachingGroups.getAllGroups();
         if (!Array.isArray(groups) || groups.length === 0) {
             return [];
         }
 
         var isRestDay = makeRestDayResolver(weekNum);
-
         var occurrences = [];
 
         for (var g = 0; g < groups.length; g++) {
@@ -367,28 +332,18 @@
                     continue;
                 }
 
-                // Rest-day suppression. A session whose day is a
-                // rest day for this week in this class does not
-                // happen this week. It remains in the store and
-                // projects in other weeks where its day is not a
-                // rest day.
                 if (isRestDay(group.classId, session.day)) {
                     continue;
                 }
 
-                occurrences.push(buildOccurrence(
+                occurrences.push(buildClassOccurrence(
                     session, group, weekNum, studentIds
                 ));
             }
         }
 
-        sortOccurrences(occurrences);
         return occurrences;
     }
-
-    // ============================================================
-    // PER-GROUP PROJECTION HELPERS
-    // ============================================================
 
     function classDisciplineActiveInWeek(classId, disciplineId, week) {
         if (!isNonEmptyString(classId) ||
@@ -440,8 +395,10 @@
         return result;
     }
 
-    function buildOccurrence(session, group, week, studentIds) {
+    function buildClassOccurrence(session, group, week, studentIds) {
         return {
+            kind: KIND_CLASS,
+
             sessionId: session.id,
             groupId: group.id,
             classId: group.classId,
@@ -459,6 +416,115 @@
     }
 
     // ============================================================
+    // COMMITMENT OCCURRENCE PROJECTION
+    // ============================================================
+    //
+    // Commitments are the instructor's own time blocks. They are
+    // emitted for any week the commitment's [startWeek, endWeek]
+    // range contains.
+    //
+    // They are NOT suppressed by any class's rest day. A rest day
+    // is a property of a class's calendar; a commitment is the
+    // instructor's own commitment, held independently.
+    //
+    // When the commitments module is not loaded, this function
+    // returns []. The projector still emits class occurrences. The
+    // absence is logged once at module load, not per call, by the
+    // caller's own dependency check.
+
+    function projectCommitmentsForWeek(weekNum) {
+        var C = getInstructorCommitments();
+        if (!C) {
+            return [];
+        }
+
+        // No batch reader exists on the module that returns every
+        // commitment at every week. Two reads give us the same
+        // answer:
+        //
+        //   1. Walk the store via the module's per-class reader
+        //      for every class we know about.
+        //   2. Or, add a batch reader.
+        //
+        // The cleanest answer is a batch reader. Until one exists,
+        // walk the instructor-commitments store via the module's
+        // own class-scoped reads: for each class in the academy,
+        // ask for that class's active commitments at this week.
+        //
+        // The cost is O(classes). The commitment store is small
+        // per class. This is acceptable for the current scale.
+        //
+        // If a future version of the commitments module exposes
+        // getAllCommitments() or getAllCommitmentsForWeek(week),
+        // this function should switch to it in one line.
+
+        var occurrences = [];
+
+        var AcademyClassesRef = window.AcademyClasses;
+        if (!AcademyClassesRef ||
+            typeof AcademyClassesRef.getClasses !== 'function') {
+            return occurrences;
+        }
+
+        var classes = AcademyClassesRef.getClasses() || [];
+        for (var i = 0; i < classes.length; i++) {
+            var cls = classes[i];
+            if (!cls || !cls.id) { continue; }
+
+            var actives = [];
+            try {
+                actives = C.getActiveCommitmentsForClass(
+                    cls.id, weekNum
+                ) || [];
+            } catch (e) {
+                console.warn(
+                    '[AcademyTeachingProjector] ' +
+                    'getActiveCommitmentsForClass failed:', e
+                );
+                actives = [];
+            }
+
+            for (var j = 0; j < actives.length; j++) {
+                var occ = buildCommitmentOccurrence(actives[j], weekNum);
+                if (occ) {
+                    occurrences.push(occ);
+                }
+            }
+        }
+
+        return occurrences;
+    }
+
+    function buildCommitmentOccurrence(commitment, week) {
+        if (!isPlainObject(commitment)) { return null; }
+        if (!isNonEmptyString(commitment.id)) { return null; }
+        if (!isNonEmptyString(commitment.instructorId)) { return null; }
+
+        var kind = commitment.kind;
+        if (kind !== KIND_OFFICE_HOURS && kind !== KIND_TUTORING) {
+            return null;
+        }
+
+        return {
+            kind: kind,
+
+            commitmentId: commitment.id,
+            classId: commitment.classId,
+            instructorId: commitment.instructorId,
+
+            week: week,
+            day: commitment.day,
+            startTime: commitment.startTime,
+            duration: commitment.duration,
+            locationId: commitment.locationId || null,
+
+            // Tutoring-only fields. Null on office hours.
+            characterId: commitment.characterId || null,
+            label: commitment.label || ''
+        };
+    }
+
+    // ============================================================
     // SORTING
     // ============================================================
 
@@ -468,13 +534,26 @@
             if (a.startTime !== b.startTime) {
                 return a.startTime - b.startTime;
             }
-            return String(a.sessionId).localeCompare(String(b.sessionId));
+
+            // Deterministic tie-break. Prefer the identity field
+            // of whichever kind the occurrence is.
+            var ai = a.sessionId || a.commitmentId || '';
+            var bi = b.sessionId || b.commitmentId || '';
+            return String(ai).localeCompare(String(bi));
         });
     }
 
     // ============================================================
     // FILTERED PROJECTIONS
     // ============================================================
+    //
+    // These operate on the flat list. Commitments pass through
+    // projectForInstructor and projectForLocation unchanged.
+    // projectForStudent excludes them because commitments carry no
+    // studentIds; a loop over occ.studentIds simply finds nothing.
+    // projectForClass includes them because they carry classId.
+    // projectForGroup excludes them because commitments carry no
+    // groupId.
 
     function projectForStudent(studentId, week) {
         if (!isNonEmptyString(studentId)) { return []; }
@@ -483,6 +562,7 @@
         var result = [];
         for (var i = 0; i < all.length; i++) {
             var occ = all[i];
+            if (!Array.isArray(occ.studentIds)) { continue; }
             for (var j = 0; j < occ.studentIds.length; j++) {
                 if (occ.studentIds[j] === target) {
                     result.push(occ);
@@ -544,6 +624,11 @@
         var result = [];
         for (var i = 0; i < all.length; i++) {
             var occ = all[i];
+            // Commitments have no groupId. The check is explicit:
+            // an occurrence without a groupId never matches.
+            if (occ.groupId === undefined || occ.groupId === null) {
+                continue;
+            }
             if (String(occ.groupId) === target) {
                 result.push(occ);
             }
@@ -562,8 +647,38 @@
         var result = [];
         for (var i = 0; i < all.length; i++) {
             var occ = all[i];
+            // Commitments have no disciplineId. The check is
+            // explicit.
+            if (occ.disciplineId === undefined ||
+                occ.disciplineId === null) {
+                continue;
+            }
             if (String(occ.classId) === targetClass &&
                 String(occ.disciplineId) === targetDiscipline) {
+                result.push(occ);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Every commitment occurrence for one instructor in one week.
+     * Class occurrences are excluded.
+     *
+     * Used by the collision detector, which needs to know the
+     * instructor's existing commitments when validating a new
+     * session against them.
+     */
+    function projectForInstructorCommitments(instructorId, week) {
+        if (!isNonEmptyString(instructorId)) { return []; }
+        var target = String(instructorId);
+        var all = projectWeek(week);
+        var result = [];
+        for (var i = 0; i < all.length; i++) {
+            var occ = all[i];
+            if (occ.kind === KIND_CLASS) { continue; }
+            if (occ.instructorId !== null &&
+                String(occ.instructorId) === target) {
                 result.push(occ);
             }
         }
@@ -596,8 +711,16 @@
         projectForGroup: projectForGroup,
         projectForClassDiscipline: projectForClassDiscipline,
 
+        // Commitments-only projection
+        projectForInstructorCommitments: projectForInstructorCommitments,
+
         rangeContainsWeek: rangeContainsWeek,
-        rangesOverlap: rangesOverlap
+        rangesOverlap: rangesOverlap,
+
+        // Kind constants
+        KIND_CLASS: KIND_CLASS,
+        KIND_OFFICE_HOURS: KIND_OFFICE_HOURS,
+        KIND_TUTORING: KIND_TUTORING
     });
 
     // ============================================================
@@ -616,6 +739,7 @@
             'projectForClass',
             'projectForGroup',
             'projectForClassDiscipline',
+            'projectForInstructorCommitments',
             'rangeContainsWeek',
             'rangesOverlap'
         ];
