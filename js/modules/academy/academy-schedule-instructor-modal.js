@@ -15,6 +15,11 @@
  *   - Discipline  dropdown, sourced from the instructor's
  *                 disciplines for the currently selected class.
  *                 Required.
+ *   - Group       dropdown, sourced from the existing teaching
+ *                 groups for the selected (class, discipline,
+ *                 instructor) triple. Offers every existing group
+ *                 plus a "create new group" sentinel. Only
+ *                 rendered once a discipline is chosen.
  *   - Duration    dropdown, MIN_CLASS_DURATION to
  *                 MAX_CLASS_DURATION. Required.
  *   - Location    dropdown, sourced from AcademyLocations.
@@ -47,6 +52,7 @@
  *   AcademySchedule.scheduleInstructorSlot({
  *       instructorId, classId, disciplineId,
  *       week, day, startHour, duration, locationId,
+ *       groupId       OR forceNewGroup: true,
  *       allowCollisions
  *   })
  *
@@ -69,6 +75,8 @@
  *   - window.AcademyAggregator
  *   - window.AcademySchedule
  *   - window.AcademyLocations
+ *   - window.AcademyTeachingGroups
+ *   - window.AcademyDisciplines
  *   - window.AcademyUI
  *   - window.CalendarConstants
  */
@@ -90,6 +98,8 @@
     var AcademyAggregator = window.AcademyAggregator;
     var AcademySchedule = window.AcademySchedule;
     var AcademyLocations = window.AcademyLocations;
+    var AcademyTeachingGroups = window.AcademyTeachingGroups;
+    var AcademyDisciplines = window.AcademyDisciplines;
     var AcademyUI = window.AcademyUI;
     var CalendarConstants = window.CalendarConstants;
 
@@ -123,6 +133,20 @@
         typeof AcademyLocations.getLocations !== 'function') {
         _missing.push('AcademyLocations.getLocations');
     }
+    if (!AcademyTeachingGroups ||
+        typeof AcademyTeachingGroups.getGroupsForClassDisciplineInstructor !== 'function') {
+        _missing.push(
+            'AcademyTeachingGroups.getGroupsForClassDisciplineInstructor'
+        );
+    }
+    if (!AcademyTeachingGroups ||
+        typeof AcademyTeachingGroups.getActiveMembers !== 'function') {
+        _missing.push('AcademyTeachingGroups.getActiveMembers');
+    }
+    if (!AcademyDisciplines ||
+        typeof AcademyDisciplines.getDiscipline !== 'function') {
+        _missing.push('AcademyDisciplines.getDiscipline');
+    }
     if (!AcademyUI ||
         typeof AcademyUI.getDisplayWeek !== 'function') {
         _missing.push('AcademyUI.getDisplayWeek');
@@ -152,6 +176,8 @@
     var MAX_DURATION = CalendarConstants.MAX_CLASS_DURATION;
     var DEFAULT_DURATION = MIN_DURATION;
 
+    var NEW_GROUP_SENTINEL = '';
+
     // ============================================================
     // MODULE STATE
     // ============================================================
@@ -168,6 +194,8 @@
     var _selectedDisciplineId = '';
     var _selectedDuration = DEFAULT_DURATION;
     var _selectedLocationId = '';
+    var _selectedGroupId = NEW_GROUP_SENTINEL;
+    var _availableGroups = [];
     var _pendingCollision = null;
     var _busy = false;
 
@@ -238,6 +266,141 @@
     }
 
     // ============================================================
+    // GROUP RESOLUTION
+    // ============================================================
+
+    function readAvailableGroups(classId, disciplineId, instructorId, week) {
+        if (!isNonEmptyString(classId) ||
+            !isNonEmptyString(disciplineId) ||
+            !isNonEmptyString(instructorId)) {
+            return [];
+        }
+
+        var weekNum = parseStrictInteger(week);
+        if (weekNum === null) { return []; }
+
+        var rawGroups = [];
+        try {
+            rawGroups = AcademyTeachingGroups
+                .getGroupsForClassDisciplineInstructor(
+                    classId, disciplineId, instructorId
+                ) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademyScheduleInstructorModal] ' +
+                'getGroupsForClassDisciplineInstructor failed:', e
+            );
+            return [];
+        }
+
+        if (!Array.isArray(rawGroups)) { return []; }
+
+        var active = [];
+        for (var i = 0; i < rawGroups.length; i++) {
+            var g = rawGroups[i];
+            if (!g || !g.id) { continue; }
+
+            var startOk = true;
+            var endOk = true;
+
+            if (typeof g.startWeek === 'number' && weekNum < g.startWeek) {
+                startOk = false;
+            }
+            if (g.endWeek !== null &&
+                g.endWeek !== undefined &&
+                typeof g.endWeek === 'number' &&
+                weekNum > g.endWeek) {
+                endOk = false;
+            }
+
+            if (startOk && endOk) { active.push(g); }
+        }
+
+        active.sort(function(a, b) {
+            var an = typeof a.groupNumber === 'number' ? a.groupNumber : 0;
+            var bn = typeof b.groupNumber === 'number' ? b.groupNumber : 0;
+            if (an !== bn) { return an - bn; }
+            return String(a.id).localeCompare(String(b.id));
+        });
+
+        var disciplineName = '';
+        var disc = AcademyDisciplines.getDiscipline(disciplineId);
+        if (disc && isNonEmptyString(disc.name)) {
+            disciplineName = disc.name;
+        }
+
+        var result = [];
+        for (var j = 0; j < active.length; j++) {
+            var group = active[j];
+
+            var customName = isNonEmptyString(group.customName)
+                ? String(group.customName).trim()
+                : null;
+            var groupNumber = typeof group.groupNumber === 'number'
+                ? group.groupNumber : 0;
+
+            var displayName = customName !== null
+                ? customName
+                : (disciplineName + (groupNumber > 0
+                    ? ' ' + groupNumber
+                    : ''));
+
+            var memberCount = 0;
+            try {
+                var members = AcademyTeachingGroups.getActiveMembers(
+                    group.id, weekNum
+                );
+                if (Array.isArray(members)) {
+                    memberCount = members.length;
+                }
+            } catch (e) { memberCount = 0; }
+
+            var sessionCount = 0;
+            var Sessions = window.AcademyTeachingSessions;
+            if (Sessions &&
+                typeof Sessions.getSessionsForGroup === 'function') {
+                try {
+                    var sessions = Sessions.getSessionsForGroup(group.id);
+                    if (Array.isArray(sessions)) {
+                        sessionCount = sessions.length;
+                    }
+                } catch (e) { sessionCount = 0; }
+            }
+
+            result.push({
+                groupId: String(group.id),
+                groupNumber: groupNumber,
+                displayName: displayName,
+                memberCount: memberCount,
+                sessionCount: sessionCount
+            });
+        }
+
+        return result;
+    }
+
+    function refreshGroupState() {
+        _availableGroups = [];
+        _selectedGroupId = NEW_GROUP_SENTINEL;
+
+        if (!_context) { return; }
+        if (!isNonEmptyString(_selectedDisciplineId)) { return; }
+
+        _availableGroups = readAvailableGroups(
+            _context.classId,
+            _selectedDisciplineId,
+            _context.instructorId,
+            _context.week
+        );
+
+        if (_availableGroups.length > 0) {
+            _selectedGroupId = _availableGroups[0].groupId;
+        } else {
+            _selectedGroupId = NEW_GROUP_SENTINEL;
+        }
+    }
+
+    // ============================================================
     // ENTRY POINT
     // ============================================================
 
@@ -289,6 +452,8 @@
         _selectedDisciplineId = '';
         _selectedDuration = DEFAULT_DURATION;
         _selectedLocationId = '';
+        _selectedGroupId = NEW_GROUP_SENTINEL;
+        _availableGroups = [];
         _pendingCollision = null;
         _busy = false;
 
@@ -386,6 +551,8 @@
         _selectedDisciplineId = '';
         _selectedDuration = DEFAULT_DURATION;
         _selectedLocationId = '';
+        _selectedGroupId = NEW_GROUP_SENTINEL;
+        _availableGroups = [];
         _pendingCollision = null;
         _busy = false;
     }
@@ -434,6 +601,9 @@
             durations: buildDurationOptions(),
             locations: getAvailableLocations(),
             selectedLocationId: _selectedLocationId,
+            groups: _availableGroups,
+            selectedGroupId: _selectedGroupId,
+            newGroupSentinel: NEW_GROUP_SENTINEL,
             pendingCollision: _pendingCollision,
             busy: _busy
         };
@@ -533,7 +703,6 @@
                     'data-class-id="' +
                         escapeAttribute(vm.classId) + '">';
 
-        // ---- Header ----
         html += '<div class="modal-header">';
         html += '<h3>Add to instructor schedule</h3>';
         html += '<button type="button" class="close-modal" ' +
@@ -541,7 +710,6 @@
                     'aria-label="Close">&times;</button>';
         html += '</div>';
 
-        // ---- Body ----
         html += '<div class="modal-body">';
 
         html += '<p class="academy-schedule-instructor-summary">' +
@@ -583,6 +751,11 @@
         html += '</select>';
         html += '</div>';
 
+        // ---- Group picker (only when discipline is chosen) ----
+        if (isNonEmptyString(vm.selectedDisciplineId)) {
+            html += renderGroupPicker(vm);
+        }
+
         // ---- Duration ----
         html += '<div class="form-group">';
         html += '<label for="academy-schedule-instructor-duration">' +
@@ -612,10 +785,85 @@
 
         html += '</div>';
 
-        // ---- Footer ----
         html += renderFooter(vm, false);
 
         html += '</form>';
+        return html;
+    }
+
+    function renderGroupPicker(vm) {
+        var groups = Array.isArray(vm.groups) ? vm.groups : [];
+        var showCounts = groups.length > 1;
+
+        var html = '';
+        html += '<div class="form-group academy-schedule-instructor-group">';
+        html += '<label for="academy-schedule-instructor-group">' +
+                    'Group' +
+                '</label>';
+
+        html += '<select id="academy-schedule-instructor-group" ' +
+                    'class="academy-schedule-instructor-group-select"' +
+                    (vm.busy ? ' disabled' : '') + '>';
+
+        if (groups.length === 0) {
+            html += '<option value="' +
+                        escapeAttribute(vm.newGroupSentinel) + '" ' +
+                        'selected>' +
+                        'Create a new group' +
+                    '</option>';
+        } else {
+            for (var i = 0; i < groups.length; i++) {
+                var g = groups[i];
+                if (!g || !g.groupId) { continue; }
+
+                var selected = String(g.groupId) ===
+                    String(vm.selectedGroupId)
+                    ? ' selected'
+                    : '';
+
+                var label = g.displayName;
+
+                if (showCounts) {
+                    var parts = [];
+                    if (typeof g.memberCount === 'number') {
+                        parts.push(g.memberCount + ' member' +
+                            (g.memberCount === 1 ? '' : 's'));
+                    }
+                    if (typeof g.sessionCount === 'number') {
+                        parts.push(g.sessionCount + ' session' +
+                            (g.sessionCount === 1 ? '' : 's'));
+                    }
+                    if (parts.length > 0) {
+                        label += ' (' + parts.join(', ') + ')';
+                    }
+                }
+
+                html += '<option value="' +
+                            escapeAttribute(g.groupId) + '"' + selected +
+                            '>' +
+                            escapeHtml(label) +
+                        '</option>';
+            }
+
+            var newSelected = String(vm.selectedGroupId) ===
+                String(vm.newGroupSentinel)
+                ? ' selected'
+                : '';
+            html += '<option value="' +
+                        escapeAttribute(vm.newGroupSentinel) + '"' +
+                        newSelected + '>' +
+                        'Create a new group' +
+                    '</option>';
+        }
+
+        html += '</select>';
+        html += '<p class="field-hint">' +
+                    'The session will be added to the selected group. ' +
+                    'Choosing "Create a new group" starts a fresh, ' +
+                    'empty group for this discipline.' +
+                '</p>';
+        html += '</div>';
+
         return html;
     }
 
@@ -757,9 +1005,8 @@
             'academy-schedule-instructor-discipline'
         )) {
             _selectedDisciplineId = target.value || '';
-            if (_pendingCollision) {
-                _pendingCollision = null;
-            }
+            _pendingCollision = null;
+            refreshGroupState();
             renderContent();
             return;
         }
@@ -778,6 +1025,14 @@
             'academy-schedule-instructor-location'
         )) {
             _selectedLocationId = target.value || '';
+            return;
+        }
+
+        if (target.classList.contains(
+            'academy-schedule-instructor-group-select'
+        )) {
+            _selectedGroupId = target.value || NEW_GROUP_SENTINEL;
+            _pendingCollision = null;
             return;
         }
     }
@@ -815,7 +1070,7 @@
         _busy = true;
         renderContent();
 
-        AcademySchedule.scheduleInstructorSlot({
+        var payload = {
             instructorId: _context.instructorId,
             classId: _context.classId,
             disciplineId: _selectedDisciplineId,
@@ -825,41 +1080,51 @@
             duration: duration,
             locationId: locationId,
             allowCollisions: allowCollisions === true
-        }).then(function(result) {
-            _busy = false;
+        };
 
-            if (result && result.success) {
-                notify('Slot added to instructor schedule.', 'success');
-                closeModal();
-                return;
-            }
+        if (isNonEmptyString(_selectedGroupId)) {
+            payload.groupId = String(_selectedGroupId);
+        } else {
+            payload.forceNewGroup = true;
+        }
 
-            if (result && result.reason === 'instructor_collision') {
-                var collision = (result.data && result.data.collision)
-                    ? result.data.collision
-                    : { type: 'instructor' };
-                _pendingCollision = collision;
+        AcademySchedule.scheduleInstructorSlot(payload)
+            .then(function(result) {
+                _busy = false;
+
+                if (result && result.success) {
+                    notify('Slot added to instructor schedule.', 'success');
+                    closeModal();
+                    return;
+                }
+
+                if (result && result.reason === 'instructor_collision') {
+                    var collision = (result.data && result.data.collision)
+                        ? result.data.collision
+                        : { type: 'instructor' };
+                    _pendingCollision = collision;
+                    renderContent();
+                    return;
+                }
+
+                _pendingCollision = null;
+
+                var msg = (result && result.message)
+                    ? result.message
+                    : 'Could not add this slot.';
+                notify(msg, 'error');
                 renderContent();
-                return;
-            }
-
-            _pendingCollision = null;
-
-            var msg = (result && result.message)
-                ? result.message
-                : 'Could not add this slot.';
-            notify(msg, 'error');
-            renderContent();
-        }).catch(function(err) {
-            _busy = false;
-            _pendingCollision = null;
-            console.warn(
-                '[AcademyScheduleInstructorModal] ' +
-                'scheduleInstructorSlot threw:', err
-            );
-            notify('Could not add this slot.', 'error');
-            renderContent();
-        });
+            })
+            .catch(function(err) {
+                _busy = false;
+                _pendingCollision = null;
+                console.warn(
+                    '[AcademyScheduleInstructorModal] ' +
+                    'scheduleInstructorSlot threw:', err
+                );
+                notify('Could not add this slot.', 'error');
+                renderContent();
+            });
     }
 
     // ============================================================
