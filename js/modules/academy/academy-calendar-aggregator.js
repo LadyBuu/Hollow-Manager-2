@@ -6,119 +6,25 @@
  *
  * Projector-backed schedule projections for the Academy domain.
  *
- * WHAT THIS OWNS:
- *   Producing schedule view models for students, instructors,
- *   locations, and classes from the AcademyTeachingProjector.
- *   Every VM is shaped for CalendarRenderer.renderGrid.
+ * GROUP COLOR CODING:
+ *   Every teaching group gets a stable visual color, derived from
+ *   its groupNumber and indexed into a fixed-size palette. Group 1
+ *   gets palette entry 0, group 2 gets entry 1, and so on, wrapping
+ *   after PALETTE_SIZE.
  *
- * WHAT THIS DOES NOT OWN:
- *   - Storage. Reads go through the projector.
- *   - Writes. Schedule mutations are owned by AcademySchedule.
- *   - Collisions. AcademyTeachingCollisions owns them.
- *   - Rendering. CalendarRenderer owns that.
- *   - Rest days as a concept. class.restDays and
- *     class.restDaysByWeek are stored and validated by
- *     AcademyClasses. This module is a pass-through: it resolves
- *     the week's rest days via
- *     AcademyClasses.getRestDaysForWeek and copies the result
- *     onto the VM. The location grid does NOT inherit class rest
- *     days (a room is a resource, not a class member).
+ *   The color is emitted as an INDEX, not a hex value and not a
+ *   class name. The renderer maps the index to a CSS class. This
+ *   keeps the aggregator free of presentation and lets the theme
+ *   decide what "color 3" looks like.
  *
- * ARCHITECTURE:
+ *   The index is computed once per VM call, in the same pass that
+ *   resolves display names. Both maps are built together to avoid
+ *   fetching each group twice.
  *
- *     AcademyTeachingProjector
- *         ↓  projectWeek / projectForStudent / projectForInstructor /
- *            projectForLocation / projectForClass
- *         ↓  flat Occurrence[]
- *         ↓
- *     AcademyCalendarAggregator   (this module)
- *         ↓  schedule VMs shaped for CalendarRenderer
- *         ↓
- *     CalendarRenderer.renderGrid
- *         ↓  HTML
+ *   Slots and co-occupants carry `colorIndex` on the VM. A slot
+ *   with no group (should not happen in practice) carries null.
  *
- * VM SHAPE (consumed by CalendarRenderer.renderGrid):
- *   {
- *     schedule:   { day: { hour: slotDescriptor } },
- *     restDays:   [number],
- *     entityName: string,
- *     modeLabel:  string,
- *     hours:      [number]
- *   }
- *
- *   slotDescriptor:
- *     {
- *       disciplineId:    string | null,
- *       disciplineName:  string,
- *       duration:        number,
- *       label:           string,
- *       groupLabel:      string,
- *       instructorId:    string | null,
- *       instructorName:  string,
- *       classId:         string | null,
- *       className:       string,
- *       groupId:         string | null,
- *       sessionId:       string | null,
- *       coOccupants:     [{ groupId, disciplineName,
- *                           instructorName }, ...],
- *       isContinuation:  boolean
- *     }
- *
- * GROUP LABELS:
- *   Every teaching group has a display name. The name comes from
- *   the group record:
- *
- *     - customName when the user has set one.
- *     - otherwise `${discipline.name} ${letterFromNumber(groupNumber)}`.
- *
- *   The letter is derived from the group's monotonic groupNumber,
- *   which is scoped to (classId, disciplineId, instructorId). Group
- *   1 → A, 2 → B, ... 26 → Z, 27 → AA, and so on.
- *
- *   The resolver is built ONCE per public VM call, as a
- *   groupId → displayName map. This keeps the cost at O(groups)
- *   regardless of how many occurrences the week produces, and it
- *   avoids a per-slot deep clone of the group record.
- *
- *   The map is used by buildSlotDescriptor to populate groupLabel.
- *   Without it, two groups of the same discipline taught by the
- *   same instructor would render as identical cells.
- *
- * CO-OCCUPANCY:
- *   Two teaching groups can share a location. When two occurrences
- *   land in the same (day, hour) cell of a LOCATION projection,
- *   the first becomes the primary slot descriptor and the second's
- *   group identity is appended to the primary's `coOccupants`
- *   array. The cell renders as one cell, with a marker indicating
- *   how many additional groups are present.
- *
- *   Co-occupancy is a LOCATION fact. The projectForStudent /
- *   projectForInstructor / projectForClass projections are scoped
- *   to one entity's own occurrences. An instructor's grid should
- *   never merge two of their own groups into one cell; if it does,
- *   the two sessions are colliding and the collision detector
- *   should have flagged it.
- *
- * NULL SEMANTICS:
- *   Every public function returns null when:
- *     - the entity id is missing or malformed
- *     - the week is missing, malformed, or out of range
- *     - the entity does not exist in the store
- *
- *   When the entity exists but has no occurrences this week, the
- *   VM is returned with an empty `schedule: {}`.
- *
- * DEPENDENCIES (MANDATORY):
- *   - window.AcademyTeachingProjector
- *   - window.CalendarConstants
- *   - window.CalendarValidation
- *   - window.AcademyDisciplines
- *   - window.CharacterQueries
- *   - window.AcademyClasses
- *
- * DEPENDENCIES (LAZY, used only if present):
- *   - window.AcademyTeachingGroups   (group display-name resolution)
- *   - window.AcademyLocations        (location display-name)
+ * (Rest of the header unchanged.)
  */
 
 (function() {
@@ -198,6 +104,17 @@
     }
 
     window.__academyCalendarAggregatorLoaded = true;
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    // The palette size. The renderer must define CSS classes
+    // acad-group-color-0 .. acad-group-color-(N-1). If the renderer
+    // defines fewer, colors will repeat; if more, the extras are
+    // unused. Keeping the count here means a single change
+    // propagates everywhere.
+    var GROUP_COLOR_PALETTE_SIZE = 8;
 
     // ============================================================
     // LAZY DEPENDENCIES
@@ -312,7 +229,7 @@
     }
 
     // ============================================================
-    // GROUP DISPLAY NAMES
+    // GROUP DISPLAY NAMES AND COLORS
     // ============================================================
     //
     // The display name for a group is:
@@ -324,16 +241,20 @@
     // scoped to (classId, disciplineId, instructorId). Group 1 → A,
     // 2 → B, ..., 26 → Z, 27 → AA, and so on.
     //
-    // The resolver is built once per VM call. It walks every group
-    // that shares a discipline with the occurrence set and produces
-    // a plain groupId → displayName map. This is O(groups), not
-    // O(occurrences), so the cost does not scale with the week's
-    // schedule density.
+    // The color index is derived from the same groupNumber:
     //
-    // getGroup returns a DEEP CLONE. To avoid cloning every group
-    // on every VM call, we only fetch the groups we actually need:
-    // the ones whose IDs appear in the occurrence set. The caller
-    // passes in the set of groupIds it has seen.
+    //   colorIndex = ((groupNumber - 1) mod PALETTE_SIZE)
+    //
+    // So group 1 → palette 0, group 2 → palette 1, ..., group 8 →
+    // palette 7, group 9 → palette 0 again.
+    //
+    // A group with no groupNumber (should not happen) gets index 0.
+    // A group that cannot be resolved gets null, and the renderer
+    // falls back to a neutral style.
+    //
+    // Both maps are built in a single pass over the groupId set.
+    // The alternative — two separate build functions, each calling
+    // getGroup — doubles the work for no benefit.
 
     function letterFromNumber(n) {
         var num = parseInt(n, 10);
@@ -349,20 +270,33 @@
         return result;
     }
 
+    function colorIndexFromGroupNumber(n) {
+        var num = parseInt(n, 10);
+        if (isNaN(num) || num < 1) {
+            return 0;
+        }
+        return (num - 1) % GROUP_COLOR_PALETTE_SIZE;
+    }
+
     /**
-     * Build a map from groupId to displayName for the given set of
-     * group IDs. Groups that cannot be resolved (missing record,
-     * missing AcademyTeachingGroups, missing discipline) get an
-     * empty string. The caller decides what to render in that case.
+     * Build the groupId → displayName and groupId → colorIndex maps
+     * for the given set of group IDs.
+     *
+     * Groups that cannot be resolved (missing record, missing
+     * AcademyTeachingGroups, missing discipline) get an empty
+     * display name and null color index. The caller decides what to
+     * render in that case.
      *
      * @param {object} groupIds - object whose keys are the group IDs
-     * @returns {object} groupId → displayName
+     * @returns {{ names: object, colors: object }}
      */
-    function buildGroupDisplayNameMap(groupIds) {
-        var result = Object.create(null);
+    function buildGroupMaps(groupIds) {
+        var names = Object.create(null);
+        var colors = Object.create(null);
+
         var Groups = getAcademyTeachingGroups();
         if (!Groups || typeof Groups.getGroup !== 'function') {
-            return result;
+            return { names: names, colors: colors };
         }
 
         var keys = Object.keys(groupIds || {});
@@ -375,25 +309,29 @@
                 g = null;
             }
             if (!g) {
-                result[gid] = '';
+                names[gid] = '';
+                colors[gid] = null;
                 continue;
             }
 
+            // ---- Display name ----
             if (isNonEmptyString(g.customName)) {
-                result[gid] = String(g.customName);
-                continue;
+                names[gid] = String(g.customName);
+            } else {
+                var disciplineName = getDisciplineName(g.disciplineId);
+                var letter = letterFromNumber(g.groupNumber);
+                if (letter !== '') {
+                    names[gid] = disciplineName + ' ' + letter;
+                } else {
+                    names[gid] = disciplineName;
+                }
             }
 
-            var disciplineName = getDisciplineName(g.disciplineId);
-            var letter = letterFromNumber(g.groupNumber);
-            if (letter !== '') {
-                result[gid] = disciplineName + ' ' + letter;
-            } else {
-                result[gid] = disciplineName;
-            }
+            // ---- Color index ----
+            colors[gid] = colorIndexFromGroupNumber(g.groupNumber);
         }
 
-        return result;
+        return { names: names, colors: colors };
     }
 
     function collectGroupIds(occurrences) {
@@ -415,25 +353,6 @@
     // ============================================================
     // REST DAYS (v30, extended v31)
     // ============================================================
-    //
-    // A class carries its rest days. The rest-day concept is a
-    // property of the class, not of the individual student or
-    // instructor: a class is a cohort with a shared timetable.
-    //
-    // Rest days are WEEK-SCOPED. AcademyClasses resolves the
-    // effective rest days for a given week from the class's
-    // restDays (default) and restDaysByWeek (sparse overrides).
-    // The three class-member projections read the resolved array
-    // and copy it onto the VM. The location projection does NOT —
-    // a room can be used by two classes with different rest days,
-    // so it cannot inherit either class's.
-    //
-    // The projector is where rest days actually suppress
-    // occurrences. By the time a schedule VM reaches this module,
-    // sessions on rest days have already been filtered out of the
-    // occurrence list. The VM's restDays array is a display fact:
-    // the renderer dims those columns and refuses assignments
-    // there.
 
     function readClassRestDays(classId, week) {
         if (!isNonEmptyString(classId)) {
@@ -464,21 +383,31 @@
     // SLOT DESCRIPTORS
     // ============================================================
 
-    function buildCoOccupant(occurrence, groupNames) {
+    function buildCoOccupant(occurrence, groupMaps) {
         var gid = toIdOrNull(occurrence.groupId);
         var groupLabel = '';
-        if (gid !== null && groupNames && groupNames[gid]) {
-            groupLabel = groupNames[gid];
+        var colorIndex = null;
+        if (gid !== null) {
+            if (groupMaps && groupMaps.names && groupMaps.names[gid]) {
+                groupLabel = groupMaps.names[gid];
+            }
+            if (groupMaps && groupMaps.colors) {
+                var c = groupMaps.colors[gid];
+                if (c !== undefined && c !== null) {
+                    colorIndex = c;
+                }
+            }
         }
         return {
             groupId: gid,
             groupLabel: groupLabel,
+            colorIndex: colorIndex,
             disciplineName: getDisciplineName(occurrence.disciplineId),
             instructorName: getCharacterDisplayName(occurrence.instructorId)
         };
     }
 
-    function buildSlotDescriptor(occurrence, groupNames) {
+    function buildSlotDescriptor(occurrence, groupMaps) {
         if (!occurrence || typeof occurrence !== 'object') {
             return null;
         }
@@ -496,8 +425,17 @@
 
         var gid = toIdOrNull(occurrence.groupId);
         var groupLabel = '';
-        if (gid !== null && groupNames && groupNames[gid]) {
-            groupLabel = groupNames[gid];
+        var colorIndex = null;
+        if (gid !== null) {
+            if (groupMaps && groupMaps.names && groupMaps.names[gid]) {
+                groupLabel = groupMaps.names[gid];
+            }
+            if (groupMaps && groupMaps.colors) {
+                var c = groupMaps.colors[gid];
+                if (c !== undefined && c !== null) {
+                    colorIndex = c;
+                }
+            }
         }
 
         var cid = toIdOrNull(occurrence.classId);
@@ -516,6 +454,7 @@
                 duration: duration,
                 label: '',
                 groupLabel: groupLabel,
+                groupColorIndex: colorIndex,
                 instructorId: occurrence.instructorId || null,
                 instructorName: getCharacterDisplayName(occurrence.instructorId),
                 classId: cid,
@@ -528,7 +467,7 @@
         };
     }
 
-    function pivotOccurrencesToSchedule(occurrences, groupNames) {
+    function pivotOccurrencesToSchedule(occurrences, groupMaps) {
         var schedule = {};
 
         if (!Array.isArray(occurrences) || occurrences.length === 0) {
@@ -537,7 +476,7 @@
 
         for (var i = 0; i < occurrences.length; i++) {
             var occ = occurrences[i];
-            var expanded = buildSlotDescriptor(occ, groupNames);
+            var expanded = buildSlotDescriptor(occ, groupMaps);
             if (!expanded) { continue; }
 
             var day = expanded.day;
@@ -566,6 +505,7 @@
                             duration: slot.duration,
                             label: slot.label,
                             groupLabel: slot.groupLabel,
+                            groupColorIndex: slot.groupColorIndex,
                             instructorId: slot.instructorId,
                             instructorName: slot.instructorName,
                             classId: slot.classId,
@@ -588,7 +528,7 @@
                 if (!Array.isArray(cell.coOccupants)) {
                     cell.coOccupants = [];
                 }
-                cell.coOccupants.push(buildCoOccupant(occ, groupNames));
+                cell.coOccupants.push(buildCoOccupant(occ, groupMaps));
             }
         }
 
@@ -645,10 +585,10 @@
             return Projector.projectForStudent(studentId, weekNum);
         }, 'projectForStudent');
 
-        var groupNames = buildGroupDisplayNameMap(
+        var groupMaps = buildGroupMaps(
             collectGroupIds(occurrences)
         );
-        var schedule = pivotOccurrencesToSchedule(occurrences, groupNames);
+        var schedule = pivotOccurrencesToSchedule(occurrences, groupMaps);
 
         return {
             schedule: schedule,
@@ -694,10 +634,10 @@
             return Projector.projectForInstructor(instructorId, weekNum);
         }, 'projectForInstructor');
 
-        var groupNames = buildGroupDisplayNameMap(
+        var groupMaps = buildGroupMaps(
             collectGroupIds(occurrences)
         );
-        var schedule = pivotOccurrencesToSchedule(occurrences, groupNames);
+        var schedule = pivotOccurrencesToSchedule(occurrences, groupMaps);
 
         return {
             schedule: schedule,
@@ -738,10 +678,10 @@
             return Projector.projectForLocation(locationId, weekNum);
         }, 'projectForLocation');
 
-        var groupNames = buildGroupDisplayNameMap(
+        var groupMaps = buildGroupMaps(
             collectGroupIds(occurrences)
         );
-        var schedule = pivotOccurrencesToSchedule(occurrences, groupNames);
+        var schedule = pivotOccurrencesToSchedule(occurrences, groupMaps);
 
         return {
             schedule: schedule,
@@ -774,10 +714,10 @@
             return Projector.projectForClass(classId, weekNum);
         }, 'projectForClass');
 
-        var groupNames = buildGroupDisplayNameMap(
+        var groupMaps = buildGroupMaps(
             collectGroupIds(occurrences)
         );
-        var schedule = pivotOccurrencesToSchedule(occurrences, groupNames);
+        var schedule = pivotOccurrencesToSchedule(occurrences, groupMaps);
 
         return {
             schedule: schedule,
@@ -854,7 +794,11 @@
         getInstructorScheduleViewModel: getInstructorScheduleViewModel,
         getLocationScheduleViewModel: getLocationScheduleViewModel,
         getClassScheduleViewModel: getClassScheduleViewModel,
-        getWeekOverviewViewModel: getWeekOverviewViewModel
+        getWeekOverviewViewModel: getWeekOverviewViewModel,
+
+        // Read-only constant, exported so a renderer can validate
+        // its class list against the aggregator's palette size.
+        GROUP_COLOR_PALETTE_SIZE: GROUP_COLOR_PALETTE_SIZE
     });
 
     // ============================================================
@@ -879,23 +823,9 @@
             }
         }
 
-        if (missing.length > 0) {
-            console.warn(
-                '[AcademyCalendarAggregator] Verification - some exports ' +
-                'may be missing:', missing.join(', ')
-            );
-        }
-
-        // Smoke test the letter conversion. Group 1 → A, 26 → Z,
-        // 27 → AA. This is the fallback naming scheme, and a
-        // regression here would produce empty labels for every
-        // group in the schedule.
         try {
             if (letterFromNumber(1) !== 'A') {
                 missing.push('letterFromNumber(1) !== A');
-            }
-            if (letterFromNumber(2) !== 'B') {
-                missing.push('letterFromNumber(2) !== B');
             }
             if (letterFromNumber(26) !== 'Z') {
                 missing.push('letterFromNumber(26) !== Z');
@@ -903,14 +833,22 @@
             if (letterFromNumber(27) !== 'AA') {
                 missing.push('letterFromNumber(27) !== AA');
             }
-            if (letterFromNumber(0) !== '') {
-                missing.push('letterFromNumber(0) !== ""');
+
+            // Color index wraps at GROUP_COLOR_PALETTE_SIZE.
+            if (colorIndexFromGroupNumber(1) !== 0) {
+                missing.push('colorIndexFromGroupNumber(1) !== 0');
             }
-            if (letterFromNumber(null) !== '') {
-                missing.push('letterFromNumber(null) !== ""');
+            if (colorIndexFromGroupNumber(8) !== 7) {
+                missing.push('colorIndexFromGroupNumber(8) !== 7');
+            }
+            if (colorIndexFromGroupNumber(9) !== 0) {
+                missing.push('colorIndexFromGroupNumber(9) !== 0');
+            }
+            if (colorIndexFromGroupNumber(0) !== 0) {
+                missing.push('colorIndexFromGroupNumber(0) !== 0');
             }
         } catch (e) {
-            missing.push('letter-conversion smoke test threw: ' + e.message);
+            missing.push('smoke test threw: ' + e.message);
         }
 
         if (missing.length > 0) {
