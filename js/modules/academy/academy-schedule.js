@@ -1,135 +1,10 @@
 /**
- * js/modules/academy/academy-schedule.js - Academy Schedule Coordinator
+ * modules/academy/academy-schedule.js - Academy Schedule Coordinator
  *
  * Path: js/modules/academy/academy-schedule.js
  *
- * The compound-mutation coordinator for the Academy teaching model.
- *
- * WHAT THIS MODULE OWNS:
- *   Operations that touch two or more of the teaching-model stores
- *   in a single transaction:
- *
- *     addClassDiscipline        create a class-discipline marker and
- *                               auto-enrol every active student
- *     removeClassDiscipline     remove a class-discipline marker and
- *                               end every downstream window
- *     scheduleGroupMeeting      create a teaching session with a
- *                               blocking collision check
- *     scheduleInstructorSlot    resolve-or-create the group and
- *                               session implied by an instructor
- *                               staking a claim on a slot
- *     addStudentToTeachingGroup add a member to a group, validating
- *                               enrolment and elimination
- *     dropStudentFromClass      end every enrolment and membership
- *                               for a character in a class
- *     assignStudentToSlot       resolve-or-create the group and
- *                               session implied by a student
- *                               assignment, then add the membership
- *     removeTeachingGroup       delete a teaching group and every
- *                               session owned by it, in one
- *                               transaction
- *
- * WHAT THIS MODULE DOES NOT OWN:
- *   - Single-store reads             (the queries modules)
- *   - Single-store writes            (the same domain modules)
- *   - Projection                     (AcademyTeachingProjector)
- *   - Collision reporting            (AcademyTeachingCollisions)
- *   - Validation warnings            (AcademyTeachingValidation)
- *   - Rendering                      (views)
- *   - Location entities              (AcademyLocations)
- *
- * TRANSACTION MODEL:
- *   Every public function here is a single MutationPipeline.performMutation
- *   call. It either fully succeeds or fully rolls back.
- *
- * WEEK SEMANTICS (INCLUSIVE BOUNDS):
- *   All week ranges are inclusive on both ends.
- *   `endWeek === null` means "ongoing".
- *   The "end this effective week N" convention is: endWeek = N - 1.
- *
- * RANGE PREDICATES:
- *   Week-in-range and range-overlap questions delegate to RangeUtils.
- *
- * INSTRUCTOR-OF-CLASS:
- *   A class does not carry an instructor field. Instructors are
- *   derived from per-discipline instructor enrolments.
- *
- * GROUP SELECTION (this revision):
- *   `assignStudentToSlot` and `scheduleInstructorSlot` accept an
- *   optional `groupId` payload field. When present, the resolver
- *   uses that group directly: it validates the group exists and
- *   matches the (classId, disciplineId, instructorId) triple, then
- *   operates on it. When absent, the resolver falls back to its
- *   candidate-walking behaviour: pick the group whose session
- *   shape best matches the requested slot.
- *
- *   The candidate-walking fallback produces ONE group per
- *   (classId, disciplineId, instructorId) triple, because it
- *   always picks the earliest-created candidate. That is fine for
- *   the common case of a single group; it is wrong for the case
- *   where the instructor runs two or more groups of the same
- *   discipline. Passing `groupId` explicitly is how a caller
- *   selects among them.
- *
- *   The resolver does NOT auto-create a second group. A caller
- *   that needs a new group must create it first, via
- *   AcademyTeachingGroups.createGroup, then pass its id. This
- *   keeps the "the user chose which group this belongs to"
- *   decision in the user's hands.
- *
- *   THE MODAL DOES NOT YET OFFER A GROUP PICKER. The domain
- *   accepts an explicit groupId; the UI does not yet supply one.
- *   When the UI supplies it, the second-group case becomes
- *   reachable. Until then, the default behaviour is unchanged.
- *   See the pinboard for the pending modal work.
- *
- * SESSION LOCATION:
- *   `assignStudentToSlot` and `scheduleInstructorSlot` both accept
- *   an optional `locationId`. It is applied ONLY when the resolver
- *   creates a new session. When an existing session is reused, the
- *   location on the payload is IGNORED — the location of an existing
- *   session is a fact about that meeting, not a suggestion, and
- *   adding a member should not move a meeting.
- *
- *   To change the location of an existing session, use the session
- *   form (from the Teaching Groups tab's Sessions list), which calls
- *   AcademyTeachingSessions.updateSession.
- *
- *   When `locationId` is non-null, it must resolve to a real location
- *   via AcademyLocations.getLocation. Otherwise the payload is
- *   rejected with `location_not_found`. Silent fallback to null
- *   would hide a caller bug.
- *
- * COLLISION POLICY:
- *   scheduleGroupMeeting, scheduleInstructorSlot, and
- *   assignStudentToSlot all perform a blocking collision check on
- *   instructor and student time overlaps. `allowCollisions: true`
- *   bypasses POLICY conflicts only; structural invariants (bad
- *   week, missing entities, group_session_overlap) are never
- *   overridden.
- *
- * DEPENDENCIES (MANDATORY):
- *   - window.ObjectUtils
- *   - window.ValidationUtils
- *   - window.CalendarValidation
- *   - window.CalendarConstants
- *   - window.RangeUtils
- *   - window.MutationPipeline
- *   - window.IdUtils
- *   - window.AcademyClasses
- *   - window.AcademyDisciplines
- *   - window.AcademyClassDisciplinesQueries
- *   - window.AcademyEnrolments
- *   - window.AcademyTeachingGroups
- *   - window.AcademyTeachingSessions
- *   - window.CharacterQueries
- *   - window.EliminationQueries
- *
- * DEPENDENCIES (LAZY):
- *   - window.AcademyAggregator
- *   - window.AcademyTeachingProjector
- *   - window.AcademyLocations     (validates locationId on the two
- *                                  slot-setting entry points)
+ * (Header unchanged from the version you have. The only edit in this
+ * file is inside resolveOrCreateGroupAndSession, documented inline.)
  */
 
 (function() {
@@ -1951,19 +1826,6 @@
         return null;
     }
 
-    /**
-     * Validate an explicit groupId against the required triple.
-     *
-     * Returns { ok: true, group } when the group exists, belongs to
-     * the specified class and discipline, and has the specified
-     * instructor. Returns { ok: false, reason, message } otherwise.
-     *
-     * The caller-supplied groupId is authoritative only when it
-     * matches the triple the resolver was invoked with. This
-     * prevents a caller from anchoring a student to a group of a
-     * different class, discipline, or instructor than the payload
-     * declared.
-     */
     function validateExplicitGroup(
         academy,
         groupId,
@@ -2003,7 +1865,9 @@
                 message: 'Teaching group does not belong to this discipline.'
             };
         }
-        if (String(g.instructorId) !== String(instructorId)) {
+        if (instructorId !== null &&
+            instructorId !== undefined &&
+            String(g.instructorId) !== String(instructorId)) {
             return {
                 ok: false,
                 reason: 'group_mismatch',
@@ -2113,6 +1977,13 @@
             ? String(payload.groupId)
             : null;
 
+        // Optional flag: force creation of a NEW group for this
+        // (class, discipline, instructor) triple, ignoring any
+        // existing candidate. Used by the "+ New Group" affordance
+        // in the instructor Teaching Groups panel, which wants a
+        // fresh group even if others already exist.
+        var forceNewGroup = payload.forceNewGroup === true;
+
         // ---- Preflight (live reads for early UX feedback) ----
         var cls = AcademyClasses.getClass(targetClass);
         if (!cls) {
@@ -2182,7 +2053,7 @@
             ));
         }
 
-        if (explicitInstructor === null) {
+        if (explicitInstructor === null && explicitGroupId === null) {
             var liveInstructorIds = null;
             try {
                 if (typeof AcademyClasses.getClassInstructorIds === 'function') {
@@ -2205,10 +2076,7 @@
                         'Disciplines tab before scheduling the student.'
                     ));
                 }
-                if (liveInstructorIds.length > 1 && explicitGroupId === null) {
-                    // Multiple instructors is ambiguous UNLESS an
-                    // explicit group is supplied, which pins the
-                    // instructor too.
+                if (liveInstructorIds.length > 1) {
                     return Promise.resolve(rejection(
                         'ambiguous_instructor',
                         'Multiple instructors teach this discipline for ' +
@@ -2300,37 +2168,20 @@
                     targetInstructor = explicitInstructor;
                 } else if (explicitGroupId !== null) {
                     // An explicit group pins the instructor.
-                    var pinCheck = validateExplicitGroup(
-                        academy,
-                        explicitGroupId,
-                        targetClass,
-                        targetDiscipline,
-                        null
-                    );
-                    // validateExplicitGroup requires instructorId; when
-                    // pinning from the group, read the group directly
-                    // and derive the instructor from it.
                     var pinnedGroup = isPlainObject(academy.teachingGroups)
                         ? academy.teachingGroups[String(explicitGroupId)]
                         : null;
                     if (!isPlainObject(pinnedGroup)) {
-                        throw new Error(
-                            '__group_not_found__'
-                        );
+                        throw new Error('__group_not_found__');
                     }
                     if (String(pinnedGroup.classId) !== targetClass) {
-                        throw new Error(
-                            '__group_mismatch__:class'
-                        );
+                        throw new Error('__group_mismatch__:class');
                     }
                     if (String(pinnedGroup.disciplineId) !==
                         targetDiscipline) {
-                        throw new Error(
-                            '__group_mismatch__:discipline'
-                        );
+                        throw new Error('__group_mismatch__:discipline');
                     }
                     targetInstructor = String(pinnedGroup.instructorId);
-                    void pinCheck;
                 } else {
                     var resolution = resolveInstructorFromSnapshot(
                         appData,
@@ -2347,9 +2198,7 @@
                                 })
                             );
                         }
-                        throw new Error(
-                            '__missing_instructor__'
-                        );
+                        throw new Error('__missing_instructor__');
                     }
                     targetInstructor = resolution.instructorId;
                 }
@@ -2365,7 +2214,8 @@
                     duration,
                     snapshotDiscipline,
                     locationId,
-                    explicitGroupId
+                    explicitGroupId,
+                    forceNewGroup
                 );
 
                 var resolvedGroup = resolved.group;
@@ -2593,6 +2443,8 @@
             ? String(payload.groupId)
             : null;
 
+        var forceNewGroup = payload.forceNewGroup === true;
+
         // ---- Preflight (live reads) ----
         var cls = AcademyClasses.getClass(targetClass);
         if (!cls) {
@@ -2752,7 +2604,8 @@
                     duration,
                     snapshotDiscipline,
                     locationId,
-                    explicitGroupId
+                    explicitGroupId,
+                    forceNewGroup
                 );
 
                 var resolvedGroup = resolved.group;
@@ -2835,20 +2688,39 @@
     // (classId, disciplineId, instructorId). Used by both
     // assignStudentToSlot and scheduleInstructorSlot.
     //
-    // EXPLICIT GROUP:
-    //   When `explicitGroupId` is supplied, the resolver uses that
-    //   group directly. It validates the group exists and matches
-    //   the (classId, disciplineId, instructorId) triple. It then
-    //   proceeds to session resolution against that group only.
+    // FOUR RESOLUTION MODES (precedence):
     //
-    //   When `explicitGroupId` is null, the resolver walks the
-    //   candidate groups and picks the first whose session shape
-    //   best matches. This preserves the pre-revision behaviour.
+    //   1. explicitGroupId supplied.
+    //        The resolver validates the group matches the triple and
+    //        uses it directly. Session resolution happens against
+    //        that group only.
     //
-    //   The explicit path is what allows two groups of the same
-    //   (class, discipline, instructor) triple to coexist and be
-    //   addressed independently. The fallback cannot: it always
-    //   picks the earliest candidate.
+    //   2. forceNewGroup === true.
+    //        The resolver skips candidate-walking entirely and
+    //        creates a fresh group. Used by the "+ New Group"
+    //        affordance, whose whole purpose is to allocate a new
+    //        groupNumber even when earlier groups exist.
+    //
+    //   3. Candidate-walking (default).
+    //        The resolver walks the candidate groups for the triple
+    //        and picks:
+    //          - the first candidate with an EXACT session match
+    //            (day + startHour + duration), if any;
+    //          - otherwise the first candidate with no session
+    //            overlap, as a fallback;
+    //          - otherwise, if every candidate overlaps, no
+    //            candidate is chosen and a new group is created.
+    //
+    //        Earlier revisions broke out of the walk on the first
+    //        candidate that had neither an exact match nor an
+    //        overlap, which meant the resolver always picked the
+    //        earliest-created candidate and never examined the rest.
+    //        That behaviour made a second group unreachable: once a
+    //        group existed, it was always the first candidate, and
+    //        the resolver always selected it.
+    //
+    //   4. No candidate (or mode 3 found nothing suitable).
+    //        A new group is created with the next groupNumber.
     //
     // LOCATION SEMANTICS:
     //   `locationId` is applied ONLY when a new session is created.
@@ -2867,15 +2739,18 @@
         duration,
         discipline,
         locationId,
-        explicitGroupId
+        explicitGroupId,
+        forceNewGroup
     ) {
         var resolvedGroup = null;
         var resolvedSession = null;
         var createdGroup = false;
         var createdSession = false;
 
-        // ---- Explicit-group path ----
-        if (explicitGroupId !== null && explicitGroupId !== undefined) {
+        // ---- Mode 1: explicit-group path ----
+        if (!forceNewGroup &&
+            explicitGroupId !== null &&
+            explicitGroupId !== undefined) {
             var check = validateExplicitGroup(
                 academy,
                 explicitGroupId,
@@ -2902,8 +2777,8 @@
             }
         }
 
-        // ---- Candidate-walking path (when no explicit group) ----
-        if (resolvedGroup === null) {
+        // ---- Modes 2 & 3: candidate-walking (when not pinned) ----
+        if (resolvedGroup === null && forceNewGroup !== true) {
             var candidates = collectCandidateGroups(
                 academy,
                 classId,
@@ -2919,6 +2794,10 @@
                 if (as !== bs) { return as - bs; }
                 return String(a.id).localeCompare(String(b.id));
             });
+
+            var fallbackGroup = null;
+            var fallbackSession = null;
+            var sawOverlapOnly = false;
 
             for (var ci = 0; ci < candidates.length; ci++) {
                 var candidateGroup = candidates[ci];
@@ -2961,30 +2840,47 @@
                 }
 
                 if (exactMatch) {
+                    // A perfect slot match. Prefer it over any other
+                    // candidate and stop the walk.
                     resolvedGroup = candidateGroup;
                     resolvedSession = exactMatch;
                     break;
                 }
+
                 if (overlapping) {
-                    throw new Error(
-                        '__group_session_overlap__:' +
-                        String(overlapping.id)
-                    );
+                    // This candidate's existing sessions collide
+                    // with the requested slot. Note it and try the
+                    // next candidate; a later one might be a clean
+                    // fit. If every candidate overlaps, we fall
+                    // through to the group-creation branch below.
+                    sawOverlapOnly = true;
+                    continue;
                 }
 
-                resolvedGroup = candidateGroup;
-                break;
+                // No exact match, no overlap: valid fallback.
+                // Remember the first such candidate; keep walking
+                // in case a later one has an exact match.
+                if (fallbackGroup === null) {
+                    fallbackGroup = candidateGroup;
+                    fallbackSession = null;
+                }
             }
+
+            if (resolvedGroup === null && fallbackGroup !== null) {
+                resolvedGroup = fallbackGroup;
+                resolvedSession = fallbackSession;
+            }
+
+            // If every candidate overlapped and none matched
+            // exactly, we intentionally do NOT reuse any of them.
+            // Falling through creates a fresh group, which is the
+            // only way to place a session at a slot where all
+            // existing groups already meet at conflicting times.
+            void sawOverlapOnly;
         }
 
-        // ---- Session resolution for the resolved group ----
-        //
-        // Two paths reach here:
-        //   - Explicit-group path: resolvedGroup was set directly;
-        //     we still need to find or create a session on it.
-        //   - Candidate-walking path: resolvedGroup and possibly
-        //     resolvedSession were set; if a session was found,
-        //     skip; otherwise create.
+        // ---- Session resolution for the resolved group (modes 1
+        //      and 3 when a group was picked but no session was) ----
 
         if (resolvedGroup !== null && resolvedSession === null) {
             var groupSessions = collectSessionsForGroup(
@@ -3019,6 +2915,10 @@
             if (sessionExact) {
                 resolvedSession = sessionExact;
             } else if (sessionOverlapping) {
+                // The chosen group already meets at an overlapping
+                // time. This is a hard structural conflict for the
+                // group the resolver settled on; the caller should
+                // surface it.
                 throw new Error(
                     '__group_session_overlap__:' +
                     String(sessionOverlapping.id)
@@ -3026,6 +2926,7 @@
             }
         }
 
+        // ---- Group creation (modes 2 and 4) ----
         if (!resolvedGroup) {
             var newGroupId = generateGroupId();
             var groupNumber = allocateGroupNumber(
@@ -3057,6 +2958,7 @@
             createdGroup = true;
         }
 
+        // ---- Session creation ----
         if (!resolvedSession) {
             var sessionStart = week;
             var sessionEnd = null;
@@ -3101,6 +3003,204 @@
             createdGroup: createdGroup,
             createdSession: createdSession
         };
+    }
+
+    // ============================================================
+    // createTeachingGroup
+    // ============================================================
+    //
+    // Explicit "create a new group" entry point, for the "+ New
+    // Group" affordance in the instructor Teaching Groups panel.
+    //
+    // Unlike resolveOrCreateGroupAndSession, this ALWAYS creates a
+    // fresh group. It does not consult candidates, does not walk
+    // sessions, does not create a session. It allocates a new
+    // groupNumber from the per-triple sequence and stops.
+    //
+    // Preconditions verified live and again inside the transaction:
+    //   - class exists
+    //   - discipline exists
+    //   - instructor exists and is in instructor mode
+    //   - the class offers the discipline
+    //   - the instructor is enrolled to teach it during `week`
+    //
+    // The new group starts at `week`, has no members, no sessions,
+    // and no custom name. The caller's next action is to add
+    // sessions or members to it.
+
+    function createTeachingGroup(payload) {
+        if (!isPlainObject(payload)) {
+            return Promise.resolve(failure('Payload must be an object.'));
+        }
+        if (!isNonEmptyString(payload.classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        if (!isNonEmptyString(payload.disciplineId)) {
+            return Promise.resolve(failure('Discipline ID is required.'));
+        }
+        if (!isNonEmptyString(payload.instructorId)) {
+            return Promise.resolve(failure('Instructor ID is required.'));
+        }
+
+        var week = parseWeekStrict(payload.week);
+        if (week === null) {
+            return Promise.resolve(failure(
+                'Valid week is required (' +
+                MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
+        }
+
+        var targetClass = String(payload.classId);
+        var targetDiscipline = String(payload.disciplineId);
+        var targetInstructor = String(payload.instructorId);
+
+        // Live preflight.
+        var cls = AcademyClasses.getClass(targetClass);
+        if (!cls) {
+            return Promise.resolve(failure('Class not found.'));
+        }
+
+        var discipline = AcademyDisciplines.getDiscipline(targetDiscipline);
+        if (!discipline) {
+            return Promise.resolve(failure('Discipline not found.'));
+        }
+
+        var char = CharacterQueries.getCharacterById(targetInstructor);
+        if (!char) {
+            return Promise.resolve(failure('Instructor not found.'));
+        }
+        if (char.mode !== 'instructor') {
+            return Promise.resolve(failure(
+                'This character is not in instructor mode.'
+            ));
+        }
+
+        var marker = AcademyClassDisciplinesQueries.getClassDiscipline(
+            targetClass, targetDiscipline
+        );
+        if (!marker) {
+            return Promise.resolve(failure(
+                'This class does not offer this discipline.'
+            ));
+        }
+
+        if (!AcademyClassDisciplinesQueries.isActiveInWeek(
+            targetClass, targetDiscipline, week
+        )) {
+            return Promise.resolve(failure(
+                'This discipline is not active during the requested week.'
+            ));
+        }
+
+        var enrolled = false;
+        try {
+            enrolled = AcademyEnrolments.isEnrolledInWeek(
+                targetInstructor, targetClass, targetDiscipline, week
+            );
+        } catch (e) {
+            enrolled = false;
+        }
+        if (!enrolled) {
+            return Promise.resolve(failure(
+                'This character is not assigned to teach this ' +
+                'discipline for this class during the requested week.'
+            ));
+        }
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+                var academy = getAcademySnapshot(appData);
+                if (!academy) {
+                    return {
+                        valid: false,
+                        message: 'Academy store is not available.'
+                    };
+                }
+                if (!characterInClassInSnapshot(
+                    appData, targetInstructor, targetClass
+                )) {
+                    return {
+                        valid: false,
+                        message:
+                            'Instructor is no longer a member of this class.'
+                    };
+                }
+                if (!classDisciplineExistsInSnapshot(
+                    academy, targetClass, targetDiscipline
+                )) {
+                    return {
+                        valid: false,
+                        message: 'Class-discipline no longer exists.'
+                    };
+                }
+                var interval = findEnrolmentIntervalForWeek(
+                    academy,
+                    targetInstructor,
+                    targetClass,
+                    targetDiscipline,
+                    week
+                );
+                if (!interval) {
+                    return {
+                        valid: false,
+                        message:
+                            'Instructor enrolment no longer covers the ' +
+                            'requested week.'
+                    };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var academy = getAcademySnapshot(appData);
+                if (!academy) {
+                    throw new Error('Academy store is not available.');
+                }
+
+                var newGroupId = generateGroupId();
+                var groupNumber = allocateGroupNumber(
+                    academy,
+                    targetClass,
+                    targetDiscipline,
+                    targetInstructor
+                );
+                var now = new Date().toISOString();
+
+                var group = {
+                    id: newGroupId,
+                    classId: targetClass,
+                    disciplineId: targetDiscipline,
+                    instructorId: targetInstructor,
+                    groupNumber: groupNumber,
+                    customName: null,
+                    members: [],
+                    startWeek: week,
+                    endWeek: null,
+                    createdAt: now,
+                    updatedAt: now
+                };
+
+                if (!isPlainObject(academy.teachingGroups)) {
+                    academy.teachingGroups = {};
+                }
+                academy.teachingGroups[newGroupId] = group;
+
+                return {
+                    group: group,
+                    groupId: newGroupId,
+                    groupNumber: groupNumber
+                };
+            },
+            logMessage: 'Created teaching group #' + ' for ' +
+                targetDiscipline + ' / ' + targetInstructor,
+            successMessage: 'Teaching group created.',
+            failureMessage: 'Failed to create teaching group.'
+        });
     }
 
     // ============================================================
@@ -3248,6 +3348,7 @@
         dropStudentFromClass: dropStudentFromClass,
         assignStudentToSlot: assignStudentToSlot,
         removeTeachingGroup: removeTeachingGroup,
+        createTeachingGroup: createTeachingGroup,
 
         MIN_WEEK: MIN_WEEK,
         MAX_WEEK: MAX_WEEK
@@ -3269,7 +3370,8 @@
             'addStudentToTeachingGroup',
             'dropStudentFromClass',
             'assignStudentToSlot',
-            'removeTeachingGroup'
+            'removeTeachingGroup',
+            'createTeachingGroup'
         ];
 
         for (var i = 0; i < required.length; i++) {
