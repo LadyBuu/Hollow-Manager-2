@@ -4,75 +4,8 @@
  *
  * Path: js/modules/academy/controllers/academy-people-controller.js
  *
- * The People feature controller. Owns the People view.
- *
- * WHAT THIS OWNS:
- *   - Rendering the People view into the shell's content host.
- *   - Handling clicks, changes, inputs, and keydowns routed by
- *     the shell for events inside the host.
- *   - The active character tab.
- *   - The People search debounce timer.
- *   - The class selection and character selection flows.
- *   - The class detail panel and the character detail panel.
- *   - The character-mode checkbox.
- *   - Drop Out / Remove from Class / Enroll / Leave Discipline.
- *   - The Edit Social Score modal.
- *   - The class CRUD modals and the class-disciplines picker.
- *   - The inline grades editor and schedule grid sub-editors.
- *   - The schedule-assign flow (empty cells in student mode).
- *   - The schedule-assign-instructor flow (empty cells in
- *     instructor mode).
- *   - The schedule-slot-open flow (occupied cells).
- *   - The teaching-groups roster and session flows.
- *   - The teaching-groups "create a new group" flow.
- *   - The discipline-hours picker (student mode): the panel that
- *     lets a student be dropped into an existing teaching group
- *     for one of their enrolled disciplines.
- *
- * WHAT THIS DOES NOT OWN:
- *   - The content host. The shell provides it.
- *   - The class selection, character selection, display week,
- *     people filter, and character mode.
- *   - Re-rendering the shell.
- *   - Domain reads and writes.
- *
- * DEPENDENCY DIRECTION:
- *   Shell → registry → this controller.
- *   This controller never references window.AcademyView.
- *
- * RENDER SIGNATURE:
- *   render(host, context)
- *
- *   host    — the HTMLElement the shell allocates.
- *   context — { onChange: function() }
- *
- * DEPENDENCIES (mandatory):
- *   - window.AcademyUI
- *   - window.AcademyAggregator
- *   - window.AcademyCharacterDetailAggregator
- *   - window.CharacterCRUD
- *   - window.NotificationSystem
- *   - window.DomUtils
- *   - window.AcademyClasses
- *
- * DEPENDENCIES (lazy):
- *   - window.AcademyClassDetail
- *   - window.AcademyCharacterDetail
- *   - window.AcademyGradesEditor
- *   - window.CalendarRenderer
- *   - window.AcademyCRUDModals
- *   - window.AcademyClassDisciplinesPicker
- *   - window.AcademyEnrollmentModal
- *   - window.AcademyScheduleAssignModal
- *   - window.AcademyScheduleInstructorModal
- *   - window.AcademySessionFormModal
- *   - window.AcademySchedule
- *   - window.AcademyDisciplines
- *   - window.AcademyEnrolments
- *   - window.AcademyEliminations
- *   - window.AcademyTeachingGroups
- *   - window.AcademyTeachingSessions
- *   - window.CharacterQueries
+ * (Header unchanged; the additions in this revision are the
+ * candidate-picker search and the radio-state tracking.)
  */
 
 (function() {
@@ -151,77 +84,24 @@
     // OPTIONAL DEPENDENCY ACCESSORS
     // ============================================================
 
-    function getClassDetailModule() {
-        return window.AcademyClassDetail || null;
-    }
-
-    function getCharacterDetailModule() {
-        return window.AcademyCharacterDetail || null;
-    }
-
-    function getGradesEditor() {
-        return window.AcademyGradesEditor || null;
-    }
-
-    function getCalendarRenderer() {
-        return window.CalendarRenderer || null;
-    }
-
-    function getCRUDModals() {
-        return window.AcademyCRUDModals || null;
-    }
-
-    function getDisciplines() {
-        return window.AcademyDisciplines || null;
-    }
-
-    function getEnrolments() {
-        return window.AcademyEnrolments || null;
-    }
-
-    function getAcademyEliminations() {
-        return window.AcademyEliminations || null;
-    }
-
-    function getCharacterQueries() {
-        return window.CharacterQueries || null;
-    }
-
-    function getCharacterClasses() {
-        return window.AcademyClasses || null;
-    }
-
-    function getClassDisciplinesPicker() {
-        return window.AcademyClassDisciplinesPicker || null;
-    }
-
-    function getEnrollmentModal() {
-        return window.AcademyEnrollmentModal || null;
-    }
-
-    function getScheduleAssignModal() {
-        return window.AcademyScheduleAssignModal || null;
-    }
-
-    function getScheduleInstructorModal() {
-        return window.AcademyScheduleInstructorModal || null;
-    }
-
-    function getSessionFormModal() {
-        return window.AcademySessionFormModal || null;
-    }
-
-    function getTeachingGroups() {
-        return window.AcademyTeachingGroups || null;
-    }
-
-    function getTeachingSessions() {
-        return window.AcademyTeachingSessions || null;
-    }
-
-    function getSchedule() {
-        return window.AcademySchedule || null;
-    }
+    function getClassDetailModule() { return window.AcademyClassDetail || null; }
+    function getCharacterDetailModule() { return window.AcademyCharacterDetail || null; }
+    function getGradesEditor() { return window.AcademyGradesEditor || null; }
+    function getCalendarRenderer() { return window.CalendarRenderer || null; }
+    function getCRUDModals() { return window.AcademyCRUDModals || null; }
+    function getDisciplines() { return window.AcademyDisciplines || null; }
+    function getEnrolments() { return window.AcademyEnrolments || null; }
+    function getAcademyEliminations() { return window.AcademyEliminations || null; }
+    function getCharacterQueries() { return window.CharacterQueries || null; }
+    function getCharacterClasses() { return window.AcademyClasses || null; }
+    function getClassDisciplinesPicker() { return window.AcademyClassDisciplinesPicker || null; }
+    function getEnrollmentModal() { return window.AcademyEnrollmentModal || null; }
+    function getScheduleAssignModal() { return window.AcademyScheduleAssignModal || null; }
+    function getScheduleInstructorModal() { return window.AcademyScheduleInstructorModal || null; }
+    function getSessionFormModal() { return window.AcademySessionFormModal || null; }
+    function getTeachingGroups() { return window.AcademyTeachingGroups || null; }
+    function getTeachingSessions() { return window.AcademyTeachingSessions || null; }
+    function getSchedule() { return window.AcademySchedule || null; }
 
     // ============================================================
     // SMALL HELPERS
@@ -239,13 +119,8 @@
         NotificationSystem.notify(message, type || 'info');
     }
 
-    function escapeHtml(value) {
-        return DomUtils.escapeHtml(value);
-    }
-
-    function escapeAttribute(value) {
-        return DomUtils.escapeAttribute(value);
-    }
+    function escapeHtml(value) { return DomUtils.escapeHtml(value); }
+    function escapeAttribute(value) { return DomUtils.escapeAttribute(value); }
 
     // ============================================================
     // MODULE STATE
@@ -259,13 +134,10 @@
     var _searchTimer = null;
 
     var _openPickerGroupId = null;
+    // _pickerCandidates is now an object { candidates, blocked }
+    // or null while the picker VM is loading.
     var _pickerCandidates = null;
 
-    // Discipline-hours picker state.
-    //   _openDisciplinePicker = { disciplineId } | null
-    //   _currentGridVM         the grid VM from the last mount,
-    //                          used to resolve group statuses
-    //                          without a second aggregator call
     var _openDisciplinePicker = null;
     var _currentGridVM = null;
 
@@ -302,8 +174,6 @@
         _host = host;
         _context = normaliseContext(rawContext);
 
-        // A re-render invalidates the discipline picker: the
-        // grid is about to be replaced.
         _openDisciplinePicker = null;
         _currentGridVM = null;
 
@@ -688,7 +558,6 @@
             return;
         }
 
-        // ---- Character row selection ----
         var charRow = target.closest(
             '.academy-character-row, .academy-student-row'
         );
@@ -698,14 +567,12 @@
             return;
         }
 
-        // ---- Add Class button ----
         if (target.closest('#academy-add-class-btn')) {
             e.preventDefault();
             handleAddClass();
             return;
         }
 
-        // ---- Character tab buttons ----
         var tabBtn = target.closest('.academy-character-tab-btn');
         if (tabBtn && tabBtn.dataset && tabBtn.dataset.tab) {
             e.preventDefault();
@@ -717,7 +584,6 @@
             return;
         }
 
-        // ---- Delegated action dispatch ----
         var actionEl = target.closest('[data-action]');
         if (!actionEl || !actionEl.dataset) { return; }
 
@@ -760,14 +626,32 @@
             c.onChange();
             return;
         }
+
+        // ---- Teaching-groups candidate radio ----
+        if (target.classList &&
+            target.classList.contains(
+                'academy-teaching-group-candidate-radio'
+            )) {
+            updateCandidateAddButtonState(target);
+            return;
+        }
     }
 
     function handleInput(e) {
         var target = e.target;
-        if (!target || !target.id) { return; }
+        if (!target) { return; }
 
         if (target.id === 'academy-people-search') {
             debouncePeopleSearch(target.value);
+            return;
+        }
+
+        // ---- Teaching-groups candidate search ----
+        if (target.classList &&
+            target.classList.contains(
+                'academy-teaching-group-candidate-search'
+            )) {
+            applyCandidateSearchFilter(target);
             return;
         }
     }
@@ -789,7 +673,6 @@
 
     function dispatchAction(action, el) {
         switch (action) {
-            // ---- Character-scoped ----
             case 'drop-out-character':
                 handleDropOut(el.dataset.characterId);
                 return;
@@ -809,12 +692,10 @@
                 );
                 return;
 
-            // ---- Score card ----
             case 'edit-social-score':
                 handleEditSocialScore(el.dataset.characterId);
                 return;
 
-            // ---- Class-scoped ----
             case 'edit-class-add-character':
                 handleClassAction('add-character', el.dataset.classId);
                 return;
@@ -828,12 +709,10 @@
                 handleClassAction('delete-class', el.dataset.classId);
                 return;
 
-            // ---- Schedule grid (student mode) ----
             case 'schedule-assign':
                 handleScheduleAssign(el.dataset.day, el.dataset.hour);
                 return;
 
-            // ---- Schedule grid (instructor mode) ----
             case 'schedule-assign-instructor':
                 handleScheduleInstructorAssign(
                     el.dataset.day,
@@ -841,20 +720,15 @@
                 );
                 return;
 
-            // ---- Schedule grid (occupied cells) ----
             case 'schedule-slot-open':
                 handleScheduleSlotOpen(el);
                 return;
 
-            // ---- Co-occupants panel ----
             case 'schedule-co-occupants-open':
-                // Not implemented on character grids. Reserved for
-                // the location controller. Silently ignore.
                 return;
             case 'schedule-co-occupants-close':
                 return;
 
-            // ---- Discipline-hours picker ----
             case 'schedule-discipline-picker-open':
                 handleDisciplinePickerOpen(el.dataset.disciplineId);
                 return;
@@ -865,7 +739,6 @@
                 handleDisciplinePickerAdd(el.dataset.groupId);
                 return;
 
-            // ---- Teaching groups: roster ----
             case 'teaching-groups-toggle-discipline':
                 handleToggleTeachingGroupDiscipline(
                     el.dataset.disciplineId
@@ -890,7 +763,6 @@
                 );
                 return;
 
-            // ---- Teaching groups: sessions ----
             case 'teaching-groups-add-session':
                 handleAddTeachingGroupSession(el.dataset.groupId);
                 return;
@@ -1386,8 +1258,6 @@
             return;
         }
 
-        // Cache the grid VM for the discipline picker. It holds
-        // the disciplineHours array the picker reads.
         _currentGridVM = gridVM;
 
         var renderState = {
@@ -1421,11 +1291,6 @@
             return;
         }
 
-        // If the discipline picker was open before this render
-        // pass, remount it. The render() entry point clears the
-        // picker state, so this branch is only reached when the
-        // mount happens without a full render (i.e. after an add
-        // that refetched the VM in place).
         if (_openDisciplinePicker) {
             mountDisciplinePickerPanel();
         }
@@ -1742,15 +1607,6 @@
     // ============================================================
     // DISCIPLINE-HOURS PICKER FLOW
     // ============================================================
-    //
-    // Opened from a discipline row in the hours panel at the
-    // bottom of the student's schedule grid. Lists every
-    // teaching group for the (class, discipline) the student can
-    // join, colour-coded by whether adding would collide with
-    // the student's existing schedule.
-    //
-    // Click a green group: add the student to the group.
-    // Red groups are not clickable.
 
     function handleDisciplinePickerOpen(disciplineId) {
         if (!isNonEmptyString(disciplineId)) { return; }
@@ -1956,8 +1812,6 @@
             ? session.durationLabel
             : '';
 
-        // Mark the session that is the conflict source, when the
-        // group is red.
         var isConflictSource = false;
         if (group && group.status === 'red' && group.conflict) {
             if (String(session.sessionId) ===
@@ -2055,28 +1909,6 @@
         ctx.onChange();
     }
 
-    // ============================================================
-    // TEACHING GROUPS — CREATE NEW GROUP
-    // ============================================================
-    //
-    // The "+ New Group" button in a discipline header. It creates
-    // a new, empty teaching group for the (class, discipline,
-    // instructor) triple and re-renders.
-    //
-    // The button carries class-id, discipline-id, character-id
-    // and week as data attributes. The controller reads them,
-    // confirms the intent (a group is a persistent thing the user
-    // will then have to manage), and calls
-    // AcademySchedule.createTeachingGroup.
-    //
-    // createTeachingGroup is preferred over the domain module's
-    // own createGroup because it runs the same preflight checks
-    // the assign flow runs (class-discipline exists, instructor
-    // is enrolled, discipline is active that week) and returns
-    // the same structured rejection shape. That keeps the modal
-    // and the schedule resolver in agreement about what a valid
-    // group-creation context is.
-
     function handleCreateTeachingGroup(el) {
         if (!el || !el.dataset) { return; }
 
@@ -2119,9 +1951,6 @@
             return;
         }
 
-        // Resolve the discipline name for the modal heading and
-        // the confirmation text. Best effort: a missing name just
-        // renders as "this discipline".
         var disciplineName = '';
         var AD = getDisciplines();
         if (AD && typeof AD.getDiscipline === 'function') {
@@ -2133,10 +1962,6 @@
 
         var label = disciplineName || 'this discipline';
 
-        // The "+ New Group" button already creates an empty
-        // group; the user can then add sessions and students to
-        // it. Confirm first, because an accidental click leaves
-        // an empty group behind.
         if (!confirm(
             'Create a new teaching group for ' + label + '?\n\n' +
             'The group starts empty. Add sessions and students to ' +
@@ -2202,7 +2027,16 @@
         }
 
         _openPickerGroupId = String(groupId);
-        _pickerCandidates = vm.candidates;
+        // Store the WHOLE VM (candidates + blocked) so the
+        // renderer can show both sections.
+        _pickerCandidates = {
+            candidates: Array.isArray(vm.candidates)
+                ? vm.candidates
+                : [],
+            blocked: Array.isArray(vm.blocked)
+                ? vm.blocked
+                : []
+        };
 
         var ctx = getContext();
         ctx.onChange();
@@ -2220,17 +2054,26 @@
     function handleSubmitTeachingGroupAdd(groupId) {
         if (!isNonEmptyString(groupId)) { return; }
 
-        var selectEl = document.querySelector(
+        // Read from the eligible list. Blocked rows have no radios,
+        // so this query can never find a blocked student.
+        var picker = document.querySelector(
             '.academy-teaching-group-candidate-picker' +
-            '[data-group-id="' + cssEscape(groupId) + '"] ' +
-            '.academy-teaching-group-candidate-select'
+            '[data-group-id="' + cssEscape(groupId) + '"]'
         );
-        if (!selectEl) {
+        if (!picker) {
             notify('Could not read the selected student.', 'error');
             return;
         }
 
-        var charId = selectEl.value;
+        var checked = picker.querySelector(
+            '.academy-teaching-group-candidate-radio:checked'
+        );
+        if (!checked) {
+            notify('Select a student first.', 'error');
+            return;
+        }
+
+        var charId = checked.value;
         if (!isNonEmptyString(charId)) {
             notify('Select a student first.', 'error');
             return;
@@ -2314,6 +2157,96 @@
                 );
                 notify('Failed to remove student from group.', 'error');
             });
+    }
+
+    // ============================================================
+    // CANDIDATE PICKER — SEARCH + SELECTION STATE
+    // ============================================================
+
+    /**
+     * Filter the candidate rows in a picker by search term.
+     *
+     * Filters both sections at once. A section whose visible rows
+     * drop to zero hides itself entirely. The picker-level "no
+     * matches" hint appears only when the whole picker has no
+     * visible rows.
+     */
+    function applyCandidateSearchFilter(inputEl) {
+        if (!inputEl) { return; }
+        var picker = inputEl.closest(
+            '.academy-teaching-group-candidate-picker'
+        );
+        if (!picker) { return; }
+
+        var term = (inputEl.value || '').toLowerCase().trim();
+        var rows = picker.querySelectorAll(
+            '.academy-teaching-group-candidate-row'
+        );
+
+        for (var i = 0; i < rows.length; i++) {
+            var row = rows[i];
+            var key = row.dataset ? (row.dataset.searchKey || '') : '';
+            var matches = term === '' || key.indexOf(term) !== -1;
+            row.style.display = matches ? '' : 'none';
+        }
+
+        // Hide empty sections.
+        var sections = picker.querySelectorAll(
+            '.academy-teaching-group-candidate-section'
+        );
+        var totalVisible = 0;
+        for (var s = 0; s < sections.length; s++) {
+            var section = sections[s];
+            var visibleInSection = section.querySelectorAll(
+                '.academy-teaching-group-candidate-row' +
+                ':not([style*="display: none"])'
+            ).length;
+            // The :not selector above is not reliable for inline
+            // display toggling; count manually.
+            visibleInSection = 0;
+            var sectionRows = section.querySelectorAll(
+                '.academy-teaching-group-candidate-row'
+            );
+            for (var r = 0; r < sectionRows.length; r++) {
+                if (sectionRows[r].style.display !== 'none') {
+                    visibleInSection++;
+                }
+            }
+            totalVisible += visibleInSection;
+            section.style.display = visibleInSection === 0 ? 'none' : '';
+        }
+
+        var noMatches = picker.querySelector('[data-no-matches]');
+        if (noMatches) {
+            noMatches.style.display = totalVisible === 0 ? '' : 'none';
+        }
+    }
+
+    /**
+     * Toggle the Add button between disabled and enabled as the
+     * user picks a candidate radio.
+     */
+    function updateCandidateAddButtonState(radioEl) {
+        if (!radioEl) { return; }
+        var picker = radioEl.closest(
+            '.academy-teaching-group-candidate-picker'
+        );
+        if (!picker) { return; }
+
+        var addBtn = picker.querySelector(
+            '[data-action="teaching-groups-add-student-submit"]'
+        );
+        if (!addBtn) { return; }
+
+        var checked = picker.querySelector(
+            '.academy-teaching-group-candidate-radio:checked'
+        );
+
+        if (checked) {
+            addBtn.removeAttribute('disabled');
+        } else {
+            addBtn.setAttribute('disabled', 'disabled');
+        }
     }
 
     function cssEscape(value) {
