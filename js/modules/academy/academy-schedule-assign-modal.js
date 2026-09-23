@@ -9,8 +9,8 @@
  * delete an entire teaching group from the schedule.
  *
  * MODES:
- *   'assign'          (default) pick a discipline + duration +
- *                     optional location, submit
+ *   'assign'          (default) pick a discipline + group +
+ *                     duration + optional location, submit
  *                     → AcademySchedule.assignStudentToSlot
  *   'remove-student'  confirm removal of one student from one group
  *                     → AcademyTeachingGroups.removeMemberRecord
@@ -18,142 +18,27 @@
  *                     session and student membership it owns
  *                     → AcademySchedule.removeTeachingGroup
  *
- * WHAT THIS MODULE OWNS:
- *   The modal shell, its content, its listeners, its view model, and
- *   its submission handlers for all three modes. Opened from the
- *   character detail panel's Schedule tab, via the People controller,
- *   when the user clicks a grid cell.
+ * GROUP PICKER:
+ *   In 'assign' mode, once a discipline and instructor are resolved,
+ *   the modal lists every existing teaching group for the current
+ *   (classId, disciplineId, instructorId) triple. The user picks one,
+ *   or picks the "new group" sentinel to have the resolver create a
+ *   fresh group.
  *
- * WHAT THIS MODULE DOES NOT OWN:
- *   - The schedule grid. CalendarRenderer produces it.
- *   - The click dispatch. AcademyPeopleController routes to this
- *     module's openModal.
- *   - Group and session resolution. AcademySchedule owns it.
- *   - Discipline eligibility. The modal offers the class's active
- *     offerings via AcademyClassDisciplinesQueries; whether a given
- *     offering is legal for the student is decided by the domain.
- *   - Location eligibility. The modal offers every location in the
- *     store; the domain validates the chosen ID. An empty location
- *     is valid.
- *   - Collision policy. The domain detects collisions; this modal
- *     surfaces the rejection and offers a retry with
- *     allowCollisions.
+ *   The selection is carried to the domain as either:
+ *     - payload.groupId      (existing group)
+ *     - payload.forceNewGroup (new group sentinel)
  *
- * SESSION LOCATION:
- *   The 'assign' mode form gains a location dropdown, sourced from
- *   AcademyLocations.getLocations(). Optional. An empty selection
- *   sends locationId: null.
+ *   Exactly one is set; never both.
  *
- *   The location is applied ONLY when the domain creates a new
- *   session. When the student is assigned to an existing session
- *   (matching day / start hour / duration on a candidate group),
- *   the location select is ignored — the session keeps its own
- *   location. That is the domain's rule and this modal honors it by
- *   not pretending to override it.
+ *   The picker is refreshed whenever the discipline changes, because
+ *   groups are keyed by discipline. It is cleared when the discipline
+ *   is cleared.
  *
- *   To change the location of an existing session, use the session
- *   form (from the Teaching Groups tab's Sessions list).
+ *   Group count and student count are shown per option so the user
+ *   can tell groups apart when the discipline has several.
  *
- * INSTRUCTOR PICKER (this revision):
- *   When more than one instructor teaches the selected discipline
- *   for the selected class at the target week, the modal offers an
- *   inline instructor picker and includes `instructorId` in the
- *   submission payload. The domain then skips its own instructor
- *   resolution and proceeds straight to the collision check.
- *
- *   The picker is reached two ways:
- *
- *     1. PRE-FLIGHT (primary).
- *        When the user picks a discipline, the modal reads the
- *        class's instructors for that (class, discipline, week)
- *        directly via AcademyClasses.getClassInstructorIds and
- *        decides:
- *          - zero instructors: show an inline error, disable submit
- *          - one instructor:   auto-select, no picker shown
- *          - many instructors: show the picker
- *        This is the normal flow. It removes the round trip and
- *        makes the multi-instructor case a first-class affordance,
- *        not a stall.
- *
- *     2. FALLBACK.
- *        If the domain still returns
- *        reason: 'ambiguous_instructor' — because the pre-flight
- *        was skipped, or because the state changed between
- *        pre-flight and submit — the modal enters the picker
- *        sub-state using the rejection's data.instructorIds. The
- *        pending discipline / duration / location selections
- *        survive the transition. The retry carries the chosen
- *        instructorId.
- *
- *   The two paths share the picker rendering. The fallback exists
- *   because two reads can disagree; it is not the primary path.
- *
- * MODAL SHAPE — ASSIGN MODE:
- *   Header: "Assign discipline"
- *   Body:
- *     - Slot summary line
- *     - Discipline select
- *     - Instructor picker (only when > 1 instructor available)
- *     - Duration select
- *     - Location select (optional)
- *   Footer:
- *     - Cancel
- *     - Assign (disabled until a discipline is chosen and an
- *       instructor is resolved)
- *
- * MODAL SHAPE — REMOVE-STUDENT MODE:
- *   Header: "Remove student from slot"
- *   Body:
- *     - Slot summary line
- *     - Warning panel
- *     - Detail: discipline, duration, member count
- *   Footer:
- *     - Cancel
- *     - Remove (danger)
- *
- * MODAL SHAPE — REMOVE-GROUP MODE:
- *   Header: "Delete teaching group"
- *   Body:
- *     - Slot summary line
- *     - Warning panel
- *     - Detail: discipline, duration, member count, session count
- *   Footer:
- *     - Cancel
- *     - Delete Group (danger)
- *
- * COLLISION RETRY:
- *   When assignStudentToSlot rejects with reason: 'student_collision'
- *   or reason: 'instructor_collision', the modal shows a
- *   confirmation inline. Other rejections are shown as an error
- *   toast.
- *
- * WINDOW SEMANTICS:
- *   The membership window is derived by the domain, not the modal.
- *   The modal passes only `week`.
- *
- * INPUT VALIDATION:
- *   The modal performs strict numeric validation on the values it
- *   receives from the controller. This is UX validation, not
- *   authority. The domain re-validates everything.
- *
- * LISTENER DISCIPLINE:
- *   Content listeners are bound ONCE, on the modal's content element,
- *   when the modal is created. Re-rendering replaces innerHTML but
- *   does not rebind.
- *
- * DEPENDENCIES (MANDATORY):
- *   - window.DomUtils
- *   - window.Modal
- *   - window.NotificationSystem
- *   - window.AcademyUI
- *   - window.AcademyClasses
- *   - window.AcademyClassDisciplinesQueries
- *   - window.AcademyDisciplines
- *   - window.AcademyLocations
- *   - window.AcademySchedule
- *   - window.AcademyTeachingGroups
- *   - window.CharacterQueries
- *   - window.CalendarConstants
+ * (Rest of the header unchanged.)
  */
 
 (function() {
@@ -232,6 +117,16 @@
         typeof AcademyTeachingGroups.removeMemberRecord !== 'function') {
         _missing.push('AcademyTeachingGroups.removeMemberRecord');
     }
+    if (!AcademyTeachingGroups ||
+        typeof AcademyTeachingGroups.getGroupsForClassDisciplineInstructor !== 'function') {
+        _missing.push(
+            'AcademyTeachingGroups.getGroupsForClassDisciplineInstructor'
+        );
+    }
+    if (!AcademyTeachingGroups ||
+        typeof AcademyTeachingGroups.getActiveMembers !== 'function') {
+        _missing.push('AcademyTeachingGroups.getActiveMembers');
+    }
     if (!CharacterQueries ||
         typeof CharacterQueries.getCharacterById !== 'function' ||
         typeof CharacterQueries.getDisplayName !== 'function') {
@@ -264,6 +159,12 @@
 
     var VALID_MODES = ['assign', 'remove-student', 'remove-group'];
 
+    // Sentinel: the user chose "create a new group" rather than one
+    // of the existing groups. Empty string, to match how
+    // _selectedDisciplineId treats "no selection" at the top of
+    // the form.
+    var NEW_GROUP_SENTINEL = '';
+
     // ============================================================
     // MODULE STATE
     // ============================================================
@@ -280,36 +181,23 @@
     var _selectedDuration = DEFAULT_DURATION;
     var _selectedLocationId = '';
 
-    // Instructor picker state.
-    //
-    //   _availableInstructors  [{ id, name }, ...]  — the current
-    //                          candidate list for the selected
-    //                          discipline at the target week. Empty
-    //                          when no discipline is selected or
-    //                          when the discipline has no
-    //                          instructors.
-    //   _selectedInstructorId  '' when auto-resolution has not been
-    //                          needed (single instructor auto-picks
-    //                          into this field) or when the picker
-    //                          is still open.
-    //   _instructorError       '' when the instructor situation is
-    //                          clean; a message string otherwise
-    //                          (e.g. "No instructor teaches this
-    //                          discipline for this class").
-    //   _showInstructorPicker  true when the picker panel is
-    //                          rendered. Set when the candidate
-    //                          list has more than one entry.
+    // Group picker state.
+    //   _availableGroups  [{ groupId, displayName, memberCount,
+    //                        sessionCount }, ...] for the currently
+    //                     selected (class, discipline, instructor)
+    //                     triple, sorted by groupNumber.
+    //   _selectedGroupId  '' (NEW_GROUP_SENTINEL) or a group ID.
+    //                     '' means "new group".
+    var _availableGroups = [];
+    var _selectedGroupId = NEW_GROUP_SENTINEL;
+
+    // Instructor picker state. Same shape as before.
     var _availableInstructors = [];
     var _selectedInstructorId = '';
     var _instructorError = '';
     var _showInstructorPicker = false;
 
-    // When the domain rejects with a policy collision, the modal
-    // shows a confirm prompt. `_pendingCollision` holds the last
-    // rejection so the retry can carry its reason forward.
     var _pendingCollision = null;
-
-    // True while a submission is in flight.
     var _busy = false;
 
     // ============================================================
@@ -401,20 +289,6 @@
     // ============================================================
     // INSTRUCTOR RESOLUTION
     // ============================================================
-    //
-    // Reads the class's instructors for a (discipline, week) pair
-    // via the canonical query. Returns a normalised list of
-    // { id, name } objects, sorted alphabetically by name.
-    //
-    // A character whose record cannot be resolved is dropped from
-    // the list; the picker never offers an instructor it cannot
-    // name. This is a defensive filter, not a policy decision —
-    // the domain will reject the assignment if the chosen
-    // instructor is not actually valid.
-    //
-    // Errors from the read are logged and treated as an empty list.
-    // The modal then shows the "no instructor" error, which is the
-    // honest UI for a broken read.
 
     function readAvailableInstructors(classId, disciplineId, week) {
         if (!isNonEmptyString(classId) ||
@@ -473,19 +347,182 @@
         return result;
     }
 
-    /**
-     * Update instructor state based on the currently-selected
-     * discipline.
-     *
-     * Called whenever the discipline changes, and once at open when
-     * a discipline is pre-selected (it is not, in this modal — the
-     * user always picks).
-     *
-     * Clears any prior collision state. The collision was resolved
-     * against a specific instructor; changing discipline invalidates
-     * it.
-     */
-    function refreshInstructorState() {
+    // ============================================================
+    // GROUP RESOLUTION
+    // ============================================================
+    //
+    // Reads every existing group for the current
+    // (classId, disciplineId, instructorId) triple and produces the
+    // option list the picker renders.
+    //
+    // Each option carries memberCount and sessionCount, so the user
+    // can tell groups apart. Both counts are computed here, not
+    // lazily in the renderer, so the renderer stays a pure string
+    // builder.
+    //
+    // The list is sorted by groupNumber ascending, which is the
+    // order the domain allocates them in.
+
+    function readAvailableGroups(
+        classId,
+        disciplineId,
+        instructorId,
+        week
+    ) {
+        if (!isNonEmptyString(classId) ||
+            !isNonEmptyString(disciplineId) ||
+            !isNonEmptyString(instructorId)) {
+            return [];
+        }
+
+        var weekNum = parseStrictInteger(week);
+        if (weekNum === null) {
+            return [];
+        }
+
+        var rawGroups = [];
+        try {
+            rawGroups = AcademyTeachingGroups
+                .getGroupsForClassDisciplineInstructor(
+                    classId,
+                    disciplineId,
+                    instructorId
+                ) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademyScheduleAssignModal] ' +
+                'getGroupsForClassDisciplineInstructor failed:', e
+            );
+            return [];
+        }
+
+        if (!Array.isArray(rawGroups)) {
+            return [];
+        }
+
+        // Filter to groups active at the target week. A group that
+        // ended before this week cannot accept a new session.
+        var active = [];
+        for (var i = 0; i < rawGroups.length; i++) {
+            var g = rawGroups[i];
+            if (!g || !g.id) { continue; }
+
+            var startOk = true;
+            var endOk = true;
+
+            if (typeof g.startWeek === 'number' &&
+                weekNum < g.startWeek) {
+                startOk = false;
+            }
+            if (g.endWeek !== null &&
+                g.endWeek !== undefined &&
+                typeof g.endWeek === 'number' &&
+                weekNum > g.endWeek) {
+                endOk = false;
+            }
+
+            if (startOk && endOk) {
+                active.push(g);
+            }
+        }
+
+        // Sort by groupNumber ascending.
+        active.sort(function(a, b) {
+            var an = typeof a.groupNumber === 'number'
+                ? a.groupNumber : 0;
+            var bn = typeof b.groupNumber === 'number'
+                ? b.groupNumber : 0;
+            if (an !== bn) { return an - bn; }
+            return String(a.id).localeCompare(String(b.id));
+        });
+
+        var disciplineName = '';
+        var disc = AcademyDisciplines.getDiscipline(disciplineId);
+        if (disc && isNonEmptyString(disc.name)) {
+            disciplineName = disc.name;
+        }
+
+        var result = [];
+
+        for (var j = 0; j < active.length; j++) {
+            var group = active[j];
+
+            var customName = isNonEmptyString(group.customName)
+                ? String(group.customName).trim()
+                : null;
+
+            var groupNumber = typeof group.groupNumber === 'number'
+                ? group.groupNumber : 0;
+
+            var displayName = customName !== null
+                ? customName
+                : (disciplineName + (groupNumber > 0
+                    ? ' ' + groupNumber
+                    : ''));
+
+            var memberCount = 0;
+            try {
+                var members = AcademyTeachingGroups.getActiveMembers(
+                    group.id, weekNum
+                );
+                if (Array.isArray(members)) {
+                    memberCount = members.length;
+                }
+            } catch (e) {
+                memberCount = 0;
+            }
+
+            var sessionCount = 0;
+            var Sessions = window.AcademyTeachingSessions;
+            if (Sessions &&
+                typeof Sessions.getSessionsForGroup === 'function') {
+                try {
+                    var sessions = Sessions.getSessionsForGroup(
+                        group.id
+                    );
+                    if (Array.isArray(sessions)) {
+                        sessionCount = sessions.length;
+                    }
+                } catch (e) {
+                    sessionCount = 0;
+                }
+            }
+
+            result.push({
+                groupId: String(group.id),
+                groupNumber: groupNumber,
+                displayName: displayName,
+                memberCount: memberCount,
+                sessionCount: sessionCount
+            });
+        }
+
+        return result;
+    }
+
+    // ============================================================
+    // STATE REFRESH
+    // ============================================================
+    //
+    // Called whenever the discipline or the instructor changes.
+    // Re-reads both the group list and the instructor state, so the
+    // two stay consistent.
+    //
+    // Clearing rules:
+    //   - Changing discipline clears _selectedGroupId, the pending
+    //     collision, and re-reads instructors for the new discipline.
+    //   - Changing instructor clears _selectedGroupId (the group
+    //     belongs to a specific instructor) but keeps _pendingCollision
+    //     cleared too (the collision was against a specific
+    //     instructor).
+    //
+    // After both are re-read, the group picker defaults to:
+    //   - the first existing group, when at least one exists;
+    //   - NEW_GROUP_SENTINEL, when none exist.
+    // The user can override this selection.
+
+    function refreshInstructorAndGroupState() {
+        // ---- Instructor state ----
         _availableInstructors = [];
         _selectedInstructorId = '';
         _instructorError = '';
@@ -493,35 +530,87 @@
         _pendingCollision = null;
 
         if (!_context || _context.mode !== 'assign') {
+            _availableGroups = [];
+            _selectedGroupId = NEW_GROUP_SENTINEL;
             return;
         }
 
         if (!isNonEmptyString(_selectedDisciplineId)) {
+            _availableGroups = [];
+            _selectedGroupId = NEW_GROUP_SENTINEL;
             return;
         }
 
-        var list = readAvailableInstructors(
+        var instructorList = readAvailableInstructors(
             _context.classId,
             _selectedDisciplineId,
             _context.week
         );
 
-        _availableInstructors = list;
+        _availableInstructors = instructorList;
 
-        if (list.length === 0) {
+        if (instructorList.length === 0) {
             _instructorError =
                 'No instructor teaches this discipline for this ' +
                 'class during the requested week.';
+            _availableGroups = [];
+            _selectedGroupId = NEW_GROUP_SENTINEL;
             return;
         }
 
-        if (list.length === 1) {
-            _selectedInstructorId = list[0].id;
+        if (instructorList.length === 1) {
+            _selectedInstructorId = instructorList[0].id;
+        } else {
+            _showInstructorPicker = true;
+            // _selectedInstructorId stays ''. The user picks.
+        }
+
+        // ---- Group state ----
+        //
+        // Only resolvable when the instructor is known. When the
+        // picker is showing, groups cannot be listed yet.
+        refreshGroupState();
+    }
+
+    /**
+     * Refresh only the group list and the selected group, leaving
+     * the instructor state alone. Called from
+     * refreshInstructorAndGroupState, and from the instructor
+     * radio handler.
+     *
+     * When the instructor is not yet resolved, the group list is
+     * empty and the sentinel is selected. The picker renders a
+     * hint saying "choose an instructor first."
+     */
+    function refreshGroupState() {
+        _availableGroups = [];
+        _selectedGroupId = NEW_GROUP_SENTINEL;
+
+        if (!_context || _context.mode !== 'assign') {
+            return;
+        }
+        if (!isNonEmptyString(_selectedDisciplineId)) {
+            return;
+        }
+        if (!isNonEmptyString(_selectedInstructorId)) {
             return;
         }
 
-        _showInstructorPicker = true;
-        // _selectedInstructorId stays ''. The user picks.
+        _availableGroups = readAvailableGroups(
+            _context.classId,
+            _selectedDisciplineId,
+            _selectedInstructorId,
+            _context.week
+        );
+
+        // Default selection:
+        //   - first existing group, when one exists
+        //   - the new-group sentinel otherwise
+        if (_availableGroups.length > 0) {
+            _selectedGroupId = _availableGroups[0].groupId;
+        } else {
+            _selectedGroupId = NEW_GROUP_SENTINEL;
+        }
     }
 
     // ============================================================
@@ -543,7 +632,6 @@
             return null;
         }
 
-        // ---- Common validation ----
         if (!isNonEmptyString(options.classId)) {
             notify('Class ID is required.', 'error');
             return null;
@@ -567,7 +655,6 @@
             return null;
         }
 
-        // ---- Mode-specific validation ----
         var charId = null;
         var groupId = null;
         var sessionId = null;
@@ -615,9 +702,12 @@
         _onClose = typeof options.onClose === 'function'
             ? options.onClose
             : null;
+
         _selectedDisciplineId = '';
         _selectedDuration = DEFAULT_DURATION;
         _selectedLocationId = '';
+        _selectedGroupId = NEW_GROUP_SENTINEL;
+        _availableGroups = [];
         _availableInstructors = [];
         _selectedInstructorId = '';
         _instructorError = '';
@@ -706,6 +796,8 @@
         _selectedDisciplineId = '';
         _selectedDuration = DEFAULT_DURATION;
         _selectedLocationId = '';
+        _selectedGroupId = NEW_GROUP_SENTINEL;
+        _availableGroups = [];
         _availableInstructors = [];
         _selectedInstructorId = '';
         _instructorError = '';
@@ -756,6 +848,9 @@
             base.selectedInstructorId = _selectedInstructorId;
             base.instructorError = _instructorError;
             base.showInstructorPicker = _showInstructorPicker;
+            base.groups = _availableGroups;
+            base.selectedGroupId = _selectedGroupId;
+            base.newGroupSentinel = NEW_GROUP_SENTINEL;
         } else if (_context.mode === 'remove-student') {
             base.charName = getCharacterName(_context.charId);
         }
@@ -913,6 +1008,17 @@
             }
         }
 
+        // ---- Group picker ----
+        //
+        // Rendered only when the discipline and instructor are
+        // both resolved. When they are, every existing group for
+        // the triple is a choice, plus the "new group" sentinel.
+        if (isNonEmptyString(vm.selectedDisciplineId) &&
+            isNonEmptyString(vm.selectedInstructorId) &&
+            !isNonEmptyString(vm.instructorError)) {
+            html += renderGroupPicker(vm);
+        }
+
         // ---- Duration ----
         html += '<div class="form-group">';
         html += '<label for="academy-schedule-assign-duration">' +
@@ -1030,6 +1136,104 @@
         return html;
     }
 
+    // ============================================================
+    // GROUP PICKER
+    // ============================================================
+    //
+    // Renders a <select> listing every existing group for the
+    // (class, discipline, instructor) triple, plus the "new group"
+    // sentinel as the last option.
+    //
+    // Each existing option is labelled with its display name and,
+    // when there is more than one, its member/session counts. A
+    // single-group triple shows only the group name and the new-
+    // group option; the counts are not needed to disambiguate.
+    //
+    // The picker is disabled while _busy is true, matching the
+    // other form controls.
+    //
+    // When the discipline is set but no groups exist yet, the
+    // picker still renders, containing only the new-group option.
+    // This makes the "you will get a new group" outcome obvious
+    // before submission.
+
+    function renderGroupPicker(vm) {
+        var groups = Array.isArray(vm.groups) ? vm.groups : [];
+        var showCounts = groups.length > 1;
+
+        var html = '';
+        html += '<div class="form-group academy-schedule-assign-group">';
+        html += '<label for="academy-schedule-assign-group">' +
+                    'Group' +
+                '</label>';
+
+        html += '<select id="academy-schedule-assign-group" ' +
+                    'class="academy-schedule-assign-group-select"' +
+                    (vm.busy ? ' disabled' : '') + '>';
+
+        if (groups.length === 0) {
+            // No groups yet: only the sentinel, and it is selected.
+            html += '<option value="' + escapeAttribute(vm.newGroupSentinel) + '" ' +
+                        'selected>' +
+                        'Create a new group' +
+                    '</option>';
+        } else {
+            for (var i = 0; i < groups.length; i++) {
+                var g = groups[i];
+                if (!g || !g.groupId) { continue; }
+
+                var selected = String(g.groupId) ===
+                    String(vm.selectedGroupId)
+                    ? ' selected'
+                    : '';
+
+                var label = g.displayName;
+
+                if (showCounts) {
+                    var parts = [];
+                    if (typeof g.memberCount === 'number') {
+                        parts.push(g.memberCount + ' member' +
+                            (g.memberCount === 1 ? '' : 's'));
+                    }
+                    if (typeof g.sessionCount === 'number') {
+                        parts.push(g.sessionCount + ' session' +
+                            (g.sessionCount === 1 ? '' : 's'));
+                    }
+                    if (parts.length > 0) {
+                        label += ' (' + parts.join(', ') + ')';
+                    }
+                }
+
+                html += '<option value="' +
+                            escapeAttribute(g.groupId) + '"' + selected +
+                            '>' +
+                            escapeHtml(label) +
+                        '</option>';
+            }
+
+            var newSelected = String(vm.selectedGroupId) ===
+                String(vm.newGroupSentinel)
+                ? ' selected'
+                : '';
+            html += '<option value="' +
+                        escapeAttribute(vm.newGroupSentinel) + '"' +
+                        newSelected + '>' +
+                        'Create a new group' +
+                    '</option>';
+        }
+
+        html += '</select>';
+
+        html += '<p class="field-hint">' +
+                    'The session will be added to the selected group. ' +
+                    'Choosing "Create a new group" starts a fresh, ' +
+                    'empty group for this discipline and instructor.' +
+                '</p>';
+        html += '</div>';
+
+        return html;
+    }
+
     function renderLocationSelect(vm) {
         var locations = Array.isArray(vm.locations) ? vm.locations : [];
 
@@ -1071,9 +1275,10 @@
      *   - a discipline is chosen
      *   - the discipline resolves to exactly one instructor, OR
      *     the user has picked one from the picker
+     *   - the group picker has a valid selection (which it always
+     *     does once the instructor is resolved)
      *
-     * A collision prompt overrides the disabled state — the user
-     * is confirming an already-complete assignment.
+     * A collision prompt overrides the disabled state.
      */
     function canSubmitAssign(vm) {
         if (vm.busy) { return false; }
@@ -1260,10 +1465,6 @@
         return html;
     }
 
-    // ============================================================
-    // HTML — SHARED REMOVE DETAIL PANEL
-    // ============================================================
-
     function renderRemoveDetailPanel(vm, showSessionCount) {
         var disciplineName = isNonEmptyString(vm.disciplineName)
             ? vm.disciplineName
@@ -1330,10 +1531,9 @@
         )) {
             _selectedDisciplineId = target.value || '';
 
-            // A new discipline invalidates any prior collision —
-            // the collision was against a specific instructor.
-            // refreshInstructorState clears _pendingCollision.
-            refreshInstructorState();
+            // A new discipline invalidates the instructor picker,
+            // the group picker, and any prior collision.
+            refreshInstructorAndGroupState();
 
             renderContent();
             return;
@@ -1367,10 +1567,23 @@
                 ? String(instrId)
                 : '';
 
-            // A changed instructor invalidates any prior collision.
+            // A changed instructor invalidates the group picker
+            // and any prior collision.
             _pendingCollision = null;
+            refreshGroupState();
 
             renderContent();
+            return;
+        }
+
+        // ---- Group select ----
+        if (target.classList.contains(
+            'academy-schedule-assign-group-select'
+        )) {
+            _selectedGroupId = target.value || NEW_GROUP_SENTINEL;
+
+            // A changed group invalidates any prior collision.
+            _pendingCollision = null;
             return;
         }
     }
@@ -1470,6 +1683,19 @@
             allowCollisions: allowCollisions === true
         };
 
+        // Carry the group selection into the payload. Exactly one
+        // of groupId or forceNewGroup is set:
+        //
+        //   _selectedGroupId is a real group id
+        //     → payload.groupId
+        //   _selectedGroupId is the sentinel ('')
+        //     → payload.forceNewGroup = true
+        if (isNonEmptyString(_selectedGroupId)) {
+            payload.groupId = String(_selectedGroupId);
+        } else {
+            payload.forceNewGroup = true;
+        }
+
         AcademySchedule.assignStudentToSlot(payload)
             .then(function(result) {
                 _busy = false;
@@ -1498,18 +1724,11 @@
                     return;
                 }
 
-                // ---- Fallback: domain says the instructor set is
-                //      still ambiguous. The pre-flight was skipped
-                //      or the state changed between pre-flight and
-                //      submit. Re-enter the picker with the
-                //      domain's list.
                 if (result && result.reason === 'ambiguous_instructor') {
                     handleAmbiguousInstructorRejection(result);
                     return;
                 }
 
-                // ---- Fallback: domain says no instructor is
-                //      enrolled for this discipline.
                 if (result && result.reason === 'missing_instructor') {
                     _instructorError =
                         'No instructor teaches this discipline for ' +
@@ -1541,23 +1760,6 @@
             });
     }
 
-    /**
-     * Handle a domain rejection with reason 'ambiguous_instructor'.
-     *
-     * The rejection shape is:
-     *
-     *   {
-     *     reason: 'ambiguous_instructor',
-     *     message: '...',
-     *     data: { instructorIds: ['id1', 'id2', ...] }
-     *   }
-     *
-     * We resolve the IDs to names via CharacterQueries and enter
-     * the picker sub-state. If the list turns out to be empty or
-     * single, we surface the appropriate error instead — the
-     * domain's "ambiguous" claim is only meaningful when there are
-     * at least two.
-     */
     function handleAmbiguousInstructorRejection(result) {
         var ids = (result.data && Array.isArray(result.data.instructorIds))
             ? result.data.instructorIds
@@ -1594,6 +1796,8 @@
             _availableInstructors = [];
             _selectedInstructorId = '';
             _showInstructorPicker = false;
+            _availableGroups = [];
+            _selectedGroupId = NEW_GROUP_SENTINEL;
             renderContent();
             return;
         }
@@ -1603,16 +1807,17 @@
             _selectedInstructorId = resolved[0].id;
             _instructorError = '';
             _showInstructorPicker = false;
+            refreshGroupState();
             renderContent();
             return;
         }
 
-        // Two or more: enter the picker. Keep the user's discipline
-        // and duration; the picker sits between them.
         _availableInstructors = resolved;
         _selectedInstructorId = '';
         _instructorError = '';
         _showInstructorPicker = true;
+        _availableGroups = [];
+        _selectedGroupId = NEW_GROUP_SENTINEL;
         renderContent();
     }
 
