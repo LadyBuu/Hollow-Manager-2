@@ -6,25 +6,152 @@
  *
  * Projector-backed schedule projections for the Academy domain.
  *
+ * WHAT THIS OWNS:
+ *   Producing schedule view models for students, instructors,
+ *   locations, and classes from the AcademyTeachingProjector.
+ *   Every VM is shaped for CalendarRenderer.renderGrid.
+ *
+ * WHAT THIS DOES NOT OWN:
+ *   - Storage. Reads go through the projector.
+ *   - Writes. Schedule mutations are owned by AcademySchedule.
+ *   - Collisions. AcademyTeachingCollisions owns them.
+ *   - Rendering. CalendarRenderer owns that.
+ *   - Rest days as a concept. class.restDays and
+ *     class.restDaysByWeek are stored and validated by
+ *     AcademyClasses. This module is a pass-through: it resolves
+ *     the week's rest days via
+ *     AcademyClasses.getRestDaysForWeek and copies the result
+ *     onto the VM. The location grid does NOT inherit class rest
+ *     days (a room is a resource, not a class member).
+ *
+ * ARCHITECTURE:
+ *
+ *     AcademyTeachingProjector
+ *         ↓  projectWeek / projectForStudent / projectForInstructor /
+ *            projectForLocation / projectForClass
+ *         ↓  flat Occurrence[]
+ *         ↓
+ *     AcademyCalendarAggregator   (this module)
+ *         ↓  schedule VMs shaped for CalendarRenderer
+ *         ↓
+ *     CalendarRenderer.renderGrid
+ *         ↓  HTML
+ *
+ * VM SHAPE (consumed by CalendarRenderer.renderGrid):
+ *   {
+ *     schedule:   { day: { hour: slotDescriptor } },
+ *     restDays:   [number],
+ *     entityName: string,
+ *     modeLabel:  string,
+ *     hours:      [number]
+ *   }
+ *
+ *   slotDescriptor:
+ *     {
+ *       disciplineId:    string | null,
+ *       disciplineName:  string,
+ *       duration:        number,
+ *       label:           string,
+ *       groupLabel:      string,
+ *       groupColorIndex: number | null,
+ *       instructorId:    string | null,
+ *       instructorName:  string,
+ *       classId:         string | null,
+ *       className:       string,
+ *       groupId:         string | null,
+ *       sessionId:       string | null,
+ *       coOccupants:     [coOccupantDescriptor, ...],
+ *       isContinuation:  boolean
+ *     }
+ *
+ *   coOccupantDescriptor:
+ *     {
+ *       groupId:         string | null,
+ *       groupLabel:      string,
+ *       colorIndex:      number | null,
+ *       disciplineName:  string,
+ *       instructorName:  string,
+ *       sessionId:       string | null,
+ *       duration:        number
+ *     }
+ *
+ * CO-OCCUPANCY:
+ *   The pivot writes the first occurrence at a (day, hour) into the
+ *   cell's slot descriptor. Every subsequent occurrence at that
+ *   cell that is not a continuation of the same session is appended
+ *   to `slot.coOccupants`.
+ *
+ *   On a LOCATION grid, co-occupancy means "two or more groups
+ *   share this room at this time." The location controller renders
+ *   the list.
+ *
+ *   On a STUDENT grid, the projection is scoped to one student's
+ *   own sessions (Projector.projectForStudent). Two different
+ *   sessions cannot both be in the cell unless the student is
+ *   genuinely double-booked. Co-occupancy is therefore a COLLISION
+ *   indicator, and the +N badge on the cell is a disclosure
+ *   affordance: click it, and the character-detail panel lists the
+ *   overlapping sessions.
+ *
+ *   On an INSTRUCTOR grid, the same reasoning applies: the
+ *   projection is scoped to one instructor's sessions, so a
+ *   co-occupant is another meeting the instructor is committed to
+ *   at the same slot.
+ *
+ *   The co-occupant descriptor carries the fields the collision
+ *   panel needs to render one row per overlapping session:
+ *   discipline, instructor, group label, duration.
+ *
+ * GROUP LABELS:
+ *   Every teaching group has a display name. The name comes from
+ *   the group record:
+ *
+ *     - customName when the user has set one.
+ *     - otherwise `${discipline.name} ${letterFromNumber(groupNumber)}`.
+ *
+ *   The letter is derived from the group's monotonic groupNumber,
+ *   which is scoped to (classId, disciplineId, instructorId). Group
+ *   1 → A, 2 → B, ... 26 → Z, 27 → AA, and so on.
+ *
+ *   The resolver is built ONCE per public VM call, as a
+ *   groupId → displayName map. This keeps the cost at O(groups)
+ *   regardless of how many occurrences the week produces, and it
+ *   avoids a per-slot deep clone of the group record.
+ *
+ *   The map is used by buildSlotDescriptor to populate groupLabel.
+ *   Without it, two groups of the same discipline taught by the
+ *   same instructor would render as identical cells.
+ *
  * GROUP COLOR CODING:
- *   Every teaching group gets a stable visual color, derived from
- *   its groupNumber and indexed into a fixed-size palette. Group 1
- *   gets palette entry 0, group 2 gets entry 1, and so on, wrapping
- *   after PALETTE_SIZE.
+ *   Each group gets a stable color index derived from its
+ *   groupNumber, mod GROUP_COLOR_PALETTE_SIZE. Group 1 → 0,
+ *   group 2 → 1, ..., group N → (N-1) mod PALETTE_SIZE.
  *
- *   The color is emitted as an INDEX, not a hex value and not a
- *   class name. The renderer maps the index to a CSS class. This
- *   keeps the aggregator free of presentation and lets the theme
- *   decide what "color 3" looks like.
+ *   The index is emitted on the slot descriptor and on each
+ *   co-occupant. The renderer maps the index to a CSS class. The
+ *   color is deterministic: the same group has the same color on
+ *   every grid, every render, every session.
  *
- *   The index is computed once per VM call, in the same pass that
- *   resolves display names. Both maps are built together to avoid
- *   fetching each group twice.
+ * NULL SEMANTICS:
+ *   Every public function returns null when:
+ *     - the entity id is missing or malformed
+ *     - the week is missing, malformed, or out of range
+ *     - the entity does not exist in the store
  *
- *   Slots and co-occupants carry `colorIndex` on the VM. A slot
- *   with no group (should not happen in practice) carries null.
+ *   When the entity exists but has no occurrences this week, the
+ *   VM is returned with an empty `schedule: {}`.
  *
- * (Rest of the header unchanged.)
+ * DEPENDENCIES (MANDATORY):
+ *   - window.AcademyTeachingProjector
+ *   - window.CalendarConstants
+ *   - window.CalendarValidation
+ *   - window.AcademyDisciplines
+ *   - window.CharacterQueries
+ *   - window.AcademyClasses
+ *
+ * DEPENDENCIES (LAZY, used only if present):
+ *   - window.AcademyTeachingGroups   (group display-name resolution)
+ *   - window.AcademyLocations        (location display-name)
  */
 
 (function() {
@@ -106,17 +233,6 @@
     window.__academyCalendarAggregatorLoaded = true;
 
     // ============================================================
-    // CONSTANTS
-    // ============================================================
-
-    // The palette size. The renderer must define CSS classes
-    // acad-group-color-0 .. acad-group-color-(N-1). If the renderer
-    // defines fewer, colors will repeat; if more, the extras are
-    // unused. Keeping the count here means a single change
-    // propagates everywhere.
-    var GROUP_COLOR_PALETTE_SIZE = 8;
-
-    // ============================================================
     // LAZY DEPENDENCIES
     // ============================================================
 
@@ -127,6 +243,12 @@
     function getAcademyTeachingGroups() {
         return window.AcademyTeachingGroups || null;
     }
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var GROUP_COLOR_PALETTE_SIZE = 8;
 
     // ============================================================
     // HELPERS
@@ -231,30 +353,6 @@
     // ============================================================
     // GROUP DISPLAY NAMES AND COLORS
     // ============================================================
-    //
-    // The display name for a group is:
-    //
-    //   customName if set
-    //   otherwise `${discipline.name} ${letterFromNumber(groupNumber)}`
-    //
-    // The letter is derived from the group's monotonic groupNumber,
-    // scoped to (classId, disciplineId, instructorId). Group 1 → A,
-    // 2 → B, ..., 26 → Z, 27 → AA, and so on.
-    //
-    // The color index is derived from the same groupNumber:
-    //
-    //   colorIndex = ((groupNumber - 1) mod PALETTE_SIZE)
-    //
-    // So group 1 → palette 0, group 2 → palette 1, ..., group 8 →
-    // palette 7, group 9 → palette 0 again.
-    //
-    // A group with no groupNumber (should not happen) gets index 0.
-    // A group that cannot be resolved gets null, and the renderer
-    // falls back to a neutral style.
-    //
-    // Both maps are built in a single pass over the groupId set.
-    // The alternative — two separate build functions, each calling
-    // getGroup — doubles the work for no benefit.
 
     function letterFromNumber(n) {
         var num = parseInt(n, 10);
@@ -286,9 +384,6 @@
      * AcademyTeachingGroups, missing discipline) get an empty
      * display name and null color index. The caller decides what to
      * render in that case.
-     *
-     * @param {object} groupIds - object whose keys are the group IDs
-     * @returns {{ names: object, colors: object }}
      */
     function buildGroupMaps(groupIds) {
         var names = Object.create(null);
@@ -314,7 +409,6 @@
                 continue;
             }
 
-            // ---- Display name ----
             if (isNonEmptyString(g.customName)) {
                 names[gid] = String(g.customName);
             } else {
@@ -327,7 +421,6 @@
                 }
             }
 
-            // ---- Color index ----
             colors[gid] = colorIndexFromGroupNumber(g.groupNumber);
         }
 
@@ -351,7 +444,7 @@
     }
 
     // ============================================================
-    // REST DAYS (v30, extended v31)
+    // REST DAYS
     // ============================================================
 
     function readClassRestDays(classId, week) {
@@ -383,6 +476,13 @@
     // SLOT DESCRIPTORS
     // ============================================================
 
+    /**
+     * Build a co-occupant descriptor for an occurrence that shares
+     * its (day, hour) cell with another occurrence.
+     *
+     * The descriptor carries the fields the collision panel renders
+     * per row: discipline, instructor, group label, duration.
+     */
     function buildCoOccupant(occurrence, groupMaps) {
         var gid = toIdOrNull(occurrence.groupId);
         var groupLabel = '';
@@ -398,12 +498,21 @@
                 }
             }
         }
+
+        var duration = 1;
+        if (isFiniteNumber(occurrence.duration) &&
+            occurrence.duration > 0) {
+            duration = Math.round(occurrence.duration);
+        }
+
         return {
             groupId: gid,
             groupLabel: groupLabel,
             colorIndex: colorIndex,
             disciplineName: getDisciplineName(occurrence.disciplineId),
-            instructorName: getCharacterDisplayName(occurrence.instructorId)
+            instructorName: getCharacterDisplayName(occurrence.instructorId),
+            sessionId: toIdOrNull(occurrence.sessionId),
+            duration: duration
         };
     }
 
@@ -796,8 +905,6 @@
         getClassScheduleViewModel: getClassScheduleViewModel,
         getWeekOverviewViewModel: getWeekOverviewViewModel,
 
-        // Read-only constant, exported so a renderer can validate
-        // its class list against the aggregator's palette size.
         GROUP_COLOR_PALETTE_SIZE: GROUP_COLOR_PALETTE_SIZE
     });
 
@@ -834,7 +941,6 @@
                 missing.push('letterFromNumber(27) !== AA');
             }
 
-            // Color index wraps at GROUP_COLOR_PALETTE_SIZE.
             if (colorIndexFromGroupNumber(1) !== 0) {
                 missing.push('colorIndexFromGroupNumber(1) !== 0');
             }
