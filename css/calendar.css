@@ -10,6 +10,7 @@
  *   - The schedule grid and its cells
  *   - Header row
  *   - Occupied slots, empty slots, rest-day columns, blocked slots
+ *   - Group color coding
  *   - The co-occupant marker and its detail panel
  *   - The discipline-hours panel, its rows, and its current-group
  *     sub-block
@@ -34,6 +35,30 @@
  *   mobile. Both are sized to fit a two-digit 24-hour label
  *   (`00:00` through `23:00`) without truncation at the current
  *   font size. See calendar-renderer.js for the label format.
+ *
+ * GROUP COLOR CODING:
+ *   Each occupied cell carries a `.acad-group-color-N` class,
+ *   where N is an index the aggregator resolved from the group's
+ *   groupNumber. The palette below defines classes 0 through 7.
+ *
+ *   The classes override two properties of `.schedule-occupied`:
+ *     - `background`      the neutral accent-soft tint is replaced
+ *                         by a color-tinted background
+ *     - `border-left-color` the neutral accent border is replaced
+ *                         by the group's identity color
+ *
+ *   They do NOT override `cursor`, transitions, or any layout
+ *   property. A hover rule on `.schedule-cell[data-action=...]`
+ *   still applies, because the hover rule targets the cell, not
+ *   the color class. The hover background (`--accent-hover`) sits
+ *   atop the group tint, which is visually fine but slightly
+ *   muddies the color; the border-left stays the group's, which
+ *   keeps identity visible on hover.
+ *
+ *   Palette size is fixed at 8. If the aggregator's
+ *   GROUP_COLOR_PALETTE_SIZE ever changes, this file must add or
+ *   remove palette entries to match. A missing entry falls back
+ *   to the neutral `.schedule-occupied` styling.
  *
  * Loads after shared.css and academy.css.
  */
@@ -239,7 +264,12 @@
 
 /* ============================================================
    OCCUPIED SLOT
-   ============================================================ */
+   ============================================================
+   Base styling for an occupied cell. The group-color classes
+   (below) override `background` and `border-left-color` when the
+   slot carries a color index. When it doesn't, this rule is what
+   the cell renders with.
+ */
 
 .schedule-slot {
     transition: background 0.15s ease, border-color 0.15s ease,
@@ -266,6 +296,74 @@
     .schedule-continuation {
     color: var(--accent);
     opacity: 1;
+}
+
+/* ============================================================
+   GROUP COLOR CODING
+   ============================================================
+   Each `.acad-group-color-N` rule overrides `background` and
+   `border-left-color` on an occupied cell.
+
+   These rules are declared AFTER `.schedule-occupied` so they
+   win the cascade for those two properties. They are NOT nested
+   under `.schedule-occupied` because the renderer only emits
+   the color class alongside `schedule-occupied`, never alone;
+   the top-level selector is sufficient and reads more clearly.
+
+   The eight colors are chosen for:
+     - Legibility against the dark Academy background.
+     - Distinguishability at a glance, including for common
+       forms of color blindness.
+     - A stable visual identity that does not compete with the
+       cell's text content.
+
+   They are NOT semantic. Red does not mean "bad"; green does
+   not mean "good". They are identifiers, nothing more.
+
+   Border-left is 3px, matching `.schedule-occupied`. The
+   background tint is 14% alpha, which is strong enough to
+   distinguish adjacent cells but weak enough that the text
+   inside remains the primary visual signal.
+ */
+
+.acad-group-color-0 {
+    background: rgba(217, 119, 87, 0.14);
+    border-left-color: #d97757;
+}
+
+.acad-group-color-1 {
+    background: rgba(111, 168, 220, 0.14);
+    border-left-color: #6fa8dc;
+}
+
+.acad-group-color-2 {
+    background: rgba(140, 187, 58, 0.14);
+    border-left-color: #8cbb3a;
+}
+
+.acad-group-color-3 {
+    background: rgba(197, 134, 192, 0.14);
+    border-left-color: #c586c0;
+}
+
+.acad-group-color-4 {
+    background: rgba(78, 201, 176, 0.14);
+    border-left-color: #4ec9b0;
+}
+
+.acad-group-color-5 {
+    background: rgba(220, 220, 170, 0.14);
+    border-left-color: #dcdcaa;
+}
+
+.acad-group-color-6 {
+    background: rgba(157, 124, 216, 0.14);
+    border-left-color: #9d7cd8;
+}
+
+.acad-group-color-7 {
+    background: rgba(224, 108, 117, 0.14);
+    border-left-color: #e06c75;
 }
 
 /* ============================================================
@@ -1033,6 +1131,25 @@
     border: 1px dashed var(--border);
 }
 
+/*
+ * Legend swatches for group colors. Same classes as the grid
+ * cells, so the swatch shows exactly the color the cell shows.
+ * Only the width is narrowed so the swatch is square.
+ */
+.legend-color.acad-group-color-0,
+.legend-color.acad-group-color-1,
+.legend-color.acad-group-color-2,
+.legend-color.acad-group-color-3,
+.legend-color.acad-group-color-4,
+.legend-color.acad-group-color-5,
+.legend-color.acad-group-color-6,
+.legend-color.acad-group-color-7 {
+    width: 12px;
+    height: 12px;
+    border-left-width: 3px;
+    border-radius: 3px;
+}
+
 .legend-label {
     color: var(--text-dim);
 }
@@ -1059,7 +1176,17 @@
 
 .academy-schedule-assign-discipline,
 .academy-schedule-assign-duration,
-.academy-schedule-assign-location {
+.academy-schedule-assign-location,
+.academy-schedule-assign-group-select {
+    width: 100%;
+    max-width: 320px;
+}
+
+.academy-schedule-assign-group {
+    margin-bottom: 12px;
+}
+
+.academy-schedule-assign-group-select {
     width: 100%;
     max-width: 320px;
 }
@@ -1262,7 +1389,17 @@
 
 .academy-schedule-instructor-discipline,
 .academy-schedule-instructor-duration,
-.academy-schedule-instructor-location {
+.academy-schedule-instructor-location,
+.academy-schedule-instructor-group-select {
+    width: 100%;
+    max-width: 320px;
+}
+
+.academy-schedule-instructor-group {
+    margin-bottom: 12px;
+}
+
+.academy-schedule-instructor-group-select {
     width: 100%;
     max-width: 320px;
 }
