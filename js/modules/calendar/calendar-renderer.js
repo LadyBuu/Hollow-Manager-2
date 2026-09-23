@@ -43,6 +43,20 @@
  *   pipeline should be obvious at a glance, not silently
  *   indistinguishable.
  *
+ * GROUP COLOR:
+ *   Each occupied cell carries a color derived from the group's
+ *   groupNumber. The color is an INDEX on the slot
+ *   (`slotData.groupColorIndex`), resolved by
+ *   AcademyCalendarAggregator. The renderer maps the index to a
+ *   CSS class `acad-group-color-N` and appends it to the cell's
+ *   class list. The palette size is fixed by the aggregator
+ *   (`GROUP_COLOR_PALETTE_SIZE`); the CSS must define classes
+ *   for every index in [0, PALETTE_SIZE).
+ *
+ *   A slot with no group, or with a color index the aggregator
+ *   could not resolve, gets no color class. The cell renders
+ *   with the neutral `.schedule-occupied` styling.
+ *
  * HOURS PANEL — CURRENT GROUP:
  *   Each discipline-hours row optionally carries a
  *   `currentGroup` sub-block, listing the group the student is
@@ -154,6 +168,45 @@
         }
 
         return '';
+    }
+
+    // ============================================================
+    // GROUP COLOR CLASS
+    // ============================================================
+    //
+    // Maps the slot's groupColorIndex (an integer from the
+    // aggregator) to a CSS class name.
+    //
+    // Contract:
+    //   - The index is null when the slot has no group, or when
+    //     the aggregator could not resolve a color for the group.
+    //     In that case, no class is returned and the cell renders
+    //     with the neutral .schedule-occupied styling.
+    //   - The index is a non-negative integer otherwise. The CSS
+    //     file defines .acad-group-color-0 through
+    //     .acad-group-color-(N-1), where N is the aggregator's
+    //     GROUP_COLOR_PALETTE_SIZE.
+    //   - A negative or non-integer index is treated as absent.
+    //     The aggregator never emits one, but the guard keeps a
+    //     malformed VM from producing a bogus class like
+    //     "acad-group-color-NaN".
+    //
+    // The class name is not validated against the palette size.
+    // If the aggregator's palette grows, the CSS must grow with
+    // it; the two are kept in sync by the constant the aggregator
+    // exports.
+
+    function getGroupColorClass(slotData) {
+        if (!slotData) { return ''; }
+
+        var idx = slotData.groupColorIndex;
+
+        if (idx === null || idx === undefined) { return ''; }
+        if (typeof idx !== 'number' || !isFinite(idx)) { return ''; }
+        if (idx < 0) { return ''; }
+        if (Math.floor(idx) !== idx) { return ''; }
+
+        return 'acad-group-color-' + idx;
     }
 
     // ============================================================
@@ -478,6 +531,18 @@
                 if (isOccupied) { classes += ' schedule-occupied'; } else { classes += ' schedule-empty'; }
                 if (isRestDay) { classes += ' schedule-rest-day'; }
                 if (isBlock) { classes += ' schedule-blocked'; }
+
+                // ---- Group color class ----
+                //
+                // Applied only to occupied cells. An empty cell
+                // has no group and no color. A blocked cell is
+                // not a group either; the blocked styling wins.
+                if (isOccupied && !isRestDay) {
+                    var colorClass = getGroupColorClass(slotData);
+                    if (colorClass !== '') {
+                        classes += ' ' + colorClass;
+                    }
+                }
 
                 var cellAction = null;
                 if (!isRestDay && !isBlock) {
