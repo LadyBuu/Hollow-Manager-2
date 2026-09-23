@@ -12,6 +12,37 @@
  *   - Handle DataLoader and tabChanged integration
  *   - Expose a small public API on window.Academy
  *
+ * SOCIAL PROVIDER EAGER INITIALISATION (this revision):
+ *   The Academy instructor-commitments module creates a mentor
+ *   relationship in the Social domain when a tutoring block is
+ *   saved with a character. That call goes through SocialCore,
+ *   whose dependency check requires the character provider to
+ *   have been initialised via SocialCore.init().
+ *
+ *   Social's own entry point calls initProviders() on first mount
+ *   of the Social tab. A user who never opens the Social tab
+ *   would therefore hit "Dependencies not loaded" when saving a
+ *   tutoring block. Initialising Social here, at Academy module
+ *   load time, removes that ordering dependency.
+ *
+ *   The call is GUARDED:
+ *     - window.Social may be absent (script order, test harness,
+ *       partial load). When absent, the call is skipped.
+ *     - The call is wrapped in try/catch. A throw inside
+ *       initProviders() is logged and swallowed; the rest of the
+ *       Academy module runs normally.
+ *
+ *   When the call is skipped or throws, the mentor hook in the
+ *   commitments module degrades to a soft failure: the tutoring
+ *   block saves, the mentor relationship is not created, and the
+ *   user sees a toast. The commitment itself is unaffected.
+ *
+ *   Idempotency:
+ *     Social.initProviders() guards on its own
+ *     _providersInitialized flag and returns early on subsequent
+ *     calls. Calling it here, and again when the Social tab
+ *     mounts, is harmless.
+ *
  * ARCHITECTURE:
  *   This file is the LIFECYCLE ENTRY POINT, not a render module.
  *   All rendering and interaction live in academy-view.js.
@@ -73,6 +104,8 @@
  *     module still functions.
  *   - window.DataLoader — readiness hook is skipped when absent
  *   - window.NotificationSystem — used by error paths when present
+ *   - window.Social — eager provider init. When absent, the call is
+ *     skipped; the commitments module degrades gracefully.
  *
  * USAGE:
  *   The module self-registers with TabManager. External callers use:
@@ -134,6 +167,40 @@
             _missing.join(', ')
         );
     }
+
+    // ============================================================
+    // SOCIAL PROVIDER EAGER INITIALISATION
+    // ============================================================
+    //
+    // See the file header for the full rationale.
+    //
+    // The call is:
+    //   - guarded on window.Social being present and exposing
+    //     initProviders()
+    //   - wrapped in try/catch
+    //   - safe to call before window.data is populated
+    //     (initProviders only reads CharacterQueries, which is
+    //      expected to have loaded)
+    //   - safe to call multiple times (Social guards on its own
+    //     _providersInitialized flag)
+
+    (function initSocialProvidersIfPresent() {
+        var Social = window.Social;
+        if (!Social) {
+            return;
+        }
+        if (typeof Social.initProviders !== 'function') {
+            return;
+        }
+        try {
+            Social.initProviders();
+        } catch (e) {
+            console.warn(
+                '[AcademyModule] Social.initProviders threw during ' +
+                'eager initialisation:', e
+            );
+        }
+    })();
 
     // ============================================================
     // CONTROLLER REGISTRATION
@@ -245,6 +312,13 @@
      * Does NOT repair. The database migration is responsible for
      * producing the correct shape. If it is wrong, the mount path
      * renders an error state.
+     *
+     * instructorCommitments is a NEW store. It is NOT checked here.
+     * Existing database snapshots predate it. The commitments
+     * module's reads return [] when the bucket is absent, and its
+     * writes create the bucket lazily via ensureStore. Adding the
+     * bucket to the database's empty-data template and to a
+     * migration is a separate change, owned by database.js.
      */
     function validateAcademyStructure() {
         if (!window.data || typeof window.data !== 'object') {
