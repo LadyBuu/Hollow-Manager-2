@@ -18,53 +18,21 @@
  *   - The legend, the loading state
  *   - The schedule-assign and schedule-instructor modals
  *
- * HORIZONTAL SCROLL:
- *   The grid's natural minimum width exceeds a phone's viewport.
- *   The wrapper (`.calendar-grid-wrapper`) owns horizontal
- *   scrolling. The grid itself sizes to `min-width: max-content`
- *   so it reaches its natural width, and the wrapper scrolls when
- *   that exceeds the viewport.
- *
- *   On desktop, the grid's natural width is smaller than the
- *   wrapper, so the day columns expand to fill via their `1fr`
- *   upper bound and no scrollbar appears. On mobile the natural
- *   width exceeds the viewport and the wrapper scrolls.
- *
- * HOUR COLUMN:
- *   The leading hour column is 72px on desktop and 56px on
- *   mobile. Both are sized to fit a two-digit 24-hour label
- *   (`00:00` through `23:00`) without truncation at the current
- *   font size. See calendar-renderer.js for the label format.
- *
- * GROUP COLOR CODING:
- *   Each occupied cell carries a `.acad-group-color-N` class,
- *   where N is an index the aggregator resolved from the group's
- *   groupNumber. The palette below defines classes 0 through 7.
- *
- *   The classes override two properties of `.schedule-occupied`:
- *     - `background`      the neutral accent-soft tint is replaced
- *                         by a color-tinted background
- *     - `border-left-color` the neutral accent border is replaced
- *                         by the group's identity color
- *
- *   They do NOT override `cursor`, transitions, or any layout
- *   property. A hover rule on `.schedule-cell[data-action=...]`
- *   still applies, because the hover rule targets the cell, not
- *   the color class.
- *
- *   Palette size is fixed at 8. If the aggregator's
- *   GROUP_COLOR_PALETTE_SIZE ever changes, this file must add or
- *   remove palette entries to match. A missing entry falls back
- *   to the neutral `.schedule-occupied` styling.
- *
  * INSTRUCTOR PICKER (assign modal):
  *   The radio list renders every instructor who teaches the
  *   chosen discipline for the chosen class. Names are the
- *   primary content; the radio is a control. Every element in
- *   the chain has an explicit color, an explicit display, and
- *   no ellipsis truncation, because in some modal contexts the
- *   inherited color was matching the modal background and the
- *   names rendered invisibly.
+ *   primary content; the radio is a control.
+ *
+ *   Layout note: the name span must NOT shrink below its natural
+ *   content width. `min-width: auto` (the flex default) is the
+ *   correct value. `min-width: 0` combined with
+ *   `overflow-wrap: anywhere` was the previous behaviour and
+ *   caused the name to wrap one character per line when the
+ *   parent flex container was narrow. The current rules use
+ *   `flex: 1 1 auto` plus `min-width: auto` plus
+ *   `overflow-wrap: break-word`, which lets the name grow, never
+ *   shrinks it below its natural width, and only breaks at word
+ *   boundaries.
  *
  * Loads after shared.css and academy.css.
  */
@@ -85,27 +53,6 @@
     flex-direction: column;
     gap: 8px;
     width: 100%;
-
-    /* Owns horizontal scroll for the grid.
-     *
-     * The grid's natural minimum width (hour column + 7 day
-     * columns + gaps) exceeds the viewport on phones. Without a
-     * scroll container here, that overflow escapes to the
-     * nearest scrollable ancestor — usually the whole page —
-     * which reads as a broken layout. The wrapper is the
-     * element that knows the grid's intent, so it is the
-     * element that owns the scroll.
-     *
-     * overflow-y: hidden keeps the wrapper from becoming a
-     * vertical scroll container; the page handles vertical
-     * scroll. min-width: 0 lets the wrapper shrink below its
-     * content's natural width so it can be the viewport for
-     * the grid's overflow.
-     *
-     * -webkit-overflow-scrolling: touch is a legacy iOS hint;
-     * it enables momentum scrolling on WebKit browsers that
-     * predate default smooth scrolling. Modern iOS ignores it.
-     */
     overflow-x: auto;
     overflow-y: hidden;
     -webkit-overflow-scrolling: touch;
@@ -146,7 +93,6 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     overflow: hidden;
-
     min-width: max-content;
 }
 
@@ -270,9 +216,7 @@
 
 /* ============================================================
    GROUP COLOR CODING
-   ============================================================
-   See the file header for the contract.
- */
+   ============================================================ */
 
 .acad-group-color-0 {
     background: rgba(217, 119, 87, 0.14);
@@ -760,8 +704,6 @@
     color: var(--text-dim);
 }
 
-/* ---------- Current-group sub-block ---------- */
-
 .schedule-hours-current-group {
     margin: 2px 0 0 4px;
     padding: 4px 8px 4px 10px;
@@ -1075,16 +1017,9 @@
 }
 
 /* ============================================================
-   SCHEDULE ASSIGN MODAL
+   SCHEDULE ASSIGN / INSTRUCTOR MODALS
    ============================================================ */
 
-/*
- * The assign modal hosts the discipline picker, the instructor
- * radio list, and the group picker. It needs to be wide enough
- * for a two-word instructor name to sit beside a radio without
- * wrapping. 360px is the floor; 520px is the ceiling. Below
- * 480px, we drop the floor and let the modal fill the viewport.
- */
 #academy-schedule-assign-modal .modal-content,
 #academy-schedule-instructor-modal .modal-content {
     min-width: 360px;
@@ -1137,12 +1072,20 @@
  * A radio list of instructors. Each option is a full-width row:
  * a radio control at the left, then the name filling the rest.
  *
- * Every element in the chain has an explicit color, an explicit
- * display, and no ellipsis truncation. Earlier revisions used
- * `white-space: nowrap; overflow: hidden; text-overflow:
- * ellipsis` on the name, and in some modal contexts that
- * collapsed the name to zero width — the radio rendered and the
- * name did not. The name now wraps if it needs to.
+ * LAYOUT RULES (careful):
+ *   - The option is a flex container, aligned to flex-start so
+ *     the radio sits at the top of a wrapped name.
+ *   - The radio is `flex: 0 0 auto`; it never shrinks.
+ *   - The name is `flex: 1 1 auto; min-width: auto`. That lets it
+ *     grow into the remaining space and never shrink below its
+ *     natural content width.
+ *
+ *   Do NOT set `min-width: 0` on the name span. Do NOT set
+ *   `overflow-wrap: anywhere` or `word-break: break-word` on it.
+ *   Those were the previous values and they caused the name to
+ *   wrap one character per line when the modal was narrow,
+ *   because the span was told it could shrink below zero and
+ *   that it could break between any two characters.
  */
 
 .academy-schedule-assign-instructors {
@@ -1201,14 +1144,12 @@
 }
 
 .academy-schedule-assign-instructor-name {
-    flex: 1;
-    min-width: 0;
+    flex: 1 1 auto;
+    min-width: auto;
     white-space: normal;
-    overflow-wrap: anywhere;
-    word-break: break-word;
+    overflow-wrap: break-word;
     line-height: 1.3;
     color: var(--text);
-    display: inline-block;
 }
 
 .academy-schedule-assign-instructors-error {
