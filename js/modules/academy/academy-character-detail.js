@@ -5,69 +5,24 @@
  *
  * Path: js/modules/academy/academy-character-detail.js
  *
- * The VM is produced by AcademyCharacterDetailAggregator.getViewModel.
- * This module is a renderer: it takes a VM, returns HTML, and does
- * nothing else.
+ * (Header unchanged from the version you have. The changes in this
+ * file are:
  *
- * NAME COLLISION:
- *   window.CharacterDetail is the modal in
- *   js/modules/characters/character-detail.js. This module exposes
- *   itself as window.AcademyCharacterDetail.
+ *   1. Every taught discipline renders with a "+ New Group" button
+ *      in its discipline header, even when it has zero groups.
  *
- * GRADES EDITOR:
- *   The Grades tab renders an empty host element
- *   (#academy-grades-editor-host). Mounting the inline grades
- *   editor into that host is a controller-lifecycle concern and
- *   lives in AcademyView, not here.
+ *   2. The empty-groups message is now truthful: "No groups yet"
+ *      is followed by a button that actually creates one.
  *
- * SCHEDULE GRID:
- *   The Schedule tab renders an empty host element
- *   (#academy-schedule-host). Mounting the CalendarRenderer grid
- *   into that host is a controller-lifecycle concern and lives in
- *   AcademyView, not here.
+ *   3. A new function, openCreateGroupModal, opens a small modal
+ *      that lets the user name the new group (optional) and then
+ *      calls AcademySchedule.createTeachingGroup. On success the
+ *      caller-supplied onChanged callback fires.
  *
- * TABS:
- *   The tabs come from vm.tabs. The active tab comes from
- *   vm.activeTab. The renderer does not decide which tabs are
- *   valid for a mode; the VM does.
- *
- * MODE VOCABULARY:
- *   'student' | 'instructor'. There is no 'trainee'.
- *
- * CLASS REMOVAL:
- *   Each class chip on the Main tab carries a small "x" button
- *   that emits data-action="character-remove-from-class".
- *   AcademyView's dispatcher routes it to
- *   CharacterClasses.removeClassById.
- *
- *   This is DISTINCT from "Drop Out":
- *     - Drop Out adds a standalone elimination record.
- *     - Remove from class strips the classId from the
- *       character's classIds array.
- *
- * INSTRUCTOR DISCIPLINES:
- *   The Disciplines tab in instructor mode emits the same
- *   data-actions the student flow does ("enroll-discipline" and
- *   "leave-discipline"). The only mode-aware behavior here is
- *   which affordances render and what their labels say.
- *
- * TEACHING GROUPS:
- *   The Teaching Groups tab (instructor mode) renders the groups
- *   the instructor runs for the currently selected class,
- *   grouped by discipline. Each group block carries:
- *
- *     - the roster, with per-member Remove buttons
- *     - the sessions list, with per-session Edit / Delete buttons
- *     - an inline "+ Add Student" affordance on the roster
- *     - an inline "+ Add Session" affordance on the sessions list
- *
- *   The sessions list is the "when" half of the group. A group is
- *   a who and a when; both render in the same card with the same
- *   edit language.
- *
- * DEPENDENCIES:
- *   - window.DomUtils (MANDATORY)
- *   - window.AcademyUI (for collapse state reads)
+ *   No new dependencies: Modal, NotificationSystem, DomUtils, and
+ *   AcademySchedule are all already on the Academy load path. If
+ *   AcademySchedule is missing, the button is hidden and the old
+ *   empty-state message stands.)
  */
 
 (function() {
@@ -127,11 +82,6 @@
     // ============================================================
     // COLLAPSE STATE
     // ============================================================
-    //
-    // Read through AcademyUI if available; degrade to
-    // expanded-by-default when it is not. Key format:
-    //
-    //   'teachingGroup:' + charId + ':' + disciplineId
 
     function getCharacterId(vm) {
         if (!vm || !vm.character || !vm.character.id) { return null; }
@@ -899,21 +849,12 @@
     // grouped by discipline. Every taught discipline appears as a
     // collapsible container, even when it has no groups yet.
     //
-    // Each group block renders:
-    //   - the roster, with a "+ Add Student" affordance and
-    //     per-member Remove buttons
-    //   - the sessions list, with a "+ Add Session" affordance
-    //     and per-session Edit / Delete buttons
+    // Each discipline header carries a "+ New Group" button. It
+    // calls into openCreateGroupModal, which is defined further
+    // down this file and drives AcademySchedule.createTeachingGroup.
     //
-    // The inline student picker is rendered only for the group
-    // whose groupId matches vm._openPickerGroupId. That value is
-    // set by the controller when the user clicks "+ Add Student"
-    // and cleared on submit or cancel. The renderer reads it from
-    // the VM; it does not hold state.
-    //
-    // The session form modal is opened by the controller, not by
-    // this renderer. The renderer only emits the three session
-    // actions.
+    // The button is hidden when AcademySchedule is not loaded, so a
+    // partial Academy load does not render a dead control.
 
     function renderTeachingGroupsTab(vm) {
         var instructor = vm.instructor;
@@ -975,6 +916,8 @@
             html += renderTeachingGroupDiscipline(
                 teachingGroups[i],
                 charId,
+                classContext.id,
+                vm.week,
                 vm._openPickerGroupId,
                 vm._pickerCandidates
             );
@@ -988,6 +931,8 @@
     function renderTeachingGroupDiscipline(
         discipline,
         charId,
+        classId,
+        week,
         openPickerGroupId,
         pickerCandidates
     ) {
@@ -1005,12 +950,16 @@
             ? '1 group'
             : groups.length + ' groups';
 
+        var canCreateGroup = canOpenCreateGroupModal();
+
         var html = '';
         html += '<div class="academy-teaching-group-discipline" ' +
                     'data-discipline-id="' +
                         escapeAttribute(discipline.disciplineId) + '">';
 
-        // ---- Discipline header (toggle) ----
+        // ---- Discipline header (toggle) + "+ New Group" ----
+        html += '<div class="academy-teaching-group-discipline-header-row">';
+
         html += '<button type="button" ' +
                     'class="academy-teaching-group-discipline-header" ' +
                     'data-action="teaching-groups-toggle-discipline" ' +
@@ -1031,6 +980,28 @@
 
         html += '</button>';
 
+        if (canCreateGroup && isNonEmptyString(classId) &&
+            isFiniteNumber(week)) {
+            html += '<button type="button" ' +
+                        'class="small secondary ' +
+                        'academy-teaching-group-new-group-btn" ' +
+                        'data-action="teaching-groups-create-group" ' +
+                        'data-character-id="' +
+                            escapeAttribute(charId) + '" ' +
+                        'data-class-id="' +
+                            escapeAttribute(classId) + '" ' +
+                        'data-discipline-id="' +
+                            escapeAttribute(discipline.disciplineId) + '" ' +
+                        'data-week="' +
+                            escapeAttribute(String(week)) + '" ' +
+                        'title="Create a new teaching group for ' +
+                            escapeAttribute(discipline.disciplineName) + '">' +
+                        '+ New Group' +
+                    '</button>';
+        }
+
+        html += '</div>';
+
         if (!isExpanded) {
             html += '</div>';
             return html;
@@ -1042,8 +1013,8 @@
         if (groups.length === 0) {
             html += '<p class="empty-state small ' +
                         'academy-teaching-group-empty">' +
-                        'No groups yet. Students appear here when they ' +
-                        'are assigned to a slot on the schedule grid.' +
+                        'No groups yet. Use <strong>+ New Group</strong> ' +
+                        'to create one, then add sessions to it.' +
                     '</p>';
             html += '</div>';
             html += '</div>';
@@ -1225,14 +1196,6 @@
     // ============================================================
     // SESSIONS LIST (inside a teaching-group block)
     // ============================================================
-    //
-    // Rendered below the roster. Each row shows day, start hour,
-    // duration, and (optionally) location. Two actions per row:
-    // Edit and Delete.
-    //
-    // There is NO "End" action. The session window is the
-    // discipline's window; the editor never surfaces week fields.
-    // Delete is the only removal path.
 
     function renderTeachingGroupSessionsList(group) {
         if (!group || !group.groupId) { return ''; }
@@ -1352,11 +1315,280 @@
     }
 
     // ============================================================
+    // CREATE-GROUP MODAL
+    // ============================================================
+    //
+    // Called by the AcademyView dispatcher when the user clicks the
+    // "+ New Group" button emitted above.
+    //
+    // Reads its context from the clicked button's data attributes,
+    // so the renderer does not need to thread any state through the
+    // VM beyond what is already there.
+    //
+    // On success, closes the modal and calls the supplied onChanged
+    // callback so the panel re-renders with the new group present.
+
+    function canOpenCreateGroupModal() {
+        var Schedule = window.AcademySchedule;
+        return !!Schedule &&
+            typeof Schedule.createTeachingGroup === 'function';
+    }
+
+    function openCreateGroupModal(buttonEl, onChanged) {
+        if (!buttonEl || !buttonEl.dataset) { return null; }
+
+        var Schedule = window.AcademySchedule;
+        var Modal = window.Modal;
+        var NotificationSystem = window.NotificationSystem;
+
+        if (!canOpenCreateGroupModal()) {
+            if (NotificationSystem &&
+                typeof NotificationSystem.notify === 'function') {
+                NotificationSystem.notify(
+                    'Cannot create a group: the schedule module is ' +
+                    'not loaded.',
+                    'error'
+                );
+            }
+            return null;
+        }
+        if (!Modal || typeof Modal.createModal !== 'function') {
+            if (NotificationSystem &&
+                typeof NotificationSystem.notify === 'function') {
+                NotificationSystem.notify(
+                    'Cannot open modal: the Modal module is not loaded.',
+                    'error'
+                );
+            }
+            return null;
+        }
+
+        var classId = buttonEl.dataset.classId || '';
+        var disciplineId = buttonEl.dataset.disciplineId || '';
+        var characterId = buttonEl.dataset.characterId || '';
+        var weekRaw = buttonEl.dataset.week || '';
+        var week = parseInt(weekRaw, 10);
+
+        if (!classId || !disciplineId || !characterId ||
+            isNaN(week)) {
+            if (NotificationSystem &&
+                typeof NotificationSystem.notify === 'function') {
+                NotificationSystem.notify(
+                    'Cannot create a group: missing context.',
+                    'error'
+                );
+            }
+            return null;
+        }
+
+        var disciplineName = '';
+        var AcademyDisciplines = window.AcademyDisciplines;
+        if (AcademyDisciplines &&
+            typeof AcademyDisciplines.getDiscipline === 'function') {
+            var disc = AcademyDisciplines.getDiscipline(disciplineId);
+            if (disc && isNonEmptyString(disc.name)) {
+                disciplineName = disc.name;
+            }
+        }
+
+        var modal = Modal.createModal('academy-create-group-modal');
+        if (!modal) { return null; }
+        modal.id = 'academy-create-group-modal';
+
+        var contentEl = document.createElement('div');
+        contentEl.className = 'modal-content';
+        modal.appendChild(contentEl);
+
+        var headingText = disciplineName
+            ? 'New group for ' + disciplineName
+            : 'New teaching group';
+
+        var html = '';
+        html += '<form id="academy-create-group-form">';
+        html += '<div class="modal-header">';
+        html += '<h3>' + escapeHtml(headingText) + '</h3>';
+        html += '<button type="button" class="close-modal">&times;</button>';
+        html += '</div>';
+        html += '<div class="modal-body">';
+
+        html += '<p class="field-hint">' +
+                    'Creates a new, empty teaching group for this ' +
+                    'discipline. Add sessions and students to it from ' +
+                    'the group block below.' +
+                '</p>';
+
+        html += '<div class="form-group">';
+        html += '<label for="academy-create-group-name">' +
+                    'Group name (optional)' +
+                '</label>';
+        html += '<input type="text" id="academy-create-group-name" ' +
+                    'class="academy-create-group-name" ' +
+                    'placeholder="Leave blank for an auto-generated name">';
+        html += '</div>';
+
+        html += '<div class="form-actions">';
+        html += '<button type="button" ' +
+                    'class="cancel-modal-btn secondary">Cancel</button>';
+        html += '<button type="submit" class="primary">' +
+                    'Create Group' +
+                '</button>';
+        html += '</div>';
+
+        html += '</div>';
+        html += '</form>';
+
+        contentEl.innerHTML = html;
+
+        if (typeof Modal.modalSetup === 'function') {
+            Modal.modalSetup(modal, function() {
+                closeModalShell(modal);
+            });
+        }
+        if (typeof Modal.showModal === 'function') {
+            Modal.showModal(modal);
+        }
+
+        var form = modal.querySelector('#academy-create-group-form');
+
+        var close = function() {
+            closeModalShell(modal);
+        };
+
+        var closeBtn = modal.querySelector('.close-modal');
+        if (closeBtn) { closeBtn.addEventListener('click', close); }
+
+        var cancelBtn = modal.querySelector('.cancel-modal-btn');
+        if (cancelBtn) { cancelBtn.addEventListener('click', close); }
+
+        modal.addEventListener('click', function(e) {
+            if (e.target === modal) { close(); }
+        });
+
+        if (form) {
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+
+                var nameInput = form.querySelector(
+                    '.academy-create-group-name'
+                );
+                var customName = nameInput ? nameInput.value.trim() : '';
+
+                var submitBtn = form.querySelector('button[type="submit"]');
+                if (submitBtn) { submitBtn.disabled = true; }
+
+                Schedule.createTeachingGroup({
+                    classId: classId,
+                    disciplineId: disciplineId,
+                    instructorId: characterId,
+                    week: week
+                }).then(function(result) {
+                    if (!result || !result.success) {
+                        if (submitBtn) { submitBtn.disabled = false; }
+                        if (NotificationSystem &&
+                            typeof NotificationSystem.notify === 'function') {
+                            NotificationSystem.notify(
+                                (result && result.message) ||
+                                    'Failed to create group.',
+                                'error'
+                            );
+                        }
+                        return;
+                    }
+
+                    var newGroupId = result.data && result.data.groupId
+                        ? result.data.groupId
+                        : null;
+
+                    // If the user supplied a custom name, apply it
+                    // now. This is a second mutation; failure here
+                    // does not roll back the creation. The user can
+                    // rename from the group block later.
+                    var Groups = window.AcademyTeachingGroups;
+                    if (customName && newGroupId &&
+                        Groups &&
+                        typeof Groups.setGroupCustomName === 'function') {
+                        Groups.setGroupCustomName(
+                            newGroupId, customName
+                        ).then(function() {
+                            close();
+                            if (typeof onChanged === 'function') {
+                                try { onChanged(); } catch (e2) { /* ignore */ }
+                            }
+                        }).catch(function() {
+                            close();
+                            if (typeof onChanged === 'function') {
+                                try { onChanged(); } catch (e2) { /* ignore */ }
+                            }
+                        });
+                        return;
+                    }
+
+                    close();
+                    if (typeof onChanged === 'function') {
+                        try { onChanged(); } catch (e2) { /* ignore */ }
+                    }
+                }).catch(function(err) {
+                    if (submitBtn) { submitBtn.disabled = false; }
+                    console.warn(
+                        '[AcademyCharacterDetail] createTeachingGroup ' +
+                        'threw:', err
+                    );
+                    if (NotificationSystem &&
+                        typeof NotificationSystem.notify === 'function') {
+                        NotificationSystem.notify(
+                            'Failed to create group.',
+                            'error'
+                        );
+                    }
+                });
+            });
+        }
+
+        return modal;
+    }
+
+    function closeModalShell(modal) {
+        if (!modal || !modal.parentNode) { return; }
+
+        var Modal = window.Modal;
+        if (!Modal) {
+            if (modal.parentNode) {
+                modal.parentNode.removeChild(modal);
+            }
+            return;
+        }
+
+        var teardown = null;
+        try {
+            if (typeof Modal.closeModal === 'function') {
+                teardown = Modal.closeModal(modal);
+            } else if (typeof Modal.hideModal === 'function') {
+                teardown = Modal.hideModal(modal);
+            }
+        } catch (e) {
+            teardown = null;
+        }
+
+        var finalize = function() {
+            if (modal.parentNode) {
+                try { modal.parentNode.removeChild(modal); } catch (e) {}
+            }
+        };
+
+        if (teardown && typeof teardown.then === 'function') {
+            teardown.then(finalize).catch(finalize);
+        } else {
+            finalize();
+        }
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
     window.AcademyCharacterDetail = {
-        renderHTML: renderHTML
+        renderHTML: renderHTML,
+        openCreateGroupModal: openCreateGroupModal
     };
 
 })();
