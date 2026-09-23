@@ -12,8 +12,8 @@
  *     every event to the active controller.
  *   - Own the shared CRUD modal callback wiring
  *     (AcademyCRUDModals.setOnChangeCallback).
- *   - Preserve scroll position of same-view sidebars across
- *     refreshes (C6).
+ *   - Preserve scroll position of same-view sidebars and the
+ *     character detail panel across refreshes.
  *   - Call the outgoing controller's unmount() when the active view
  *     changes and on shell teardown.
  *   - Own the Weekly Teams view's team selection. It is scoped to
@@ -69,31 +69,42 @@
  *   No feature-scoped state beyond the shell's own coordinator
  *   bookkeeping.
  *
- * SCROLL RESTORATION (C6):
+ * SCROLL RESTORATION:
  *   Same-view refreshes only. When render() runs, it captures the
- *   scrollTop of any scrollable sidebar currently in the DOM, swaps
- *   the container's innerHTML, mounts the active controller (which
- *   fills the content host with the sidebar HTML), then restores the
- *   captured scrollTop onto the same selector in the new DOM.
+ *   scrollTop of any scrollable container currently in the DOM,
+ *   swaps the container's innerHTML, mounts the active controller
+ *   (which fills the content host with the sidebar HTML), then
+ *   restores the captured scrollTop onto the same selector in the
+ *   new DOM.
  *
  *   ORDERING MATTERS:
- *     The sidebar elements live inside the controller's content
- *     host, not in the shell chrome. The host is empty until the
- *     controller writes it. So restore MUST run AFTER
- *     mountActiveControllerIfPresent(), not before. Restoring earlier
- *     finds no elements and is a silent no-op.
+ *     The scrollable containers live inside the controller's
+ *     content host, not in the shell chrome. The host is empty
+ *     until the controller writes it. So restore MUST run AFTER
+ *     mountActiveControllerIfPresent(), not before. Restoring
+ *     earlier finds no elements and is a silent no-op.
  *
  *   The set of selectors is deliberately small and explicit:
  *     - .academy-people-sidebar
  *     - .academy-weekly-teams-sidebar
  *     - .academy-exams-sidebar
  *     - .academy-exams-detail
+ *     - #academy-people-detail             (character detail panel)
+ *     - .academy-teaching-group-discipline-list
+ *     - .academy-character-discipline-list
  *
  *   Rules:
  *     - A selector that is absent before the swap is not captured.
  *     - A selector that is absent after the mount is not restored.
  *     - No fallback to document scroll.
  *     - Not persisted. Leaving a view and returning resets to 0.
+ *
+ *   The last three selectors cover the character detail panel and
+ *   its inner scrollable lists. Without them, any re-render fired
+ *   from a teaching-groups action (add student, remove student,
+ *   session edit) jumped the panel back to the top. With them, the
+ *   panel and the nested lists keep their scroll position across
+ *   every refresh.
  */
 
 (function() {
@@ -197,14 +208,29 @@
     var VALID_VIEW_IDS = VIEWS.map(function(v) { return v.id; });
 
     // ============================================================
-    // SCROLL RESTORATION (C6)
+    // SCROLL RESTORATION
     // ============================================================
+    //
+    // See the file header for the rationale behind each selector.
+    //
+    // Every selector is looked up with querySelector, so the first
+    // matching element is the one captured and restored. That is
+    // the intended behaviour: each selector names a container that
+    // is unique per render.
 
     var SCROLL_RESTORE_SELECTORS = [
         '.academy-people-sidebar',
         '.academy-weekly-teams-sidebar',
         '.academy-exams-sidebar',
-        '.academy-exams-detail'
+        '.academy-exams-detail',
+        // Character detail panel and its inner scrollable lists.
+        // These preserve scroll across any refresh that replaces
+        // the shell's innerHTML, including refreshes fired from
+        // teaching-groups actions, session edits, and the
+        // discipline picker.
+        '#academy-people-detail',
+        '.academy-teaching-group-discipline-list',
+        '.academy-character-discipline-list'
     ];
 
     function captureSidebarScroll(container) {
@@ -301,11 +327,11 @@
         html += renderViewNav(view);
         html += renderControllerHostForView(view);
 
-        // C6 — capture scrollable sidebars before the innerHTML
-        // swap. Restore AFTER the active controller has rendered
-        // into its content host: the sidebar elements live inside
-        // the host, and the host is empty until the controller
-        // fills it. Restoring any earlier is a silent no-op.
+        // Capture scrollable containers before the innerHTML swap.
+        // Restore AFTER the active controller has rendered into its
+        // content host: the containers live inside the host, and the
+        // host is empty until the controller fills it. Restoring any
+        // earlier is a silent no-op.
         var capturedScroll = captureSidebarScroll(container);
 
         container.innerHTML = html;
