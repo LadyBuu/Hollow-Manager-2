@@ -24,6 +24,7 @@
  *     instructor mode).
  *   - The schedule-slot-open flow (occupied cells).
  *   - The teaching-groups roster and session flows.
+ *   - The teaching-groups "create a new group" flow.
  *   - The discipline-hours picker (student mode): the panel that
  *     lets a student be dropped into an existing teaching group
  *     for one of their enrolled disciplines.
@@ -869,6 +870,9 @@
                 handleToggleTeachingGroupDiscipline(
                     el.dataset.disciplineId
                 );
+                return;
+            case 'teaching-groups-create-group':
+                handleCreateTeachingGroup(el);
                 return;
             case 'teaching-groups-add-student':
                 handleOpenTeachingGroupPicker(el.dataset.groupId);
@@ -2049,6 +2053,122 @@
 
         var ctx = getContext();
         ctx.onChange();
+    }
+
+    // ============================================================
+    // TEACHING GROUPS — CREATE NEW GROUP
+    // ============================================================
+    //
+    // The "+ New Group" button in a discipline header. It creates
+    // a new, empty teaching group for the (class, discipline,
+    // instructor) triple and re-renders.
+    //
+    // The button carries class-id, discipline-id, character-id
+    // and week as data attributes. The controller reads them,
+    // confirms the intent (a group is a persistent thing the user
+    // will then have to manage), and calls
+    // AcademySchedule.createTeachingGroup.
+    //
+    // createTeachingGroup is preferred over the domain module's
+    // own createGroup because it runs the same preflight checks
+    // the assign flow runs (class-discipline exists, instructor
+    // is enrolled, discipline is active that week) and returns
+    // the same structured rejection shape. That keeps the modal
+    // and the schedule resolver in agreement about what a valid
+    // group-creation context is.
+
+    function handleCreateTeachingGroup(el) {
+        if (!el || !el.dataset) { return; }
+
+        var classId = isNonEmptyString(el.dataset.classId)
+            ? String(el.dataset.classId)
+            : null;
+        var disciplineId = isNonEmptyString(el.dataset.disciplineId)
+            ? String(el.dataset.disciplineId)
+            : null;
+        var characterId = isNonEmptyString(el.dataset.characterId)
+            ? String(el.dataset.characterId)
+            : null;
+        var weekRaw = el.dataset.week;
+        var week = parseInt(weekRaw, 10);
+
+        if (!classId) {
+            notify('Class ID is required.', 'error');
+            return;
+        }
+        if (!disciplineId) {
+            notify('Discipline ID is required.', 'error');
+            return;
+        }
+        if (!characterId) {
+            notify('Instructor ID is required.', 'error');
+            return;
+        }
+        if (isNaN(week)) {
+            notify('Valid week is required.', 'error');
+            return;
+        }
+
+        var Schedule = getSchedule();
+        if (!Schedule ||
+            typeof Schedule.createTeachingGroup !== 'function') {
+            notify(
+                'Schedule module does not support group creation.',
+                'error'
+            );
+            return;
+        }
+
+        // Resolve the discipline name for the modal heading and
+        // the confirmation text. Best effort: a missing name just
+        // renders as "this discipline".
+        var disciplineName = '';
+        var AD = getDisciplines();
+        if (AD && typeof AD.getDiscipline === 'function') {
+            var disc = AD.getDiscipline(disciplineId);
+            if (disc && isNonEmptyString(disc.name)) {
+                disciplineName = disc.name;
+            }
+        }
+
+        var label = disciplineName || 'this discipline';
+
+        // The "+ New Group" button already creates an empty
+        // group; the user can then add sessions and students to
+        // it. Confirm first, because an accidental click leaves
+        // an empty group behind.
+        if (!confirm(
+            'Create a new teaching group for ' + label + '?\n\n' +
+            'The group starts empty. Add sessions and students to ' +
+            'it from the group block below.'
+        )) {
+            return;
+        }
+
+        Schedule.createTeachingGroup({
+            classId: classId,
+            disciplineId: disciplineId,
+            instructorId: characterId,
+            week: week
+        }).then(function(result) {
+            if (result && result.success) {
+                notify('Teaching group created.', 'success');
+                var ctx = getContext();
+                ctx.onChange();
+                return;
+            }
+            if (result && result.message) {
+                notify(result.message, 'error');
+            } else {
+                notify('Failed to create teaching group.', 'error');
+            }
+        }).catch(function(err) {
+            console.warn(
+                '[AcademyPeopleController] createTeachingGroup ' +
+                'failed:', err
+            );
+            notify('Failed to create teaching group.', 'error');
+        });
     }
 
     function handleOpenTeachingGroupPicker(groupId) {
