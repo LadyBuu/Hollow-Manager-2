@@ -9,8 +9,8 @@
  * delete an entire teaching group from the schedule.
  *
  * MODES:
- *   'assign'          (default) pick a discipline + group +
- *                     duration + optional location, submit
+ *   'assign'          (default) pick a discipline + instructor +
+ *                     group + duration + optional location, submit
  *                     → AcademySchedule.assignStudentToSlot
  *   'remove-student'  confirm removal of one student from one group
  *                     → AcademyTeachingGroups.removeMemberRecord
@@ -18,7 +18,7 @@
  *                     session and student membership it owns
  *                     → AcademySchedule.removeTeachingGroup
  *
- * GROUP PICKER:
+ * GROUP PICKER (this revision):
  *   In 'assign' mode, once a discipline and instructor are resolved,
  *   the modal lists every existing teaching group for the current
  *   (classId, disciplineId, instructorId) triple. The user picks one,
@@ -38,7 +38,132 @@
  *   Group count and student count are shown per option so the user
  *   can tell groups apart when the discipline has several.
  *
- * (Rest of the header unchanged.)
+ * WHAT THIS MODULE OWNS:
+ *   The modal shell, its content, its listeners, its view model, and
+ *   its submission handlers for all three modes. Opened from the
+ *   character detail panel's Schedule tab, via the People controller,
+ *   when the user clicks a grid cell.
+ *
+ * WHAT THIS MODULE DOES NOT OWN:
+ *   - The schedule grid. CalendarRenderer produces it.
+ *   - The click dispatch. AcademyPeopleController routes to this
+ *     module's openModal.
+ *   - Group and session resolution. AcademySchedule owns it.
+ *   - Discipline eligibility. The modal offers the class's active
+ *     offerings via AcademyClassDisciplinesQueries; whether a given
+ *     offering is legal for the student is decided by the domain.
+ *   - Location eligibility. The modal offers every location in the
+ *     store; the domain validates the chosen ID. An empty location
+ *     is valid.
+ *   - Collision policy. The domain detects collisions; this modal
+ *     surfaces the rejection and offers a retry with
+ *     allowCollisions.
+ *
+ * SESSION LOCATION:
+ *   The 'assign' mode form gains a location dropdown, sourced from
+ *   AcademyLocations.getLocations(). Optional. An empty selection
+ *   sends locationId: null.
+ *
+ *   The location is applied ONLY when the domain creates a new
+ *   session. When the student is assigned to an existing session
+ *   (matching day / start hour / duration on a candidate group),
+ *   the location select is ignored — the session keeps its own
+ *   location. That is the domain's rule and this modal honors it by
+ *   not pretending to override it.
+ *
+ *   To change the location of an existing session, use the session
+ *   form (from the Teaching Groups tab's Sessions list).
+ *
+ * INSTRUCTOR PICKER:
+ *   When more than one instructor teaches the selected discipline
+ *   for the selected class at the target week, the modal offers an
+ *   inline instructor picker and includes `instructorId` in the
+ *   submission payload. The domain then skips its own instructor
+ *   resolution and proceeds straight to the collision check.
+ *
+ *   The picker is reached two ways:
+ *
+ *     1. PRE-FLIGHT (primary).
+ *        When the user picks a discipline, the modal reads the
+ *        class's instructors for that (class, discipline, week)
+ *        directly via AcademyClasses.getClassInstructorIds and
+ *        decides:
+ *          - zero instructors: show an inline error, disable submit
+ *          - one instructor:   auto-select, no picker shown
+ *          - many instructors: show the picker
+ *
+ *     2. FALLBACK.
+ *        If the domain still returns reason 'ambiguous_instructor',
+ *        the modal enters the picker sub-state using the rejection's
+ *        data.instructorIds.
+ *
+ * MODAL SHAPE — ASSIGN MODE:
+ *   Header: "Assign discipline"
+ *   Body:
+ *     - Slot summary line
+ *     - Discipline select
+ *     - Instructor picker (only when > 1 instructor available)
+ *     - Group picker (only when instructor resolved)
+ *     - Duration select
+ *     - Location select (optional)
+ *   Footer:
+ *     - Cancel
+ *     - Assign (disabled until a discipline is chosen and an
+ *       instructor is resolved)
+ *
+ * MODAL SHAPE — REMOVE-STUDENT MODE:
+ *   Header: "Remove student from slot"
+ *   Body:
+ *     - Slot summary line
+ *     - Warning panel
+ *     - Detail: discipline, duration, member count
+ *   Footer:
+ *     - Cancel
+ *     - Remove (danger)
+ *
+ * MODAL SHAPE — REMOVE-GROUP MODE:
+ *   Header: "Delete teaching group"
+ *   Body:
+ *     - Slot summary line
+ *     - Warning panel
+ *     - Detail: discipline, duration, member count, session count
+ *   Footer:
+ *     - Cancel
+ *     - Delete Group (danger)
+ *
+ * COLLISION RETRY:
+ *   When assignStudentToSlot rejects with reason 'student_collision'
+ *   or reason 'instructor_collision', the modal shows a
+ *   confirmation inline. Other rejections are shown as an error
+ *   toast.
+ *
+ * WINDOW SEMANTICS:
+ *   The membership window is derived by the domain, not the modal.
+ *   The modal passes only `week`.
+ *
+ * INPUT VALIDATION:
+ *   The modal performs strict numeric validation on the values it
+ *   receives from the controller. This is UX validation, not
+ *   authority. The domain re-validates everything.
+ *
+ * LISTENER DISCIPLINE:
+ *   Content listeners are bound ONCE, on the modal's content element,
+ *   when the modal is created. Re-rendering replaces innerHTML but
+ *   does not rebind.
+ *
+ * DEPENDENCIES (MANDATORY):
+ *   - window.DomUtils
+ *   - window.Modal
+ *   - window.NotificationSystem
+ *   - window.AcademyUI
+ *   - window.AcademyClasses
+ *   - window.AcademyClassDisciplinesQueries
+ *   - window.AcademyDisciplines
+ *   - window.AcademyLocations
+ *   - window.AcademySchedule
+ *   - window.AcademyTeachingGroups
+ *   - window.CharacterQueries
+ *   - window.CalendarConstants
  */
 
 (function() {
@@ -191,7 +316,7 @@
     var _availableGroups = [];
     var _selectedGroupId = NEW_GROUP_SENTINEL;
 
-    // Instructor picker state. Same shape as before.
+    // Instructor picker state.
     var _availableInstructors = [];
     var _selectedInstructorId = '';
     var _instructorError = '';
@@ -350,18 +475,6 @@
     // ============================================================
     // GROUP RESOLUTION
     // ============================================================
-    //
-    // Reads every existing group for the current
-    // (classId, disciplineId, instructorId) triple and produces the
-    // option list the picker renders.
-    //
-    // Each option carries memberCount and sessionCount, so the user
-    // can tell groups apart. Both counts are computed here, not
-    // lazily in the renderer, so the renderer stays a pure string
-    // builder.
-    //
-    // The list is sorted by groupNumber ascending, which is the
-    // order the domain allocates them in.
 
     function readAvailableGroups(
         classId,
@@ -400,8 +513,6 @@
             return [];
         }
 
-        // Filter to groups active at the target week. A group that
-        // ended before this week cannot accept a new session.
         var active = [];
         for (var i = 0; i < rawGroups.length; i++) {
             var g = rawGroups[i];
@@ -426,7 +537,6 @@
             }
         }
 
-        // Sort by groupNumber ascending.
         active.sort(function(a, b) {
             var an = typeof a.groupNumber === 'number'
                 ? a.groupNumber : 0;
@@ -503,26 +613,8 @@
     // ============================================================
     // STATE REFRESH
     // ============================================================
-    //
-    // Called whenever the discipline or the instructor changes.
-    // Re-reads both the group list and the instructor state, so the
-    // two stay consistent.
-    //
-    // Clearing rules:
-    //   - Changing discipline clears _selectedGroupId, the pending
-    //     collision, and re-reads instructors for the new discipline.
-    //   - Changing instructor clears _selectedGroupId (the group
-    //     belongs to a specific instructor) but keeps _pendingCollision
-    //     cleared too (the collision was against a specific
-    //     instructor).
-    //
-    // After both are re-read, the group picker defaults to:
-    //   - the first existing group, when at least one exists;
-    //   - NEW_GROUP_SENTINEL, when none exist.
-    // The user can override this selection.
 
     function refreshInstructorAndGroupState() {
-        // ---- Instructor state ----
         _availableInstructors = [];
         _selectedInstructorId = '';
         _instructorError = '';
@@ -562,26 +654,11 @@
             _selectedInstructorId = instructorList[0].id;
         } else {
             _showInstructorPicker = true;
-            // _selectedInstructorId stays ''. The user picks.
         }
 
-        // ---- Group state ----
-        //
-        // Only resolvable when the instructor is known. When the
-        // picker is showing, groups cannot be listed yet.
         refreshGroupState();
     }
 
-    /**
-     * Refresh only the group list and the selected group, leaving
-     * the instructor state alone. Called from
-     * refreshInstructorAndGroupState, and from the instructor
-     * radio handler.
-     *
-     * When the instructor is not yet resolved, the group list is
-     * empty and the sentinel is selected. The picker renders a
-     * hint saying "choose an instructor first."
-     */
     function refreshGroupState() {
         _availableGroups = [];
         _selectedGroupId = NEW_GROUP_SENTINEL;
@@ -603,9 +680,6 @@
             _context.week
         );
 
-        // Default selection:
-        //   - first existing group, when one exists
-        //   - the new-group sentinel otherwise
         if (_availableGroups.length > 0) {
             _selectedGroupId = _availableGroups[0].groupId;
         } else {
@@ -996,8 +1070,7 @@
         html += '</select>';
         html += '</div>';
 
-        // ---- Instructor picker / error (only when a discipline
-        //      is selected) ----
+        // ---- Instructor picker / error ----
         if (isNonEmptyString(vm.selectedDisciplineId)) {
             if (isNonEmptyString(vm.instructorError)) {
                 html += renderInstructorError(vm.instructorError);
@@ -1009,10 +1082,6 @@
         }
 
         // ---- Group picker ----
-        //
-        // Rendered only when the discipline and instructor are
-        // both resolved. When they are, every existing group for
-        // the triple is a choice, plus the "new group" sentinel.
         if (isNonEmptyString(vm.selectedDisciplineId) &&
             isNonEmptyString(vm.selectedInstructorId) &&
             !isNonEmptyString(vm.instructorError)) {
@@ -1136,27 +1205,6 @@
         return html;
     }
 
-    // ============================================================
-    // GROUP PICKER
-    // ============================================================
-    //
-    // Renders a <select> listing every existing group for the
-    // (class, discipline, instructor) triple, plus the "new group"
-    // sentinel as the last option.
-    //
-    // Each existing option is labelled with its display name and,
-    // when there is more than one, its member/session counts. A
-    // single-group triple shows only the group name and the new-
-    // group option; the counts are not needed to disambiguate.
-    //
-    // The picker is disabled while _busy is true, matching the
-    // other form controls.
-    //
-    // When the discipline is set but no groups exist yet, the
-    // picker still renders, containing only the new-group option.
-    // This makes the "you will get a new group" outcome obvious
-    // before submission.
-
     function renderGroupPicker(vm) {
         var groups = Array.isArray(vm.groups) ? vm.groups : [];
         var showCounts = groups.length > 1;
@@ -1172,8 +1220,8 @@
                     (vm.busy ? ' disabled' : '') + '>';
 
         if (groups.length === 0) {
-            // No groups yet: only the sentinel, and it is selected.
-            html += '<option value="' + escapeAttribute(vm.newGroupSentinel) + '" ' +
+            html += '<option value="' +
+                        escapeAttribute(vm.newGroupSentinel) + '" ' +
                         'selected>' +
                         'Create a new group' +
                     '</option>';
@@ -1268,18 +1316,6 @@
         return html;
     }
 
-    /**
-     * Is the form ready to submit?
-     *
-     * The submit button is disabled until:
-     *   - a discipline is chosen
-     *   - the discipline resolves to exactly one instructor, OR
-     *     the user has picked one from the picker
-     *   - the group picker has a valid selection (which it always
-     *     does once the instructor is resolved)
-     *
-     * A collision prompt overrides the disabled state.
-     */
     function canSubmitAssign(vm) {
         if (vm.busy) { return false; }
         if (vm.pendingCollision) { return true; }
@@ -1530,11 +1566,7 @@
             'academy-schedule-assign-discipline'
         )) {
             _selectedDisciplineId = target.value || '';
-
-            // A new discipline invalidates the instructor picker,
-            // the group picker, and any prior collision.
             refreshInstructorAndGroupState();
-
             renderContent();
             return;
         }
@@ -1556,7 +1588,6 @@
             return;
         }
 
-        // ---- Instructor radio ----
         if (target.classList.contains(
             'academy-schedule-assign-instructor-radio'
         )) {
@@ -1567,22 +1598,16 @@
                 ? String(instrId)
                 : '';
 
-            // A changed instructor invalidates the group picker
-            // and any prior collision.
             _pendingCollision = null;
             refreshGroupState();
-
             renderContent();
             return;
         }
 
-        // ---- Group select ----
         if (target.classList.contains(
             'academy-schedule-assign-group-select'
         )) {
             _selectedGroupId = target.value || NEW_GROUP_SENTINEL;
-
-            // A changed group invalidates any prior collision.
             _pendingCollision = null;
             return;
         }
@@ -1683,13 +1708,6 @@
             allowCollisions: allowCollisions === true
         };
 
-        // Carry the group selection into the payload. Exactly one
-        // of groupId or forceNewGroup is set:
-        //
-        //   _selectedGroupId is a real group id
-        //     → payload.groupId
-        //   _selectedGroupId is the sentinel ('')
-        //     → payload.forceNewGroup = true
         if (isNonEmptyString(_selectedGroupId)) {
             payload.groupId = String(_selectedGroupId);
         } else {
