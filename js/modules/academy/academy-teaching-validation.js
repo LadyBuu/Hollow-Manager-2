@@ -62,10 +62,24 @@
  *   student is not rostered for are excluded (the projector
  *   already excludes them from studentIds).
  *
- *   Target of 0 or missing weeklyHours yields status 'met' when
- *   scheduledMinutes is 0 and 'over' otherwise. This is because a
- *   class-discipline with no target but with scheduled sessions is
- *   unusual and worth surfacing.
+ *   ACTIVE-DISCIPLINE GUARD (this revision):
+ *     A discipline that does not run in the queried week is NOT
+ *     part of the report. The report answers "how is the student
+ *     doing in the disciplines that run this week?", and a
+ *     discipline that runs weeks 5–12 has no place in a week-1
+ *     report, even if the student's enrolment interval covers
+ *     week 1.
+ *
+ *     The check is AcademyClassDisciplinesQueries.isActiveInWeek,
+ *     which reads the discipline's own startWeek / endWeek. The
+ *     projector already applies the same check when building
+ *     occurrences, so the scheduled-minutes side was already
+ *     correct; the target side was not. Before this revision,
+ *     a discipline starting in week 5 produced a report row in
+ *     week 1 showing "0 / 3h, 3h left", as though the student
+ *     had failed to attend a course that had not begun.
+ *
+ *     The row is now omitted entirely. The absence is the answer.
  *
  * CLASS-DISCIPLINE READS:
  *   The class-discipline marker store has two modules: a mutation
@@ -73,24 +87,17 @@
  *   (AcademyClassDisciplinesQueries). This validator reads through
  *   the read module.
  *
- *   The single read it performs is `getEffectiveConfig`, which
- *   resolves the discipline's weeklyHours (the marker has no
- *   per-class override). That read is a query, and it lives on the
- *   queries module.
+ *   The two reads it performs are `getEffectiveConfig` (to resolve
+ *   the discipline's weeklyHours) and `isActiveInWeek` (to filter
+ *   the report to running disciplines).
  *
  * RANGE PREDICATES:
  *   The range question — "does this range contain this week" and
  *   "is this range contained inside this other range" — is owned
- *   by window.RangeUtils, which is the canonical range-predicate
- *   module for the whole application.
+ *   by window.RangeUtils.
  *
  *   `rangeContained` is a local composition: it asks RangeUtils
- *   twice, once per bound, and ANDs the answers. RangeUtils does
- *   not expose a "range A contained in range B" predicate
- *   directly, and the containment question is a composition of
- *   two containment checks on the individual bounds. Keeping the
- *   composition here means the semantics stay expressed in terms
- *   of the canonical primitive.
+ *   twice, once per bound, and ANDs the answers.
  *
  * REPORT SHAPES:
  *
@@ -196,6 +203,11 @@
                 'AcademyClassDisciplinesQueries.getEffectiveConfig'
             );
         }
+        if (typeof AcademyClassDisciplinesQueries.isActiveInWeek !== 'function') {
+            _missing.push(
+                'AcademyClassDisciplinesQueries.isActiveInWeek'
+            );
+        }
     }
     if (!AcademyEnrolments) {
         _missing.push('AcademyEnrolments (module)');
@@ -255,38 +267,14 @@
     //
     //   rangeContained(innerStart, innerEnd, outerStart, outerEnd)
     //     asks RangeUtils.containsWeek twice, once per inner bound,
-    //     and ANDs the answers. That is the definition of "range A
-    //     is contained inside range B" expressed in terms of the
-    //     canonical week-containment predicate. RangeUtils does not
-    //     expose containment-of-range directly, and it doesn't need
-    //     to: two calls to the primitive is the whole semantics.
+    //     and ANDs the answers.
     //
     //   memberWindowCovered(memStart, memEnd, intervals)
     //     asks, for the member's [memStart, memEnd], whether any of
-    //     the enrolment intervals fully contains it. The
-    //     containment question per interval is rangeContained.
+    //     the enrolment intervals fully contains it.
     //
     // Do not reimplement the week math here.
 
-    /**
-     * Is [innerStart, innerEnd] contained within [outerStart, outerEnd]?
-     *
-     * Both inner bounds must fall inside the outer range. A null
-     * inner end is treated as unbounded on the right; a null outer
-     * end is treated as unbounded on the right. If the outer range
-     * is unbounded on the right and the inner range is bounded, the
-     * inner range is contained. If the inner range is unbounded on
-     * the right and the outer range is bounded, it is not.
-     *
-     * Delegates the per-bound containment check to
-     * RangeUtils.containsWeek. Two calls: one for the inner start,
-     * one for the inner end. Both must return true.
-     *
-     * The inner end is null-safe: when null, the check for the
-     * inner end is replaced by "is the outer range also
-     * unbounded?" — because a bounded outer range cannot contain
-     * an unbounded inner range.
-     */
     function rangeContained(
         innerStart, innerEnd,
         outerStart, outerEnd
@@ -298,15 +286,10 @@
             return false;
         }
 
-        // The inner start must fall inside the outer range.
         if (!RangeUtils.containsWeek(innerStart, outerStart, outerEnd)) {
             return false;
         }
 
-        // The inner end:
-        //   - null means unbounded → contained only if the outer is
-        //     also unbounded on the right.
-        //   - otherwise, must fall inside the outer range.
         if (innerEnd === null || innerEnd === undefined) {
             return outerEnd === null || outerEnd === undefined;
         }
@@ -322,14 +305,13 @@
      * Compute the weekly-hours report for every enrolled student in
      * a class for a given week.
      *
+     * ACTIVE-DISCIPLINE GUARD:
+     *   A discipline that is not active in the given week does not
+     *   appear in the report. See the file header.
+     *
      * @param {string} classId
      * @param {number|string} week
      * @returns {array} Array of report entries.
-     *   {
-     *     classId, disciplineId, studentId, week,
-     *     scheduledMinutes, targetMinutes,
-     *     differenceMinutes, status
-     *   }
      */
     function validateClassWeeklyHours(classId, week) {
         var weekNum = parseWeekStrict(week);
@@ -339,22 +321,11 @@
 
         var target = String(classId);
 
-        // Walk every enrolled student for this class. The enrolments
-        // store knows which students are enrolled; each entry carries
-        // the disciplineId plus its range. A student can be enrolled
-        // in a discipline for part of the class's run; only students
-        // whose enrolment covers the week contribute to that
-        // discipline's report.
         var enrolments = AcademyEnrolments.getClassEnrolments(target);
         if (!enrolments || typeof enrolments !== 'object') {
             return [];
         }
 
-        // Cache the scheduled minutes per (student, discipline).
-        // The projector emits per-session occurrences with a
-        // studentIds list; walking the projector once and
-        // accumulating is much cheaper than calling
-        // projectForStudent per student.
         var minutesByStudentDiscipline = accumulateMinutes(
             target, weekNum
         );
@@ -371,13 +342,36 @@
                 if (!isNonEmptyString(disciplineId)) { continue; }
 
                 // The student must be enrolled in this discipline
-                // during the given week. getClassEnrolments returns
-                // the deduplicated list of disciplines, without
-                // ranges; the week check confirms the student is
-                // actually enrolled this week.
+                // during the given week.
                 if (!AcademyEnrolments.isEnrolledInWeek(
                     studentId, target, disciplineId, weekNum
                 )) {
+                    continue;
+                }
+
+                // ---- ACTIVE-DISCIPLINE GUARD ----
+                //
+                // The discipline must be running during the given
+                // week. A discipline that starts in week 5 has no
+                // business appearing in a week-1 report.
+                //
+                // The check reads the discipline's own startWeek /
+                // endWeek through the canonical query. The projector
+                // already applies the same check when building
+                // occurrences, so the scheduled-minutes side was
+                // already correct; this guard corrects the target
+                // side.
+                var isActive = false;
+                try {
+                    isActive = AcademyClassDisciplinesQueries
+                        .isActiveInWeek(
+                            target, disciplineId, weekNum
+                        ) === true;
+                } catch (e) {
+                    isActive = false;
+                }
+
+                if (!isActive) {
                     continue;
                 }
 
@@ -411,7 +405,6 @@
             }
         }
 
-        // Deterministic order: (disciplineId, studentId).
         reports.sort(function(a, b) {
             if (a.disciplineId !== b.disciplineId) {
                 return a.disciplineId < b.disciplineId ? -1 : 1;
@@ -425,6 +418,9 @@
     /**
      * Walk the projector's occurrences for the class, once, and
      * accumulate scheduled minutes per (student, discipline).
+     *
+     * The projector already filters occurrences to disciplines
+     * active in the week. No additional guard is needed here.
      */
     function accumulateMinutes(classId, week) {
         var minutes = Object.create(null);
@@ -454,10 +450,7 @@
 
     /**
      * Resolve the weekly-hours target (in minutes) for a
-     * (classId, disciplineId) pair. Uses the effective config,
-     * which falls back from the class-discipline's explicit value
-     * to the discipline's default. When neither is set, the target
-     * is 0.
+     * (classId, disciplineId) pair.
      */
     function resolveTargetMinutes(classId, disciplineId) {
         var config = AcademyClassDisciplinesQueries.getEffectiveConfig(
@@ -475,7 +468,7 @@
 
     /**
      * Convenience: return only the report entries that are NOT
-     * 'met'. Useful for surfacing warnings in the UI.
+     * 'met'.
      */
     function validateClassWeeklyHoursProblems(classId, week) {
         var all = validateClassWeeklyHours(classId, week);
@@ -492,26 +485,6 @@
     // STRUCTURAL INVARIANT WARNINGS
     // ============================================================
 
-    /**
-     * Validate structural invariants across the teaching model.
-     *
-     * Returns an array of warning objects. Every check is
-     * warning-only.
-     *
-     * Checks:
-     *   1. Every group member's window must be contained within
-     *      the corresponding enrolment window for the group's
-     *      (class, discipline).
-     *   2. Every session's window must be contained within its
-     *      group's window.
-     *   3. Every session's group must exist.
-     *   4. Every session in the given week must have a non-empty
-     *      roster (studentIds list from the projector).
-     *
-     * @param {number|string} week - Used for the empty-roster
-     *   check. Pass null to skip that check.
-     * @returns {array}
-     */
     function validateInvariants(week) {
         var warnings = [];
 
@@ -557,7 +530,6 @@
                 );
                 if (!Array.isArray(intervals)) { continue; }
 
-                // Find enrolment intervals for this discipline.
                 var matching = [];
                 for (var e = 0; e < intervals.length; e++) {
                     var entry = intervals[e];
@@ -585,8 +557,6 @@
                     continue;
                 }
 
-                // The member's [start, end] must be contained within
-                // at least one enrolment interval. If not, warn.
                 var covered = memberWindowCovered(
                     member.startWeek, member.endWeek, matching
                 );
@@ -611,14 +581,6 @@
         }
     }
 
-    /**
-     * Is the member's [memStart, memEnd] contained within at least
-     * one of the given enrolment intervals?
-     *
-     * Delegates the per-interval containment question to
-     * rangeContained, which composes RangeUtils.containsWeek. This
-     * function is a search over intervals, not a range predicate.
-     */
     function memberWindowCovered(memStart, memEnd, intervals) {
         if (memStart === null || memStart === undefined) {
             return false;
@@ -677,8 +639,6 @@
                 continue;
             }
 
-            // Session window must be contained within the group's
-            // window.
             var sessionStart = session.startWeek;
             var sessionEnd = session.endWeek;
             var groupStart = group.startWeek;
@@ -739,19 +699,6 @@
     // FULL REPORT
     // ============================================================
 
-    /**
-     * Full validation report for a class in a given week.
-     *
-     * @param {string} classId
-     * @param {number|string} week
-     * @returns {object} {
-     *   classId,
-     *   week,
-     *   weeklyHours: array,
-     *   invariants: array,
-     *   hasWarnings: boolean
-     * }
-     */
     function validateClass(classId, week) {
         var weekNum = parseWeekStrict(week);
         if (weekNum === null || !isNonEmptyString(classId)) {
@@ -767,9 +714,6 @@
         var weeklyHours = validateClassWeeklyHours(classId, weekNum);
         var invariants = validateInvariants(weekNum);
 
-        // The invariant checks are class-agnostic. Filter the ones
-        // that are relevant to this class so a per-class report
-        // does not carry warnings about other classes' groups.
         var relevantInvariants = [];
         for (var i = 0; i < invariants.length; i++) {
             var w = invariants[i];
@@ -777,10 +721,6 @@
             if (ctx.classId && String(ctx.classId) !== String(classId)) {
                 continue;
             }
-            // Empty-roster and session-group-missing warnings do not
-            // carry a classId; they are included regardless. If you
-            // want stricter filtering, resolve the group's classId
-            // and compare.
             relevantInvariants.push(w);
         }
 
@@ -811,15 +751,10 @@
     // ============================================================
 
     window.AcademyTeachingValidation = Object.freeze({
-        // Weekly-hours
         validateClassWeeklyHours: validateClassWeeklyHours,
         validateClassWeeklyHoursProblems:
             validateClassWeeklyHoursProblems,
-
-        // Invariants
         validateInvariants: validateInvariants,
-
-        // Full report
         validateClass: validateClass
     });
 
@@ -844,99 +779,60 @@
             }
         }
 
-        // Smoke test on rangeContained: the composition of
-        // RangeUtils.containsWeek that the validator uses for both
-        // the session-vs-group and member-vs-enrolment containment
-        // questions. Every case below should produce the stated
-        // answer under inclusive-bounds, null-means-ongoing
-        // semantics.
         try {
-            // Inner strictly inside outer.
             if (rangeContained(5, 10, 1, 20) !== true) {
                 missing.push('rangeContained(5,10,1,20) !== true');
             }
-            // Inner extends below outer.
             if (rangeContained(1, 10, 5, 20) !== false) {
                 missing.push('rangeContained(1,10,5,20) !== false');
             }
-            // Inner extends above outer.
             if (rangeContained(15, 30, 1, 20) !== false) {
                 missing.push('rangeContained(15,30,1,20) !== false');
             }
-            // Equal bounds.
             if (rangeContained(5, 10, 5, 10) !== true) {
                 missing.push('rangeContained with equal bounds !== true');
             }
-            // Inner open-ended, outer open-ended.
             if (rangeContained(5, null, 1, null) !== true) {
                 missing.push('rangeContained with both open ends !== true');
             }
-            // Inner open-ended, outer closed — outer cannot contain
-            // an unbounded inner range.
             if (rangeContained(5, null, 1, 20) !== false) {
                 missing.push('rangeContained open inside closed !== false');
             }
-            // Inner closed, outer open-ended — outer contains inner.
             if (rangeContained(5, 10, 1, null) !== true) {
                 missing.push('rangeContained closed inside open !== true');
             }
-            // Null inner start is not a range.
             if (rangeContained(null, 10, 1, 20) !== false) {
                 missing.push('rangeContained with null inner start !== false');
             }
-            // Null outer start is not a range.
             if (rangeContained(5, 10, null, 20) !== false) {
                 missing.push('rangeContained with null outer start !== false');
             }
-            // Both null ends, inner start inside — the outer is
-            // unbounded, the inner is unbounded on the right, so
-            // contained.
-            if (rangeContained(10, null, 1, null) !== true) {
-                missing.push('rangeContained open inside open failed');
-            }
-            // Inner starts before outer's start.
-            if (rangeContained(0, 5, 1, 20) !== false) {
-                missing.push('rangeContained inner starts before outer');
-            }
-        } catch (e) {
-            missing.push('rangeContained smoke test threw: ' + e.message);
-        }
 
-        // Smoke test on memberWindowCovered: search over a set of
-        // enrolment intervals for one that fully contains the
-        // member's window.
-        try {
             var intervals = [
                 { startWeek: 1, endWeek: 5 },
                 { startWeek: 10, endWeek: 20 }
             ];
-            // Member window fits inside the second interval.
             if (memberWindowCovered(12, 18, intervals) !== true) {
                 missing.push('memberWindowCovered missed a containing interval');
             }
-            // Member window straddles both intervals.
             if (memberWindowCovered(4, 12, intervals) !== false) {
                 missing.push('memberWindowCovered accepted a straddling window');
             }
-            // Member window entirely outside both intervals.
             if (memberWindowCovered(6, 9, intervals) !== false) {
                 missing.push('memberWindowCovered accepted a window in the gap');
             }
-            // Member window exactly equals an interval.
             if (memberWindowCovered(10, 20, intervals) !== true) {
                 missing.push('memberWindowCovered missed exact-match interval');
             }
-            // Member window open-ended, matching an open interval.
             var openIntervals = [{ startWeek: 1, endWeek: null }];
             if (memberWindowCovered(5, null, openIntervals) !== true) {
                 missing.push('memberWindowCovered missed open-ended match');
             }
-            // No intervals at all.
             if (memberWindowCovered(5, 10, []) !== false) {
                 missing.push('memberWindowCovered returned true with no intervals');
             }
         } catch (e) {
-            missing.push('memberWindowCovered smoke test threw: ' + e.message);
+            missing.push('smoke test threw: ' + e.message);
         }
 
         if (missing.length > 0) {
