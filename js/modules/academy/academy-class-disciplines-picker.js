@@ -21,8 +21,7 @@
  *     - It reads its VM from
  *       AcademyAggregator.getClassDisciplinesPickerViewModel(classId,
  *       { week }).
- *     - It writes through AcademyClassDisciplines only. It does not
- *       touch any other store.
+ *     - It writes through AcademyClassDisciplines only.
  *     - It closes on the Close button, on backdrop click, and on
  *       Escape.
  *     - Only one picker modal is open at a time. Opening a second
@@ -31,16 +30,10 @@
  * WHAT THIS MODULE DOES NOT OWN:
  *   - The class-discipline marker store   (AcademyClassDisciplines)
  *   - The class-discipline marker reads   (AcademyClassDisciplinesQueries)
- *     The picker receives its read data pre-assembled on the VM
- *     from AcademyAggregator. It does not import the queries module
- *     directly; if the VM ever needs a field this modal reads, the
- *     aggregator adds it. The modal stays a pure renderer over the
- *     VM.
  *   - The enrolment store                 (AcademyEnrolments)
  *   - Instructor-of-a-discipline-for-a-class. That relationship is
  *     expressed through enrolments and edited from the character's
- *     own Disciplines tab, not from this picker. The picker does
- *     NOT show, edit, or reference instructors.
+ *     own Disciplines tab, not from this picker.
  *   - The global discipline list          (AcademyDisciplines)
  *   - The class detail panel              (AcademyClassDetail)
  *   - The People controller               (AcademyPeopleController)
@@ -57,51 +50,40 @@
  *       -> AcademyClassDisciplines.setClassDiscipline with the
  *          mandatory flag flipped.
  *
- *   Both go through MutationPipeline. On success, the VM is
- *   refetched so the row reflects the new state. On failure, the
- *   pipeline has already notified; the modal does not re-render.
+ *   Both go through MutationPipeline. On success AND on failure,
+ *   the VM is refetched so the row reflects the domain's actual
+ *   state. The domain is authoritative; the UI returns to it.
  *
- *   The modal has three close paths (Close button, backdrop click,
- *   Escape key), all of which route through closeModal.
+ * ASYNC SAFETY:
+ *   Every asynchronous callback captures the current
+ *   `_instanceToken`. If a new modal has been opened (or the
+ *   current one closed) before the callback runs, the callback is
+ *   a no-op. This prevents stale operations from touching a fresh
+ *   modal.
  *
- * SELECT ALL / UNSELECT ALL:
- *   Two buttons in the summary row.
+ *   The same token guards per-row mutations and bulk operations.
  *
- *     Select all    Enrols every currently-unoffered discipline as
- *                   optional (mandatory: false). Skips disciplines
- *                   that are already offered.
+ * PER-ROW LOCK:
+ *   A discipline whose mutation is in flight is tracked in
+ *   `_pendingDisciplineIds`. Clicks on that row are ignored until
+ *   the mutation completes. Other rows remain interactive.
+ *   The locked row renders disabled.
  *
- *     Unselect all  Removes every offering. Confirmation is required
- *                   when more than a small threshold of disciplines
- *                   would be affected.
+ * BULK OPERATIONS:
+ *   Select all / Unselect all are sequential chains of individual
+ *   mutations. Each underlying write is atomic; the bulk operation
+ *   as a whole is not transactional. Partial success with clear
+ *   failure feedback is the outcome.
  *
- *   Both are sequential chains of individual mutations. Each
- *   underlying write is atomic; the bulk operation as a whole is not
- *   transactional, because a partial success with clear failure
- *   feedback is better than a hard rollback that discards successful
- *   writes.
+ *   While a bulk runs, `_busy` is true and all interactive
+ *   controls render disabled.
  *
- *   While a bulk operation is running, the picker's interactivity is
- *   suspended (a running flag). Clicks during the run are ignored;
- *   the "Select all" / "Unselect all" buttons show as disabled.
- *
- * LISTENER DISCIPLINE:
- *   Content listeners (delegated change + click) are bound ONCE, on
- *   the modal's content element, when the modal is created. Every
- *   render replaces the content's innerHTML but does not rebind.
- *
- *   Modal-level listeners (Escape and click-outside) are installed
- *   by Modal.modalSetup, which is idempotent per modal. The picker
- *   passes its closeModal as the setup callback so that Modal's
- *   handlers route through the picker's cleanup path.
- *
- * ROW LAYOUT:
- *   Each discipline row is:
- *
- *     [checkbox]  [name]  [week window badge]  [mandatory checkbox]  [Mandatory label]
- *
- *   The mandatory checkbox and label only appear when the discipline
- *   is offered. Unoffered rows carry only the checkbox and the name.
+ * VM CONTRACT:
+ *   The aggregator's contract is strict: `vm.disciplines` is an
+ *   array. A malformed VM is reported as an error, not silently
+ *   rendered as "no disciplines exist yet." A throw from the
+ *   aggregator propagates as a visible error; it is not translated
+ *   into "class not found."
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -109,16 +91,6 @@
  *   - window.NotificationSystem
  *   - window.AcademyAggregator
  *   - window.AcademyClassDisciplines
- *
- * USAGE:
- *   var Picker = window.AcademyClassDisciplinesPicker;
- *
- *   Picker.openModal('class_123', {
- *       week: 5,
- *       onClose: function() {
- *           // re-render the class detail panel
- *       }
- *   });
  */
 
 (function() {
@@ -178,9 +150,8 @@
     // CONSTANTS
     // ============================================================
 
-    // Threshold for confirming a bulk operation. Below this, the
-    // bulk happens without a confirm dialog. Above it, the user is
-    // asked first.
+    // Threshold for confirming a bulk operation. Above this, the
+    // user is asked first.
     var BULK_CONFIRM_THRESHOLD = 5;
 
     // ============================================================
@@ -196,10 +167,23 @@
     var _contentChangeHandler = null;
     var _contentClickHandler = null;
 
-    // True while a bulk operation is running. Clicks that would
-    // issue new mutations are ignored during the run; the Select
-    // all / Unselect all buttons render disabled.
+    // The last authoritative VM. Re-rendered on busy-state changes
+    // without refetching.
+    var _vm = null;
+
+    // Bulk operation in flight. When true, all interactive controls
+    // render disabled.
     var _busy = false;
+
+    // Per-discipline lock. A discipline ID in this set has a
+    // mutation in flight; its row renders disabled and clicks on it
+    // are ignored.
+    var _pendingDisciplineIds = Object.create(null);
+
+    // Instance token. Incremented on each open. Asynchronous
+    // callbacks compare their captured token against this value and
+    // become no-ops when it has changed.
+    var _instanceToken = 0;
 
     // ============================================================
     // HELPERS
@@ -217,6 +201,22 @@
         return row && row.offered === true;
     }
 
+    function isRowLocked(disciplineId) {
+        return _pendingDisciplineIds[String(disciplineId)] === true;
+    }
+
+    function acquireRowLock(disciplineId) {
+        _pendingDisciplineIds[String(disciplineId)] = true;
+    }
+
+    function releaseRowLock(disciplineId) {
+        delete _pendingDisciplineIds[String(disciplineId)];
+    }
+
+    function hasAnyRowLock() {
+        return Object.keys(_pendingDisciplineIds).length > 0;
+    }
+
     // ============================================================
     // ENTRY POINT
     // ============================================================
@@ -229,8 +229,7 @@
      * @param {number} [options.week]     - Display week for
      *   `activeInWeek` badges. Optional.
      * @param {function} [options.onClose] - Called once, when the
-     *   modal closes for any reason. The caller uses this to
-     *   re-render the class detail panel.
+     *   modal closes for any reason.
      * @returns {object|null} The modal element, or null on failure
      */
     function openModal(classId, options) {
@@ -251,21 +250,16 @@
             ? options.onClose
             : null;
         _busy = false;
+        _pendingDisciplineIds = Object.create(null);
+        _vm = null;
 
-        var vm = null;
-        try {
-            vm = AcademyAggregator.getClassDisciplinesPickerViewModel(
-                _classId,
-                { week: _week }
-            );
-        } catch (e) {
-            console.warn(
-                '[AcademyClassDisciplinesPicker] ' +
-                'getClassDisciplinesPickerViewModel threw:', e
-            );
-        }
+        // Bump the instance token. Any callback that fires from a
+        // previous instance becomes a no-op.
+        _instanceToken++;
+        var myToken = _instanceToken;
 
-        if (!vm) {
+        var vm = fetchVM();
+        if (vm === null) {
             notify('Class not found.', 'error');
             resetState();
             return null;
@@ -287,13 +281,15 @@
 
         _modal = modal;
         _contentEl = contentEl;
+        _vm = vm;
 
         _contentChangeHandler = handleContentChange;
         _contentClickHandler = handleContentClick;
         contentEl.addEventListener('change', _contentChangeHandler);
         contentEl.addEventListener('click', _contentClickHandler);
 
-        renderContent(vm);
+        renderContent();
+        void myToken;
 
         Modal.modalSetup(modal, function() {
             closeModal();
@@ -323,14 +319,10 @@
             } catch (e) { /* ignore */ }
         }
 
-        _modal = null;
-        _contentEl = null;
-        _classId = null;
-        _week = null;
-        _onClose = null;
-        _contentChangeHandler = null;
-        _contentClickHandler = null;
-        _busy = false;
+        // Invalidate any in-flight callbacks.
+        _instanceToken++;
+
+        resetState();
 
         if (modal) {
             try {
@@ -359,41 +351,79 @@
         _onClose = null;
         _contentChangeHandler = null;
         _contentClickHandler = null;
+        _vm = null;
         _busy = false;
+        _pendingDisciplineIds = Object.create(null);
+    }
+
+    // ============================================================
+    // VM FETCH
+    // ============================================================
+    //
+    // Distinguishes three outcomes:
+    //   - a well-formed VM (returns the VM)
+    //   - the aggregator returned null (returns null → class
+    //     missing)
+    //   - the aggregator threw (propagates)
+    //
+    // The caller decides what to do. The picker does not translate
+    // a throw into "class not found."
+
+    function fetchVM() {
+        if (!_classId) { return null; }
+
+        var vm = AcademyAggregator.getClassDisciplinesPickerViewModel(
+            _classId,
+            { week: _week }
+        );
+
+        if (vm === null || vm === undefined) {
+            return null;
+        }
+
+        if (!Array.isArray(vm.disciplines)) {
+            throw new Error(
+                '[AcademyClassDisciplinesPicker] Aggregator returned a ' +
+                'VM whose `disciplines` field is not an array. ' +
+                'The VM contract requires an array.'
+            );
+        }
+
+        return vm;
+    }
+
+    function refetchAndRender() {
+        if (!_contentEl || !_classId) { return; }
+
+        var vm;
+        try {
+            vm = fetchVM();
+        } catch (e) {
+            console.warn(
+                '[AcademyClassDisciplinesPicker] refetch failed:', e
+            );
+            notify('Failed to refresh picker.', 'error');
+            closeModal();
+            return;
+        }
+
+        if (vm === null) {
+            notify('Class no longer exists.', 'error');
+            closeModal();
+            return;
+        }
+
+        _vm = vm;
+        renderContent();
     }
 
     // ============================================================
     // RENDER
     // ============================================================
 
-    function renderContent(vm) {
-        if (!_contentEl || !vm) { return; }
-        _contentEl.innerHTML = buildModalHTML(vm);
-    }
-
-    function refetchAndRender() {
-        if (!_contentEl || !_classId) { return; }
-
-        var vm = null;
-        try {
-            vm = AcademyAggregator.getClassDisciplinesPickerViewModel(
-                _classId,
-                { week: _week }
-            );
-        } catch (e) {
-            console.warn(
-                '[AcademyClassDisciplinesPicker] ' +
-                'refetch getClassDisciplinesPickerViewModel threw:', e
-            );
-        }
-
-        if (!vm) {
-            notify('Failed to refresh picker.', 'error');
-            closeModal();
-            return;
-        }
-
-        renderContent(vm);
+    function renderContent() {
+        if (!_contentEl || !_vm) { return; }
+        _contentEl.innerHTML = buildModalHTML(_vm);
     }
 
     // ============================================================
@@ -401,9 +431,7 @@
     // ============================================================
 
     function buildModalHTML(vm) {
-        var disciplines = Array.isArray(vm.disciplines)
-            ? vm.disciplines
-            : [];
+        var disciplines = vm.disciplines;
 
         var offeredCount = countOffered(disciplines);
         var totalCount = disciplines.length;
@@ -450,7 +478,12 @@
     }
 
     function renderSummaryRow(offeredCount, totalCount) {
-        var busyAttr = _busy ? ' disabled' : '';
+        // Bulk buttons are disabled while a bulk operation runs.
+        // They are NOT disabled for per-row locks: a row lock does
+        // not block the bulk buttons, and a bulk operation that
+        // touches a locked row is prevented at the write handler,
+        // not by greying out the button.
+        var disabledAttr = _busy ? ' disabled' : '';
 
         var html = '';
         html += '<div class="academy-picker-summary">';
@@ -466,11 +499,13 @@
 
         html += '<div class="academy-picker-bulk-actions">';
         html += '<button type="button" class="small secondary" ' +
-                    'data-picker-action="select-all"' + busyAttr + '>' +
+                    'data-picker-action="select-all"' +
+                    disabledAttr + '>' +
                     'Select all' +
                 '</button>';
         html += '<button type="button" class="small secondary" ' +
-                    'data-picker-action="unselect-all"' + busyAttr + '>' +
+                    'data-picker-action="unselect-all"' +
+                    disabledAttr + '>' +
                     'Unselect all' +
                 '</button>';
         html += '</div>';
@@ -491,10 +526,17 @@
         if (!row || !row.id) { return ''; }
 
         var offered = isOffered(row);
-        var busyAttr = _busy ? ' disabled' : '';
+
+        // A row is disabled while EITHER a bulk operation is
+        // running OR this specific row has a mutation in flight.
+        var disabled = _busy || isRowLocked(row.id);
+        var disabledAttr = disabled ? ' disabled' : '';
 
         var rowClasses = 'academy-picker-row';
         if (offered) { rowClasses += ' academy-picker-row-offered'; }
+        if (isRowLocked(row.id)) {
+            rowClasses += ' academy-picker-row-busy';
+        }
 
         var html = '';
         html += '<div class="' + rowClasses + '" ' +
@@ -509,7 +551,7 @@
                     'data-discipline-id="' +
                         DomUtils.escapeAttribute(row.id) + '"' +
                     (offered ? ' checked' : '') +
-                    busyAttr + '>';
+                    disabledAttr + '>';
         html += '<span class="academy-picker-discipline-name">' +
                     DomUtils.escapeHtml(row.name) +
                 '</span>';
@@ -542,7 +584,7 @@
                         'data-discipline-id="' +
                             DomUtils.escapeAttribute(row.id) + '"' +
                         (row.mandatory ? ' checked' : '') +
-                        busyAttr + '>';
+                        disabledAttr + '>';
             html += '<span class="academy-picker-mandatory-label">' +
                         'Mandatory' +
                     '</span>';
@@ -567,6 +609,7 @@
     // ============================================================
 
     function handleContentClick(e) {
+        // Bulk operations block all click actions.
         if (_busy) {
             e.preventDefault();
             return;
@@ -609,32 +652,39 @@
         if (!target || !target.dataset) { return; }
 
         var action = target.dataset.pickerAction;
+        var disciplineId = target.dataset.disciplineId;
 
         if (action === 'toggle-offered') {
             e.preventDefault();
-            handleToggleOffered(
-                target.dataset.disciplineId,
-                target.checked
-            );
+            handleToggleOffered(disciplineId, target.checked);
             return;
         }
 
         if (action === 'toggle-mandatory') {
             e.preventDefault();
-            handleToggleMandatory(
-                target.dataset.disciplineId,
-                target.checked
-            );
+            handleToggleMandatory(disciplineId, target.checked);
             return;
         }
     }
 
     // ============================================================
-    // WRITE HANDLERS
+    // WRITE HANDLERS — PER-ROW
     // ============================================================
 
     function handleToggleOffered(disciplineId, checked) {
         if (!_classId || !isNonEmptyString(disciplineId)) { return; }
+
+        // Row lock: ignore repeat clicks while a write for this
+        // discipline is in flight.
+        if (isRowLocked(disciplineId)) {
+            // Restore the input to its prior value. The domain
+            // state has not changed.
+            refetchAndRender();
+            return;
+        }
+
+        acquireRowLock(disciplineId);
+        renderContent(); // reflect the lock immediately
 
         var promise;
 
@@ -652,35 +702,65 @@
         }
 
         promise.then(function(result) {
+            releaseRowLock(disciplineId);
+
             if (result && result.success) {
                 refetchAndRender();
+                return;
             }
+
+            // Failure. Domain state is authoritative. Refetch so
+            // the checkbox returns to the real value.
+            if (result && result.message) {
+                notify(result.message, 'error');
+            }
+            refetchAndRender();
         }).catch(function(err) {
+            releaseRowLock(disciplineId);
             console.warn(
                 '[AcademyClassDisciplinesPicker] ' +
                 'toggle-offered failed:', err
             );
             notify('Failed to update the class-discipline.', 'error');
+            refetchAndRender();
         });
     }
 
     function handleToggleMandatory(disciplineId, checked) {
         if (!_classId || !isNonEmptyString(disciplineId)) { return; }
 
+        if (isRowLocked(disciplineId)) {
+            refetchAndRender();
+            return;
+        }
+
+        acquireRowLock(disciplineId);
+        renderContent();
+
         AcademyClassDisciplines.setClassDiscipline(
             _classId,
             disciplineId,
             { mandatory: checked }
         ).then(function(result) {
+            releaseRowLock(disciplineId);
+
             if (result && result.success) {
                 refetchAndRender();
+                return;
             }
+
+            if (result && result.message) {
+                notify(result.message, 'error');
+            }
+            refetchAndRender();
         }).catch(function(err) {
+            releaseRowLock(disciplineId);
             console.warn(
                 '[AcademyClassDisciplinesPicker] ' +
                 'toggle-mandatory failed:', err
             );
             notify('Failed to update the class-discipline.', 'error');
+            refetchAndRender();
         });
     }
 
@@ -691,25 +771,22 @@
     function handleSelectAll() {
         if (!_classId || _busy) { return; }
 
-        var vm = null;
-        try {
-            vm = AcademyAggregator.getClassDisciplinesPickerViewModel(
-                _classId,
-                { week: _week }
+        // Row locks in flight: the bulk operation should not race
+        // with them. Refuse to start.
+        if (hasAnyRowLock()) {
+            notify(
+                'Wait for the current update to finish before running ' +
+                'a bulk operation.',
+                'info'
             );
-        } catch (e) {
-            vm = null;
-        }
-
-        if (!vm) {
-            notify('Failed to refresh picker.', 'error');
             return;
         }
 
+        var vm = _vm;
+        if (!vm) { return; }
+
         var targets = [];
-        var disciplines = Array.isArray(vm.disciplines)
-            ? vm.disciplines
-            : [];
+        var disciplines = vm.disciplines;
         for (var i = 0; i < disciplines.length; i++) {
             var row = disciplines[i];
             if (!row || !row.id) { continue; }
@@ -749,25 +826,20 @@
     function handleUnselectAll() {
         if (!_classId || _busy) { return; }
 
-        var vm = null;
-        try {
-            vm = AcademyAggregator.getClassDisciplinesPickerViewModel(
-                _classId,
-                { week: _week }
+        if (hasAnyRowLock()) {
+            notify(
+                'Wait for the current update to finish before running ' +
+                'a bulk operation.',
+                'info'
             );
-        } catch (e) {
-            vm = null;
-        }
-
-        if (!vm) {
-            notify('Failed to refresh picker.', 'error');
             return;
         }
 
+        var vm = _vm;
+        if (!vm) { return; }
+
         var targets = [];
-        var disciplines = Array.isArray(vm.disciplines)
-            ? vm.disciplines
-            : [];
+        var disciplines = vm.disciplines;
         for (var i = 0; i < disciplines.length; i++) {
             var row = disciplines[i];
             if (!row || !row.id) { continue; }
@@ -806,48 +878,38 @@
     /**
      * Run a list of mutation-thunks sequentially.
      *
-     * Each thunk returns a Promise<{success, message?}>. Failures
-     * are collected. At the end:
-     *   - If no failures: optionally notify a success message, and
-     *     refetch-and-render.
-     *   - If any failures: notify the failure message with the
-     *     count, log details, and still refetch-and-render so the
-     *     modal reflects whatever succeeded.
+     * The instance token is captured at the start. Every thunk and
+     * every completion callback checks that the token is still
+     * current; if the modal has been closed or replaced, the run
+     * stops and no further UI updates happen.
      *
-     * While the chain runs, `_busy` is true. The rendered modal
-     * shows disabled controls. `renderContent` is not called until
-     * the chain completes, so the DOM stays stable during the run.
+     * `_busy` is set for the duration. The rendered modal shows
+     * disabled controls. The bulk completes with a summary notify,
+     * then refetches and re-renders.
      *
-     * @param {array} thunks
-     * @param {string} successMessage
-     * @param {string} failureMessage
+     * The bulk operation as a whole is not transactional. Each
+     * underlying write is atomic; partial success is possible and
+     * is reported.
      */
     function runBulk(thunks, successMessage, failureMessage) {
-        _busy = true;
+        var myToken = _instanceToken;
 
-        // Re-render immediately so the buttons show disabled state.
-        // This does not refetch the VM; it reuses the last-rendered
-        // state, which is safe because only `_busy` changed.
-        var currentVM = null;
-        try {
-            currentVM = AcademyAggregator.getClassDisciplinesPickerViewModel(
-                _classId,
-                { week: _week }
-            );
-        } catch (e) {
-            currentVM = null;
-        }
-        if (currentVM) {
-            renderContent(currentVM);
-        }
+        _busy = true;
+        renderContent();
 
         var failures = [];
         var chain = Promise.resolve();
 
         thunks.forEach(function(thunk) {
             chain = chain.then(function() {
+                if (myToken !== _instanceToken) {
+                    return;
+                }
                 return thunk();
             }).then(function(result) {
+                if (myToken !== _instanceToken) {
+                    return;
+                }
                 if (!result || !result.success) {
                     failures.push({
                         message: (result && result.message) ||
@@ -855,6 +917,9 @@
                     });
                 }
             }).catch(function(err) {
+                if (myToken !== _instanceToken) {
+                    return;
+                }
                 failures.push({
                     message: String(err && err.message || err)
                 });
@@ -862,6 +927,10 @@
         });
 
         chain.then(function() {
+            if (myToken !== _instanceToken) {
+                return;
+            }
+
             _busy = false;
 
             if (failures.length === 0) {
@@ -880,9 +949,6 @@
                 }
             }
 
-            // Refetch the VM and re-render. This reflects every
-            // write that succeeded and clears the disabled state
-            // on every control.
             refetchAndRender();
         });
     }
