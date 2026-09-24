@@ -15,50 +15,31 @@
  *   - Academic tab rendering delegates to
  *     CharacterClassView.renderAcademicTab
  *
+ * CLASS OPTIONS (v30):
+ *   The class dropdown reads AcademyClasses.getClasses() directly.
+ *   The retired AcademyQueries facade is no longer consulted.
+ *
  * PER-FIELD RANDOM:
  *   Physical and personality fields sourced from fixed pools carry a
  *   small ⟳ button (class .field-random-btn) that rerolls only that
  *   field. The button is bound via delegation in character-events.js;
  *   this file only emits the markup.
  *
- *   The button is emitted next to:
- *
- *     Physical tab:   gender, eyes, hair, skin, height, weight, build
- *     Personality:    traits, ideals, bonds, flaws, alignment, likes,
- *                     dislikes, habits, fears, goals, authority,
- *                     conflictStyle, socialStyle, quirks
- *
- *   Free-text fields (names, appearance notes) do NOT carry the
- *   button. Nor do combat notes, HP, MP, weapons, or academic fields.
- *
- *   The tab-level ⟳ Random button is unchanged: it rerolls every
- *   randomizable field on the tab.
- *
  * TAB STATE:
  *   - state.currentTab is module-level. It survives across renders.
  *   - Switching between two EXISTING characters keeps the current
- *     tab. If you were on the Professional tab for character A,
- *     clicking character B leaves you on the Professional tab.
+ *     tab.
  *   - Opening a NEW character (editId === null) resets the tab to
- *     'name'. This is the only reset trigger. A fresh form should
- *     start at the top.
- *   - CharacterForm.hide() also resets the tab to 'name', because
- *     hiding the form is the end of a session.
+ *     'name'.
+ *   - CharacterForm.hide() also resets the tab to 'name'.
  *
  * FORM TAB BUTTONS (BUG-E12):
  *   - getTabsHTML() emits <button type="button"> for every tab.
- *     Without type="button", a button inside a <form> defaults to
- *     type="submit".
- *
- * PROFESSIONAL TAB:
- *   The Professional tab carries an empty
- *   <div id="professional-view"> container. After the form HTML
- *   is written into the DOM, render() delegates to
- *   CharacterViews.renderCharacterProfessional(char).
  *
  * EDIT ID RESOLUTION:
- *   - getCurrentEditId() / setCurrentEditId() prefer the global
- *     functions exposed by characters/index.js.
+ *   getCurrentEditId() / setCurrentEditId() prefer the global
+ *   functions exposed by characters/index.js. The `window._currentEditId`
+ *   fallback exists only for the brief window before index.js runs.
  */
 
 (function() {
@@ -82,7 +63,7 @@
     function getCharacterStatsView() { return window.CharacterStatsView || null; }
     function getCharacterViews() { return window.CharacterViews || null; }
     function getCharacterClassView() { return window.CharacterClassView || null; }
-    function getAcademyQueries() { return window.AcademyQueries || null; }
+    function getAcademyClasses() { return window.AcademyClasses || null; }
     function getFormUtils() { return window.FormUtils || null; }
     function getDomUtils() { return window.DomUtils || null; }
 
@@ -116,7 +97,7 @@
         if (!getCharacterConstants()) { missing.push('CharacterConstants'); }
         if (!getMagicConstants()) { missing.push('MagicConstants'); }
         if (!getCharacterStats()) { missing.push('CharacterStats'); }
-        if (!getAcademyQueries()) { missing.push('AcademyQueries'); }
+        if (!getAcademyClasses()) { missing.push('AcademyClasses'); }
         if (!getFormUtils()) { missing.push('FormUtils'); }
         if (!getDomUtils()) { missing.push('DomUtils'); }
 
@@ -240,10 +221,6 @@
 
     var state = { currentTab: 'name' };
 
-    // Tracks the edit ID from the last render() call. Used to detect
-    // transitions to a new-character session. `undefined` means no
-    // render has happened yet, which is distinct from `null` (a
-    // "new character" session).
     var _lastRenderedEditId = undefined;
 
     var VALID_TABS = ['name', 'physical', 'personality', 'academic', 'professional', 'combat', 'social', 'notes'];
@@ -259,12 +236,17 @@
     // ============================================================
     // CLASS OPTIONS
     // ============================================================
+    //
+    // The class dropdown reads AcademyClasses.getClasses() directly.
+    // The retired AcademyQueries facade is no longer consulted.
 
     function getClassOptionsHTML(selectedId) {
-        var AcademyQueries = getAcademyQueries();
-        if (!AcademyQueries) { return '<option value="">None</option>'; }
+        var AcademyClasses = getAcademyClasses();
+        if (!AcademyClasses || typeof AcademyClasses.getClasses !== 'function') {
+            return '<option value="">None</option>';
+        }
 
-        var classes = AcademyQueries.getClasses() || [];
+        var classes = AcademyClasses.getClasses() || [];
         var html = '<option value="">None</option>';
 
         for (var i = 0; i < classes.length; i++) {
@@ -452,16 +434,6 @@
         }
 
         // ---- TAB SESSION RULE ----
-        //
-        // Switching between two EXISTING characters keeps the current
-        // tab. Opening a NEW character (editId null) resets to the
-        // Name tab.
-        //
-        // The reset fires only when the previous render was for an
-        // existing character and the new render is for a null editId.
-        // It does NOT fire when transitioning between two existing
-        // characters, and it does NOT fire on the first render after
-        // page load (when _lastRenderedEditId is undefined).
         var normalizedEditId = editId === undefined || editId === null || editId === ''
             ? null
             : String(editId);
@@ -1209,7 +1181,6 @@
         var FormUtils = getFormUtils();
         if (!FormUtils) { return; }
 
-        // Name Tab
         FormUtils.setField('char-firstName', char.firstName);
         FormUtils.setField('char-middleName', char.middleName);
         FormUtils.setField('char-lastName', char.lastName);
@@ -1259,7 +1230,6 @@
         }
         applyDeceasedState(isDeceased);
 
-        // Physical Tab
         FormUtils.setField('char-eyes', char.eyes);
         FormUtils.setField('char-hair', char.hair);
         FormUtils.setField('char-skin', char.skin);
@@ -1268,7 +1238,6 @@
         FormUtils.setField('char-build', char.build);
         FormUtils.setField('char-appearanceNotes', char.appearanceNotes);
 
-        // Personality Tab
         if (char.personality) {
             FormUtils.setField('char-personality-traits', char.personality.traits);
             FormUtils.setField('char-personality-ideals', char.personality.ideals);
@@ -1287,7 +1256,6 @@
             FormUtils.setField('char-personality-quirks', char.personality.quirks);
         }
 
-        // Professional Tab
         FormUtils.setField('char-specialty', char.specialty);
 
         var careerContainer = document.getElementById('career-status-container');
@@ -1303,7 +1271,6 @@
             }
         }
 
-        // Combat Tab - Stats
         var statKeys = getStatKeys();
         if (char.stats) {
             statKeys.forEach(function(key) {
@@ -1312,11 +1279,9 @@
             });
         }
 
-        // Combat Tab - HP / MP
         FormUtils.setField('char-hp', char.hp || 0);
         FormUtils.setField('char-mp', char.mp || 0);
 
-        // Combat Tab - Weapons
         var weaponsContainer = document.getElementById('weapons-container');
         if (weaponsContainer) {
             weaponsContainer.textContent = '';
@@ -1326,10 +1291,8 @@
             });
         }
 
-        // Combat Tab - Combat Notes
         FormUtils.setField('char-combat-notes', char.combatNotes || '');
 
-        // Notes Tab
         FormUtils.setField('char-notes-tab', char.notes || '');
     }
 
@@ -1416,7 +1379,6 @@
         var statMax = getStatMax();
         var statDefault = getStatDefault();
 
-        // Previous Names
         var previousNames = [];
         var prevInputs = form.querySelectorAll('.previous-name-input');
         for (var i = 0; i < prevInputs.length; i++) {
@@ -1424,7 +1386,6 @@
             if (val) { previousNames.push(val); }
         }
 
-        // Display Parts
         var displayParts = {
             first:    FormUtils.getField('char-displayFirst') === true,
             nickname: FormUtils.getField('char-displayNickname') === true,
@@ -1433,7 +1394,6 @@
             alias:    FormUtils.getField('char-displayAlias') === true
         };
 
-        // Deceased / Life Events
         var isDeceased = FormUtils.getField('char-deceased') === true;
 
         var deathYear = '';
@@ -1457,7 +1417,6 @@
         }
 
         var dto = {
-            // Name tab
             firstName: FormUtils.getField('char-firstName') || '',
             middleName: FormUtils.getField('char-middleName') || '',
             lastName: FormUtils.getField('char-lastName') || '',
@@ -1466,20 +1425,16 @@
             previousNames: previousNames,
             displayParts: displayParts,
 
-            // Birth year
             birthYear: birthYearRaw,
 
-            // Gender / Attraction
             gender: FormUtils.getField('char-gender') || '',
             attraction: FormUtils.getField('char-attraction') || '',
 
-            // Life events
             deceased: isDeceased,
             deathYear: deathYear,
             deathAge: deathAge,
             deathCause: deathCause,
 
-            // Physical tab
             eyes: FormUtils.getField('char-eyes') || '',
             hair: FormUtils.getField('char-hair') || '',
             skin: FormUtils.getField('char-skin') || '',
@@ -1488,27 +1443,20 @@
             build: FormUtils.getField('char-build') || '',
             appearanceNotes: FormUtils.getField('char-appearanceNotes') || '',
 
-            // Professional tab
             specialty: FormUtils.getField('char-specialty') || '',
             careerStatus: collectCareerStatus(form),
 
-            // Combat tab - Physical stats
             stats: {},
 
-            // Combat tab - HP / MP
             hp: parseInt(FormUtils.getField('char-hp'), 10) || 0,
             mp: parseInt(FormUtils.getField('char-mp'), 10) || 0,
 
-            // Combat tab - Weapons
             weapons: collectWeapons(form),
 
-            // Combat tab - Combat notes
             combatNotes: FormUtils.getField('char-combat-notes') || '',
 
-            // Notes tab - general notes
             notes: FormUtils.getField('char-notes-tab') || '',
 
-            // Personality tab
             personality: {
                 traits: FormUtils.getField('char-personality-traits') || '',
                 ideals: FormUtils.getField('char-personality-ideals') || '',
@@ -1528,13 +1476,11 @@
             }
         };
 
-        // Stats
         statKeys.forEach(function(key) {
             var value = parseInt(FormUtils.getField('char-stat-' + key), 10);
             dto.stats[key] = !isNaN(value) ? Math.max(statMin, Math.min(statMax, value)) : statDefault;
         });
 
-        // Magic — collected via CharacterStatsView
         var CharacterStatsView = getCharacterStatsView();
         if (CharacterStatsView && typeof CharacterStatsView.collectMagicalFields === 'function') {
             dto.magic = CharacterStatsView.collectMagicalFields();
