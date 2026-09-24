@@ -26,8 +26,8 @@
  * SELECTION LIFECYCLE:
  *   The three selections — view, class, character — interact:
  *
- *     view change       -> character may clear (non-People views
- *                          do not carry a character selection);
+ *     view change       -> character may clear (non-People views do
+ *                          not carry a character selection);
  *                          class remains
  *     class change      -> character clears unconditionally
  *     character change  -> no effect on view or class
@@ -47,17 +47,17 @@
  *       -> reads CharacterQueries.getCharacterById(charId).mode
  *       -> returns 'student' | 'instructor' | null
  *
- *   READ SEMANTICS (this revision):
- *     - null / blank charId             -> null
- *     - character does not exist        -> null
+ *   READ SEMANTICS:
+ *     - null / blank charId               -> null
+ *     - character does not exist          -> null
  *     - character exists, mode==='instructor' -> 'instructor'
- *     - character exists, anything else -> 'student'
- *     - CharacterQueries unavailable    -> throws
+ *     - character exists, anything else   -> 'student'
+ *     - CharacterQueries unavailable      -> throws
  *
- *   The prior revision collapsed "missing character" into 'student'.
- *   That was wrong: a missing character is a failed reference, not
- *   evidence that a person is a student. Callers that need a mode
- *   for a missing character must decide what that means.
+ *   A missing character is not the same as a student. Callers that
+ *   need a mode for a missing character must decide what that
+ *   means. An earlier revision returned 'student' for that case,
+ *   which fabricated a domain fact out of a failed reference.
  *
  *   The write-side API (setCharacterMode, toggleCharacterMode,
  *   clearCharacterMode, isValidCharacterMode, getValidCharacterModes,
@@ -69,9 +69,6 @@
  *   module kept a per-character mode map in session state; the mode
  *   reset to 'student' on every page reload. That made the instructor
  *   relationship non-persistent, which is wrong for a domain fact.
- *   `loadState`'s strict merge already drops unknown fields, so the
- *   old `characterModes` key is discarded silently when a stale
- *   session state is loaded.
  *
  * DEPENDENCY MODEL:
  *   CharacterQueries is LAZY-BUT-MANDATORY. The module loads without
@@ -100,12 +97,23 @@
  *   - Character mode write API (v27) — the mode is a domain fact.
  *   - Character mode sessionStorage map (v27) — same reason.
  *   - `expandedRoundIds` internal name and `getExpandedRoundIds` /
- *     `clearExpandedRoundIds` public API (this revision). The map
- *     stores COLLAPSED rounds (non-default exceptions). The old
- *     name inverted the meaning on every read. Renamed to
- *     `collapsedRoundIds` / `getCollapsedRoundIds` /
- *     `clearCollapsedRoundIds`. Pre-rename session state is
- *     abandoned on first load; UI collapse state is disposable.
+ *     `clearExpandedRoundIds` public API. The map stores COLLAPSED
+ *     rounds (non-default exceptions). The old name inverted the
+ *     meaning on every read. Renamed to `collapsedRoundIds` /
+ *     `getCollapsedRoundIds` / `clearCollapsedRoundIds`.
+ *
+ *   MIGRATION NOTE — v4 → v5:
+ *     The storage key was bumped from `academy_ui_state_v4` to
+ *     `academy_ui_state_v5` in the same revision that renamed the
+ *     round map. A v4 session state carries `expandedRoundIds`
+ *     (the old name); a v5 state carries `collapsedRoundIds` (the
+ *     new name). The strict merge in mergeWithDefaults only reads
+ *     known fields, so a v4 state loaded under the v5 key would
+ *     have been silently emptied. Bumping the key makes the
+ *     abandonment explicit instead of accidental: the v4 state is
+ *     discarded wholesale, and the module starts from defaults.
+ *     Round collapse state is disposable by design; nothing of
+ *     value is lost.
  *
  * ROLE VOCABULARY (CANONICAL):
  *   The People view filter uses three values:
@@ -401,8 +409,13 @@
     // ============================================================
     // STORAGE
     // ============================================================
+    //
+    // v5 key: see the MIGRATION NOTE in the file header. The bump
+    // from v4 to v5 abandons the pre-rename `expandedRoundIds` map
+    // explicitly rather than dropping it silently through the
+    // strict merge.
 
-    var STORAGE_KEY = 'academy_ui_state_v4';
+    var STORAGE_KEY = 'academy_ui_state_v5';
 
     function loadState() {
         var defaults = createDefaultState();
@@ -434,7 +447,7 @@
      * from pre-v27 state. It is not a known field anymore, so it is
      * not carried forward.
      *
-     * The storage key was bumped to v4 in this revision, so pre-
+     * The storage key was bumped to v5 in this revision, so pre-
      * rename `expandedRoundIds` state is also abandoned wholesale.
      */
     function mergeWithDefaults(parsed, defaults) {
@@ -475,7 +488,8 @@
         }
 
         // Expanded ids: values must be strictly `true`, and keys must
-        // be non-empty strings. Anything else is dropped.
+        // be non-empty strings. Anything else is dropped. A persisted
+        // { "abc": "banana" } is not valid UI state.
         if (parsed.expandedIds &&
             typeof parsed.expandedIds === 'object' &&
             !Array.isArray(parsed.expandedIds)) {
@@ -1078,6 +1092,9 @@
     // ============================================================
 
     // Public DEFAULT_STATE is a DEEP-frozen clone of the template.
+    // deepFreeze is applied so a caller cannot reach into a nested
+    // object (filters.people, expandedIds, collapsedRoundIds) and
+    // corrupt the published template.
     var DEFAULT_STATE_PUBLIC = deepFreeze(createDefaultState());
 
     window.AcademyUI = Object.freeze({
