@@ -138,26 +138,20 @@
  * DELETE CASCADE SEMANTICS:
  *   Deleting a character is a CASCADE. In a single transaction it:
  *     1. Removes the character from every team's members list.
- *     2. Removes the character from academy.weeklyTeams (this used to
- *        be inline; now routed through AcademyCascade).
- *     3. Strips curriculum.autoGroups references (instructor + students).
- *     4. Removes academy.grades records.
- *     5. Removes academy.rankings records.
- *     6. Removes academy.enrolments entries (class-scoped).
- *     7. Removes academy.socialScores entries.
- *     8. Removes social relationships.
- *     9. Removes mission support-personnel references.
- *    10. Removes tournament participant / elimination / winner / match
- *        references.
- *    11. Removes curriculum.schedules[charId].
- *    12. Removes curriculum.restDays[charId].
- *    13. Prunes curriculum.metadata keys prefixed with the character ID.
- *    14. Deletes the character entity itself.
+ *     2. Removes the character from academy.weeklyTeams.
+ *     3. Removes academy.grades records.
+ *     4. Removes academy.rankings records.
+ *     5. Removes academy.enrolments entries (class-scoped).
+ *     6. Removes academy.socialScores entries.
+ *     7. Removes social relationships.
+ *     8. Removes mission support-personnel references.
+ *     9. Removes tournament participant / elimination / winner /
+ *        match references.
+ *    10. Deletes the character entity itself.
  *
- *   Steps 2–10 are delegated to AcademyCascade.characterDeleted.
- *   Step 1 and steps 11–13 stay inline, because they touch character-
- *   adjacent stores (team entity rosters and curriculum) that are not
- *   academy-domain concerns.
+ *   Steps 2–9 are delegated to AcademyCascade.characterDeleted.
+ *   Step 1 stays inline, because it touches the team entity roster,
+ *   which is not an academy-domain concern.
  *
  * IMPORTANT:
  *   - No DOM extraction here - form extraction is in character-form.js
@@ -322,12 +316,6 @@
      *
      * Shared by updateExistingCharacter, createNewCharacter, and
      * backfillDeathCascades so the three paths cannot drift.
-     *
-     * @param {object} data - pipeline snapshot
-     * @param {string} charId
-     * @param {number} deathYear
-     * @param {string} contextLabel - 'save', 'create', or 'backfill';
-     *   used only in the warning message.
      */
     function runDeathCascade(data, charId, deathYear, contextLabel) {
         var TeamCore = getTeamCore();
@@ -953,9 +941,7 @@
      * SINGLE TRANSACTION:
      *   Every character's cascade is applied to the same snapshot,
      *   and the snapshot is committed once. If any character's
-     *   cascade throws, the whole backfill rolls back. In practice
-     *   endStintsForCharacter never throws (it is documented as
-     *   pure with respect to the snapshot), so this is a safety net.
+     *   cascade throws, the whole backfill rolls back.
      *
      * NO-OP WITHOUT TEAMCORE:
      *   If TeamCore.endStintsForCharacter is unavailable, the
@@ -1027,9 +1013,6 @@
 
                     charactersScanned++;
 
-                    // endStintsForCharacter is pure with respect to
-                    // the snapshot and never throws. It returns a
-                    // result object summarising what it did.
                     var result = TeamCore.endStintsForCharacter(
                         data,
                         String(char.id),
@@ -1042,13 +1025,6 @@
                         result.stintsEnded > 0) {
                         charactersWithStintsEnded++;
                         stintsEndedTotal += result.stintsEnded;
-
-                        // Track touched teams. endStintsForCharacter
-                        // reports teamsTouched as a count, not a set,
-                        // so we walk the team store to identify the
-                        // touched teams for the summary. This is a
-                        // cheap post-pass; it does not re-mutate
-                        // anything.
                     }
 
                     if (typeof result.teamsTouched === 'number' &&
@@ -1132,18 +1108,13 @@
     // and how the character's enrolments are interpreted.
     //
     // It is deliberately NOT settable through save(). The generic
-    // save path preserves whatever mode is on the record. This
-    // mirrors the classIds and disciplineIds rule: fields owned by a
-    // dedicated mutation are not touched by generic save.
+    // save path preserves whatever mode is on the record.
     //
     // NO SIDE EFFECTS. Flipping mode does not:
     //   - Clear or reassign enrolments.
     //   - Touch teaching groups.
     //   - Touch exam sequences.
     //   - Cascade into any other store.
-    //
-    // If the mode ever needs to trigger side effects, they are added
-    // here, in one place, rather than scattered across call sites.
 
     function setMode(charId, mode) {
         if (!checkDependencies()) {
@@ -1249,61 +1220,7 @@
     //   - Cross-domain cleanup (enrolments, grades, rankings, social
     //     scores, weekly teams, auto-groups, social, missions,
     //     tournaments) routes through AcademyCascade.characterDeleted.
-    //   - Character-side cleanup (team entity rosters, curriculum
-    //     schedules / rest days / metadata) stays inline.
-
-    function stripCharacterFromCurriculum(curriculum, charId) {
-        var result = {
-            scheduleEntriesRemoved: 0,
-            restDaysEntriesRemoved: 0,
-            metadataEntriesPruned: 0
-        };
-
-        if (!curriculum || typeof curriculum !== 'object' || !charId) {
-            return result;
-        }
-
-        var target = String(charId);
-
-        if (curriculum.schedules &&
-            typeof curriculum.schedules === 'object' &&
-            !Array.isArray(curriculum.schedules)) {
-            if (curriculum.schedules[target] !== undefined) {
-                delete curriculum.schedules[target];
-                result.scheduleEntriesRemoved = 1;
-            }
-        }
-
-        if (curriculum.restDays &&
-            typeof curriculum.restDays === 'object' &&
-            !Array.isArray(curriculum.restDays)) {
-            if (curriculum.restDays[target] !== undefined) {
-                delete curriculum.restDays[target];
-                result.restDaysEntriesRemoved = 1;
-            }
-        }
-
-        if (curriculum.metadata &&
-            typeof curriculum.metadata === 'object' &&
-            !Array.isArray(curriculum.metadata)) {
-            var prefix = target + '_';
-            var keysToRemove = [];
-
-            Object.keys(curriculum.metadata).forEach(function(key) {
-                if (String(key).indexOf(prefix) === 0) {
-                    keysToRemove.push(key);
-                }
-            });
-
-            for (var i = 0; i < keysToRemove.length; i++) {
-                delete curriculum.metadata[keysToRemove[i]];
-            }
-
-            result.metadataEntriesPruned = keysToRemove.length;
-        }
-
-        return result;
-    }
+    //   - Character-side cleanup (team entity rosters) stays inline.
 
     function deleteCharacter(id) {
         if (!checkDependencies()) {
@@ -1343,7 +1260,6 @@
             mutate: function(data) {
                 var cascade = {
                     teamMembershipsRemoved: 0,
-                    curriculum: null,
                     academyCascade: null
                 };
 
@@ -1365,11 +1281,6 @@
                 var Cascade = getAcademyCascade();
                 if (Cascade && typeof Cascade.characterDeleted === 'function') {
                     cascade.academyCascade = Cascade.characterDeleted(data, targetId);
-                }
-
-                // ---- Character-side: curriculum ----
-                if (data.curriculum && typeof data.curriculum === 'object') {
-                    cascade.curriculum = stripCharacterFromCurriculum(data.curriculum, targetId);
                 }
 
                 // ---- Remove the character entity itself ----
@@ -1406,16 +1317,6 @@
                         if (summary) {
                             details.push(summary.replace(/^\(|\)$/g, ''));
                         }
-                    }
-                }
-
-                if (c.curriculum) {
-                    var cur = c.curriculum;
-                    var curTotal = cur.scheduleEntriesRemoved +
-                                   cur.restDaysEntriesRemoved +
-                                   cur.metadataEntriesPruned;
-                    if (curTotal > 0) {
-                        details.push(curTotal + ' curriculum reference(s)');
                     }
                 }
 
