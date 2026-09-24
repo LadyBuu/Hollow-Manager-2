@@ -12,6 +12,40 @@
  * AcademyCalendarAggregator.getDisciplineScheduleSummaryViewModel
  * and returns an HTML string.
  *
+ * VM CONTRACT (STRICT):
+ *   The renderer trusts the VM. Every field it reads is guaranteed
+ *   by the aggregator's contract. A malformed VM is an aggregator
+ *   bug and must surface as a thrown error, not as a summary panel
+ *   that quietly claims fewer students than exist.
+ *
+ *   {
+ *     classId:          string,
+ *     className:        string,
+ *     disciplineId:     string,
+ *     disciplineName:   string,
+ *     week:             number,
+ *
+ *     enrolledCount:    integer >= 0,
+ *     assignedCount:    integer >= 0,
+ *     unassignedCount:  integer >= 0,
+ *     eliminatedCount:  integer >= 0,
+ *
+ *     assigned:   [ rowVM, ... ],   // guaranteed array
+ *     unassigned: [ rowVM, ... ]    // guaranteed array
+ *   }
+ *
+ *   rowVM:
+ *   {
+ *     id:                string,
+ *     name:              string,
+ *     status:            string,
+ *     eliminated:        boolean,
+ *     eliminationWeek:   number | null
+ *   }
+ *
+ *   INVARIANT: enrolledCount === assignedCount + unassignedCount.
+ *   The renderer asserts this. A mismatch is an aggregator bug.
+ *
  * PANEL SHAPE:
  *   A single disclosure. The header shows the three counts. The
  *   body lists the unassigned students. Eliminated students appear
@@ -37,6 +71,17 @@
  *   (academy-discipline-controller.js), which flips the block's
  *   data-expanded attribute, the caret glyph, and the body's
  *   display. This module only emits the marker.
+ *
+ * ACCESSIBILITY:
+ *   The toggle is a <button> with aria-expanded and aria-controls.
+ *   The body carries a matching id. Both are required so that
+ *   assistive technology can associate the toggle with the region
+ *   it expands.
+ *
+ *   The id is composed from the discipline ID so that a page with
+ *   multiple summaries (rare today, possible later) does not
+ *   produce duplicate ids. The discipline ID is HTML-attribute-
+ *   escaped before being embedded.
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
@@ -86,26 +131,101 @@
         return typeof value === 'number' && isFinite(value);
     }
 
+    function isNonNegativeInteger(value) {
+        return typeof value === 'number' &&
+            isFinite(value) &&
+            Number.isInteger(value) &&
+            value >= 0;
+    }
+
+    // ============================================================
+    // VM VALIDATION
+    // ============================================================
+    //
+    // Strict. The renderer trusts the VM. A missing field is an
+    // aggregator bug, not a request for a default value.
+
+    function validateVM(viewModel) {
+        if (!viewModel || typeof viewModel !== 'object') {
+            throw new Error(
+                '[AcademyDisciplineScheduleSummary] renderHTML requires ' +
+                'a view model object.'
+            );
+        }
+
+        var vm = viewModel;
+
+        if (!isNonNegativeInteger(vm.enrolledCount)) {
+            throw new Error(
+                '[AcademyDisciplineScheduleSummary] VM.enrolledCount ' +
+                'must be a non-negative integer.'
+            );
+        }
+        if (!isNonNegativeInteger(vm.assignedCount)) {
+            throw new Error(
+                '[AcademyDisciplineScheduleSummary] VM.assignedCount ' +
+                'must be a non-negative integer.'
+            );
+        }
+        if (!isNonNegativeInteger(vm.unassignedCount)) {
+            throw new Error(
+                '[AcademyDisciplineScheduleSummary] VM.unassignedCount ' +
+                'must be a non-negative integer.'
+            );
+        }
+        if (!Array.isArray(vm.assigned)) {
+            throw new Error(
+                '[AcademyDisciplineScheduleSummary] VM.assigned must ' +
+                'be an array.'
+            );
+        }
+        if (!Array.isArray(vm.unassigned)) {
+            throw new Error(
+                '[AcademyDisciplineScheduleSummary] VM.unassigned must ' +
+                'be an array.'
+            );
+        }
+
+        // Invariant: enrolled = assigned + unassigned.
+        if (vm.enrolledCount !== vm.assignedCount + vm.unassignedCount) {
+            throw new Error(
+                '[AcademyDisciplineScheduleSummary] VM invariant ' +
+                'violated: enrolledCount (' + vm.enrolledCount +
+                ') !== assignedCount (' + vm.assignedCount +
+                ') + unassignedCount (' + vm.unassignedCount + '). ' +
+                'This is an aggregator bug.'
+            );
+        }
+
+        // Counts must agree with list lengths.
+        if (vm.assignedCount !== vm.assigned.length) {
+            throw new Error(
+                '[AcademyDisciplineScheduleSummary] VM.assignedCount (' +
+                vm.assignedCount + ') does not match the length of ' +
+                'VM.assigned (' + vm.assigned.length + ').'
+            );
+        }
+        if (vm.unassignedCount !== vm.unassigned.length) {
+            throw new Error(
+                '[AcademyDisciplineScheduleSummary] VM.unassignedCount (' +
+                vm.unassignedCount + ') does not match the length of ' +
+                'VM.unassigned (' + vm.unassigned.length + ').'
+            );
+        }
+
+        return vm;
+    }
+
     // ============================================================
     // PUBLIC ENTRY POINT
     // ============================================================
 
     function renderHTML(viewModel) {
-        if (!viewModel || typeof viewModel !== 'object') {
-            return '';
-        }
+        var vm = validateVM(viewModel);
 
-        var vm = viewModel;
-
-        var enrolled = isFiniteNumber(vm.enrolledCount)
-            ? vm.enrolledCount
-            : 0;
-        var assigned = isFiniteNumber(vm.assignedCount)
-            ? vm.assignedCount
-            : 0;
-        var unassigned = isFiniteNumber(vm.unassignedCount)
-            ? vm.unassignedCount
-            : 0;
+        var enrolled = vm.enrolledCount;
+        var assigned = vm.assignedCount;
+        var unassigned = vm.unassignedCount;
 
         var html = '';
         html += '<div class="academy-discipline-schedule-summary" ' +
@@ -178,6 +298,13 @@
             ? vm.disciplineName
             : 'Discipline';
 
+        // Body id includes the discipline id so multiple summaries
+        // on one page do not collide. Escaped for attribute context.
+        var bodyId = 'academy-discipline-summary-body-' +
+            (isNonEmptyString(vm.disciplineId)
+                ? vm.disciplineId
+                : 'unknown');
+
         var html = '';
 
         html += '<div class="academy-discipline-summary-block" ' +
@@ -187,7 +314,9 @@
         html += '<button type="button" ' +
                     'class="academy-discipline-summary-toggle" ' +
                     'data-action="discipline-summary-toggle" ' +
-                    'aria-expanded="false">';
+                    'aria-expanded="false" ' +
+                    'aria-controls="' +
+                        escapeAttribute(bodyId) + '">';
 
         html += '<span class="academy-discipline-summary-caret">' +
                     '\u25b8' +
@@ -231,6 +360,7 @@
 
         // ---- Collapsible body ----
         html += '<div class="academy-discipline-summary-body" ' +
+                    'id="' + escapeAttribute(bodyId) + '" ' +
                     'style="display:none;">';
         html += renderUnassignedList(vm.unassigned);
         html += '</div>';
@@ -249,7 +379,12 @@
 
         for (var i = 0; i < unassigned.length; i++) {
             var row = unassigned[i];
-            if (!row || !row.id) { continue; }
+            if (!row || !row.id) {
+                throw new Error(
+                    '[AcademyDisciplineScheduleSummary] VM.unassigned[' +
+                    i + '] must be an object with an id.'
+                );
+            }
 
             var rowClass = 'academy-discipline-summary-row';
             if (row.eliminated === true) {
