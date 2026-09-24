@@ -23,6 +23,20 @@
  *       selectClass(), selectCharacter(), setDisplayWeek(),
  *       setPeopleFilter(), ...
  *
+ * SELECTION LIFECYCLE:
+ *   The three selections — view, class, character — interact:
+ *
+ *     view change       -> character may clear (non-People views
+ *                          do not carry a character selection);
+ *                          class remains
+ *     class change      -> character clears unconditionally
+ *     character change  -> no effect on view or class
+ *
+ *   A class selection survives a view change because every view
+ *   that reads it (Weekly Teams, Rankings, Discipline Schedule
+ *   tab, Locations, Exams) is class-scoped. Only the character
+ *   selection is People-specific.
+ *
  * CHARACTER MODE (v27+):
  *   The character's mode is a DOMAIN FACT. It lives on the character
  *   record as `character.mode`, and it is written by
@@ -30,9 +44,20 @@
  *   that fact:
  *
  *     AcademyUI.getCharacterMode(charId)
- *       → reads CharacterQueries.getCharacterById(charId).mode
- *       → falls back to 'student' when the character is missing
- *         or the field is malformed
+ *       -> reads CharacterQueries.getCharacterById(charId).mode
+ *       -> returns 'student' | 'instructor' | null
+ *
+ *   READ SEMANTICS (this revision):
+ *     - null / blank charId             -> null
+ *     - character does not exist        -> null
+ *     - character exists, mode==='instructor' -> 'instructor'
+ *     - character exists, anything else -> 'student'
+ *     - CharacterQueries unavailable    -> throws
+ *
+ *   The prior revision collapsed "missing character" into 'student'.
+ *   That was wrong: a missing character is a failed reference, not
+ *   evidence that a person is a student. Callers that need a mode
+ *   for a missing character must decide what that means.
  *
  *   The write-side API (setCharacterMode, toggleCharacterMode,
  *   clearCharacterMode, isValidCharacterMode, getValidCharacterModes,
@@ -48,6 +73,20 @@
  *   old `characterModes` key is discarded silently when a stale
  *   session state is loaded.
  *
+ * DEPENDENCY MODEL:
+ *   CharacterQueries is LAZY-BUT-MANDATORY. The module loads without
+ *   it, initialises, and serves view / class / week / filter state
+ *   normally. `getCharacterMode` is the only method that requires
+ *   CharacterQueries, and it resolves the dependency at call time.
+ *   A missing module at that moment throws — it is not a silent
+ *   fallback to a fabricated mode.
+ *
+ *   This distinction matters because the entire Academy UI state
+ *   surface (view selection, class selection, display week, People
+ *   filters, expansion state, round collapse state) does not depend
+ *   on the character-query layer. Gating module load on a read-only
+ *   helper is a load-order failure disguised as a dependency.
+ *
  * REMOVED FROM PRIOR VERSIONS:
  *   - setState(key, value) and updateState(updates) — generic escape
  *     hatches that bypassed every invariant.
@@ -60,6 +99,13 @@
  *     'student' | 'instructor'.
  *   - Character mode write API (v27) — the mode is a domain fact.
  *   - Character mode sessionStorage map (v27) — same reason.
+ *   - `expandedRoundIds` internal name and `getExpandedRoundIds` /
+ *     `clearExpandedRoundIds` public API (this revision). The map
+ *     stores COLLAPSED rounds (non-default exceptions). The old
+ *     name inverted the meaning on every read. Renamed to
+ *     `collapsedRoundIds` / `getCollapsedRoundIds` /
+ *     `clearCollapsedRoundIds`. Pre-rename session state is
+ *     abandoned on first load; UI collapse state is disposable.
  *
  * ROLE VOCABULARY (CANONICAL):
  *   The People view filter uses three values:
@@ -107,11 +153,17 @@
  *   persisted object small and lets the default change in the
  *   future without leaving stale entries behind.
  *
+ *   The default policy is INTERNAL (`DEFAULT_ROUND_EXPANDED`). It is
+ *   not a caller-supplied argument, because two callers passing
+ *   different defaults for the same state would disagree about what
+ *   the state means.
+ *
  * DEPENDENCIES:
- *   - window.CalendarConstants  (MIN_WEEK, MAX_WEEK) — MANDATORY
- *   - window.CharacterQueries   (getCharacterById) — MANDATORY
- *     for getCharacterMode. The module reads the character record
- *     through the query module, not through window.data directly.
+ *   - window.CalendarConstants  (MIN_WEEK, MAX_WEEK) — MANDATORY at
+ *     load.
+ *   - window.CharacterQueries   (getCharacterById) — LAZY, resolved
+ *     at call time by getCharacterMode. Mandatory when that method
+ *     is invoked.
  *
  * USAGE:
  *   AcademyUI.getSelectedView();
@@ -124,9 +176,9 @@
  *   AcademyUI.setPeopleFilter({ role: 'student' });
  *
  *   // Tournament round collapse
- *   AcademyUI.isRoundExpanded('tourn_abc', 'round_xyz', true);
+ *   AcademyUI.isRoundExpanded('tourn_abc', 'round_xyz');
  *   AcademyUI.setRoundExpanded('tourn_abc', 'round_xyz', false);
- *   AcademyUI.getExpandedRoundIds();
+ *   AcademyUI.getCollapsedRoundIds();
  */
 
 (function() {
@@ -137,11 +189,13 @@
     }
 
     // ============================================================
-    // MANDATORY DEPENDENCIES
+    // MANDATORY DEPENDENCIES — LOAD-TIME
     // ============================================================
+    //
+    // Only CalendarConstants is required at load. CharacterQueries
+    // is lazy-but-mandatory; see the header.
 
     var CalendarConstants = window.CalendarConstants;
-    var CharacterQueries = window.CharacterQueries;
 
     if (!CalendarConstants ||
         typeof CalendarConstants.MIN_WEEK !== 'number' ||
@@ -152,18 +206,34 @@
         );
     }
 
-    if (!CharacterQueries ||
-        typeof CharacterQueries.getCharacterById !== 'function') {
-        throw new Error(
-            '[AcademyUI] Missing mandatory dependency: ' +
-            'CharacterQueries.getCharacterById'
-        );
-    }
-
     window.__academyUILoaded = true;
 
     // ============================================================
-    // CONSTANTS - frozen
+    // LAZY-BUT-MANDATORY DEPENDENCIES
+    // ============================================================
+
+    /**
+     * Resolve CharacterQueries at call time. Throws when the module
+     * is missing or malformed. This is the "lazy ≠ optional" rule:
+     * load order is deferred, mandatory-ness is not.
+     */
+    function requireCharacterQueries() {
+        var Queries = window.CharacterQueries;
+
+        if (!Queries ||
+            typeof Queries.getCharacterById !== 'function') {
+            throw new Error(
+                '[AcademyUI] CharacterQueries.getCharacterById is ' +
+                'unavailable. It is required by getCharacterMode. ' +
+                'Check the script load order in index.html.'
+            );
+        }
+
+        return Queries;
+    }
+
+    // ============================================================
+    // CONSTANTS — frozen
     // ============================================================
 
     var MIN_WEEK = CalendarConstants.MIN_WEEK;
@@ -186,6 +256,12 @@
     var VALID_STATUS_FILTERS = Object.freeze(['active', 'eliminated', 'deceased', 'all']);
     var DEFAULT_STATUS_FILTER = 'active';
 
+    var DEFAULT_CHARACTER_MODE = 'student';
+
+    // Round collapse policy. INTERNAL. The storage layer stores
+    // exceptions to this default; callers do not pass it in.
+    var DEFAULT_ROUND_EXPANDED = true;
+
     // ============================================================
     // DEFAULT STATE
     // ============================================================
@@ -193,12 +269,16 @@
     // Single canonical definition. _state is initialised from a
     // fresh clone of this template; resetState() also returns to it.
     //
-    // The public DEFAULT_STATE export is a frozen clone of the same
-    // template, so a caller cannot corrupt the template by mutating
-    // the published copy.
+    // The public DEFAULT_STATE export is a DEEP-frozen clone of the
+    // same template, so a caller cannot corrupt it by mutating a
+    // nested object.
     //
     // NOTE (v27): `characterModes` is gone. The mode is a domain
     // fact and does not belong in session state.
+    //
+    // NOTE (this revision): the collapsed-rounds map is named
+    // `collapsedRoundIds`, not `expandedRoundIds`. The map stores
+    // COLLAPSED rounds. The old name inverted the meaning.
 
     function createDefaultState() {
         return {
@@ -215,10 +295,28 @@
             },
             expandedIds: {},
             // C4 — tournament round collapse state.
-            // { [compositeKey]: true } for collapsed rounds.
-            // Absence means "expanded".
-            expandedRoundIds: {}
+            // { [compositeKey]: true } for COLLAPSED rounds.
+            // Absence means "expanded" (the default).
+            collapsedRoundIds: {}
         };
+    }
+
+    // ============================================================
+    // DEEP FREEZE
+    // ============================================================
+
+    function deepFreeze(obj) {
+        if (!obj || typeof obj !== 'object' || Object.isFrozen(obj)) {
+            return obj;
+        }
+        var keys = Object.keys(obj);
+        for (var i = 0; i < keys.length; i++) {
+            var v = obj[keys[i]];
+            if (v && typeof v === 'object') {
+                deepFreeze(v);
+            }
+        }
+        return Object.freeze(obj);
     }
 
     // ============================================================
@@ -304,7 +402,7 @@
     // STORAGE
     // ============================================================
 
-    var STORAGE_KEY = 'academy_ui_state_v3';
+    var STORAGE_KEY = 'academy_ui_state_v4';
 
     function loadState() {
         var defaults = createDefaultState();
@@ -335,6 +433,9 @@
      * The same mechanism silently drops the old `characterModes` map
      * from pre-v27 state. It is not a known field anymore, so it is
      * not carried forward.
+     *
+     * The storage key was bumped to v4 in this revision, so pre-
+     * rename `expandedRoundIds` state is also abandoned wholesale.
      */
     function mergeWithDefaults(parsed, defaults) {
         var merged = defaults;
@@ -373,13 +474,19 @@
             }
         }
 
+        // Expanded ids: values must be strictly `true`, and keys must
+        // be non-empty strings. Anything else is dropped.
         if (parsed.expandedIds &&
             typeof parsed.expandedIds === 'object' &&
             !Array.isArray(parsed.expandedIds)) {
             var keys = Object.keys(parsed.expandedIds);
             for (var i = 0; i < keys.length; i++) {
-                if (parsed.expandedIds[keys[i]]) {
-                    merged.expandedIds[keys[i]] = true;
+                var key = keys[i];
+                if (typeof key !== 'string' || key.trim() === '') {
+                    continue;
+                }
+                if (parsed.expandedIds[key] === true) {
+                    merged.expandedIds[key] = true;
                 }
             }
         }
@@ -387,20 +494,17 @@
         // C4 — round collapse state.
         //
         // Only keys shaped like `${examId}::${roundId}` are accepted.
-        // Both halves must be non-empty strings. A malformed key is
-        // dropped; a malformed value is dropped. This is the same
-        // strictness the rest of the merge uses: never carry forward
-        // state we cannot vouch for.
-        if (parsed.expandedRoundIds &&
-            typeof parsed.expandedRoundIds === 'object' &&
-            !Array.isArray(parsed.expandedRoundIds)) {
-            var roundKeys = Object.keys(parsed.expandedRoundIds);
+        // Both halves must be non-empty strings, with exactly one
+        // separator. Values must be strictly `true`.
+        if (parsed.collapsedRoundIds &&
+            typeof parsed.collapsedRoundIds === 'object' &&
+            !Array.isArray(parsed.collapsedRoundIds)) {
+            var roundKeys = Object.keys(parsed.collapsedRoundIds);
             for (var k = 0; k < roundKeys.length; k++) {
                 var composite = roundKeys[k];
-                if (typeof composite !== 'string') { continue; }
                 if (!isValidRoundCompositeKey(composite)) { continue; }
-                if (parsed.expandedRoundIds[composite] === true) {
-                    merged.expandedRoundIds[composite] = true;
+                if (parsed.collapsedRoundIds[composite] === true) {
+                    merged.collapsedRoundIds[composite] = true;
                 }
             }
         }
@@ -461,7 +565,9 @@
                 }
             },
             expandedIds: Object.assign({}, _state.expandedIds),
-            expandedRoundIds: Object.assign({}, _state.expandedRoundIds)
+            collapsedRoundIds: Object.assign(
+                {}, _state.collapsedRoundIds
+            )
         };
     }
 
@@ -575,40 +681,43 @@
     // read-only window onto that fact.
     //
     // READ SEMANTICS:
-    //   - The character exists and carries a valid mode → return it.
-    //   - The character exists but the mode is missing or malformed
-    //     → return 'student' (the canonical default).
-    //   - The character does not exist → return 'student' (the
-    //     caller is asking about a character that isn't there; a
-    //     neutral default is the safest answer).
-    //   - charId is null/malformed → return 'student'.
+    //   - null / blank charId               → null
+    //   - character does not exist          → null
+    //   - character exists, mode==='instructor' → 'instructor'
+    //   - character exists, anything else   → 'student'
+    //   - CharacterQueries unavailable      → throws
+    //
+    // A missing character is not the same as a student. Callers that
+    // need a mode for a missing character must decide what that
+    // means. The previous revision returned 'student' for that case,
+    // which fabricated a domain fact out of a failed reference.
     //
     // WRITE SEMANTICS:
     //   There are none. The write API has been retired. Callers that
     //   want to change the mode call CharacterCRUD.setMode and
     //   trigger a re-render on success.
 
-    var DEFAULT_CHARACTER_MODE = 'student';
-
     /**
      * Read the mode of a character.
      *
      * @param {string} charId
-     * @returns {'student'|'instructor'}
+     * @returns {'student'|'instructor'|null}
      */
     function getCharacterMode(charId) {
         var id = normaliseId(charId);
         if (id === null) {
-            return DEFAULT_CHARACTER_MODE;
+            return null;
         }
 
-        var char = CharacterQueries.getCharacterById(id);
+        var Queries = requireCharacterQueries();
+
+        var char = Queries.getCharacterById(id);
         if (!char || typeof char !== 'object') {
-            return DEFAULT_CHARACTER_MODE;
+            return null;
         }
 
-        if (char.mode === 'student' || char.mode === 'instructor') {
-            return char.mode;
+        if (char.mode === 'instructor') {
+            return 'instructor';
         }
 
         return DEFAULT_CHARACTER_MODE;
@@ -700,15 +809,19 @@
     // ============================================================
     // EXPANSION
     // ============================================================
+    //
+    // IDs route through normaliseId() so that setExpanded({}, true)
+    // cannot produce the state key "[object Object]".
 
     function isExpanded(id) {
-        if (!id) { return false; }
-        return _state.expandedIds[id] === true;
+        var key = normaliseId(id);
+        if (key === null) { return false; }
+        return _state.expandedIds[key] === true;
     }
 
     function setExpanded(id, expanded) {
-        if (!id) { return; }
-        var key = String(id);
+        var key = normaliseId(id);
+        if (key === null) { return; }
         var currentlyExpanded = _state.expandedIds[key] === true;
         var next = expanded === true;
 
@@ -723,8 +836,8 @@
     }
 
     function toggleExpanded(id) {
-        if (!id) { return false; }
-        var key = String(id);
+        var key = normaliseId(id);
+        if (key === null) { return false; }
         var currentlyExpanded = _state.expandedIds[key] === true;
         if (currentlyExpanded) {
             delete _state.expandedIds[key];
@@ -759,9 +872,16 @@
     // KEY FORMAT:
     //   `${examId}::${roundId}`. The double-colon separator is chosen
     //   because neither IDs contain it. IDs are normalised to trimmed
-    //   strings before use. Both halves must be non-empty.
+    //   strings before use. Both halves must be non-empty, and
+    //   exactly one separator must appear.
     //
-    // WHY NOT A NESTED MAP (examId → roundId → bool):
+    // DEFAULT POLICY:
+    //   DEFAULT_ROUND_EXPANDED is a module constant. Callers do not
+    //   pass it in. Two callers passing different defaults for the
+    //   same state would disagree about what the state means; the
+    //   storage layer is not a policy-injection point.
+    //
+    // WHY NOT A NESTED MAP (examId -> roundId -> bool):
     //   The aggregator reads collapse state per round in a loop over
     //   rounds. A flat map with composite keys is O(1) per lookup and
     //   serialises to a compact JSON object. A nested map is a
@@ -771,16 +891,19 @@
     var ROUND_KEY_SEPARATOR = '::';
 
     /**
-     * Validate a composite round key. Exposed for the merge path and
-     * for callers that want to assert the shape.
+     * Validate a composite round key. Requires exactly two non-empty
+     * parts separated by exactly one separator.
      */
     function isValidRoundCompositeKey(key) {
-        if (typeof key !== 'string') { return false; }
-        var idx = key.indexOf(ROUND_KEY_SEPARATOR);
-        if (idx <= 0) { return false; }
-        if (idx + ROUND_KEY_SEPARATOR.length >= key.length) {
+        if (typeof key !== 'string') {
             return false;
         }
+        var parts = key.split(ROUND_KEY_SEPARATOR);
+        if (parts.length !== 2) {
+            return false;
+        }
+        if (parts[0].trim() === '') { return false; }
+        if (parts[1].trim() === '') { return false; }
         return true;
     }
 
@@ -801,37 +924,29 @@
      *
      * @returns {object} { [compositeKey]: true }
      */
-    function getExpandedRoundIds() {
-        return Object.assign({}, _state.expandedRoundIds);
+    function getCollapsedRoundIds() {
+        return Object.assign({}, _state.collapsedRoundIds);
     }
 
     /**
      * Is a specific round expanded?
      *
-     * `defaultExpanded` is required and explicit: the caller states
-     * the default instead of this module assuming one. That keeps the
-     * default policy at the call site (the aggregator, in C4) where
-     * it is visible, instead of hidden in a storage module.
+     * Uses the module's internal default policy. A stored entry
+     * means "collapsed"; absence means "expanded" (the default).
      *
      * @param {string} examId
      * @param {string} roundId
-     * @param {boolean} defaultExpanded - value to return when the
-     *   round has no stored state.
      * @returns {boolean}
      */
-    function isRoundExpanded(examId, roundId, defaultExpanded) {
+    function isRoundExpanded(examId, roundId) {
         var key = makeRoundKey(examId, roundId);
         if (key === null) {
-            return defaultExpanded === true;
+            return DEFAULT_ROUND_EXPANDED;
         }
-        // Stored entries mean "collapsed". Absence means "expanded".
-        // So:
-        //   stored === true  → collapsed → return false
-        //   stored !== true  → no record → return default
-        if (_state.expandedRoundIds[key] === true) {
+        if (_state.collapsedRoundIds[key] === true) {
             return false;
         }
-        return defaultExpanded === true;
+        return DEFAULT_ROUND_EXPANDED;
     }
 
     /**
@@ -857,16 +972,17 @@
             return false;
         }
         var wantCollapsed = expanded === false;
-        var currentlyCollapsed = _state.expandedRoundIds[key] === true;
+        var currentlyCollapsed =
+            _state.collapsedRoundIds[key] === true;
 
         if (wantCollapsed === currentlyCollapsed) {
             return true;
         }
 
         if (wantCollapsed) {
-            _state.expandedRoundIds[key] = true;
+            _state.collapsedRoundIds[key] = true;
         } else {
-            delete _state.expandedRoundIds[key];
+            delete _state.collapsedRoundIds[key];
         }
         saveState();
         return true;
@@ -875,33 +991,31 @@
     /**
      * Toggle a round's expanded state.
      *
-     * The caller must state the current default so the toggle knows
-     * what "before" means for a round with no stored record.
+     * Uses the module's internal default policy for a round with no
+     * stored record.
      *
      * @returns {boolean} the state AFTER the toggle. When the input
-     *   is invalid, returns `defaultExpanded`.
+     *   is invalid, returns DEFAULT_ROUND_EXPANDED.
      */
-    function toggleRoundExpanded(examId, roundId, defaultExpanded) {
+    function toggleRoundExpanded(examId, roundId) {
         var key = makeRoundKey(examId, roundId);
         if (key === null) {
-            return defaultExpanded === true;
+            return DEFAULT_ROUND_EXPANDED;
         }
 
-        // Translate "stored or default" into a concrete current state,
-        // then flip it.
-        var currentlyExpanded = true;
-        if (_state.expandedRoundIds[key] === true) {
+        var currentlyExpanded;
+        if (_state.collapsedRoundIds[key] === true) {
             currentlyExpanded = false;
         } else {
-            currentlyExpanded = defaultExpanded === true;
+            currentlyExpanded = DEFAULT_ROUND_EXPANDED;
         }
 
         var next = !currentlyExpanded;
 
         if (next === true) {
-            delete _state.expandedRoundIds[key];
+            delete _state.collapsedRoundIds[key];
         } else {
-            _state.expandedRoundIds[key] = true;
+            _state.collapsedRoundIds[key] = true;
         }
         saveState();
         return next;
@@ -913,8 +1027,8 @@
      * Not called from anywhere in the current build. Exposed for
      * symmetry with clearExpanded() and for tests.
      */
-    function clearExpandedRoundIds() {
-        _state.expandedRoundIds = {};
+    function clearCollapsedRoundIds() {
+        _state.collapsedRoundIds = {};
         saveState();
     }
 
@@ -963,8 +1077,8 @@
     // EXPOSE
     // ============================================================
 
-    // Public DEFAULT_STATE is a frozen clone of the template.
-    var DEFAULT_STATE_PUBLIC = Object.freeze(createDefaultState());
+    // Public DEFAULT_STATE is a DEEP-frozen clone of the template.
+    var DEFAULT_STATE_PUBLIC = deepFreeze(createDefaultState());
 
     window.AcademyUI = Object.freeze({
         // Lifecycle
@@ -991,8 +1105,7 @@
 
         // Character mode — READ ONLY
         // The mode is a domain fact. Use CharacterCRUD.setMode to
-        // write it. This module reflects whatever the character
-        // record carries.
+        // write it. Returns 'student' | 'instructor' | null.
         getCharacterMode: getCharacterMode,
 
         // People filter
@@ -1011,11 +1124,11 @@
         clearExpanded: clearExpanded,
 
         // Tournament round collapse (C4)
-        getExpandedRoundIds: getExpandedRoundIds,
+        getCollapsedRoundIds: getCollapsedRoundIds,
         isRoundExpanded: isRoundExpanded,
         setRoundExpanded: setRoundExpanded,
         toggleRoundExpanded: toggleRoundExpanded,
-        clearExpandedRoundIds: clearExpandedRoundIds,
+        clearCollapsedRoundIds: clearCollapsedRoundIds,
 
         // Selections
         clearSelection: clearSelection,
