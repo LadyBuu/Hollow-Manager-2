@@ -2,7 +2,7 @@
  * modules/characters/index.js - Characters Module Entry Point
  * Single entry point for all character functionality
  * Path: js/modules/characters/index.js
- * 
+ *
  * This module is responsible for:
  *   - Registering with TabManager
  *   - Rendering the character container
@@ -11,11 +11,11 @@
  *   - Coordinating character state
  *   - Ensuring CharacterAggregator is available
  *   - Mounting the relationship modal shell (used by character-views / character-events)
- * 
+ *
  * LIFECYCLE:
- *   TabManager.register('characters') -> mountCharacters() -> 
+ *   TabManager.register('characters') -> mountCharacters() ->
  *   CharacterList.render() -> CharacterForm.render() -> CharacterEvents.init()
- * 
+ *
  * IMPORTANT:
  *   - This module is the only external entry point for characters
  *   - All character logic lives in the sub-modules
@@ -26,12 +26,28 @@
  *   - CharacterAggregator is verified at initialization
  *   - The relationship modal shell (#character-relationship-modal) is mounted here ONCE
  *   - The graph modal is created on demand by CharacterEvents
- * 
+ *
+ * CHARACTER CSV CONTROLS (this revision):
+ *   The Import / Export / Template buttons for character CSVs moved
+ *   from the global page header into the character module's page
+ *   header, next to "+ Add". They are icon-only to save space and
+ *   carry title + aria-label for accessibility.
+ *
+ *   The buttons keep their original IDs:
+ *     #export-characters-csv-btn
+ *     #import-characters-csv-btn
+ *     #template-characters-csv-btn
+ *     #characters-csv-file-input
+ *
+ *   The delegated handlers live in character-events.js
+ *   (bindCharacterCsvControls), so they survive every re-render of
+ *   the module page.
+ *
  * STATE SOURCE OF TRUTH:
  *   - _currentEditId is the canonical edit state (PRIVATE)
  *   - Exposed via getCurrentEditId/setCurrentEditId (INTERNAL USE ONLY)
  *   - window.data is the source of truth for persisted application data
- * 
+ *
  * DEPENDENCIES:
  *   - window.TabManager (from tab-manager.js) - MANDATORY
  *   - window.CharacterAggregator (from character-aggregator.js) - MANDATORY
@@ -41,7 +57,7 @@
  *   - window.CharacterClassView (from character-class-view.js) - MANDATORY
  *   - window.CharacterViews (from character-views.js) - MANDATORY (for Social tab)
  *   - window.DataLoader (from loader.js) - OPTIONAL (for compatibility)
- * 
+ *
  * EXPOSED API:
  *   - window.mountCharacters(container) - Mount the character feature
  *   - window.showCharacterForm(id) - Show character form
@@ -82,7 +98,6 @@
             missing.push('TabManager.register');
         }
 
-        // CharacterAggregator is MANDATORY - verify it's loaded
         if (!CharacterAggregator || typeof CharacterAggregator.getCharacterDetail !== 'function') {
             missing.push('CharacterAggregator.getCharacterDetail');
         }
@@ -112,8 +127,6 @@
             missing.push('CharacterClassView.populateClassFilter');
         }
 
-        // CharacterViews is required for the Social tab to render.
-        // If it's missing, we still mount the rest of the form.
         if (!CharacterViews || typeof CharacterViews.renderCharacterSocial !== 'function') {
             console.warn('[CharactersModule] CharacterViews not loaded - Social tab will be empty.');
         }
@@ -163,7 +176,6 @@
 
         container.innerHTML = getCharactersHTML();
 
-        // Render character list - uses Aggregator internally
         if (CharacterList && typeof CharacterList.render === 'function') {
             try {
                 CharacterList.render();
@@ -172,7 +184,6 @@
             }
         }
 
-        // Populate class filter - uses AcademyQueries directly
         if (CharacterClassView && typeof CharacterClassView.populateClassFilter === 'function') {
             try {
                 CharacterClassView.populateClassFilter();
@@ -181,7 +192,6 @@
             }
         }
 
-        // Initialize events - uses Aggregator for projections, Queries for simple reads
         if (CharacterEvents && typeof CharacterEvents.init === 'function') {
             try {
                 CharacterEvents.init(container);
@@ -190,7 +200,6 @@
             }
         }
 
-        // Show form if there's an edit ID
         var editId = getCurrentEditId();
         if (editId && CharacterForm && typeof CharacterForm.render === 'function') {
             try {
@@ -227,15 +236,34 @@
     // HTML GENERATOR
     // ============================================================
 
-      function getCharactersHTML() {
+    function getCharactersHTML() {
         return `
             <div class="characters-layout">
                 <div class="characters-sidebar">
                     <div class="characters-header">
                         <h2>Characters</h2>
                         <div class="characters-header-actions">
-                            <button id="toggle-char-list" class="secondary small" aria-label="Toggle character list">☰</button>
-                            <button id="add-character-btn" class="primary small">+ Add</button>
+                            <button id="export-characters-csv-btn"
+                                    class="small secondary"
+                                    title="Export Characters (CSV)"
+                                    aria-label="Export Characters CSV">↓</button>
+                            <button id="import-characters-csv-btn"
+                                    class="small secondary"
+                                    title="Import Characters (CSV)"
+                                    aria-label="Import Characters CSV">↑</button>
+                            <button id="template-characters-csv-btn"
+                                    class="small secondary"
+                                    title="Character CSV Template"
+                                    aria-label="Character CSV Template">▤</button>
+                            <input type="file"
+                                   id="characters-csv-file-input"
+                                   accept=".csv"
+                                   style="display:none;">
+                            <button id="toggle-char-list"
+                                    class="secondary small"
+                                    aria-label="Toggle character list">☰</button>
+                            <button id="add-character-btn"
+                                    class="primary small">+ Add</button>
                         </div>
                     </div>
                     <div class="characters-filters">
@@ -244,17 +272,6 @@
                             <option value="all">All Classes</option>
                         </select>
 
-                        <!--
-                            Career Status filter.
-                            Each checkbox carries data-status with the
-                            lowercase status key. The list module reads
-                            these via CharacterList.getFilterValues().
-
-                            The statuses mirror CharacterConstants'
-                            CAREER_STATUS_OPTIONS, minus the empty
-                            placeholder. Any new status added there
-                            should be added here too.
-                        -->
                         <div class="status-filter-group" style="margin-top:6px;">
                             <div style="font-size:0.6rem;color:var(--text-dim);font-weight:600;margin-bottom:4px;">Career Status</div>
                             <div id="char-status-filter" style="display:grid;grid-template-columns:1fr 1fr;gap:2px 8px;">
