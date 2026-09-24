@@ -28,11 +28,69 @@
  *   and the class-discipline's window. The projector does that
  *   intersection; this module never touches rosters.
  *
+ * GROUPID IS IMMUTABLE AFTER CREATION:
+ *   A session belongs to exactly one group, chosen at creation. The
+ *   update surface does not accept groupId. Moving a session to
+ *   another group is a remove-and-recreate operation, because the
+ *   membership semantics of the two groups may not be compatible.
+ *
+ * LOCATION IS A HINT, NOT A VALIDATED REFERENCE:
+ *   locationId is stored as a free identifier. This module does NOT
+ *   validate that the referenced location exists. Rationale: a
+ *   session is a recurring timetable slot, and a slot may be created
+ *   before a room is assigned or after a room is decommissioned. The
+ *   location is a property of the slot, not a foreign key that gates
+ *   the slot's existence.
+ *
+ *   Contrast with AcademyInstructorCommitments, which DOES validate
+ *   the location reference. Commitments are the instructor's own
+ *   time; the location there is chosen deliberately at creation. Two
+ *   use cases, two policies.
+ *
+ *   When a location is deleted, AcademyCascade.locationDeleted calls
+ *   stripLocationRefs, which nulls the reference on every session
+ *   that carried it. The session survives.
+ *
  * HISTORICAL-RECORD PRINCIPLE:
  *   A session is a historical fact. Ending a session sets its
  *   endWeek; it does NOT delete the record. Deleting a session
  *   outright is reserved for administrative cleanup and for cascade
  *   deletes (group delete, class delete, discipline delete).
+ *
+ * CALENDAR END BOUNDARY:
+ *   CALENDAR_END_HOUR is the last hour that may be OCCUPIED. A
+ *   session that starts at CALENDAR_END_HOUR with duration 1 occupies
+ *   [CALENDAR_END_HOUR, CALENDAR_END_HOUR + 1), which is valid. The
+ *   exclusive end of the calendar day is therefore
+ *   CALENDAR_END_HOUR + 1, exposed here as CALENDAR_END_TIME.
+ *
+ *   The rule reads: `startTime + duration <= CALENDAR_END_TIME`.
+ *
+ *   The same derived constant appears in academy-session-form-modal.js
+ *   and academy-instructor-commitments.js. Until a canonical
+ *   CalendarConstants.isValidTimeWindow() helper exists, each file
+ *   carries the local constant with this same comment. Do not
+ *   change the arithmetic in one file without changing it in all
+ *   three.
+ *
+ * TRANSACTION SNAPSHOT RULE:
+ *   Every pipeline validate() callback resolves references against
+ *   the appData argument it is handed. It does not read window.data.
+ *   Preflight reads against window.data are for early UX feedback
+ *   only; the pipeline re-checks against the snapshot.
+ *
+ *   This applies to:
+ *     - create: the group exists in the snapshot, no ID collision,
+ *       no overlap in the snapshot
+ *     - update: the session exists in the snapshot, the candidate
+ *       satisfies all constraints, no overlap in the snapshot
+ *     - end: the session exists in the snapshot
+ *     - remove: the session exists in the snapshot
+ *
+ * RANGE PREDICATES:
+ *   - `sessionActiveInWeek` delegates to RangeUtils.containsWeek.
+ *   - `sessionsOverlap` combines a local TIME overlap with a
+ *     RangeUtils.weeksOverlap call for the week ranges.
  *
  * CASCADE HELPERS:
  *   stripGroupRefs(appData, groupId)          remove every session
@@ -52,10 +110,14 @@
  *   need to enumerate groups. This is the discipline→group→session
  *   knowledge living where it belongs.
  *
- * RANGE PREDICATES:
- *   - `sessionActiveInWeek` delegates to RangeUtils.containsWeek.
- *   - `sessionsOverlap` combines a local TIME overlap with a
- *     RangeUtils.weeksOverlap call for the week ranges.
+ *   CASCADE STRICTNESS:
+ *     The class and discipline strips require the group store to be
+ *     present on the snapshot. A missing or malformed group store is
+ *     a data-integrity failure during a destructive cascade; the
+ *     helper throws rather than silently reporting zero sessions
+ *     removed. The group strip does not require the store (it filters
+ *     sessions directly by groupId), and the location strip does not
+ *     require any store.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.ObjectUtils
@@ -65,9 +127,12 @@
  *   - window.RangeUtils
  *   - window.MutationPipeline
  *   - window.AcademyTeachingGroups
- *
- * DEPENDENCIES (LAZY):
  *   - window.IdUtils
+ *
+ * USAGE:
+ *   AcademyTeachingSessions.createSession({...}).then(...);
+ *   AcademyTeachingSessions.updateSession(id, {...}).then(...);
+ *   AcademyTeachingSessions.endSession(id, week).then(...);
  */
 
 (function() {
@@ -88,25 +153,31 @@
     var RangeUtils = window.RangeUtils;
     var MutationPipeline = window.MutationPipeline;
     var AcademyTeachingGroups = window.AcademyTeachingGroups;
+    var IdUtils = window.IdUtils;
 
     var _missing = [];
 
     if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
         _missing.push('ObjectUtils.deepClone');
     }
-    if (!ValidationUtils || typeof ValidationUtils.isNonEmptyString !== 'function') {
+    if (!ValidationUtils ||
+        typeof ValidationUtils.isNonEmptyString !== 'function') {
         _missing.push('ValidationUtils.isNonEmptyString');
     }
-    if (!CalendarValidation || typeof CalendarValidation.parseWeek !== 'function') {
+    if (!CalendarValidation ||
+        typeof CalendarValidation.parseWeek !== 'function') {
         _missing.push('CalendarValidation.parseWeek');
     }
-    if (!CalendarValidation || typeof CalendarValidation.parseDay !== 'function') {
+    if (!CalendarValidation ||
+        typeof CalendarValidation.parseDay !== 'function') {
         _missing.push('CalendarValidation.parseDay');
     }
-    if (!CalendarValidation || typeof CalendarValidation.parseHour !== 'function') {
+    if (!CalendarValidation ||
+        typeof CalendarValidation.parseHour !== 'function') {
         _missing.push('CalendarValidation.parseHour');
     }
-    if (!CalendarValidation || typeof CalendarValidation.parseDuration !== 'function') {
+    if (!CalendarValidation ||
+        typeof CalendarValidation.parseDuration !== 'function') {
         _missing.push('CalendarValidation.parseDuration');
     }
     if (!CalendarConstants ||
@@ -120,12 +191,16 @@
     if (!RangeUtils || typeof RangeUtils.weeksOverlap !== 'function') {
         _missing.push('RangeUtils.weeksOverlap');
     }
-    if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
+    if (!MutationPipeline ||
+        typeof MutationPipeline.performMutation !== 'function') {
         _missing.push('MutationPipeline.performMutation');
     }
     if (!AcademyTeachingGroups ||
         typeof AcademyTeachingGroups.getGroup !== 'function') {
         _missing.push('AcademyTeachingGroups.getGroup');
+    }
+    if (!IdUtils || typeof IdUtils.generateId !== 'function') {
+        _missing.push('IdUtils.generateId');
     }
 
     if (_missing.length > 0) {
@@ -147,9 +222,20 @@
     var MAX_DAY = CalendarConstants.MAX_DAY;
     var MIN_HOUR = CalendarConstants.MIN_HOUR;
     var MAX_HOUR = CalendarConstants.MAX_HOUR;
-    var CALENDAR_END_HOUR = CalendarConstants.CALENDAR_END_HOUR;
     var MIN_CLASS_DURATION = CalendarConstants.MIN_CLASS_DURATION;
     var MAX_CLASS_DURATION = CalendarConstants.MAX_CLASS_DURATION;
+
+    // CALENDAR_END_HOUR is the last hour that may be occupied. A
+    // session that starts at that hour with duration 1 occupies
+    // [CALENDAR_END_HOUR, CALENDAR_END_HOUR + 1), which is valid.
+    // The exclusive end of the calendar day is therefore
+    // CALENDAR_END_HOUR + 1.
+    //
+    // The same derived constant appears in
+    // academy-session-form-modal.js and
+    // academy-instructor-commitments.js. Do not change the
+    // arithmetic here without changing it there.
+    var CALENDAR_END_TIME = CalendarConstants.CALENDAR_END_HOUR + 1;
 
     // ============================================================
     // HELPERS
@@ -209,14 +295,6 @@
         if (parsed === null) return null;
         if (parsed < MIN_CLASS_DURATION || parsed > MAX_CLASS_DURATION) return null;
         return parsed;
-    }
-
-    function generateSessionId() {
-        if (window.IdUtils && typeof window.IdUtils.generateId === 'function') {
-            return window.IdUtils.generateId('tsession');
-        }
-        return 'tsession_' + Date.now() + '_' +
-            Math.random().toString(36).slice(2, 8);
     }
 
     // ============================================================
@@ -323,6 +401,53 @@
     }
 
     // ============================================================
+    // SNAPSHOT-AWARE LOOKUPS
+    // ============================================================
+    //
+    // Used by pipeline validate() callbacks. Read from the appData
+    // snapshot, not window.data.
+
+    /**
+     * Resolve a teaching group from the transaction snapshot.
+     *
+     * The snapshot's group store is the authoritative view for
+     * validation. Reading through AcademyTeachingGroups would read
+     * live state, which may diverge from the snapshot during the
+     * pipeline's validate→mutate window.
+     */
+    function getGroupFromSnapshot(appData, groupId) {
+        if (!appData || !appData.academy || typeof appData.academy !== 'object') {
+            return null;
+        }
+        if (!isPlainObject(appData.academy.teachingGroups)) {
+            return null;
+        }
+        if (!isNonEmptyString(groupId)) {
+            return null;
+        }
+        var group = appData.academy.teachingGroups[String(groupId)];
+        if (!isPlainObject(group)) {
+            return null;
+        }
+        return group;
+    }
+
+    function getSessionFromSnapshot(appData, sessionId) {
+        var store = getStoreFromSnapshot(appData);
+        if (!store) {
+            return null;
+        }
+        if (!isNonEmptyString(sessionId)) {
+            return null;
+        }
+        var record = store[String(sessionId)];
+        if (!isPlainObject(record)) {
+            return null;
+        }
+        return record;
+    }
+
+    // ============================================================
     // VALIDATION
     // ============================================================
 
@@ -379,7 +504,7 @@
                     MIN_CLASS_DURATION + ' and ' + MAX_CLASS_DURATION + '.'
             };
         }
-        if (startNum + durationNum > CALENDAR_END_HOUR + 1) {
+        if (startNum + durationNum > CALENDAR_END_TIME) {
             return {
                 valid: false,
                 message: 'Session extends beyond the end of the day.'
@@ -421,16 +546,32 @@
         return { valid: true, startWeek: startNum, endWeek: endNum };
     }
 
-    function findOverlappingSession(groupId, candidate, excludeId) {
-        var all = getAllSessionRecordsInternal();
+    // ============================================================
+    // OVERLAP DETECTION
+    // ============================================================
+    //
+    // Two lookups with the same shape, one against live state, one
+    // against a transaction snapshot. Preflight uses live; the
+    // pipeline uses snapshot.
+
+    function findOverlappingSessionInStore(
+        store,
+        groupId,
+        candidate,
+        excludeId
+    ) {
+        if (!store || typeof store !== 'object') {
+            return null;
+        }
         var targetGroup = String(groupId);
         var exclude = (excludeId !== undefined && excludeId !== null)
             ? String(excludeId)
             : null;
 
-        for (var i = 0; i < all.length; i++) {
-            var s = all[i];
-            if (!s) continue;
+        var keys = Object.keys(store);
+        for (var i = 0; i < keys.length; i++) {
+            var s = store[keys[i]];
+            if (!isPlainObject(s)) continue;
             if (String(s.groupId) !== targetGroup) continue;
             if (exclude !== null && String(s.id) === exclude) continue;
             if (sessionsOverlap(s, candidate)) {
@@ -438,6 +579,15 @@
             }
         }
         return null;
+    }
+
+    function findOverlappingSession(groupId, candidate, excludeId) {
+        return findOverlappingSessionInStore(
+            getStore(),
+            groupId,
+            candidate,
+            excludeId
+        );
     }
 
     // ============================================================
@@ -559,6 +709,7 @@
             endWeek: weekCheck.endWeek
         };
 
+        // Preflight overlap check against live state (UX).
         var overlap = findOverlappingSession(candidate.groupId, candidate, null);
         if (overlap) {
             return Promise.resolve(failure(
@@ -568,7 +719,7 @@
             ));
         }
 
-        var generatedId = generateSessionId();
+        var generatedId = IdUtils.generateId('tsession');
         candidate.id = generatedId;
 
         var now = new Date().toISOString();
@@ -576,12 +727,49 @@
         candidate.updatedAt = now;
 
         var targetId = generatedId;
+        var targetGroupId = candidate.groupId;
 
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
+
+                // The group must exist in the snapshot.
+                if (!getGroupFromSnapshot(appData, targetGroupId)) {
+                    return {
+                        valid: false,
+                        message: 'Teaching group no longer exists.'
+                    };
+                }
+
+                // The session ID must not collide in the snapshot.
+                if (getSessionFromSnapshot(appData, targetId)) {
+                    return {
+                        valid: false,
+                        message: 'Session ID collision.'
+                    };
+                }
+
+                // No overlap against the snapshot's sessions of
+                // this group.
+                var store = getStoreFromSnapshot(appData);
+                var snapshotOverlap = findOverlappingSessionInStore(
+                    store, targetGroupId, candidate, null
+                );
+                if (snapshotOverlap) {
+                    return {
+                        valid: false,
+                        message:
+                            'This session overlaps with an existing ' +
+                            'session of the same group on day ' +
+                            snapshotOverlap.day + '.'
+                    };
+                }
+
                 return { valid: true };
             },
             mutate: function(appData) {
@@ -589,7 +777,7 @@
                 store[targetId] = deepClone(candidate);
                 return { session: deepClone(candidate), sessionId: targetId };
             },
-            logMessage: 'Created teaching session for group ' + candidate.groupId,
+            logMessage: 'Created teaching session for group ' + targetGroupId,
             successMessage: 'Teaching session created.',
             failureMessage: 'Failed to create teaching session.'
         });
@@ -606,6 +794,13 @@
         var rosterCheck = validateNoRoster(updates);
         if (!rosterCheck.valid) {
             return Promise.resolve(failure(rosterCheck.message));
+        }
+
+        if (updates.groupId !== undefined) {
+            return Promise.resolve(failure(
+                'groupId is immutable after creation. Remove this ' +
+                'session and create a new one in the target group.'
+            ));
         }
 
         var existing = getSessionInternal(sessionId);
@@ -646,6 +841,7 @@
         candidate.startWeek = weekCheck.startWeek;
         candidate.endWeek = weekCheck.endWeek;
 
+        // Preflight overlap check against live state (UX).
         var overlap = findOverlappingSession(
             candidate.groupId,
             candidate,
@@ -660,12 +856,48 @@
 
         candidate.updatedAt = new Date().toISOString();
         var targetId = String(sessionId);
+        var targetGroupId = candidate.groupId;
 
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
+
+                // The target must still exist.
+                if (!getSessionFromSnapshot(appData, targetId)) {
+                    return {
+                        valid: false,
+                        message: 'Teaching session no longer exists.'
+                    };
+                }
+
+                // The owning group must still exist.
+                if (!getGroupFromSnapshot(appData, targetGroupId)) {
+                    return {
+                        valid: false,
+                        message: 'Owning teaching group no longer exists.'
+                    };
+                }
+
+                // No overlap in the snapshot, excluding this session.
+                var store = getStoreFromSnapshot(appData);
+                var snapshotOverlap = findOverlappingSessionInStore(
+                    store, targetGroupId, candidate, targetId
+                );
+                if (snapshotOverlap) {
+                    return {
+                        valid: false,
+                        message:
+                            'This session overlaps with an existing ' +
+                            'session of the same group on day ' +
+                            snapshotOverlap.day + '.'
+                    };
+                }
+
                 return { valid: true };
             },
             mutate: function(appData) {
@@ -709,7 +941,25 @@
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+                var snapshot = getSessionFromSnapshot(appData, targetId);
+                if (!snapshot) {
+                    return {
+                        valid: false,
+                        message: 'Teaching session no longer exists.'
+                    };
+                }
+                if (snapshot.startWeek >= weekNum) {
+                    return {
+                        valid: false,
+                        message:
+                            'Effective week would end the session ' +
+                            'before it begins.'
+                    };
                 }
                 return { valid: true };
             },
@@ -737,14 +987,23 @@
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+                if (!getSessionFromSnapshot(appData, targetId)) {
+                    return {
+                        valid: false,
+                        message: 'Teaching session no longer exists.'
+                    };
                 }
                 return { valid: true };
             },
             mutate: function(appData) {
                 var store = getStoreFromSnapshot(appData);
                 if (!store || !Object.prototype.hasOwnProperty.call(store, targetId)) {
-                    return { removed: false };
+                    throw new Error('Teaching session not found in store.');
                 }
                 delete store[targetId];
                 return { removed: true };
@@ -762,6 +1021,10 @@
     /**
      * Strip all sessions for a group. Called from a group-delete
      * cascade.
+     *
+     * Does not require the group store. Sessions are filtered by
+     * groupId directly. A missing store is not an error here: if
+     * there are no sessions, there is nothing to strip.
      */
     function stripGroupRefs(appData, groupId) {
         var result = { sessionsRemoved: 0 };
@@ -813,6 +1076,11 @@
      * The class→group resolution reads the group store on the same
      * appData snapshot. Sessions are removed only when their group
      * exists in the snapshot and that group's classId matches.
+     *
+     * CASCADE STRICTNESS: a missing or malformed group store throws.
+     * This is a destructive cascade; silently reporting zero
+     * removals would hide a data-integrity failure and leave the
+     * sessions orphaned.
      */
     function stripClassRefs(appData, classId) {
         var result = { sessionsRemoved: 0 };
@@ -821,11 +1089,17 @@
         var store = getStoreFromSnapshot(appData);
         if (!store) return result;
 
-        var groupStore = (appData.academy &&
-                          isPlainObject(appData.academy.teachingGroups))
-            ? appData.academy.teachingGroups
-            : {};
+        if (!appData.academy ||
+            !isPlainObject(appData.academy.teachingGroups)) {
+            throw new Error(
+                '[AcademyTeachingSessions] stripClassRefs requires ' +
+                'the teachingGroups store on the snapshot. The store ' +
+                'is missing or malformed; the class-delete cascade ' +
+                'cannot resolve group ownership without it.'
+            );
+        }
 
+        var groupStore = appData.academy.teachingGroups;
         var targetClass = String(classId);
         var keys = Object.keys(store);
 
@@ -855,6 +1129,8 @@
      * this helper is transaction-local: it sees the state as of the
      * cascade's current mutation, not the live store.
      *
+     * CASCADE STRICTNESS: a missing or malformed group store throws.
+     *
      * Sessions whose group no longer exists in the snapshot are not
      * touched. Their groupId points at nothing, so the discipline
      * relationship cannot be established. Cleaning orphan sessions
@@ -868,11 +1144,17 @@
         var store = getStoreFromSnapshot(appData);
         if (!store) return result;
 
-        var groupStore = (appData.academy &&
-                          isPlainObject(appData.academy.teachingGroups))
-            ? appData.academy.teachingGroups
-            : {};
+        if (!appData.academy ||
+            !isPlainObject(appData.academy.teachingGroups)) {
+            throw new Error(
+                '[AcademyTeachingSessions] stripDisciplineRefs requires ' +
+                'the teachingGroups store on the snapshot. The store ' +
+                'is missing or malformed; the discipline-delete cascade ' +
+                'cannot resolve group ownership without it.'
+            );
+        }
 
+        var groupStore = appData.academy.teachingGroups;
         var targetDiscipline = String(disciplineId);
         var keys = Object.keys(store);
 
@@ -1016,6 +1298,32 @@
                 { day: 1, startTime: 9, duration: 1, startWeek: 30, endWeek: 40 }
             ) !== true) {
                 missing.push('sessionsOverlap missed an ongoing week range');
+            }
+
+            // Boundary smoke test. A session ending exactly at
+            // CALENDAR_END_TIME is valid; one ending one hour later
+            // is not.
+            var lastOccupiable = CalendarConstants.CALENDAR_END_HOUR;
+            if (CALENDAR_END_TIME !== lastOccupiable + 1) {
+                missing.push('CALENDAR_END_TIME is not CALENDAR_END_HOUR + 1');
+            }
+            var okTime = validateTimeWindow(
+                MIN_DAY, lastOccupiable, 1
+            );
+            if (okTime.valid !== true) {
+                missing.push(
+                    'validateTimeWindow rejected a session ending ' +
+                    'exactly at CALENDAR_END_TIME'
+                );
+            }
+            var badTime = validateTimeWindow(
+                MIN_DAY, lastOccupiable, 2
+            );
+            if (badTime.valid !== false) {
+                missing.push(
+                    'validateTimeWindow accepted a session extending ' +
+                    'past CALENDAR_END_TIME'
+                );
             }
         } catch (e) {
             missing.push('predicate smoke test threw: ' + e.message);
