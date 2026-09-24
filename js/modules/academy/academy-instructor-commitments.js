@@ -34,6 +34,91 @@
  *       updatedAt
  *     }
  *
+ * WHAT THIS MODULE DOES NOT OWN:
+ *   - The teaching-sessions store     (AcademyTeachingSessions)
+ *   - The teaching-groups store       (AcademyTeachingGroups)
+ *   - The social-relationship store   (SocialCore / SocialQueries)
+ *   - The class-discipline store      (AcademyClassDisciplines)
+ *   - Student enrolment               (AcademyEnrolments)
+ *
+ * CLASSID SEMANTICS:
+ *   classId identifies the ACADEMY CONTEXT in which the commitment
+ *   is recorded. It does NOT make the commitment subject to the
+ *   class's teaching schedule or rest-day rules.
+ *
+ *   A commitment is the instructor's own time. It is independent
+ *   of any class's calendar. The class's rest days do not suppress
+ *   it. The class's teaching sessions do not displace it.
+ *
+ *   classId exists so that a commitment can be listed, filtered,
+ *   and cascaded by class. When a class is deleted, its
+ *   commitments are deleted with it (the class is the context;
+ *   without the context, the record is orphaned). This is the
+ *   only sense in which classId is used.
+ *
+ * KIND DISCRIMINATION:
+ *   The two kinds share every field except `characterId`.
+ *   `characterId` is only accepted when kind is 'tutoring'. A
+ *   caller that tries to set it on an office hour gets a
+ *   rejection, not a silent drop.
+ *
+ *   Canonical invariant:
+ *     officeHours  → characterId === null
+ *     tutoring     → characterId === null OR valid character ID
+ *
+ * TRANSACTION SNAPSHOT RULE:
+ *   Pipeline validate() callbacks resolve references against the
+ *   `appData` argument they are handed. They do not read
+ *   window.data. Preflight reads against window.data are for
+ *   early UX feedback only; the pipeline re-checks against the
+ *   snapshot.
+ *
+ *   Both create and update validate the CANDIDATE against the
+ *   snapshot. This closes two failure modes:
+ *     - a reference that was valid at preflight being invalidated
+ *       by another mutation before commit
+ *     - an update that preserves a reference which has already
+ *       become stale in storage
+ *
+ * LOCATION DEPENDENCY:
+ *   When a commitment sets a locationId, AcademyLocations is
+ *   MANDATORY. A missing location provider, or a location that
+ *   does not resolve, is a validation failure. There is no
+ *   "foreign key valid only when the module happens to be
+ *   loaded" path.
+ *
+ * LABEL:
+ *   The label is bounded by LABEL_MAX_LENGTH. An overlong label
+ *   is REJECTED, not silently truncated. Silent truncation hides
+ *   user error; the caller must supply a label within bounds.
+ *
+ * MENTORING HOOK (tutoring only):
+ *   When a tutoring commitment is created or updated with a
+ *   characterId, the save sequence also ensures a mentor
+ *   relationship exists between the instructor (as mentor) and
+ *   the character (as mentee) in the Social domain.
+ *
+ *   The relationship create is a SEPARATE MUTATION PIPELINE,
+ *   run after the commitment write commits. If it fails, the
+ *   commitment stays.
+ *
+ *   The relationship check has THREE outcomes:
+ *     exists            → no create attempted
+ *     doesn't exist     → create attempted
+ *     couldn't determine → no create attempted; the caller is
+ *                          notified that the relationship could
+ *                          not be verified. A failed read does not
+ *                          silently become "assume absent."
+ *
+ * RANGE PREDICATES:
+ *   Week-in-range questions in this module delegate to
+ *   RangeUtils. This module does not reimplement range math.
+ *
+ * MUTATION CONTRACT:
+ *   Every public mutation returns Promise<{ success, data?, message? }>.
+ *   Every mutation routes through MutationPipeline.
+ *   Every mutation is atomic on its OWN store.
+ *
  * CASCADE HELPERS:
  *   stripClassRefs(appData, classId)
  *     Every commitment attached to the class is removed.
@@ -48,40 +133,23 @@
  *
  *   stripInstructorRefs(appData, instructorId)
  *     Every commitment owned by the instructor is removed,
- *     regardless of class. Same effect as stripCharacterRefs for
- *     the instructor role; provided for callers that want the
- *     intent explicit.
+ *     regardless of class.
+ *
+ *     SEMANTIC DISTINCTION FROM stripCharacterRefs:
+ *       stripCharacterRefs is "remove every relationship to this
+ *       character." It handles the subject role too.
+ *
+ *       stripInstructorRefs is "remove commitments owned by this
+ *       instructor." It is narrower: it does not touch the subject
+ *       role. For a character deletion, stripCharacterRefs is the
+ *       right call. stripInstructorRefs exists for callers that
+ *       want to express "clear this instructor's schedule" without
+ *       touching anyone else's references.
  *
  *   stripLocationRefs(appData, locationId)
  *     Nulls the locationId on every commitment that referenced
  *     the deleted location. The commitment survives. Symmetric
  *     with AcademyTeachingSessions.stripLocationRefs.
- *
- * KIND DISCRIMINATION:
- *   The two kinds share every field except `characterId`.
- *   `characterId` is only accepted when kind is 'tutoring'. A
- *   caller that tries to set it on an office hour gets a
- *   rejection, not a silent drop.
- *
- * MENTORING HOOK (tutoring only):
- *   When a tutoring commitment is created or updated with a
- *   characterId, the save sequence also ensures a mentor
- *   relationship exists between the instructor (as mentor) and
- *   the character (as mentee) in the Social domain.
- *
- *   The relationship create is a SEPARATE MUTATION PIPELINE,
- *   run after the commitment write commits. If it fails, the
- *   commitment stays. The user sees a toast asking them to retry
- *   the relationship from the Social tab.
- *
- * RANGE PREDICATES:
- *   Week-in-range questions in this module delegate to
- *   RangeUtils. This module does not reimplement range math.
- *
- * MUTATION CONTRACT:
- *   Every public mutation returns Promise<{ success, data?, message? }>.
- *   Every mutation routes through MutationPipeline.
- *   Every mutation is atomic on its OWN store.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.ObjectUtils
@@ -94,8 +162,9 @@
  *   - window.AcademyClasses
  *   - window.CharacterQueries
  *
- * DEPENDENCIES (LAZY, used at call time):
- *   - window.AcademyLocations     (location existence, optional)
+ * DEPENDENCIES (LAZY, mandatory at call time when used):
+ *   - window.AcademyLocations     (location existence; required
+ *                                  when a locationId is set)
  *   - window.SocialCore           (mentor relationship create)
  *   - window.SocialQueries        (mentor relationship read)
  *   - window.NotificationSystem   (soft-failure notice)
@@ -237,10 +306,6 @@
                !Array.isArray(value);
     }
 
-    function isFiniteNumber(value) {
-        return typeof value === 'number' && isFinite(value);
-    }
-
     function deepClone(value) {
         var result = ObjectUtils.deepClone(value);
         if (result === value && value !== null && typeof value === 'object') {
@@ -304,18 +369,17 @@
         return parsed;
     }
 
+    /**
+     * Normalise a label WITHOUT truncation. A label longer than
+     * LABEL_MAX_LENGTH is returned as-is; the validator rejects it.
+     * Trimming whitespace is fine — that is normalisation, not
+     * silent mutation of the caller's intent.
+     */
     function normaliseLabel(raw) {
         if (raw === undefined || raw === null) {
             return '';
         }
-        var s = String(raw).trim();
-        if (s === '') {
-            return '';
-        }
-        if (s.length > LABEL_MAX_LENGTH) {
-            s = s.slice(0, LABEL_MAX_LENGTH);
-        }
-        return s;
+        return String(raw).trim();
     }
 
     function notify(message, type) {
@@ -406,8 +470,57 @@
     }
 
     // ============================================================
-    // VALIDATION
+    // SNAPSHOT-AWARE LOOKUPS
     // ============================================================
+    //
+    // Used by the pipeline validate() callbacks. Read from the
+    // appData snapshot, not window.data.
+
+    function findCharacterInSnapshot(appData, charId) {
+        if (!appData || !Array.isArray(appData.characters)) {
+            return null;
+        }
+        var target = String(charId);
+        for (var i = 0; i < appData.characters.length; i++) {
+            var c = appData.characters[i];
+            if (c && String(c.id) === target) {
+                return c;
+            }
+        }
+        return null;
+    }
+
+    function findClassInSnapshot(appData, classId) {
+        if (!appData || !appData.academy ||
+            !isPlainObject(appData.academy.graduatingClasses)) {
+            return null;
+        }
+        var target = String(classId);
+        return appData.academy.graduatingClasses[target] || null;
+    }
+
+    function findCommitmentInSnapshot(appData, commitmentId) {
+        var store = getStoreFromSnapshot(appData);
+        if (!store) {
+            return null;
+        }
+        var record = store[String(commitmentId)];
+        if (!isPlainObject(record)) {
+            return null;
+        }
+        return record;
+    }
+
+    // ============================================================
+    // PAYLOAD VALIDATION (user input)
+    // ============================================================
+    //
+    // validateCommitmentPayload() is the USER-INPUT validator. It
+    // checks the requested payload's shape and domain rules. It does
+    // not check reference existence.
+    //
+    // Reference existence is validateCandidateAgainstSnapshot()'s
+    // job, which runs inside the pipeline.
 
     function validateCommitmentPayload(payload, isPartial) {
         if (!isPlainObject(payload)) {
@@ -424,10 +537,6 @@
             if (!isNonEmptyString(payload.classId)) {
                 return { valid: false, message: 'Class ID is required.' };
             }
-            var cls = AcademyClasses.getClass(payload.classId);
-            if (!cls) {
-                return { valid: false, message: 'Class not found.' };
-            }
             normalised.classId = String(payload.classId);
         }
 
@@ -437,15 +546,6 @@
                 return {
                     valid: false,
                     message: 'Instructor ID is required.'
-                };
-            }
-            var instructor = CharacterQueries.getCharacterById(
-                payload.instructorId
-            );
-            if (!instructor) {
-                return {
-                    valid: false,
-                    message: 'Instructor not found.'
                 };
             }
             normalised.instructorId = String(payload.instructorId);
@@ -578,21 +678,6 @@
                         message: 'Location ID must be a non-empty string.'
                     };
                 }
-                var AL = getAcademyLocations();
-                if (AL && typeof AL.getLocation === 'function') {
-                    var loc = null;
-                    try {
-                        loc = AL.getLocation(payload.locationId);
-                    } catch (e) {
-                        loc = null;
-                    }
-                    if (!loc) {
-                        return {
-                            valid: false,
-                            message: 'Location not found.'
-                        };
-                    }
-                }
                 normalised.locationId = String(payload.locationId);
             }
         } else if (!isPartial) {
@@ -623,31 +708,40 @@
                     };
                 }
 
-                var char = CharacterQueries.getCharacterById(
-                    payload.characterId
-                );
-                if (!char) {
-                    return {
-                        valid: false,
-                        message: 'Character not found.'
-                    };
-                }
-
                 normalised.characterId = String(payload.characterId);
             }
         } else if (!isPartial) {
             normalised.characterId = null;
         }
 
-        // ---- label ----
+        // ---- label (reject overlong; no truncation) ----
         if (payload.label !== undefined) {
-            normalised.label = normaliseLabel(payload.label);
+            var label = normaliseLabel(payload.label);
+            if (label.length > LABEL_MAX_LENGTH) {
+                return {
+                    valid: false,
+                    message: 'Label must be ' + LABEL_MAX_LENGTH +
+                        ' characters or fewer.'
+                };
+            }
+            normalised.label = label;
         } else if (!isPartial) {
             normalised.label = '';
         }
 
         return { valid: true, normalised: normalised };
     }
+
+    // ============================================================
+    // CANDIDATE VALIDATION (structural, complete record)
+    // ============================================================
+    //
+    // validateCandidate() checks the COMPLETE candidate record's
+    // structural and domain shape. It does not check reference
+    // existence — that is the snapshot validator's job.
+    //
+    // Used by create and update after the candidate has been built
+    // or restored from storage.
 
     function validateCandidate(candidate) {
         if (!isPlainObject(candidate)) {
@@ -708,14 +802,118 @@
             }
         }
 
-        if (candidate.kind === KIND_OFFICE_HOURS &&
-            candidate.characterId !== null &&
-            candidate.characterId !== undefined &&
-            candidate.characterId !== '') {
+        // ---- locationId: null or non-empty string ----
+        if (candidate.locationId !== null &&
+            candidate.locationId !== undefined) {
+            if (!isNonEmptyString(candidate.locationId)) {
+                return {
+                    valid: false,
+                    message: 'Candidate locationId must be null or a ' +
+                        'non-empty string.'
+                };
+            }
+        }
+
+        // ---- characterId: null or non-empty string; not on
+        //      office hours ----
+        if (candidate.characterId !== null &&
+            candidate.characterId !== undefined) {
+            if (!isNonEmptyString(candidate.characterId)) {
+                return {
+                    valid: false,
+                    message: 'Candidate characterId must be null or a ' +
+                        'non-empty string.'
+                };
+            }
+            if (candidate.kind === KIND_OFFICE_HOURS) {
+                return {
+                    valid: false,
+                    message: 'Office hours do not take a character.'
+                };
+            }
+        }
+
+        // ---- label length ----
+        if (candidate.label !== undefined && candidate.label !== null) {
+            if (typeof candidate.label !== 'string') {
+                return {
+                    valid: false,
+                    message: 'Candidate label must be a string.'
+                };
+            }
+            if (candidate.label.length > LABEL_MAX_LENGTH) {
+                return {
+                    valid: false,
+                    message: 'Candidate label must be ' +
+                        LABEL_MAX_LENGTH + ' characters or fewer.'
+                };
+            }
+        }
+
+        return { valid: true };
+    }
+
+    // ============================================================
+    // SNAPSHOT VALIDATION (reference existence)
+    // ============================================================
+    //
+    // validateCandidateAgainstSnapshot() checks that every foreign
+    // reference on the candidate resolves in the transaction
+    // snapshot. It runs inside the pipeline validator.
+    //
+    // Location is MANDATORY when set: a missing AcademyLocations
+    // provider is a failure, not a silent pass.
+    //
+    // A commitment ID collision check is NOT part of this
+    // function; the caller owns that (create only).
+
+    function validateCandidateAgainstSnapshot(candidate, appData) {
+        // ---- classId ----
+        if (!findClassInSnapshot(appData, candidate.classId)) {
             return {
                 valid: false,
-                message: 'Office hours do not take a character.'
+                message: 'Class no longer exists: ' + candidate.classId
             };
+        }
+
+        // ---- instructorId ----
+        if (!findCharacterInSnapshot(appData, candidate.instructorId)) {
+            return {
+                valid: false,
+                message: 'Instructor no longer exists: ' +
+                    candidate.instructorId
+            };
+        }
+
+        // ---- characterId (tutoring only) ----
+        if (isNonEmptyString(candidate.characterId)) {
+            if (!findCharacterInSnapshot(appData, candidate.characterId)) {
+                return {
+                    valid: false,
+                    message: 'Character no longer exists: ' +
+                        candidate.characterId
+                };
+            }
+        }
+
+        // ---- locationId ----
+        if (isNonEmptyString(candidate.locationId)) {
+            var AL = getAcademyLocations();
+            if (!AL || typeof AL.getLocation !== 'function') {
+                return {
+                    valid: false,
+                    message: 'AcademyLocations is required to validate ' +
+                        'a commitment location. Check the script load ' +
+                        'order in index.html.'
+                };
+            }
+            var loc = AL.getLocation(candidate.locationId);
+            if (!loc) {
+                return {
+                    valid: false,
+                    message: 'Location not found: ' + candidate.locationId
+                };
+            }
         }
 
         return { valid: true };
@@ -752,6 +950,12 @@
     // ============================================================
     // MENTOR RELATIONSHIP HOOK
     // ============================================================
+    //
+    // Three-state read:
+    //   exists             → no create attempted
+    //   doesn't exist      → create attempted
+    //   couldn't determine → no create attempted; soft-failure
+    //                        is reported to the user
 
     function ensureMentorRelationship(instructorId, characterId) {
         if (!isNonEmptyString(instructorId) ||
@@ -789,9 +993,10 @@
             });
         }
 
-        var alreadyExists = false;
+        // ---- Read the current state. Three outcomes. ----
+        var exists;
         try {
-            alreadyExists = SQ.relationshipExists(
+            exists = SQ.relationshipExists(
                 instructorId,
                 characterId,
                 MENTOR_TYPE_ID
@@ -799,12 +1004,18 @@
         } catch (e) {
             console.warn(
                 '[AcademyInstructorCommitments] ' +
-                'relationshipExists threw:', e
+                'relationshipExists threw; the mentor relationship ' +
+                'could not be verified. Not attempting a create.',
+                e
             );
-            alreadyExists = false;
+            return Promise.resolve({
+                attempted: false,
+                created: false,
+                reason: 'check-failed'
+            });
         }
 
-        if (alreadyExists) {
+        if (exists) {
             return Promise.resolve({
                 attempted: false,
                 created: false,
@@ -856,6 +1067,17 @@
             commitment.instructorId,
             commitment.characterId
         ).then(function (hook) {
+            if (!hook.attempted && hook.reason === 'check-failed') {
+                notify(
+                    'Tutoring block saved. The mentor relationship ' +
+                    'could not be verified; no attempt was made to ' +
+                    'create it. Check the Social tab and add the ' +
+                    'relationship manually if needed.',
+                    'warning'
+                );
+                return hook;
+            }
+
             if (hook.attempted && !hook.created) {
                 notify(
                     'Tutoring block saved. The mentor relationship ' +
@@ -865,6 +1087,7 @@
                     'warning'
                 );
             }
+
             return hook;
         });
     }
@@ -887,6 +1110,15 @@
             return Promise.resolve(failure(candidateCheck.message));
         }
 
+        // Preflight reference check (UX). The pipeline re-checks
+        // against the snapshot.
+        var preflight = validateCandidateAgainstSnapshot(
+            candidate, getDataStore()
+        );
+        if (!preflight.valid) {
+            return Promise.resolve(failure(preflight.message));
+        }
+
         var targetId = candidate.id;
 
         return MutationPipeline.performMutation({
@@ -897,13 +1129,27 @@
                         message: 'Application data is not available.'
                     };
                 }
-                if (getStoreFromSnapshot(appData) &&
-                    getStoreFromSnapshot(appData)[targetId]) {
+
+                // ID collision against the snapshot.
+                if (findCommitmentInSnapshot(appData, targetId)) {
                     return {
                         valid: false,
                         message: 'Commitment ID collision.'
                     };
                 }
+
+                // Reference existence against the snapshot. This
+                // is the authoritative check.
+                var snapCheck = validateCandidateAgainstSnapshot(
+                    candidate, appData
+                );
+                if (!snapCheck.valid) {
+                    return {
+                        valid: false,
+                        message: snapCheck.message
+                    };
+                }
+
                 return { valid: true };
             },
             mutate: function (appData) {
@@ -960,28 +1206,17 @@
             }
         }
 
-        if (candidate.startTime + candidate.duration >
-            CALENDAR_END_HOUR + 1) {
-            return Promise.resolve(failure(
-                'Commitment extends beyond the end of the day.'
-            ));
-        }
-        if (candidate.endWeek !== null &&
-            candidate.endWeek < candidate.startWeek) {
-            return Promise.resolve(failure(
-                'End week cannot be before start week.'
-            ));
-        }
-        if (candidate.kind === KIND_OFFICE_HOURS &&
-            isNonEmptyString(candidate.characterId)) {
-            return Promise.resolve(failure(
-                'Office hours do not take a character.'
-            ));
-        }
-
         var candidateCheck = validateCandidate(candidate);
         if (!candidateCheck.valid) {
             return Promise.resolve(failure(candidateCheck.message));
+        }
+
+        // Preflight reference check (UX).
+        var preflight = validateCandidateAgainstSnapshot(
+            candidate, getDataStore()
+        );
+        if (!preflight.valid) {
+            return Promise.resolve(failure(preflight.message));
         }
 
         candidate.updatedAt = new Date().toISOString();
@@ -995,13 +1230,29 @@
                         message: 'Application data is not available.'
                     };
                 }
-                var store = getStoreFromSnapshot(appData);
-                if (!store || !store[targetId]) {
+
+                // The commitment must still exist.
+                if (!findCommitmentInSnapshot(appData, targetId)) {
                     return {
                         valid: false,
                         message: 'Commitment no longer exists.'
                     };
                 }
+
+                // Reference existence against the snapshot. This is
+                // the authoritative check. An update that would
+                // preserve a stale classId / instructorId /
+                // characterId / locationId fails here.
+                var snapCheck = validateCandidateAgainstSnapshot(
+                    candidate, appData
+                );
+                if (!snapCheck.valid) {
+                    return {
+                        valid: false,
+                        message: snapCheck.message
+                    };
+                }
+
                 return { valid: true };
             },
             mutate: function (appData) {
@@ -1045,8 +1296,7 @@
                         message: 'Application data is not available.'
                     };
                 }
-                var store = getStoreFromSnapshot(appData);
-                if (!store || !store[targetId]) {
+                if (!findCommitmentInSnapshot(appData, targetId)) {
                     return {
                         valid: false,
                         message: 'Commitment no longer exists.'
@@ -1247,6 +1497,22 @@
         return result;
     }
 
+    /**
+     * Every commitment OWNED by the instructor is removed.
+     *
+     * SEMANTIC DISTINCTION:
+     *   stripCharacterRefs removes every relationship to the
+     *   character, including the tutoring-subject role.
+     *
+     *   stripInstructorRefs removes only what the instructor owns.
+     *   It does not clear the subject role of any other
+     *   instructor's tutoring block.
+     *
+     * For a character deletion, stripCharacterRefs is the correct
+     * call. stripInstructorRefs exists for callers that want to
+     * express "clear this instructor's schedule" without touching
+     * anyone else's references.
+     */
     function stripInstructorRefs(appData, instructorId) {
         var result = { commitmentsRemoved: 0 };
 
@@ -1281,8 +1547,7 @@
      * deleted location.
      *
      * The commitment survives. The room was a property of the
-     * block, not its identity. A decommissioned room does not
-     * delete the block; it needs a new room.
+     * block, not its identity.
      *
      * Symmetric with AcademyTeachingSessions.stripLocationRefs.
      */
