@@ -41,6 +41,26 @@
  *   outright is reserved for administrative cleanup and for
  *   cascade deletes (class delete, discipline delete).
  *
+ *   Clear Roster is the exception. See CLEAR ROSTER below.
+ *
+ * CLEAR ROSTER — HARD DELETE:
+ *   clearGroupRoster(groupId) removes every member entry from the
+ *   group. The member records are DELETED, not ended. No history
+ *   survives.
+ *
+ *   This is a deliberate departure from the historical-record
+ *   principle. The semantic is: "this assignment was a mistake and
+ *   the records should not have existed." It matches the per-
+ *   student Remove button in the group block header, which uses
+ *   removeMemberRecord for the same reason.
+ *
+ *   Callers that want the interval-aware variant ("these students
+ *   were in the group and left") should call endMembership per
+ *   character. No bulk version of that exists today.
+ *
+ *   The group itself and its sessions are NOT touched. Only the
+ *   members array is emptied.
+ *
  * WEEK SEMANTICS:
  *   - Weeks are bounded [MIN_WEEK, MAX_WEEK].
  *   - startWeek and endWeek are integers in that range.
@@ -125,6 +145,8 @@
  *   AcademyTeachingGroups.addMemberToGroup(groupId, charId, week)
  *       .then(...);
  *   AcademyTeachingGroups.endMembership(groupId, charId, effectiveWeek)
+ *       .then(...);
+ *   AcademyTeachingGroups.clearGroupRoster(groupId)
  *       .then(...);
  */
 
@@ -267,16 +289,6 @@
     // ============================================================
     // RANGE PREDICATES — DELEGATE TO RangeUtils
     // ============================================================
-    //
-    // RangeUtils.containsWeek(week, start, end) is the canonical
-    // "does this range contain this week" predicate for the whole
-    // application. It treats end === null as unbounded, uses
-    // inclusive bounds on both ends, and rejects weeks outside
-    // [MIN_WEEK, MAX_WEEK].
-    //
-    // The two helpers below add only the member-shape and
-    // group-shape null checks that RangeUtils cannot know about.
-    // Everything else is delegation. Do not put range math here.
 
     function memberActiveInWeek(member, week) {
         if (!member || typeof member !== 'object') {
@@ -309,15 +321,6 @@
     // ============================================================
     // MEMBER INTERVAL OVERLAP
     // ============================================================
-    //
-    // Two member entries overlap when their inclusive [start, end]
-    // ranges intersect. endWeek === null means unbounded.
-    //
-    // This predicate is local because RangeUtils.weeksOverlap works
-    // on bare week numbers and this shape carries startWeek /
-    // endWeek. The interval math itself is not reimplemented: the
-    // endpoint comparison is the same inclusive-overlap rule used
-    // everywhere.
 
     function memberIntervalsOverlap(a, b) {
         if (!a || !b) { return false; }
@@ -558,10 +561,6 @@
     // INTERNAL PREDICATES
     // ============================================================
 
-    /**
-     * Count the member entries on the group that have at least one
-     * interval containing `weekNum`.
-     */
     function countActiveMemberEntries(group, charId, weekNum) {
         if (!group || !Array.isArray(group.members)) { return 0; }
         var target = String(charId);
@@ -577,23 +576,6 @@
         return count;
     }
 
-    /**
-     * Does adding an interval at `weekNum` (open-ended) conflict
-     * with any existing interval for this character on this group
-     * that is NOT already active at `weekNum`?
-     *
-     * The membership invariant is "at most one active interval per
-     * character per group at any given week." A character who is
-     * already active at weekNum is asking for a state that already
-     * holds — a no-op, not a conflict.
-     *
-     * A character who is NOT active at weekNum but who has an
-     * existing interval that would still overlap [weekNum, ∞) is a
-     * real conflict: the proposed interval would create two
-     * simultaneous stints.
-     *
-     * Returns the conflicting entry, or null.
-     */
     function findConflictOnAdd(group, charId, weekNum) {
         if (!group || !Array.isArray(group.members)) { return null; }
         var target = String(charId);
@@ -604,8 +586,6 @@
             if (!m) { continue; }
             if (String(m.characterId) !== target) { continue; }
 
-            // Already active at weekNum? Then the requested state
-            // already holds. Not a conflict.
             if (memberActiveInWeek(m, weekNum)) {
                 continue;
             }
@@ -617,10 +597,6 @@
         return null;
     }
 
-    /**
-     * Find every entry for this character that has at least one
-     * interval containing `weekNum`.
-     */
     function findActiveEntriesForWeek(group, charId, weekNum) {
         var result = [];
         if (!group || !Array.isArray(group.members)) { return result; }
@@ -844,21 +820,6 @@
     // ============================================================
     // SEQUENCE VALIDATION
     // ============================================================
-    //
-    // The sequence store records the LAST allocated group number for
-    // each (classId, disciplineId, instructorId) triple. The next
-    // number is the recorded value plus one.
-    //
-    // Three states:
-    //   - key absent               -> nextNumber = 1
-    //   - key present, valid int >= 0 -> nextNumber = stored + 1
-    //   - key present, malformed   -> throw
-    //
-    // The third state is a data-integrity failure. Treating a
-    // corrupt sequence as "no sequence" would silently reuse group
-    // numbers, and the sequence contract (monotonic per triple) is
-    // load-bearing for display names and for reasoning about
-    // historical groups.
 
     function allocateGroupNumber(seqStore, seqKey) {
         if (!isPlainObject(seqStore)) {
@@ -896,14 +857,6 @@
     // MUTATIONS
     // ============================================================
 
-    /**
-     * Create a group. Allocates a fresh groupNumber from the sequence
-     * store for this (class, discipline, instructor) triple.
-     *
-     * Does NOT merge with an existing group. Callers that want
-     * find-or-create should use getGroupsForClassDisciplineInstructor
-     * and pick one, or add members via addMemberToGroup.
-     */
     function createGroup(classId, disciplineId, instructorId, week) {
         var cdCheck = validateClassAndDiscipline(classId, disciplineId);
         if (!cdCheck.valid) {
@@ -927,11 +880,6 @@
         var targetInstructor = String(instructorId);
         var seqKey = makeSequenceKey(targetClass, targetDiscipline, targetInstructor);
 
-        // Generate the ID outside the pipeline. The pipeline
-        // validator checks it for collision against the snapshot;
-        // a collision is essentially impossible with IdUtils, but
-        // the check is cheap and the contract is "ID is unique in
-        // the resulting store."
         var newGroupId = IdUtils.generateId('tgroup');
 
         return MutationPipeline.performMutation({
@@ -943,7 +891,6 @@
                     };
                 }
 
-                // References must exist in the snapshot.
                 if (!findClassInSnapshot(appData, targetClass)) {
                     return {
                         valid: false,
@@ -963,7 +910,6 @@
                     };
                 }
 
-                // The generated ID must not collide in the snapshot.
                 var groupStore = getGroupStoreFromSnapshot(appData);
                 if (groupStore && groupStore[newGroupId]) {
                     return {
@@ -978,8 +924,6 @@
                 var groupStore = ensureGroupStore(appData);
                 var seqStore = ensureSequenceStore(appData);
 
-                // allocateGroupNumber throws on a malformed sequence;
-                // the throw rolls back the transaction.
                 var nextNumber = allocateGroupNumber(seqStore, seqKey);
 
                 var group = buildNewGroupRecord(
@@ -1003,18 +947,6 @@
         });
     }
 
-    /**
-     * Add a member to a group. Records "from `week` onward."
-     *
-     * MEMBERSHIP INVARIANT:
-     *   If the member already has an interval on this group that
-     *   contains `week`, this is a no-op.
-     *
-     *   Otherwise, if the member has any interval on this group
-     *   that would overlap [week, ∞), the operation is rejected.
-     *   The proposed interval would create two simultaneous stints
-     *   for the same character on the same group.
-     */
     function addMemberToGroup(groupId, charId, week) {
         if (!isNonEmptyString(groupId)) {
             return Promise.resolve(failure('Group ID is required.'));
@@ -1043,7 +975,6 @@
         var targetGroup = String(groupId);
         var targetChar = String(charId);
 
-        // Preflight: already active at this week (live store)?
         if (isMemberOfGroup(targetGroup, targetChar, weekNum)) {
             return Promise.resolve({
                 success: true,
@@ -1060,7 +991,6 @@
                     };
                 }
 
-                // Group must exist in the snapshot.
                 var snapshotGroup = getGroupFromSnapshot(appData, targetGroup);
                 if (!snapshotGroup) {
                     return {
@@ -1069,7 +999,6 @@
                     };
                 }
 
-                // Character must exist in the snapshot.
                 if (!findCharacterInSnapshot(appData, targetChar)) {
                     return {
                         valid: false,
@@ -1077,9 +1006,6 @@
                     };
                 }
 
-                // Membership invariant against the snapshot.
-                // Already active at this week -> no-op, allowed.
-                // Any other overlap -> reject.
                 var activeCount = countActiveMemberEntries(
                     snapshotGroup, targetChar, weekNum
                 );
@@ -1133,18 +1059,6 @@
         });
     }
 
-    /**
-     * End a member's participation from `effectiveWeek` onward.
-     *
-     * Drop-out semantics: truncates the active window at
-     * effectiveWeek - 1. History survives.
-     *
-     * MEMBERSHIP INVARIANT:
-     *   Exactly one active interval at effectiveWeek is the normal
-     *   case. Zero is a no-op. More than one means stored history
-     *   has overlapping stints for the same character on the same
-     *   group — a data-integrity failure. Throwing surfaces it.
-     */
     function endMembership(groupId, charId, effectiveWeek) {
         if (!isNonEmptyString(groupId) || !isNonEmptyString(charId)) {
             return Promise.resolve(failure('Group and character IDs are required.'));
@@ -1214,10 +1128,6 @@
                 }
 
                 if (activeEntries.length > 1) {
-                    // Should be unreachable: validate() rejects
-                    // this case. Kept as a defensive assertion so
-                    // a diverged validate/mutate pair fails loudly
-                    // rather than silently truncating one interval.
                     throw new Error(
                         'Multiple active intervals found during end.'
                     );
@@ -1240,15 +1150,6 @@
         });
     }
 
-    /**
-     * Hard-delete a member's record from a group entirely.
-     * Administrative cleanup only.
-     *
-     * Returns { removed: N } so callers can see how many entries
-     * were affected. Under normal history, N is 0 or 1; a corrupt
-     * store with duplicate entries for the same character returns
-     * the count of all entries removed.
-     */
     function removeMemberRecord(groupId, charId) {
         if (!isNonEmptyString(groupId) || !isNonEmptyString(charId)) {
             return Promise.resolve(failure('Group and character IDs are required.'));
@@ -1300,10 +1201,93 @@
     }
 
     /**
-     * End the group as a whole from `effectiveWeek` onward.
-     * Members' individual windows are unchanged; the group's own
-     * endWeek is set.
+     * Clear the group's roster. Removes every member entry from the
+     * group.
+     *
+     * HARD DELETE SEMANTIC:
+     *   The member records are removed entirely. No history
+     *   survives. This matches the per-student Remove button in
+     *   the group block header, which calls removeMemberRecord.
+     *
+     *   The intent is correction: "this assignment was a mistake
+     *   and the records should not have existed." Callers that
+     *   want the interval-aware variant ("these students were in
+     *   the group and left") should call endMembership per
+     *   character. No bulk version of that exists today.
+     *
+     * THE GROUP AND ITS SESSIONS ARE NOT TOUCHED:
+     *   Only the members array is emptied. The group record, its
+     *   startWeek / endWeek, its customName, its groupNumber, and
+     *   every teaching session owned by it are unchanged.
+     *
+     * IDEMPOTENT:
+     *   A group with an empty members array is a successful no-op.
+     *   The result reports removed: 0.
+     *
+     * @param {string} groupId
+     * @returns {Promise<{ success, data?: { removed: number }, message? }>}
      */
+    function clearGroupRoster(groupId) {
+        if (!isNonEmptyString(groupId)) {
+            return Promise.resolve(failure('Group ID is required.'));
+        }
+
+        var targetGroup = String(groupId);
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+                if (!getGroupFromSnapshot(appData, targetGroup)) {
+                    return {
+                        valid: false,
+                        message: 'Teaching group no longer exists.'
+                    };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var store = getGroupStoreFromSnapshot(appData);
+                if (!store || !isPlainObject(store[targetGroup])) {
+                    throw new Error('Teaching group not found in store.');
+                }
+                var group = store[targetGroup];
+
+                if (!Array.isArray(group.members)) {
+                    group.members = [];
+                    return { removed: 0 };
+                }
+
+                var removed = group.members.length;
+                group.members = [];
+
+                if (removed > 0) {
+                    group.updatedAt = new Date().toISOString();
+                }
+
+                return { removed: removed };
+            },
+            logMessage: function(result) {
+                return 'Cleared ' + (result && result.removed
+                    ? result.removed : 0) +
+                    ' member(s) from teaching group ' + targetGroup;
+            },
+            successMessage: function(result) {
+                var n = result && result.removed ? result.removed : 0;
+                if (n === 0) {
+                    return 'The group already has no students.';
+                }
+                return 'Removed ' + n + ' student' +
+                    (n === 1 ? '' : 's') + ' from the group.';
+            },
+            failureMessage: 'Failed to clear the group roster.'
+        });
+    }
+
     function endGroup(groupId, effectiveWeek) {
         if (!isNonEmptyString(groupId)) {
             return Promise.resolve(failure('Group ID is required.'));
@@ -1362,13 +1346,6 @@
         });
     }
 
-    /**
-     * Set or clear the group's custom name.
-     * Pass null to revert to the auto-generated name.
-     *
-     * Overlong names are REJECTED, not truncated. Silent truncation
-     * hides user error; the caller must supply a name within bounds.
-     */
     function setGroupCustomName(groupId, customName) {
         if (!isNonEmptyString(groupId)) {
             return Promise.resolve(failure('Group ID is required.'));
@@ -1427,18 +1404,6 @@
         });
     }
 
-    /**
-     * Hard-delete a teaching group. Reserved for administrative
-     * cleanup and for cascade deletes. Ordinary "this group is over"
-     * is endGroup.
-     *
-     * LOW-LEVEL PRIMITIVE: this function does NOT remove teaching
-     * sessions owned by the group. Sessions that reference the
-     * deleted group become orphans. Cross-domain callers that need
-     * the group and its sessions removed in one transaction use
-     * AcademySchedule.removeTeachingGroup, which is the compound
-     * operation that owns that orchestration.
-     */
     function removeGroupRecord(groupId) {
         if (!isNonEmptyString(groupId)) {
             return Promise.resolve(failure('Group ID is required.'));
@@ -1473,12 +1438,6 @@
     // ============================================================
     // CASCADE HELPERS
     // ============================================================
-    //
-    // All four helpers run inside another module's pipeline
-    // transaction. A missing or malformed group store on the
-    // snapshot is a data-integrity failure for a destructive
-    // cascade; the helper throws rather than silently reporting a
-    // zero-count success.
 
     function assertGroupStorePresent(appData, helperName) {
         var store = getGroupStoreFromSnapshot(appData);
@@ -1492,13 +1451,6 @@
         return store;
     }
 
-    /**
-     * End every membership for a character across all groups, from
-     * `effectiveWeek` onward. Historical records survive.
-     *
-     * If effectiveWeek is null, all memberships are ended with
-     * endWeek = MAX_WEEK.
-     */
     function stripCharacterRefs(appData, charId, effectiveWeek) {
         var result = { membershipsEnded: 0, groupsEndedAsInstructor: 0 };
 
@@ -1520,7 +1472,6 @@
             var group = store[groupIds[i]];
             if (!isPlainObject(group)) { continue; }
 
-            // If the character is the instructor, end the whole group.
             if (String(group.instructorId) === target) {
                 if (weekNum !== null) {
                     if (group.startWeek < weekNum &&
@@ -1537,7 +1488,6 @@
                 continue;
             }
 
-            // Otherwise, end their membership(s).
             if (!Array.isArray(group.members)) { continue; }
             for (var j = 0; j < group.members.length; j++) {
                 var member = group.members[j];
@@ -1560,10 +1510,6 @@
         return result;
     }
 
-    /**
-     * Strip the entire teachingGroups subtree for a class.
-     * Hard delete. Called from class-delete cascade.
-     */
     function stripClassRefs(appData, classId) {
         var result = { groupsRemoved: 0 };
 
@@ -1588,10 +1534,6 @@
         return result;
     }
 
-    /**
-     * Strip all teaching groups for a discipline across all classes.
-     * Called from discipline-delete cascade.
-     */
     function stripDisciplineRefs(appData, disciplineId) {
         var result = { groupsRemoved: 0 };
 
@@ -1616,10 +1558,6 @@
         return result;
     }
 
-    /**
-     * Strip all teaching groups for a specific instructor. Called
-     * when an instructor record is deleted outright (rare).
-     */
     function stripInstructorRefs(appData, instructorId) {
         var result = { groupsRemoved: 0 };
 
@@ -1666,6 +1604,7 @@
         addMemberToGroup: addMemberToGroup,
         endMembership: endMembership,
         removeMemberRecord: removeMemberRecord,
+        clearGroupRoster: clearGroupRoster,
         endGroup: endGroup,
         setGroupCustomName: setGroupCustomName,
         removeGroupRecord: removeGroupRecord,
@@ -1694,8 +1633,8 @@
             'getActiveMembers', 'isMemberOfGroup',
             'getGroupForStudentInClassDiscipline',
             'createGroup', 'addMemberToGroup', 'endMembership',
-            'removeMemberRecord', 'endGroup', 'setGroupCustomName',
-            'removeGroupRecord',
+            'removeMemberRecord', 'clearGroupRoster', 'endGroup',
+            'setGroupCustomName', 'removeGroupRecord',
             'stripCharacterRefs', 'stripClassRefs',
             'stripDisciplineRefs', 'stripInstructorRefs'
         ];
@@ -1709,7 +1648,6 @@
             console.warn('[AcademyTeachingGroups] Verification missing:', missing.join(', '));
         }
 
-        // Smoke test the range wrappers and the overlap predicate.
         try {
             var activeMember = { characterId: 'c1', startWeek: 1, endWeek: 10 };
             var ongoingMember = { characterId: 'c2', startWeek: 5, endWeek: null };
@@ -1754,7 +1692,6 @@
                 missing.push('groupActiveInWeek accepted a null group');
             }
 
-            // Overlap predicate.
             if (memberIntervalsOverlap(
                 { startWeek: 1, endWeek: 10 },
                 { startWeek: 11, endWeek: 20 }
