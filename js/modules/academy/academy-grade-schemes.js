@@ -10,7 +10,7 @@
  *   - Validating scheme objects (bands sorted, unique labels, minPercent in range)
  *   - Converting a percentage to a band label for display
  *   - Producing a human-readable range preview for the discipline editor
- *   - Providing passing semantics (default threshold or scheme-aware)
+ *   - Providing passing semantics (explicit `passing` field or label heuristic)
  *   - Providing letter-grade semantics (default letter map or scheme-aware)
  *
  * IMPORTANT:
@@ -19,57 +19,123 @@
  *     after that, the stored scheme is the source of truth.
  *   - Grades are ALWAYS stored as percentages. The scheme is a display layer.
  *     Nothing about the converted label is persisted.
- *   - The 'numeric' scheme means "no conversion": display the raw percentage.
- *     Callers detect this by checking `scheme.id === 'numeric'` OR by looking
- *     for the sentinel band label '%'.
  *
  * SCHEME SHAPE:
  *   {
  *     id:        string,   // preset marker: 'letter' | 'pass_fail' | 'numeric' | 'custom'
  *     label:     string,   // display name, user-editable
  *     bands: [
- *       { label: string, minPercent: integer 0..100 },
+ *       {
+ *         label:      string,
+ *         minPercent: integer 0..100,
+ *         passing:    boolean   // OPTIONAL; see PASSING SEMANTICS below
+ *       },
  *       ...
  *     ]
  *   }
  *
  * BAND SEMANTICS:
- *   - Bands are sorted DESCENDING by minPercent.
+ *   - Canonical (normalised) bands are sorted DESCENDING by minPercent.
  *   - The band whose minPercent is the largest value <= score wins.
  *   - The lowest band MUST have minPercent === 0 so every score matches.
  *   - Bands must have unique labels (case-sensitive).
  *
+ * VALIDATION vs NORMALISATION:
+ *   Two distinct contracts, deliberately separated:
+ *
+ *     validateScheme(scheme)
+ *       Reports whether a scheme is VALID. Checks semantic validity
+ *       independent of ordering: bands form a non-empty array, each
+ *       band has a non-empty label and an integer minPercent in
+ *       range, labels are unique, minPercents are unique, exactly
+ *       one band has minPercent === 0.
+ *
+ *       Does NOT require descending order. Ordering is a
+ *       canonical-form concern, not a semantic one; normalisation
+ *       guarantees it.
+ *
+ *     normalizeScheme(raw)
+ *       Produces a canonical scheme from arbitrary input.
+ *
+ *       NORMALISATION POLICY:
+ *         - A structurally valid scheme is returned as a canonical
+ *           clone, bands sorted descending.
+ *         - Formatting differences that parse unambiguously are
+ *           coerced: minPercent: "80" becomes 80. minPercent:
+ *           "80garbage" is REJECTED (see below).
+ *         - A structurally INVALID scheme falls back to the numeric
+ *           default wholesale. It is NOT repaired.
+ *
+ *       WHY FALLBACK, NOT REPAIR:
+ *         Silently inventing a missing band or dropping a malformed
+ *         one changes what a student's grade MEANS. If a scheme
+ *         has bands A/90, B/80, C/70 and C is malformed, dropping
+ *         it would turn 75% into an F instead of a C. That is not
+ *         cosmetic corruption. It is a changed academic result.
+ *
+ *         A malformed scheme falls back to the numeric default so
+ *         the caller sees a coherent (if unhelpful) scheme instead
+ *         of a subtly wrong one. The caller can detect the
+ *         fallback and surface it; silent repair would hide it.
+ *
  * PASSING SEMANTICS:
- *   - isPassing(score, scheme):
- *       * If scheme is provided AND is not the numeric scheme, uses the
- *         scheme's bands to determine passing. A score passes if its
- *         matching band's minPercent is >= the scheme's "lowest passing
- *         band" threshold. The lowest passing band is the last band in
- *         the scheme whose label is not in a fail-label set.
- *       * If scheme is not provided, uses PASSING_THRESHOLD (70).
- *       * If scheme is the numeric scheme, uses PASSING_THRESHOLD.
- *   - FAIL_LABELS: labels considered failing by convention. Used to
- *     determine the lowest passing band. Defaults to ['F', 'Fail'].
- *     Users can rename bands, so this is heuristic — callers who need
- *     exact control should read bands directly.
+ *   A band may carry an explicit `passing: boolean` field. When ANY
+ *   band in the scheme carries an explicit `passing` field, that
+ *   field is authoritative for that band. The scheme's
+ *   "lowest passing band" is the band with the smallest minPercent
+ *   whose `passing` is not explicitly false.
+ *
+ *   When NO band carries an explicit `passing` field, the module
+ *   falls back to a label heuristic: labels in FAIL_LABELS ('F',
+ *   'Fail') are considered failing, and the lowest passing band is
+ *   the one with the smallest minPercent that is not fail-labelled.
+ *
+ *   The heuristic exists for schemes written before explicit
+ *   `passing` support. It is a compatibility path, not a design
+ *   recommendation. New schemes SHOULD carry explicit `passing`
+ *   fields, because a custom scheme with labels like
+ *   "Unsatisfactory" has no recognised fail label and would
+ *   otherwise treat every band as passing.
+ *
+ * isPassing(score, scheme):
+ *   - If scheme is provided and is not the numeric scheme, uses the
+ *     scheme's lowest passing band threshold (explicit or heuristic).
+ *   - If scheme is not provided, or is the numeric scheme, uses
+ *     PASSING_THRESHOLD (70).
+ *
+ * NUMERIC SENTINEL:
+ *   The numeric scheme means "no conversion": display the raw
+ *   percentage. It is identified by having exactly one band whose
+ *   label is the sentinel '%', OR by having id === 'numeric' AND
+ *   a bands array whose shape matches the numeric preset.
+ *
+ *   The preset ID is HISTORICAL METADATA. The bands are the source
+ *   of truth for semantics. A scheme with id === 'numeric' but with
+ *   letter-grade bands is NOT treated as numeric; it behaves like
+ *   the letter-grade scheme it actually is.
  *
  * LETTER GRADE SEMANTICS:
- *   - getLetterGrade(score, scheme):
- *       * If scheme is provided AND is not the numeric scheme, returns
- *         the matching band's label (as both label and description).
- *       * Otherwise, falls back to LETTER_GRADES (A/B/C/D/F at 90/80/70/60/0).
+ *   getGradeBand(score, scheme)
+ *     Returns the matching band's label (as both label and
+ *     description). For the numeric scheme, returns null.
+ *
+ *   getLetterGrade(score, scheme)
+ *     DEPRECATED NAME. Alias of getGradeBand with a fallback to the
+ *     default LETTER_GRADES map (A/B/C/D/F at 90/80/70/60/0) when
+ *     scheme is absent. Retained for backward compatibility.
+ *
+ *   New code should call getGradeBand.
  *
  * DEPENDENCIES:
- *   - None (self-contained)
+ *   None (self-contained)
  *
  * USAGE:
  *   var S = window.AcademyGradeSchemes;
  *   var preset = S.getPreset('letter');
  *   var scheme = S.normalizeScheme(rawScheme);
- *   var label = S.getLabelForScore(scheme, 87);       // → 'B'
- *   var preview = S.getRangeLabel(scheme);             // → 'A: 90–100%, B: 80–89%, ...'
- *   var passed = S.isPassing(87, scheme);              // → true
- *   var letter = S.getLetterGrade(87, scheme);         // → { label: 'B', description: 'B' }
+ *   var band = S.getGradeBand(87, scheme);            // → { label: 'B', description: 'B' }
+ *   var preview = S.getRangeLabel(scheme);            // → 'A: 90–100%, B: 80–89%, ...'
+ *   var passed = S.isPassing(87, scheme);             // → true
  */
 
 (function() {
@@ -84,7 +150,13 @@
     // CONSTANTS
     // ============================================================
 
-    var VALID_PRESET_IDS = ['letter', 'pass_fail', 'numeric', 'custom'];
+    var VALID_PRESET_IDS = Object.freeze([
+        'letter',
+        'pass_fail',
+        'numeric',
+        'custom'
+    ]);
+
     var DEFAULT_PRESET_ID = 'numeric';
     var NUMERIC_SENTINEL_LABEL = '%';
 
@@ -98,8 +170,13 @@
     var PASSING_THRESHOLD = 70;
 
     // Labels considered failing by convention. Used by isPassing to
-    // locate the "lowest passing band" in a custom scheme. Case-sensitive
-    // matching against the scheme's band labels.
+    // locate the "lowest passing band" in a custom scheme that does
+    // NOT carry explicit `passing` fields. Case-sensitive matching
+    // against the scheme's band labels.
+    //
+    // This is a COMPATIBILITY PATH for schemes written before
+    // explicit `passing` support. New schemes should carry
+    // explicit `passing` fields.
     var FAIL_LABELS = Object.freeze(['F', 'Fail']);
 
     // ---- Letter-grade fallback map ----
@@ -121,6 +198,12 @@
     // verbatim when the user picks it from the dropdown. After that,
     // the stored scheme is authoritative — we never re-derive from
     // the preset id.
+    //
+    // The pass_fail preset carries explicit `passing` fields. The
+    // letter preset does NOT; it relies on the FAIL_LABELS
+    // heuristic ('F' is the failing label). This is deliberate:
+    // the letter preset's labels are the canonical A/B/C/D/F set,
+    // and the heuristic recognises 'F' correctly.
 
     var PRESETS = [
         {
@@ -138,8 +221,8 @@
             id: 'pass_fail',
             label: 'Pass / Fail',
             bands: [
-                { label: 'Pass', minPercent: 70 },
-                { label: 'Fail', minPercent: 0 }
+                { label: 'Pass', minPercent: 70, passing: true },
+                { label: 'Fail', minPercent: 0,  passing: false }
             ]
         },
         {
@@ -177,14 +260,79 @@
         return Object.freeze(obj);
     }
 
-    function deepClone(value) {
-        if (value === null || typeof value !== 'object') {
-            return value;
+    /**
+     * Dedicated scheme clone.
+     *
+     * A generic JSON-based clone (or a `structuredClone` with a
+     * silent fallback) is unsafe here: the fallback returns the
+     * original object by reference, which lets a caller mutate the
+     * canonical preset. Schemes have a small, well-defined shape;
+     * a purpose-built clone is both safer and clearer.
+     *
+     * Preserves the `passing` field when present, so explicit
+     * passing metadata survives the clone.
+     */
+    function cloneScheme(scheme) {
+        if (!isObject(scheme)) {
+            return null;
         }
-        if (typeof structuredClone === 'function') {
-            try { return structuredClone(value); } catch (_) {}
+
+        var bands = [];
+        if (Array.isArray(scheme.bands)) {
+            for (var i = 0; i < scheme.bands.length; i++) {
+                var band = scheme.bands[i];
+                if (!isObject(band)) { continue; }
+                var clonedBand = {
+                    label: band.label,
+                    minPercent: band.minPercent
+                };
+                if (typeof band.passing === 'boolean') {
+                    clonedBand.passing = band.passing;
+                }
+                bands.push(clonedBand);
+            }
         }
-        try { return JSON.parse(JSON.stringify(value)); } catch (_) { return value; }
+
+        var result = {
+            id: scheme.id,
+            label: scheme.label,
+            bands: bands
+        };
+
+        return result;
+    }
+
+    /**
+     * Strict integer parse for a percentage-like value.
+     *
+     * Accepts:
+     *   - an integer number
+     *   - a pure-digit string ("80", "-1")
+     *
+     * Rejects:
+     *   - "80garbage", "80.5" (fractional), "" (empty)
+     *   - NaN, Infinity, non-integer numbers
+     *
+     * Returns the integer, or null.
+     */
+    function parseStrictInteger(value) {
+        if (value === undefined || value === null) {
+            return null;
+        }
+
+        if (typeof value === 'number') {
+            return Number.isInteger(value) ? value : null;
+        }
+
+        if (typeof value === 'string') {
+            var trimmed = value.trim();
+            if (trimmed === '') { return null; }
+            if (!/^-?\d+$/.test(trimmed)) { return null; }
+            var n = Number(trimmed);
+            return Number.isInteger(n) ? n : null;
+        }
+
+        return null;
     }
 
     // ============================================================
@@ -197,23 +345,46 @@
      */
     function getDefaultScheme() {
         var numeric = getPreset('numeric');
-        return deepClone(numeric);
+        return cloneScheme(numeric);
     }
 
     /**
      * Is this scheme the numeric sentinel?
-     * True when id === 'numeric' OR when the scheme has exactly one
-     * band and that band's label is the numeric sentinel.
+     *
+     * TRUE when:
+     *   - the scheme has exactly one band whose label is the numeric
+     *     sentinel ('%'), OR
+     *   - the scheme's id is 'numeric' AND its bands match the
+     *     numeric preset's shape (single band at minPercent 0).
+     *
+     * The bands are the source of truth. A scheme tagged
+     * id === 'numeric' whose bands are letter-grade shaped is NOT
+     * numeric; the id is historical metadata, not semantics.
      */
     function isNumericScheme(scheme) {
         if (!scheme || typeof scheme !== 'object') { return false; }
-        if (scheme.id === 'numeric') { return true; }
+
+        // Primary test: sentinel band shape.
         if (Array.isArray(scheme.bands) && scheme.bands.length === 1) {
             var band = scheme.bands[0];
             if (band && band.label === NUMERIC_SENTINEL_LABEL) {
                 return true;
             }
         }
+
+        // Secondary test: id === 'numeric' AND bands match the
+        // numeric preset's shape. The band check ensures we do not
+        // treat a re-banded scheme as numeric.
+        if (scheme.id === 'numeric') {
+            if (!Array.isArray(scheme.bands)) { return true; }
+            if (scheme.bands.length !== 1) { return false; }
+            var only = scheme.bands[0];
+            if (!only || typeof only !== 'object') { return false; }
+            if (only.label !== NUMERIC_SENTINEL_LABEL) { return false; }
+            if (only.minPercent !== 0) { return false; }
+            return true;
+        }
+
         return false;
     }
 
@@ -224,7 +395,7 @@
     function getPresets() {
         var result = [];
         for (var i = 0; i < PRESETS.length; i++) {
-            result.push(deepClone(PRESETS[i]));
+            result.push(cloneScheme(PRESETS[i]));
         }
         return result;
     }
@@ -233,7 +404,7 @@
         if (!isNonEmptyString(id)) { return null; }
         for (var i = 0; i < PRESETS.length; i++) {
             if (PRESETS[i].id === id) {
-                return deepClone(PRESETS[i]);
+                return cloneScheme(PRESETS[i]);
             }
         }
         return null;
@@ -263,6 +434,9 @@
     /**
      * Validate a scheme.
      *
+     * SEMANTIC validity, independent of band ordering. Normalisation
+     * is responsible for sorting; validation checks the shape.
+     *
      * Returns { valid: boolean, errors: [ { field, message } ] }
      *
      * Checks:
@@ -274,6 +448,7 @@
      *   - each band has an integer minPercent in [0, 100]
      *   - no duplicate minPercent values
      *   - exactly one band has minPercent === 0
+     *   - band.passing, when present, is a boolean
      */
     function validateScheme(scheme) {
         var errors = [];
@@ -344,8 +519,9 @@
                 labelsSeen[band.label] = true;
             }
 
-            var minP = parseInt(band.minPercent, 10);
-            if (isNaN(minP) || minP < MIN_PERCENT || minP > MAX_PERCENT) {
+            // Strict integer parse. "80garbage" is rejected.
+            var minP = parseStrictInteger(band.minPercent);
+            if (minP === null || minP < MIN_PERCENT || minP > MAX_PERCENT) {
                 errors.push({
                     field: 'band_' + i,
                     message: 'Band ' + idx + ' min percent must be an integer between 0 and 100.'
@@ -359,6 +535,15 @@
                     });
                 }
                 minPercentsSeen[minP] = true;
+            }
+
+            // passing, when present, must be a boolean.
+            if (band.passing !== undefined &&
+                typeof band.passing !== 'boolean') {
+                errors.push({
+                    field: 'band_' + i,
+                    message: 'Band ' + idx + ' passing must be a boolean when present.'
+                });
             }
         }
 
@@ -390,20 +575,26 @@
     // NORMALISATION
     // ============================================================
     //
-    // Normalisation is LENIENT. It coerces what it can, drops what it
-    // can't, and produces a canonical shape. Unlike validateScheme,
-    // which reports every problem, normalizeScheme produces a usable
-    // scheme or falls back to the numeric default.
+    // NORMALISATION POLICY:
+    //   - Structurally valid input → canonical clone, sorted
+    //     descending.
+    //   - Structurally INVALID input → fall back to the numeric
+    //     default wholesale.
     //
-    // This is the function every read path should call before using
-    // a stored scheme. It guarantees:
+    // The policy is fallback, not repair. See the file header.
+    //
+    // "Structurally valid" here includes the strict integer parse
+    // of minPercent. "80" (pure digit string) is coerced. "80abc"
+    // fails validation and the whole scheme falls back to default.
+    //
+    // The canonical output:
     //   - id is a valid preset id or 'custom'
     //   - label is a non-empty string
-    //   - bands is a non-empty array
-    //   - bands sorted descending by minPercent
-    //   - each band has a non-empty string label and integer minPercent 0..100
-    //   - band labels unique (later duplicates dropped)
-    //   - exactly one band with minPercent === 0 (added if missing)
+    //   - bands is a non-empty array, sorted descending by minPercent
+    //   - each band has a non-empty string label, integer minPercent
+    //   - band labels are unique
+    //   - exactly one band has minPercent === 0
+    //   - band.passing is preserved when present and boolean
     //   - returned object is frozen
 
     function normalizeScheme(raw) {
@@ -411,62 +602,57 @@
             return deepFreeze(getDefaultScheme());
         }
 
-        var id = isValidPresetId(raw.id) ? raw.id : 'custom';
-        var label = isNonEmptyString(raw.label)
-            ? String(raw.label).trim().slice(0, MAX_SCHEME_LABEL_LENGTH)
-            : 'Custom Scheme';
-
-        var bands = [];
+        // Formatting-only coercion first: trim label, coerce
+        // pure-digit minPercent strings to integers. This produces a
+        // candidate that validateScheme can judge on semantic
+        // grounds.
+        var candidate = {
+            id: isValidPresetId(raw.id) ? raw.id : 'custom',
+            label: isNonEmptyString(raw.label)
+                ? String(raw.label).trim().slice(0, MAX_SCHEME_LABEL_LENGTH)
+                : 'Custom Scheme',
+            bands: []
+        };
 
         if (Array.isArray(raw.bands)) {
-            var labelsSeen = {};
-            var minPercentsSeen = {};
-
-            for (var i = 0; i < raw.bands.length && bands.length < MAX_BANDS; i++) {
+            for (var i = 0; i < raw.bands.length && i < MAX_BANDS; i++) {
                 var band = raw.bands[i];
                 if (!isObject(band)) { continue; }
                 if (!isNonEmptyString(band.label)) { continue; }
 
                 var bandLabel = String(band.label).trim().slice(0, MAX_LABEL_LENGTH);
                 if (!bandLabel) { continue; }
-                if (labelsSeen[bandLabel]) { continue; }
 
-                var minP = parseInt(band.minPercent, 10);
-                if (isNaN(minP)) { continue; }
-                if (minP < MIN_PERCENT) { minP = MIN_PERCENT; }
-                if (minP > MAX_PERCENT) { minP = MAX_PERCENT; }
-                if (minPercentsSeen[minP]) { continue; }
+                var minP = parseStrictInteger(band.minPercent);
+                if (minP === null) { continue; }
 
-                labelsSeen[bandLabel] = true;
-                minPercentsSeen[minP] = true;
-                bands.push({ label: bandLabel, minPercent: minP });
+                var coercedBand = {
+                    label: bandLabel,
+                    minPercent: minP
+                };
+                if (typeof band.passing === 'boolean') {
+                    coercedBand.passing = band.passing;
+                }
+                candidate.bands.push(coercedBand);
             }
         }
 
-        // Sort descending by minPercent
-        bands.sort(function(a, b) {
-            return b.minPercent - a.minPercent;
-        });
-
-        // Ensure a band exists at minPercent 0
-        var hasZero = false;
-        for (var j = 0; j < bands.length; j++) {
-            if (bands[j].minPercent === 0) { hasZero = true; break; }
-        }
-        if (!hasZero) {
-            bands.push({ label: 'F', minPercent: 0 });
-        }
-
-        // If we somehow produced no bands, fall back to numeric sentinel.
-        if (bands.length === 0) {
+        // Now validate the coerced candidate semantically.
+        var check = validateScheme(candidate);
+        if (!check.valid) {
+            // Fall back to the numeric default wholesale. Do not
+            // repair; a repaired scheme silently changes what a
+            // student's grade means.
             return deepFreeze(getDefaultScheme());
         }
 
-        return deepFreeze({
-            id: id,
-            label: label,
-            bands: bands
+        // Sort descending. This is normalisation's job, not
+        // validation's.
+        candidate.bands.sort(function(a, b) {
+            return b.minPercent - a.minPercent;
         });
+
+        return deepFreeze(candidate);
     }
 
     // ============================================================
@@ -552,18 +738,42 @@
     // ============================================================
 
     /**
+     * Does the scheme carry ANY explicit `passing` field on its
+     * bands?
+     *
+     * When true, the explicit fields are authoritative for the
+     * bands that carry them; the label heuristic is not consulted.
+     *
+     * When false, the label heuristic applies to the whole scheme.
+     */
+    function schemeHasExplicitPassing(scheme) {
+        if (!isObject(scheme) || !Array.isArray(scheme.bands)) {
+            return false;
+        }
+        for (var i = 0; i < scheme.bands.length; i++) {
+            var band = scheme.bands[i];
+            if (band && typeof band === 'object' &&
+                typeof band.passing === 'boolean') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Get the lowest passing band's minPercent for a scheme.
      *
-     * A "passing band" is any band whose label is not in FAIL_LABELS.
-     * The lowest passing band is the one with the smallest minPercent
-     * that is still considered passing.
+     * A "passing band" is:
+     *   - when the band carries an explicit `passing: true`, it is
+     *     passing;
+     *   - when the band carries an explicit `passing: false`, it is
+     *     failing;
+     *   - when the band carries no explicit `passing`, it is
+     *     passing iff its label is not in FAIL_LABELS.
      *
      * Returns null when:
      *   - scheme is missing or numeric
-     *   - all bands are fail-labelled
-     *
-     * This is heuristic. Users can rename bands. If exact control is
-     * needed, callers should inspect scheme.bands directly.
+     *   - no band is considered passing
      */
     function getLowestPassingBand(scheme) {
         if (!isObject(scheme) || !Array.isArray(scheme.bands)) {
@@ -579,9 +789,14 @@
             if (!band || !isNonEmptyString(band.label)) { continue; }
             if (typeof band.minPercent !== 'number') { continue; }
 
-            // Skip fail-labelled bands
-            var isFail = FAIL_LABELS.indexOf(band.label) !== -1;
-            if (isFail) { continue; }
+            var isPassingBand;
+            if (typeof band.passing === 'boolean') {
+                isPassingBand = band.passing === true;
+            } else {
+                isPassingBand = FAIL_LABELS.indexOf(band.label) === -1;
+            }
+
+            if (!isPassingBand) { continue; }
 
             if (!lowest || band.minPercent < lowest.minPercent) {
                 lowest = band;
@@ -595,7 +810,8 @@
      *
      * SEMANTICS:
      *   - If scheme is provided and is NOT numeric:
-     *       * Compute the lowest passing band's threshold.
+     *       * Compute the lowest passing band's threshold (explicit
+     *         or heuristic).
      *       * Score passes iff its percentage >= that threshold.
      *   - Otherwise (scheme missing, or numeric):
      *       * Score passes iff percentage >= PASSING_THRESHOLD (70).
@@ -615,7 +831,7 @@
             if (lowestPassing && typeof lowestPassing.minPercent === 'number') {
                 return pct >= lowestPassing.minPercent;
             }
-            // No passing band in the scheme (all fail). Nothing passes.
+            // No passing band in the scheme. Nothing passes.
             return false;
         }
 
@@ -623,39 +839,35 @@
     }
 
     // ============================================================
-    // LETTER-GRADE SEMANTICS
+    // GRADE-BAND SEMANTICS
     // ============================================================
 
     /**
-     * Get the letter grade for a score.
+     * Get the grade band for a score under a scheme.
      *
      * SEMANTICS:
      *   - If scheme is provided and is NOT numeric:
      *       * Returns the matching band's label as both label and
-     *         description. Description is intentionally identical
-     *         because schemes only carry labels.
-     *   - Otherwise:
-     *       * Uses LETTER_GRADES (A=90, B=80, C=70, D=60, F=0).
+     *         description.
+     *   - If scheme is numeric or missing:
+     *       * Returns null. Callers that want a fallback letter
+     *         grade call getLetterGrade.
      *
      * Return shape:
-     *   { label: string, description: string }
-     *
-     * Callers that need "is this score passing under this scheme"
-     * should use isPassing instead.
+     *   { label: string, description: string } | null
      *
      * @param {number} score - Percentage (0-100)
      * @param {object|null} scheme - Optional scheme
-     * @returns {object} { label, description }
+     * @returns {object|null}
      */
-    function getLetterGrade(score, scheme) {
+    function getGradeBand(score, scheme) {
         var pct = Number(score);
         if (!isFinite(pct)) {
-            return { label: '?', description: 'Invalid' };
+            return null;
         }
         if (pct < MIN_PERCENT) { pct = MIN_PERCENT; }
         if (pct > MAX_PERCENT) { pct = MAX_PERCENT; }
 
-        // Scheme-based path
         if (isObject(scheme) && !isNumericScheme(scheme)) {
             var band = getBandForScore(scheme, pct);
             if (band && isNonEmptyString(band.label)) {
@@ -666,7 +878,31 @@
             }
         }
 
-        // Fallback: LETTER_GRADES
+        return null;
+    }
+
+    /**
+     * DEPRECATED NAME. Alias of getGradeBand with a fallback to the
+     * default LETTER_GRADES map (A/B/C/D/F at 90/80/70/60/0) when
+     * the scheme returns no band.
+     *
+     * New code should call getGradeBand.
+     *
+     * @param {number} score - Percentage (0-100)
+     * @param {object|null} scheme - Optional scheme
+     * @returns {object} { label, description }
+     */
+    function getLetterGrade(score, scheme) {
+        var band = getGradeBand(score, scheme);
+        if (band) { return band; }
+
+        var pct = Number(score);
+        if (!isFinite(pct)) {
+            return { label: '?', description: 'Invalid' };
+        }
+        if (pct < MIN_PERCENT) { pct = MIN_PERCENT; }
+        if (pct > MAX_PERCENT) { pct = MAX_PERCENT; }
+
         for (var i = 0; i < LETTER_GRADES.length; i++) {
             if (pct >= LETTER_GRADES[i].min) {
                 return {
@@ -686,6 +922,11 @@
     /**
      * Render a "A: 90–100, B: 80–89, ..." preview string for a scheme.
      * For the numeric sentinel, returns "Percentages as-is".
+     *
+     * Assumes canonical descending bands (as produced by
+     * normalizeScheme). If bands are not sorted, the preview shows
+     * the ranges as the bands specify them, which may be wrong; the
+     * caller is responsible for normalising before previewing.
      */
     function getRangeLabel(scheme) {
         if (!isObject(scheme)) { return ''; }
@@ -737,11 +978,9 @@
     // EXPOSE
     // ============================================================
 
-    // Presets are exposed as a clone. The originals are frozen inside
-    // this module and never handed out.
-    var PRESETS_PUBLIC = Object.freeze(getPresets().map(function(p) {
-        return deepFreeze(p);
-    }));
+    // Presets are exposed as a deep-frozen clone. The originals are
+    // frozen inside this module and never handed out.
+    var PRESETS_PUBLIC = deepFreeze(getPresets());
 
     window.AcademyGradeSchemes = Object.freeze({
         // Constants
@@ -786,8 +1025,10 @@
         // Passing
         getLowestPassingBand: getLowestPassingBand,
         isPassing: isPassing,
+        schemeHasExplicitPassing: schemeHasExplicitPassing,
 
-        // Letter grade
+        // Grade band (canonical) and letter grade (deprecated alias)
+        getGradeBand: getGradeBand,
         getLetterGrade: getLetterGrade,
 
         // Display helpers
@@ -809,7 +1050,8 @@
             'getDefaultScheme', 'isNumericScheme',
             'validateScheme', 'isValidScheme', 'normalizeScheme',
             'getBandForScore', 'getLabelForScore', 'getGradeDisplay',
-            'getLowestPassingBand', 'isPassing', 'getLetterGrade',
+            'getLowestPassingBand', 'isPassing', 'schemeHasExplicitPassing',
+            'getGradeBand', 'getLetterGrade',
             'getRangeLabel', 'getBandLabels'
         ];
 
@@ -819,8 +1061,76 @@
             }
         }
 
+        try {
+            // Malformed minPercent must fall back to the numeric
+            // default, not repair into a plausible scheme.
+            var malformed = exports.normalizeScheme({
+                label: 'My Scheme',
+                bands: [
+                    { label: 'Pass', minPercent: 70 },
+                    { label: 'Fail', minPercent: '80garbage' }
+                ]
+            });
+            if (malformed.label !== 'Numeric') {
+                missing.push(
+                    'normalizeScheme did not fall back on malformed ' +
+                    'minPercent'
+                );
+            }
+
+            // Strict integer parsing.
+            if (exports.validateScheme({
+                label: 'X',
+                bands: [
+                    { label: 'A', minPercent: '80garbage' },
+                    { label: 'F', minPercent: 0 }
+                ]
+            }).valid !== false) {
+                missing.push(
+                    'validateScheme accepted a trailing-garbage minPercent'
+                );
+            }
+
+            // Explicit passing field honoured.
+            var explicit = exports.normalizeScheme({
+                id: 'custom',
+                label: 'Explicit',
+                bands: [
+                    { label: 'Unsatisfactory', minPercent: 0, passing: false },
+                    { label: 'Satisfactory', minPercent: 70, passing: true }
+                ]
+            });
+            if (exports.isPassing(50, explicit) !== false) {
+                missing.push(
+                    'isPassing ignored explicit passing: false'
+                );
+            }
+            if (exports.isPassing(80, explicit) !== true) {
+                missing.push(
+                    'isPassing ignored explicit passing: true'
+                );
+            }
+
+            // Bands are authoritative for numeric detection.
+            var rebanded = {
+                id: 'numeric',
+                label: 'Rebanded',
+                bands: [
+                    { label: 'A', minPercent: 90 },
+                    { label: 'F', minPercent: 0 }
+                ]
+            };
+            if (exports.isNumericScheme(rebanded) !== false) {
+                missing.push(
+                    'isNumericScheme treated a re-banded numeric scheme as numeric'
+                );
+            }
+        } catch (e) {
+            missing.push('smoke test threw: ' + e.message);
+        }
+
         if (missing.length > 0) {
-            console.warn('[AcademyGradeSchemes] Verification - missing exports:', missing.join(', '));
+            console.warn('[AcademyGradeSchemes] Verification failed:', missing.join(', '));
         }
     })();
 
