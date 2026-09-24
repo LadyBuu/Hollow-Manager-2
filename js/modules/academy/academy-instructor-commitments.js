@@ -34,39 +34,34 @@
  *       updatedAt
  *     }
  *
- * WHAT THIS MODULE DOES NOT OWN:
- *   - The teaching-sessions store     (AcademyTeachingSessions)
- *   - The teaching-groups store       (AcademyTeachingGroups)
- *   - The social-relationship store   (SocialCore / SocialQueries)
- *   - The class-discipline store      (AcademyClassDisciplines)
- *   - Student enrolment               (AcademyEnrolments)
+ * CASCADE HELPERS:
+ *   stripClassRefs(appData, classId)
+ *     Every commitment attached to the class is removed.
+ *     Commitments are class-scoped.
  *
- * SEMANTICS:
- *   Commitments are INSTRUCTOR-ONLY time blocks. They never
- *   appear on a student's schedule, never roll into any student's
- *   weekly-hours target, and are never suppressed by a class's
- *   rest days. They are the instructor's own commitment and are
- *   independent of any class's calendar.
+ *   stripCharacterRefs(appData, characterId)
+ *     Two roles are handled in one pass:
+ *       - the character as INSTRUCTOR: their commitments are
+ *         deleted
+ *       - the character as SUBJECT of a tutoring block: the
+ *         commitment survives, characterId is nulled
  *
- *   They DO participate in instructor collision detection: two
- *   commitments on the same instructor at overlapping times are
- *   a conflict, and a commitment that overlaps a class session
- *   taught by the same instructor is a conflict. The collision
- *   detector reads them via the projector; this module does not
- *   perform the detection.
+ *   stripInstructorRefs(appData, instructorId)
+ *     Every commitment owned by the instructor is removed,
+ *     regardless of class. Same effect as stripCharacterRefs for
+ *     the instructor role; provided for callers that want the
+ *     intent explicit.
  *
- *   When location is set, a commitment also occupies a location.
- *   The location collision rule applies: a room cannot be
- *   double-booked. As above, that rule is enforced by the
- *   collision detector, not here.
+ *   stripLocationRefs(appData, locationId)
+ *     Nulls the locationId on every commitment that referenced
+ *     the deleted location. The commitment survives. Symmetric
+ *     with AcademyTeachingSessions.stripLocationRefs.
  *
  * KIND DISCRIMINATION:
  *   The two kinds share every field except `characterId`.
  *   `characterId` is only accepted when kind is 'tutoring'. A
  *   caller that tries to set it on an office hour gets a
- *   rejection, not a silent drop. The reason is that a silently
- *   dropped field is a bug the caller cannot see. A rejection is
- *   a bug the caller has to fix.
+ *   rejection, not a silent drop.
  *
  * MENTORING HOOK (tutoring only):
  *   When a tutoring commitment is created or updated with a
@@ -74,35 +69,14 @@
  *   relationship exists between the instructor (as mentor) and
  *   the character (as mentee) in the Social domain.
  *
- *   The check is DIRECTIONAL and FORWARD-ONLY:
- *
- *     SocialQueries.relationshipExists(
- *       instructorId, characterId, 'mentor'
- *     )
- *
- *   A reverse-direction mentor relationship (character mentors
- *   instructor) does not satisfy the check. Both directions are
- *   distinct facts, and the tutoring block means only one of
- *   them.
- *
  *   The relationship create is a SEPARATE MUTATION PIPELINE,
  *   run after the commitment write commits. If it fails, the
  *   commitment stays. The user sees a toast asking them to retry
- *   the relationship from the Social tab. Atomicity across the
- *   two stores is not attempted; the two stores belong to two
- *   domains and have two owners.
- *
- *   When SocialCore is not available, or when its character
- *   provider has not been initialised, the relationship create
- *   is skipped and the same "commitment saved, relationship not
- *   saved" outcome applies. The commitment record is unaffected.
+ *   the relationship from the Social tab.
  *
  * RANGE PREDICATES:
- *   Week-in-range and time-overlap questions in this module
- *   delegate to RangeUtils. This module does not reimplement
- *   range math. Where RangeUtils does not cover a specific
- *   question (hour-level overlap), the local helper performs it
- *   directly.
+ *   Week-in-range questions in this module delegate to
+ *   RangeUtils. This module does not reimplement range math.
  *
  * MUTATION CONTRACT:
  *   Every public mutation returns Promise<{ success, data?, message? }>.
@@ -117,43 +91,14 @@
  *   - window.RangeUtils
  *   - window.MutationPipeline
  *   - window.IdUtils
- *   - window.AcademyClasses       (class existence + class reads)
- *   - window.CharacterQueries     (instructor existence + display)
+ *   - window.AcademyClasses
+ *   - window.CharacterQueries
  *
  * DEPENDENCIES (LAZY, used at call time):
  *   - window.AcademyLocations     (location existence, optional)
  *   - window.SocialCore           (mentor relationship create)
  *   - window.SocialQueries        (mentor relationship read)
  *   - window.NotificationSystem   (soft-failure notice)
- *
- * USAGE:
- *   var C = window.AcademyInstructorCommitments;
- *
- *   C.createCommitment({
- *       classId: 'class_1',
- *       instructorId: 'char_1',
- *       kind: 'officeHours',
- *       day: 3,
- *       startTime: 14,
- *       duration: 2,
- *       locationId: 'loc_office',
- *       label: 'Open hours',
- *       startWeek: 5,
- *       endWeek: null
- *   }).then(function (r) { ... });
- *
- *   C.createCommitment({
- *       classId: 'class_1',
- *       instructorId: 'char_1',
- *       kind: 'tutoring',
- *       characterId: 'char_42',
- *       day: 5,
- *       startTime: 10,
- *       duration: 1,
- *       label: 'Thesis chapter 3',
- *       startWeek: 5,
- *       endWeek: null
- *   }).then(function (r) { ... });
  */
 
 (function() {
@@ -871,10 +816,10 @@
             instructorId,
             characterId,
             MENTOR_TYPE_ID,
-            '',    // startYear
-            '',    // endYear
-            '',    // clarification
-            ''     // notes
+            '',
+            '',
+            '',
+            ''
         ).then(function (result) {
             if (result && result.success) {
                 return {
@@ -1257,27 +1202,6 @@
         return result;
     }
 
-    /**
-     * Strip references to a character.
-     *
-     * Two distinct roles:
-     *
-     *   The character is the INSTRUCTOR of the commitment. The
-     *   commitment was their time; it is deleted. Counted under
-     *   `commitmentsRemoved`.
-     *
-     *   The character is the SUBJECT of a tutoring commitment
-     *   (characterId). The commitment is not theirs; only the
-     *   reference is cleared. Counted under `referencesCleared`.
-     *
-     * A single call can do both, if the deleted character happened
-     * to be both the instructor and the subject of the same
-     * commitment. That cannot happen in practice — a commitment
-     * cannot have instructorId === characterId because the
-     * validator rejects self-reference on the mentor hook, and the
-     * domain layer permits it structurally only when a caller
-     * deliberately constructs it. The code handles it anyway.
-     */
     function stripCharacterRefs(appData, characterId) {
         var result = {
             commitmentsRemoved: 0,
@@ -1323,12 +1247,6 @@
         return result;
     }
 
-    /**
-     * Delete every commitment owned by the instructor, regardless
-     * of class. Used when an instructor record is deleted outright.
-     * Same effect as stripCharacterRefs for the instructor role;
-     * provided for callers that want the intent explicit.
-     */
     function stripInstructorRefs(appData, instructorId) {
         var result = { commitmentsRemoved: 0 };
 
@@ -1367,10 +1285,6 @@
      * delete the block; it needs a new room.
      *
      * Symmetric with AcademyTeachingSessions.stripLocationRefs.
-     *
-     * @param {object} appData
-     * @param {string} locationId
-     * @returns {object} { referencesCleared }
      */
     function stripLocationRefs(appData, locationId) {
         var result = { referencesCleared: 0 };
