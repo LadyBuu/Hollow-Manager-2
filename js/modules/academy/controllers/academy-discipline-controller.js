@@ -28,6 +28,9 @@
  *   - The "+ Add Discipline" flow (B4-1).
  *   - The discipline delete confirm modal, via AcademyCRUDModals.
  *   - Mounting the calendar grid into the Schedule tab host.
+ *   - Mounting the enrollment summary panel into the Schedule tab
+ *     summary host, below the grid. (BATCH 3)
+ *   - Toggling the summary panel open and closed. (BATCH 3)
  *
  * WHAT THIS DOES NOT OWN:
  *   - The content host. The shell provides it.
@@ -40,6 +43,10 @@
  *     them; AcademyAggregator produces the VMs.
  *   - The schedule projection. AcademyCalendarAggregator owns it;
  *     the controller just mounts the grid into the host.
+ *   - The enrollment summary content. AcademyCalendarAggregator
+ *     produces the summary VM and
+ *     AcademyDisciplineScheduleSummary renders it; the controller
+ *     only mounts and wires the toggle.
  *   - Instructor assignment for a discipline. That relationship is
  *     class-scoped and is owned by the class-disciplines picker.
  *     The discipline editor does not offer an instructor picker
@@ -49,17 +56,34 @@
  *     the controller simply opens the modal.
  *
  * SCHEDULE TAB:
- *   The Schedule tab renders a week selector and a grid host. The
- *   grid is mounted by this controller via AcademyCalendarAggregator
- *   .getDisciplineScheduleViewModel, which projects
- *   Projector.projectForClassDiscipline. One discipline, one class,
- *   one week, every instructor.
+ *   The Schedule tab renders a week selector, a grid host, and an
+ *   enrollment summary host. The grid is mounted by this controller
+ *   via AcademyCalendarAggregator.getDisciplineScheduleViewModel,
+ *   which projects Projector.projectForClassDiscipline. One
+ *   discipline, one class, one week, every instructor.
  *
  *   The class is AcademyUI.getSelectedClassId(). When no class is
  *   selected, the controller renders an explicit empty state into
- *   the host instead of inventing a class.
+ *   each host instead of inventing a class.
  *
  *   Rest days apply (the grid is class-scoped).
+ *
+ * ENROLLMENT SUMMARY (BATCH 3):
+ *   The panel below the grid answers two questions: how many
+ *   students are enrolled in this discipline for this class, and
+ *   how many of them do not have a group assigned.
+ *
+ *   Both questions are answered by
+ *   AcademyCalendarAggregator.getDisciplineScheduleSummaryViewModel.
+ *   The enrollment population is not week-scoped. The assigned
+ *   predicate is not week-scoped either: a student is assigned when
+ *   their characterId appears in the members[] array of any teaching
+ *   group of this discipline for this class. The week is passed
+ *   through only for display and for the elimination flag.
+ *
+ *   The panel's markup and its disclosure come from
+ *   AcademyDisciplineScheduleSummary. This controller mounts the
+ *   HTML and toggles the disclosure on click.
  *
  * DRAFT LIFECYCLE:
  *   - Draft is created by openEditor('create'), or by selecting a
@@ -98,6 +122,7 @@
  *   - window.AcademyDisciplineView
  *   - window.AcademyGradeSchemes
  *   - window.AcademyCalendarAggregator  (lazy; for the Schedule tab)
+ *   - window.AcademyDisciplineScheduleSummary (lazy; for the summary panel)
  *   - window.CalendarRenderer           (lazy; for the Schedule tab)
  *   - window.AcademyCRUDModals          (lazy; delete confirm)
  *   - window.NotificationSystem
@@ -186,6 +211,10 @@
 
     function getCalendarRenderer() {
         return window.CalendarRenderer || null;
+    }
+
+    function getDisciplineScheduleSummary() {
+        return window.AcademyDisciplineScheduleSummary || null;
     }
 
     // ============================================================
@@ -357,19 +386,29 @@
     /**
      * Mount the discipline schedule grid into its host.
      *
-     * Skips when:
+     * On every code path where the summary is still meaningful,
+     * mountDisciplineScheduleSummaryIfPresent is called. It is a
+     * separate host and a separate renderer; its success is
+     * independent of the grid's.
+     *
+     * Skips the grid when:
      *   - the host is absent (the tab body was not rendered)
-     *   - the CalendarAggregator or CalendarRenderer is missing
-     *   - no class is selected (renders an empty state instead)
+     *   - the CalendarRenderer is missing
      *   - no disciplineId is available (draft is new; grid needs
      *     a persisted discipline to scope to)
+     *   - no class is selected (renders an empty state instead)
      *   - the week is invalid
+     *   - the CalendarAggregator is missing
      */
     function mountDisciplineScheduleGridIfPresent(disciplineId, week) {
         var host = document.getElementById(
             'academy-discipline-schedule-host'
         );
-        if (!host) { return; }
+
+        if (!host) {
+            // No host: the tab body was not rendered. Skip both.
+            return;
+        }
 
         var Renderer = getCalendarRenderer();
         if (!Renderer || typeof Renderer.renderGrid !== 'function') {
@@ -377,16 +416,19 @@
                 '<p class="empty-state small">' +
                     'Calendar renderer is not available.' +
                 '</p>';
+            mountDisciplineScheduleSummaryIfPresent(disciplineId, week);
             return;
         }
 
         // A brand-new draft has no persisted discipline yet. The
-        // grid needs a real discipline to scope to.
+        // grid needs a real discipline to scope to, and so does the
+        // summary.
         if (!isNonEmptyString(disciplineId)) {
             host.innerHTML =
                 '<p class="empty-state small">' +
                     'Save the discipline first to view its schedule.' +
                 '</p>';
+            clearDisciplineScheduleSummaryHost();
             return;
         }
 
@@ -397,6 +439,7 @@
                     'Select a class from People or Weekly Teams to ' +
                     'view this discipline\'s schedule.' +
                 '</p>';
+            clearDisciplineScheduleSummaryHost();
             return;
         }
 
@@ -407,6 +450,7 @@
                 '<p class="empty-state small">' +
                     'Select a valid week.' +
                 '</p>';
+            clearDisciplineScheduleSummaryHost();
             return;
         }
 
@@ -417,6 +461,7 @@
                 '<p class="empty-state small">' +
                     'Calendar aggregator is not available.' +
                 '</p>';
+            mountDisciplineScheduleSummaryIfPresent(disciplineId, week);
             return;
         }
 
@@ -441,6 +486,7 @@
                     'Schedule data is not available for this ' +
                     'discipline and class.' +
                 '</p>';
+            mountDisciplineScheduleSummaryIfPresent(disciplineId, week);
             return;
         }
 
@@ -473,6 +519,92 @@
                 '<p class="empty-state small">' +
                     'Failed to render the discipline schedule.' +
                 '</p>';
+        }
+
+        mountDisciplineScheduleSummaryIfPresent(disciplineId, week);
+    }
+
+    // ============================================================
+    // ENROLLMENT SUMMARY MOUNT
+    // ============================================================
+    //
+    // The panel below the grid. Advisory: any failure to build the
+    // VM or render the HTML leaves its host empty. The grid is
+    // unaffected.
+    //
+    // The VM's enrollment population and its assigned predicate are
+    // both not week-scoped. The week parameter flows through only
+    // for display and the elimination flag. See the aggregator's
+    // header for the full rationale.
+
+    function mountDisciplineScheduleSummaryIfPresent(disciplineId, week) {
+        var host = document.getElementById(
+            'academy-discipline-schedule-summary-host'
+        );
+        if (!host) { return; }
+
+        host.innerHTML = '';
+
+        if (!isNonEmptyString(disciplineId)) { return; }
+
+        var classId = AcademyUI.getSelectedClassId();
+        if (!isNonEmptyString(classId)) { return; }
+
+        if (typeof week !== 'number' ||
+            week < MIN_WEEK ||
+            week > MAX_WEEK) {
+            return;
+        }
+
+        var ACA = getCalendarAggregator();
+        if (!ACA ||
+            typeof ACA.getDisciplineScheduleSummaryViewModel !==
+                'function') {
+            return;
+        }
+
+        var summaryVM = null;
+        try {
+            summaryVM = ACA.getDisciplineScheduleSummaryViewModel(
+                classId,
+                disciplineId,
+                week
+            );
+        } catch (e) {
+            console.warn(
+                '[AcademyDisciplineController] summary VM fetch failed:',
+                e
+            );
+            return;
+        }
+
+        if (!summaryVM) { return; }
+
+        var Renderer = getDisciplineScheduleSummary();
+        if (!Renderer || typeof Renderer.renderHTML !== 'function') {
+            return;
+        }
+
+        var html = '';
+        try {
+            html = Renderer.renderHTML(summaryVM);
+        } catch (e) {
+            console.warn(
+                '[AcademyDisciplineController] summary render failed:',
+                e
+            );
+            return;
+        }
+
+        host.innerHTML = html;
+    }
+
+    function clearDisciplineScheduleSummaryHost() {
+        var host = document.getElementById(
+            'academy-discipline-schedule-summary-host'
+        );
+        if (host) {
+            host.innerHTML = '';
         }
     }
 
@@ -592,6 +724,10 @@
             case 'discipline-tab-select':
                 e.preventDefault();
                 handleDisciplineTabSelect(actionEl.dataset.tab);
+                return;
+            case 'discipline-summary-toggle':
+                e.preventDefault();
+                handleDisciplineSummaryToggle(actionEl);
                 return;
             case 'discipline-apply-scheme-preset':
                 e.preventDefault();
@@ -730,6 +866,49 @@
         _scheduleWeek = parsed;
         var ctx = getContext();
         ctx.onChange();
+    }
+
+    // ============================================================
+    // SUMMARY PANEL TOGGLE
+    // ============================================================
+    //
+    // The panel's markup lives in
+    // AcademyDisciplineScheduleSummary. Its disclosure behaviour
+    // lives here: flip data-expanded, rotate the caret, show or
+    // hide the body.
+    //
+    // The disclosure pattern matches the orphan-teams section in
+    // academy-weekly-teams-view.js. The state is held in the DOM
+    // only; it is not persisted, and it resets on any re-render
+    // because the shell replaces the host's innerHTML.
+
+    function handleDisciplineSummaryToggle(buttonEl) {
+        if (!buttonEl || typeof buttonEl.closest !== 'function') {
+            return;
+        }
+
+        var block = buttonEl.closest('.academy-discipline-summary-block');
+        if (!block) { return; }
+
+        var currentlyExpanded = block.getAttribute('data-expanded') === 'true';
+        var next = !currentlyExpanded;
+
+        block.setAttribute('data-expanded', next ? 'true' : 'false');
+        buttonEl.setAttribute('aria-expanded', next ? 'true' : 'false');
+
+        var caret = buttonEl.querySelector(
+            '.academy-discipline-summary-caret'
+        );
+        if (caret) {
+            caret.textContent = next ? '\u25be' : '\u25b8';
+        }
+
+        var body = block.querySelector(
+            '.academy-discipline-summary-body'
+        );
+        if (body) {
+            body.style.display = next ? 'block' : 'none';
+        }
     }
 
     // ============================================================
