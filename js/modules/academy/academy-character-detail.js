@@ -24,6 +24,26 @@
  *   Footer Add button shows the count of checked candidates
  *   and is disabled when the count is zero.
  *
+ * TEACHING GROUP BULK ACTIONS:
+ *   Each group block header carries, in order:
+ *
+ *     Clear Roster   secondary. Shown only when the group has
+ *                    members. Removes every member entry from
+ *                    the group (hard delete). The group and its
+ *                    sessions are untouched. Emits
+ *                    data-action="teaching-groups-clear-roster".
+ *
+ *     + Add Student  primary. Opens the candidate picker.
+ *                    Emits data-action="teaching-groups-add-student".
+ *
+ *     ✕ (delete)     danger. Deletes the group and every session
+ *                    on it. Confirmed by the controller. Emits
+ *                    data-action="teaching-groups-delete-group"
+ *                    with data-group-id and data-class-id.
+ *
+ *   The renderer emits markers only. The confirmation and the
+ *   domain mutations live in the controller.
+ *
  * (Rest of the header unchanged.)
  *
  * DEPENDENCIES:
@@ -1018,6 +1038,7 @@
             html += renderTeachingGroupBlock(
                 groups[i],
                 charId,
+                classId,
                 openPickerGroupId,
                 pickerCandidates
             );
@@ -1031,6 +1052,7 @@
     function renderTeachingGroupBlock(
         group,
         charId,
+        classId,
         openPickerGroupId,
         pickerCandidates
     ) {
@@ -1055,6 +1077,21 @@
                 '</span>';
 
         if (!isPickerOpen) {
+            // Clear Roster: shown only when there is something to
+            // clear. A group with no members has nothing to act on.
+            if (members.length > 0) {
+                html += '<button type="button" class="small secondary ' +
+                            'academy-teaching-group-clear-roster-btn" ' +
+                            'data-action="teaching-groups-clear-roster" ' +
+                            'data-group-id="' +
+                                escapeAttribute(group.groupId) + '" ' +
+                            'title="Remove every student from this ' +
+                                'group. The group and its sessions ' +
+                                'remain.">' +
+                            'Clear Roster' +
+                        '</button>';
+            }
+
             html += '<button type="button" class="small primary ' +
                         'academy-teaching-group-add-btn" ' +
                         'data-action="teaching-groups-add-student" ' +
@@ -1063,6 +1100,22 @@
                         '+ Add Student' +
                     '</button>';
         }
+
+        // Delete Group: always available. Danger-styled. The
+        // controller confirms before dispatching; the confirmation
+        // names the group, its session count, and its member
+        // count.
+        html += '<button type="button" class="small danger ' +
+                    'academy-teaching-group-delete-btn" ' +
+                    'data-action="teaching-groups-delete-group" ' +
+                    'data-group-id="' +
+                        escapeAttribute(group.groupId) + '" ' +
+                    'data-class-id="' +
+                        escapeAttribute(classId || '') + '" ' +
+                    'title="Delete this group and every session on it.">' +
+                    '\u2715' +
+                '</button>';
+
         html += '</div>';
 
         if (isPickerOpen) {
