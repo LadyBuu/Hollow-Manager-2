@@ -22,6 +22,9 @@
  *                               enrolment and elimination
  *     dropStudentFromClass      end every enrolment and membership
  *                               for a character in a class
+ *     dropStudentFromGroup      end ONLY the membership of a
+ *                               character in ONE group; enrolments
+ *                               and other groups are untouched
  *     assignStudentToSlot       resolve-or-create the group and
  *                               session implied by a student
  *                               assignment, then add the membership
@@ -43,19 +46,38 @@
  *   - Location entities              (AcademyLocations)
  *   - Instructor commitments store   (AcademyInstructorCommitments)
  *
+ * DROP STUDENT FROM CLASS vs DROP STUDENT FROM GROUP:
+ *   Two distinct operations, two distinct semantics:
+ *
+ *     dropStudentFromClass(classId, charId, effectiveWeek)
+ *       The student leaves the class. Every enrolment interval
+ *       they have in this class ends (across every discipline),
+ *       every teaching-group membership they hold in this class
+ *       ends (across every group), and the classId is removed
+ *       from character.classIds. The student is no longer a
+ *       member of the class.
+ *
+ *     dropStudentFromGroup(classId, groupId, charId, effectiveWeek)
+ *       The student leaves ONE group. That group's membership
+ *       interval for this character ends. Enrolments are
+ *       untouched. Other groups are untouched. character.classIds
+ *       is untouched. The student remains enrolled and remains
+ *       a member of the class.
+ *
+ *   The discipline picker's "Leave this group" button uses the
+ *   narrow operation. The broad operation is reserved for an
+ *   explicit "drop out of class" affordance.
+ *
  * TRANSACTION MODEL:
  *   Every public function here is a single MutationPipeline.performMutation
  *   call, EXCEPT the three commitment forwarders, which delegate to
  *   the commitments module's own pipelines. Either way: full success
  *   or full rollback per store.
  *
- * INSTRUCTOR COMMITMENTS (this revision):
+ * INSTRUCTOR COMMITMENTS:
  *   The three forwarders exist so that the schedule module remains
  *   the single documented entry point for anything that shapes the
- *   instructor's weekly time. Callers that only want to create a
- *   commitment may reach for AcademyInstructorCommitments directly;
- *   the forwarders are convenience and, more importantly, a future
- *   place to hang coordination.
+ *   instructor's weekly time.
  *
  *   No collision preflight runs on commitment create. Commitments
  *   may overlap class sessions and other commitments; the grid
@@ -67,8 +89,6 @@
  *   overlaps an existing commitment — IS rejected as an instructor
  *   collision. The instructor is already committed; a class session
  *   has no business claiming that slot.
- *
- * (Rest of the header unchanged.)
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.ObjectUtils
@@ -90,11 +110,8 @@
  * DEPENDENCIES (LAZY):
  *   - window.AcademyAggregator
  *   - window.AcademyTeachingProjector
- *   - window.AcademyLocations     (validates locationId on the two
- *                                  slot-setting entry points)
+ *   - window.AcademyLocations
  *   - window.AcademyInstructorCommitments
- *                                 (commitment forwarders and the
- *                                  instructor-collision extension)
  */
 
 (function() {
@@ -390,35 +407,11 @@
         }
     }
 
-    /**
-     * Does the instructor have a collision at the candidate slot?
-     *
-     * Walks two sources:
-     *   1. Every existing teaching session whose group belongs to
-     *      the instructor.
-     *   2. Every instructor commitment (office hours, tutoring)
-     *      whose instructor is this instructor.
-     *
-     * Both sources count. A new class session that overlaps the
-     * instructor's office hours is a collision; the instructor is
-     * already committed during that time.
-     *
-     * `excludeGroupId` excludes sessions belonging to the named
-     * group. Used when re-checking a slot that is already claimed
-     * by the same group.
-     *
-     * @param {string} instructorId
-     * @param {object} candidate - { day, startTime, duration,
-     *                               startWeek, endWeek }
-     * @param {string|null} excludeGroupId
-     * @returns {object|null} { session, group } | { commitment } | null
-     */
     function findInstructorCollision(instructorId, candidate, excludeGroupId) {
         if (!isNonEmptyString(instructorId)) {
             return null;
         }
 
-        // ---- Source 1: class sessions ----
         var allSessions = AcademyTeachingSessions.getAllSessions() || [];
 
         for (var i = 0; i < allSessions.length; i++) {
@@ -449,7 +442,6 @@
             }
         }
 
-        // ---- Source 2: instructor commitments ----
         var Commitments = getAcademyInstructorCommitments();
         if (!Commitments ||
             typeof Commitments.getCommitmentsForInstructor !== 'function') {
@@ -588,8 +580,6 @@
                 // Keep the fallback name.
             }
 
-            // The collision may be a class session or a commitment.
-            // The message differs.
             var message;
             if (instructorCollision.commitment) {
                 message = instructorName +
@@ -1405,6 +1395,15 @@
     // ============================================================
     // dropStudentFromClass
     // ============================================================
+    //
+    // The BROAD operation. Ends every enrolment and every
+    // teaching-group membership for the character in the class,
+    // and removes the classId from character.classIds.
+    //
+    // Used by an explicit "drop out of class" affordance.
+    //
+    // For "leave ONE group, keep everything else," use
+    // dropStudentFromGroup below.
 
     function dropStudentFromClass(classId, charId, effectiveWeek) {
         if (!isNonEmptyString(classId)) {
@@ -1555,6 +1554,202 @@
             },
             successMessage: 'Student dropped from class.',
             failureMessage: 'Failed to drop student from class.'
+        });
+    }
+
+    // ============================================================
+    // dropStudentFromGroup
+    // ============================================================
+    //
+    // The NARROW operation. Ends ONLY the membership interval for
+    // the given character in the given group, effective from
+    // effectiveWeek onward.
+    //
+    // Touches NOTHING else:
+    //   - Enrolments are not modified. The student remains enrolled
+    //     in the discipline.
+    //   - Other groups are not modified. The student remains a
+    //     member of any other group of any other discipline.
+    //   - character.classIds is not modified. The student remains
+    //     in the class.
+    //
+    // Semantics of effectiveWeek:
+    //   Same as endMembership on AcademyTeachingGroups. The
+    //   membership interval whose startWeek < effectiveWeek and
+    //   whose endWeek is null or >= effectiveWeek is truncated:
+    //   its endWeek becomes effectiveWeek - 1. A student leaving
+    //   effective week 6 is a member through week 5, not week 6.
+    //
+    //   If no interval matches — the student is not an active
+    //   member of the group at that week — the mutation is a
+    //   validation rejection, not a silent no-op. The caller
+    //   learns that the operation had no effect.
+
+    function dropStudentFromGroup(classId, groupId, charId, effectiveWeek) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        if (!isNonEmptyString(groupId)) {
+            return Promise.resolve(failure('Group ID is required.'));
+        }
+        if (!isNonEmptyString(charId)) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
+
+        var week = parseWeekStrict(effectiveWeek);
+        if (week === null) {
+            return Promise.resolve(failure(
+                'Valid effective week is required (' +
+                MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
+        }
+
+        var targetClass = String(classId);
+        var targetGroup = String(groupId);
+        var targetChar = String(charId);
+        var endWeek = week - 1;
+
+        // Pre-flight: read the live group and confirm the group
+        // belongs to the class and the student is an active member.
+        // This is UX; the pipeline re-checks against the snapshot.
+        var liveGroup = null;
+        try {
+            liveGroup = AcademyTeachingGroups.getGroup(targetGroup);
+        } catch (e) {
+            liveGroup = null;
+        }
+        if (!liveGroup) {
+            return Promise.resolve(failure('Teaching group not found.'));
+        }
+        if (String(liveGroup.classId) !== targetClass) {
+            return Promise.resolve(failure(
+                'This group does not belong to the specified class.'
+            ));
+        }
+
+        var liveIsMember = false;
+        try {
+            liveIsMember = AcademyTeachingGroups.isMemberOfGroup(
+                targetGroup, targetChar, week
+            ) === true;
+        } catch (e) {
+            liveIsMember = false;
+        }
+        if (!liveIsMember) {
+            return Promise.resolve(failure(
+                'The character is not an active member of this group ' +
+                'during the requested week.'
+            ));
+        }
+
+        var groupName = isNonEmptyString(liveGroup.customName)
+            ? liveGroup.customName
+            : ('group ' + targetGroup);
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+                var academy = getAcademySnapshot(appData);
+                if (!academy) {
+                    return {
+                        valid: false,
+                        message: 'Academy store is not available.'
+                    };
+                }
+                if (!isPlainObject(academy.teachingGroups) ||
+                    !isPlainObject(academy.teachingGroups[targetGroup])) {
+                    return {
+                        valid: false,
+                        message: 'Teaching group no longer exists.'
+                    };
+                }
+                var g = academy.teachingGroups[targetGroup];
+                if (String(g.classId) !== targetClass) {
+                    return {
+                        valid: false,
+                        message:
+                            'Group no longer belongs to the specified class.'
+                    };
+                }
+                if (!Array.isArray(g.members)) {
+                    return {
+                        valid: false,
+                        message:
+                            'The character is not a member of this group.'
+                    };
+                }
+                var hasActive = false;
+                for (var i = 0; i < g.members.length; i++) {
+                    var m = g.members[i];
+                    if (!m) { continue; }
+                    if (String(m.characterId) !== targetChar) { continue; }
+                    if (weekInRange(week, m.startWeek, m.endWeek)) {
+                        hasActive = true;
+                        break;
+                    }
+                }
+                if (!hasActive) {
+                    return {
+                        valid: false,
+                        message:
+                            'The character is no longer an active member ' +
+                            'of this group at week ' + week + '.'
+                    };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var academy = getAcademySnapshot(appData);
+                if (!academy) {
+                    throw new Error('Academy store is not available.');
+                }
+                var g = academy.teachingGroups[targetGroup];
+                if (!isPlainObject(g)) {
+                    throw new Error('Teaching group not found.');
+                }
+                if (!Array.isArray(g.members)) {
+                    throw new Error('Group has no members array.');
+                }
+
+                var matched = null;
+                for (var i = 0; i < g.members.length; i++) {
+                    var m = g.members[i];
+                    if (!m) { continue; }
+                    if (String(m.characterId) !== targetChar) { continue; }
+                    if (weekInRange(week, m.startWeek, m.endWeek)) {
+                        matched = m;
+                        break;
+                    }
+                }
+
+                if (!matched) {
+                    throw new Error(
+                        'Active membership interval not found at week ' +
+                        week + '.'
+                    );
+                }
+
+                matched.endWeek = endWeek;
+                g.updatedAt = new Date().toISOString();
+
+                return {
+                    groupId: targetGroup,
+                    characterId: targetChar,
+                    effectiveWeek: week,
+                    endWeek: endWeek
+                };
+            },
+            logMessage: function(result) {
+                return 'Removed ' + targetChar + ' from ' + groupName +
+                    ' effective week ' + result.effectiveWeek;
+            },
+            successMessage: 'Left the group.',
+            failureMessage: 'Failed to leave the group.'
         });
     }
 
@@ -3286,16 +3481,6 @@
     // ============================================================
     // INSTRUCTOR COMMITMENT FORWARDERS
     // ============================================================
-    //
-    // Thin forwarders to AcademyInstructorCommitments. The
-    // schedule module remains the documented entry point for
-    // anything that shapes the instructor's weekly time.
-    //
-    // No preflight collision check. Commitments are the
-    // instructor's own time blocks; they may overlap class
-    // sessions and other commitments. The collision detector
-    // reports those overlaps; the user decides. This mirrors
-    // `allowCollisions: true` on the assign flows.
 
     function createInstructorCommitment(payload) {
         var C = getAcademyInstructorCommitments();
@@ -3477,6 +3662,7 @@
         scheduleInstructorSlot: scheduleInstructorSlot,
         addStudentToTeachingGroup: addStudentToTeachingGroup,
         dropStudentFromClass: dropStudentFromClass,
+        dropStudentFromGroup: dropStudentFromGroup,
         assignStudentToSlot: assignStudentToSlot,
         removeTeachingGroup: removeTeachingGroup,
         createTeachingGroup: createTeachingGroup,
@@ -3505,6 +3691,7 @@
             'scheduleInstructorSlot',
             'addStudentToTeachingGroup',
             'dropStudentFromClass',
+            'dropStudentFromGroup',
             'assignStudentToSlot',
             'removeTeachingGroup',
             'createTeachingGroup',
