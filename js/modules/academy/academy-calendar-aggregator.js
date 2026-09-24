@@ -17,16 +17,14 @@
  *   - Writes. Schedule mutations are owned by AcademySchedule.
  *   - Collisions. AcademyTeachingCollisions owns them.
  *   - Rendering. CalendarRenderer owns that.
- *   - Rest days as a concept. class.restDays and
- *     class.restDaysByWeek are stored and validated by
- *     AcademyClasses. This module is a pass-through: it resolves
- *     the week's rest days via
- *     AcademyClasses.getRestDaysForWeek and copies the result
- *     onto the VM. The location grid does NOT inherit class rest
- *     days (a room is a resource, not a class member). The
- *     discipline grid DOES inherit class rest days, because a
- *     discipline grid is class-scoped: the sessions it shows are
- *     the class's sessions.
+ *   - The `slot.label` field. Every slot descriptor carries
+ *     `label: ''`. The field exists for a caller that wants to
+ *     stamp a user-authored label onto a slot; the aggregator does
+ *     not invent one. CalendarRenderer derives the visible text
+ *     from the rest of the descriptor (discipline, group,
+ *     instructor). If a future caller needs to render a label,
+ *     it should compute one and write it in a view-model post-
+ *     processing step, not here.
  *
  * ARCHITECTURE:
  *
@@ -42,6 +40,40 @@
  *     CalendarRenderer.renderGrid
  *         ↓  HTML
  *
+ * ERROR POLICY:
+ *   The projector is a mandatory dependency. If it throws, or if
+ *   it returns something that is not an array, the aggregator
+ *   returns `null` for that VM. It does NOT return an empty
+ *   schedule.
+ *
+ *   The distinction matters:
+ *
+ *     entity exists, no occurrences   → VM with `schedule: {}`.
+ *     projector threw                 → null.
+ *     projector returned garbage      → null.
+ *
+ *   A projector failure is not "the calendar is empty." It is a
+ *   bug in the projector (or a broken occurrence in its input),
+ *   and the caller should be able to distinguish it. Converting it
+ *   into an empty VM would make a broken projector look like a
+ *   quiet week.
+ *
+ *   The same policy applies to the location display-name lookup:
+ *   if AcademyLocations.getLocationName throws, the exception
+ *   propagates. It is not silently converted into "use the ID."
+ *
+ * REST DAYS:
+ *   class.restDays and class.restDaysByWeek are stored and
+ *   validated by AcademyClasses. This module reads the week's
+ *   effective rest days via AcademyClasses.getRestDaysForWeek and
+ *   copies the result onto the VM.
+ *
+ *   The location grid does NOT inherit class rest days (a room is
+ *   a resource, not a class member).
+ *
+ *   The discipline grid DOES inherit class rest days, because a
+ *   discipline grid is class-scoped.
+ *
  * VM SHAPE (consumed by CalendarRenderer.renderGrid):
  *   {
  *     schedule:   { day: { hour: slotDescriptor } },
@@ -56,7 +88,7 @@
  *       disciplineId:    string | null,
  *       disciplineName:  string,
  *       duration:        number,
- *       label:           string,
+ *       label:           string,          // always ''
  *       groupLabel:      string,
  *       groupColorIndex: number | null,
  *       instructorId:    string | null,
@@ -86,40 +118,13 @@
  *   cell that is not a continuation of the same session is appended
  *   to `slot.coOccupants`.
  *
- *   On a LOCATION grid, co-occupancy means "two or more groups
- *   share this room at this time."
- *
- *   On a STUDENT grid, the projection is scoped to one student's
- *   own sessions. A co-occupant means the student is double-booked.
- *
- *   On an INSTRUCTOR grid, the same reasoning applies: the
- *   projection is scoped to one instructor's sessions, so a
- *   co-occupant is another meeting the instructor is committed to
- *   at the same slot.
- *
- *   On a CLASS grid, and on a DISCIPLINE grid scoped to a class,
- *   a co-occupant means two or more groups are meeting at the same
- *   slot. If they are for the same discipline, they might be
- *   parallel sections (fine) or a scheduling mistake (not fine).
- *   The aggregator does not decide which; it reports what the
- *   projector returned, and the user decides. AcademyTeachingCollisions
- *   owns the semantic answer.
- *
- * DISCIPLINE GRID:
- *   getDisciplineScheduleViewModel(classId, disciplineId, week)
- *   projects `Projector.projectForClassDiscipline`, which filters
- *   projectWeek to occurrences whose classId AND disciplineId both
- *   match. The result is every session of that discipline for that
- *   class this week, across every instructor and every group.
- *
- *   The grid does NOT distinguish instructors visually beyond what
- *   the slot descriptor already carries: instructor name is
- *   rendered per cell, and co-occupants list additional sessions
- *   at the same slot. If two instructors teach parallel sections
- *   of the same discipline at the same hour, both are shown.
- *
- *   Rest days apply, because the discipline grid is class-scoped
- *   and shows the class's sessions.
+ *   A co-occupant means two or more occurrences share a cell. On a
+ *   location grid it means two groups share the room. On a student
+ *   or instructor grid it means a double-booking. On a class or
+ *   discipline grid it means two groups meeting at the same slot.
+ *   The aggregator reports what the projector returned; the
+ *   semantic answer ("is this a conflict?") belongs to
+ *   AcademyTeachingCollisions.
  *
  * GROUP LABELS:
  *   Every teaching group has a display name. The name comes from
@@ -154,9 +159,29 @@
  *     - the entity id is missing or malformed
  *     - the week is missing, malformed, or out of range
  *     - the entity does not exist in the store
+ *     - the projector threw, or returned a non-array
  *
- *   When the entity exists but has no occurrences this week, the
- *   VM is returned with an empty `schedule: {}`.
+ *   When the entity exists and the projector returns an empty
+ *   array, the VM is returned with an empty `schedule: {}`.
+ *
+ * CLASS CONTEXT (student / instructor VMs):
+ *   The student and instructor projections accept an options
+ *   object:
+ *
+ *     { week, classId }
+ *
+ *   `classId` is the class context for rest days. When supplied,
+ *   the VM carries the class's rest days for the week. When
+ *   omitted (or null), the VM carries `restDays: []`; the
+ *   aggregator does NOT pick a class on the caller's behalf.
+ *
+ *   This is deliberately explicit. The student schedule itself
+ *   comes from `Projector.projectForStudent(studentId, week)` —
+ *   it is not class-scoped. The rest days come from the class.
+ *   A caller that wants "the student's schedule in the context of
+ *   class X" passes classId. A caller that just wants "the
+ *   student's schedule" passes none, and gets no rest-day
+ *   decoration.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.AcademyTeachingProjector
@@ -165,9 +190,9 @@
  *   - window.AcademyDisciplines
  *   - window.CharacterQueries
  *   - window.AcademyClasses
+ *   - window.AcademyTeachingGroups
  *
  * DEPENDENCIES (LAZY, used only if present):
- *   - window.AcademyTeachingGroups   (group display-name resolution)
  *   - window.AcademyLocations        (location display-name)
  */
 
@@ -188,6 +213,7 @@
     var AcademyDisciplines = window.AcademyDisciplines;
     var CharacterQueries = window.CharacterQueries;
     var AcademyClasses = window.AcademyClasses;
+    var AcademyTeachingGroups = window.AcademyTeachingGroups;
 
     var _missing = [];
 
@@ -245,6 +271,10 @@
         typeof AcademyClasses.getRestDaysForWeek !== 'function') {
         _missing.push('AcademyClasses.getRestDaysForWeek');
     }
+    if (!AcademyTeachingGroups ||
+        typeof AcademyTeachingGroups.getGroup !== 'function') {
+        _missing.push('AcademyTeachingGroups.getGroup');
+    }
 
     if (_missing.length > 0) {
         throw new Error(
@@ -261,10 +291,6 @@
 
     function getAcademyLocations() {
         return window.AcademyLocations || null;
-    }
-
-    function getAcademyTeachingGroups() {
-        return window.AcademyTeachingGroups || null;
     }
 
     // ============================================================
@@ -336,23 +362,31 @@
         return isNonEmptyString(cls.name) ? cls.name : classId;
     }
 
+    /**
+     * Resolve a location's display name.
+     *
+     * When AcademyLocations is not loaded, falls back to the raw ID.
+     * That is a documented optional dependency.
+     *
+     * When AcademyLocations IS loaded and its lookup throws, the
+     * exception propagates. The aggregator does not mask a domain
+     * failure as "use the ID instead."
+     */
     function getLocationDisplayName(locationId) {
         if (!isNonEmptyString(locationId)) {
             return 'Location';
         }
+
         var AL = getAcademyLocations();
         if (!AL || typeof AL.getLocationName !== 'function') {
             return locationId;
         }
-        try {
-            var name = AL.getLocationName(locationId);
-            if (isNonEmptyString(name) && name !== 'Unknown') {
-                return name;
-            }
-            return locationId;
-        } catch (e) {
-            return locationId;
+
+        var name = AL.getLocationName(locationId);
+        if (isNonEmptyString(name) && name !== 'Unknown') {
+            return name;
         }
+        return locationId;
     }
 
     function getHoursRange() {
@@ -371,6 +405,47 @@
         }
         var str = String(value);
         return str === '' ? null : str;
+    }
+
+    // ============================================================
+    // PROJECTOR CALL — STRUCTURED RESULT
+    // ============================================================
+    //
+    // The projector is mandatory. When it succeeds and returns an
+    // array, the caller gets `{ ok: true, occurrences: [...] }`.
+    // When it throws, or returns a non-array, the caller gets
+    // `{ ok: false, message }`.
+    //
+    // The caller decides what to do. Public VMs return null on
+    // failure. They do not substitute an empty schedule.
+
+    function callProjector(fn, label) {
+        var result;
+        try {
+            result = fn();
+        } catch (e) {
+            console.warn(
+                '[AcademyCalendarAggregator] ' + label + ' threw:', e
+            );
+            return {
+                ok: false,
+                message: label + ' threw: ' +
+                    (e && e.message ? e.message : e)
+            };
+        }
+
+        if (!Array.isArray(result)) {
+            console.warn(
+                '[AcademyCalendarAggregator] ' + label +
+                ' returned a non-array:', result
+            );
+            return {
+                ok: false,
+                message: label + ' returned a non-array.'
+            };
+        }
+
+        return { ok: true, occurrences: result };
     }
 
     // ============================================================
@@ -399,24 +474,23 @@
         return (num - 1) % GROUP_COLOR_PALETTE_SIZE;
     }
 
+    /**
+     * Build the groupId → displayName and groupId → colorIndex maps
+     * for the given set of group IDs.
+     *
+     * AcademyTeachingGroups is mandatory. A group ID that does not
+     * resolve gets an empty display name and null color index; the
+     * caller decides what to render in that case. The lookup itself
+     * can throw and that exception propagates.
+     */
     function buildGroupMaps(groupIds) {
         var names = Object.create(null);
         var colors = Object.create(null);
 
-        var Groups = getAcademyTeachingGroups();
-        if (!Groups || typeof Groups.getGroup !== 'function') {
-            return { names: names, colors: colors };
-        }
-
         var keys = Object.keys(groupIds || {});
         for (var i = 0; i < keys.length; i++) {
             var gid = keys[i];
-            var g = null;
-            try {
-                g = Groups.getGroup(gid);
-            } catch (e) {
-                g = null;
-            }
+            var g = AcademyTeachingGroups.getGroup(gid);
             if (!g) {
                 names[gid] = '';
                 colors[gid] = null;
@@ -469,18 +543,8 @@
         if (weekNum === null) {
             return [];
         }
-        try {
-            var days = AcademyClasses.getRestDaysForWeek(
-                classId, weekNum
-            );
-            return Array.isArray(days) ? days.slice() : [];
-        } catch (e) {
-            console.warn(
-                '[AcademyCalendarAggregator] getRestDaysForWeek failed:',
-                e
-            );
-            return [];
-        }
+        var days = AcademyClasses.getRestDaysForWeek(classId, weekNum);
+        return Array.isArray(days) ? days.slice() : [];
     }
 
     // ============================================================
@@ -648,24 +712,14 @@
         return schedule;
     }
 
-    function safeProjectorCall(fn, label) {
-        try {
-            var result = fn();
-            if (Array.isArray(result)) {
-                return result;
-            }
-            return [];
-        } catch (e) {
-            console.warn(
-                '[AcademyCalendarAggregator] ' + label + ' threw:', e
-            );
-            return [];
-        }
-    }
-
     // ============================================================
     // STUDENT SCHEDULE VM
     // ============================================================
+    //
+    // Options: { week, classId }
+    //
+    // classId, when present, is the class context for rest days.
+    // When absent or null, the VM carries restDays: [].
 
     function getStudentScheduleViewModel(studentId, weekOrOptions) {
         if (!isNonEmptyString(studentId)) {
@@ -694,13 +748,17 @@
             return null;
         }
 
-        var occurrences = safeProjectorCall(function() {
+        var call = callProjector(function() {
             return Projector.projectForStudent(studentId, weekNum);
         }, 'projectForStudent');
 
-        var groupMaps = buildGroupMaps(
-            collectGroupIds(occurrences)
-        );
+        if (!call.ok) {
+            return null;
+        }
+
+        var occurrences = call.occurrences;
+
+        var groupMaps = buildGroupMaps(collectGroupIds(occurrences));
         var schedule = pivotOccurrencesToSchedule(occurrences, groupMaps);
 
         return {
@@ -715,6 +773,9 @@
     // ============================================================
     // INSTRUCTOR SCHEDULE VM
     // ============================================================
+    //
+    // Options: { week, classId }
+    // Same class-context semantics as the student VM.
 
     function getInstructorScheduleViewModel(instructorId, weekOrOptions) {
         if (!isNonEmptyString(instructorId)) {
@@ -743,13 +804,17 @@
             return null;
         }
 
-        var occurrences = safeProjectorCall(function() {
+        var call = callProjector(function() {
             return Projector.projectForInstructor(instructorId, weekNum);
         }, 'projectForInstructor');
 
-        var groupMaps = buildGroupMaps(
-            collectGroupIds(occurrences)
-        );
+        if (!call.ok) {
+            return null;
+        }
+
+        var occurrences = call.occurrences;
+
+        var groupMaps = buildGroupMaps(collectGroupIds(occurrences));
         var schedule = pivotOccurrencesToSchedule(occurrences, groupMaps);
 
         return {
@@ -776,24 +841,23 @@
 
         var AL = getAcademyLocations();
         if (AL && typeof AL.getLocation === 'function') {
-            var loc = null;
-            try {
-                loc = AL.getLocation(locationId);
-            } catch (e) {
-                loc = null;
-            }
+            var loc = AL.getLocation(locationId);
             if (!loc) {
                 return null;
             }
         }
 
-        var occurrences = safeProjectorCall(function() {
+        var call = callProjector(function() {
             return Projector.projectForLocation(locationId, weekNum);
         }, 'projectForLocation');
 
-        var groupMaps = buildGroupMaps(
-            collectGroupIds(occurrences)
-        );
+        if (!call.ok) {
+            return null;
+        }
+
+        var occurrences = call.occurrences;
+
+        var groupMaps = buildGroupMaps(collectGroupIds(occurrences));
         var schedule = pivotOccurrencesToSchedule(occurrences, groupMaps);
 
         return {
@@ -823,13 +887,17 @@
             return null;
         }
 
-        var occurrences = safeProjectorCall(function() {
+        var call = callProjector(function() {
             return Projector.projectForClass(classId, weekNum);
         }, 'projectForClass');
 
-        var groupMaps = buildGroupMaps(
-            collectGroupIds(occurrences)
-        );
+        if (!call.ok) {
+            return null;
+        }
+
+        var occurrences = call.occurrences;
+
+        var groupMaps = buildGroupMaps(collectGroupIds(occurrences));
         var schedule = pivotOccurrencesToSchedule(occurrences, groupMaps);
 
         return {
@@ -849,19 +917,10 @@
     // discipline, every group, every session.
     //
     // Data source: Projector.projectForClassDiscipline, which is a
-    // filter over projectWeek. This is the same teaching-model
-    // projection every other grid uses. No parallel scheduling
-    // model.
+    // filter over projectWeek. Same teaching-model projection every
+    // other grid uses. No parallel scheduling model.
     //
     // Rest days apply, because a discipline grid is class-scoped.
-    // The sessions it shows are the class's sessions; the class's
-    // rest days suppress occurrences on those days.
-    //
-    // Entity name: "<Discipline> — <Class>" so the header identifies
-    // both the discipline and the class scope. Without the class
-    // name, two classes' grids would show the same label for the
-    // same discipline and the reader would have to infer the scope
-    // from context.
 
     function getDisciplineScheduleViewModel(classId, disciplineId, week) {
         if (!isNonEmptyString(classId)) {
@@ -886,15 +945,19 @@
             return null;
         }
 
-        var occurrences = safeProjectorCall(function() {
+        var call = callProjector(function() {
             return Projector.projectForClassDiscipline(
                 classId, disciplineId, weekNum
             );
         }, 'projectForClassDiscipline');
 
-        var groupMaps = buildGroupMaps(
-            collectGroupIds(occurrences)
-        );
+        if (!call.ok) {
+            return null;
+        }
+
+        var occurrences = call.occurrences;
+
+        var groupMaps = buildGroupMaps(collectGroupIds(occurrences));
         var schedule = pivotOccurrencesToSchedule(occurrences, groupMaps);
 
         var disciplineName = isNonEmptyString(discipline.name)
@@ -914,6 +977,11 @@
     // ============================================================
     // WEEK OVERVIEW VM
     // ============================================================
+    //
+    // `studentAssignmentCount` is the sum, across every occurrence,
+    // of occ.studentIds.length. It counts student-session
+    // assignments represented in the projection, not unique
+    // students: one session with 20 students contributes 20.
 
     function getWeekOverviewViewModel(week) {
         var weekNum = parseWeek(week);
@@ -921,16 +989,22 @@
             return null;
         }
 
-        var occurrences = safeProjectorCall(function() {
+        var call = callProjector(function() {
             return Projector.projectWeek(weekNum);
         }, 'projectWeek');
+
+        if (!call.ok) {
+            return null;
+        }
+
+        var occurrences = call.occurrences;
 
         var sessions = Object.create(null);
         var groups = Object.create(null);
         var classes = Object.create(null);
         var instructors = Object.create(null);
         var locations = Object.create(null);
-        var studentOccurrences = 0;
+        var studentAssignments = 0;
 
         for (var i = 0; i < occurrences.length; i++) {
             var occ = occurrences[i];
@@ -952,7 +1026,7 @@
                 locations[String(occ.locationId)] = true;
             }
             if (Array.isArray(occ.studentIds)) {
-                studentOccurrences += occ.studentIds.length;
+                studentAssignments += occ.studentIds.length;
             }
         }
 
@@ -964,7 +1038,7 @@
             uniqueClassCount: Object.keys(classes).length,
             uniqueInstructorCount: Object.keys(instructors).length,
             uniqueLocationCount: Object.keys(locations).length,
-            studentOccurrenceCount: studentOccurrences
+            studentAssignmentCount: studentAssignments
         };
     }
 
