@@ -23,8 +23,7 @@
  *     dropStudentFromClass      end every enrolment and membership
  *                               for a character in a class
  *     dropStudentFromGroup      end ONLY the membership of a
- *                               character in ONE group; enrolments
- *                               and other groups are untouched
+ *                               character in ONE group
  *     assignStudentToSlot       resolve-or-create the group and
  *                               session implied by a student
  *                               assignment, then add the membership
@@ -46,6 +45,17 @@
  *   - Location entities              (AcademyLocations)
  *   - Instructor commitments store   (AcademyInstructorCommitments)
  *
+ * LOCATION DEPENDENCY:
+ *   When a mutation supplies a locationId, AcademyLocations is
+ *   MANDATORY at that moment. Lazy resolution solves load order;
+ *   it does not make the dependency optional. A missing location
+ *   provider, or a location that does not resolve, is a failure.
+ *   There is no "foreign key valid only when the module happens to
+ *   be loaded" path.
+ *
+ *   A null / empty / undefined locationId passes without consulting
+ *   AcademyLocations. There is no reference to validate.
+ *
  * DROP STUDENT FROM CLASS vs DROP STUDENT FROM GROUP:
  *   Two distinct operations, two distinct semantics:
  *
@@ -64,15 +74,11 @@
  *       is untouched. The student remains enrolled and remains
  *       a member of the class.
  *
- *   The discipline picker's "Leave this group" button uses the
- *   narrow operation. The broad operation is reserved for an
- *   explicit "drop out of class" affordance.
- *
  * TRANSACTION MODEL:
- *   Every public function here is a single MutationPipeline.performMutation
- *   call, EXCEPT the three commitment forwarders, which delegate to
- *   the commitments module's own pipelines. Either way: full success
- *   or full rollback per store.
+ *   Every public function here is a single
+ *   MutationPipeline.performMutation call, EXCEPT the three
+ *   commitment forwarders, which delegate to the commitments
+ *   module's own pipelines.
  *
  * INSTRUCTOR COMMITMENTS:
  *   The three forwarders exist so that the schedule module remains
@@ -81,14 +87,12 @@
  *
  *   No collision preflight runs on commitment create. Commitments
  *   may overlap class sessions and other commitments; the grid
- *   renders the overlap, the collision detector reports it, and the
- *   user decides. This mirrors how `allowCollisions: true` behaves
- *   on the student and instructor assign flows.
+ *   renders the overlap, the collision detector reports it, and
+ *   the user decides.
  *
  *   Collision on the OTHER direction — a new class session that
  *   overlaps an existing commitment — IS rejected as an instructor
- *   collision. The instructor is already committed; a class session
- *   has no business claiming that slot.
+ *   collision.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.ObjectUtils
@@ -107,10 +111,11 @@
  *   - window.CharacterQueries
  *   - window.EliminationQueries
  *
- * DEPENDENCIES (LAZY):
+ * DEPENDENCIES (LAZY, mandatory at call time when used):
  *   - window.AcademyAggregator
  *   - window.AcademyTeachingProjector
- *   - window.AcademyLocations
+ *   - window.AcademyLocations            (required when a
+ *                                          locationId is set)
  *   - window.AcademyInstructorCommitments
  */
 
@@ -338,6 +343,16 @@
     // ============================================================
     // LOCATION RESOLUTION
     // ============================================================
+    //
+    // Inputs:
+    //   null / undefined / '' → no location. Passes without
+    //     consulting AcademyLocations.
+    //   non-empty string       → AcademyLocations is MANDATORY.
+    //     Missing module, missing getLocation, or a location that
+    //     does not resolve is a failure.
+    //
+    // Lazy resolution solves load order. It does not make the
+    // dependency optional at the moment a location is being set.
 
     function resolveLocationId(rawLocationId) {
         if (rawLocationId === undefined ||
@@ -356,19 +371,20 @@
         var id = String(rawLocationId);
         var AL = getAcademyLocations();
 
-        if (AL && typeof AL.getLocation === 'function') {
-            var loc = null;
-            try {
-                loc = AL.getLocation(id);
-            } catch (e) {
-                loc = null;
-            }
-            if (!loc) {
-                return {
-                    ok: false,
-                    message: 'Location not found.'
-                };
-            }
+        if (!AL || typeof AL.getLocation !== 'function') {
+            return {
+                ok: false,
+                message: 'AcademyLocations is required to validate a ' +
+                    'location. Check the script load order in index.html.'
+            };
+        }
+
+        var loc = AL.getLocation(id);
+        if (!loc) {
+            return {
+                ok: false,
+                message: 'Location not found.'
+            };
         }
 
         return { ok: true, value: id };
@@ -1395,15 +1411,6 @@
     // ============================================================
     // dropStudentFromClass
     // ============================================================
-    //
-    // The BROAD operation. Ends every enrolment and every
-    // teaching-group membership for the character in the class,
-    // and removes the classId from character.classIds.
-    //
-    // Used by an explicit "drop out of class" affordance.
-    //
-    // For "leave ONE group, keep everything else," use
-    // dropStudentFromGroup below.
 
     function dropStudentFromClass(classId, charId, effectiveWeek) {
         if (!isNonEmptyString(classId)) {
@@ -1560,30 +1567,6 @@
     // ============================================================
     // dropStudentFromGroup
     // ============================================================
-    //
-    // The NARROW operation. Ends ONLY the membership interval for
-    // the given character in the given group, effective from
-    // effectiveWeek onward.
-    //
-    // Touches NOTHING else:
-    //   - Enrolments are not modified. The student remains enrolled
-    //     in the discipline.
-    //   - Other groups are not modified. The student remains a
-    //     member of any other group of any other discipline.
-    //   - character.classIds is not modified. The student remains
-    //     in the class.
-    //
-    // Semantics of effectiveWeek:
-    //   Same as endMembership on AcademyTeachingGroups. The
-    //   membership interval whose startWeek < effectiveWeek and
-    //   whose endWeek is null or >= effectiveWeek is truncated:
-    //   its endWeek becomes effectiveWeek - 1. A student leaving
-    //   effective week 6 is a member through week 5, not week 6.
-    //
-    //   If no interval matches — the student is not an active
-    //   member of the group at that week — the mutation is a
-    //   validation rejection, not a silent no-op. The caller
-    //   learns that the operation had no effect.
 
     function dropStudentFromGroup(classId, groupId, charId, effectiveWeek) {
         if (!isNonEmptyString(classId)) {
@@ -1609,9 +1592,6 @@
         var targetChar = String(charId);
         var endWeek = week - 1;
 
-        // Pre-flight: read the live group and confirm the group
-        // belongs to the class and the student is an active member.
-        // This is UX; the pipeline re-checks against the snapshot.
         var liveGroup = null;
         try {
             liveGroup = AcademyTeachingGroups.getGroup(targetGroup);
@@ -2337,7 +2317,6 @@
 
         var forceNewGroup = payload.forceNewGroup === true;
 
-        // ---- Preflight (live reads for early UX feedback) ----
         var cls = AcademyClasses.getClass(targetClass);
         if (!cls) {
             return Promise.resolve(rejection(
@@ -2801,7 +2780,6 @@
 
         var forceNewGroup = payload.forceNewGroup === true;
 
-        // ---- Preflight (live reads) ----
         var cls = AcademyClasses.getClass(targetClass);
         if (!cls) {
             return Promise.resolve(rejection(
@@ -3062,7 +3040,6 @@
         var createdGroup = false;
         var createdSession = false;
 
-        // ---- Mode 1: explicit-group path ----
         if (!forceNewGroup &&
             explicitGroupId !== null &&
             explicitGroupId !== undefined) {
@@ -3092,7 +3069,6 @@
             }
         }
 
-        // ---- Modes 2 & 3: candidate-walking (when not pinned) ----
         if (resolvedGroup === null && forceNewGroup !== true) {
             var candidates = collectCandidateGroups(
                 academy,
@@ -3179,8 +3155,6 @@
             void sawOverlapOnly;
         }
 
-        // ---- Session resolution for the resolved group ----
-
         if (resolvedGroup !== null && resolvedSession === null) {
             var groupSessions = collectSessionsForGroup(
                 academy, resolvedGroup.id
@@ -3221,7 +3195,6 @@
             }
         }
 
-        // ---- Group creation (modes 2 and 4) ----
         if (!resolvedGroup) {
             var newGroupId = generateGroupId();
             var groupNumber = allocateGroupNumber(
@@ -3253,7 +3226,6 @@
             createdGroup = true;
         }
 
-        // ---- Session creation ----
         if (!resolvedSession) {
             var sessionStart = week;
             var sessionEnd = null;
