@@ -8,7 +8,7 @@
  * rendering, its event handling, and its sub-editor lifecycle
  * (grades editor, schedule grid, teaching-group candidate picker).
  *
- * DISCIPLINE-HOURS PICKER — this revision:
+ * DISCIPLINE-HOURS PICKER:
  *   The picker reads two new VM fields from the aggregator:
  *
  *     entry.hasCurrentGroup   true when the student is already a
@@ -31,6 +31,32 @@
  *   AcademySchedule.dropStudentFromGroup, which ends ONLY the
  *   membership of the student in the named group. Enrolments and
  *   other groups are untouched. The student remains in the class.
+ *
+ * TEACHING GROUP BULK ACTIONS:
+ *   The group block header carries two bulk actions, in addition
+ *   to the existing per-student Remove button in the roster and
+ *   the per-session Edit / Delete buttons in the sessions list.
+ *
+ *     teaching-groups-clear-roster
+ *       Remove every member entry from a group. HARD DELETE, same
+ *       semantic as the per-student Remove button: the member
+ *       records are deleted, no history survives. The group and
+ *       its sessions are untouched.
+ *
+ *       Routes to AcademyTeachingGroups.clearGroupRoster.
+ *
+ *     teaching-groups-delete-group
+ *       Delete the group and every session on it. Members are
+ *       removed from the roster as a side effect of the group
+ *       record going away. Students enrolled in the discipline
+ *       are not affected.
+ *
+ *       Routes to AcademySchedule.removeTeachingGroup, which owns
+ *       the compound operation.
+ *
+ *   Both are confirmed inline before dispatch. The confirmation
+ *   message names the group, and for delete-group names the
+ *   session and member counts.
  */
 
 (function() {
@@ -841,6 +867,16 @@
                 handleRemoveTeachingGroupStudent(
                     el.dataset.groupId,
                     el.dataset.characterId
+                );
+                return;
+
+            case 'teaching-groups-clear-roster':
+                handleClearTeachingGroupRoster(el.dataset.groupId);
+                return;
+            case 'teaching-groups-delete-group':
+                handleDeleteTeachingGroup(
+                    el.dataset.groupId,
+                    el.dataset.classId
                 );
                 return;
 
@@ -1746,21 +1782,6 @@
         host.innerHTML = buildDisciplinePickerHTML(entry);
     }
 
-    /**
-     * Build the picker panel for a discipline-hours row.
-     *
-     * Two shapes:
-     *
-     *   entry.hasCurrentGroup === true
-     *     The student is already in a group for this discipline.
-     *     The panel shows the current group and a single "Leave
-     *     this group" action.
-     *
-     *   entry.hasCurrentGroup === false
-     *     The panel lists every available group. Green groups are
-     *     clickable ("add"). Red groups list every conflicting
-     *     group of the student's that would need to be left.
-     */
     function buildDisciplinePickerHTML(entry) {
         var disciplineName = isNonEmptyString(entry.disciplineName)
             ? entry.disciplineName
@@ -2096,22 +2117,6 @@
             });
     }
 
-    /**
-     * "Leave this group" from the picker's current-group panel.
-     *
-     * NARROW OPERATION. Calls AcademySchedule.dropStudentFromGroup,
-     * which ends ONLY the membership of the student in the named
-     * group, effective from the display week onward.
-     *
-     * What is NOT affected:
-     *   - The student's enrolments in any discipline.
-     *   - The student's memberships in any other group, in any
-     *     discipline.
-     *   - character.classIds.
-     *
-     * The student remains in the class and remains enrolled in the
-     * discipline. Only this one group membership ends.
-     */
     function handleDisciplinePickerLeave(groupId) {
         if (!isNonEmptyString(groupId)) { return; }
 
@@ -2483,6 +2488,200 @@
                 );
                 notify('Failed to remove student from group.', 'error');
             });
+    }
+
+    // ============================================================
+    // TEACHING GROUPS — BULK ROSTER OPERATIONS
+    // ============================================================
+
+    /**
+     * Clear Roster: remove every member from a group, keeping the
+     * group and its sessions.
+     *
+     * HARD DELETE. The member records are removed entirely. No
+     * history survives. This matches the per-student Remove button
+     * in the group block header, which also calls a hard-delete
+     * operation. The intent is correction: "this assignment was a
+     * mistake and the records should not have existed."
+     *
+     * The group record, its startWeek / endWeek, its customName,
+     * its groupNumber, and every teaching session owned by it are
+     * unchanged.
+     */
+    function handleClearTeachingGroupRoster(groupId) {
+        if (!isNonEmptyString(groupId)) { return; }
+
+        var TG = getTeachingGroups();
+        if (!TG || typeof TG.clearGroupRoster !== 'function') {
+            notify('Teaching groups module not available.', 'error');
+            return;
+        }
+
+        var group = null;
+        try {
+            group = TG.getGroup(groupId);
+        } catch (e) {
+            group = null;
+        }
+
+        if (!group) {
+            notify('Teaching group not found.', 'error');
+            return;
+        }
+
+        var members = Array.isArray(group.members) ? group.members : [];
+        var memberCount = members.length;
+
+        if (memberCount === 0) {
+            notify('This group has no students to clear.', 'info');
+            return;
+        }
+
+        var groupName = isNonEmptyString(group.customName)
+            ? '"' + group.customName + '"'
+            : 'this group';
+
+        if (!confirm(
+            'Remove all ' + memberCount + ' student' +
+            (memberCount === 1 ? '' : 's') +
+            ' from ' + groupName + '?\n\n' +
+            'Their membership records will be deleted. This cannot ' +
+            'be undone.\n\n' +
+            'The group and its sessions are not affected. To delete ' +
+            'the group itself, use the delete button on the group ' +
+            'header.'
+        )) {
+            return;
+        }
+
+        TG.clearGroupRoster(groupId)
+            .then(function(result) {
+                if (result && result.success) {
+                    var ctx = getContext();
+                    ctx.onChange();
+                    return;
+                }
+                if (result && result.message) {
+                    notify(result.message, 'error');
+                }
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[AcademyPeopleController] clearGroupRoster failed:',
+                    err
+                );
+                notify('Failed to clear the group roster.', 'error');
+            });
+    }
+
+    /**
+     * Delete Group: remove the teaching group and every session on
+     * it, in one transaction. Members are unassigned.
+     *
+     * Routes to AcademySchedule.removeTeachingGroup, which owns
+     * the compound operation. It deletes the group record and
+     * every teaching session whose groupId matches. Students
+     * enrolled in the discipline are not affected; their
+     * enrolments are independent of their membership in this
+     * group.
+     */
+    function handleDeleteTeachingGroup(groupId, classId) {
+        if (!isNonEmptyString(groupId)) { return; }
+
+        var resolvedClassId = isNonEmptyString(classId)
+            ? String(classId)
+            : AcademyUI.getSelectedClassId();
+
+        if (!isNonEmptyString(resolvedClassId)) {
+            notify('No class selected.', 'error');
+            return;
+        }
+
+        var Schedule = getSchedule();
+        if (!Schedule ||
+            typeof Schedule.removeTeachingGroup !== 'function') {
+            notify('Schedule module not available.', 'error');
+            return;
+        }
+
+        var TG = getTeachingGroups();
+        var group = null;
+        if (TG && typeof TG.getGroup === 'function') {
+            try {
+                group = TG.getGroup(groupId);
+            } catch (e) {
+                group = null;
+            }
+        }
+
+        var groupName = 'this group';
+        if (group) {
+            groupName = isNonEmptyString(group.customName)
+                ? '"' + group.customName + '"'
+                : 'this group';
+        }
+
+        var memberCount = 0;
+        var sessionCount = 0;
+        if (group) {
+            if (Array.isArray(group.members)) {
+                memberCount = group.members.length;
+            }
+            var TS = getTeachingSessions();
+            if (TS && typeof TS.getSessionsForGroup === 'function') {
+                try {
+                    var sessions = TS.getSessionsForGroup(groupId) || [];
+                    sessionCount = sessions.length;
+                } catch (e) {
+                    sessionCount = 0;
+                }
+            }
+        }
+
+        var summaryParts = [];
+        if (sessionCount > 0) {
+            summaryParts.push(sessionCount + ' session' +
+                (sessionCount === 1 ? '' : 's'));
+        }
+        if (memberCount > 0) {
+            summaryParts.push(memberCount + ' student' +
+                (memberCount === 1 ? '' : 's'));
+        }
+        var summary = summaryParts.length > 0
+            ? ' (' + summaryParts.join(', ') + ')'
+            : '';
+
+        if (!confirm(
+            'Delete ' + groupName + summary + '?\n\n' +
+            'The group and every session on it will be removed. ' +
+            'Students enrolled in the discipline are not affected; ' +
+            'only their membership in this group is removed.\n\n' +
+            'This cannot be undone.'
+        )) {
+            return;
+        }
+
+        Schedule.removeTeachingGroup({
+            groupId: String(groupId),
+            classId: String(resolvedClassId)
+        }).then(function(result) {
+            if (result && result.success) {
+                var ctx = getContext();
+                ctx.onChange();
+                return;
+            }
+            if (result && result.message) {
+                notify(result.message, 'error');
+            } else {
+                notify('Failed to delete the teaching group.', 'error');
+            }
+        }).catch(function(err) {
+            console.warn(
+                '[AcademyPeopleController] removeTeachingGroup failed:',
+                err
+            );
+            notify('Failed to delete the teaching group.', 'error');
+        });
     }
 
     // ============================================================
