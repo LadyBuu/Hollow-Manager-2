@@ -18,7 +18,7 @@
  *   - Mutations are ATOMIC: if persistence fails, window.data is restored.
  *   - This module does NOT call saveData() directly - the pipeline does.
  *
- * READ SAFETY (Phase 2):
+ * READ SAFETY:
  *   - getDataStore() returns null when window.data is missing.
  *   - Internal readers never create window.data.locations as a side
  *     effect of a read. Structure creation is confined to
@@ -30,30 +30,45 @@
  *   - ObjectUtils.deepClone throws if cloning fails or if the clone
  *     aliases the input.
  *
- * NAME NORMALISATION (Phase 2):
- *   - Location name comparison is centralised in
- *     normaliseLocationName: trim + lowercase. Every name lookup
- *     goes through it.
+ * NAME UNIQUENESS (the module's strongest invariant):
+ *   Two locations may not share a name under normaliseLocationName().
+ *   This is enforced:
+ *     - on create: preflight and pipeline validator
+ *     - on update: preflight and pipeline validator (when name changes)
+ *     - on saveLocations bulk: preflight (within-batch duplicates and
+ *       existing collisions) and pipeline validator (post-mutation
+ *       uniqueness across the whole store)
  *
- * VALID_LOCATION_TYPES (Phase 2):
- *   - The list is deep-frozen at load. Callers cannot mutate the
- *     shared array. getValidLocationTypes() returns a copy.
+ *   The pipeline validator is the authoritative check. The preflight
+ *   checks exist for better error messages, not for correctness.
  *
- * DELETE CASCADE (v21):
- *   Deleting a location is a CASCADE. In a single transaction it:
+ * TRANSACTION SNAPSHOT RULE:
+ *   Every pipeline validate() callback resolves references against
+ *   the `appData` argument it is handed. It does not read
+ *   window.data. Preflight reads against window.data are for early
+ *   UX feedback; the pipeline re-checks against the snapshot.
+ *
+ * CAPACITY:
+ *   Capacity is null (unspecified) or an integer in
+ *   [MIN_CAPACITY, MAX_CAPACITY]. Fractional capacities are rejected.
+ *   A room's capacity is 30, not 30.5.
+ *
+ * DELETE CASCADE:
+ *   Deleting a location is a CASCADE. In a single MutationPipeline
+ *   transaction it:
  *     1. Deletes the location from window.data.locations.
  *     2. Cross-domain cleanup via AcademyCascade.locationDeleted,
- *        which nulls the locationId on every teaching session that
- *        referenced it.
+ *        which nulls the locationId on every teaching session and
+ *        every instructor commitment that referenced it.
  *
- *   The retired stored-schedule maps (curriculum.locationSchedules,
- *   curriculum.classLocations, curriculum.metadata) are no longer
- *   touched. They were removed in database v21.
+ *   AcademyCascade.locationDeleted is MANDATORY at deletion time.
+ *   Lazy lookup solves load order; it does not make the dependency
+ *   optional. A missing cascade fails the transaction.
  *
- *   Sessions are NOT deleted when their location is deleted. The
- *   room was a property of the session, not its identity. A
- *   decommissioned room does not end the class; the session survives
- *   with locationId set to null.
+ *   Sessions and commitments are NOT deleted when their location is
+ *   deleted. The room was a property of the record, not its
+ *   identity. A decommissioned room does not end the class or the
+ *   commitment; the record survives with locationId set to null.
  *
  * MUTATION CONTRACT:
  *   - create / update / delete / saveLocations all return
@@ -70,16 +85,6 @@
  *   - window.ValidationUtils (from validation-utils.js) - MANDATORY
  *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
  *   - window.AcademyCascade (from academy-cascade.js) - LAZY
- *
- * USAGE:
- *   var locations = window.AcademyLocations;
- *
- *   locations.create({ name: 'Training Hall A', type: 'classroom', capacity: 30 })
- *       .then(function(result) { ... });
- *
- *   locations.delete('loc_123').then(function(result) {
- *       // result.data.cascade contains the cascade summary
- *   });
  */
 
 (function() {
@@ -167,10 +172,6 @@
         return ValidationUtils.isNonEmptyString(value);
     }
 
-    function isNumber(value) {
-        return typeof value === 'number' && isFinite(value);
-    }
-
     function deepClone(value) {
         var result = ObjectUtils.deepClone(value);
         if (result === value && value !== null && typeof value === 'object') {
@@ -198,6 +199,10 @@
      * Normalise a location name for comparison.
      * Trims leading/trailing whitespace and lowercases. Empty or
      * invalid input returns ''.
+     *
+     * This is the SINGLE authority for name comparison in this
+     * module. Every uniqueness check goes through it. Do not
+     * inline `String(x).toLowerCase().trim()` anywhere; use this.
      */
     function normaliseLocationName(name) {
         if (name === null || name === undefined) {
@@ -298,8 +303,66 @@
     }
 
     // ============================================================
+    // SNAPSHOT-AWARE LOOKUPS - for pipeline validate() callbacks
+    // ============================================================
+    //
+    // These read from an appData snapshot, not window.data. They
+    // are the ones pipeline validators must use.
+
+    function findLocationInSnapshot(appData, id) {
+        if (!appData || !Array.isArray(appData.locations)) {
+            return null;
+        }
+        var target = String(id);
+        for (var i = 0; i < appData.locations.length; i++) {
+            var loc = appData.locations[i];
+            if (loc && String(loc.id) === target) {
+                return loc;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Does any location OTHER than `excludeId` carry the given
+     * normalised name in the snapshot?
+     *
+     * Returns the conflicting record or null.
+     */
+    function findNameConflictInSnapshot(appData, normalisedName, excludeId) {
+        if (!appData || !Array.isArray(appData.locations)) {
+            return null;
+        }
+        if (normalisedName === '') {
+            return null;
+        }
+        var exclude = (excludeId === undefined || excludeId === null)
+            ? null
+            : String(excludeId);
+
+        for (var i = 0; i < appData.locations.length; i++) {
+            var loc = appData.locations[i];
+            if (!loc) { continue; }
+            if (exclude !== null && String(loc.id) === exclude) {
+                continue;
+            }
+            if (normaliseLocationName(loc.name) === normalisedName) {
+                return loc;
+            }
+        }
+        return null;
+    }
+
+    // ============================================================
     // LOCATION VALIDATION
     // ============================================================
+    //
+    // Validates INPUT data. For the complete stored-record shape,
+    // see the candidate passed through the pipeline validator.
+    //
+    // Capacity rule: null OR integer in [MIN_CAPACITY, MAX_CAPACITY].
+    // A float is rejected. "30" is accepted and coerced to 30,
+    // because form inputs come through as strings; "30.5" is not.
 
     function validateLocationData(data, isPartial) {
         if (!isObject(data)) {
@@ -321,8 +384,19 @@
         if (data.capacity !== undefined) {
             if (data.capacity !== null && data.capacity !== '') {
                 var capacity = Number(data.capacity);
-                if (isNaN(capacity) || capacity < MIN_CAPACITY || capacity > MAX_CAPACITY) {
-                    return { valid: false, message: 'Capacity must be between ' + MIN_CAPACITY + ' and ' + MAX_CAPACITY + '.' };
+                if (isNaN(capacity) || !Number.isInteger(capacity)) {
+                    return {
+                        valid: false,
+                        message: 'Capacity must be an integer between ' +
+                            MIN_CAPACITY + ' and ' + MAX_CAPACITY + '.'
+                    };
+                }
+                if (capacity < MIN_CAPACITY || capacity > MAX_CAPACITY) {
+                    return {
+                        valid: false,
+                        message: 'Capacity must be between ' +
+                            MIN_CAPACITY + ' and ' + MAX_CAPACITY + '.'
+                    };
                 }
             }
         }
@@ -357,6 +431,10 @@
 
     /**
      * Create a new location.
+     *
+     * Uniqueness is enforced by the pipeline validator against
+     * appData.locations. The preflight check against window.data is
+     * for early UX feedback only.
      */
     function create(data) {
         var validation = validateLocationData(data, false);
@@ -364,6 +442,8 @@
             return Promise.resolve(failure(validation.message));
         }
 
+        // Preflight: is there already a location with this name?
+        // This is UX; the pipeline re-checks.
         var existing = getLocationByNameRecord(data.name);
         if (existing) {
             return Promise.resolve(failure('A location with this name already exists.'));
@@ -378,14 +458,18 @@
                 if (!appData || typeof appData !== 'object') {
                     return { valid: false, message: 'Application data is not available.' };
                 }
-                if (Array.isArray(appData.locations)) {
-                    for (var i = 0; i < appData.locations.length; i++) {
-                        var loc = appData.locations[i];
-                        if (loc && normaliseLocationName(loc.name) === normalisedNewName) {
-                            return { valid: false, message: 'A location with this name already exists.' };
-                        }
-                    }
+
+                // Name uniqueness against the transaction snapshot.
+                var conflict = findNameConflictInSnapshot(
+                    appData, normalisedNewName, targetId
+                );
+                if (conflict) {
+                    return {
+                        valid: false,
+                        message: 'A location with this name already exists.'
+                    };
                 }
+
                 return { valid: true };
             },
             mutate: function(appData) {
@@ -401,6 +485,14 @@
 
     /**
      * Update an existing location.
+     *
+     * NAME UNIQUENESS:
+     *   When the candidate's name changes, the pipeline validator
+     *   checks the new name against every other location in
+     *   appData.locations. The preflight check against window.data
+     *   is for early UX feedback only. This closes the TOCTOU
+     *   window where a rename that was unique at preflight could
+     *   collide at commit.
      */
     function update(id, updates) {
         if (!isNonEmptyString(id)) {
@@ -435,6 +527,8 @@
                 return Promise.resolve(failure('Location name cannot be empty.'));
             }
             if (newName !== candidate.name) {
+                // Preflight duplicate check against window.data.
+                // UX; the pipeline re-checks against the snapshot.
                 var duplicate = getLocationByNameRecord(newName);
                 if (duplicate && String(duplicate.id) !== String(id)) {
                     return Promise.resolve(failure('A location with this name already exists.'));
@@ -461,8 +555,15 @@
                 ? Number(updates.capacity)
                 : null;
 
-            if (newCapacity !== null && (isNaN(newCapacity) || newCapacity < MIN_CAPACITY || newCapacity > MAX_CAPACITY)) {
-                return Promise.resolve(failure('Capacity must be between ' + MIN_CAPACITY + ' and ' + MAX_CAPACITY + '.'));
+            if (newCapacity !== null) {
+                if (!Number.isInteger(newCapacity) ||
+                    newCapacity < MIN_CAPACITY ||
+                    newCapacity > MAX_CAPACITY) {
+                    return Promise.resolve(failure(
+                        'Capacity must be an integer between ' +
+                        MIN_CAPACITY + ' and ' + MAX_CAPACITY + '.'
+                    ));
+                }
             }
 
             if (candidate.capacity !== newCapacity) {
@@ -477,22 +578,32 @@
 
         candidate.updatedAt = new Date().toISOString();
         var targetId = String(id);
+        var normalisedCandidateName = normaliseLocationName(candidate.name);
 
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || !Array.isArray(appData.locations)) {
                     return { valid: false, message: 'Location no longer exists.' };
                 }
-                var found = false;
-                for (var i = 0; i < appData.locations.length; i++) {
-                    if (String(appData.locations[i].id) === targetId) {
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
+
+                // The target must still exist in the snapshot.
+                if (!findLocationInSnapshot(appData, targetId)) {
                     return { valid: false, message: 'Location no longer exists.' };
                 }
+
+                // Name uniqueness against the snapshot. This is
+                // the authoritative check; the preflight against
+                // window.data is UX.
+                var conflict = findNameConflictInSnapshot(
+                    appData, normalisedCandidateName, targetId
+                );
+                if (conflict) {
+                    return {
+                        valid: false,
+                        message: 'A location with this name already exists.'
+                    };
+                }
+
                 return { valid: true };
             },
             mutate: function(appData) {
@@ -519,15 +630,17 @@
     /**
      * Delete a location permanently.
      *
-     * CASCADE (v21). In a single transaction it:
-     *   1. Deletes the location from window.data.locations.
-     *   2. Delegates to AcademyCascade.locationDeleted, which nulls
-     *      the locationId on every teaching session that referenced
-     *      it. Sessions are NOT deleted; the class still runs.
+     * CASCADE:
+     *   AcademyCascade.locationDeleted is MANDATORY at deletion
+     *   time. Lazy lookup solves load order; it does not make the
+     *   dependency optional. A missing cascade fails the
+     *   transaction, because a successful deletion that leaves
+     *   stale locationId references is worse than a failed one.
      *
-     * The retired stored-schedule maps (curriculum.locationSchedules,
-     * curriculum.classLocations, curriculum.metadata) are no longer
-     * touched. They were removed in database v21.
+     * WHAT THE CASCADE DOES:
+     *   Nulls the locationId on every teaching session and every
+     *   instructor commitment that referenced this location. Those
+     *   records survive; the reference is cleared.
      */
     function deleteLocation(id) {
         if (!isNonEmptyString(id)) {
@@ -550,14 +663,7 @@
                 if (!appData || !Array.isArray(appData.locations)) {
                     return { valid: false, message: 'Location no longer exists.' };
                 }
-                var found = false;
-                for (var i = 0; i < appData.locations.length; i++) {
-                    if (String(appData.locations[i].id) === target) {
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
+                if (!findLocationInSnapshot(appData, target)) {
                     return { valid: false, message: 'Location no longer exists.' };
                 }
                 return { valid: true };
@@ -578,13 +684,20 @@
                 locations.splice(idx, 1);
 
                 // ---- 2. Cross-domain cascade ----
-                // AcademyCascade.locationDeleted nulls the locationId
-                // on every teaching session that referenced it.
-                var cascade = null;
+                // The cascade helper is mandatory at this point. A
+                // missing module or missing helper fails the
+                // transaction.
                 var Cascade = getAcademyCascade();
-                if (Cascade && typeof Cascade.locationDeleted === 'function') {
-                    cascade = Cascade.locationDeleted(appData, target);
+                if (!Cascade ||
+                    typeof Cascade.locationDeleted !== 'function') {
+                    throw new Error(
+                        '[AcademyLocations] AcademyCascade.locationDeleted ' +
+                        'is required for location deletion. Check the ' +
+                        'script load order in index.html.'
+                    );
                 }
+
+                var cascade = Cascade.locationDeleted(appData, target);
 
                 return {
                     deleted: true,
@@ -648,11 +761,38 @@
         return result;
     }
 
+    /**
+     * PRESENTATION HELPER. Returns the location's name, or
+     * 'Unknown' when the ID is empty or the location does not
+     * exist.
+     *
+     * The two missing cases are deliberately collapsed:
+     *   - no location assigned (null/empty ID)
+     *   - location assigned but not found
+     *
+     * Callers that need to distinguish them (e.g. an authoritative
+     * schedule decision) should use getLocation() and inspect the
+     * returned record directly. This function is for display text.
+     */
     function getLocationName(id) {
         var loc = getLocationRecord(id);
         return loc ? loc.name : 'Unknown';
     }
 
+    /**
+     * PRESENTATION HELPER. Returns true when the location exists
+     * AND has a positive capacity.
+     *
+     * Returns false when:
+     *   - the location does not exist
+     *   - the location exists with capacity null
+     *   - the location exists with capacity 0 (which the schema
+     *     disallows, but stored records could theoretically carry)
+     *
+     * Callers that need to distinguish "doesn't exist" from
+     * "exists with no capacity" should use getLocation() and read
+     * the record's capacity directly.
+     */
     function hasCapacity(id) {
         var loc = getLocationRecord(id);
         return loc ? loc.capacity !== null && loc.capacity > 0 : false;
@@ -666,6 +806,28 @@
     // ============================================================
     // BULK OPERATIONS - Via MutationPipeline
     // ============================================================
+    //
+    // Save multiple locations at once.
+    //
+    // PHASES:
+    //   1. Preflight. Validate each entry. Detect within-batch
+    //      duplicates. Detect collisions with existing locations.
+    //      Build a plan of { action: 'create' | 'update' | 'skip',
+    //      record, matchId? }.
+    //
+    //   2. Pipeline validate. Verify the plan against the snapshot:
+    //        - every update target still exists
+    //        - every create ID is still free
+    //        - the POST-MUTATION name set is unique
+    //
+    //   3. Pipeline mutate. Apply the plan.
+    //
+    // THE POST-MUTATION UNIQUENESS INVARIANT:
+    //   After the bulk operation completes, no two locations in
+    //   appData.locations may share a normalised name. This is the
+    //   same invariant normal create/update enforce. The pipeline
+    //   validator checks it explicitly by simulating the resulting
+    //   name set and looking for duplicates.
 
     function saveLocations(locationsData, options) {
         if (!Array.isArray(locationsData) || locationsData.length === 0) {
@@ -677,6 +839,12 @@
 
         var planned = [];
         var errors = [];
+
+        // ---- Within-batch duplicate detection ----
+        // Two entries in the same batch that normalise to the same
+        // name are a preflight failure. The message identifies the
+        // second offending row.
+        var batchNames = Object.create(null);
 
         for (var i = 0; i < locationsData.length; i++) {
             var data = locationsData[i];
@@ -695,6 +863,18 @@
                 errors.push({ index: i, error: validation.message });
                 continue;
             }
+
+            var normalised = normaliseLocationName(data.name);
+            if (batchNames[normalised]) {
+                errors.push({
+                    index: i,
+                    error: 'Duplicate name within batch: "' +
+                        data.name + '" (first seen at index ' +
+                        batchNames[normalised].index + ').'
+                });
+                continue;
+            }
+            batchNames[normalised] = { index: i };
 
             var existing = getLocationByNameRecord(data.name);
 
@@ -732,6 +912,92 @@
                 if (!appData || typeof appData !== 'object') {
                     return { valid: false, message: 'Application data is not available.' };
                 }
+
+                var snapshotLocations = Array.isArray(appData.locations)
+                    ? appData.locations
+                    : [];
+
+                // ---- 1. Update targets must exist ----
+                for (var u = 0; u < updates.length; u++) {
+                    var updateItem = updates[u];
+                    if (!findLocationInSnapshot(appData, updateItem.matchId)) {
+                        return {
+                            valid: false,
+                            message: 'Location no longer exists: ' +
+                                updateItem.matchId
+                        };
+                    }
+                }
+
+                // ---- 2. Create IDs must not collide ----
+                for (var c = 0; c < creates.length; c++) {
+                    if (findLocationInSnapshot(appData, creates[c].record.id)) {
+                        return {
+                            valid: false,
+                            message: 'Location ID collision: ' +
+                                creates[c].record.id
+                        };
+                    }
+                }
+
+                // ---- 3. Post-mutation name set must be unique ----
+                //
+                // Simulate the result: every snapshot location that
+                // is NOT being updated, plus every updated and
+                // created candidate. Then check for duplicate
+                // normalised names.
+                var updateIds = Object.create(null);
+                for (var ui = 0; ui < updates.length; ui++) {
+                    updateIds[String(updates[ui].matchId)] = true;
+                }
+
+                var seenNames = Object.create(null);
+
+                for (var s = 0; s < snapshotLocations.length; s++) {
+                    var loc = snapshotLocations[s];
+                    if (!loc) { continue; }
+                    if (updateIds[String(loc.id)]) { continue; }
+
+                    var key = normaliseLocationName(loc.name);
+                    if (key === '') { continue; }
+                    if (seenNames[key]) {
+                        return {
+                            valid: false,
+                            message: 'Duplicate location name in ' +
+                                'resulting store: "' + loc.name + '".'
+                        };
+                    }
+                    seenNames[key] = true;
+                }
+
+                for (var ui2 = 0; ui2 < updates.length; ui2++) {
+                    var uRec = updates[ui2].record;
+                    var uKey = normaliseLocationName(uRec.name);
+                    if (uKey === '') { continue; }
+                    if (seenNames[uKey]) {
+                        return {
+                            valid: false,
+                            message: 'Duplicate location name in ' +
+                                'resulting store: "' + uRec.name + '".'
+                        };
+                    }
+                    seenNames[uKey] = true;
+                }
+
+                for (var ci = 0; ci < creates.length; ci++) {
+                    var cRec = creates[ci].record;
+                    var cKey = normaliseLocationName(cRec.name);
+                    if (cKey === '') { continue; }
+                    if (seenNames[cKey]) {
+                        return {
+                            valid: false,
+                            message: 'Duplicate location name in ' +
+                                'resulting store: "' + cRec.name + '".'
+                        };
+                    }
+                    seenNames[cKey] = true;
+                }
+
                 return { valid: true };
             },
             mutate: function(appData) {
@@ -743,17 +1009,6 @@
                     var item = planned[k];
 
                     if (item.action === 'create') {
-                        var normalisedName = normaliseLocationName(item.record.name);
-                        var collision = false;
-                        for (var c = 0; c < locations.length; c++) {
-                            if (normaliseLocationName(locations[c].name) === normalisedName) {
-                                collision = true;
-                                break;
-                            }
-                        }
-                        if (collision) {
-                            throw new Error('Location already exists: ' + item.record.name);
-                        }
                         locations.push(deepClone(item.record));
                         created++;
 
