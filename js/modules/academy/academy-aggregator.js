@@ -17,6 +17,10 @@
  *     getStudentViewModel(studentId, options)
  *     getInstructorViewModel(instructorId, options)
  *
+ *   Instructor:
+ *     getClassInstructorDisciplines(classId, instructorId, week)
+ *     getInstructorGroupPickerViewModel(classId, instructorId, disciplineId, week)
+ *
  *   Disciplines:
  *     getDisciplineListViewModel(filters)
  *     getDisciplineEditorViewModel(options)
@@ -34,11 +38,6 @@
  *     getWeeklyTeamsViewModel(classId, week, selectedTeamId)
  *     getWeeklyTeamMemberManagerViewModel({ classId, teamId, week })
  *     getUnassignedTeamsViewModel({ classId })
- *
- *   Instructor schedule modal support:
- *     getClassInstructorDisciplines(classId, instructorId, week)
- *     getInstructorGroupPickerViewModel(classId, instructorId,
- *                                       disciplineId, week)
  *
  * IMPORTANT:
  *   - Projection builder. Never mutates. No UI dependencies.
@@ -90,44 +89,36 @@
  *   bug is fixed here: those views now consult the year-level
  *   rule.
  *
- * INSTRUCTOR SCHEDULE MODAL SUPPORT:
- *   Two projections back the "add to instructor schedule" modal.
- *   Both are week-scoped, because the modal is scoped to a single
- *   slot in a single week.
+ * INSTRUCTOR DISCIPLINES (v27):
+ *   getClassInstructorDisciplines(classId, instructorId, week)
+ *   answers "which of this class's disciplines does this specific
+ *   instructor teach during this week?" It reads per-discipline
+ *   instructor enrolments, filtered to the class's offerings that
+ *   are active in the week.
  *
- *     getClassInstructorDisciplines(classId, instructorId, week)
- *       "Which of this class's offerings is this instructor
- *        enrolled to teach, during this week?"
+ *   It is the per-instructor mirror of
+ *   AcademyClasses.getClassInstructorIds, which answers the same
+ *   question for every instructor at once.
  *
- *       The mirror of getClassInstructorIds. That function answers
- *       "who teaches this discipline this week?"; this function
- *       answers the same question in the other direction.
+ *   The result is what the instructor-schedule modal's discipline
+ *   dropdown consumes.
  *
- *       The rule, in order:
- *         1. the character exists and has mode === 'instructor'
- *         2. the class offers the discipline (marker exists)
- *         3. the offering is active in the week
- *         4. the character is enrolled in the discipline for the
- *            class, and the enrolment interval covers the week
+ * INSTRUCTOR GROUP PICKER (v28):
+ *   getInstructorGroupPickerViewModel(classId, instructorId,
+ *   disciplineId, week) answers "which existing teaching groups
+ *   exist for this (class, discipline, instructor) triple that
+ *   are active during this week, and what are their display names
+ *   and counts?"
  *
- *       All four checks are required. A character enrolled for a
- *       discipline the class does not offer is not teaching it.
- *       A character enrolled for a discipline that does not run
- *       this week is not teaching it this week.
+ *   The result is what the instructor-schedule modal's group
+ *   dropdown consumes.
  *
- *     getInstructorGroupPickerViewModel(classId, instructorId,
- *                                       disciplineId, week)
- *       "Which teaching groups already exist for this
- *        (class, discipline, instructor) triple, and what are
- *        their current counts?"
- *
- *       Returns groups active at the week, with displayName,
- *       memberCount, and sessionCount.
- *
- *       Uses AcademyTeachingGroups and AcademyTeachingSessions,
- *       both resolved at call time. Neither is a load-time
- *       dependency of this module: the aggregator's core
- *       projections do not read teaching groups or sessions.
+ *   DEPENDENCY NOTE:
+ *     This projection requires AcademyTeachingGroups and
+ *     AcademyTeachingSessions. Neither is a load-time dependency
+ *     of this aggregator; both are resolved at call time. A
+ *     missing module throws — it is not silently treated as "no
+ *     groups." See the function's own comment for why.
  *
  * RANGE PREDICATES:
  *   The "does this range contain this week" question is owned by
@@ -208,11 +199,13 @@
  *   `mandatory` is only meaningful when `offered` is true. When the
  *   discipline is not offered, `mandatory` is false.
  *
- * INSTRUCTOR DISCIPLINES (v27):
+ * DISCIPLINE LIST (v27):
  *   getDisciplineListViewModel does not carry instructorIds or
  *   instructorNames. The discipline entity has no global instructor
  *   list. Callers that need "which instructors teach this
- *   discipline" walk enrolments and filter by character mode.
+ *   discipline" walk enrolments and filter by character mode, or
+ *   use getClassInstructorDisciplines for the per-class-per-
+ *   instructor form.
  *
  * SCHEDULE SOURCE:
  *   Location schedule projections read from
@@ -240,6 +233,8 @@
  *   - AcademyDisciplines             (discipline entities)
  *   - AcademyClassDisciplinesQueries (class-discipline marker reads,
  *                                     v27)
+ *   - AcademyEnrolments              (instructor enrolments for
+ *                                     getClassInstructorDisciplines)
  *   - CharacterQueries               (character identity + mode)
  *   - AcademyLocations               (location entities for the
  *                                     Locations view)
@@ -250,7 +245,8 @@
  *   - RangeUtils                     (containsWeek, for the
  *                                     partition split)
  *
- * DEPENDENCIES (LAZY):
+ * DEPENDENCIES (LAZY, resolved at call time inside the projection
+ * that needs them):
  *   - TeamAggregator             (period-display strings)
  *   - AcademyWeeklyTeams         (week-window + orphan reads)
  *   - AcademyRanking             (ranking projection)
@@ -261,15 +257,12 @@
  *                                 getWeeklyTeamMemberManagerViewModel
  *                                 and by the People 'eliminated'
  *                                 filter)
- *   - AcademyTeachingGroups      (group-picker projection; resolved
- *                                 at call time by
- *                                 getInstructorGroupPickerViewModel)
- *   - AcademyTeachingSessions    (group-picker projection; resolved
- *                                 at call time by
- *                                 getInstructorGroupPickerViewModel)
- *   - AcademyEnrolments          (class-instructor-disciplines
- *                                 projection; resolved at call time
- *                                 by getClassInstructorDisciplines)
+ *   - AcademyTeachingGroups      (group reads for
+ *                                 getInstructorGroupPickerViewModel;
+ *                                 REQUIRED by that projection)
+ *   - AcademyTeachingSessions    (session-count reads for
+ *                                 getInstructorGroupPickerViewModel;
+ *                                 REQUIRED by that projection)
  */
 
 (function() {
@@ -287,6 +280,7 @@
     var AcademyDisciplines = window.AcademyDisciplines;
     var AcademyClassDisciplinesQueries =
         window.AcademyClassDisciplinesQueries;
+    var AcademyEnrolments = window.AcademyEnrolments;
     var CharacterQueries = window.CharacterQueries;
     var AcademyLocations = window.AcademyLocations;
     var TeamQueries = window.TeamQueries;
@@ -326,6 +320,16 @@
     if (!AcademyClassDisciplinesQueries ||
         typeof AcademyClassDisciplinesQueries.getClassDiscipline !== 'function') {
         _missing.push('AcademyClassDisciplinesQueries.getClassDiscipline');
+    }
+    if (!AcademyClassDisciplinesQueries ||
+        typeof AcademyClassDisciplinesQueries.getClassDisciplinesForClass !== 'function') {
+        _missing.push(
+            'AcademyClassDisciplinesQueries.getClassDisciplinesForClass'
+        );
+    }
+    if (!AcademyEnrolments ||
+        typeof AcademyEnrolments.isEnrolledInWeek !== 'function') {
+        _missing.push('AcademyEnrolments.isEnrolledInWeek');
     }
     if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
         _missing.push('CharacterQueries.getCharacterById');
@@ -415,51 +419,41 @@
     // LAZY-BUT-MANDATORY DEPENDENCIES
     // ============================================================
     //
-    // Resolved at call time, thrown on when absent. Load order is
-    // deferred; mandatory-ness is not. Used by the two instructor-
-    // schedule projections, which are the only projections in this
-    // module that read teaching groups or teaching sessions.
+    // Resolved at call time by the projections that need them.
+    // Missing at call time throws; it is not silently treated as
+    // "no data." This is the "lazy ≠ optional" pattern: load order
+    // is deferred, mandatory-ness is not.
 
-    function requireAcademyEnrolments(contextLabel) {
-        var AE = window.AcademyEnrolments;
-        if (!AE ||
-            typeof AE.isEnrolled !== 'function' ||
-            typeof AE.isEnrolledInWeek !== 'function') {
-            throw new Error(
-                '[AcademyAggregator] AcademyEnrolments ' +
-                '(isEnrolled, isEnrolledInWeek) is required by ' +
-                contextLabel + '. Check the script load order in ' +
-                'index.html.'
-            );
-        }
-        return AE;
-    }
-
+    /**
+     * Resolve AcademyTeachingGroups for the group-picker projection.
+     * Throws when the module is missing or malformed.
+     */
     function requireAcademyTeachingGroups(contextLabel) {
         var ATG = window.AcademyTeachingGroups;
         if (!ATG ||
             typeof ATG.getGroupsForClassDisciplineInstructor !== 'function' ||
             typeof ATG.getActiveMembers !== 'function') {
             throw new Error(
-                '[AcademyAggregator] AcademyTeachingGroups ' +
-                '(getGroupsForClassDisciplineInstructor, ' +
-                'getActiveMembers) is required by ' +
-                contextLabel + '. Check the script load order in ' +
-                'index.html.'
+                '[AcademyAggregator] AcademyTeachingGroups is required ' +
+                'by ' + contextLabel + '. Check the script load order ' +
+                'in index.html.'
             );
         }
         return ATG;
     }
 
+    /**
+     * Resolve AcademyTeachingSessions for the group-picker
+     * projection's session counts. Throws when the module is missing
+     * or malformed.
+     */
     function requireAcademyTeachingSessions(contextLabel) {
         var ATS = window.AcademyTeachingSessions;
-        if (!ATS ||
-            typeof ATS.getSessionsForGroup !== 'function') {
+        if (!ATS || typeof ATS.getSessionsForGroup !== 'function') {
             throw new Error(
-                '[AcademyAggregator] AcademyTeachingSessions ' +
-                '(getSessionsForGroup) is required by ' +
-                contextLabel + '. Check the script load order in ' +
-                'index.html.'
+                '[AcademyAggregator] AcademyTeachingSessions is required ' +
+                'by ' + contextLabel + '. Check the script load order ' +
+                'in index.html.'
             );
         }
         return ATS;
@@ -635,6 +629,275 @@
     }
 
     // ============================================================
+    // INSTRUCTOR DISCIPLINES
+    // ============================================================
+    //
+    // "Which of this class's disciplines does this specific
+    // instructor teach during this week?"
+    //
+    // Per-instructor mirror of AcademyClasses.getClassInstructorIds.
+    // The rule is the same one getClassInstructorIds uses, applied
+    // to a single instructor rather than to the whole class.
+    //
+    // The answer is YEAR-LEVEL for the instructor's role, but the
+    // DISCIPLINE WINDOW is week-scoped: the caller asks about a
+    // specific week, and the disciplines that appear are those the
+    // instructor is enrolled to teach AT THAT WEEK.
+    //
+    // This is the derivation the instructor-schedule modal's
+    // discipline dropdown consumes.
+    //
+    // RETURN SHAPE:
+    //   [ { id, name, type } ] sorted by name.
+    //
+    // The result is empty when:
+    //   - classId or instructorId is empty
+    //   - week is missing or out of bounds
+    //   - the instructor record does not exist
+    //   - the instructor is not in instructor mode
+    //   - the class offers no disciplines, or none the instructor
+    //     is enrolled in for this week
+    //
+    // The character's mode is checked here, matching
+    // getClassInstructorIds and the character-detail aggregator's
+    // buildInstructorDisciplines. A character who is not in
+    // instructor mode is not a teaching instructor, regardless of
+    // any enrolment they carry.
+
+    function getClassInstructorDisciplines(classId, instructorId, week) {
+        if (!isNonEmptyString(classId) ||
+            !isNonEmptyString(instructorId)) {
+            return [];
+        }
+
+        var weekNum = resolveWeek(week);
+        if (weekNum === null) {
+            return [];
+        }
+
+        var char = CharacterQueries.getCharacterById(instructorId);
+        if (!char || char.mode !== 'instructor') {
+            return [];
+        }
+
+        var targetClass = String(classId);
+        var targetChar = String(instructorId);
+
+        var markers = AcademyClassDisciplinesQueries
+            .getClassDisciplinesForClass(targetClass) || [];
+
+        var result = [];
+
+        for (var i = 0; i < markers.length; i++) {
+            var marker = markers[i];
+            if (!marker || !marker.disciplineId) { continue; }
+
+            var disciplineId = String(marker.disciplineId);
+
+            var enrolled = AcademyEnrolments.isEnrolledInWeek(
+                targetChar,
+                targetClass,
+                disciplineId,
+                weekNum
+            ) === true;
+
+            if (!enrolled) { continue; }
+
+            var disc = AcademyDisciplines.getDiscipline(disciplineId);
+            if (!disc) { continue; }
+
+            result.push({
+                id: String(disc.id),
+                name: isNonEmptyString(disc.name)
+                    ? disc.name
+                    : 'Unnamed Discipline',
+                type: disc.type || 'mandatory'
+            });
+        }
+
+        result.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
+
+        return result;
+    }
+
+    // ============================================================
+    // INSTRUCTOR GROUP PICKER
+    // ============================================================
+    //
+    // "Which existing teaching groups exist for this (class,
+    // discipline, instructor) triple that are active during this
+    // week, and what are their display names and counts?"
+    //
+    // The picker VM is a flat list of groups. It does NOT decide
+    // which one is selected; selection is a caller concern.
+    //
+    // DEPENDENCY NOTE:
+    //   AcademyTeachingGroups and AcademyTeachingSessions are
+    //   resolved at call time and treated as mandatory for this
+    //   function. A missing module throws. That is deliberate:
+    //   "cannot enumerate groups" is not the same answer as "there
+    //   are no groups," and the picker must not silently show an
+    //   empty list when the underlying read failed.
+    //
+    //   AcademyTeachingSessions is required because the VM carries
+    //   a sessionCount per group. A caller that never renders the
+    //   count could theoretically skip the dependency, but the VM
+    //   shape is stable and the count is part of it.
+    //
+    // RANGE FILTERING:
+    //   A group is included when:
+    //     group.startWeek is missing OR week >= group.startWeek
+    //     AND
+    //     group.endWeek is missing OR week <= group.endWeek
+    //
+    //   Missing bounds are treated as "unbounded on that side."
+    //   A malformed bound (non-numeric, non-blank) causes the group
+    //   to be EXCLUDED, not silently included. The alternative —
+    //   treating a corrupt startWeek as "no boundary" — would
+    //   surface a group at every week, which is the failure mode
+    //   the corpus's other range helpers explicitly reject.
+    //
+    // DISPLAY NAME:
+    //   group.customName when set
+    //   otherwise `${discipline.name} ${groupNumber}` when groupNumber
+    //     is a positive integer
+    //   otherwise just `${discipline.name}`
+    //
+    //   This matches the display-name rule used elsewhere in the
+    //   Academy (see academy-character-detail-aggregator.js's
+    //   buildGroupDisplayName). It is not the letter-suffixed
+    //   variant that the calendar aggregator uses, because the
+    //   instructor-modal picker shows the raw group number for
+    //   closer correspondence with the stored record.
+
+    function getInstructorGroupPickerViewModel(
+        classId,
+        instructorId,
+        disciplineId,
+        week
+    ) {
+        if (!isNonEmptyString(classId) ||
+            !isNonEmptyString(instructorId) ||
+            !isNonEmptyString(disciplineId)) {
+            return { groups: [] };
+        }
+
+        var weekNum = resolveWeek(week);
+        if (weekNum === null) {
+            return { groups: [] };
+        }
+
+        var targetClass = String(classId);
+        var targetInstructor = String(instructorId);
+        var targetDiscipline = String(disciplineId);
+
+        var ATG = requireAcademyTeachingGroups(
+            'getInstructorGroupPickerViewModel'
+        );
+        var ATS = requireAcademyTeachingSessions(
+            'getInstructorGroupPickerViewModel'
+        );
+
+        var rawGroups = ATG.getGroupsForClassDisciplineInstructor(
+            targetClass,
+            targetDiscipline,
+            targetInstructor
+        ) || [];
+
+        if (!Array.isArray(rawGroups)) {
+            rawGroups = [];
+        }
+
+        var discipline = AcademyDisciplines.getDiscipline(
+            targetDiscipline
+        );
+        var disciplineName = (discipline &&
+                              isNonEmptyString(discipline.name))
+            ? discipline.name
+            : 'Unnamed Discipline';
+
+        var result = [];
+
+        for (var i = 0; i < rawGroups.length; i++) {
+            var group = rawGroups[i];
+            if (!group || !group.id) { continue; }
+
+            var startOk = true;
+            if (group.startWeek !== undefined &&
+                group.startWeek !== null &&
+                group.startWeek !== '') {
+                if (typeof group.startWeek !== 'number' ||
+                    !isFinite(group.startWeek)) {
+                    startOk = false;
+                } else if (weekNum < group.startWeek) {
+                    startOk = false;
+                }
+            }
+
+            var endOk = true;
+            if (startOk &&
+                group.endWeek !== undefined &&
+                group.endWeek !== null &&
+                group.endWeek !== '') {
+                if (typeof group.endWeek !== 'number' ||
+                    !isFinite(group.endWeek)) {
+                    endOk = false;
+                } else if (weekNum > group.endWeek) {
+                    endOk = false;
+                }
+            }
+
+            if (!startOk || !endOk) { continue; }
+
+            var groupNumber = isFiniteNumber(group.groupNumber)
+                ? group.groupNumber
+                : 0;
+
+            var customName = isNonEmptyString(group.customName)
+                ? String(group.customName).trim()
+                : null;
+
+            var displayName;
+            if (customName !== null) {
+                displayName = customName;
+            } else if (groupNumber > 0) {
+                displayName = disciplineName + ' ' + groupNumber;
+            } else {
+                displayName = disciplineName;
+            }
+
+            var members = ATG.getActiveMembers(group.id, weekNum) || [];
+            var memberCount = Array.isArray(members)
+                ? members.length
+                : 0;
+
+            var sessions = ATS.getSessionsForGroup(group.id) || [];
+            var sessionCount = Array.isArray(sessions)
+                ? sessions.length
+                : 0;
+
+            result.push({
+                groupId: String(group.id),
+                groupNumber: groupNumber,
+                displayName: displayName,
+                memberCount: memberCount,
+                sessionCount: sessionCount
+            });
+        }
+
+        result.sort(function(a, b) {
+            if (a.groupNumber !== b.groupNumber) {
+                return a.groupNumber - b.groupNumber;
+            }
+            return a.groupId.localeCompare(b.groupId);
+        });
+
+        return { groups: result };
+    }
+
+    // ============================================================
     // ELIMINATION PROJECTION
     // ============================================================
 
@@ -805,7 +1068,7 @@
     // directly. Callers that need the YEAR-LEVEL list ("who are the
     // instructors of this class?") walk
     // character.mode === 'instructor' AND classIds, or use the
-    // exported getClassInstructorsForClass helper below.
+    // exported getClassInstructorSetForClass helper below.
     //
     // studentCount is the number of STUDENTS. Instructors are
     // excluded from the roster at all weeks, so this number reflects
@@ -1261,251 +1524,6 @@
             className: cls.name || 'Unnamed Class',
             disciplines: rows
         };
-    }
-
-    // ============================================================
-    // INSTRUCTOR SCHEDULE MODAL SUPPORT
-    // ============================================================
-    //
-    // Two projections back the "add to instructor schedule" modal.
-    //
-    // Both are WEEK-SCOPED. The modal is scoped to a single slot in
-    // a single week; the answers must be about that week.
-    //
-    // NEITHER function catches. A failed query propagates to the
-    // caller. A modal that cannot determine which disciplines the
-    // instructor teaches must not silently render "no disciplines";
-    // that is the same failure mode the schedule review flagged
-    // across the teaching modules.
-
-    /**
-     * Which of this class's offerings is this instructor enrolled to
-     * teach, during this week?
-     *
-     * The mirror of getClassInstructorIds. That function answers
-     * "who teaches this discipline this week?"; this answers the
-     * same question in the other direction.
-     *
-     * RULES (all required):
-     *   1. The character exists and has mode === 'instructor'.
-     *      A character whose stored mode is not 'instructor' is not
-     *      teaching, even if an enrolment record exists. This
-     *      matches the mode-based rule used by
-     *      getClassInstructorIds and by the character-detail
-     *      aggregator's buildInstructorDisciplines.
-     *   2. The class offers the discipline (marker exists).
-     *   3. The offering is active in the week (discipline window).
-     *   4. The character is enrolled in the discipline for the
-     *      class, and the enrolment interval covers the week.
-     *
-     * @returns {array} Sorted by name. Each entry:
-     *   { id, name, type }
-     *
-     * @throws when a query needed for the answer fails. The caller
-     *   decides how to surface the failure.
-     */
-    function getClassInstructorDisciplines(classId, instructorId, week) {
-        if (!isNonEmptyString(classId) ||
-            !isNonEmptyString(instructorId)) {
-            return [];
-        }
-
-        var weekNum = resolveWeek(week);
-        if (weekNum === null) {
-            return [];
-        }
-
-        var char = CharacterQueries.getCharacterById(instructorId);
-        if (!char) {
-            return [];
-        }
-        if (char.mode !== 'instructor') {
-            return [];
-        }
-
-        var AE = requireAcademyEnrolments(
-            'getClassInstructorDisciplines'
-        );
-
-        var markers = AcademyClassDisciplinesQueries
-            .getClassDisciplinesForClass(classId) || [];
-
-        var result = [];
-
-        for (var i = 0; i < markers.length; i++) {
-            var marker = markers[i];
-            if (!marker || !marker.disciplineId) { continue; }
-
-            var disciplineId = String(marker.disciplineId);
-
-            // The class offers the discipline. Check active-in-week.
-            var active = AcademyClassDisciplinesQueries.isActiveInWeek(
-                classId, disciplineId, weekNum
-            );
-            if (active !== true) { continue; }
-
-            // The character is enrolled in the discipline for this
-            // class, and the interval covers the week. The enquiry
-            // uses the canonical enrolment query.
-            var enrolledInWeek = AE.isEnrolledInWeek(
-                instructorId, classId, disciplineId, weekNum
-            );
-            if (enrolledInWeek !== true) { continue; }
-
-            var disc = AcademyDisciplines.getDiscipline(disciplineId);
-            if (!disc) { continue; }
-
-            result.push({
-                id: String(disc.id),
-                name: isNonEmptyString(disc.name)
-                    ? disc.name
-                    : 'Unnamed Discipline',
-                type: disc.type || 'mandatory'
-            });
-        }
-
-        result.sort(function(a, b) {
-            return a.name.localeCompare(b.name);
-        });
-
-        return result;
-    }
-
-    /**
-     * Which teaching groups already exist for this
-     * (class, discipline, instructor) triple at this week?
-     *
-     * Returns groups whose own [startWeek, endWeek] window contains
-     * the week. A group that starts after the week, or has already
-     * ended, is not returned.
-     *
-     * Each entry:
-     *   {
-     *     groupId:      string,
-     *     groupNumber:  number,   // 0 when not set on the record
-     *     displayName:  string,   // customName || disciplineName N
-     *     memberCount:  number,   // active members at the week
-     *     sessionCount: number    // total sessions on the group
-     *   }
-     *
-     * Sorted by groupNumber, then by groupId.
-     *
-     * @returns {object} { groups: [...] }
-     *
-     * @throws when AcademyTeachingGroups or AcademyTeachingSessions
-     *   is unavailable at call time, or when either query fails.
-     *   A modal that cannot load the picker must fail visibly, not
-     *   render an empty picker.
-     */
-    function getInstructorGroupPickerViewModel(
-        classId,
-        instructorId,
-        disciplineId,
-        week
-    ) {
-        if (!isNonEmptyString(classId) ||
-            !isNonEmptyString(instructorId) ||
-            !isNonEmptyString(disciplineId)) {
-            return { groups: [] };
-        }
-
-        var weekNum = resolveWeek(week);
-        if (weekNum === null) {
-            return { groups: [] };
-        }
-
-        var ATG = requireAcademyTeachingGroups(
-            'getInstructorGroupPickerViewModel'
-        );
-        var ATS = requireAcademyTeachingSessions(
-            'getInstructorGroupPickerViewModel'
-        );
-
-        var rawGroups = ATG.getGroupsForClassDisciplineInstructor(
-            classId, disciplineId, instructorId
-        ) || [];
-
-        if (!Array.isArray(rawGroups)) {
-            return { groups: [] };
-        }
-
-        var active = [];
-        for (var i = 0; i < rawGroups.length; i++) {
-            var g = rawGroups[i];
-            if (!g || !g.id) { continue; }
-
-            var startOk = true;
-            var endOk = true;
-
-            if (isFiniteNumber(g.startWeek) && weekNum < g.startWeek) {
-                startOk = false;
-            }
-            if (g.endWeek !== null &&
-                g.endWeek !== undefined &&
-                isFiniteNumber(g.endWeek) &&
-                weekNum > g.endWeek) {
-                endOk = false;
-            }
-
-            if (startOk && endOk) {
-                active.push(g);
-            }
-        }
-
-        active.sort(function(a, b) {
-            var an = isFiniteNumber(a.groupNumber) ? a.groupNumber : 0;
-            var bn = isFiniteNumber(b.groupNumber) ? b.groupNumber : 0;
-            if (an !== bn) { return an - bn; }
-            return String(a.id).localeCompare(String(b.id));
-        });
-
-        var discipline = AcademyDisciplines.getDiscipline(disciplineId);
-        var disciplineName = (discipline && isNonEmptyString(discipline.name))
-            ? discipline.name
-            : '';
-
-        var result = [];
-
-        for (var j = 0; j < active.length; j++) {
-            var group = active[j];
-
-            var customName = isNonEmptyString(group.customName)
-                ? String(group.customName).trim()
-                : null;
-            var groupNumber = isFiniteNumber(group.groupNumber)
-                ? group.groupNumber
-                : 0;
-
-            var displayName = customName !== null
-                ? customName
-                : (disciplineName + (groupNumber > 0
-                    ? ' ' + groupNumber
-                    : ''));
-
-            // memberCount: active members at this week.
-            var members = ATG.getActiveMembers(group.id, weekNum);
-            var memberCount = Array.isArray(members)
-                ? members.length
-                : 0;
-
-            // sessionCount: total sessions on the group, regardless
-            // of window. This is a "how much is already scheduled on
-            // this group" indicator, not a per-week count.
-            var sessions = ATS.getSessionsForGroup(group.id);
-            var sessionCount = Array.isArray(sessions)
-                ? sessions.length
-                : 0;
-
-            result.push({
-                groupId: String(group.id),
-                groupNumber: groupNumber,
-                displayName: displayName,
-                memberCount: memberCount,
-                sessionCount: sessionCount
-            });
-        }
-
-        return { groups: result };
     }
 
     // ============================================================
@@ -2348,16 +2366,16 @@
         getStudentViewModel: getStudentViewModel,
         getInstructorViewModel: getInstructorViewModel,
 
+        // Instructor projections
+        getClassInstructorDisciplines: getClassInstructorDisciplines,
+        getInstructorGroupPickerViewModel: getInstructorGroupPickerViewModel,
+
         // Discipline projections
         getDisciplineListViewModel: getDisciplineListViewModel,
         getDisciplineEditorViewModel: getDisciplineEditorViewModel,
 
         // Class-discipline picker
         getClassDisciplinesPickerViewModel: getClassDisciplinesPickerViewModel,
-
-        // Instructor schedule modal support
-        getClassInstructorDisciplines: getClassInstructorDisciplines,
-        getInstructorGroupPickerViewModel: getInstructorGroupPickerViewModel,
 
         // Ranking
         getRankingViewModel: getRankingViewModel,
@@ -2392,11 +2410,11 @@
             'getPeopleViewModel',
             'getStudentViewModel',
             'getInstructorViewModel',
+            'getClassInstructorDisciplines',
+            'getInstructorGroupPickerViewModel',
             'getDisciplineListViewModel',
             'getDisciplineEditorViewModel',
             'getClassDisciplinesPickerViewModel',
-            'getClassInstructorDisciplines',
-            'getInstructorGroupPickerViewModel',
             'getRankingViewModel',
             'getLocationViewModel',
             'getWeeklyTeamsViewModel',
