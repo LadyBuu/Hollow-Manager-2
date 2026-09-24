@@ -29,19 +29,15 @@
  *   - "Instructors"         = CharacterQueries.getInstructors()
  *                             (status-based)
  *   - "Active characters"   is NOT displayed because "active" has no
- *     canonical definition (deceased vs eliminated vs career status
- *     are all possible interpretations)
+ *     canonical definition
  *
  *   - "Active teams"        = teams where `status === 'active'`
  *   - "Active tournaments"  = tournaments where `status === 'active'`
  *   - "Active missions"     = missions where `status === 'active'`
- *     (canonical statuses from each domain's constants)
  *
- *   - "Total classes"       = AcademyQueries.getClasses().length
+ *   - "Total classes"       = AcademyClasses.getClasses().length
  *   - "Enrolled students"   is NOT displayed because there is no
- *     canonical aggregate and the semantics (unique students vs sum
- *     of class sizes) are ambiguous. Academy must decide before
- *     Dashboard displays it.
+ *     canonical aggregate and the semantics are ambiguous.
  *
  * DEPENDENCIES (all required):
  *   - window.ApplicationSettingsQueries
@@ -49,7 +45,7 @@
  *   - window.TeamQueries
  *   - window.TournamentQueries
  *   - window.MissionQueries
- *   - window.AcademyQueries
+ *   - window.AcademyClasses
  *
  * USAGE:
  *   var agg = window.DashboardAggregator;
@@ -69,13 +65,11 @@
 
     var missing = [];
 
-    // ---- Application settings ----
     if (!window.ApplicationSettingsQueries ||
         typeof window.ApplicationSettingsQueries.getCurrentYear !== 'function') {
         missing.push('ApplicationSettingsQueries.getCurrentYear');
     }
 
-    // ---- Character ----
     if (!window.CharacterQueries || typeof window.CharacterQueries.getCharacters !== 'function') {
         missing.push('CharacterQueries.getCharacters');
     }
@@ -86,24 +80,20 @@
         missing.push('CharacterQueries.getInstructors');
     }
 
-    // ---- Team ----
     if (!window.TeamQueries || typeof window.TeamQueries.getTeams !== 'function') {
         missing.push('TeamQueries.getTeams');
     }
 
-    // ---- Tournament ----
     if (!window.TournamentQueries || typeof window.TournamentQueries.getTournaments !== 'function') {
         missing.push('TournamentQueries.getTournaments');
     }
 
-    // ---- Mission ----
     if (!window.MissionQueries || typeof window.MissionQueries.getMissions !== 'function') {
         missing.push('MissionQueries.getMissions');
     }
 
-    // ---- Academy ----
-    if (!window.AcademyQueries || typeof window.AcademyQueries.getClasses !== 'function') {
-        missing.push('AcademyQueries.getClasses');
+    if (!window.AcademyClasses || typeof window.AcademyClasses.getClasses !== 'function') {
+        missing.push('AcademyClasses.getClasses');
     }
 
     if (missing.length > 0) {
@@ -121,19 +111,12 @@
     var TeamQueries = window.TeamQueries;
     var TournamentQueries = window.TournamentQueries;
     var MissionQueries = window.MissionQueries;
-    var AcademyQueries = window.AcademyQueries;
+    var AcademyClasses = window.AcademyClasses;
 
     // ============================================================
     // HELPERS
     // ============================================================
 
-    /**
-     * Count items in an array matching a predicate.
-     *
-     * @param {array} items - Array of items
-     * @param {function} predicate - Predicate function
-     * @returns {number} Count of matching items
-     */
     function countBy(items, predicate) {
         var count = 0;
         for (var i = 0; i < items.length; i++) {
@@ -148,15 +131,7 @@
     // STATISTICS - calculated once per view model
     // ============================================================
 
-    /**
-     * Calculate all dashboard statistics.
-     * This function is called exactly once per getDashboardViewModel() call.
-     * All derived views (quickStats, domainCounts) use its return value.
-     *
-     * @returns {object} Statistics object
-     */
     function calculateStatistics() {
-        // ---- Characters ----
         var characters = CharacterQueries.getCharacters();
         var totalCharacters = characters.length;
         var deceasedCharacters = countBy(characters, function(c) {
@@ -166,7 +141,6 @@
         var students = CharacterQueries.getStudents();
         var instructors = CharacterQueries.getInstructors();
 
-        // ---- Teams ----
         var teams = TeamQueries.getTeams();
         var activeTeams = countBy(teams, function(t) {
             return t && t.status === 'active';
@@ -176,29 +150,24 @@
         var civilianTeams = countBy(teams, function(t) { return t && t.type === 'civilian'; });
         var academicTeams = countBy(teams, function(t) { return t && t.type === 'academic'; });
 
-        // ---- Tournaments ----
         var tournaments = TournamentQueries.getTournaments();
         var activeTournaments = countBy(tournaments, function(t) { return t && t.status === 'active'; });
         var completedTournaments = countBy(tournaments, function(t) { return t && t.status === 'completed'; });
         var draftTournaments = countBy(tournaments, function(t) { return t && t.status === 'draft'; });
 
-        // ---- Missions ----
         var missions = MissionQueries.getMissions();
         var activeMissions = countBy(missions, function(m) { return m && m.status === 'active'; });
         var completedMissions = countBy(missions, function(m) { return m && m.status === 'completed'; });
         var cancelledMissions = countBy(missions, function(m) { return m && m.status === 'cancelled'; });
 
-        // ---- Academy ----
-        var classes = AcademyQueries.getClasses();
+        var classes = AcademyClasses.getClasses();
 
         return {
-            // Characters
             totalCharacters: totalCharacters,
             deceasedCharacters: deceasedCharacters,
             students: students.length,
             instructors: instructors.length,
 
-            // Teams
             totalTeams: teams.length,
             activeTeams: activeTeams,
             professionalTeams: professionalTeams,
@@ -206,19 +175,16 @@
             civilianTeams: civilianTeams,
             academicTeams: academicTeams,
 
-            // Tournaments
             totalTournaments: tournaments.length,
             activeTournaments: activeTournaments,
             completedTournaments: completedTournaments,
             draftTournaments: draftTournaments,
 
-            // Missions
             totalMissions: missions.length,
             activeMissions: activeMissions,
             completedMissions: completedMissions,
             cancelledMissions: cancelledMissions,
 
-            // Academy
             totalClasses: classes.length
         };
     }
@@ -227,12 +193,6 @@
     // DERIVED VIEWS
     // ============================================================
 
-    /**
-     * Build a compact quick-stats projection from the full statistics.
-     *
-     * @param {object} stats - Statistics from calculateStatistics()
-     * @returns {object} Quick stats
-     */
     function buildQuickStats(stats) {
         return {
             characters: stats.totalCharacters,
@@ -246,12 +206,6 @@
         };
     }
 
-    /**
-     * Build a grouped domain-counts projection from the full statistics.
-     *
-     * @param {object} stats - Statistics from calculateStatistics()
-     * @returns {object} Domain-grouped counts
-     */
     function buildDomainCounts(stats) {
         return {
             characters: {
@@ -290,23 +244,11 @@
     // DASHBOARD VIEW MODEL
     // ============================================================
 
-    /**
-     * Get the complete dashboard view model.
-     *
-     * This is the single entry point for the Dashboard renderer.
-     * Everything the Dashboard needs is returned from here.
-     *
-     * @returns {object} Dashboard view model
-     */
     function getDashboardViewModel() {
-        // Calculate statistics once - all derived views use this value
         var statistics = calculateStatistics();
 
         return {
-            // Application state
             currentYear: AppSettingsQueries.getCurrentYear(),
-
-            // Statistics (full + derived)
             statistics: statistics,
             quickStats: buildQuickStats(statistics),
             domainCounts: buildDomainCounts(statistics)
