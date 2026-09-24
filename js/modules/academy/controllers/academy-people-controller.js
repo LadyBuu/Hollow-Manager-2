@@ -27,8 +27,10 @@
  *   group the user would need to leave. The user chooses; the
  *   picker does not pre-select.
  *
- *   A new action, 'schedule-discipline-picker-leave', routes to
- *   AcademySchedule.dropStudentFromClass for the current group.
+ *   The "Leave this group" action calls
+ *   AcademySchedule.dropStudentFromGroup, which ends ONLY the
+ *   membership of the student in the named group. Enrolments and
+ *   other groups are untouched. The student remains in the class.
  */
 
 (function() {
@@ -1752,16 +1754,12 @@
      *   entry.hasCurrentGroup === true
      *     The student is already in a group for this discipline.
      *     The panel shows the current group and a single "Leave
-     *     this group" action. No alternative groups are listed;
-     *     leaving is the only action, and the student reopens the
-     *     picker afterwards to choose a new group if they want.
+     *     this group" action.
      *
      *   entry.hasCurrentGroup === false
      *     The panel lists every available group. Green groups are
-     *     clickable ("add"). Red groups are shown but not
-     *     selectable; each red group lists every existing group of
-     *     the student that would need to be left to free the slot.
-     *     The user reads the list and decides.
+     *     clickable ("add"). Red groups list every conflicting
+     *     group of the student's that would need to be left.
      */
     function buildDisciplinePickerHTML(entry) {
         var disciplineName = isNonEmptyString(entry.disciplineName)
@@ -1821,10 +1819,6 @@
         return html;
     }
 
-    /**
-     * The "already in a group" panel. Shows the current group and
-     * a single Leave action. No alternatives.
-     */
     function renderCurrentGroupPanel(currentGroup) {
         if (!currentGroup || !currentGroup.groupId) {
             return (
@@ -1868,8 +1862,9 @@
         html += '</div>';
 
         html += '<p class="field-hint schedule-discipline-picker-current-hint">' +
-                    'Leaving this group frees the slot. Reopen the ' +
-                    'picker afterwards to choose another group.' +
+                    'Leaving this group frees the slot. You stay ' +
+                    'enrolled in the discipline. Reopen the picker ' +
+                    'afterwards to choose another group.' +
                 '</p>';
 
         html += '</div>';
@@ -1932,11 +1927,6 @@
             html += '</ul>';
         }
 
-        // ---- Conflicting groups ----
-        //
-        // Every entry of `conflictingGroups` is rendered. The
-        // picker does not pre-select which group the user should
-        // leave; the user sees the list and decides.
         var conflicts = Array.isArray(group.conflictingGroups)
             ? group.conflictingGroups
             : [];
@@ -1944,9 +1934,6 @@
         if (isRed && conflicts.length > 0) {
             html += renderConflictingGroupsList(conflicts);
         } else if (isRed) {
-            // Defensive: red but no explicit list. Should not
-            // happen with the current aggregator, but render
-            // something rather than silence.
             html += '<div class="schedule-discipline-picker-conflict">' +
                         'Conflicts with an existing session.' +
                     '</div>';
@@ -2090,24 +2077,12 @@
                     return;
                 }
 
-                // Rejection. The domain refused the add (usually
-                // because the student's other groups collide with
-                // the target group's sessions and the domain's
-                // collision check rejected it, even though the
-                // picker showed green).
-                //
-                // Refresh so the panel reflects the domain's view.
-                // The rejection message is surfaced verbatim so
-                // the user sees why.
                 if (result && result.message) {
                     notify(result.message, 'error');
                 } else {
                     notify('Could not add the student to this group.', 'error');
                 }
 
-                // Re-fetch the grid VM by triggering a full
-                // re-render. The next mountDisciplinePickerPanel
-                // will use fresh data.
                 _openDisciplinePicker = null;
                 var c = getContext();
                 c.onChange();
@@ -2124,14 +2099,18 @@
     /**
      * "Leave this group" from the picker's current-group panel.
      *
-     * Routes to AcademySchedule.dropStudentFromClass, which ends
-     * every enrolment and membership for the student in this class
-     * — that is the domain's semantics for "leaving". The picker
-     * then closes and the grid refreshes with the freed slot.
+     * NARROW OPERATION. Calls AcademySchedule.dropStudentFromGroup,
+     * which ends ONLY the membership of the student in the named
+     * group, effective from the display week onward.
      *
-     * If a narrower operation is desired later ("leave this group
-     * only, keep the enrolment"), the domain will need a dedicated
-     * mutation. Today dropStudentFromClass is what exists.
+     * What is NOT affected:
+     *   - The student's enrolments in any discipline.
+     *   - The student's memberships in any other group, in any
+     *     discipline.
+     *   - character.classIds.
+     *
+     * The student remains in the class and remains enrolled in the
+     * discipline. Only this one group membership ends.
      */
     function handleDisciplinePickerLeave(groupId) {
         if (!isNonEmptyString(groupId)) { return; }
@@ -2156,12 +2135,12 @@
 
         var Schedule = getSchedule();
         if (!Schedule ||
-            typeof Schedule.dropStudentFromClass !== 'function') {
+            typeof Schedule.dropStudentFromGroup !== 'function') {
             notify('Schedule module not available.', 'error');
             return;
         }
 
-        Schedule.dropStudentFromClass(classId, charId, week)
+        Schedule.dropStudentFromGroup(classId, groupId, charId, week)
             .then(function(result) {
                 if (result && result.success) {
                     _openDisciplinePicker = null;
@@ -2179,7 +2158,7 @@
             .catch(function(err) {
                 console.warn(
                     '[AcademyPeopleController] ' +
-                    'dropStudentFromClass failed:', err
+                    'dropStudentFromGroup failed:', err
                 );
                 notify('Failed to leave the group.', 'error');
             });
@@ -2347,19 +2326,6 @@
         ctx.onChange();
     }
 
-    /**
-     * Multi-select submit. Reads every checked eligible checkbox,
-     * then adds them one at a time.
-     *
-     * Sequential, not atomic. Each add is its own pipeline
-     * transaction. Successful adds commit; failures are collected.
-     * On completion the picker closes and the panel refreshes.
-     *
-     * The add order is the order the checkboxes appear in the DOM,
-     * which is the order the aggregator returned (alphabetical).
-     * That order is deterministic, so a partial failure leaves the
-     * student list in a stable shape.
-     */
     function handleSubmitTeachingGroupAdd(groupId) {
         if (!isNonEmptyString(groupId)) { return; }
 
@@ -2607,11 +2573,6 @@
         }
     }
 
-    /**
-     * After any checkbox change (single, Select all, Clear), update:
-     *   - the eligible section's count badge ("N / total")
-     *   - the Add button's label ("Add (N)") and disabled state
-     */
     function updateCandidateSelectionState(picker) {
         if (!picker) { return; }
 
