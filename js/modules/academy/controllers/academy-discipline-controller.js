@@ -5,8 +5,8 @@
  * Path: js/modules/academy/controllers/academy-discipline-controller.js
  *
  * The Disciplines feature controller. Owns the Disciplines view:
- * its render, its event handlers, its editor draft state, and its
- * search debounce.
+ * its render, its event handlers, its editor draft state, its
+ * schedule-tab state, and its search debounce.
  *
  * WHAT THIS OWNS:
  *   - Rendering the Disciplines view into the shell's content host.
@@ -15,6 +15,9 @@
  *   - The discipline editor draft (name, type, weeks, weight,
  *     grade scheme, assessment weights) and its mode
  *     ('empty' | 'create' | 'edit').
+ *   - The active detail-panel tab: 'edit' | 'schedule'.
+ *   - The Schedule tab's week (defaults to AcademyUI's display week
+ *     on first render; the user can change it locally).
  *   - Per-field and per-band validation errors on the draft.
  *   - The list filter (type, search) as feature state.
  *   - The search debounce timer.
@@ -24,25 +27,39 @@
  *     and reset-weights actions.
  *   - The "+ Add Discipline" flow (B4-1).
  *   - The discipline delete confirm modal, via AcademyCRUDModals.
+ *   - Mounting the calendar grid into the Schedule tab host.
  *
  * WHAT THIS DOES NOT OWN:
  *   - The content host. The shell provides it.
- *   - The class, character, or location selections. Disciplines are
- *     global; the controller does not read any selection.
- *   - The display week. Disciplines are not week-scoped at the list
- *     level; the editor's week fields come from the draft.
+ *   - The class selection. The Schedule tab uses
+ *     AcademyUI.getSelectedClassId(); there is no second class
+ *     selector.
  *   - Re-rendering the shell. When a mutation or draft change should
  *     re-render, the controller calls context.onChange().
  *   - Discipline domain reads and writes. AcademyDisciplines owns
  *     them; AcademyAggregator produces the VMs.
+ *   - The schedule projection. AcademyCalendarAggregator owns it;
+ *     the controller just mounts the grid into the host.
  *   - Instructor assignment for a discipline. That relationship is
  *     class-scoped and is owned by the class-disciplines picker.
  *     The discipline editor does not offer an instructor picker
  *     (v27).
  *   - The delete-confirm modal's onChange wiring. The shell keeps
  *     that wiring (via AcademyCRUDModals.setOnChangeCallback), and
- *     the controller simply opens the modal. This is the same
- *     arrangement the shell used pre-S1.3.
+ *     the controller simply opens the modal.
+ *
+ * SCHEDULE TAB:
+ *   The Schedule tab renders a week selector and a grid host. The
+ *   grid is mounted by this controller via AcademyCalendarAggregator
+ *   .getDisciplineScheduleViewModel, which projects
+ *   Projector.projectForClassDiscipline. One discipline, one class,
+ *   one week, every instructor.
+ *
+ *   The class is AcademyUI.getSelectedClassId(). When no class is
+ *   selected, the controller renders an explicit empty state into
+ *   the host instead of inventing a class.
+ *
+ *   Rest days apply (the grid is class-scoped).
  *
  * DRAFT LIFECYCLE:
  *   - Draft is created by openEditor('create'), or by selecting a
@@ -61,16 +78,7 @@
  *   [data-action] elements to this controller's dispatch switch.
  *   Without a data-action, the button never reached the controller.
  *   B4-1 changes the button to data-action="discipline-add" and
- *   adds a matching case here. The handler calls initializeNewDraft
- *   and fires context.onChange() to render the create form.
- *
- * INSTRUCTOR PICKER REMOVAL (v27):
- *   The editor no longer carries an instructor picker. The retired
- *   `draft.instructorIds` field is gone. The switch case that used
- *   to handle instructor selection has been removed. The
- *   availableInstructors list on the editor VM is now unused by
- *   this view; it remains on the VM for one more pass until the
- *   discipline-editor-draft retirement lands.
+ *   adds a matching case here.
  *
  * DEPENDENCY DIRECTION:
  *   Shell → registry → this controller.
@@ -83,26 +91,15 @@
  *             controller.
  *   context — { onChange: function() }
  *
- *   The context is intentionally minimal. Discipline editing is
- *   self-contained: there is nothing to select outside the view and
- *   nothing to navigate to.
- *
- * EVENT ROUTING:
- *   The controller's handle* methods receive the raw DOM event. The
- *   action names and data attributes emitted by the discipline
- *   renderer are unchanged from pre-S1.3 (with the B4-1 addition of
- *   discipline-add), and the controller handles the same strings
- *   the shell's dispatcher did. No renderer changes are needed
- *   beyond the B4-1 button markup.
- *
  * DEPENDENCIES:
- *   - window.AcademyUI             (for getDisplayWeek, if needed)
+ *   - window.AcademyUI
  *   - window.AcademyAggregator
  *   - window.AcademyDisciplines
  *   - window.AcademyDisciplineView
  *   - window.AcademyGradeSchemes
- *   - window.AcademyCRUDModals     (lazy; for the delete confirm)
- *   - window.CharacterQueries      (lazy; used by the aggregator)
+ *   - window.AcademyCalendarAggregator  (lazy; for the Schedule tab)
+ *   - window.CalendarRenderer           (lazy; for the Schedule tab)
+ *   - window.AcademyCRUDModals          (lazy; delete confirm)
  *   - window.NotificationSystem
  *   - window.CalendarConstants
  */
@@ -130,6 +127,10 @@
 
     if (!AcademyUI || typeof AcademyUI.getDisplayWeek !== 'function') {
         _missing.push('AcademyUI.getDisplayWeek');
+    }
+    if (!AcademyUI ||
+        typeof AcademyUI.getSelectedClassId !== 'function') {
+        _missing.push('AcademyUI.getSelectedClassId');
     }
     if (!AcademyAggregator ||
         typeof AcademyAggregator.getDisciplineListViewModel !== 'function' ||
@@ -179,12 +180,22 @@
         return window.AcademyCRUDModals || null;
     }
 
+    function getCalendarAggregator() {
+        return window.AcademyCalendarAggregator || null;
+    }
+
+    function getCalendarRenderer() {
+        return window.CalendarRenderer || null;
+    }
+
     // ============================================================
     // CONSTANTS
     // ============================================================
 
     var MIN_WEEK = CalendarConstants.MIN_WEEK;
     var MAX_WEEK = CalendarConstants.MAX_WEEK;
+
+    var VALID_DETAIL_TABS = ['edit', 'schedule'];
 
     // ============================================================
     // SMALL HELPERS
@@ -206,6 +217,11 @@
     // so event handlers can find them. The draft and filter are the
     // feature's own state; the draft is cleared on unmount, the
     // filter is not.
+    //
+    // Schedule-tab state:
+    //   _activeDisciplineTab   'edit' | 'schedule'
+    //   _scheduleWeek          number | null (null = unset; falls
+    //                          back to AcademyUI's display week)
 
     var _host = null;
     var _context = null;
@@ -217,6 +233,9 @@
 
     var _disciplineFilters = { type: 'all', search: '' };
     var _disciplineSearchTimer = null;
+
+    var _activeDisciplineTab = 'edit';
+    var _scheduleWeek = null;
 
     // ============================================================
     // CONTEXT NORMALISATION
@@ -235,6 +254,33 @@
     }
 
     // ============================================================
+    // SCHEDULE WEEK RESOLUTION
+    // ============================================================
+
+    /**
+     * Resolve the effective week for the Schedule tab.
+     * Priority: explicit `_scheduleWeek`, then AcademyUI's display
+     * week. Returns a bounded integer, or null when neither source
+     * yields one.
+     */
+    function resolveScheduleWeek() {
+        if (typeof _scheduleWeek === 'number' &&
+            _scheduleWeek >= MIN_WEEK &&
+            _scheduleWeek <= MAX_WEEK) {
+            return _scheduleWeek;
+        }
+
+        var display = AcademyUI.getDisplayWeek();
+        if (typeof display === 'number' &&
+            display >= MIN_WEEK &&
+            display <= MAX_WEEK) {
+            return display;
+        }
+
+        return null;
+    }
+
+    // ============================================================
     // RENDER
     // ============================================================
 
@@ -250,6 +296,7 @@
             _disciplineFilters
         );
         var editorVM = buildEditorVM();
+        var scheduleWeek = resolveScheduleWeek();
 
         var html;
         try {
@@ -258,7 +305,9 @@
                 selected: editorVM,
                 editorMode: _disciplineDraftMode,
                 filters: _disciplineFilters,
-                total: listVM.total
+                total: listVM.total,
+                activeTab: _activeDisciplineTab,
+                scheduleWeek: scheduleWeek
             });
         } catch (e) {
             console.warn(
@@ -274,6 +323,15 @@
         }
 
         host.innerHTML = html;
+
+        if (_activeDisciplineTab === 'schedule' &&
+            _disciplineDraftMode !== 'empty' &&
+            _disciplineDraft) {
+            mountDisciplineScheduleGridIfPresent(
+                _disciplineDraft.id,
+                scheduleWeek
+            );
+        }
     }
 
     function buildEditorVM() {
@@ -290,6 +348,132 @@
     function getContext() {
         if (_context) { return _context; }
         return normaliseContext(null);
+    }
+
+    // ============================================================
+    // SCHEDULE GRID MOUNT
+    // ============================================================
+
+    /**
+     * Mount the discipline schedule grid into its host.
+     *
+     * Skips when:
+     *   - the host is absent (the tab body was not rendered)
+     *   - the CalendarAggregator or CalendarRenderer is missing
+     *   - no class is selected (renders an empty state instead)
+     *   - no disciplineId is available (draft is new; grid needs
+     *     a persisted discipline to scope to)
+     *   - the week is invalid
+     */
+    function mountDisciplineScheduleGridIfPresent(disciplineId, week) {
+        var host = document.getElementById(
+            'academy-discipline-schedule-host'
+        );
+        if (!host) { return; }
+
+        var Renderer = getCalendarRenderer();
+        if (!Renderer || typeof Renderer.renderGrid !== 'function') {
+            host.innerHTML =
+                '<p class="empty-state small">' +
+                    'Calendar renderer is not available.' +
+                '</p>';
+            return;
+        }
+
+        // A brand-new draft has no persisted discipline yet. The
+        // grid needs a real discipline to scope to.
+        if (!isNonEmptyString(disciplineId)) {
+            host.innerHTML =
+                '<p class="empty-state small">' +
+                    'Save the discipline first to view its schedule.' +
+                '</p>';
+            return;
+        }
+
+        var classId = AcademyUI.getSelectedClassId();
+        if (!isNonEmptyString(classId)) {
+            host.innerHTML =
+                '<p class="empty-state small">' +
+                    'Select a class from People or Weekly Teams to ' +
+                    'view this discipline\'s schedule.' +
+                '</p>';
+            return;
+        }
+
+        if (typeof week !== 'number' ||
+            week < MIN_WEEK ||
+            week > MAX_WEEK) {
+            host.innerHTML =
+                '<p class="empty-state small">' +
+                    'Select a valid week.' +
+                '</p>';
+            return;
+        }
+
+        var ACA = getCalendarAggregator();
+        if (!ACA ||
+            typeof ACA.getDisciplineScheduleViewModel !== 'function') {
+            host.innerHTML =
+                '<p class="empty-state small">' +
+                    'Calendar aggregator is not available.' +
+                '</p>';
+            return;
+        }
+
+        var gridVM = null;
+        try {
+            gridVM = ACA.getDisciplineScheduleViewModel(
+                classId,
+                disciplineId,
+                week
+            );
+        } catch (e) {
+            console.warn(
+                '[AcademyDisciplineController] ' +
+                'getDisciplineScheduleViewModel threw:', e
+            );
+            gridVM = null;
+        }
+
+        if (!gridVM) {
+            host.innerHTML =
+                '<p class="empty-state small">' +
+                    'Schedule data is not available for this ' +
+                    'discipline and class.' +
+                '</p>';
+            return;
+        }
+
+        var renderState = {
+            selectedId: disciplineId,
+            week: week
+        };
+
+        var renderVM = {
+            mode: 'discipline',
+            canEdit: false,
+            canEditInstructorSlot: false,
+            schedule: gridVM.schedule,
+            restDays: gridVM.restDays,
+            entityName: gridVM.entityName,
+            modeLabel: gridVM.modeLabel,
+            showEmptySlots: false,
+            showRestDays: true,
+            hours: gridVM.hours,
+            disciplineHours: []
+        };
+
+        try {
+            host.innerHTML = Renderer.renderGrid(renderState, renderVM);
+        } catch (e) {
+            console.warn(
+                '[AcademyDisciplineController] renderGrid failed:', e
+            );
+            host.innerHTML =
+                '<p class="empty-state small">' +
+                    'Failed to render the discipline schedule.' +
+                '</p>';
+        }
     }
 
     // ============================================================
@@ -316,10 +500,6 @@
             ? AcademyDisciplines.getAssessmentWeights(record.id)
             : {};
 
-        // NOTE (v27): `instructorIds` is NOT part of the draft.
-        // The retired global instructor list has no UI here.
-        // Instructor-of-a-discipline-for-a-class is edited through
-        // the class-disciplines picker.
         _disciplineDraft = {
             id: record.id,
             name: record.name || '',
@@ -348,6 +528,7 @@
         _selectedDisciplineId = null;
         _disciplineDraftMode = 'create';
         _disciplineDraftErrors = {};
+        _activeDisciplineTab = 'edit';
 
         _disciplineDraft = {
             id: null,
@@ -370,6 +551,7 @@
         _disciplineDraft = null;
         _disciplineDraftMode = 'empty';
         _disciplineDraftErrors = {};
+        _activeDisciplineTab = 'edit';
     }
 
     // ============================================================
@@ -387,6 +569,7 @@
         if (discRow && discRow.dataset && discRow.dataset.disciplineId) {
             e.preventDefault();
             initializeDraftFromDiscipline(discRow.dataset.disciplineId);
+            _activeDisciplineTab = 'edit';
             var ctx = getContext();
             ctx.onChange();
             return;
@@ -405,6 +588,10 @@
                 initializeNewDraft();
                 var addCtx = getContext();
                 addCtx.onChange();
+                return;
+            case 'discipline-tab-select':
+                e.preventDefault();
+                handleDisciplineTabSelect(actionEl.dataset.tab);
                 return;
             case 'discipline-apply-scheme-preset':
                 e.preventDefault();
@@ -442,6 +629,12 @@
     function handleChange(e) {
         var target = e.target;
         if (!target) { return; }
+
+        // ---- Schedule tab week input ----
+        if (target.id === 'academy-discipline-schedule-week') {
+            handleScheduleWeekChange(target.value);
+            return;
+        }
 
         // ---- Editor field changes ----
         if (target.dataset && target.dataset.disciplineField) {
@@ -498,7 +691,45 @@
     }
 
     function handleKeydown(e) {
-        // No keyboard shortcuts in the Disciplines view. Reserved.
+        var target = e.target;
+        if (!target || e.key !== 'Enter') { return; }
+
+        if (target.id === 'academy-discipline-schedule-week') {
+            e.preventDefault();
+            handleScheduleWeekChange(target.value);
+            return;
+        }
+    }
+
+    // ============================================================
+    // TAB HANDLING
+    // ============================================================
+
+    function handleDisciplineTabSelect(tabId) {
+        if (!isNonEmptyString(tabId)) { return; }
+        if (VALID_DETAIL_TABS.indexOf(tabId) === -1) { return; }
+        if (tabId === _activeDisciplineTab) { return; }
+
+        _activeDisciplineTab = tabId;
+        var ctx = getContext();
+        ctx.onChange();
+    }
+
+    function handleScheduleWeekChange(rawValue) {
+        var parsed = parseInt(rawValue, 10);
+        if (isNaN(parsed) || parsed < MIN_WEEK || parsed > MAX_WEEK) {
+            notify(
+                'Week must be between ' + MIN_WEEK + ' and ' + MAX_WEEK + '.',
+                'error'
+            );
+            return;
+        }
+        if (parsed === _scheduleWeek) {
+            return;
+        }
+        _scheduleWeek = parsed;
+        var ctx = getContext();
+        ctx.onChange();
     }
 
     // ============================================================
@@ -534,8 +765,6 @@
                 _disciplineDraft.gradeScheme.label = inputEl.value;
                 return;
             case 'schemePresetId':
-                // The preset select only takes effect when the user
-                // clicks Apply Preset. Handled separately.
                 return;
             default:
                 return;
@@ -579,9 +808,6 @@
         if (!GradeSchemes || !_disciplineDraft) { return; }
         if (!_host || typeof _host.querySelector !== 'function') { return; }
 
-        // Host-scoped query. The pre-S1.3 shell used
-        // document.querySelector; scoping to the host is the correct
-        // behaviour for a controller that owns its content.
         var previewEl = _host.querySelector(
             '.academy-discipline-scheme-preview-text'
         );
@@ -603,8 +829,6 @@
         if (!_disciplineDraft || !GradeSchemes) { return; }
         if (!_host || typeof _host.querySelector !== 'function') { return; }
 
-        // Host-scoped query. Resolves the preset select inside this
-        // controller's rendered content.
         var presetSelect = _host.querySelector(
             '[data-discipline-field="schemePresetId"]'
         );
@@ -698,6 +922,7 @@
     function handleCancelDiscipline() {
         if (_disciplineDraftMode === 'edit' && _selectedDisciplineId) {
             initializeDraftFromDiscipline(_selectedDisciplineId);
+            _activeDisciplineTab = 'edit';
         } else {
             clearDraft();
         }
@@ -710,9 +935,6 @@
         var CRUD = getCRUDModals();
         if (disciplineId && CRUD &&
             typeof CRUD.openDisciplineDelete === 'function') {
-            // The modal's onChange callback is wired by the shell via
-            // AcademyCRUDModals.setOnChangeCallback. The controller
-            // does not touch that wiring.
             CRUD.openDisciplineDelete(disciplineId);
         }
     }
@@ -728,10 +950,6 @@
             scheme = GradeSchemes.normalizeScheme(scheme);
         }
 
-        // NOTE (v27): `instructorIds` is NOT part of the payload.
-        // The retired global instructor list is not editable here.
-        // AcademyDisciplines.create/update silently ignore the field
-        // if a caller passes it; this controller does not pass it.
         return {
             name: (draft.name || '').trim(),
             type: draft.type,
@@ -815,19 +1033,16 @@
     // ============================================================
 
     function unmount() {
-        // Clear the draft. Matches pre-S1.3: switching away from
-        // Disciplines abandons an in-progress edit.
         clearDraft();
 
-        // Clear the debounce timer. A pending search refresh after
-        // the view is gone should not fire.
         if (_disciplineSearchTimer) {
             clearTimeout(_disciplineSearchTimer);
             _disciplineSearchTimer = null;
         }
 
-        // The list filter is deliberately NOT cleared. Matches
-        // pre-S1.3: the type and search filter survive a view switch.
+        // The list filter is deliberately NOT cleared.
+        // The schedule week is deliberately NOT cleared; a return
+        // visit lands on the same week the user was last looking at.
 
         _host = null;
         _context = null;
