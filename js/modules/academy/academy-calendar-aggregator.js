@@ -8,8 +8,9 @@
  *
  * WHAT THIS OWNS:
  *   Producing schedule view models for students, instructors,
- *   locations, and classes from the AcademyTeachingProjector.
- *   Every VM is shaped for CalendarRenderer.renderGrid.
+ *   locations, classes, and disciplines from the
+ *   AcademyTeachingProjector. Every VM is shaped for
+ *   CalendarRenderer.renderGrid.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Storage. Reads go through the projector.
@@ -22,13 +23,17 @@
  *     the week's rest days via
  *     AcademyClasses.getRestDaysForWeek and copies the result
  *     onto the VM. The location grid does NOT inherit class rest
- *     days (a room is a resource, not a class member).
+ *     days (a room is a resource, not a class member). The
+ *     discipline grid DOES inherit class rest days, because a
+ *     discipline grid is class-scoped: the sessions it shows are
+ *     the class's sessions.
  *
  * ARCHITECTURE:
  *
  *     AcademyTeachingProjector
  *         ↓  projectWeek / projectForStudent / projectForInstructor /
- *            projectForLocation / projectForClass
+ *            projectForLocation / projectForClass /
+ *            projectForClassDiscipline
  *         ↓  flat Occurrence[]
  *         ↓
  *     AcademyCalendarAggregator   (this module)
@@ -82,25 +87,39 @@
  *   to `slot.coOccupants`.
  *
  *   On a LOCATION grid, co-occupancy means "two or more groups
- *   share this room at this time." The location controller renders
- *   the list.
+ *   share this room at this time."
  *
  *   On a STUDENT grid, the projection is scoped to one student's
- *   own sessions (Projector.projectForStudent). Two different
- *   sessions cannot both be in the cell unless the student is
- *   genuinely double-booked. Co-occupancy is therefore a COLLISION
- *   indicator, and the +N badge on the cell is a disclosure
- *   affordance: click it, and the character-detail panel lists the
- *   overlapping sessions.
+ *   own sessions. A co-occupant means the student is double-booked.
  *
  *   On an INSTRUCTOR grid, the same reasoning applies: the
  *   projection is scoped to one instructor's sessions, so a
  *   co-occupant is another meeting the instructor is committed to
  *   at the same slot.
  *
- *   The co-occupant descriptor carries the fields the collision
- *   panel needs to render one row per overlapping session:
- *   discipline, instructor, group label, duration.
+ *   On a CLASS grid, and on a DISCIPLINE grid scoped to a class,
+ *   a co-occupant means two or more groups are meeting at the same
+ *   slot. If they are for the same discipline, they might be
+ *   parallel sections (fine) or a scheduling mistake (not fine).
+ *   The aggregator does not decide which; it reports what the
+ *   projector returned, and the user decides. AcademyTeachingCollisions
+ *   owns the semantic answer.
+ *
+ * DISCIPLINE GRID:
+ *   getDisciplineScheduleViewModel(classId, disciplineId, week)
+ *   projects `Projector.projectForClassDiscipline`, which filters
+ *   projectWeek to occurrences whose classId AND disciplineId both
+ *   match. The result is every session of that discipline for that
+ *   class this week, across every instructor and every group.
+ *
+ *   The grid does NOT distinguish instructors visually beyond what
+ *   the slot descriptor already carries: instructor name is
+ *   rendered per cell, and co-occupants list additional sessions
+ *   at the same slot. If two instructors teach parallel sections
+ *   of the same discipline at the same hour, both are shown.
+ *
+ *   Rest days apply, because the discipline grid is class-scoped
+ *   and shows the class's sessions.
  *
  * GROUP LABELS:
  *   Every teaching group has a display name. The name comes from
@@ -118,19 +137,17 @@
  *   regardless of how many occurrences the week produces, and it
  *   avoids a per-slot deep clone of the group record.
  *
- *   The map is used by buildSlotDescriptor to populate groupLabel.
- *   Without it, two groups of the same discipline taught by the
- *   same instructor would render as identical cells.
- *
  * GROUP COLOR CODING:
- *   Each group gets a stable color index derived from its
+ *   Each group gets a deterministic palette index derived from its
  *   groupNumber, mod GROUP_COLOR_PALETTE_SIZE. Group 1 → 0,
  *   group 2 → 1, ..., group N → (N-1) mod PALETTE_SIZE.
  *
  *   The index is emitted on the slot descriptor and on each
  *   co-occupant. The renderer maps the index to a CSS class. The
- *   color is deterministic: the same group has the same color on
- *   every grid, every render, every session.
+ *   index is deterministic: the same group has the same palette
+ *   slot on every grid, every render, every session. It is NOT
+ *   globally unique; groups 1 and 9 share a palette slot because
+ *   there are only eight palette slots.
  *
  * NULL SEMANTICS:
  *   Every public function returns null when:
@@ -188,6 +205,12 @@
     }
     if (!Projector || typeof Projector.projectForClass !== 'function') {
         _missing.push('AcademyTeachingProjector.projectForClass');
+    }
+    if (!Projector ||
+        typeof Projector.projectForClassDiscipline !== 'function') {
+        _missing.push(
+            'AcademyTeachingProjector.projectForClassDiscipline'
+        );
     }
 
     if (!CalendarConstants ||
@@ -376,15 +399,6 @@
         return (num - 1) % GROUP_COLOR_PALETTE_SIZE;
     }
 
-    /**
-     * Build the groupId → displayName and groupId → colorIndex maps
-     * for the given set of group IDs.
-     *
-     * Groups that cannot be resolved (missing record, missing
-     * AcademyTeachingGroups, missing discipline) get an empty
-     * display name and null color index. The caller decides what to
-     * render in that case.
-     */
     function buildGroupMaps(groupIds) {
         var names = Object.create(null);
         var colors = Object.create(null);
@@ -455,9 +469,6 @@
         if (weekNum === null) {
             return [];
         }
-        if (typeof AcademyClasses.getRestDaysForWeek !== 'function') {
-            return [];
-        }
         try {
             var days = AcademyClasses.getRestDaysForWeek(
                 classId, weekNum
@@ -476,13 +487,6 @@
     // SLOT DESCRIPTORS
     // ============================================================
 
-    /**
-     * Build a co-occupant descriptor for an occurrence that shares
-     * its (day, hour) cell with another occurrence.
-     *
-     * The descriptor carries the fields the collision panel renders
-     * per row: discipline, instructor, group label, duration.
-     */
     function buildCoOccupant(occurrence, groupMaps) {
         var gid = toIdOrNull(occurrence.groupId);
         var groupLabel = '';
@@ -838,6 +842,76 @@
     }
 
     // ============================================================
+    // DISCIPLINE SCHEDULE VM
+    // ============================================================
+    //
+    // One discipline, one class, one week. Every instructor of that
+    // discipline, every group, every session.
+    //
+    // Data source: Projector.projectForClassDiscipline, which is a
+    // filter over projectWeek. This is the same teaching-model
+    // projection every other grid uses. No parallel scheduling
+    // model.
+    //
+    // Rest days apply, because a discipline grid is class-scoped.
+    // The sessions it shows are the class's sessions; the class's
+    // rest days suppress occurrences on those days.
+    //
+    // Entity name: "<Discipline> — <Class>" so the header identifies
+    // both the discipline and the class scope. Without the class
+    // name, two classes' grids would show the same label for the
+    // same discipline and the reader would have to infer the scope
+    // from context.
+
+    function getDisciplineScheduleViewModel(classId, disciplineId, week) {
+        if (!isNonEmptyString(classId)) {
+            return null;
+        }
+        if (!isNonEmptyString(disciplineId)) {
+            return null;
+        }
+
+        var weekNum = parseWeek(week);
+        if (weekNum === null) {
+            return null;
+        }
+
+        var cls = AcademyClasses.getClass(classId);
+        if (!cls) {
+            return null;
+        }
+
+        var discipline = AcademyDisciplines.getDiscipline(disciplineId);
+        if (!discipline) {
+            return null;
+        }
+
+        var occurrences = safeProjectorCall(function() {
+            return Projector.projectForClassDiscipline(
+                classId, disciplineId, weekNum
+            );
+        }, 'projectForClassDiscipline');
+
+        var groupMaps = buildGroupMaps(
+            collectGroupIds(occurrences)
+        );
+        var schedule = pivotOccurrencesToSchedule(occurrences, groupMaps);
+
+        var disciplineName = isNonEmptyString(discipline.name)
+            ? discipline.name
+            : 'Unknown Discipline';
+        var className = getClassDisplayName(classId);
+
+        return {
+            schedule: schedule,
+            restDays: readClassRestDays(classId, weekNum),
+            entityName: disciplineName + ' \u2014 ' + className,
+            modeLabel: 'Discipline Schedule',
+            hours: getHoursRange()
+        };
+    }
+
+    // ============================================================
     // WEEK OVERVIEW VM
     // ============================================================
 
@@ -903,6 +977,7 @@
         getInstructorScheduleViewModel: getInstructorScheduleViewModel,
         getLocationScheduleViewModel: getLocationScheduleViewModel,
         getClassScheduleViewModel: getClassScheduleViewModel,
+        getDisciplineScheduleViewModel: getDisciplineScheduleViewModel,
         getWeekOverviewViewModel: getWeekOverviewViewModel,
 
         GROUP_COLOR_PALETTE_SIZE: GROUP_COLOR_PALETTE_SIZE
@@ -921,6 +996,7 @@
             'getInstructorScheduleViewModel',
             'getLocationScheduleViewModel',
             'getClassScheduleViewModel',
+            'getDisciplineScheduleViewModel',
             'getWeekOverviewViewModel'
         ];
 
