@@ -16,6 +16,10 @@
  *   - Uses AcademyClasses for class existence checks (no circular dep).
  *   - Uses AcademyPerformance for the calculation. Ranking CONSUMES
  *     performance. It does NOT calculate averages.
+ *   - Uses AcademyAggregator.getClassStudentsViewModel to resolve the
+ *     class roster for auto-generate. The aggregator is the canonical
+ *     roster source; AcademyQueries was the previous source and has
+ *     been retired from this module.
  *   - Uses CharacterQueries for name resolution.
  *   - All MUTATIONS go through MutationPipeline.
  *   - All READS are synchronous and side-effect free.
@@ -23,7 +27,7 @@
  *   - Mutations are ATOMIC: if persistence fails, window.data is restored.
  *   - This module does NOT call saveData() directly - the pipeline does.
  *
- * READ SAFETY (Phase 2):
+ * READ SAFETY:
  *   - getAcademyStore() returns null (does NOT create academy.{...}) when
  *     the store is missing. Reads are side-effect free.
  *   - Public queries return DEEP CLONES. Callers cannot mutate live state.
@@ -34,7 +38,7 @@
  *   - ObjectUtils.deepClone throws if cloning fails or if the clone
  *     aliases the input.
  *
- * PERFORMANCE INTEGRATION (Phase 3):
+ * PERFORMANCE INTEGRATION:
  *   - autoGenerate reads the ranking data from AcademyPerformance.
  *     It does NOT call AcademyGrades.calculateClassRanking.
  *   - Students with no score (academic null AND overall null) are SKIPPED.
@@ -42,47 +46,87 @@
  *     would produce records the UI cannot render. Absence of a record
  *     means "not yet graded".
  *
- * RANKING RECORD SHAPE (Phase 3 + Phase 5):
+ * RANKING RECORD SHAPE:
  *   {
  *     id,                // rank_xxx
  *     classId,           // class_789
  *     studentId,         // char_456
  *     week,              // 5
  *     rank,              // 1
- *     totalStudents,     // 25
+ *     totalStudents,     // 17
  *     academicAverage,   // 82.5 (number|null)
  *     socialScore,       // 88 (number|null)
  *     overallScore,      // 83.7 (number|null)
  *     createdAt,
  *     updatedAt
  *   }
- *   - `score` and `averageScore` are REMOVED. The record carries the
- *     three scores produced by the performance layer.
- *   - `percentile` is DERIVED on read from `rank` and `totalStudents`.
  *
- * UNIQUENESS CONTRACT (Phase 3):
+ *   TOTAL STUDENTS — MEANING:
+ *     `totalStudents` is the number of students that received a
+ *     ranking record for this (class, week) pair. It is NOT the
+ *     number of students enrolled in the class.
+ *
+ *     Ungraded students do not receive a ranking record. If 25
+ *     students are enrolled and 17 have grades this week,
+ *     totalStudents is 17, and rank 17 is last.
+ *
+ *     This is the correct denominator for percentile: rank is
+ *     relative to the ranked population, not the enrolled
+ *     population. It is NOT a proxy for class size. Callers that
+ *     need class size read it from the class roster.
+ *
+ *     The field name `totalStudents` is retained for storage
+ *     stability. It is a historical name; its meaning is
+ *     "ranked students this week", not "students in the class".
+ *
+ *   `score` and `averageScore` are REMOVED. The record carries the
+ *   three scores produced by the performance layer.
+ *   `percentile` is DERIVED on read from `rank` and `totalStudents`.
+ *
+ * UNIQUENESS CONTRACT:
  *   - The tuple (classId, studentId, week) is UNIQUE across the store.
  *   - Enforced pre-flight, in pipeline validate, and via input
  *     deduplication inside autoGenerate / saveRankings.
  *
- * RANK BOUND CONTRACT (Phase 3):
+ * RANK BOUND CONTRACT:
  *   - rank must be >= 1.
  *   - rank must be <= totalStudents.
  *
- * CASCADE SEMANTICS (stripCharacterRefs):
- *   When a character is deleted, all ranking records keyed to that
- *   character are removed. Called by CharacterCRUD.deleteCharacter
- *   from inside its pipeline mutate.
+ * TRANSACTION SNAPSHOT RULE:
+ *   Every pipeline validate() callback resolves references against
+ *   the appData argument it is handed. It does not read window.data.
+ *   Preflight reads against window.data are for early UX feedback
+ *   only; the pipeline re-checks against the snapshot.
  *
- * DEPENDENCIES:
- *   - window.ObjectUtils (from object-utils.js) - MANDATORY
- *   - window.IdUtils (from id-utils.js) - MANDATORY
- *   - window.ValidationUtils (from validation-utils.js) - MANDATORY
- *   - window.AcademyPerformance (from academy-performance.js) - MANDATORY
- *   - window.AcademyClasses (from academy-classes.js) - MANDATORY
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
- *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
- *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
+ *   This applies to create, update, autoGenerate, and saveRankings.
+ *   Foreign keys (classId, studentId) are validated against the
+ *   snapshot, not against AcademyClasses or CharacterQueries.
+ *
+ * WEEK PARSING:
+ *   Week parsing goes through CalendarValidation.parseWeek, the
+ *   canonical strict parser. No `parseInt` coercion. "5bananas"
+ *   is rejected, not silently accepted as 5.
+ *
+ * CASCADE STRICTNESS:
+ *   stripCharacterRefs and stripClassRefs operate on a destructive
+ *   cascade. A missing store is a no-op; a malformed store (present
+ *   but not a plain object, or an array) is an error. Silently
+ *   reporting a zero-count success on malformed state would let a
+ *   corrupted store masquerade as "nothing to clean up".
+ *
+ * DEPENDENCIES (MANDATORY):
+ *   - window.ObjectUtils
+ *   - window.IdUtils
+ *   - window.ValidationUtils
+ *   - window.CalendarValidation
+ *   - window.CalendarConstants
+ *   - window.AcademyPerformance
+ *   - window.AcademyClasses
+ *   - window.CharacterQueries
+ *   - window.MutationPipeline
+ *
+ * DEPENDENCIES (LAZY, mandatory at call time):
+ *   - window.AcademyAggregator    (class roster for auto-generate)
  *
  * USAGE:
  *   var rankings = window.AcademyRanking;
@@ -118,6 +162,16 @@
         missing.push('ValidationUtils.isNonEmptyString');
     }
 
+    if (!window.CalendarValidation || typeof window.CalendarValidation.parseWeek !== 'function') {
+        missing.push('CalendarValidation.parseWeek');
+    }
+
+    if (!window.CalendarConstants ||
+        typeof window.CalendarConstants.MIN_WEEK !== 'number' ||
+        typeof window.CalendarConstants.MAX_WEEK !== 'number') {
+        missing.push('CalendarConstants.MIN_WEEK/MAX_WEEK');
+    }
+
     if (!window.AcademyPerformance || typeof window.AcademyPerformance.calculateRanking !== 'function') {
         missing.push('AcademyPerformance.calculateRanking');
     }
@@ -137,10 +191,6 @@
         missing.push('MutationPipeline.performMutation');
     }
 
-    if (!window.CalendarConstants) {
-        missing.push('CalendarConstants');
-    }
-
     if (missing.length > 0) {
         throw new Error('[AcademyRanking] Missing dependencies: ' + missing.join(', '));
     }
@@ -154,11 +204,43 @@
     var ObjectUtils = window.ObjectUtils;
     var IdUtils = window.IdUtils;
     var ValidationUtils = window.ValidationUtils;
+    var CalendarValidation = window.CalendarValidation;
+    var CalendarConstants = window.CalendarConstants;
     var AcademyPerformance = window.AcademyPerformance;
     var AcademyClasses = window.AcademyClasses;
     var CharacterQueries = window.CharacterQueries;
     var MutationPipeline = window.MutationPipeline;
-    var CalendarConstants = window.CalendarConstants;
+
+    // ============================================================
+    // LAZY DEPENDENCIES
+    // ============================================================
+
+    function getAcademyAggregator() {
+        return window.AcademyAggregator || null;
+    }
+
+    /**
+     * Resolve AcademyAggregator at call time, throwing when it is
+     * missing. Used by autoGenerate to resolve the class roster.
+     *
+     * Lazy-but-mandatory: the module loads without it, but
+     * autoGenerate cannot answer "which students are in this
+     * class?" without it. Returning [] would turn "the dependency
+     * is missing" into "the class has no students", which is
+     * exactly the failure mode this migration removes.
+     */
+    function requireAcademyAggregator(contextLabel) {
+        var AGG = getAcademyAggregator();
+        if (!AGG ||
+            typeof AGG.getClassStudentsViewModel !== 'function') {
+            throw new Error(
+                '[AcademyRanking] AcademyAggregator.getClassStudentsViewModel ' +
+                'is required by ' + contextLabel + '. Check the script ' +
+                'load order in index.html.'
+            );
+        }
+        return AGG;
+    }
 
     // ============================================================
     // CONSTANTS
@@ -208,6 +290,28 @@
     }
 
     // ============================================================
+    // WEEK PARSING — CANONICAL
+    // ============================================================
+    //
+    // Week parsing goes through CalendarValidation.parseWeek.
+    // Returns an integer in [MIN_WEEK, MAX_WEEK], or null.
+    //
+    // No `parseInt` coercion. "5bananas" is rejected. null is the
+    // honest "this is not a week" answer; callers decide whether
+    // to return an empty result, a failure, or throw.
+
+    function parseWeekStrict(week) {
+        var parsed = CalendarValidation.parseWeek(week);
+        if (parsed === null) {
+            return null;
+        }
+        if (parsed < MIN_WEEK || parsed > MAX_WEEK) {
+            return null;
+        }
+        return parsed;
+    }
+
+    // ============================================================
     // UNIQUENESS KEY
     // ============================================================
 
@@ -225,7 +329,7 @@
             if (exclude !== null && String(r.id) === exclude) continue;
             if (String(r.classId) !== String(classId)) continue;
             if (String(r.studentId) !== String(studentId)) continue;
-            if (parseInt(r.week, 10) !== parseInt(week, 10)) continue;
+            if (parseWeekStrict(r.week) !== parseWeekStrict(week)) continue;
             return r;
         }
         return null;
@@ -237,7 +341,12 @@
         }
 
         var rankings = appData.academy.rankings;
+        if (!isObject(rankings)) {
+            return null;
+        }
+
         var exclude = excludeId !== null && excludeId !== undefined ? String(excludeId) : null;
+        var targetWeek = parseWeekStrict(week);
 
         for (var id in rankings) {
             if (!Object.prototype.hasOwnProperty.call(rankings, id)) continue;
@@ -246,8 +355,61 @@
             if (exclude !== null && String(r.id) === exclude) continue;
             if (String(r.classId) !== String(classId)) continue;
             if (String(r.studentId) !== String(studentId)) continue;
-            if (parseInt(r.week, 10) !== parseInt(week, 10)) continue;
+            if (parseWeekStrict(r.week) !== targetWeek) continue;
             return r;
+        }
+        return null;
+    }
+
+    // ============================================================
+    // SNAPSHOT-AWARE LOOKUPS
+    // ============================================================
+    //
+    // Used by pipeline validate() callbacks. Read from the appData
+    // snapshot, not window.data.
+
+    function findRankingInSnapshot(appData, rankId) {
+        if (!appData || !appData.academy) {
+            return null;
+        }
+        var rankings = appData.academy.rankings;
+        if (!isObject(rankings)) {
+            return null;
+        }
+        var record = rankings[String(rankId)];
+        if (!isObject(record)) {
+            return null;
+        }
+        return record;
+    }
+
+    function findClassInSnapshot(appData, classId) {
+        if (!appData || !appData.academy) {
+            return null;
+        }
+        var store = appData.academy.graduatingClasses;
+        if (!isObject(store)) {
+            return null;
+        }
+        if (!isNonEmptyString(classId)) {
+            return null;
+        }
+        return store[String(classId)] || null;
+    }
+
+    function findCharacterInSnapshot(appData, charId) {
+        if (!appData || !Array.isArray(appData.characters)) {
+            return null;
+        }
+        if (!isNonEmptyString(charId)) {
+            return null;
+        }
+        var target = String(charId);
+        for (var i = 0; i < appData.characters.length; i++) {
+            var c = appData.characters[i];
+            if (c && String(c.id) === target) {
+                return c;
+            }
         }
         return null;
     }
@@ -336,20 +498,31 @@
 
         var result = [];
 
+        var filterClass = isNonEmptyString(classId) ? String(classId) : null;
+
+        // Week filter. A provided-but-invalid week is a filter that
+        // matches nothing, not "no filter". The previous behaviour
+        // was `if (!isNaN(weekNum) && ...)`, which turned malformed
+        // input into "don't filter" and returned everything.
+        var filterWeek = null;
+        if (week !== undefined) {
+            filterWeek = parseWeekStrict(week);
+            if (filterWeek === null) {
+                return [];
+            }
+        }
+
         for (var id in academy.rankings) {
             if (Object.prototype.hasOwnProperty.call(academy.rankings, id)) {
                 var rank = academy.rankings[id];
                 if (!rank) continue;
 
-                if (classId !== undefined && String(rank.classId) !== String(classId)) {
+                if (filterClass !== null && String(rank.classId) !== filterClass) {
                     continue;
                 }
 
-                if (week !== undefined) {
-                    var weekNum = parseInt(week, 10);
-                    if (!isNaN(weekNum) && rank.week !== weekNum) {
-                        continue;
-                    }
+                if (filterWeek !== null && parseWeekStrict(rank.week) !== filterWeek) {
+                    continue;
                 }
 
                 result.push(rank);
@@ -363,14 +536,22 @@
         return result;
     }
 
+    /**
+     * Internal class rankings lookup.
+     *
+     * An invalid week is rejected with an empty array. The
+     * previous behaviour coerced an invalid week to week 1, which
+     * produced valid-looking data for a query the caller could not
+     * have meant.
+     */
     function getClassRankingsInternal(classId, week) {
         if (!isNonEmptyString(classId)) {
             return [];
         }
 
-        var weekNum = parseInt(week, 10);
-        if (isNaN(weekNum) || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            weekNum = 1;
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return [];
         }
 
         return getRankingRecords(classId, weekNum);
@@ -381,9 +562,9 @@
             return null;
         }
 
-        var weekNum = parseInt(week, 10);
-        if (isNaN(weekNum) || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            weekNum = 1;
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return null;
         }
 
         var rankings = getClassRankingsInternal(classId, weekNum);
@@ -404,6 +585,10 @@
         }
 
         var rankings = appData.academy.rankings;
+        if (!isObject(rankings)) {
+            return [];
+        }
+
         var targetClass = String(classId);
         var result = [];
 
@@ -412,7 +597,7 @@
                 var rank = rankings[id];
                 if (!rank) continue;
                 if (String(rank.classId) !== targetClass) continue;
-                if (parseInt(rank.week, 10) !== weekNum) continue;
+                if (parseWeekStrict(rank.week) !== weekNum) continue;
                 result.push(deepClone(rank));
             }
         }
@@ -425,7 +610,7 @@
     }
 
     // ============================================================
-    // CLASS VALIDATION
+    // PREFLIGHT CLASS VALIDATION (live reads, UX only)
     // ============================================================
 
     function validateClassExists(classId) {
@@ -463,9 +648,13 @@
         }
 
         if (!isPartial || data.week !== undefined) {
-            var week = parseInt(data.week, 10);
-            if (isNaN(week) || week < MIN_WEEK || week > MAX_WEEK) {
-                return { valid: false, message: 'Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').' };
+            var week = parseWeekStrict(data.week);
+            if (week === null) {
+                return {
+                    valid: false,
+                    message: 'Valid week is required (' +
+                        MIN_WEEK + '-' + MAX_WEEK + ').'
+                };
             }
         }
 
@@ -519,8 +708,8 @@
             return { valid: false, message: 'Candidate missing studentId.' };
         }
 
-        var week = parseInt(candidate.week, 10);
-        if (isNaN(week) || week < MIN_WEEK || week > MAX_WEEK) {
+        var week = parseWeekStrict(candidate.week);
+        if (week === null) {
             return { valid: false, message: 'Candidate week is out of range.' };
         }
 
@@ -557,14 +746,88 @@
         return { valid: true };
     }
 
+    /**
+     * Authoritative candidate validation against the transaction
+     * snapshot.
+     *
+     * Checks:
+     *   - the candidate's structural validity (delegated to
+     *     validateCandidate)
+     *   - the class exists in the snapshot
+     *   - the student exists in the snapshot
+     *   - if excludeId is provided, the ranking record exists in
+     *     the snapshot (update path)
+     *   - no conflicting ranking for (classId, studentId, week)
+     *     in the snapshot, excluding the record being updated
+     *
+     * Returns { valid, message? }.
+     */
+    function validateCandidateAgainstSnapshot(candidate, appData, excludeId) {
+        var structural = validateCandidate(candidate);
+        if (!structural.valid) {
+            return structural;
+        }
+
+        if (!findClassInSnapshot(appData, candidate.classId)) {
+            return {
+                valid: false,
+                message: 'Class no longer exists: ' + candidate.classId
+            };
+        }
+
+        if (!findCharacterInSnapshot(appData, candidate.studentId)) {
+            return {
+                valid: false,
+                message: 'Student no longer exists: ' + candidate.studentId
+            };
+        }
+
+        if (excludeId !== null && excludeId !== undefined) {
+            if (!findRankingInSnapshot(appData, excludeId)) {
+                return {
+                    valid: false,
+                    message: 'Ranking no longer exists.'
+                };
+            }
+        }
+
+        var conflict = findConflictingRankingInSnapshot(
+            appData,
+            candidate.classId,
+            candidate.studentId,
+            candidate.week,
+            excludeId
+        );
+        if (conflict) {
+            return {
+                valid: false,
+                message: 'A ranking already exists for this student, ' +
+                    'class, and week.'
+            };
+        }
+
+        return { valid: true };
+    }
+
     // ============================================================
     // INTERNAL CANDIDATE BUILDER
     // ============================================================
 
     function buildRankingRecord(data, existingId, existingCreatedAt) {
         var now = new Date().toISOString();
+
+        var weekNum = parseWeekStrict(data.week);
+        if (weekNum === null) {
+            throw new Error(
+                '[AcademyRanking] buildRankingRecord received an ' +
+                'invalid week: ' + String(data.week)
+            );
+        }
+
         var rank = parseInt(data.rank, 10);
-        var totalStudents = data.totalStudents !== undefined ? parseInt(data.totalStudents, 10) : 0;
+        var totalStudents = data.totalStudents !== undefined
+            ? parseInt(data.totalStudents, 10)
+            : 0;
 
         var academicAverage = data.academicAverage !== undefined && data.academicAverage !== null
             ? parseFloat(data.academicAverage)
@@ -580,7 +843,7 @@
             id: existingId || generateId(),
             classId: String(data.classId),
             studentId: String(data.studentId),
-            week: parseInt(data.week, 10),
+            week: weekNum,
             rank: rank,
             totalStudents: totalStudents,
             academicAverage: academicAverage,
@@ -613,7 +876,12 @@
             ));
         }
 
-        var newRanking = buildRankingRecord(data, null, null);
+        var newRanking;
+        try {
+            newRanking = buildRankingRecord(data, null, null);
+        } catch (e) {
+            return Promise.resolve(failure(e.message));
+        }
 
         var candidateCheck = validateCandidate(newRanking);
         if (!candidateCheck.valid) {
@@ -624,23 +892,19 @@
 
         return MutationPipeline.performMutation({
             validate: function(appData) {
-                if (!appData || !appData.academy) {
-                    return { valid: false, message: 'Academy data is not available.' };
+                if (!appData || typeof appData !== 'object') {
+                    return { valid: false, message: 'Application data is not available.' };
                 }
-                if (appData.academy.rankings && appData.academy.rankings[targetId]) {
+
+                // ID collision.
+                if (findRankingInSnapshot(appData, targetId)) {
                     return { valid: false, message: 'Ranking ID collision.' };
                 }
-                var snapshotConflict = findConflictingRankingInSnapshot(
-                    appData,
-                    newRanking.classId,
-                    newRanking.studentId,
-                    newRanking.week,
-                    targetId
+
+                // Authoritative validation against the snapshot.
+                return validateCandidateAgainstSnapshot(
+                    newRanking, appData, null
                 );
-                if (snapshotConflict) {
-                    return { valid: false, message: 'A ranking already exists for this student, class, and week.' };
-                }
-                return { valid: true };
             },
             mutate: function(appData) {
                 if (!appData.academy.rankings || typeof appData.academy.rankings !== 'object') {
@@ -706,8 +970,8 @@
                     break;
 
                 case 'week':
-                    var week = parseInt(value, 10);
-                    if (isNaN(week) || week < MIN_WEEK || week > MAX_WEEK) {
+                    var week = parseWeekStrict(value);
+                    if (week === null) {
                         return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
                     }
                     if (candidate.week !== week) {
@@ -789,20 +1053,11 @@
                 if (!appData || !appData.academy || !appData.academy.rankings) {
                     return { valid: false, message: 'Ranking no longer exists.' };
                 }
-                if (!appData.academy.rankings[targetId]) {
-                    return { valid: false, message: 'Ranking no longer exists.' };
-                }
-                var snapshotConflict = findConflictingRankingInSnapshot(
-                    appData,
-                    candidate.classId,
-                    candidate.studentId,
-                    candidate.week,
-                    targetId
+
+                // Authoritative validation against the snapshot.
+                return validateCandidateAgainstSnapshot(
+                    candidate, appData, targetId
                 );
-                if (snapshotConflict) {
-                    return { valid: false, message: 'Another ranking already exists for this student, class, and week.' };
-                }
-                return { valid: true };
             },
             mutate: function(appData) {
                 if (!appData.academy || !appData.academy.rankings) {
@@ -844,7 +1099,7 @@
                 if (!appData || !appData.academy || !appData.academy.rankings) {
                     return { valid: false, message: 'Ranking no longer exists.' };
                 }
-                if (!appData.academy.rankings[target]) {
+                if (!findRankingInSnapshot(appData, target)) {
                     return { valid: false, message: 'Ranking no longer exists.' };
                 }
                 return { valid: true };
@@ -870,8 +1125,8 @@
             return Promise.resolve(failure('Class ID is required.'));
         }
 
-        var weekNum = parseInt(week, 10);
-        if (isNaN(weekNum) || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
             return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
         }
 
@@ -892,7 +1147,7 @@
                 for (var id in rankings) {
                     if (Object.prototype.hasOwnProperty.call(rankings, id)) {
                         var rank = rankings[id];
-                        if (rank && String(rank.classId) === targetClass && rank.week === weekNum) {
+                        if (rank && String(rank.classId) === targetClass && parseWeekStrict(rank.week) === weekNum) {
                             toRemove.push(id);
                             removed.push({
                                 id: id,
@@ -1089,13 +1344,14 @@
      *
      * PLAN / APPLY:
      *   1. Validate inputs.
-     *   2. Read the class roster (student IDs).
+     *   2. Resolve the class roster via AcademyAggregator.
      *   3. Ask AcademyPerformance for the ranked list. Performance
      *      owns the calculation; this module does not compute
      *      averages itself.
      *   4. Plan ALL writes (create/update/skip) without touching
      *      window.data. Deduplicate by (classId, studentId, week).
      *   5. Apply all planned writes in a SINGLE pipeline transaction.
+     *      The transaction revalidates the plan against the snapshot.
      *   6. Return the post-mutation state read from the appData
      *      snapshot.
      *
@@ -1105,14 +1361,19 @@
      *
      * UNIQUENESS:
      *   - The (classId, studentId, week) tuple is unique.
+     *
+     * totalStudents:
+     *   - Set to the number of students who received a ranking
+     *     record this week. See the file header for the full
+     *     meaning.
      */
     function autoGenerate(classId, week, options) {
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
         }
 
-        var weekNum = parseInt(week, 10);
-        if (isNaN(weekNum) || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
             return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
         }
 
@@ -1127,7 +1388,11 @@
         // ---- Resolve the roster ----
         var studentIds = options.studentIds;
         if (!Array.isArray(studentIds)) {
-            studentIds = resolveClassStudentIds(classId);
+            try {
+                studentIds = resolveClassStudentIds(classId);
+            } catch (e) {
+                return Promise.resolve(failure(e.message));
+            }
         }
 
         if (!Array.isArray(studentIds) || studentIds.length === 0) {
@@ -1156,9 +1421,7 @@
         for (var i = 0; i < rankingData.length; i++) {
             var entry = rankingData[i];
             if (!entry) { continue; }
-            // Skip unranked entries.
             if (entry.rank === null) { continue; }
-            // Skip entries without any score.
             var hasScore = (entry.overallScore !== null && entry.overallScore !== undefined) ||
                            (entry.academicAverage !== null && entry.academicAverage !== undefined);
             if (!hasScore) { continue; }
@@ -1170,6 +1433,9 @@
         }
 
         // ---- Plan ----
+        // totalStudents counts the ranked students this week. See
+        // the file header for the semantic distinction from class
+        // size.
         var totalStudents = rankedEntries.length;
         var planned = [];
         var errors = [];
@@ -1214,16 +1480,22 @@
                 candidate.updatedAt = new Date().toISOString();
                 planned.push({ action: 'update', record: candidate, matchId: existing.id });
             } else {
-                var newRecord = buildRankingRecord({
-                    classId: classId,
-                    studentId: data.studentId,
-                    week: weekNum,
-                    rank: rankPosition,
-                    totalStudents: totalStudents,
-                    academicAverage: data.academicAverage,
-                    socialScore: data.socialScore,
-                    overallScore: data.overallScore
-                }, null, null);
+                var newRecord;
+                try {
+                    newRecord = buildRankingRecord({
+                        classId: classId,
+                        studentId: data.studentId,
+                        week: weekNum,
+                        rank: rankPosition,
+                        totalStudents: totalStudents,
+                        academicAverage: data.academicAverage,
+                        socialScore: data.socialScore,
+                        overallScore: data.overallScore
+                    }, null, null);
+                } catch (e) {
+                    errors.push({ studentId: data.studentId, error: e.message });
+                    continue;
+                }
                 planned.push({ action: 'create', record: newRecord });
             }
         }
@@ -1238,6 +1510,49 @@
                 if (!appData || !appData.academy) {
                     return { valid: false, message: 'Academy data is not available.' };
                 }
+
+                // The class must still exist in the snapshot.
+                if (!findClassInSnapshot(appData, classId)) {
+                    return { valid: false, message: 'Class no longer exists.' };
+                }
+
+                // Revalidate each planned action against the snapshot.
+                // The plan is a set of creates and updates; every
+                // target must still be consistent.
+                for (var i = 0; i < planned.length; i++) {
+                    var item = planned[i];
+
+                    if (item.action === 'create') {
+                        if (findRankingInSnapshot(appData, item.record.id)) {
+                            return {
+                                valid: false,
+                                message: 'Ranking ID collision during ' +
+                                    'auto-generate: ' + item.record.id
+                            };
+                        }
+                        var createCheck = validateCandidateAgainstSnapshot(
+                            item.record, appData, null
+                        );
+                        if (!createCheck.valid) {
+                            return createCheck;
+                        }
+                    } else if (item.action === 'update') {
+                        if (!findRankingInSnapshot(appData, item.matchId)) {
+                            return {
+                                valid: false,
+                                message: 'Ranking no longer exists: ' +
+                                    item.matchId
+                            };
+                        }
+                        var updateCheck = validateCandidateAgainstSnapshot(
+                            item.record, appData, item.matchId
+                        );
+                        if (!updateCheck.valid) {
+                            return updateCheck;
+                        }
+                    }
+                }
+
                 return { valid: true };
             },
             mutate: function(appData) {
@@ -1281,18 +1596,92 @@
         });
     }
 
+    /**
+     * Resolve the class's student IDs.
+     *
+     * DERIVED ROSTER. The aggregator derives it from
+     * character.classIds and excludes instructors.
+     *
+     * The previous implementation called
+     * AcademyQueries.getClassStudentIds, which read the same
+     * underlying character data but through a legacy facade. That
+     * facade is being retired. The aggregator is the canonical
+     * source.
+     *
+     * Lazy-but-mandatory: the aggregator is resolved at call time
+     * and throws when absent. It does NOT return [] for a missing
+     * dependency. An empty array means "the class has no students";
+     * a missing dependency is a load-order failure that must
+     * surface.
+     *
+     * @returns {array} Array of student ID strings
+     * @throws {Error} when AcademyAggregator is unavailable
+     */
     function resolveClassStudentIds(classId) {
-        var AQ = window.AcademyQueries;
-        if (AQ && typeof AQ.getClassStudentIds === 'function') {
-            var ids = AQ.getClassStudentIds(classId);
-            return Array.isArray(ids) ? ids.slice() : [];
+        if (!isNonEmptyString(classId)) {
+            return [];
         }
-        return [];
+
+        var AGG = requireAcademyAggregator(
+            'resolveClassStudentIds'
+        );
+
+        var students = AGG.getClassStudentsViewModel(classId);
+
+        if (!Array.isArray(students)) {
+            throw new Error(
+                '[AcademyRanking] AcademyAggregator.getClassStudentsViewModel ' +
+                'returned a non-array. This is an aggregator bug.'
+            );
+        }
+
+        var result = [];
+        for (var i = 0; i < students.length; i++) {
+            var s = students[i];
+            if (!s || !s.id) { continue; }
+            result.push(String(s.id));
+        }
+        return result;
     }
 
     // ============================================================
     // CASCADE HELPERS
     // ============================================================
+
+    /**
+     * Read the rankings store from the snapshot.
+     *
+     * A missing store is a legitimate no-op for a cascade (there
+     * are no rankings to clean up). A store that is present but
+     * malformed is an error: silently reporting a zero-count
+     * success would let a corrupted store masquerade as empty.
+     *
+     * Returns the store, or null when the store is absent.
+     * Throws when the store is present but malformed.
+     */
+    function readRankingsStoreForCascade(appData, helperName) {
+        if (!appData || !appData.academy) {
+            return null;
+        }
+
+        var rankings = appData.academy.rankings;
+
+        if (rankings === undefined || rankings === null) {
+            return null;
+        }
+
+        if (typeof rankings !== 'object' || Array.isArray(rankings)) {
+            throw new Error(
+                '[AcademyRanking] ' + helperName + ' found a malformed ' +
+                'academy.rankings store on the snapshot. Expected a ' +
+                'plain object; got ' +
+                (Array.isArray(rankings) ? 'array' : typeof rankings) +
+                '. The cascade cannot proceed against corrupted state.'
+            );
+        }
+
+        return rankings;
+    }
 
     function stripCharacterRefs(appData, charId) {
         var result = { rankingsRemoved: 0 };
@@ -1301,12 +1690,10 @@
             return result;
         }
 
-        if (!appData.academy || typeof appData.academy !== 'object') {
-            return result;
-        }
-
-        var rankings = appData.academy.rankings;
-        if (!rankings || typeof rankings !== 'object' || Array.isArray(rankings)) {
+        var rankings = readRankingsStoreForCascade(
+            appData, 'stripCharacterRefs'
+        );
+        if (!rankings) {
             return result;
         }
 
@@ -1339,12 +1726,10 @@
             return result;
         }
 
-        if (!appData.academy || typeof appData.academy !== 'object') {
-            return result;
-        }
-
-        var rankings = appData.academy.rankings;
-        if (!rankings || typeof rankings !== 'object' || Array.isArray(rankings)) {
+        var rankings = readRankingsStoreForCascade(
+            appData, 'stripClassRefs'
+        );
+        if (!rankings) {
             return result;
         }
 
@@ -1422,7 +1807,13 @@
             }
 
             if (existing) {
-                var candidate = buildRankingRecord(data, existing.id, existing.createdAt);
+                var candidate;
+                try {
+                    candidate = buildRankingRecord(data, existing.id, existing.createdAt);
+                } catch (e) {
+                    errors.push({ index: i, error: e.message });
+                    continue;
+                }
                 var candidateCheck = validateCandidate(candidate);
                 if (!candidateCheck.valid) {
                     errors.push({ index: i, error: candidateCheck.message });
@@ -1430,7 +1821,13 @@
                 }
                 planned.push({ action: 'update', record: candidate, matchId: existing.id });
             } else {
-                var newRecord = buildRankingRecord(data, null, null);
+                var newRecord;
+                try {
+                    newRecord = buildRankingRecord(data, null, null);
+                } catch (e) {
+                    errors.push({ index: i, error: e.message });
+                    continue;
+                }
                 var newCheck = validateCandidate(newRecord);
                 if (!newCheck.valid) {
                     errors.push({ index: i, error: newCheck.message });
@@ -1460,6 +1857,45 @@
                 if (!appData || !appData.academy) {
                     return { valid: false, message: 'Academy data is not available.' };
                 }
+
+                // Revalidate the entire plan against the snapshot.
+                // This is the plan/apply invariant: what we planned
+                // must still be consistent with what we are
+                // committing to.
+                for (var i = 0; i < planned.length; i++) {
+                    var item = planned[i];
+
+                    if (item.action === 'create') {
+                        if (findRankingInSnapshot(appData, item.record.id)) {
+                            return {
+                                valid: false,
+                                message: 'Ranking ID collision during ' +
+                                    'save: ' + item.record.id
+                            };
+                        }
+                        var createCheck = validateCandidateAgainstSnapshot(
+                            item.record, appData, null
+                        );
+                        if (!createCheck.valid) {
+                            return createCheck;
+                        }
+                    } else if (item.action === 'update') {
+                        if (!findRankingInSnapshot(appData, item.matchId)) {
+                            return {
+                                valid: false,
+                                message: 'Ranking no longer exists: ' +
+                                    item.matchId
+                            };
+                        }
+                        var updateCheck = validateCandidateAgainstSnapshot(
+                            item.record, appData, item.matchId
+                        );
+                        if (!updateCheck.valid) {
+                            return updateCheck;
+                        }
+                    }
+                }
+
                 return { valid: true };
             },
             mutate: function(appData) {
