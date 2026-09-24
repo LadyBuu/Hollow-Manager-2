@@ -11,18 +11,28 @@
  *   - Cross-domain cascade helper (stripCharacterRefs)
  *
  * IMPORTANT:
- *   - This module OWNS grade data - it does NOT depend on AcademyQueries
- *   - Uses AcademyClasses internal methods for class data (no circular dependency)
- *   - All MUTATIONS go through MutationPipeline (persistence, rollback, logging)
- *   - All READS are synchronous and side-effect free
- *   - Invalid inputs are REJECTED (mutation resolves with { success: false })
- *   - Mutations are ATOMIC: if persistence fails, window.data is restored
- *   - This module does NOT call saveData() directly - the pipeline does
- *   - AcademyQueries is the PUBLIC read facade that uses these internal lookups
+ *   - This module OWNS grade data - it does NOT depend on AcademyQueries.
+ *   - Uses AcademyClasses internal methods for class data (no circular dependency).
+ *   - All MUTATIONS go through MutationPipeline (persistence, rollback, logging).
+ *   - All READS are synchronous and side-effect free.
+ *   - Invalid inputs are REJECTED (mutation resolves with { success: false }).
+ *   - Mutations are ATOMIC: if persistence fails, window.data is restored.
+ *   - This module does NOT call saveData() directly - the pipeline does.
+ *   - AcademyQueries is the PUBLIC read facade that uses these internal
+ *     lookups.
+ *
+ * STORAGE NAMESPACE (v28):
+ *   Grade records live at academy.grades (unchanged).
+ *
+ *   Discipline records live at academy.disciplines. The legacy
+ *   curriculum.disciplines location was retired. The snapshot
+ *   validator reads from academy.disciplines and falls back to
+ *   curriculum.disciplines only for pre-v28 snapshots loaded
+ *   mid-transaction.
  *
  * READ SAFETY:
- *   - getAcademyStore() returns null (does NOT create academy.{...}) when
- *     the store is missing. Reads are side-effect free.
+ *   - getAcademyStore() returns null (does NOT create academy.{...})
+ *     when the store is missing. Reads are side-effect free.
  *   - Public queries return DEEP CLONES. Callers cannot mutate live state.
  *   - Internal accessors (getGradeRecord, getGradeRecords) return LIVE
  *     REFERENCES. They are consumed by this module's own mutation paths
@@ -123,9 +133,7 @@
  *     decorateGrade all DERIVE their results from score /
  *     maxScore / scheme. If a caller passes an object with a
  *     pre-computed `percentage` or `passing` field, that field is
- *     IGNORED. The Phase 3 rule ("percentage and passing are
- *     derived") is enforced at the calculation boundary, not
- *     merely documented.
+ *     IGNORED.
  *
  * SCORE VALIDATION:
  *   `score > maxScore` is REJECTED, not clamped.
@@ -140,12 +148,9 @@
  * SUMMARY SEMANTICS:
  *   - calculateSummary(grades, scheme) — every grade in the input
  *     participates. Malformed input (a non-object entry) is
- *     REJECTED with a throw, not silently skipped. A pure
- *     calculation function should not quietly ignore part of its
- *     input; the count it reports must be the count it computed.
+ *     REJECTED with a throw, not silently skipped.
  *   - The summary returns unweighted average, min, max, pass count,
  *     fail count, pass rate, and a distribution.
- *   - `passing` is determined by the scheme when supplied.
  *
  * CASCADE SEMANTICS (stripCharacterRefs):
  *   When a character is deleted, all grade records keyed to that
@@ -276,9 +281,6 @@
 
     var VALID_GRADE_TYPES = ['exam', 'assignment', 'participation', 'project', 'quiz', 'final'];
 
-    // Passing threshold fallback. Used only when GradeSchemes exposes
-    // no PASSING_THRESHOLD. The explicit undefined check preserves a
-    // configured threshold of 0, which `||` would replace with 70.
     var DEFAULT_PASSING_THRESHOLD =
         (GradeSchemes.PASSING_THRESHOLD !== undefined &&
          GradeSchemes.PASSING_THRESHOLD !== null)
@@ -301,12 +303,6 @@
         return typeof value === 'number' && isFinite(value);
     }
 
-    /**
-     * Deep clone a value.
-     *
-     * READ SAFETY: throws if cloning fails or if the clone is the
-     * original reference. Aliasing is a bug, not a graceful degradation.
-     */
     function deepClone(value) {
         var result = ObjectUtils.deepClone(value);
         if (result === value && value !== null && typeof value === 'object') {
@@ -330,10 +326,6 @@
         return { success: true, data: data };
     }
 
-    /**
-     * Parse a week via the canonical parser.
-     * Returns an integer in [MIN_WEEK, MAX_WEEK], or null.
-     */
     function parseWeekStrict(week) {
         var parsed = CalendarValidation.parseWeek(week);
         if (parsed === null) {
@@ -348,18 +340,9 @@
     /**
      * Parse a finite number strictly.
      *
-     * Accepts:
-     *   - a number that is finite
-     *   - a numeric string whose trimmed form is a valid finite
-     *     decimal number
-     *
-     * Rejects:
-     *   - empty string, whitespace-only string
-     *   - "85abc", "abc", any string with trailing characters
-     *   - NaN, Infinity, -Infinity
-     *
-     * Returns the number, or null when the input is not a valid
-     * finite number.
+     * Accepts a number that is finite, or a numeric string whose
+     * trimmed form is a valid finite decimal number. Rejects
+     * trailing characters, empty strings, NaN, Infinity.
      */
     function parseFiniteNumberStrict(value) {
         if (value === undefined || value === null) {
@@ -388,26 +371,7 @@
     // ============================================================
     // DERIVED FIELD HELPERS
     // ============================================================
-    //
-    // percentage and passing are DERIVED, not stored. These helpers
-    // compute them on demand. `decorateGrade` returns a CLONE of the
-    // input with the derived fields attached.
-    //
-    // The derived-field helpers are STRICT about their input:
-    // calculatePercentage throws when score or maxScore is missing
-    // or malformed, rather than manufacturing a plausible value.
-    // The caller that wants "no score yet" handles it by not
-    // calling these helpers.
 
-    /**
-     * Compute the percentage for a grade.
-     *
-     * @param {number} score
-     * @param {number} maxScore
-     * @returns {number} Rounded percentage (0-100)
-     * @throws {Error} when score or maxScore is not a finite number,
-     *   or maxScore is not positive
-     */
     function calculatePercentage(score, maxScore) {
         if (!isNumber(score)) {
             throw new Error(
@@ -424,36 +388,11 @@
         return Math.round((score / maxScore) * 100);
     }
 
-    /**
-     * Compute whether a grade passes.
-     *
-     * SCHEME-AWARE: when a scheme is supplied, passing is determined
-     * by the scheme's lowest passing band. When it is absent, the
-     * default threshold applies.
-     *
-     * @param {number} score
-     * @param {number} maxScore
-     * @param {object|null} scheme - Optional grade scheme
-     * @returns {boolean}
-     */
     function isPassing(score, maxScore, scheme) {
         var pct = calculatePercentage(score, maxScore);
         return GradeSchemes.isPassing(pct, scheme || null) === true;
     }
 
-    /**
-     * Attach the derived fields (percentage, passing) to a grade.
-     *
-     * Returns a CLONE. The input record is not modified.
-     *
-     * STRICT INPUT: throws when grade is not a plain object, or
-     * when its score / maxScore are not valid numbers. A malformed
-     * grade is a bug, not a reason to invent a plausible percentage.
-     *
-     * Any pre-existing `percentage` or `passing` field on the input
-     * is OVERWRITTEN. The derived fields are the authoritative
-     * values.
-     */
     function decorateGrade(grade, scheme) {
         if (!isObject(grade)) {
             throw new Error(
@@ -468,12 +407,6 @@
         return copy;
     }
 
-    /**
-     * Attach derived fields to an array of grades.
-     *
-     * Strict: a malformed entry causes the function to throw, not
-     * to silently skip.
-     */
     function decorateGrades(grades, scheme) {
         if (!Array.isArray(grades)) {
             return [];
@@ -501,11 +434,9 @@
         if (!data) {
             return null;
         }
-
         if (!data.academy || typeof data.academy !== 'object') {
             return null;
         }
-
         return data.academy;
     }
 
@@ -599,24 +530,52 @@
         return null;
     }
 
+    /**
+     * Resolve a discipline reference against the transaction
+     * snapshot.
+     *
+     * Disciplines live at academy.disciplines. The legacy
+     * curriculum.disciplines location is checked as a fallback for
+     * pre-v28 snapshots that may still be in play mid-transaction
+     * (an old save loaded into memory, a mid-upgrade window). The
+     * primary store always wins when both are present.
+     */
     function findDisciplineInSnapshot(appData, disciplineId) {
-        if (!appData || !isObject(appData.curriculum)) {
-            return null;
-        }
-        var list = appData.curriculum.disciplines;
-        if (!Array.isArray(list)) {
+        if (!appData || typeof appData !== 'object') {
             return null;
         }
         if (!isNonEmptyString(disciplineId)) {
             return null;
         }
+
         var target = String(disciplineId);
-        for (var i = 0; i < list.length; i++) {
-            var d = list[i];
-            if (d && String(d.id) === target) {
-                return d;
+
+        // Primary: academy.disciplines
+        if (appData.academy && typeof appData.academy === 'object') {
+            var academyList = appData.academy.disciplines;
+            if (Array.isArray(academyList)) {
+                for (var a = 0; a < academyList.length; a++) {
+                    var ad = academyList[a];
+                    if (ad && String(ad.id) === target) {
+                        return ad;
+                    }
+                }
             }
         }
+
+        // Legacy fallback: curriculum.disciplines
+        if (appData.curriculum && typeof appData.curriculum === 'object') {
+            var legacyList = appData.curriculum.disciplines;
+            if (Array.isArray(legacyList)) {
+                for (var l = 0; l < legacyList.length; l++) {
+                    var ld = legacyList[l];
+                    if (ld && String(ld.id) === target) {
+                        return ld;
+                    }
+                }
+            }
+        }
+
         return null;
     }
 
@@ -641,18 +600,6 @@
     // GRADE VALIDATION
     // ============================================================
 
-    /**
-     * Validate grade data.
-     *
-     * STRICT PARSING:
-     *   score and maxScore are parsed by parseFiniteNumberStrict.
-     *   "85abc" is rejected. A trailing-character string cannot
-     *   silently become a valid score.
-     *
-     * SCORE VALIDATION: when both score and maxScore are present in
-     * the input, score must not exceed maxScore. This is checked
-     * here AND re-checked against the candidate in `update`.
-     */
     function validateGradeData(data, isPartial) {
         if (!isObject(data)) {
             return { valid: false, message: 'Grade data must be an object.' };
@@ -701,7 +648,6 @@
             }
         }
 
-        // ---- score <= maxScore ----
         if (data.score !== undefined && data.maxScore !== undefined) {
             var s = parseFiniteNumberStrict(data.score);
             var m = parseFiniteNumberStrict(data.maxScore);
@@ -722,17 +668,6 @@
         return { valid: true };
     }
 
-    /**
-     * Validate a completed candidate record.
-     *
-     * The final gate before mutation. Enforces invariants that the
-     * partial-update validator cannot check in isolation:
-     *   - score <= maxScore
-     *   - week in bounds
-     *   - every required field present
-     *
-     * Returns { valid, message? }.
-     */
     function validateCandidate(candidate) {
         if (!isObject(candidate)) {
             return { valid: false, message: 'Candidate is not an object.' };
@@ -778,18 +713,6 @@
         return { valid: true };
     }
 
-    /**
-     * Authoritative candidate validation against the transaction
-     * snapshot.
-     *
-     * Checks:
-     *   - structural validity (delegated to validateCandidate)
-     *   - class exists in the snapshot
-     *   - student exists in the snapshot
-     *   - discipline exists in the snapshot
-     *
-     * Returns { valid, message? }.
-     */
     function validateCandidateAgainstSnapshot(candidate, appData) {
         var structural = validateCandidate(candidate);
         if (!structural.valid) {
@@ -824,24 +747,6 @@
     // INTERNAL CANDIDATE BUILDER
     // ============================================================
 
-    /**
-     * Build a canonical grade record from raw data.
-     *
-     * Pure - does not touch window.data.
-     *
-     * No silent repair. `maxScore` that is present but malformed
-     * is a validation failure (checked by the caller); this builder
-     * uses the parsed value. `score` is not clamped.
-     *
-     * DEFAULT SEMANTICS:
-     *   - Omitted maxScore → 100.
-     *   - Omitted type     → 'assignment'.
-     *   - Omitted date     → today.
-     *   - Omitted notes    → ''.
-     *   These are explicit DOMAIN defaults, not corruption
-     *   recovery. Malformed values are rejected before reaching
-     *   this function.
-     */
     function buildGradeRecord(data, existingId, existingCreatedAt) {
         var now = new Date().toISOString();
 
@@ -885,19 +790,9 @@
     }
 
     // ============================================================
-    // PUBLIC API - GRADE CRUD (Promise-based, via MutationPipeline)
+    // PUBLIC API - GRADE CRUD
     // ============================================================
 
-    /**
-     * Create a new grade.
-     *
-     * Identity is (studentId, classId, disciplineId, week, type).
-     * This function does NOT enforce uniqueness on that tuple;
-     * callers that want exactly-one enforce it themselves.
-     *
-     * @param {object} data - Grade data
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
     function create(data) {
         var validation = validateGradeData(data, false);
         if (!validation.valid) {
@@ -946,16 +841,6 @@
         });
     }
 
-    /**
-     * Update an existing grade.
-     *
-     * VALIDATION ORDER:
-     *   1. Validate each individual field in `updates`.
-     *   2. Apply the updates to a clone of the existing record.
-     *   3. Validate the resulting candidate as a whole.
-     *   4. Validate the candidate against the transaction snapshot.
-     *   5. Only commit if all checks pass.
-     */
     function update(gradeId, updates) {
         if (!isNonEmptyString(gradeId)) {
             return Promise.resolve(failure('Grade ID is required.'));
@@ -1105,12 +990,6 @@
         });
     }
 
-    /**
-     * Delete a grade permanently.
-     *
-     * @param {string} gradeId - Grade ID
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
     function deleteGrade(gradeId) {
         if (!isNonEmptyString(gradeId)) {
             return Promise.resolve(failure('Grade ID is required.'));
@@ -1155,12 +1034,6 @@
         });
     }
 
-    /**
-     * Delete all grades for a student.
-     *
-     * @param {string} studentId - Student ID
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
     function deleteStudentGrades(studentId) {
         if (!isNonEmptyString(studentId)) {
             return Promise.resolve(failure('Student ID is required.'));
@@ -1219,16 +1092,9 @@
     // that need them either pass a scheme to the query helpers here,
     // or call `decorateGrade` / `decorateGrades` directly.
     //
-    // Returning the raw record without derived fields is deliberate:
-    // it forces callers to decide what scheme applies. `passing`
-    // without a scheme is a lossy answer that can silently disagree
-    // with what the UI displays.
-    //
     // WEEK FILTER:
     //   A provided-but-invalid week is a filter that matches
-    //   nothing, not "no filter". The previous behaviour was
-    //   `if (!isNaN(weekNum) && ...)`, which turned malformed input
-    //   into "don't filter" and returned everything.
+    //   nothing, not "no filter".
 
     function sortGrades(a, b) {
         if (a.week !== b.week) {
@@ -1256,13 +1122,6 @@
         return result;
     }
 
-    /**
-     * Get all grades for a student, optionally filtered to a week.
-     *
-     * @param {string} studentId - Student ID
-     * @param {number|string} [week] - Optional week filter
-     * @returns {array} Array of cloned grade records
-     */
     function getStudentGrades(studentId, week) {
         if (!isNonEmptyString(studentId)) {
             return [];
@@ -1295,14 +1154,6 @@
         return result.map(function(g) { return deepClone(g); });
     }
 
-    /**
-     * Get all grades for a student within a specific class.
-     *
-     * @param {string} studentId - Student ID
-     * @param {string} classId - Class ID
-     * @param {number|string} [week] - Optional week filter
-     * @returns {array} Array of cloned grade records
-     */
     function getStudentClassGrades(studentId, classId, week) {
         if (!isNonEmptyString(studentId) || !isNonEmptyString(classId)) {
             return [];
@@ -1443,27 +1294,6 @@
     // CALCULATION FUNCTIONS - Pure
     // ============================================================
 
-    /**
-     * Calculate a summary for a list of grades.
-     *
-     * STRICT INPUT:
-     *   Every entry in `grades` must be a plain object with a valid
-     *   score and maxScore. A malformed entry causes the function
-     *   to throw. A pure calculation function should not silently
-     *   skip part of its input; the count it reports must be the
-     *   count it computed.
-     *
-     * DERIVED FIELDS:
-     *   `percentage` and `passing` are ALWAYS derived from score /
-     *   maxScore / scheme. Any pre-existing `percentage` or
-     *   `passing` field on the input is IGNORED. The Phase 3 rule
-     *   is enforced here, not merely documented.
-     *
-     * @param {array} grades - Array of grade records
-     * @param {object|null} [scheme] - Optional grade scheme
-     * @returns {object} Summary statistics
-     * @throws {Error} when a grade is malformed
-     */
     function calculateSummary(grades, scheme) {
         if (!Array.isArray(grades)) {
             throw new Error(
@@ -1503,16 +1333,12 @@
                 );
             }
 
-            // Derived from score / maxScore. Never trust a
-            // pre-existing percentage.
             var pct = calculatePercentage(grade.score, grade.maxScore);
 
             total += pct;
             if (pct > max) max = pct;
             if (pct < min) min = pct;
 
-            // Derived from the scheme. Never trust a pre-existing
-            // passing field.
             var isPass = GradeSchemes.isPassing(pct, scheme || null) === true;
 
             if (isPass) {
@@ -1546,9 +1372,6 @@
         };
     }
 
-    /**
-     * Calculate a class summary for a specific week.
-     */
     function calculateClassSummary(classId, week, scheme) {
         var grades = getClassGrades(classId, week);
         return calculateSummary(grades, scheme);
@@ -1558,20 +1381,6 @@
     // CASCADE HELPERS - Remove all references to a character ID
     // ============================================================
 
-    /**
-     * Strip all grade records for a character.
-     *
-     * PURE with respect to appData. Does not touch window.data.
-     * Never throws.
-     *
-     * STRICTNESS:
-     *   - academy.grades absent → no-op
-     *   - academy.grades present but malformed (not a plain object,
-     *     or an array) → throw
-     *
-     * A malformed store masquerading as "nothing to remove" would
-     * let the cascade commit while leaving orphaned state in place.
-     */
     function stripCharacterRefs(appData, charId) {
         var result = { gradesRemoved: 0 };
 
@@ -1620,28 +1429,6 @@
     // BULK OPERATIONS - Via MutationPipeline
     // ============================================================
 
-    /**
-     * Save multiple grades at once.
-     *
-     * PLAN / APPLY: validate each entry, decide create/update/skip,
-     * revalidate the entire plan against the transaction snapshot,
-     * apply all writes in a single transaction.
-     *
-     * IDENTITY:
-     *   The overwrite-matching key is the five-field tuple
-     *   (studentId, classId, disciplineId, week, type).
-     *
-     *   An input record whose tuple matches an existing grade
-     *   updates that grade in place. An input record whose tuple
-     *   does not match creates a new grade.
-     *
-     *   Two inputs with the same tuple in one batch are rejected
-     *   as a batch-level duplicate.
-     *
-     * @param {array} gradesData - Array of grade data
-     * @param {object} [options] - { overwrite: boolean }
-     * @returns {Promise<{ success, data?, message? }>}
-     */
     function saveGrades(gradesData, options) {
         if (!Array.isArray(gradesData) || gradesData.length === 0) {
             return Promise.resolve(failure('Grade data array is required.'));
@@ -1677,10 +1464,6 @@
                 continue;
             }
 
-            // Batch-level tuple check. Two inputs with the same
-            // (student, class, discipline, week, type) are a
-            // duplicate in a single batch; the second is rejected
-            // rather than the two silently colliding in storage.
             var effectiveType = data.type || 'assignment';
             var tupleKey = String(data.studentId) + '::' +
                            String(data.classId) + '::' +
@@ -1696,7 +1479,6 @@
             }
             seenTuples[tupleKey] = true;
 
-            // Find the existing grade with the same tuple.
             var existing = null;
             for (var j = 0; j < existingGrades.length; j++) {
                 var g = existingGrades[j];
@@ -1767,9 +1549,6 @@
                     return { valid: false, message: 'Academy data is not available.' };
                 }
 
-                // Revalidate the plan against the snapshot. Every
-                // create and update target must still be consistent
-                // with what we are committing to.
                 for (var i = 0; i < planned.length; i++) {
                     var item = planned[i];
 
