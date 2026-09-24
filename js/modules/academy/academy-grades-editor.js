@@ -1,11 +1,11 @@
 /**
  * modules/academy/academy-grades-editor.js - Academy Inline Grades Editor
- * Inline editor for a single character's grades within a class.
+ * Inline editor for a single character's grades within a class and week.
  *
  * Path: js/modules/academy/academy-grades-editor.js
  *
  * RESPONSIBILITIES:
- *   - Render the grades table for a (character, class) pair
+ *   - Render the grades table for a (character, class, week) triple
  *   - Render the Add Grade form and Edit Grade modal
  *   - Render the Delete Grade confirmation modal
  *   - Wire per-row Edit / Delete buttons via container delegation
@@ -18,30 +18,73 @@
  *   - Notifications. The pipeline notifies.
  *   - Persistence. The pipeline persists.
  *
- * LIFECYCLE:
- *   mount(container, charId, classId, week)
- *   refresh()  — re-render after a mutation succeeds
- *   unmount(container) — remove listeners
+ * WEEK SCOPING:
+ *   The editor is WEEK-SCOPED. It mounts for a (character, class,
+ *   week) triple. The displayed grades are those for that week,
+ *   only. The grade form's week field is FIXED at mount time and
+ *   cannot be changed. New grades are stamped with the mounted
+ *   week.
  *
- * CLASS + WEEK CONTEXT:
- *   The class and week are FIXED at mount time. Changing class or week
- *   requires a re-mount. The editor does not track UI state changes
- *   on its own; the caller (AcademyView) owns that.
+ *   This resolves a previous contradiction: the header said "the
+ *   class and week are fixed at mount time" but the render called
+ *   getStudentClassGrades(charId, classId) without a week. The
+ *   editor displayed all class grades while claiming week scoping.
+ *
+ *   The surrounding UI (the character detail panel's Schedule tab)
+ *   already owns the selected week. This editor inherits it.
+ *
+ * CONTEXT VERIFICATION:
+ *   Every mutation is checked against the mounted context before
+ *   dispatch. A grade being edited or deleted MUST belong to the
+ *   mounted (character, class) pair. A stale DOM event or a
+ *   programming error cannot make this editor mutate a grade it
+ *   does not own.
+ *
+ *   For edit, the update payload sends only the fields the editor
+ *   actually allows the user to change: score, maxScore, type,
+ *   date, notes, disciplineId. It does NOT send studentId or
+ *   classId. Those are contextual identity fields; the editor
+ *   does not own them. If a future design wants the editor to
+ *   move a grade between classes or students, that is a different
+ *   operation and should be its own surface.
+ *
+ *   Week is not in the edit payload either. Grade identity is
+ *   (studentId, classId, disciplineId, week, type); the editor
+ *   treats week as fixed by its mount.
+ *
+ * ASYNC SAFETY:
+ *   Every asynchronous callback captures the current
+ *   `_openToken`. If the editor is re-mounted (or the modal is
+ *   closed) before the callback runs, the callback is a no-op.
+ *
+ *   A `_busy` flag per modal additionally disables the submit and
+ *   delete buttons while a mutation is in flight, so a
+ *   double-click cannot fire two writes.
  *
  * GRADE SCHEME:
- *   Grades are stored as percentages (score + maxScore). The scheme is
- *   a display layer. It is read from AcademyDisciplines.getGradeScheme,
- *   which normalizes on read.
+ *   Grades are stored as percentages (score + maxScore). The scheme
+ *   is a display layer. It is read from
+ *   AcademyDisciplines.getGradeScheme, which normalizes on read.
+ *
+ * PERCENTAGE:
+ *   The editor does NOT calculate percentages itself. It calls
+ *   AcademyGrades.calculatePercentage, which is the single
+ *   implementation. The editor does not prefer a stored
+ *   `percentage` field when present; the field is derived and any
+ *   stored value is ignored.
  *
  * ENROLLMENT:
  *   The discipline picker sources its options from the student's
- *   enrollment for the selected class via AcademyEnrolments. Enrollment
- *   is class-scoped. character.disciplineIds is not read.
+ *   enrollment for the selected class via AcademyEnrolments.
+ *   Enrollment is class-scoped. character.disciplineIds is not
+ *   read.
  *
- * WEEK SEMANTICS:
- *   Weeks are parsed via ValidationUtils.parseStrictPositiveInteger and
- *   bounded by CalendarConstants.MIN_WEEK / MAX_WEEK. No silent
- *   coercion of "12garbage" to 12.
+ *   The picker does NOT filter by week. A discipline the student
+ *   is enrolled in for the class appears in the picker, even if
+ *   the discipline's own active window does not include the
+ *   mounted week. The picker shows the option as disabled when the
+ *   discipline is not active this week; the user sees it, but
+ *   cannot select it.
  *
  * MODAL CONTENT CONTRACT:
  *   Modal.createModal returns a bare .modal shell. The modal content
@@ -59,8 +102,8 @@
  *   - window.AcademyEnrolments
  *   - window.CalendarConstants
  *
- * DEPENDENCIES (OPTIONAL, used for display only):
- *   - window.CharacterQueries
+ * DEPENDENCIES (LAZY, optional):
+ *   - window.CharacterQueries  (display only; not required)
  */
 
 (function() {
@@ -125,6 +168,9 @@
     if (!AcademyGrades || typeof AcademyGrades.calculateSummary !== 'function') {
         _missing.push('AcademyGrades.calculateSummary');
     }
+    if (!AcademyGrades || typeof AcademyGrades.calculatePercentage !== 'function') {
+        _missing.push('AcademyGrades.calculatePercentage');
+    }
     if (!AcademyDisciplines || typeof AcademyDisciplines.getDiscipline !== 'function') {
         _missing.push('AcademyDisciplines.getDiscipline');
     }
@@ -154,14 +200,6 @@
     }
 
     window.__academyGradesEditorLoaded = true;
-
-    // ============================================================
-    // OPTIONAL DEPENDENCY ACCESSOR
-    // ============================================================
-
-    function getCharacterQueries() {
-        return window.CharacterQueries || null;
-    }
 
     // ============================================================
     // CONSTANTS
@@ -229,9 +267,7 @@
 
     /**
      * Get the normalized grade scheme for a discipline.
-     * AcademyDisciplines.getGradeScheme normalizes on read; this
-     * helper is a thin wrapper that also handles the missing-discipline
-     * case.
+     * AcademyDisciplines.getGradeScheme normalizes on read.
      */
     function getSchemeForDiscipline(disciplineId) {
         if (!isNonEmptyString(disciplineId)) {
@@ -242,17 +278,25 @@
 
     /**
      * Get the numeric percentage of a grade.
-     * Prefers the derived `percentage` field when present; falls back
-     * to computing from score / maxScore.
+     *
+     * ALWAYS delegates to AcademyGrades.calculatePercentage. Does
+     * NOT prefer a stored `percentage` field. Phase 3 rule:
+     * percentage is derived, not stored.
+     *
+     * Returns null when the grade's score / maxScore are not valid.
      */
     function getGradePercentage(grade) {
         if (!grade) { return null; }
-        if (isFiniteNumber(grade.percentage)) { return grade.percentage; }
 
         var score = parseFiniteNumber(grade.score);
         var max = parseFiniteNumber(grade.maxScore);
         if (score === null || max === null || max <= 0) { return null; }
-        return Math.round((score / max) * 100);
+
+        try {
+            return AcademyGrades.calculatePercentage(score, max);
+        } catch (e) {
+            return null;
+        }
     }
 
     function formatScoreDisplay(grade, scheme) {
@@ -348,8 +392,17 @@
 
     /**
      * Get the discipline options from the student's enrollment for a
-     * class. Returns an array of { id, name, activeThisWeek }.
-     * Enrollment is class-scoped; the source of truth is AcademyEnrolments.
+     * class. Returns an array of
+     * { id, name, activeThisWeek, missing }.
+     *
+     * `missing` is true when the enrollment references a discipline
+     * that does not resolve. The option is returned (so the caller
+     * can decide how to render a broken reference) rather than
+     * silently skipped.
+     *
+     * `activeThisWeek` reflects whether the DISCIPLINE's own
+     * startWeek / endWeek window contains the mounted week. It is a
+     * presentation hint. The picker does NOT filter by week.
      */
     function getEnrolledDisciplineOptions(studentId, classId, week) {
         if (!isNonEmptyString(studentId) || !isNonEmptyString(classId)) {
@@ -369,7 +422,17 @@
             if (!isNonEmptyString(id)) { continue; }
 
             var discipline = AcademyDisciplines.getDiscipline(id);
-            if (!discipline) { continue; }
+
+            if (!discipline) {
+                options.push({
+                    id: String(id),
+                    name: 'Unknown Discipline',
+                    type: '',
+                    activeThisWeek: false,
+                    missing: true
+                });
+                continue;
+            }
 
             var activeThisWeek = true;
             if (weekNum !== null) {
@@ -387,13 +450,18 @@
                 id: discipline.id,
                 name: discipline.name || 'Unnamed Discipline',
                 type: getDisciplineType(discipline.id),
-                activeThisWeek: activeThisWeek
+                activeThisWeek: activeThisWeek,
+                missing: false
             });
         }
 
         options.sort(function(a, b) {
-            if (a.activeThisWeek && !b.activeThisWeek) { return -1; }
-            if (!a.activeThisWeek && b.activeThisWeek) { return 1; }
+            if (a.missing !== b.missing) {
+                return a.missing ? 1 : -1;
+            }
+            if (a.activeThisWeek !== b.activeThisWeek) {
+                return a.activeThisWeek ? -1 : 1;
+            }
             return (a.name || '').localeCompare(b.name || '');
         });
 
@@ -413,6 +481,11 @@
     };
 
     var _delegatedHandler = null;
+
+    // Token incremented on mount, unmount, and each modal open.
+    // Async callbacks capture the current token and become no-ops
+    // if it has changed.
+    var _openToken = 0;
 
     // ============================================================
     // MOUNT / UNMOUNT / REFRESH
@@ -444,6 +517,8 @@
         _state.classId = isNonEmptyString(classId) ? String(classId) : null;
         _state.week = weekNum;
 
+        _openToken++;
+
         render();
 
         if (!_state.listening) {
@@ -470,6 +545,8 @@
         _state.classId = null;
         _state.week = null;
         _state.listening = false;
+
+        _openToken++;
     }
 
     function refresh() {
@@ -477,6 +554,28 @@
             return;
         }
         render();
+    }
+
+    // ============================================================
+    // CONTEXT VERIFICATION
+    // ============================================================
+
+    /**
+     * Does a grade belong to the mounted (character, class) pair?
+     *
+     * Every mutation routes through this check. A grade that does
+     * not belong to the mounted context is not this editor's to
+     * touch.
+     */
+    function gradeBelongsToMountedContext(grade) {
+        if (!grade) { return false; }
+        if (!_state.charId) { return false; }
+        if (String(grade.studentId) !== _state.charId) { return false; }
+        if (_state.classId !== null &&
+            String(grade.classId) !== _state.classId) {
+            return false;
+        }
+        return true;
     }
 
     // ============================================================
@@ -488,13 +587,12 @@
 
         var charId = _state.charId;
         var classId = _state.classId;
+        var weekNum = _state.week;
 
-        var grades;
-        if (classId) {
-            grades = AcademyGrades.getStudentClassGrades(charId, classId) || [];
-        } else {
-            grades = AcademyGrades.getStudentGrades(charId) || [];
-        }
+        // Week-scoped: fetch only the grades for the mounted week.
+        var grades = AcademyGrades.getStudentClassGrades(
+            charId, classId, weekNum
+        ) || [];
 
         grades = grades.slice().sort(function(a, b) {
             var wa = parseStrictWeek(a.week) || 0;
@@ -508,6 +606,9 @@
 
         html += '<div class="academy-grades-editor-header">';
         html += '<h4 class="academy-grades-editor-title">Grades</h4>';
+        html += '<span class="academy-grades-editor-week">' +
+                    'Week ' + escapeHtml(String(weekNum)) +
+                '</span>';
         html += '<button type="button" ' +
                     'class="primary small academy-add-grade-btn" ' +
                     'data-action="add-grade">' +
@@ -517,7 +618,9 @@
 
         if (grades.length === 0) {
             html += '<p class="empty-state small">' +
-                        'No grades recorded for this character in this class.' +
+                        'No grades recorded for this character in this ' +
+                        'class for week ' + escapeHtml(String(weekNum)) +
+                        '.' +
                     '</p>';
             html += '</div>';
             _state.container.innerHTML = html;
@@ -528,7 +631,6 @@
         html += '<table class="academy-grades-editor-table">';
         html += '<thead>';
         html += '<tr>';
-        html += '<th class="week-col">Week</th>';
         html += '<th class="discipline-col">Discipline</th>';
         html += '<th class="type-col">Type</th>';
         html += '<th class="score-col">Score</th>';
@@ -570,14 +672,10 @@
         var typeLabel = isNonEmptyString(grade.type)
             ? grade.type
             : DEFAULT_GRADE_TYPE;
-        var weekLabel = grade.week !== undefined && grade.week !== null
-            ? String(grade.week)
-            : '\u2014';
 
         var html = '';
         html += '<tr class="academy-grades-editor-row" ' +
                     'data-grade-id="' + escapeAttribute(grade.id || '') + '">';
-        html += '<td class="week-col">' + escapeHtml(weekLabel) + '</td>';
         html += '<td class="discipline-col">' + escapeHtml(disciplineName) + '</td>';
         html += '<td class="type-col">' + escapeHtml(typeLabel) + '</td>';
         html += '<td class="score-col">' +
@@ -643,6 +741,22 @@
                 notify('Grade not found.', 'error');
                 return;
             }
+
+            // Context check. A grade being edited must belong to
+            // the mounted (character, class) pair.
+            if (!gradeBelongsToMountedContext(existing)) {
+                console.warn(
+                    '[AcademyGradesEditor] Refusing to edit grade ' +
+                    gradeId + ': it does not belong to the mounted ' +
+                    'character/class context.'
+                );
+                notify(
+                    'This grade belongs to a different character or ' +
+                    'class.',
+                    'error'
+                );
+                return;
+            }
         }
 
         var isEdit = !!existing;
@@ -661,13 +775,16 @@
         var modal = openModalShell('academy-grade-form-modal');
         if (!modal) { return; }
 
+        var myToken = _openToken;
+
         // Initial discipline:
         //   - Edit mode: the grade's own discipline.
         //   - Create mode: first active enrollment, if any.
         var initialDisciplineId = g.disciplineId || null;
         if (!initialDisciplineId) {
             for (var i = 0; i < disciplineOptions.length; i++) {
-                if (disciplineOptions[i].activeThisWeek) {
+                if (disciplineOptions[i].activeThisWeek &&
+                    !disciplineOptions[i].missing) {
                     initialDisciplineId = disciplineOptions[i].id;
                     break;
                 }
@@ -686,13 +803,16 @@
         }
 
         var hasEnrollment = disciplineOptions.length > 0;
-        var hasActiveEnrollment = false;
+        var hasSelectable = false;
         for (var k = 0; k < disciplineOptions.length; k++) {
-            if (disciplineOptions[k].activeThisWeek) {
-                hasActiveEnrollment = true;
+            if (!disciplineOptions[k].missing) {
+                hasSelectable = true;
                 break;
             }
         }
+
+        // Week is fixed. The form displays it read-only.
+        var weekDisplay = String(_state.week);
 
         var html = '';
         html += '<form id="academy-grade-form" ' +
@@ -706,7 +826,18 @@
 
         html += '<div class="modal-body">';
 
-        // Discipline picker.
+        // ---- Week (read-only) ----
+        html += '<div class="form-group academy-grade-week-readonly">';
+        html += '<label>Week</label>';
+        html += '<p class="academy-grade-week-value">' +
+                    escapeHtml(weekDisplay) +
+                    ' <span class="academy-grade-week-locked">' +
+                        '(set by the Schedule tab; not editable here)' +
+                    '</span>' +
+                '</p>';
+        html += '</div>';
+
+        // ---- Discipline picker ----
         html += '<div class="form-group">';
         html += '<label for="ag-disc-select">Discipline *</label>';
         html += '<select id="ag-disc-select" class="ag-disc-select" required>';
@@ -715,6 +846,10 @@
             html += '<option value="">' +
                         'Not enrolled in any disciplines for this class' +
                     '</option>';
+        } else if (!hasSelectable) {
+            html += '<option value="">' +
+                        'All enrolled disciplines are unavailable' +
+                    '</option>';
         } else {
             html += '<option value="">Select a discipline...</option>';
             for (var d = 0; d < disciplineOptions.length; d++) {
@@ -722,8 +857,15 @@
                 var selected = String(opt.id) === String(initialDisciplineId)
                     ? ' selected'
                     : '';
-                var disabled = opt.activeThisWeek ? '' : ' disabled';
-                var suffix = opt.activeThisWeek ? '' : ' (not active this week)';
+                var disabled = (opt.missing || !opt.activeThisWeek)
+                    ? ' disabled'
+                    : '';
+                var suffix = '';
+                if (opt.missing) {
+                    suffix = ' (missing)';
+                } else if (!opt.activeThisWeek) {
+                    suffix = ' (not active this week)';
+                }
                 html += '<option value="' + escapeAttribute(opt.id) + '"' +
                             selected + disabled + '>' +
                             escapeHtml(opt.name + suffix) +
@@ -739,17 +881,17 @@
                         'for this class. Enroll them in a discipline before ' +
                         'adding grades.' +
                     '</p>';
-        } else if (!hasActiveEnrollment) {
+        } else if (!hasSelectable) {
             html += '<p class="field-hint">' +
                         'None of this student\'s enrolled disciplines are ' +
                         'active during week ' +
-                        escapeHtml(String(_state.week)) + '.' +
+                        escapeHtml(weekDisplay) + '.' +
                     '</p>';
         }
 
         html += '</div>';
 
-        // Type.
+        // ---- Type ----
         html += '<div class="form-group">';
         html += '<label for="ag-type-select">Type</label>';
         html += '<select id="ag-type-select" class="ag-type-select">';
@@ -766,20 +908,7 @@
                 '</p>';
         html += '</div>';
 
-        // Week.
-        html += '<div class="form-group">';
-        html += '<label for="ag-week-input">Week *</label>';
-        html += '<input type="number" id="ag-week-input" class="ag-week-input" ' +
-                    'value="' + escapeAttribute(String(
-                        g.week !== undefined && g.week !== null
-                            ? g.week
-                            : _state.week
-                    )) + '" ' +
-                    'min="' + escapeAttribute(String(MIN_WEEK)) + '" ' +
-                    'max="' + escapeAttribute(String(MAX_WEEK)) + '" required>';
-        html += '</div>';
-
-        // Score / Max score.
+        // ---- Score / Max score ----
         html += '<div class="form-row" ' +
                     'style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
         html += '<div class="form-group">';
@@ -802,7 +931,7 @@
         html += '</div>';
         html += '</div>';
 
-        // Live label preview.
+        // ---- Live label preview ----
         html += '<div class="form-group ag-grade-preview-group">';
         html += '<span class="ag-grade-preview-label">Converted:</span> ';
         html += '<span id="ag-grade-preview" class="ag-grade-preview">' +
@@ -810,14 +939,14 @@
                 '</span>';
         html += '</div>';
 
-        // Date.
+        // ---- Date ----
         html += '<div class="form-group">';
         html += '<label for="ag-date-input">Date</label>';
         html += '<input type="date" id="ag-date-input" class="ag-date-input" ' +
                     'value="' + escapeAttribute(g.date || '') + '">';
         html += '</div>';
 
-        // Notes.
+        // ---- Notes ----
         html += '<div class="form-group">';
         html += '<label for="ag-notes-input">Notes</label>';
         html += '<textarea id="ag-notes-input" class="ag-notes-input" ' +
@@ -826,8 +955,8 @@
                 '</textarea>';
         html += '</div>';
 
-        // Actions.
-        var submitDisabled = (!hasEnrollment || !hasActiveEnrollment)
+        // ---- Actions ----
+        var submitDisabled = (!hasEnrollment || !hasSelectable)
             ? ' disabled'
             : '';
         html += '<div class="form-actions">';
@@ -842,10 +971,12 @@
         html += '</form>';
 
         attachModalContent(modal, html);
-        bindGradeFormEvents(modal, existing);
+        bindGradeFormEvents(modal, existing, myToken);
     }
 
-    function bindGradeFormEvents(modal, existing) {
+    function bindGradeFormEvents(modal, existing, myToken) {
+        var busy = false;
+
         var close = function() {
             closeModal(modal);
         };
@@ -858,6 +989,7 @@
         var discInput = form.querySelector('.ag-disc-select');
         var scoreInput = form.querySelector('.ag-score-input');
         var previewEl = form.querySelector('#ag-grade-preview');
+        var submitBtn = form.querySelector('button[type="submit"]');
 
         function updatePreview() {
             if (!previewEl) { return; }
@@ -887,14 +1019,15 @@
         form.addEventListener('submit', function(e) {
             e.preventDefault();
 
+            if (busy) { return; }
+            if (myToken !== _openToken) { return; }
+
             var typeInput = form.querySelector('.ag-type-select');
-            var weekInput = form.querySelector('.ag-week-input');
             var maxInput = form.querySelector('.ag-max-score-input');
             var dateInput = form.querySelector('.ag-date-input');
             var notesInput = form.querySelector('.ag-notes-input');
 
             var disciplineId = discInput ? discInput.value : '';
-            var week = weekInput ? parseStrictWeek(weekInput.value) : null;
             var score = scoreInput ? parseFiniteNumber(scoreInput.value) : null;
             var maxScore = maxInput && maxInput.value !== ''
                 ? parseFiniteNumber(maxInput.value)
@@ -902,11 +1035,6 @@
 
             if (!disciplineId) {
                 notify('Please select a discipline.', 'error');
-                return;
-            }
-            if (week === null) {
-                notify('Week must be between ' + MIN_WEEK +
-                    ' and ' + MAX_WEEK + '.', 'error');
                 return;
             }
             if (score === null) {
@@ -922,26 +1050,57 @@
                 return;
             }
 
-            var payload = {
-                studentId: _state.charId,
-                classId: _state.classId,
-                disciplineId: disciplineId,
-                week: week,
-                score: score,
-                maxScore: maxScore,
-                type: typeInput ? typeInput.value : DEFAULT_GRADE_TYPE,
-                date: dateInput ? dateInput.value : undefined,
-                notes: notesInput ? notesInput.value.trim() : ''
-            };
+            // Week is fixed by the mount. The form does not send a
+            // week field; the domain uses the mounted week from the
+            // payload below.
+            var week = _state.week;
 
-            var promise;
+            // For create: send the full payload including
+            // studentId, classId, and week.
+            //
+            // For update: send ONLY the fields the editor allows
+            // the user to change. studentId and classId are
+            // contextual identity; the editor does not own them.
+            // week is fixed by the mount.
+            var payload;
             if (existing && existing.id) {
-                promise = AcademyGrades.update(existing.id, payload);
+                payload = {
+                    disciplineId: disciplineId,
+                    score: score,
+                    maxScore: maxScore,
+                    type: typeInput ? typeInput.value : DEFAULT_GRADE_TYPE,
+                    date: dateInput ? dateInput.value : undefined,
+                    notes: notesInput ? notesInput.value.trim() : ''
+                };
             } else {
-                promise = AcademyGrades.create(payload);
+                payload = {
+                    studentId: _state.charId,
+                    classId: _state.classId,
+                    disciplineId: disciplineId,
+                    week: week,
+                    score: score,
+                    maxScore: maxScore,
+                    type: typeInput ? typeInput.value : DEFAULT_GRADE_TYPE,
+                    date: dateInput ? dateInput.value : undefined,
+                    notes: notesInput ? notesInput.value.trim() : ''
+                };
             }
 
+            busy = true;
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.textContent = existing ? 'Updating\u2026' : 'Adding\u2026';
+            }
+
+            var promise = (existing && existing.id)
+                ? AcademyGrades.update(existing.id, payload)
+                : AcademyGrades.create(payload);
+
             promise.then(function(result) {
+                if (myToken !== _openToken) { return; }
+                busy = false;
+                if (submitBtn) { submitBtn.disabled = false; }
+
                 if (result && result.success) {
                     close();
                     refresh();
@@ -949,6 +1108,9 @@
                 // On failure, the pipeline has already notified.
                 // Modal stays open so the user can retry.
             }).catch(function(err) {
+                if (myToken !== _openToken) { return; }
+                busy = false;
+                if (submitBtn) { submitBtn.disabled = false; }
                 console.warn('[AcademyGradesEditor] Save failed:', err);
                 notify('Failed to save grade.', 'error');
             });
@@ -966,12 +1128,29 @@
             return;
         }
 
+        // Context check. A grade being deleted must belong to the
+        // mounted (character, class) pair.
+        if (!gradeBelongsToMountedContext(grade)) {
+            console.warn(
+                '[AcademyGradesEditor] Refusing to delete grade ' +
+                gradeId + ': it does not belong to the mounted ' +
+                'character/class context.'
+            );
+            notify(
+                'This grade belongs to a different character or class.',
+                'error'
+            );
+            return;
+        }
+
         var disciplineName = getDisciplineName(grade.disciplineId);
         var scheme = getSchemeForDiscipline(grade.disciplineId);
         var scoreDisplay = formatScoreDisplay(grade, scheme);
 
         var modal = openModalShell('academy-grade-delete-modal');
         if (!modal) { return; }
+
+        var myToken = _openToken;
 
         var html = '';
         html += '<form id="academy-grade-delete-form">';
@@ -996,6 +1175,8 @@
 
         attachModalContent(modal, html);
 
+        var busy = false;
+
         var close = function() {
             closeModal(modal);
         };
@@ -1005,15 +1186,33 @@
         var form = modal.querySelector('#academy-grade-delete-form');
         if (!form) { return; }
 
+        var submitBtn = form.querySelector('button[type="submit"]');
+
         form.addEventListener('submit', function(e) {
             e.preventDefault();
 
+            if (busy) { return; }
+            if (myToken !== _openToken) { return; }
+
+            busy = true;
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Deleting\u2026';
+            }
+
             AcademyGrades.delete(gradeId).then(function(result) {
+                if (myToken !== _openToken) { return; }
+                busy = false;
+                if (submitBtn) { submitBtn.disabled = false; }
+
                 if (result && result.success) {
                     close();
                     refresh();
                 }
             }).catch(function(err) {
+                if (myToken !== _openToken) { return; }
+                busy = false;
+                if (submitBtn) { submitBtn.disabled = false; }
                 console.warn('[AcademyGradesEditor] Delete failed:', err);
                 notify('Failed to delete grade.', 'error');
             });
@@ -1027,8 +1226,7 @@
     window.AcademyGradesEditor = {
         mount: mount,
         unmount: unmount,
-        refresh: refresh,
-        render: render
+        refresh: refresh
     };
 
 })();
