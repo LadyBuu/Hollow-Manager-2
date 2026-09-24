@@ -20,48 +20,30 @@
  *   - Modals are HIDDEN (not destroyed) so they can be reused:
  *     use Modal.hideModal() not Modal.closeModal().
  *
+ * CHARACTER CSV CONTROLS (this revision):
+ *   Import / Export / Template buttons for characters now live in
+ *   the character module's page header (next to "+ Add"), rendered
+ *   by characters/index.js's getCharactersHTML(). They are bound
+ *   here via delegation because the page is re-rendered whenever
+ *   the character list refreshes.
+ *
+ *   The three actions are:
+ *     #export-characters-csv-btn    → export all characters to CSV
+ *     #import-characters-csv-btn    → open file picker, import CSV
+ *     #template-characters-csv-btn  → download empty CSV template
+ *
+ *   The handler for each first looks for a named function on window
+ *   (the import-export module's public surface), and falls back to
+ *   a console warning if not present. If your import-export module
+ *   exposes the actions under different names, adjust the lookups
+ *   in the handlers below. The IDs are preserved so any existing
+ *   `ui.js` delegation that ran on the old header buttons continues
+ *   to find them in the new location.
+ *
  * PER-FIELD RANDOM:
  *   The Physical and Personality tabs render a small ⟳ button
  *   (.field-random-btn) next to each pool-backed field. Clicking
  *   one rerolls only that field.
- *
- *   Physical fields (gender / eyes / hair / skin / height /
- *   weight / build): the reroll reads the current body from the
- *   form and passes it to CharacterGenerator.generatePhysicalField.
- *   The generator respects the current shape where possible.
- *
- *   Personality fields (traits / ideals / bonds / flaws /
- *   alignment / likes / dislikes / habits / fears / goals /
- *   authority / conflictStyle / socialStyle / quirks): a uniform
- *   pick from the field's pool via
- *   CharacterGenerator.generatePersonalityField.
- *
- *   The buttons are inside the re-rendered form content, so the
- *   handler is delegated.
- *
- * SPECIAL MOVES (S10.2):
- *   - Move mutations moved from CharacterStats to CharacterMoves.
- *     The add and remove handlers call CharacterMoves.addSpecialMove
- *     and CharacterMoves.removeSpecialMove.
- *
- * CLASS MEMBERSHIP (S10.1):
- *   - Class mutations moved from CharacterClasses to AcademyClasses.
- *
- * PHYSICAL CLASS OVERRIDE:
- *   The override dropdown is a USER INSTRUCTION, not a hint. Picking
- *   class X rewrites the stat block via
- *   CharacterStats.applyPhysicalClass(X), and the derived-class
- *   display shows X's label directly via
- *   CharacterStats.getPhysicalClassLabel(X).
- *
- * REFRESH CONTRACT:
- *   - refreshUI(char) is the SINGLE refresh entry point for the
- *     character module.
- *
- * EDIT FLOW (characterEdit event):
- *   - CharacterDetail dispatches a `characterEdit` CustomEvent on
- *     document when the user clicks "Edit Character" in the detail
- *     modal. The event carries { characterId }.
  */
 
 (function() {
@@ -396,6 +378,10 @@
         bindClickOutside(container);
         bindCharacterList(container);
 
+        // Character CSV controls (this revision — moved from the
+        // global page header into the character module header)
+        bindCharacterCsvControls();
+
         // Dynamically-rendered elements - DELEGATED
         bindTabSwitching();
         bindCancelButton();
@@ -426,6 +412,201 @@
         removeAllEventListeners();
         _initialized = false;
         _socialEditId = null;
+    }
+
+    // ============================================================
+    // CHARACTER CSV CONTROLS (this revision)
+    // ============================================================
+    //
+    // The three buttons that used to live in the global header now
+    // live in the character module's page header, next to "+ Add".
+    // They are bound here via delegation because the page is
+    // re-rendered on every list refresh.
+    //
+    // Each handler looks for a named function on window first. The
+    // import-export module's public surface is expected to expose
+    // the actions under one of the names listed below. If none of
+    // them resolve, a console warning is logged and no action is
+    // taken. The IDs are preserved so any other module that
+    // delegates on them still works.
+
+    function bindCharacterCsvControls() {
+        addSafeDelegatedListener(
+            '#export-characters-csv-btn',
+            'click',
+            function(e, target) {
+                e.preventDefault();
+                handleCharacterExport();
+            }
+        );
+
+        addSafeDelegatedListener(
+            '#import-characters-csv-btn',
+            'click',
+            function(e, target) {
+                e.preventDefault();
+                handleCharacterImport();
+            }
+        );
+
+        addSafeDelegatedListener(
+            '#template-characters-csv-btn',
+            'click',
+            function(e, target) {
+                e.preventDefault();
+                handleCharacterTemplate();
+            }
+        );
+
+        // The hidden file input lives next to the buttons.
+        // A change on it dispatches the actual import.
+        addSafeDelegatedListener(
+            '#characters-csv-file-input',
+            'change',
+            function(e, target) {
+                handleCharacterCsvFileChosen(target);
+            }
+        );
+    }
+
+    function handleCharacterExport() {
+        // Preferred: a named function on the import-export surface.
+        var candidates = [
+            'exportCharactersCSV',
+            'exportCharactersToCSV',
+            'exportCharactersCsv',
+            'exportCharacters'
+        ];
+        for (var i = 0; i < candidates.length; i++) {
+            var fn = window[candidates[i]];
+            if (typeof fn === 'function') {
+                try {
+                    fn();
+                    return;
+                } catch (err) {
+                    console.warn(
+                        '[CharacterEvents] ' + candidates[i] +
+                        ' threw:', err
+                    );
+                    notify('Character export failed.', 'error');
+                    return;
+                }
+            }
+        }
+        console.warn(
+            '[CharacterEvents] No character export function found on ' +
+            'window. Expected one of: ' + candidates.join(', ')
+        );
+        notify('Character export is not available.', 'error');
+    }
+
+    function handleCharacterImport() {
+        var input = document.getElementById('characters-csv-file-input');
+        if (!input) {
+            notify('Character import is not available.', 'error');
+            return;
+        }
+        input.value = '';
+        input.click();
+    }
+
+    function handleCharacterTemplate() {
+        var candidates = [
+            'downloadCharacterCSVTemplate',
+            'downloadCharactersCSVTemplate',
+            'downloadCharacterTemplate',
+            'characterCSVTemplate'
+        ];
+        for (var i = 0; i < candidates.length; i++) {
+            var fn = window[candidates[i]];
+            if (typeof fn === 'function') {
+                try {
+                    fn();
+                    return;
+                } catch (err) {
+                    console.warn(
+                        '[CharacterEvents] ' + candidates[i] +
+                        ' threw:', err
+                    );
+                    notify('Character template failed.', 'error');
+                    return;
+                }
+            }
+        }
+        console.warn(
+            '[CharacterEvents] No character template function found on ' +
+            'window. Expected one of: ' + candidates.join(', ')
+        );
+        notify('Character template is not available.', 'error');
+    }
+
+    function handleCharacterCsvFileChosen(input) {
+        if (!input || !input.files || input.files.length === 0) {
+            return;
+        }
+
+        var file = input.files[0];
+        if (!file) { return; }
+
+        var candidates = [
+            'importCharactersCSV',
+            'importCharactersFromCSV',
+            'importCharactersCsv',
+            'importCharacters'
+        ];
+
+        var reader = new FileReader();
+        reader.onload = function(evt) {
+            var content = evt && evt.target ? evt.target.result : '';
+            if (typeof content !== 'string' || content === '') {
+                notify('Character file is empty.', 'error');
+                return;
+            }
+
+            for (var i = 0; i < candidates.length; i++) {
+                var fn = window[candidates[i]];
+                if (typeof fn === 'function') {
+                    try {
+                        var result = fn(content);
+                        if (result && typeof result.then === 'function') {
+                            result.then(function() {
+                                refreshUI(null);
+                            }).catch(function(err) {
+                                console.warn(
+                                    '[CharacterEvents] ' + candidates[i] +
+                                    ' promise rejected:', err
+                                );
+                                notify(
+                                    'Character import failed.', 'error'
+                                );
+                            });
+                        } else {
+                            refreshUI(null);
+                        }
+                        return;
+                    } catch (err) {
+                        console.warn(
+                            '[CharacterEvents] ' + candidates[i] +
+                            ' threw:', err
+                        );
+                        notify('Character import failed.', 'error');
+                        return;
+                    }
+                }
+            }
+
+            console.warn(
+                '[CharacterEvents] No character import function found on ' +
+                'window. Expected one of: ' + candidates.join(', ')
+            );
+            notify('Character import is not available.', 'error');
+        };
+
+        reader.onerror = function() {
+            notify('Failed to read the character file.', 'error');
+        };
+
+        reader.readAsText(file);
     }
 
     // ============================================================
@@ -501,10 +682,6 @@
             });
         }
 
-        // Career status filter: a container of checkboxes.
-        // Delegated so the handler survives even if the checkboxes
-        // are re-rendered (they aren't currently, but the delegation
-        // keeps the pattern consistent with the rest of the file).
         var statusFilter = document.getElementById('char-status-filter');
         if (statusFilter) {
             addSafeEventListener(statusFilter, 'change', function(e) {
@@ -548,7 +725,6 @@
                 if (hideDeadEl) { hideDeadEl.checked = true; }
                 if (hideElimEl) { hideElimEl.checked = true; }
 
-                // Uncheck every career-status checkbox.
                 var statusBoxes = document.querySelectorAll(
                     '#char-status-filter input[type="checkbox"][data-status]'
                 );
@@ -658,20 +834,6 @@
     // ============================================================
     // PER-FIELD RANDOM
     // ============================================================
-    //
-    // The Physical and Personality tabs render a small ⟳ button
-    // (.field-random-btn) next to each pool-backed field. Clicking
-    // one rerolls only that field via CharacterGenerator.
-    //
-    // Physical fields (gender / eyes / hair / skin / height /
-    // weight / build): the reroll reads the current body from the
-    // form and passes it to generatePhysicalField. The generator
-    // then respects the current shape where possible.
-    //
-    // Personality fields (traits / ideals / bonds / flaws /
-    // alignment / likes / dislikes / habits / fears / goals /
-    // authority / conflictStyle / socialStyle / quirks): a uniform
-    // pick from the field's pool.
 
     var PHYSICAL_FIELDS = {
         gender: 'char-gender',
@@ -730,7 +892,6 @@
                 return;
             }
 
-            // ---- Physical field ----
             if (PHYSICAL_FIELDS[field]) {
                 if (typeof Generator.generatePhysicalField !== 'function') {
                     notify('Generator does not support field reroll.', 'error');
@@ -748,7 +909,6 @@
                 return;
             }
 
-            // ---- Personality field ----
             if (PERSONALITY_FIELDS[field]) {
                 if (typeof Generator.generatePersonalityField !== 'function') {
                     notify('Generator does not support field reroll.', 'error');
