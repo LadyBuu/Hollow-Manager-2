@@ -9,7 +9,7 @@
  *   - Ranking generation (autoGenerate from AcademyPerformance)
  *   - Ranking statistics (percentile, distribution)
  *   - Ranking validation
- *   - Cross-domain cascade helper (stripCharacterRefs)
+ *   - Cross-domain cascade helpers (stripCharacterRefs, stripClassRefs)
  *
  * IMPORTANT:
  *   - This module OWNS ranking data - it does NOT depend on AcademyQueries.
@@ -20,12 +20,12 @@
  *     class roster for auto-generate. The aggregator is the canonical
  *     roster source; AcademyQueries was the previous source and has
  *     been retired from this module.
- *   - Uses CharacterQueries for name resolution.
+ *   - Uses CharacterQueries for name resolution ONLY in the enriched
+ *     query variants. The base ranking record does not carry a name.
  *   - All MUTATIONS go through MutationPipeline.
  *   - All READS are synchronous and side-effect free.
  *   - Invalid inputs are REJECTED (mutation resolves with { success: false }).
  *   - Mutations are ATOMIC: if persistence fails, window.data is restored.
- *   - This module does NOT call saveData() directly - the pipeline does.
  *
  * READ SAFETY:
  *   - getAcademyStore() returns null (does NOT create academy.{...}) when
@@ -39,12 +39,24 @@
  *     aliases the input.
  *
  * PERFORMANCE INTEGRATION:
- *   - autoGenerate reads the ranking data from AcademyPerformance.
- *     It does NOT call AcademyGrades.calculateClassRanking.
+ *   - autoGenerate reads ranking data from
+ *     AcademyPerformance.calculateRanking. The fourth argument
+ *     (getCharacterById) was removed from calculateRanking's signature;
+ *     names are resolved by the aggregator layer, not by performance.
+ *   - autoGenerate does not require names, only IDs.
  *   - Students with no score (academic null AND overall null) are SKIPPED.
  *     Writing a ranking record with rank: null for an ungraded student
  *     would produce records the UI cannot render. Absence of a record
  *     means "not yet graded".
+ *
+ *   MIGRATION NOTE:
+ *     AcademyPerformance.calculateRanking is marked DEPRECATED. The
+ *     eventual path is: autoGenerate calls
+ *     AcademyPerformance.calculateClassPerformance, and the ordering
+ *     and rank assignment moves into this module. This module already
+ *     owns the ordering invariant (rank <= totalStudents); moving
+ *     the ordering itself here closes the last circle. Not done in
+ *     this pass; the migration is a follow-up.
  *
  * RANKING RECORD SHAPE:
  *   {
@@ -92,13 +104,31 @@
  *   - rank must be >= 1.
  *   - rank must be <= totalStudents.
  *
+ * SCORE BOUND CONTRACT:
+ *   - academicAverage, when present, must be in [0, 100].
+ *   - socialScore, when present, must be in [0, 100].
+ *   - overallScore, when present, must be in [0, 100].
+ *   These fields are percentages. A value outside the range is a
+ *   data-integrity failure from upstream (a grade, a performance
+ *   calculation, or a social score). The validator rejects it.
+ *
+ * PERCENTILE SEMANTICS:
+ *   calculatePercentile(rank, total) returns:
+ *     ((total - rank + 1) / total) * 100
+ *
+ *   Rank 1 of 25 → 100. Rank 25 of 25 → 4.
+ *
+ *   This is "percentage of ranked students at or below this
+ *   student's position, with rank 1 = 100%". It is NOT the
+ *   statistics-textbook percentile. Documented here so a future
+ *   reader does not "fix" it to some other formula.
+ *
  * TRANSACTION SNAPSHOT RULE:
  *   Every pipeline validate() callback resolves references against
  *   the appData argument it is handed. It does not read window.data.
  *   Preflight reads against window.data are for early UX feedback
  *   only; the pipeline re-checks against the snapshot.
  *
- *   This applies to create, update, autoGenerate, and saveRankings.
  *   Foreign keys (classId, studentId) are validated against the
  *   snapshot, not against AcademyClasses or CharacterQueries.
  *
@@ -113,6 +143,12 @@
  *   but not a plain object, or an array) is an error. Silently
  *   reporting a zero-count success on malformed state would let a
  *   corrupted store masquerade as "nothing to clean up".
+ *
+ * ENRICHED QUERY VARIANTS:
+ *   getClassRankings(classId, week, true), getStudentRank(..., true),
+ *   and getRankingsWithDetails attach studentName and student to
+ *   each record. These are candidates for removal once their
+ *   consumers migrate to the aggregator layer. Retained for now.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.ObjectUtils
@@ -219,16 +255,6 @@
         return window.AcademyAggregator || null;
     }
 
-    /**
-     * Resolve AcademyAggregator at call time, throwing when it is
-     * missing. Used by autoGenerate to resolve the class roster.
-     *
-     * Lazy-but-mandatory: the module loads without it, but
-     * autoGenerate cannot answer "which students are in this
-     * class?" without it. Returning [] would turn "the dependency
-     * is missing" into "the class has no students", which is
-     * exactly the failure mode this migration removes.
-     */
     function requireAcademyAggregator(contextLabel) {
         var AGG = getAcademyAggregator();
         if (!AGG ||
@@ -249,6 +275,8 @@
     var MIN_WEEK = CalendarConstants.MIN_WEEK;
     var MAX_WEEK = CalendarConstants.MAX_WEEK;
     var MIN_RANK = 1;
+    var MIN_SCORE = 0;
+    var MAX_SCORE = 100;
 
     // ============================================================
     // HELPERS
@@ -289,17 +317,10 @@
         return { success: true, data: data };
     }
 
-    // ============================================================
-    // WEEK PARSING — CANONICAL
-    // ============================================================
-    //
-    // Week parsing goes through CalendarValidation.parseWeek.
-    // Returns an integer in [MIN_WEEK, MAX_WEEK], or null.
-    //
-    // No `parseInt` coercion. "5bananas" is rejected. null is the
-    // honest "this is not a week" answer; callers decide whether
-    // to return an empty result, a failure, or throw.
-
+    /**
+     * Parse a week via the canonical parser.
+     * Returns an integer in [MIN_WEEK, MAX_WEEK], or null.
+     */
     function parseWeekStrict(week) {
         var parsed = CalendarValidation.parseWeek(week);
         if (parsed === null) {
@@ -309,6 +330,32 @@
             return null;
         }
         return parsed;
+    }
+
+    /**
+     * Parse an integer strictly.
+     *
+     * Accepts numbers that are integers, or strings of pure digits.
+     * Rejects "5abc", "5.5", "", NaN, Infinity, non-integer numbers.
+     */
+    function parseStrictInteger(value) {
+        if (value === undefined || value === null) {
+            return null;
+        }
+
+        if (typeof value === 'number') {
+            return Number.isInteger(value) ? value : null;
+        }
+
+        if (typeof value === 'string') {
+            var trimmed = value.trim();
+            if (trimmed === '') { return null; }
+            if (!/^-?\d+$/.test(trimmed)) { return null; }
+            var n = Number(trimmed);
+            return Number.isInteger(n) ? n : null;
+        }
+
+        return null;
     }
 
     // ============================================================
@@ -323,13 +370,15 @@
         var records = getRankingRecords();
         var exclude = excludeId !== null && excludeId !== undefined ? String(excludeId) : null;
 
+        var targetWeek = parseWeekStrict(week);
+
         for (var i = 0; i < records.length; i++) {
             var r = records[i];
             if (!r) continue;
             if (exclude !== null && String(r.id) === exclude) continue;
             if (String(r.classId) !== String(classId)) continue;
             if (String(r.studentId) !== String(studentId)) continue;
-            if (parseWeekStrict(r.week) !== parseWeekStrict(week)) continue;
+            if (parseWeekStrict(r.week) !== targetWeek) continue;
             return r;
         }
         return null;
@@ -364,9 +413,6 @@
     // ============================================================
     // SNAPSHOT-AWARE LOOKUPS
     // ============================================================
-    //
-    // Used by pipeline validate() callbacks. Read from the appData
-    // snapshot, not window.data.
 
     function findRankingInSnapshot(appData, rankId) {
         if (!appData || !appData.academy) {
@@ -500,10 +546,8 @@
 
         var filterClass = isNonEmptyString(classId) ? String(classId) : null;
 
-        // Week filter. A provided-but-invalid week is a filter that
-        // matches nothing, not "no filter". The previous behaviour
-        // was `if (!isNaN(weekNum) && ...)`, which turned malformed
-        // input into "don't filter" and returned everything.
+        // A provided-but-invalid week is a filter that matches
+        // nothing, not "no filter".
         var filterWeek = null;
         if (week !== undefined) {
             filterWeek = parseWeekStrict(week);
@@ -536,14 +580,6 @@
         return result;
     }
 
-    /**
-     * Internal class rankings lookup.
-     *
-     * An invalid week is rejected with an empty array. The
-     * previous behaviour coerced an invalid week to week 1, which
-     * produced valid-looking data for a query the caller could not
-     * have meant.
-     */
     function getClassRankingsInternal(classId, week) {
         if (!isNonEmptyString(classId)) {
             return [];
@@ -659,37 +695,33 @@
         }
 
         if (!isPartial || data.rank !== undefined) {
-            var rank = parseInt(data.rank, 10);
-            if (isNaN(rank) || rank < MIN_RANK) {
-                return { valid: false, message: 'Rank must be a number greater than or equal to 1.' };
+            var rank = parseStrictInteger(data.rank);
+            if (rank === null || rank < MIN_RANK) {
+                return { valid: false, message: 'Rank must be an integer greater than or equal to 1.' };
             }
         }
 
         if (data.totalStudents !== undefined) {
-            var total = parseInt(data.totalStudents, 10);
-            if (isNaN(total) || total < 0) {
-                return { valid: false, message: 'Total students must be a number greater than or equal to 0.' };
+            var total = parseStrictInteger(data.totalStudents);
+            if (total === null || total < 0) {
+                return { valid: false, message: 'Total students must be an integer greater than or equal to 0.' };
             }
         }
 
-        if (data.academicAverage !== undefined && data.academicAverage !== null) {
-            var aa = parseFloat(data.academicAverage);
-            if (isNaN(aa) || aa < 0) {
-                return { valid: false, message: 'Academic average must be a number greater than or equal to 0.' };
-            }
-        }
-
-        if (data.socialScore !== undefined && data.socialScore !== null) {
-            var ss = parseFloat(data.socialScore);
-            if (isNaN(ss) || ss < 0) {
-                return { valid: false, message: 'Social score must be a number greater than or equal to 0.' };
-            }
-        }
-
-        if (data.overallScore !== undefined && data.overallScore !== null) {
-            var os = parseFloat(data.overallScore);
-            if (isNaN(os) || os < 0) {
-                return { valid: false, message: 'Overall score must be a number greater than or equal to 0.' };
+        // Score fields. Each, when present and non-null, must be a
+        // finite non-negative number in [0, 100].
+        var scoreFields = ['academicAverage', 'socialScore', 'overallScore'];
+        for (var i = 0; i < scoreFields.length; i++) {
+            var field = scoreFields[i];
+            var value = data[field];
+            if (value === undefined || value === null) { continue; }
+            var num = Number(value);
+            if (!isFinite(num) || num < MIN_SCORE || num > MAX_SCORE) {
+                return {
+                    valid: false,
+                    message: field + ' must be a finite number in [' +
+                        MIN_SCORE + ', ' + MAX_SCORE + '].'
+                };
             }
         }
 
@@ -713,13 +745,13 @@
             return { valid: false, message: 'Candidate week is out of range.' };
         }
 
-        var rank = parseInt(candidate.rank, 10);
-        if (isNaN(rank) || rank < MIN_RANK) {
+        var rank = parseStrictInteger(candidate.rank);
+        if (rank === null || rank < MIN_RANK) {
             return { valid: false, message: 'Candidate rank must be >= 1.' };
         }
 
-        var total = parseInt(candidate.totalStudents, 10);
-        if (isNaN(total) || total < 0) {
+        var total = parseStrictInteger(candidate.totalStudents);
+        if (total === null || total < 0) {
             return { valid: false, message: 'Candidate totalStudents is invalid.' };
         }
 
@@ -730,16 +762,20 @@
             };
         }
 
-        // Score fields are optional. Each, if present, must be a
-        // finite non-negative number.
+        // Score bounds. Each, when present and non-null, must be in
+        // [0, 100].
         var scoreFields = ['academicAverage', 'socialScore', 'overallScore'];
         for (var i = 0; i < scoreFields.length; i++) {
             var field = scoreFields[i];
             var value = candidate[field];
             if (value === null || value === undefined) { continue; }
-            var num = parseFloat(value);
-            if (isNaN(num) || num < 0) {
-                return { valid: false, message: 'Candidate ' + field + ' is invalid.' };
+            var num = Number(value);
+            if (!isFinite(num) || num < MIN_SCORE || num > MAX_SCORE) {
+                return {
+                    valid: false,
+                    message: 'Candidate ' + field + ' is out of range [' +
+                        MIN_SCORE + ', ' + MAX_SCORE + '].'
+                };
             }
         }
 
@@ -749,18 +785,6 @@
     /**
      * Authoritative candidate validation against the transaction
      * snapshot.
-     *
-     * Checks:
-     *   - the candidate's structural validity (delegated to
-     *     validateCandidate)
-     *   - the class exists in the snapshot
-     *   - the student exists in the snapshot
-     *   - if excludeId is provided, the ranking record exists in
-     *     the snapshot (update path)
-     *   - no conflicting ranking for (classId, studentId, week)
-     *     in the snapshot, excluding the record being updated
-     *
-     * Returns { valid, message? }.
      */
     function validateCandidateAgainstSnapshot(candidate, appData, excludeId) {
         var structural = validateCandidate(candidate);
@@ -824,19 +848,19 @@
             );
         }
 
-        var rank = parseInt(data.rank, 10);
+        var rank = parseStrictInteger(data.rank);
         var totalStudents = data.totalStudents !== undefined
-            ? parseInt(data.totalStudents, 10)
+            ? parseStrictInteger(data.totalStudents)
             : 0;
 
         var academicAverage = data.academicAverage !== undefined && data.academicAverage !== null
-            ? parseFloat(data.academicAverage)
+            ? Number(data.academicAverage)
             : null;
         var socialScore = data.socialScore !== undefined && data.socialScore !== null
-            ? parseFloat(data.socialScore)
+            ? Number(data.socialScore)
             : null;
         var overallScore = data.overallScore !== undefined && data.overallScore !== null
-            ? parseFloat(data.overallScore)
+            ? Number(data.overallScore)
             : null;
 
         return {
@@ -855,7 +879,7 @@
     }
 
     // ============================================================
-    // PUBLIC API - RANKING CRUD (Promise-based, via MutationPipeline)
+    // PUBLIC API - RANKING CRUD
     // ============================================================
 
     function create(data) {
@@ -896,12 +920,10 @@
                     return { valid: false, message: 'Application data is not available.' };
                 }
 
-                // ID collision.
                 if (findRankingInSnapshot(appData, targetId)) {
                     return { valid: false, message: 'Ranking ID collision.' };
                 }
 
-                // Authoritative validation against the snapshot.
                 return validateCandidateAgainstSnapshot(
                     newRanking, appData, null
                 );
@@ -981,9 +1003,9 @@
                     break;
 
                 case 'rank':
-                    var rank = parseInt(value, 10);
-                    if (isNaN(rank) || rank < MIN_RANK) {
-                        return Promise.resolve(failure('Rank must be a number greater than or equal to 1.'));
+                    var rank = parseStrictInteger(value);
+                    if (rank === null || rank < MIN_RANK) {
+                        return Promise.resolve(failure('Rank must be an integer greater than or equal to 1.'));
                     }
                     if (candidate.rank !== rank) {
                         candidate.rank = rank;
@@ -992,9 +1014,9 @@
                     break;
 
                 case 'totalStudents':
-                    var total = parseInt(value, 10);
-                    if (isNaN(total) || total < 0) {
-                        return Promise.resolve(failure('Total students must be a number greater than or equal to 0.'));
+                    var total = parseStrictInteger(value);
+                    if (total === null || total < 0) {
+                        return Promise.resolve(failure('Total students must be an integer greater than or equal to 0.'));
                     }
                     if (candidate.totalStudents !== total) {
                         candidate.totalStudents = total;
@@ -1011,9 +1033,12 @@
                             hasChanges = true;
                         }
                     } else {
-                        var num = parseFloat(value);
-                        if (isNaN(num) || num < 0) {
-                            return Promise.resolve(failure(field + ' must be a number greater than or equal to 0.'));
+                        var num = Number(value);
+                        if (!isFinite(num) || num < MIN_SCORE || num > MAX_SCORE) {
+                            return Promise.resolve(failure(
+                                field + ' must be a finite number in [' +
+                                MIN_SCORE + ', ' + MAX_SCORE + '].'
+                            ));
                         }
                         if (candidate[field] !== num) {
                             candidate[field] = num;
@@ -1054,7 +1079,6 @@
                     return { valid: false, message: 'Ranking no longer exists.' };
                 }
 
-                // Authoritative validation against the snapshot.
                 return validateCandidateAgainstSnapshot(
                     candidate, appData, targetId
                 );
@@ -1120,6 +1144,14 @@
         });
     }
 
+    /**
+     * Delete all rankings for a (class, week) pair.
+     *
+     * IDEMPOTENT CLEANUP: a (class, week) with no rankings deletes
+     * zero records and returns success. The operation is not scoped
+     * to the existence of the class; it is a bulk cleanup of a
+     * bucket, not a class-scoped mutation.
+     */
     function deleteClassRankings(classId, week) {
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
@@ -1339,34 +1371,6 @@
     // AUTO-GENERATE RANKINGS FROM PERFORMANCE
     // ============================================================
 
-    /**
-     * Auto-generate rankings from performance data.
-     *
-     * PLAN / APPLY:
-     *   1. Validate inputs.
-     *   2. Resolve the class roster via AcademyAggregator.
-     *   3. Ask AcademyPerformance for the ranked list. Performance
-     *      owns the calculation; this module does not compute
-     *      averages itself.
-     *   4. Plan ALL writes (create/update/skip) without touching
-     *      window.data. Deduplicate by (classId, studentId, week).
-     *   5. Apply all planned writes in a SINGLE pipeline transaction.
-     *      The transaction revalidates the plan against the snapshot.
-     *   6. Return the post-mutation state read from the appData
-     *      snapshot.
-     *
-     * SKIPPED STUDENTS:
-     *   - Students with no score (overall AND academic both null) are
-     *     skipped. No record is written.
-     *
-     * UNIQUENESS:
-     *   - The (classId, studentId, week) tuple is unique.
-     *
-     * totalStudents:
-     *   - Set to the number of students who received a ranking
-     *     record this week. See the file header for the full
-     *     meaning.
-     */
     function autoGenerate(classId, week, options) {
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
@@ -1400,13 +1404,18 @@
         }
 
         // ---- Ask performance for the ranked list ----
+        //
+        // calculateRanking is DEPRECATED. It is called with the
+        // three-argument signature: (studentIds, classId, week).
+        // The previous fourth argument (getCharacterById) was
+        // removed from its signature; names are resolved by the
+        // aggregator layer.
         var rankingData;
         try {
             rankingData = AcademyPerformance.calculateRanking(
                 studentIds,
                 classId,
-                weekNum,
-                CharacterQueries.getCharacterById
+                weekNum
             );
         } catch (e) {
             return Promise.resolve(failure('Failed to calculate performance: ' + e.message));
@@ -1433,9 +1442,6 @@
         }
 
         // ---- Plan ----
-        // totalStudents counts the ranked students this week. See
-        // the file header for the semantic distinction from class
-        // size.
         var totalStudents = rankedEntries.length;
         var planned = [];
         var errors = [];
@@ -1504,21 +1510,16 @@
         var updates = planned.filter(function(p) { return p.action === 'update'; });
         var skipped = planned.filter(function(p) { return p.action === 'skip'; }).length;
 
-        // ---- Apply ----
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || !appData.academy) {
                     return { valid: false, message: 'Academy data is not available.' };
                 }
 
-                // The class must still exist in the snapshot.
                 if (!findClassInSnapshot(appData, classId)) {
                     return { valid: false, message: 'Class no longer exists.' };
                 }
 
-                // Revalidate each planned action against the snapshot.
-                // The plan is a set of creates and updates; every
-                // target must still be consistent.
                 for (var i = 0; i < planned.length; i++) {
                     var item = planned[i];
 
@@ -1596,27 +1597,6 @@
         });
     }
 
-    /**
-     * Resolve the class's student IDs.
-     *
-     * DERIVED ROSTER. The aggregator derives it from
-     * character.classIds and excludes instructors.
-     *
-     * The previous implementation called
-     * AcademyQueries.getClassStudentIds, which read the same
-     * underlying character data but through a legacy facade. That
-     * facade is being retired. The aggregator is the canonical
-     * source.
-     *
-     * Lazy-but-mandatory: the aggregator is resolved at call time
-     * and throws when absent. It does NOT return [] for a missing
-     * dependency. An empty array means "the class has no students";
-     * a missing dependency is a load-order failure that must
-     * surface.
-     *
-     * @returns {array} Array of student ID strings
-     * @throws {Error} when AcademyAggregator is unavailable
-     */
     function resolveClassStudentIds(classId) {
         if (!isNonEmptyString(classId)) {
             return [];
@@ -1648,17 +1628,6 @@
     // CASCADE HELPERS
     // ============================================================
 
-    /**
-     * Read the rankings store from the snapshot.
-     *
-     * A missing store is a legitimate no-op for a cascade (there
-     * are no rankings to clean up). A store that is present but
-     * malformed is an error: silently reporting a zero-count
-     * success would let a corrupted store masquerade as empty.
-     *
-     * Returns the store, or null when the store is absent.
-     * Throws when the store is present but malformed.
-     */
     function readRankingsStoreForCascade(appData, helperName) {
         if (!appData || !appData.academy) {
             return null;
@@ -1715,10 +1684,6 @@
         return result;
     }
 
-    /**
-     * Strip all ranking records for a class.
-     * Called from AcademyClasses.delete cascade.
-     */
     function stripClassRefs(appData, classId) {
         var result = { rankingsRemoved: 0 };
 
@@ -1858,10 +1823,6 @@
                     return { valid: false, message: 'Academy data is not available.' };
                 }
 
-                // Revalidate the entire plan against the snapshot.
-                // This is the plan/apply invariant: what we planned
-                // must still be consistent with what we are
-                // committing to.
                 for (var i = 0; i < planned.length; i++) {
                     var item = planned[i];
 
@@ -1977,7 +1938,9 @@
         // ---- Constants ----
         MIN_WEEK: MIN_WEEK,
         MAX_WEEK: MAX_WEEK,
-        MIN_RANK: MIN_RANK
+        MIN_RANK: MIN_RANK,
+        MIN_SCORE: MIN_SCORE,
+        MAX_SCORE: MAX_SCORE
     };
 
 })();
