@@ -47,6 +47,22 @@
  *   - endWeek === null means "ongoing".
  *   - endWeek is INCLUSIVE.
  *
+ * MEMBERSHIP INVARIANT — AT MOST ONE ACTIVE INTERVAL PER CHARACTER:
+ *   A character has at most one interval per group that contains any
+ *   given week. This is enforced at add time (addMemberToGroup
+ *   rejects a new interval that would overlap an existing non-active
+ *   interval) and at end time (endMembership rejects when the stored
+ *   history contains more than one interval containing the effective
+ *   week, which is a data-integrity failure rather than a normal
+ *   state).
+ *
+ *   "Already active at this week" is NOT an overlap rejection. It is
+ *   a no-op: the caller asked for a state that already holds.
+ *   Overlap rejection applies only to the case where the proposed
+ *   interval would conflict with an existing interval that does NOT
+ *   already contain the requested week. This mirrors the semantics
+ *   of AcademyWeeklyTeams.syncAddMemberIntervalToPersistentRoster.
+ *
  * RANGE PREDICATES:
  *   The "does this range contain this week" question is owned by
  *   window.RangeUtils, which is the canonical range-predicate module
@@ -67,23 +83,49 @@
  *   The aggregator resolves the display name. This module provides
  *   the raw inputs (groupNumber, customName, disciplineId).
  *
- * DEPENDENCIES (MANDATORY):
- *   - window.ObjectUtils          (deepClone)
- *   - window.ValidationUtils      (isNonEmptyString)
- *   - window.CalendarValidation   (parseWeek)
- *   - window.CalendarConstants    (MIN_WEEK, MAX_WEEK)
- *   - window.RangeUtils           (containsWeek)
- *   - window.MutationPipeline     (performMutation)
- *   - window.AcademyClasses       (class existence check)
- *   - window.AcademyDisciplines   (discipline existence check)
- *   - window.CharacterQueries     (instructor existence check)
+ * TRANSACTION SNAPSHOT RULE:
+ *   Every pipeline validate() callback resolves references against
+ *   the appData argument it is handed. It does not read window.data.
+ *   Preflight reads against window.data are for early UX feedback
+ *   only; the pipeline re-checks against the snapshot.
  *
- * DEPENDENCIES (LAZY):
- *   - window.IdUtils              (group id generation; falls back
- *                                  to a local generator when absent,
- *                                  because the fallback is load-order
- *                                  neutral and deterministic enough
- *                                  for a persisted id)
+ * CASCADE STRICTNESS:
+ *   stripClassRefs, stripDisciplineRefs, stripInstructorRefs, and
+ *   stripCharacterRefs operate on a destructive cascade. A missing
+ *   or malformed group store on the snapshot is a data-integrity
+ *   failure, not "no groups"; the helpers throw rather than silently
+ *   reporting a zero-count success.
+ *
+ *   stripCharacterRefs is called during character deletion. It ends
+ *   the character's memberships rather than deleting entries, so
+ *   historical records survive.
+ *
+ * REMOVE-GROUP-RECORD IS LOW-LEVEL:
+ *   removeGroupRecord deletes the group record from the group store.
+ *   It does NOT remove teaching sessions owned by the group. Cross-
+ *   domain callers that want a group and its sessions removed in one
+ *   transaction use AcademySchedule.removeTeachingGroup, which is
+ *   the compound operation that owns that orchestration.
+ *
+ * DEPENDENCIES (MANDATORY):
+ *   - window.ObjectUtils
+ *   - window.ValidationUtils
+ *   - window.CalendarValidation
+ *   - window.CalendarConstants
+ *   - window.RangeUtils
+ *   - window.MutationPipeline
+ *   - window.AcademyClasses
+ *   - window.AcademyDisciplines
+ *   - window.CharacterQueries
+ *   - window.IdUtils
+ *
+ * USAGE:
+ *   AcademyTeachingGroups.createGroup(classId, disciplineId, instructorId, week)
+ *       .then(...);
+ *   AcademyTeachingGroups.addMemberToGroup(groupId, charId, week)
+ *       .then(...);
+ *   AcademyTeachingGroups.endMembership(groupId, charId, effectiveWeek)
+ *       .then(...);
  */
 
 (function() {
@@ -106,16 +148,19 @@
     var AcademyClasses = window.AcademyClasses;
     var AcademyDisciplines = window.AcademyDisciplines;
     var CharacterQueries = window.CharacterQueries;
+    var IdUtils = window.IdUtils;
 
     var _missing = [];
 
     if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
         _missing.push('ObjectUtils.deepClone');
     }
-    if (!ValidationUtils || typeof ValidationUtils.isNonEmptyString !== 'function') {
+    if (!ValidationUtils ||
+        typeof ValidationUtils.isNonEmptyString !== 'function') {
         _missing.push('ValidationUtils.isNonEmptyString');
     }
-    if (!CalendarValidation || typeof CalendarValidation.parseWeek !== 'function') {
+    if (!CalendarValidation ||
+        typeof CalendarValidation.parseWeek !== 'function') {
         _missing.push('CalendarValidation.parseWeek');
     }
     if (!CalendarConstants ||
@@ -126,7 +171,8 @@
     if (!RangeUtils || typeof RangeUtils.containsWeek !== 'function') {
         _missing.push('RangeUtils.containsWeek');
     }
-    if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
+    if (!MutationPipeline ||
+        typeof MutationPipeline.performMutation !== 'function') {
         _missing.push('MutationPipeline.performMutation');
     }
     if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function') {
@@ -137,6 +183,9 @@
     }
     if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
         _missing.push('CharacterQueries.getCharacterById');
+    }
+    if (!IdUtils || typeof IdUtils.generateId !== 'function') {
+        _missing.push('IdUtils.generateId');
     }
 
     if (_missing.length > 0) {
@@ -154,6 +203,8 @@
 
     var MIN_WEEK = CalendarConstants.MIN_WEEK;
     var MAX_WEEK = CalendarConstants.MAX_WEEK;
+
+    var DEFAULT_GROUP_NAME_MAX_LENGTH = 60;
 
     // ============================================================
     // HELPERS
@@ -204,12 +255,13 @@
                String(instructorId);
     }
 
-    function generateGroupId() {
-        if (window.IdUtils && typeof window.IdUtils.generateId === 'function') {
-            return window.IdUtils.generateId('tgroup');
-        }
-        return 'tgroup_' + Date.now() + '_' +
-            Math.random().toString(36).slice(2, 8);
+    function resolveGroupNameMaxLength() {
+        // TeamConstants is not a dependency of this module, and
+        // group name length is not a team concern. The bound is
+        // local; callers that need a different one must state it
+        // here. This is not a silent truncation: an overlong name
+        // is rejected, not trimmed.
+        return DEFAULT_GROUP_NAME_MAX_LENGTH;
     }
 
     // ============================================================
@@ -226,13 +278,6 @@
     // group-shape null checks that RangeUtils cannot know about.
     // Everything else is delegation. Do not put range math here.
 
-    /**
-     * Is a member entry active during the given week?
-     *
-     * Shape checks (member must be an object with a numeric
-     * startWeek) belong here. The week-containment question
-     * belongs to RangeUtils.
-     */
     function memberActiveInWeek(member, week) {
         if (!member || typeof member !== 'object') {
             return false;
@@ -247,12 +292,6 @@
         );
     }
 
-    /**
-     * Is a group active during the given week?
-     *
-     * Shape checks belong here. The week-containment question
-     * belongs to RangeUtils.
-     */
     function groupActiveInWeek(group, week) {
         if (!group) {
             return false;
@@ -265,6 +304,34 @@
             group.startWeek,
             group.endWeek
         );
+    }
+
+    // ============================================================
+    // MEMBER INTERVAL OVERLAP
+    // ============================================================
+    //
+    // Two member entries overlap when their inclusive [start, end]
+    // ranges intersect. endWeek === null means unbounded.
+    //
+    // This predicate is local because RangeUtils.weeksOverlap works
+    // on bare week numbers and this shape carries startWeek /
+    // endWeek. The interval math itself is not reimplemented: the
+    // endpoint comparison is the same inclusive-overlap rule used
+    // everywhere.
+
+    function memberIntervalsOverlap(a, b) {
+        if (!a || !b) { return false; }
+        if (a.startWeek === null || a.startWeek === undefined) { return false; }
+        if (b.startWeek === null || b.startWeek === undefined) { return false; }
+
+        var aEnd = (a.endWeek === null || a.endWeek === undefined)
+            ? Infinity
+            : a.endWeek;
+        var bEnd = (b.endWeek === null || b.endWeek === undefined)
+            ? Infinity
+            : b.endWeek;
+
+        return a.startWeek <= bEnd && b.startWeek <= aEnd;
     }
 
     // ============================================================
@@ -311,6 +378,59 @@
             return null;
         }
         return store;
+    }
+
+    function getGroupFromSnapshot(appData, groupId) {
+        var store = getGroupStoreFromSnapshot(appData);
+        if (!store) { return null; }
+        if (!isNonEmptyString(groupId)) { return null; }
+        var record = store[String(groupId)];
+        if (!isPlainObject(record)) { return null; }
+        return record;
+    }
+
+    function findClassInSnapshot(appData, classId) {
+        if (!appData || !isPlainObject(appData.academy)) {
+            return null;
+        }
+        var store = appData.academy.graduatingClasses;
+        if (!isPlainObject(store)) { return null; }
+        if (!isNonEmptyString(classId)) { return null; }
+        var record = store[String(classId)];
+        if (!isPlainObject(record)) { return null; }
+        return record;
+    }
+
+    function findDisciplineInSnapshot(appData, disciplineId) {
+        if (!appData || !isPlainObject(appData.curriculum)) {
+            return null;
+        }
+        var list = appData.curriculum.disciplines;
+        if (!Array.isArray(list)) { return null; }
+        if (!isNonEmptyString(disciplineId)) { return null; }
+        var target = String(disciplineId);
+        for (var i = 0; i < list.length; i++) {
+            var d = list[i];
+            if (d && String(d.id) === target) {
+                return d;
+            }
+        }
+        return null;
+    }
+
+    function findCharacterInSnapshot(appData, charId) {
+        if (!appData || !Array.isArray(appData.characters)) {
+            return null;
+        }
+        if (!isNonEmptyString(charId)) { return null; }
+        var target = String(charId);
+        for (var i = 0; i < appData.characters.length; i++) {
+            var c = appData.characters[i];
+            if (c && String(c.id) === target) {
+                return c;
+            }
+        }
+        return null;
     }
 
     function ensureGroupStore(appData) {
@@ -373,7 +493,7 @@
     }
 
     // ============================================================
-    // VALIDATION
+    // VALIDATION - preflight (live reads)
     // ============================================================
 
     function validateInstructor(instructorId) {
@@ -432,6 +552,88 @@
             };
         }
         return { valid: true, startWeek: startNum, endWeek: endNum };
+    }
+
+    // ============================================================
+    // INTERNAL PREDICATES
+    // ============================================================
+
+    /**
+     * Count the member entries on the group that have at least one
+     * interval containing `weekNum`.
+     */
+    function countActiveMemberEntries(group, charId, weekNum) {
+        if (!group || !Array.isArray(group.members)) { return 0; }
+        var target = String(charId);
+        var count = 0;
+        for (var i = 0; i < group.members.length; i++) {
+            var m = group.members[i];
+            if (!m) { continue; }
+            if (String(m.characterId) !== target) { continue; }
+            if (memberActiveInWeek(m, weekNum)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * Does adding an interval at `weekNum` (open-ended) conflict
+     * with any existing interval for this character on this group
+     * that is NOT already active at `weekNum`?
+     *
+     * The membership invariant is "at most one active interval per
+     * character per group at any given week." A character who is
+     * already active at weekNum is asking for a state that already
+     * holds — a no-op, not a conflict.
+     *
+     * A character who is NOT active at weekNum but who has an
+     * existing interval that would still overlap [weekNum, ∞) is a
+     * real conflict: the proposed interval would create two
+     * simultaneous stints.
+     *
+     * Returns the conflicting entry, or null.
+     */
+    function findConflictOnAdd(group, charId, weekNum) {
+        if (!group || !Array.isArray(group.members)) { return null; }
+        var target = String(charId);
+        var proposed = { startWeek: weekNum, endWeek: null };
+
+        for (var i = 0; i < group.members.length; i++) {
+            var m = group.members[i];
+            if (!m) { continue; }
+            if (String(m.characterId) !== target) { continue; }
+
+            // Already active at weekNum? Then the requested state
+            // already holds. Not a conflict.
+            if (memberActiveInWeek(m, weekNum)) {
+                continue;
+            }
+
+            if (memberIntervalsOverlap(m, proposed)) {
+                return m;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Find every entry for this character that has at least one
+     * interval containing `weekNum`.
+     */
+    function findActiveEntriesForWeek(group, charId, weekNum) {
+        var result = [];
+        if (!group || !Array.isArray(group.members)) { return result; }
+        var target = String(charId);
+        for (var i = 0; i < group.members.length; i++) {
+            var m = group.members[i];
+            if (!m) { continue; }
+            if (String(m.characterId) !== target) { continue; }
+            if (memberActiveInWeek(m, weekNum)) {
+                result.push(m);
+            }
+        }
+        return result;
     }
 
     // ============================================================
@@ -640,6 +842,57 @@
     }
 
     // ============================================================
+    // SEQUENCE VALIDATION
+    // ============================================================
+    //
+    // The sequence store records the LAST allocated group number for
+    // each (classId, disciplineId, instructorId) triple. The next
+    // number is the recorded value plus one.
+    //
+    // Three states:
+    //   - key absent               -> nextNumber = 1
+    //   - key present, valid int >= 0 -> nextNumber = stored + 1
+    //   - key present, malformed   -> throw
+    //
+    // The third state is a data-integrity failure. Treating a
+    // corrupt sequence as "no sequence" would silently reuse group
+    // numbers, and the sequence contract (monotonic per triple) is
+    // load-bearing for display names and for reasoning about
+    // historical groups.
+
+    function allocateGroupNumber(seqStore, seqKey) {
+        if (!isPlainObject(seqStore)) {
+            throw new Error(
+                '[AcademyTeachingGroups] The sequence store is not ' +
+                'available on the snapshot.'
+            );
+        }
+
+        var stored = seqStore[seqKey];
+
+        if (stored === undefined) {
+            seqStore[seqKey] = 1;
+            return 1;
+        }
+
+        if (typeof stored !== 'number' ||
+            !isFinite(stored) ||
+            !Number.isInteger(stored) ||
+            stored < 0) {
+            throw new Error(
+                '[AcademyTeachingGroups] The group-number sequence ' +
+                'for "' + seqKey + '" is malformed (' +
+                JSON.stringify(stored) + '). Fix the stored sequence ' +
+                'before creating more groups for this triple.'
+            );
+        }
+
+        var next = stored + 1;
+        seqStore[seqKey] = next;
+        return next;
+    }
+
+    // ============================================================
     // MUTATIONS
     // ============================================================
 
@@ -674,24 +927,60 @@
         var targetInstructor = String(instructorId);
         var seqKey = makeSequenceKey(targetClass, targetDiscipline, targetInstructor);
 
-        var newGroupId = null;
+        // Generate the ID outside the pipeline. The pipeline
+        // validator checks it for collision against the snapshot;
+        // a collision is essentially impossible with IdUtils, but
+        // the check is cheap and the contract is "ID is unique in
+        // the resulting store."
+        var newGroupId = IdUtils.generateId('tgroup');
 
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
+
+                // References must exist in the snapshot.
+                if (!findClassInSnapshot(appData, targetClass)) {
+                    return {
+                        valid: false,
+                        message: 'Class no longer exists.'
+                    };
+                }
+                if (!findDisciplineInSnapshot(appData, targetDiscipline)) {
+                    return {
+                        valid: false,
+                        message: 'Discipline no longer exists.'
+                    };
+                }
+                if (!findCharacterInSnapshot(appData, targetInstructor)) {
+                    return {
+                        valid: false,
+                        message: 'Instructor no longer exists.'
+                    };
+                }
+
+                // The generated ID must not collide in the snapshot.
+                var groupStore = getGroupStoreFromSnapshot(appData);
+                if (groupStore && groupStore[newGroupId]) {
+                    return {
+                        valid: false,
+                        message: 'Group ID collision.'
+                    };
+                }
+
                 return { valid: true };
             },
             mutate: function(appData) {
                 var groupStore = ensureGroupStore(appData);
                 var seqStore = ensureSequenceStore(appData);
 
-                var nextNumber = 1;
-                if (typeof seqStore[seqKey] === 'number' && seqStore[seqKey] >= 0) {
-                    nextNumber = seqStore[seqKey] + 1;
-                }
-                seqStore[seqKey] = nextNumber;
+                // allocateGroupNumber throws on a malformed sequence;
+                // the throw rolls back the transaction.
+                var nextNumber = allocateGroupNumber(seqStore, seqKey);
 
                 var group = buildNewGroupRecord(
                     targetClass,
@@ -701,13 +990,10 @@
                     weekNum
                 );
 
-                var generatedId = generateGroupId();
-                group.id = generatedId;
-                newGroupId = generatedId;
+                group.id = newGroupId;
+                groupStore[newGroupId] = group;
 
-                groupStore[generatedId] = group;
-
-                return { group: deepClone(group), groupId: generatedId };
+                return { group: deepClone(group), groupId: newGroupId };
             },
             logMessage: 'Created teaching group for ' +
                 (cdCheck.discipline.name || targetDiscipline) +
@@ -720,8 +1006,14 @@
     /**
      * Add a member to a group. Records "from `week` onward."
      *
-     * If the member already has an active membership at `week`,
-     * this is a no-op.
+     * MEMBERSHIP INVARIANT:
+     *   If the member already has an interval on this group that
+     *   contains `week`, this is a no-op.
+     *
+     *   Otherwise, if the member has any interval on this group
+     *   that would overlap [week, ∞), the operation is rejected.
+     *   The proposed interval would create two simultaneous stints
+     *   for the same character on the same group.
      */
     function addMemberToGroup(groupId, charId, week) {
         if (!isNonEmptyString(groupId)) {
@@ -738,6 +1030,11 @@
             );
         }
 
+        var liveGroup = getGroupInternal(groupId);
+        if (!liveGroup) {
+            return Promise.resolve(failure('Teaching group not found.'));
+        }
+
         var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
             return Promise.resolve(failure('Character not found.'));
@@ -746,33 +1043,80 @@
         var targetGroup = String(groupId);
         var targetChar = String(charId);
 
+        // Preflight: already active at this week (live store)?
+        if (isMemberOfGroup(targetGroup, targetChar, weekNum)) {
+            return Promise.resolve({
+                success: true,
+                data: { added: false, reason: 'already-active' }
+            });
+        }
+
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
+
+                // Group must exist in the snapshot.
+                var snapshotGroup = getGroupFromSnapshot(appData, targetGroup);
+                if (!snapshotGroup) {
+                    return {
+                        valid: false,
+                        message: 'Teaching group no longer exists.'
+                    };
+                }
+
+                // Character must exist in the snapshot.
+                if (!findCharacterInSnapshot(appData, targetChar)) {
+                    return {
+                        valid: false,
+                        message: 'Character no longer exists.'
+                    };
+                }
+
+                // Membership invariant against the snapshot.
+                // Already active at this week -> no-op, allowed.
+                // Any other overlap -> reject.
+                var activeCount = countActiveMemberEntries(
+                    snapshotGroup, targetChar, weekNum
+                );
+                if (activeCount > 0) {
+                    return { valid: true };
+                }
+
+                var conflict = findConflictOnAdd(
+                    snapshotGroup, targetChar, weekNum
+                );
+                if (conflict) {
+                    return {
+                        valid: false,
+                        message:
+                            'This character already has an overlapping ' +
+                            'stint on this group (from week ' +
+                            conflict.startWeek + ').'
+                    };
+                }
+
                 return { valid: true };
             },
             mutate: function(appData) {
                 var store = getGroupStoreFromSnapshot(appData);
-                if (!store) {
-                    throw new Error('Teaching group store is not available.');
+                if (!store || !isPlainObject(store[targetGroup])) {
+                    throw new Error('Teaching group not found in store.');
                 }
                 var group = store[targetGroup];
-                if (!isPlainObject(group)) {
-                    throw new Error('Teaching group not found.');
-                }
                 if (!Array.isArray(group.members)) {
                     group.members = [];
                 }
 
-                // Existing active membership at this week? No-op.
-                for (var i = 0; i < group.members.length; i++) {
-                    var m = group.members[i];
-                    if (String(m.characterId) === targetChar &&
-                        memberActiveInWeek(m, weekNum)) {
-                        return { added: false, reason: 'already-active' };
-                    }
+                var activeCount = countActiveMemberEntries(
+                    group, targetChar, weekNum
+                );
+                if (activeCount > 0) {
+                    return { added: false, reason: 'already-active' };
                 }
 
                 group.members.push({
@@ -792,8 +1136,14 @@
     /**
      * End a member's participation from `effectiveWeek` onward.
      *
-     * Drop-out semantics: truncates the active window at effectiveWeek - 1.
-     * History survives.
+     * Drop-out semantics: truncates the active window at
+     * effectiveWeek - 1. History survives.
+     *
+     * MEMBERSHIP INVARIANT:
+     *   Exactly one active interval at effectiveWeek is the normal
+     *   case. Zero is a no-op. More than one means stored history
+     *   has overlapping stints for the same character on the same
+     *   group — a data-integrity failure. Throwing surfaces it.
      */
     function endMembership(groupId, charId, effectiveWeek) {
         if (!isNonEmptyString(groupId) || !isNonEmptyString(charId)) {
@@ -813,33 +1163,68 @@
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
+
+                var snapshotGroup = getGroupFromSnapshot(appData, targetGroup);
+                if (!snapshotGroup) {
+                    return {
+                        valid: false,
+                        message: 'Teaching group no longer exists.'
+                    };
+                }
+
+                var activeEntries = findActiveEntriesForWeek(
+                    snapshotGroup, targetChar, weekNum
+                );
+
+                if (activeEntries.length > 1) {
+                    return {
+                        valid: false,
+                        message:
+                            'Stored membership history has ' +
+                            activeEntries.length + ' overlapping stints ' +
+                            'for this character at week ' + weekNum +
+                            '. Repair the stored intervals before ' +
+                            'ending membership.'
+                    };
+                }
+
                 return { valid: true };
             },
             mutate: function(appData) {
                 var store = getGroupStoreFromSnapshot(appData);
-                if (!store) {
-                    return { ended: false, reason: 'no-store' };
-                }
-                var group = store[targetGroup];
-                if (!isPlainObject(group) || !Array.isArray(group.members)) {
+                if (!store || !isPlainObject(store[targetGroup])) {
                     return { ended: false, reason: 'no-group' };
                 }
-
-                var matched = null;
-                for (var i = 0; i < group.members.length; i++) {
-                    var m = group.members[i];
-                    if (String(m.characterId) !== targetChar) { continue; }
-                    if (memberActiveInWeek(m, weekNum)) {
-                        matched = m;
-                        break;
-                    }
+                var group = store[targetGroup];
+                if (!Array.isArray(group.members)) {
+                    return { ended: false, reason: 'no-members' };
                 }
 
-                if (!matched) {
+                var activeEntries = findActiveEntriesForWeek(
+                    group, targetChar, weekNum
+                );
+
+                if (activeEntries.length === 0) {
                     return { ended: false, reason: 'not-active' };
                 }
+
+                if (activeEntries.length > 1) {
+                    // Should be unreachable: validate() rejects
+                    // this case. Kept as a defensive assertion so
+                    // a diverged validate/mutate pair fails loudly
+                    // rather than silently truncating one interval.
+                    throw new Error(
+                        'Multiple active intervals found during end.'
+                    );
+                }
+
+                var matched = activeEntries[0];
+
                 if (matched.startWeek >= weekNum) {
                     return { ended: false, reason: 'starts-after' };
                 }
@@ -858,6 +1243,11 @@
     /**
      * Hard-delete a member's record from a group entirely.
      * Administrative cleanup only.
+     *
+     * Returns { removed: N } so callers can see how many entries
+     * were affected. Under normal history, N is 0 or 1; a corrupt
+     * store with duplicate entries for the same character returns
+     * the count of all entries removed.
      */
     function removeMemberRecord(groupId, charId) {
         if (!isNonEmptyString(groupId) || !isNonEmptyString(charId)) {
@@ -870,30 +1260,40 @@
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+                if (!getGroupFromSnapshot(appData, targetGroup)) {
+                    return {
+                        valid: false,
+                        message: 'Teaching group no longer exists.'
+                    };
                 }
                 return { valid: true };
             },
             mutate: function(appData) {
                 var store = getGroupStoreFromSnapshot(appData);
-                if (!store) {
-                    return { removed: false };
+                if (!store || !isPlainObject(store[targetGroup])) {
+                    return { removed: 0 };
                 }
                 var group = store[targetGroup];
-                if (!isPlainObject(group) || !Array.isArray(group.members)) {
-                    return { removed: false };
+                if (!Array.isArray(group.members)) {
+                    return { removed: 0 };
                 }
                 var before = group.members.length;
                 group.members = group.members.filter(function(m) {
-                    return String(m.characterId) !== targetChar;
+                    return !m ||
+                        String(m.characterId) !== targetChar;
                 });
                 var removed = before - group.members.length;
                 if (removed > 0) {
                     group.updatedAt = new Date().toISOString();
                 }
-                return { removed: removed > 0 };
+                return { removed: removed };
             },
-            logMessage: 'Removed membership record for ' + targetChar,
+            logMessage: 'Removed membership record(s) for ' + targetChar,
             successMessage: 'Membership record removed.',
             failureMessage: 'Failed to remove membership record.'
         });
@@ -921,15 +1321,34 @@
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+                var snapshotGroup = getGroupFromSnapshot(appData, targetGroup);
+                if (!snapshotGroup) {
+                    return {
+                        valid: false,
+                        message: 'Teaching group no longer exists.'
+                    };
+                }
+                if (snapshotGroup.startWeek >= weekNum) {
+                    return {
+                        valid: false,
+                        message:
+                            'Effective week would end the group before ' +
+                            'it begins.'
+                    };
                 }
                 return { valid: true };
             },
             mutate: function(appData) {
                 var store = getGroupStoreFromSnapshot(appData);
-                if (!store) { return { ended: false }; }
+                if (!store || !isPlainObject(store[targetGroup])) {
+                    return { ended: false };
+                }
                 var group = store[targetGroup];
-                if (!isPlainObject(group)) { return { ended: false }; }
                 if (group.startWeek >= weekNum) {
                     return { ended: false, reason: 'starts-after' };
                 }
@@ -946,6 +1365,9 @@
     /**
      * Set or clear the group's custom name.
      * Pass null to revert to the auto-generated name.
+     *
+     * Overlong names are REJECTED, not truncated. Silent truncation
+     * hides user error; the caller must supply a name within bounds.
      */
     function setGroupCustomName(groupId, customName) {
         if (!isNonEmptyString(groupId)) {
@@ -959,21 +1381,42 @@
                 return Promise.resolve(failure('Custom name must be a string or null.'));
             }
             var trimmed = customName.trim();
-            name = trimmed === '' ? null : trimmed;
+            if (trimmed === '') {
+                name = null;
+            } else {
+                var maxLength = resolveGroupNameMaxLength();
+                if (trimmed.length > maxLength) {
+                    return Promise.resolve(failure(
+                        'Group name must be ' + maxLength +
+                        ' characters or fewer.'
+                    ));
+                }
+                name = trimmed;
+            }
         }
 
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+                if (!getGroupFromSnapshot(appData, targetGroup)) {
+                    return {
+                        valid: false,
+                        message: 'Teaching group no longer exists.'
+                    };
                 }
                 return { valid: true };
             },
             mutate: function(appData) {
                 var store = getGroupStoreFromSnapshot(appData);
-                if (!store) { return { changed: false }; }
+                if (!store || !isPlainObject(store[targetGroup])) {
+                    return { changed: false };
+                }
                 var group = store[targetGroup];
-                if (!isPlainObject(group)) { return { changed: false }; }
                 group.customName = name;
                 group.updatedAt = new Date().toISOString();
                 return { changed: true };
@@ -988,6 +1431,13 @@
      * Hard-delete a teaching group. Reserved for administrative
      * cleanup and for cascade deletes. Ordinary "this group is over"
      * is endGroup.
+     *
+     * LOW-LEVEL PRIMITIVE: this function does NOT remove teaching
+     * sessions owned by the group. Sessions that reference the
+     * deleted group become orphans. Cross-domain callers that need
+     * the group and its sessions removed in one transaction use
+     * AcademySchedule.removeTeachingGroup, which is the compound
+     * operation that owns that orchestration.
      */
     function removeGroupRecord(groupId) {
         if (!isNonEmptyString(groupId)) {
@@ -999,7 +1449,10 @@
         return MutationPipeline.performMutation({
             validate: function(appData) {
                 if (!appData || typeof appData !== 'object') {
-                    return { valid: false, message: 'Application data is not available.' };
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
                 }
                 return { valid: true };
             },
@@ -1020,6 +1473,24 @@
     // ============================================================
     // CASCADE HELPERS
     // ============================================================
+    //
+    // All four helpers run inside another module's pipeline
+    // transaction. A missing or malformed group store on the
+    // snapshot is a data-integrity failure for a destructive
+    // cascade; the helper throws rather than silently reporting a
+    // zero-count success.
+
+    function assertGroupStorePresent(appData, helperName) {
+        var store = getGroupStoreFromSnapshot(appData);
+        if (!store) {
+            throw new Error(
+                '[AcademyTeachingGroups] ' + helperName + ' requires ' +
+                'the teachingGroups store on the snapshot. The store ' +
+                'is missing or malformed; the cascade cannot proceed.'
+            );
+        }
+        return store;
+    }
 
     /**
      * End every membership for a character across all groups, from
@@ -1035,10 +1506,7 @@
             return result;
         }
 
-        var store = getGroupStoreFromSnapshot(appData);
-        if (!store) {
-            return result;
-        }
+        var store = assertGroupStorePresent(appData, 'stripCharacterRefs');
 
         var weekNum = null;
         if (effectiveWeek !== undefined && effectiveWeek !== null) {
@@ -1103,10 +1571,7 @@
             return result;
         }
 
-        var store = getGroupStoreFromSnapshot(appData);
-        if (!store) {
-            return result;
-        }
+        var store = assertGroupStorePresent(appData, 'stripClassRefs');
 
         var target = String(classId);
         var groupIds = Object.keys(store);
@@ -1134,10 +1599,7 @@
             return result;
         }
 
-        var store = getGroupStoreFromSnapshot(appData);
-        if (!store) {
-            return result;
-        }
+        var store = assertGroupStorePresent(appData, 'stripDisciplineRefs');
 
         var target = String(disciplineId);
         var groupIds = Object.keys(store);
@@ -1165,10 +1627,7 @@
             return result;
         }
 
-        var store = getGroupStoreFromSnapshot(appData);
-        if (!store) {
-            return result;
-        }
+        var store = assertGroupStorePresent(appData, 'stripInstructorRefs');
 
         var target = String(instructorId);
         var groupIds = Object.keys(store);
@@ -1250,10 +1709,7 @@
             console.warn('[AcademyTeachingGroups] Verification missing:', missing.join(', '));
         }
 
-        // Smoke test the delegating range wrappers. These exercise
-        // the delegation and the shape checks, without touching any
-        // store. A failure here means the RangeUtils delegation or
-        // the shape guards are broken.
+        // Smoke test the range wrappers and the overlap predicate.
         try {
             var activeMember = { characterId: 'c1', startWeek: 1, endWeek: 10 };
             var ongoingMember = { characterId: 'c2', startWeek: 5, endWeek: null };
@@ -1296,6 +1752,32 @@
             }
             if (groupActiveInWeek(null, 5) !== false) {
                 missing.push('groupActiveInWeek accepted a null group');
+            }
+
+            // Overlap predicate.
+            if (memberIntervalsOverlap(
+                { startWeek: 1, endWeek: 10 },
+                { startWeek: 11, endWeek: 20 }
+            ) !== false) {
+                missing.push('memberIntervalsOverlap flagged disjoint');
+            }
+            if (memberIntervalsOverlap(
+                { startWeek: 1, endWeek: 10 },
+                { startWeek: 10, endWeek: 20 }
+            ) !== true) {
+                missing.push('memberIntervalsOverlap missed inclusive endpoint');
+            }
+            if (memberIntervalsOverlap(
+                { startWeek: 1, endWeek: 10 },
+                { startWeek: 5, endWeek: null }
+            ) !== true) {
+                missing.push('memberIntervalsOverlap missed open-ended overlap');
+            }
+            if (memberIntervalsOverlap(
+                { startWeek: null, endWeek: 10 },
+                { startWeek: 1, endWeek: 10 }
+            ) !== false) {
+                missing.push('memberIntervalsOverlap accepted a null startWeek');
             }
         } catch (e) {
             missing.push('range-wrapper smoke test threw: ' + e.message);
