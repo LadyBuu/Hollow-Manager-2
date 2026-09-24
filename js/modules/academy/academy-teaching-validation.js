@@ -15,6 +15,8 @@
  *     session's window must be contained within its group's window.
  *   - Null-group warnings: a session whose group no longer exists.
  *   - Empty-roster warnings: a session with no students for the week.
+ *   - Configuration warnings: a class-discipline whose effective
+ *     config is missing or whose weeklyHours is malformed.
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - Hard errors. Every check here is warning-only. Whether a
@@ -62,7 +64,7 @@
  *   student is not rostered for are excluded (the projector
  *   already excludes them from studentIds).
  *
- *   ACTIVE-DISCIPLINE GUARD (this revision):
+ *   ACTIVE-DISCIPLINE GUARD:
  *     A discipline that does not run in the queried week is NOT
  *     part of the report. The report answers "how is the student
  *     doing in the disciplines that run this week?", and a
@@ -81,15 +83,31 @@
  *
  *     The row is now omitted entirely. The absence is the answer.
  *
+ *   CONFIGURATION GUARD:
+ *     A class-discipline whose effective config is missing or
+ *     whose weeklyHours is malformed produces a structured
+ *     `configuration` warning. The row is NOT emitted in the
+ *     weekly-hours list. See getEffectiveConfig's contract for
+ *     what "missing" means.
+ *
+ *   No exceptions propagate from missing config or malformed
+ *   weeklyHours. This module is warning-only; a data-integrity
+ *   problem surfaces as a warning, not as a thrown error.
+ *
  * CLASS-DISCIPLINE READS:
  *   The class-discipline marker store has two modules: a mutation
  *   module (AcademyClassDisciplines) and a read module
  *   (AcademyClassDisciplinesQueries). This validator reads through
  *   the read module.
  *
- *   The two reads it performs are `getEffectiveConfig` (to resolve
- *   the discipline's weeklyHours) and `isActiveInWeek` (to filter
- *   the report to running disciplines).
+ *   The three reads it performs:
+ *     - getEffectiveConfig (to resolve the discipline's weeklyHours)
+ *     - isActiveInWeek (to filter the report to running disciplines)
+ *     - getClassDisciplinesForClass (to enumerate the class's
+ *       offerings for the configuration guard)
+ *
+ *   Every read propagates its exceptions. A query failure is not
+ *   converted to "no configuration" or "not active."
  *
  * RANGE PREDICATES:
  *   The range question — "does this range contain this week" and
@@ -98,6 +116,39 @@
  *
  *   `rangeContained` is a local composition: it asks RangeUtils
  *   twice, once per bound, and ANDs the answers.
+ *
+ * PROJECTOR OCCURRENCES:
+ *   The projector is a trusted canonical layer. A malformed
+ *   occurrence in its output is a bug in the projector, not
+ *   evidence that the occurrence is absent. accumulateMinutes
+ *   treats a malformed occurrence as an error and throws.
+ *
+ *   `null` / non-object occurrences, non-array studentIds, and
+ *   missing durations all fail the assertion. A legitimate
+ *   semantic absence (a session outside the week, a discipline
+ *   not active) is filtered by the projector and never reaches
+ *   this function.
+ *
+ * CLASS ATTRIBUTION OF INVARIANT WARNINGS:
+ *   The validateClass() report filters invariant warnings by
+ *   `context.classId`. For the filter to work, every invariant
+ *   that can be attributed to a class must carry its classId.
+ *
+ *   The warnings that are class-attributable:
+ *     membership-outside-enrolment   group.classId
+ *     session-outside-group          session's group.classId
+ *     empty-roster                   occurrence.classId
+ *
+ *   The warnings that are NOT class-attributable:
+ *     session-group-missing          no group, no class
+ *     session-outside-group (when
+ *                                    no group, no class
+ *       the group is missing)
+ *
+ *   Both class- and non-class-attributable warnings are returned
+ *   from validateInvariants() (the unwrapped form). The
+ *   validateClass() wrapper filters to the requested class plus
+ *   the non-attributable set.
  *
  * REPORT SHAPES:
  *
@@ -121,8 +172,45 @@
  *              | 'session-group-missing'
  *              | 'empty-roster',
  *       message: string,
- *       context: object   // ids and details, shape depends on code
+ *       context: object
  *     }
+ *
+ *   Configuration warning:
+ *     {
+ *       kind: 'configuration',
+ *       code: 'config-missing'
+ *              | 'weekly-hours-malformed',
+ *       message: string,
+ *       context: {
+ *         classId,
+ *         disciplineId,
+ *         weeklyHours?: raw value
+ *       }
+ *     }
+ *
+ * INVALID-INPUT CONTRACT:
+ *   validateClass(classId, week) returns a structured result with
+ *   a `valid` boolean. When the input is invalid (missing classId,
+ *   malformed week, class not found), the result is:
+ *
+ *     {
+ *       valid: false,
+ *       classId: null,
+ *       week: null,
+ *       weeklyHours: [],
+ *       invariants: [],
+ *       warnings: [],
+ *       hasWarnings: false
+ *     }
+ *
+ *   The `valid: false` flag is what distinguishes "no warnings
+ *   because the class is clean" from "no warnings because the
+ *   input was rejected." Callers that only read hasWarnings see
+ *   false in both cases; callers that care read `valid`.
+ *
+ *   validateClassWeeklyHours and validateInvariants return []
+ *   for the same invalid inputs. They are lower-level and do not
+ *   carry a validity flag.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.CalendarConstants
@@ -133,6 +221,7 @@
  *   - window.AcademyTeachingSessions
  *   - window.AcademyClassDisciplinesQueries
  *   - window.AcademyEnrolments
+ *   - window.AcademyClasses
  */
 
 (function() {
@@ -155,6 +244,7 @@
     var AcademyClassDisciplinesQueries =
         window.AcademyClassDisciplinesQueries;
     var AcademyEnrolments = window.AcademyEnrolments;
+    var AcademyClasses = window.AcademyClasses;
 
     var _missing = [];
 
@@ -208,6 +298,11 @@
                 'AcademyClassDisciplinesQueries.isActiveInWeek'
             );
         }
+        if (typeof AcademyClassDisciplinesQueries.getClassDisciplinesForClass !== 'function') {
+            _missing.push(
+                'AcademyClassDisciplinesQueries.getClassDisciplinesForClass'
+            );
+        }
     }
     if (!AcademyEnrolments) {
         _missing.push('AcademyEnrolments (module)');
@@ -221,6 +316,10 @@
         if (typeof AcademyEnrolments.isEnrolledInWeek !== 'function') {
             _missing.push('AcademyEnrolments.isEnrolledInWeek');
         }
+    }
+    if (!AcademyClasses ||
+        typeof AcademyClasses.getClass !== 'function') {
+        _missing.push('AcademyClasses.getClass');
     }
 
     if (_missing.length > 0) {
@@ -298,6 +397,97 @@
     }
 
     // ============================================================
+    // CONFIGURATION WARNING BUILDERS
+    // ============================================================
+
+    function buildConfigurationWarning(code, message, context) {
+        return {
+            kind: 'configuration',
+            code: code,
+            message: message,
+            context: context || {}
+        };
+    }
+
+    /**
+     * Read the effective config for a (classId, disciplineId) pair
+     * and decide whether the pair is configurable.
+     *
+     * Returns one of:
+     *
+     *   { ok: true, targetMinutes: number }
+     *     The config is present and weeklyHours is a finite
+     *     non-negative number. targetMinutes is weeklyHours * 60.
+     *
+     *   { ok: false, warning: <configuration-warning> }
+     *     The config is missing entirely, or its weeklyHours is
+     *     malformed. The caller emits the warning and skips the
+     *     row.
+     *
+     * The contract for "missing" is: getEffectiveConfig returned
+     * null. That happens when either the class-discipline marker
+     * is absent or the underlying discipline record is absent.
+     * Both are integrity problems from this module's point of
+     * view; the warning message names them collectively.
+     *
+     * The contract for "malformed weeklyHours" is: the value is
+     * present but is not a finite non-negative number. Missing
+     * weeklyHours on the config is treated as malformed for the
+     * same reason: the effective config is supposed to resolve a
+     * number, and the absence of that number is a data-integrity
+     * failure, not "zero hours."
+     */
+    function readConfigTargetMinutes(classId, disciplineId) {
+        var config = AcademyClassDisciplinesQueries.getEffectiveConfig(
+            classId, disciplineId
+        );
+
+        if (!config) {
+            return {
+                ok: false,
+                warning: buildConfigurationWarning(
+                    'config-missing',
+                    'No configuration exists for this class-discipline. ' +
+                    'The marker is absent, or the discipline record is ' +
+                    'missing.',
+                    {
+                        classId: String(classId),
+                        disciplineId: String(disciplineId)
+                    }
+                )
+            };
+        }
+
+        var hours = config.weeklyHours;
+
+        if (typeof hours !== 'number' ||
+            !isFinite(hours) ||
+            hours < 0) {
+            return {
+                ok: false,
+                warning: buildConfigurationWarning(
+                    'weekly-hours-malformed',
+                    'The effective configuration for this ' +
+                    'class-discipline has a malformed weeklyHours ' +
+                    'value. Expected a finite non-negative number.',
+                    {
+                        classId: String(classId),
+                        disciplineId: String(disciplineId),
+                        weeklyHours: hours === undefined
+                            ? null
+                            : hours
+                    }
+                )
+            };
+        }
+
+        return {
+            ok: true,
+            targetMinutes: hours * 60
+        };
+    }
+
+    // ============================================================
     // WEEKLY HOURS VALIDATION
     // ============================================================
 
@@ -309,29 +499,47 @@
      *   A discipline that is not active in the given week does not
      *   appear in the report. See the file header.
      *
+     * CONFIGURATION GUARD:
+     *   A class-discipline whose effective config is missing or
+     *   whose weeklyHours is malformed produces a configuration
+     *   warning and does not appear in the weekly-hours list.
+     *
+     * Query failures propagate. isActiveInWeek and getEffectiveConfig
+     * are mandatory dependencies; a thrown exception is not
+     * converted to "not active" or "no config."
+     *
      * @param {string} classId
      * @param {number|string} week
-     * @returns {array} Array of report entries.
+     * @returns {object} { rows: [...], warnings: [...] }
      */
-    function validateClassWeeklyHours(classId, week) {
+    function validateClassWeeklyHoursDetailed(classId, week) {
         var weekNum = parseWeekStrict(week);
         if (weekNum === null || !isNonEmptyString(classId)) {
-            return [];
+            return { rows: [], warnings: [] };
         }
 
         var target = String(classId);
 
         var enrolments = AcademyEnrolments.getClassEnrolments(target);
         if (!enrolments || typeof enrolments !== 'object') {
-            return [];
+            return { rows: [], warnings: [] };
         }
 
         var minutesByStudentDiscipline = accumulateMinutes(
             target, weekNum
         );
 
+        // Configuration cache. The (classId, disciplineId) pair
+        // determines whether a row is applicable and what its
+        // target is; computing it once per pair keeps the report
+        // from making the same call per student.
+        var configCache = Object.create(null);
+        var warningsByDiscipline = Object.create(null);
+
         var reports = [];
+        var warnings = [];
         var studentIds = Object.keys(enrolments);
+
         for (var i = 0; i < studentIds.length; i++) {
             var studentId = studentIds[i];
             var disciplines = enrolments[studentId];
@@ -354,33 +562,40 @@
                 // The discipline must be running during the given
                 // week. A discipline that starts in week 5 has no
                 // business appearing in a week-1 report.
-                //
-                // The check reads the discipline's own startWeek /
-                // endWeek through the canonical query. The projector
-                // already applies the same check when building
-                // occurrences, so the scheduled-minutes side was
-                // already correct; this guard corrects the target
-                // side.
-                var isActive = false;
-                try {
-                    isActive = AcademyClassDisciplinesQueries
-                        .isActiveInWeek(
-                            target, disciplineId, weekNum
-                        ) === true;
-                } catch (e) {
-                    isActive = false;
-                }
+                var isActive = AcademyClassDisciplinesQueries
+                    .isActiveInWeek(
+                        target, disciplineId, weekNum
+                    ) === true;
 
                 if (!isActive) {
                     continue;
                 }
 
-                var key = studentId + '::' + disciplineId;
-                var scheduledMinutes = minutesByStudentDiscipline[key] || 0;
+                // ---- CONFIGURATION GUARD ----
+                var configKey = target + '::' + String(disciplineId);
+                var configResult = configCache[configKey];
+                if (!configResult) {
+                    configResult = readConfigTargetMinutes(
+                        target, disciplineId
+                    );
+                    configCache[configKey] = configResult;
+                }
 
-                var targetMinutes = resolveTargetMinutes(
-                    target, disciplineId
-                );
+                if (configResult.ok !== true) {
+                    // Emit the warning once per (class, discipline)
+                    // pair, not once per enrolled student.
+                    if (!warningsByDiscipline[configKey]) {
+                        warningsByDiscipline[configKey] = true;
+                        warnings.push(configResult.warning);
+                    }
+                    continue;
+                }
+
+                var key = studentId + '::' + disciplineId;
+                var scheduledMinutes =
+                    minutesByStudentDiscipline[key] || 0;
+
+                var targetMinutes = configResult.targetMinutes;
 
                 var difference = scheduledMinutes - targetMinutes;
                 var status;
@@ -412,7 +627,16 @@
             return a.studentId < b.studentId ? -1 : 1;
         });
 
-        return reports;
+        return { rows: reports, warnings: warnings };
+    }
+
+    /**
+     * Public wrapper. Returns just the rows, matching the previous
+     * shape. Callers that need the configuration warnings use
+     * validateClassWeeklyHoursDetailed.
+     */
+    function validateClassWeeklyHours(classId, week) {
+        return validateClassWeeklyHoursDetailed(classId, week).rows;
     }
 
     /**
@@ -421,17 +645,54 @@
      *
      * The projector already filters occurrences to disciplines
      * active in the week. No additional guard is needed here.
+     *
+     * PROJECTOR OUTPUT IS TRUSTED:
+     *   A malformed occurrence throws. The projector is the
+     *   canonical projection layer; a non-object entry, a
+     *   non-array studentIds, or a missing duration is a bug in
+     *   the projector, not evidence that the occurrence is absent.
+     *   Converting the failure to "this occurrence does not count"
+     *   would silently under-report scheduled minutes.
      */
     function accumulateMinutes(classId, week) {
         var minutes = Object.create(null);
 
         var occurrences = Projector.projectForClass(classId, week);
+
+        if (!Array.isArray(occurrences)) {
+            throw new Error(
+                '[AcademyTeachingValidation] The projector returned a ' +
+                'non-array for projectForClass. This is a projector bug.'
+            );
+        }
+
         for (var i = 0; i < occurrences.length; i++) {
             var occ = occurrences[i];
-            if (!isPlainObject(occ)) { continue; }
-            if (!Array.isArray(occ.studentIds)) { continue; }
-            if (occ.duration === undefined || occ.duration === null) {
-                continue;
+
+            if (!isPlainObject(occ)) {
+                throw new Error(
+                    '[AcademyTeachingValidation] The projector emitted ' +
+                    'a non-object occurrence at index ' + i + '. ' +
+                    'Malformed projector output is an error, not an ' +
+                    'absence.'
+                );
+            }
+            if (!Array.isArray(occ.studentIds)) {
+                throw new Error(
+                    '[AcademyTeachingValidation] The projector emitted ' +
+                    'an occurrence without a studentIds array at index ' +
+                    i + '. Malformed projector output is an error, not ' +
+                    'an absence.'
+                );
+            }
+            if (typeof occ.duration !== 'number' ||
+                !isFinite(occ.duration)) {
+                throw new Error(
+                    '[AcademyTeachingValidation] The projector emitted ' +
+                    'an occurrence without a finite duration at index ' +
+                    i + '. Malformed projector output is an error, not ' +
+                    'an absence.'
+                );
             }
 
             var durationMinutes = occ.duration * 60;
@@ -446,24 +707,6 @@
         }
 
         return minutes;
-    }
-
-    /**
-     * Resolve the weekly-hours target (in minutes) for a
-     * (classId, disciplineId) pair.
-     */
-    function resolveTargetMinutes(classId, disciplineId) {
-        var config = AcademyClassDisciplinesQueries.getEffectiveConfig(
-            classId, disciplineId
-        );
-        if (!config) {
-            return 0;
-        }
-        var hours = config.weeklyHours;
-        if (typeof hours !== 'number' || !isFinite(hours) || hours < 0) {
-            return 0;
-        }
-        return hours * 60;
     }
 
     /**
@@ -546,9 +789,9 @@
                         ' has no enrolment for the group\'s ' +
                         'class-discipline.',
                         {
-                            groupId: group.id,
                             classId: classId,
                             disciplineId: disciplineId,
+                            groupId: group.id,
                             memberId: charId,
                             memberStartWeek: member.startWeek,
                             memberEndWeek: member.endWeek
@@ -567,9 +810,9 @@
                         ' has a membership window that is not ' +
                         'contained within their enrolment.',
                         {
-                            groupId: group.id,
                             classId: classId,
                             disciplineId: disciplineId,
+                            groupId: group.id,
                             memberId: charId,
                             memberStartWeek: member.startWeek,
                             memberEndWeek: member.endWeek,
@@ -599,11 +842,11 @@
     }
 
     function checkSessionsAgainstGroups(groups, out) {
-        var groupIds = Object.create(null);
+        var groupById = Object.create(null);
         for (var g = 0; g < groups.length; g++) {
             var group = groups[g];
             if (isPlainObject(group) && isNonEmptyString(group.id)) {
-                groupIds[String(group.id)] = group;
+                groupById[String(group.id)] = group;
             }
         }
 
@@ -625,8 +868,8 @@
                 continue;
             }
 
-            var group = groupIds[String(groupId)];
-            if (!group) {
+            var owningGroup = groupById[String(groupId)];
+            if (!owningGroup) {
                 out.push(buildInvariant(
                     'session-group-missing',
                     'Session ' + session.id +
@@ -641,8 +884,8 @@
 
             var sessionStart = session.startWeek;
             var sessionEnd = session.endWeek;
-            var groupStart = group.startWeek;
-            var groupEnd = group.endWeek;
+            var groupStart = owningGroup.startWeek;
+            var groupEnd = owningGroup.endWeek;
 
             var contained = rangeContained(
                 sessionStart, sessionEnd, groupStart, groupEnd
@@ -653,6 +896,8 @@
                     'Session ' + session.id +
                     ' window extends outside its group\'s window.',
                     {
+                        classId: owningGroup.classId || null,
+                        disciplineId: owningGroup.disciplineId || null,
                         sessionId: session.id,
                         groupId: String(groupId),
                         sessionStartWeek: sessionStart,
@@ -667,16 +912,37 @@
 
     function checkEmptyRosters(week, out) {
         var occurrences = Projector.projectWeek(week);
+
+        if (!Array.isArray(occurrences)) {
+            throw new Error(
+                '[AcademyTeachingValidation] The projector returned a ' +
+                'non-array for projectWeek. This is a projector bug.'
+            );
+        }
+
         for (var i = 0; i < occurrences.length; i++) {
             var occ = occurrences[i];
-            if (!isPlainObject(occ)) { continue; }
-            if (!Array.isArray(occ.studentIds)) { continue; }
+            if (!isPlainObject(occ)) {
+                throw new Error(
+                    '[AcademyTeachingValidation] The projector emitted ' +
+                    'a non-object occurrence at index ' + i + ' while ' +
+                    'checking empty rosters.'
+                );
+            }
+            if (!Array.isArray(occ.studentIds)) {
+                throw new Error(
+                    '[AcademyTeachingValidation] The projector emitted ' +
+                    'an occurrence without a studentIds array at index ' +
+                    i + ' while checking empty rosters.'
+                );
+            }
             if (occ.studentIds.length === 0) {
                 out.push(buildInvariant(
                     'empty-roster',
                     'Session ' + occ.sessionId +
                     ' has no students for week ' + week + '.',
                     {
+                        classId: occ.classId || null,
                         sessionId: occ.sessionId,
                         groupId: occ.groupId,
                         week: week
@@ -699,40 +965,73 @@
     // FULL REPORT
     // ============================================================
 
+    /**
+     * Full validation report for a (class, week) pair.
+     *
+     * Returns an object with `valid` distinguishing "input was
+     * accepted" from "input was rejected." See the file header
+     * for the invalid-input contract.
+     */
     function validateClass(classId, week) {
         var weekNum = parseWeekStrict(week);
         if (weekNum === null || !isNonEmptyString(classId)) {
             return {
+                valid: false,
                 classId: null,
                 week: null,
                 weeklyHours: [],
                 invariants: [],
+                warnings: [],
                 hasWarnings: false
             };
         }
 
-        var weeklyHours = validateClassWeeklyHours(classId, weekNum);
+        var cls = AcademyClasses.getClass(classId);
+        if (!cls) {
+            return {
+                valid: false,
+                classId: null,
+                week: null,
+                weeklyHours: [],
+                invariants: [],
+                warnings: [],
+                hasWarnings: false
+            };
+        }
+
+        var detailed = validateClassWeeklyHoursDetailed(classId, weekNum);
+        var weeklyHours = detailed.rows;
+        var configWarnings = detailed.warnings;
         var invariants = validateInvariants(weekNum);
 
+        // Filter invariants to the requested class, plus the
+        // non-attributable set. See the file header.
         var relevantInvariants = [];
         for (var i = 0; i < invariants.length; i++) {
             var w = invariants[i];
             var ctx = w.context || {};
-            if (ctx.classId && String(ctx.classId) !== String(classId)) {
+            if (ctx.classId === undefined || ctx.classId === null) {
+                relevantInvariants.push(w);
                 continue;
             }
-            relevantInvariants.push(w);
+            if (String(ctx.classId) === String(classId)) {
+                relevantInvariants.push(w);
+            }
         }
+
+        var allWarnings = configWarnings.concat(relevantInvariants);
 
         var hasWarnings =
             weeklyHoursHasProblems(weeklyHours) ||
-            relevantInvariants.length > 0;
+            allWarnings.length > 0;
 
         return {
+            valid: true,
             classId: String(classId),
             week: weekNum,
             weeklyHours: weeklyHours,
             invariants: relevantInvariants,
+            warnings: allWarnings,
             hasWarnings: hasWarnings
         };
     }
@@ -752,6 +1051,7 @@
 
     window.AcademyTeachingValidation = Object.freeze({
         validateClassWeeklyHours: validateClassWeeklyHours,
+        validateClassWeeklyHoursDetailed: validateClassWeeklyHoursDetailed,
         validateClassWeeklyHoursProblems:
             validateClassWeeklyHoursProblems,
         validateInvariants: validateInvariants,
@@ -768,6 +1068,7 @@
 
         var required = [
             'validateClassWeeklyHours',
+            'validateClassWeeklyHoursDetailed',
             'validateClassWeeklyHoursProblems',
             'validateInvariants',
             'validateClass'
