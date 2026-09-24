@@ -5,7 +5,8 @@
  * Path: js/modules/teams/team-aggregator.js
  *
  * Projections that compose TeamQueries, CharacterQueries,
- * AcademyQueries, and MissionQueries into Team-shaped view models.
+ * AcademyClasses, AcademyAggregator, and MissionQueries into
+ * Team-shaped view models.
  *
  * IMPORTANT:
  *   - Projection builder, not a query registry.
@@ -77,11 +78,9 @@
  *   FILTER:
  *     - EXCLUDE deceased characters (as of the target year).
  *     - EXCLUDE characters who have not reached junior OR senior
- *       status by the target year. See "JUNIOR-OR-SENIOR STATUS"
- *       below.
+ *       status by the target year.
  *     - EXCLUDE characters eliminated at any point, in any year,
- *       by any cause. Presence-based. See "ELIMINATION IN
- *       MATCHMAKING" below.
+ *       by any cause. Presence-based.
  *     - EXCLUDE characters already active on a professional team
  *       at the target year.
  *
@@ -89,69 +88,47 @@
  *     Alphabetical by name.
  *
  * JUNIOR-OR-SENIOR STATUS:
- *   The matchmaking pool only includes characters who have reached
- *   junior OR senior status as of the target year. Professional
- *   teams accept both. The predicate is
- *   CharacterQueries.isJuniorOrSeniorByYear(char, year), which
- *   reads the character's careerStatus array and looks for a
- *   junior or senior entry whose startYear is <= the target year.
- *
- *   When CharacterQueries.isJuniorOrSeniorByYear is unavailable,
- *   this filter is skipped rather than failing closed.
+ *   The predicate is
+ *   CharacterQueries.isJuniorOrSeniorByYear(char, year).
+ *   When unavailable, this filter is skipped rather than failing
+ *   closed.
  *
  * ELIMINATION IN MATCHMAKING:
- *   The matchmaking pool excludes any character with an
- *   elimination record, regardless of when the elimination
- *   happened. The check is presence-based, not year-scoped.
- *
- *   When EliminationQueries is unavailable, this filter is skipped
+ *   The check is presence-based, not year-scoped. When
+ *   EliminationQueries is unavailable, this filter is skipped
  *   rather than failing closed.
  *
- * CLASS MEMBERSHIP SIGNAL (v29):
+ * CLASS MEMBERSHIP SIGNAL (v29, migrated v30):
  *   The "in class" tier signal for the member modal reads class
  *   membership from two sources:
  *
  *     1. Students: the class's roster, via
- *        AcademyQueries.getClassStudentIds.
+ *        AcademyAggregator.getClassStudentsViewModel.
  *     2. Instructors: AcademyClasses.getClassInstructorIdsAllTime,
  *        which derives the class's instructors from per-discipline
  *        instructor enrolments.
  *
- *   The retired `class.instructorId` field is not consulted.
+ *   The retired AcademyQueries facade is no longer consulted. The
+ *   retired `class.instructorId` field is not consulted.
  *
  * UNASSIGNED VIEW SEMANTICS:
  *   getUnassignedViewModel() reads
  *   TeamQueries.getProfessionalTeamEligibleRoster(currentYear) and
  *   splits the result into two lists:
  *
- *     rows:      candidates. Characters who are not staff and not
- *                already active on a professional team at the
- *                current year. This is the existing Unassigned
- *                list.
- *
- *     staffRows: staff. Characters who are instructors or support
- *                at the current year and not already active on a
- *                professional team at that year. Each staff row
- *                carries staffRole and staffSince.
- *
- *   A character on an active professional team is excluded from
- *   both lists — they're on a team, they don't need either.
+ *     rows:      candidates.
+ *     staffRows: staff.
  *
  *   When window.data.currentYear is unavailable, the projection
  *   returns empty lists and a null year. It does NOT invent a
  *   year.
  *
- *   The roster query owns eligibility (junior-or-senior, not
- *   deceased, no eliminations) and staff classification. This
- *   projection only splits the result and adds presentation
- *   fields.
- *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamQueries
  *   - window.TeamConstants
  *   - window.CharacterQueries
- *   - window.AcademyQueries
- *   - window.AcademyClasses           (getClassInstructorIdsAllTime)
+ *   - window.AcademyClasses
+ *   - window.AcademyAggregator           (getClassStudentsViewModel)
  *
  * DEPENDENCIES (LAZY, read at call time):
  *   - window.TeamUI             (filter bar VM defaults)
@@ -173,8 +150,8 @@
     var TeamQueries = window.TeamQueries;
     var TeamConstants = window.TeamConstants;
     var CharacterQueries = window.CharacterQueries;
-    var AcademyQueries = window.AcademyQueries;
     var AcademyClasses = window.AcademyClasses;
+    var AcademyAggregator = window.AcademyAggregator;
 
     var _missing = [];
 
@@ -271,23 +248,28 @@
         _missing.push('CharacterQueries.isDeceased');
     }
 
-    if (!AcademyQueries ||
-        typeof AcademyQueries.getClassDisplayName !== 'function') {
-        _missing.push('AcademyQueries.getClassDisplayName');
+    if (!AcademyClasses ||
+        typeof AcademyClasses.getClass !== 'function') {
+        _missing.push('AcademyClasses.getClass');
     }
-    if (!AcademyQueries ||
-        typeof AcademyQueries.getClassStudentIds !== 'function') {
-        _missing.push('AcademyQueries.getClassStudentIds');
+    if (!AcademyClasses ||
+        typeof AcademyClasses.getClasses !== 'function') {
+        _missing.push('AcademyClasses.getClasses');
     }
-    if (!AcademyQueries ||
-        typeof AcademyQueries.getClass !== 'function') {
-        _missing.push('AcademyQueries.getClass');
+    if (!AcademyClasses ||
+        typeof AcademyClasses.getDisplayName !== 'function') {
+        _missing.push('AcademyClasses.getDisplayName');
     }
-
     if (!AcademyClasses ||
         typeof AcademyClasses.getClassInstructorIdsAllTime !==
             'function') {
         _missing.push('AcademyClasses.getClassInstructorIdsAllTime');
+    }
+
+    if (!AcademyAggregator ||
+        typeof AcademyAggregator.getClassStudentsViewModel !==
+            'function') {
+        _missing.push('AcademyAggregator.getClassStudentsViewModel');
     }
 
     if (_missing.length > 0) {
@@ -358,7 +340,7 @@
         if (!isNonEmptyString(classId)) {
             return '';
         }
-        var name = AcademyQueries.getClassDisplayName(classId);
+        var name = AcademyClasses.getDisplayName(classId);
         if (!name || name === 'Unknown Class') {
             return '';
         }
@@ -373,23 +355,41 @@
         return TeamConstants.getPeriodLabel(type);
     }
 
+    /**
+     * Build the set of character IDs that belong to the class, for
+     * the member-modal "in class" tier signal.
+     *
+     * Two sources:
+     *   1. Students: the class roster, via the aggregator. The
+     *      aggregator excludes instructors-of-class from the roster,
+     *      so we do not need to filter them here.
+     *   2. Instructors: getClassInstructorIdsAllTime, which covers
+     *      every instructor who has ever taught anything in the
+     *      class.
+     *
+     * The retired AcademyQueries facade is not consulted. The
+     * retired class.instructorId field is not consulted.
+     */
     function buildClassMembershipSet(classId) {
         var result = Object.create(null);
         if (!isNonEmptyString(classId)) {
             return result;
         }
 
-        var studentIds = [];
+        var students = [];
         try {
-            studentIds =
-                AcademyQueries.getClassStudentIds(classId) || [];
+            students =
+                AcademyAggregator.getClassStudentsViewModel(
+                    classId, null
+                ) || [];
         } catch (e) {
-            studentIds = [];
+            students = [];
         }
-        if (Array.isArray(studentIds)) {
-            for (var s = 0; s < studentIds.length; s++) {
-                if (studentIds[s]) {
-                    result[String(studentIds[s])] = true;
+        if (Array.isArray(students)) {
+            for (var s = 0; s < students.length; s++) {
+                var st = students[s];
+                if (st && st.id) {
+                    result[String(st.id)] = true;
                 }
             }
         }
@@ -923,7 +923,7 @@
         var t = team || {};
 
         var classOptions = [];
-        var classes = AcademyQueries.getClasses() || [];
+        var classes = AcademyClasses.getClasses() || [];
         for (var i = 0; i < classes.length; i++) {
             if (classes[i] && classes[i].id) {
                 classOptions.push({
@@ -1221,38 +1221,6 @@
     // ============================================================
     // UNASSIGNED VIEW MODEL
     // ============================================================
-    //
-    // The Unassigned view is the "who isn't on a professional
-    // team right now?" panel, evaluated at the current application
-    // year. It has TWO sections:
-    //
-    //   rows       — candidates. Characters eligible for a
-    //                professional team at the current year, who
-    //                aren't already on one. This is the
-    //                traditional Unassigned list.
-    //
-    //   staffRows  — staff. Instructors and support who aren't
-    //                already on a professional team at that year.
-    //                Each row carries staffRole and staffSince.
-    //
-    // A character already active on a professional team is
-    // excluded from both lists. They don't need either.
-    //
-    // The ELIGIBILITY rules (junior-or-senior, not deceased, no
-    // eliminations) and the STAFF CLASSIFICATION (instructor /
-    // support at the query year) both live on
-    // TeamQueries.getProfessionalTeamEligibleRoster. This
-    // projection only splits the result and adds presentation
-    // fields.
-    //
-    // The 'future' classification carries the future-stint
-    // indicator: "TeamName from YYYY". This tells the user that a
-    // character who appears unassigned today is already committed
-    // to a professional team at a later year.
-    //
-    // When window.data.currentYear is unavailable, both lists are
-    // empty and the year is null. The projection does NOT invent
-    // a year.
 
     function getUnassignedViewModel() {
         var currentYear = null;
@@ -1293,18 +1261,8 @@
             var r = roster[i];
             if (!r) { continue; }
 
-            // Already on a professional team: not unassigned, not
-            // staff-of-the-unassigned. Skip both lists.
             if (r.classification === 'active') { continue; }
 
-            // ---- Staff row ----
-            //
-            // staffRole is set by the roster query when the
-            // character is an instructor or support AT the query
-            // year. Staff appear in their own section regardless
-            // of classification — a former instructor who isn't
-            // currently on a team still belongs in the Staff
-            // section, not the candidate list.
             if (r.staffRole) {
                 staffRows.push({
                     characterId: r.characterId,
@@ -1326,7 +1284,6 @@
                 continue;
             }
 
-            // ---- Candidate row ----
             var juniorDisplay = r.juniorYear !== null &&
                                 r.juniorYear !== undefined
                 ? String(r.juniorYear)
@@ -1372,54 +1329,6 @@
     // ============================================================
     // MATCHMAKING VIEW MODEL
     // ============================================================
-    //
-    // This is the ONE projection in this file that walks the team
-    // store directly. The walk builds two things:
-    //
-    //   1. The candidate pool: every character alive at year Y, who
-    //      has reached JUNIOR OR SENIOR status by Y, who has NEVER
-    //      been eliminated, and who is NOT active on a professional
-    //      team at Y.
-    //   2. The history map: for every character in the candidate
-    //      pool, the years in which they have appeared on any
-    //      professional team.
-    //
-    // WHY ONE WALK:
-    //   The history map must cover every candidate. Deriving it by
-    //   calling TeamQueries.getTeamsForCharacter(charId, year,
-    //   'professional') once per candidate would be O(candidates ×
-    //   teams) and cannot find years other than the queried one.
-    //   Years are unbounded, so there is no finite range to iterate.
-    //   A single walk over data.teams[] — reading each professional
-    //   team's member list once — is O(teams × members) and
-    //   produces the complete picture.
-    //
-    // WHY NOT A QUERY:
-    //   This derivation is specific to matchmaking. Putting it on
-    //   TeamQueries would put a matchmaking-shaped read on the
-    //   canonical query surface. The aggregator owns the projection;
-    //   the walk lives here.
-    //
-    // FILTER ORDER:
-    //   Deceased -> Junior-or-senior -> Elimination -> Active-on-a-team.
-    //   Cheapest checks first. All four are independent, so the
-    //   order is a performance call, not a correctness one.
-    //
-    // JUNIOR-OR-SENIOR:
-    //   The pool accepts juniors and seniors alike.
-    //
-    // INPUT:
-    //   year       : positive integer
-    //   targetSize : positive integer
-    //
-    // OUTPUT:
-    //   {
-    //     year,
-    //     targetSize,
-    //     candidates: [ { id, name, status, deceased, history } ]
-    //     targets:    [ { teamId, teamName, currentMemberCount,
-    //                     classDisplay, periodDisplay } ]
-    //   }
 
     function getTeamMatchmakingViewModel(year, targetSize) {
         var yearNum = TeamConstants.parsePeriod(year);
@@ -1434,7 +1343,6 @@
             };
         }
 
-        // ---- Lazy predicates, resolved once. ----
         var canCheckJuniorOrSenior =
             typeof CharacterQueries.isJuniorOrSeniorByYear ===
                 'function';
@@ -1443,7 +1351,6 @@
         var canCheckElimination = EQ &&
             typeof EQ.getEliminationWeek === 'function';
 
-        // ---- Walk every professional team once. ----
         var allProfessionalTeams = TeamQueries.getTeams(
             'professional',
             null,
@@ -1511,7 +1418,6 @@
                 ).length;
         }
 
-        // ---- Build the candidate pool. ----
         var allChars = CharacterQueries.getCharacters() || [];
         var candidates = [];
 
@@ -1521,7 +1427,6 @@
 
             var cid = String(char.id);
 
-            // 1. Deceased (year-scoped).
             var deceased = false;
             try {
                 deceased =
@@ -1532,7 +1437,6 @@
             }
             if (deceased) { continue; }
 
-            // 2. Junior-or-senior status (year-scoped).
             if (canCheckJuniorOrSenior) {
                 var isEligibleStatus = false;
                 try {
@@ -1546,7 +1450,6 @@
                 if (!isEligibleStatus) { continue; }
             }
 
-            // 3. Elimination (all-time, presence-based).
             if (canCheckElimination) {
                 var earliest = null;
                 try {
@@ -1559,7 +1462,6 @@
                 }
             }
 
-            // 4. Active on a professional team (year-scoped).
             if (activeAtYearByChar[cid] === true) { continue; }
 
             var historyYears = [];
@@ -1586,7 +1488,6 @@
             return a.name.localeCompare(b.name);
         });
 
-        // ---- Build the target list. ----
         var targets = [];
         for (var tt = 0; tt < allProfessionalTeams.length; tt++) {
             var tTeam = allProfessionalTeams[tt];
@@ -1631,25 +1532,20 @@
     // ============================================================
 
     window.TeamAggregator = Object.freeze({
-        // Core projections
         getTeamViewModel: getTeamViewModel,
         getTeamListViewModel: getTeamListViewModel,
         getTeamMembersViewModel: getTeamMembersViewModel,
         getTeamPageViewModel: getTeamPageViewModel,
 
-        // Form / modal VMs
         getTeamFormViewModel: getTeamFormViewModel,
         getMemberModalViewModel: getMemberModalViewModel,
         getRankingModalViewModel: getRankingModalViewModel,
         getFilterBarViewModel: getFilterBarViewModel,
 
-        // Unassigned VM (candidates + staff)
         getUnassignedViewModel: getUnassignedViewModel,
 
-        // Matchmaking VM
         getTeamMatchmakingViewModel: getTeamMatchmakingViewModel,
 
-        // Display helpers
         getTeamPeriodDisplay: getTeamPeriodDisplay,
         getRankingHistoryDisplay: getRankingHistoryDisplay
     });
