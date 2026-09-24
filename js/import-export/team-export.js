@@ -12,55 +12,24 @@
  *   Every team whose type normalises to 'professional'. Deprecated
  *   teams are excluded. Active and inactive teams are included.
  *
- *   This is a full export, not a period-scoped view. A team that
- *   disbanded in 1912 is still in the export. A member who left in
- *   1915 is still in the member list.
+ *   This is a full export, not a period-scoped view.
  *
  * TWO OUTPUT FORMATS:
  *
  *   TEXT (the primary format):
- *     A human-readable plain-text document. Designed to be opened
- *     in a text editor and read. Sparse: a line is emitted only
- *     when the field it describes has content. Sections collapse
- *     when empty. Sub-objects (stats, magic, weapons, moves) are
- *     flattened into prose. Stints collapse onto one line per
- *     member.
- *
- *     This is a PROJECTION, not a backup. It is deliberately lossy
- *     in structure — a reader who wants to re-import data should
- *     use the JSON envelope export at the application level.
+ *     A human-readable plain-text document.
  *
  *   CSV (the secondary format):
- *     A flat grid, one row per stint. Useful for spreadsheet work
- *     and scripting. JSON-shaped fields remain JSON-encoded,
- *     because a spreadsheet consumer expects to parse them.
+ *     A flat grid, one row per stint.
  *
  * FAIL-CLOSED:
  *   When CharacterQueries is unavailable, the module cannot build
  *   member records. Every export function returns an error result.
  *   It does NOT emit partial output.
  *
- * TEXT SHAPE:
- *
- *   Hollow Blades — Professional Teams Export
- *   Exported 2026-09-22
- *   3 teams · 11 members · 14 stints
- *
- *   ============================================================
- *   CRIMSON BLADES
- *   ============================================================
- *   Status:   Active (professional)
- *   Period:   1910 – present
- *   Class:    Class of 1910
- *   Team #:   3
- *
- *   --- Aldric Blackwood  (Captain) ----------------------------
- *   Stints:   1910 – present
- *   Age:      32
- *   Gender:   Male
- *   Build:    Athletic · 5'11" · 78kg
- *   Eyes:     Grey
- *   ...
+ * CLASS DISPLAY (v30):
+ *   Class display names come from AcademyClasses.getDisplayName.
+ *   The retired AcademyQueries facade is no longer consulted.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamQueries
@@ -70,7 +39,7 @@
  *   - window.ExportUtils
  *
  * DEPENDENCIES (OPTIONAL):
- *   - window.AcademyQueries     (class display name)
+ *   - window.AcademyClasses     (class display name)
  *   - window.CharacterConstants (stat key list)
  *   - window.MagicConstants     (magic type key list)
  */
@@ -140,8 +109,8 @@
     // OPTIONAL DEPENDENCY ACCESSORS
     // ============================================================
 
-    function getAcademyQueries() {
-        return window.AcademyQueries || null;
+    function getAcademyClasses() {
+        return window.AcademyClasses || null;
     }
 
     function getCharacterConstants() {
@@ -163,21 +132,13 @@
 
     var PROFESSIONAL_TYPE = 'professional';
 
-    // Text formatting constants. Separators are chosen so a reader
-    // scanning vertically can tell team boundaries from member
-    // boundaries at a glance.
     var TEAM_SEPARATOR = '='.repeat(64);
     var MEMBER_SEPARATOR_LEN = 64;
     var SECTION_HEADER = '# TEAMS';
 
-    // Header labels are padded to this width so values line up
-    // within a block. Long labels (e.g. 'Appearance') are not
-    // padded; the colon still anchors the value.
     var LABEL_WIDTH = 10;
 
-    // CSV columns.
     var COLUMNS = [
-        // ---- Team ----
         'TeamId',
         'TeamName',
         'TeamStatus',
@@ -185,12 +146,10 @@
         'TeamEndPeriod',
         'TeamClass',
         'TeamNumber',
-        // ---- Stint ----
         'MemberName',
         'MemberRole',
         'JoinPeriod',
         'LeavePeriod',
-        // ---- Identity ----
         'FirstName',
         'MiddleName',
         'LastName',
@@ -199,7 +158,6 @@
         'Age',
         'BirthYear',
         'Gender',
-        // ---- Physical ----
         'Eyes',
         'Hair',
         'Skin',
@@ -207,7 +165,6 @@
         'Weight',
         'Build',
         'AppearanceNotes',
-        // ---- Personality ----
         'Traits',
         'Ideals',
         'Bonds',
@@ -218,7 +175,6 @@
         'Habits',
         'Fears',
         'Goals',
-        // ---- Combat ----
         'Stats',
         'Magic',
         'HP',
@@ -259,12 +215,6 @@
         }
     }
 
-    /**
-     * Is this value non-empty for text-output purposes?
-     * A missing field is not emitted. An empty string is not
-     * emitted. A zero is emitted (0 is data). A false is emitted
-     * (false is data).
-     */
     function hasText(value) {
         if (value === undefined || value === null) { return false; }
         if (typeof value === 'string') { return value.trim() !== ''; }
@@ -401,13 +351,16 @@
     // ============================================================
     // CLASS DISPLAY
     // ============================================================
+    //
+    // Class display names come from AcademyClasses.getDisplayName.
+    // The retired AcademyQueries facade is no longer consulted.
 
     function getClassDisplay(classId) {
         if (!isNonEmptyString(classId)) { return ''; }
-        var AQ = getAcademyQueries();
-        if (AQ && typeof AQ.getClassDisplayName === 'function') {
+        var AC = getAcademyClasses();
+        if (AC && typeof AC.getDisplayName === 'function') {
             try {
-                var name = AQ.getClassDisplayName(classId);
+                var name = AC.getDisplayName(classId);
                 if (name && name !== 'Unknown Class') {
                     return String(name);
                 }
@@ -635,19 +588,6 @@
     // PUBLIC PROJECTION
     // ============================================================
 
-    /**
-     * Get every professional team with its members and member stats.
-     *
-     * @param {object} [options]
-     * @param {string} [options.status] - Optional status filter
-     *   ('active' | 'inactive' | 'operational'). Default: no filter.
-     * @returns {{
-     *   teamCount: number,
-     *   memberCount: number,
-     *   stintCount: number,
-     *   teams: Array
-     * }}
-     */
     function getTeams(options) {
         options = options || {};
 
@@ -696,21 +636,6 @@
     // ============================================================
     // TEXT FORMAT
     // ============================================================
-    //
-    // The text format is the primary export. It is designed to be
-    // read, not parsed. Every design decision favours the reader:
-    //
-    //   - Sparse: a field line is emitted only when the field has
-    //     content. No "Weapons: (none)" filler.
-    //   - Sections collapse: a member with no personality data
-    //     does not get a "Personality" header with empty lines.
-    //   - Sub-objects flatten: stats become "STR 14 · DEX 12 · ..."
-    //     not a JSON blob.
-    //   - Stints on one line: "1910 – 1915, 1918 – present".
-    //   - Separators carry hierarchy: === for teams, --- for
-    //     members. No indentation to track.
-    //   - Labels are padded to a fixed width so values line up
-    //     within a member block.
 
     function padLabel(label) {
         var str = String(label);
@@ -720,12 +645,6 @@
         return str;
     }
 
-    /**
-     * Emit a labelled line, or nothing if the value is empty.
-     * The label is padded; the value is escaped to a single line
-     * (newlines become spaces) so a multi-line notes field does
-     * not break the block layout.
-     */
     function textLine(label, value) {
         if (!hasText(value)) { return ''; }
         var v = String(value).replace(/\s+/g, ' ').trim();
@@ -733,14 +652,6 @@
         return padLabel(label) + ': ' + v + '\n';
     }
 
-    /**
-     * Format a stint list onto one line:
-     *   "1910 – present"
-     *   "1912 – 1915"
-     *   "1912 – 1915, 1918 – present"
-     *   "From 1910"
-     *   "Until 1915"
-     */
     function formatStints(stints) {
         if (!Array.isArray(stints) || stints.length === 0) {
             return '';
@@ -770,10 +681,6 @@
         return parts.join(', ');
     }
 
-    /**
-     * Format stats as "STR 14 · DEX 12 · ..." with each key
-     * uppercased. Empty (all-zero) stats are treated as empty.
-     */
     function formatStats(stats) {
         if (!isObject(stats)) { return ''; }
 
@@ -794,10 +701,6 @@
         return parts.join(' \u00b7 ');
     }
 
-    /**
-     * Format magic as "Fire 8 · Water 3" with only non-zero
-     * entries shown.
-     */
     function formatMagic(magic) {
         if (!isObject(magic)) { return ''; }
 
@@ -813,9 +716,6 @@
         return parts.join(' \u00b7 ');
     }
 
-    /**
-     * Format weapons as "Longsword (sharp), Dagger (sharp)".
-     */
     function formatWeapons(weapons) {
         if (!Array.isArray(weapons) || weapons.length === 0) {
             return '';
@@ -838,9 +738,6 @@
         return parts.join('; ');
     }
 
-    /**
-     * Format special moves as "Physical: A, B · Magical: C".
-     */
     function formatSpecialMoves(moves) {
         if (!isObject(moves)) { return ''; }
 
@@ -873,11 +770,6 @@
         return parts.join(' \u00b7 ');
     }
 
-    /**
-     * Format a physical composite line:
-     *   "Athletic · 5'11" · 78kg"
-     * Only non-empty components appear.
-     */
     function formatPhysicalComposite(member) {
         var parts = [];
         if (isNonEmptyString(member.build)) {
@@ -892,10 +784,6 @@
         return parts.join(' \u00b7 ');
     }
 
-    /**
-     * Format eyes/hair/skin as one line if any of them has content.
-     *   "Grey / Black / Fair"
-     */
     function formatColourComposite(member) {
         var parts = [];
         if (isNonEmptyString(member.eyes)) {
@@ -910,12 +798,6 @@
         return parts.join(' / ');
     }
 
-    /**
-     * Format a team status line:
-     *   "Active (professional)"
-     *   "Inactive (professional)"
-     *   "Active (academic)"
-     */
     function formatTeamStatus(team) {
         var status = isNonEmptyString(team.status)
             ? team.status
@@ -931,14 +813,6 @@
         return capitalised;
     }
 
-    /**
-     * Format a team period:
-     *   "1910 – present"
-     *   "1910 – 1915"
-     *   "From 1910"
-     *   "Until 1915"
-     *   "(no period)"
-     */
     function formatTeamPeriod(team) {
         var start = isNonEmptyString(team.startPeriod)
             ? String(team.startPeriod)
@@ -953,11 +827,6 @@
         return '';
     }
 
-    /**
-     * Build the header banner line for a member:
-     *   "--- Aldric Blackwood  (Captain) ----------------------------"
-     * The trailing dashes pad the line to MEMBER_SEPARATOR_LEN.
-     */
     function buildMemberHeader(member) {
         var name = isNonEmptyString(member.displayName)
             ? member.displayName
@@ -975,22 +844,14 @@
         return prefix + '-'.repeat(MEMBER_SEPARATOR_LEN - prefix.length);
     }
 
-    /**
-     * Emit the member's identity block.
-     * Returns an empty string when the member has no identity
-     * fields worth showing beyond the display name.
-     */
     function emitIdentityLines(member) {
         var out = '';
 
-        // Stints go first: they describe the member's relationship
-        // to the team, which is the most important context.
         var stints = formatStints(member.stints);
         if (stints) {
             out += textLine('Stints', stints);
         }
 
-        // Full name, if different from display name.
         var fullName = [member.firstName, member.middleName, member.lastName]
             .filter(isNonEmptyString)
             .join(' ');
@@ -1026,9 +887,6 @@
         return out;
     }
 
-    /**
-     * Emit the physical block. Collapses entirely when empty.
-     */
     function emitPhysicalLines(member) {
         var out = '';
 
@@ -1049,9 +907,6 @@
         return out;
     }
 
-    /**
-     * Emit the personality block. Collapses entirely when empty.
-     */
     function emitPersonalityLines(member) {
         var out = '';
 
@@ -1089,13 +944,6 @@
         return out;
     }
 
-    /**
-     * Emit the combat block. Collapses entirely when empty.
-     *
-     * Stats go on one line, HP and MP on another, weapons on
-     * another, moves on another, combat notes on another. Only
-     * the lines with content appear.
-     */
     function emitCombatLines(member) {
         var out = '';
 
@@ -1138,11 +986,6 @@
         return out;
     }
 
-    /**
-     * Emit one member block. Sections are separated by a blank
-     * line if there is more than one section with content, so the
-     * reader's eye can group them.
-     */
     function emitMemberBlock(member) {
         var out = '';
 
@@ -1164,16 +1007,6 @@
         return out;
     }
 
-    /**
-     * Emit the header block for a team:
-     *   ============================================================
-     *   CRIMSON BLADES
-     *   ============================================================
-     *   Status:   Active (professional)
-     *   Period:   1910 – present
-     *   Class:    Class of 1910
-     *   Team #:   3
-     */
     function emitTeamHeader(team) {
         var out = '';
 
@@ -1228,16 +1061,9 @@
         return out;
     }
 
-    /**
-     * Build the full text export.
-     *
-     * @param {object} vm - The VM from getTeams()
-     * @returns {string}
-     */
     function buildTeamsText(vm) {
         var out = '';
 
-        // ---- Header ----
         out += 'Hollow Blades \u2014 Professional Teams Export\n';
         out += 'Exported ' + new Date().toISOString().slice(0, 10) + '\n';
         out += vm.teamCount + ' team' +
@@ -1253,7 +1079,6 @@
             return out;
         }
 
-        // ---- Teams ----
         for (var t = 0; t < vm.teams.length; t++) {
             var team = vm.teams[t];
 
@@ -1279,31 +1104,11 @@
         return out;
     }
 
-    /**
-     * Get the plain-text content as a string. No download.
-     *
-     * @param {object} [options]
-     * @returns {string}
-     */
     function getTeamsTextContent(options) {
         var vm = getTeams(options);
         return buildTeamsText(vm);
     }
 
-    /**
-     * Export the team list as a plain-text file.
-     *
-     * @param {object} [options]
-     * @param {string} [options.filename]
-     * @param {string} [options.status]
-     * @returns {{
-     *   exported: boolean,
-     *   filename: string|null,
-     *   teamCount: number,
-     *   memberCount: number,
-     *   error: string|null
-     * }}
-     */
     function exportTeamsText(options) {
         options = options || {};
 
@@ -1321,9 +1126,6 @@
 
         var content = buildTeamsText(vm);
 
-        // No BOM. A BOM is a Windows Notepad convention for CSV
-        // files, and it produces a phantom character in vim, less,
-        // and most Unix tooling. Plain text does not need it.
         var blob = new Blob([content], {
             type: 'text/plain;charset=utf-8'
         });
@@ -1356,13 +1158,6 @@
     // ============================================================
     // CSV
     // ============================================================
-    //
-    // CSV is the secondary format. It is a flat grid — one row per
-    // stint — that a spreadsheet or scripting tool can consume.
-    // JSON-shaped fields (stats, magic, weapons, moves) remain
-    // JSON-encoded, because a consumer of CSV expects to parse
-    // them. Rows are separated by \r\n and the file carries a BOM,
-    // both because Excel expects them.
 
     function buildMemberCSVRow(team, member, stint) {
         return [
@@ -1525,18 +1320,12 @@
     // ============================================================
 
     window.TeamExport = Object.freeze({
-        // Projection
         getTeams: getTeams,
-
-        // Text (primary)
         getTeamsTextContent: getTeamsTextContent,
         exportTeamsText: exportTeamsText,
-
-        // CSV (secondary)
         getTeamsCSVContent: getTeamsCSVContent,
         exportTeamsCSV: exportTeamsCSV,
 
-        // Constants
         COLUMNS: COLUMNS.slice(),
         SECTION_HEADER: SECTION_HEADER
     });
