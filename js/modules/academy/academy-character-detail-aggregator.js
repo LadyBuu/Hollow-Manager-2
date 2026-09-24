@@ -6,9 +6,9 @@
  *
  * Produces the view model consumed by AcademyCharacterDetail.
  *
- * TEACHING GROUP CANDIDATE VIEW MODEL (this revision):
- *   The candidate picker for "add a student to this group" now
- *   returns two lists:
+ * TEACHING GROUP CANDIDATE VIEW MODEL:
+ *   The candidate picker for "add a student to this group" returns
+ *   two lists:
  *
  *     candidates  — students who can be added.
  *     blocked     — students who would collide if added, i.e.
@@ -19,20 +19,46 @@
  *   shown below the eligible list so the user can see who they
  *   cannot add and why. Blocked rows are not selectable.
  *
- *   The eligibility filters (already a member, member of a
- *   sibling group, eliminated, instructor, deceased-shape) are
- *   unchanged. They remove a student from the picker entirely.
- *   The blocked list is a SUBSET of the survivors: students who
- *   pass every eligibility filter but fail the collision check.
+ * DISCIPLINE-HOURS VIEW MODEL:
+ *   Each discipline row carries:
  *
- *   The collision check is run once per picker-open. It uses a
- *   single projector call to build a week-wide schedule map
- *   (charId → occurrences[]), then a small per-candidate
- *   comparison against the target group's sessions. This avoids
- *   one projector call per candidate, which would be O(N ×
- *   groups × sessions).
+ *     currentGroup       — the group the student is already in
+ *                          for this discipline, or null.
+ *     groups             — the OTHER groups of this discipline,
+ *                          each with a status of 'green' or 'red'
+ *                          and (when red) a conflictingGroups list.
  *
- * (Rest of the header unchanged.)
+ *   When currentGroup is non-null:
+ *     - `groups` is [] (the picker offers no other groups)
+ *     - `hasCurrentGroup` is true
+ *   The picker renders a single "leave this group?" affordance
+ *   instead of a group list.
+ *
+ *   When currentGroup is null:
+ *     - `groups` is populated
+ *     - `hasCurrentGroup` is false
+ *
+ * CONFLICT DETECTION:
+ *   A candidate group's session conflicts with the student's
+ *   current schedule if ANY occupied cell — start OR continuation
+ *   — of the student's schedule falls inside the candidate
+ *   session's [start, start+duration) window.
+ *
+ *   Continuation cells are occupied time. Skipping them was the
+ *   bug that let a candidate whose session overlapped the second
+ *   half of an existing session report as "green".
+ *
+ *   The conflict is REPORTED at the existing session's start hour.
+ *   When the colliding cell is a continuation, the collector walks
+ *   back through the student's schedule to find the session start,
+ *   and reports the conflict against the start (day, hour) — the
+ *   hour the student, or a reader, thinks of as "when the session
+ *   is".
+ *
+ *   Each red candidate carries `conflictingGroups[]`: one entry per
+ *   distinct group of the student's that collides, deduped by
+ *   groupId. The user sees every conflict and picks which to
+ *   leave.
  *
  * DEPENDENCIES (mandatory):
  *   - window.CharacterQueries
@@ -165,6 +191,10 @@
         missing.push(
             'AcademyTeachingGroups.getGroupForStudentInClassDiscipline'
         );
+    }
+    if (!AcademyTeachingGroups ||
+        typeof AcademyTeachingGroups.isMemberOfGroup !== 'function') {
+        missing.push('AcademyTeachingGroups.isMemberOfGroup');
     }
 
     if (!CalendarConstants ||
@@ -1586,13 +1616,25 @@
                 week
             );
 
-            var groups = buildDisciplineGroupsForPicker(
-                charId,
-                classId,
-                disciplineId,
-                week,
-                studentSchedule
-            );
+            // When the student is already in a group for this
+            // discipline, the picker does NOT offer other groups.
+            // It offers a "leave this group?" prompt.
+            //
+            // So `groups` stays empty in that case. The picker
+            // reads `hasCurrentGroup` and renders the leave
+            // affordance instead of the group list.
+            var hasCurrentGroup = currentGroup !== null;
+
+            var groups = [];
+            if (!hasCurrentGroup) {
+                groups = buildDisciplineGroupsForPicker(
+                    charId,
+                    classId,
+                    disciplineId,
+                    week,
+                    studentSchedule
+                );
+            }
 
             result.push({
                 disciplineId: disciplineId,
@@ -1603,6 +1645,7 @@
                 remainingHours: remainingHours,
                 isOver: remainingHours < 0,
                 currentGroup: currentGroup,
+                hasCurrentGroup: hasCurrentGroup,
                 groups: groups
             });
         }
@@ -1735,6 +1778,10 @@
             var group = allGroups[i];
             if (!group || !group.id) { continue; }
 
+            // Any group the student is already a member of is
+            // skipped. The caller decides whether to show the
+            // "current group" prompt; the picker's job is only to
+            // list alternative groups.
             var isMember = false;
             try {
                 isMember = AcademyTeachingGroups.isMemberOfGroup(
@@ -1758,21 +1805,30 @@
                 continue;
             }
 
-            var status = 'green';
-            var conflict = null;
+            // Collect EVERY conflict across every active session.
+            // Each conflict is deduped by groupId; two conflicts
+            // against the same group are one entry.
+            var conflictingGroups = [];
+            var seenGroupIds = Object.create(null);
 
             for (var c = 0; c < activeSessions.length; c++) {
-                var conflictFound = detectConflictForSession(
+                var sessionConflicts = collectConflictsForSession(
                     activeSessions[c],
                     group,
                     studentSchedule
                 );
-                if (conflictFound) {
-                    status = 'red';
-                    conflict = conflictFound;
-                    break;
+                for (var cf = 0; cf < sessionConflicts.length; cf++) {
+                    var conflict = sessionConflicts[cf];
+                    var key = conflict.conflictingGroupId !== null
+                        ? String(conflict.conflictingGroupId)
+                        : ('sid:' + String(conflict.conflictingSessionId));
+                    if (seenGroupIds[key]) { continue; }
+                    seenGroupIds[key] = true;
+                    conflictingGroups.push(conflict);
                 }
             }
+
+            var status = conflictingGroups.length > 0 ? 'red' : 'green';
 
             result.push({
                 groupId: String(group.id),
@@ -1783,7 +1839,7 @@
                 ),
                 sessions: activeSessions,
                 status: status,
-                conflict: conflict
+                conflictingGroups: conflictingGroups
             });
         }
 
@@ -1843,8 +1899,48 @@
         return disciplineName + (num > 0 ? ' ' + num : '');
     }
 
-    function detectConflictForSession(sessionVM, group, studentSchedule) {
-        if (!sessionVM) { return null; }
+    // ============================================================
+    // CONFLICT COLLECTION — PURE PER SESSION
+    // ============================================================
+    //
+    // A candidate session S conflicts with the student's schedule
+    // when any occupied cell in the student's schedule falls inside
+    // S's [start, start + duration) window.
+    //
+    // "Occupied" means: a slot descriptor exists at that (day, hour),
+    // whether it is a session START or a CONTINUATION.
+    //
+    // THE BUG THAT THIS FUNCTION FIXES:
+    //   The previous implementation skipped any cell with
+    //   `isContinuation: true`. Continuation cells are real
+    //   occupied time — the second and subsequent hours of a
+    //   multi-hour session. Skipping them meant a candidate whose
+    //   session overlapped only the SECOND half of an existing
+    //   session (e.g. 10:00-11:00 against a 9:00-11:00 existing
+    //   session) reported as green, and only became visibly red
+    //   after the assignment landed and the grid re-rendered.
+    //
+    // THE FIX:
+    //   Do not skip continuation cells. Every occupied cell counts.
+    //
+    // THE REPORTING:
+    //   When a conflict is found at hour H of the student's
+    //   schedule and that cell is a continuation, walk backwards
+    //   through the student's schedule until a non-continuation
+    //   cell is found. That earlier cell is the session's START.
+    //   The conflict is reported against the start (day, hour) —
+    //   the hour a reader thinks of as "when the session is" —
+    //   and carries the start cell's groupId / disciplineName.
+    //
+    // SELF-EXCLUSION:
+    //   The candidate group is never the student's own group here,
+    //   because buildDisciplineGroupsForPicker filters member
+    //   groups out before calling this function. So a candidate
+    //   cannot collide with itself, and no self-exclusion is
+    //   needed.
+
+    function collectConflictsForSession(sessionVM, group, studentSchedule) {
+        if (!sessionVM) { return []; }
 
         var day = sessionVM.day;
         var startTime = sessionVM.startTime;
@@ -1853,45 +1949,111 @@
             : 1;
 
         if (!isFiniteNumber(day) || !isFiniteNumber(startTime)) {
-            return null;
+            return [];
         }
 
         var daySchedule = studentSchedule[day];
         if (!daySchedule || typeof daySchedule !== 'object') {
-            return null;
+            return [];
         }
 
         var groupId = String(group.id);
+        var conflicts = [];
+        var seenAtCell = Object.create(null);
 
         for (var h = 0; h < duration; h++) {
             var hour = startTime + h;
             var slot = daySchedule[hour];
             if (!slot || typeof slot !== 'object') { continue; }
-            if (slot.isContinuation) { continue; }
 
-            var slotGroupId = slot.groupId !== undefined &&
-                              slot.groupId !== null
-                ? String(slot.groupId)
+            // A candidate group cannot be the student's own group
+            // here (filtered upstream), so the cell we are looking
+            // at belongs to some other group. Any occupied cell
+            // counts as a conflict, continuation or not.
+            //
+            // Guard against double-reporting the same underlying
+            // session across consecutive hours: the key is the
+            // sessionId if present, else the groupId, else the
+            // (day, hour) pair.
+            var cellKey = slot.sessionId
+                ? 'sid:' + String(slot.sessionId)
+                : (slot.groupId
+                    ? 'gid:' + String(slot.groupId)
+                    : 'cell:' + day + ':' + hour);
+            if (seenAtCell[cellKey]) { continue; }
+            seenAtCell[cellKey] = true;
+
+            // Find the session's START cell. Walk backwards while
+            // the previous cell is a continuation.
+            var startHour = hour;
+            var startSlot = slot;
+            var walk = hour - 1;
+            while (walk >= 0) {
+                var prev = daySchedule[walk];
+                if (!prev || typeof prev !== 'object') { break; }
+                if (!prev.isContinuation) { break; }
+                // The continuation belongs to the same session.
+                // Prefer session-id equality; fall back to
+                // group-id equality when session ids are absent.
+                var sameSession = false;
+                if (slot.sessionId && prev.sessionId) {
+                    sameSession =
+                        String(slot.sessionId) ===
+                        String(prev.sessionId);
+                } else if (slot.groupId && prev.groupId) {
+                    sameSession =
+                        String(slot.groupId) ===
+                        String(prev.groupId);
+                }
+                if (!sameSession) { break; }
+                startHour = walk;
+                startSlot = prev;
+                walk--;
+            }
+
+            var conflictingGroupId = startSlot.groupId !== undefined &&
+                                     startSlot.groupId !== null
+                ? String(startSlot.groupId)
                 : null;
 
-            if (slotGroupId !== null && slotGroupId === groupId) {
+            if (conflictingGroupId !== null &&
+                conflictingGroupId === groupId) {
+                // Defensive: a candidate group that somehow was not
+                // filtered upstream should not report itself. This
+                // branch is unreachable via the picker, but is
+                // correct if the caller is ever different.
                 continue;
             }
 
-            return {
-                sessionId: sessionVM.sessionId,
-                day: day,
-                startTime: startTime,
-                duration: duration,
-                conflictDay: day,
-                conflictStartTime: hour,
+            conflicts.push({
+                conflictingSessionId: startSlot.sessionId !== undefined &&
+                                      startSlot.sessionId !== null
+                    ? String(startSlot.sessionId)
+                    : null,
+                conflictingGroupId: conflictingGroupId,
+                conflictingDisciplineId: startSlot.disciplineId !== undefined &&
+                                         startSlot.disciplineId !== null
+                    ? String(startSlot.disciplineId)
+                    : null,
                 conflictingDisciplineName:
-                    slot.disciplineName || 'Unknown',
-                conflictingGroupId: slotGroupId
-            };
+                    startSlot.disciplineName || 'Unknown',
+                conflictDay: day,
+                conflictStartTime: startHour,
+                conflictEndTime: startHour +
+                    (isFiniteNumber(startSlot.duration)
+                        ? startSlot.duration
+                        : 1),
+                // Where on the candidate session the collision was
+                // first noticed. Kept for diagnostics; the UI
+                // surfaces conflictStartTime (the existing session's
+                // start), which is what the reader understands.
+                detectedAtDay: day,
+                detectedAtHour: hour,
+                detectedSessionId: sessionVM.sessionId
+            });
         }
 
-        return null;
+        return conflicts;
     }
 
     // ============================================================
