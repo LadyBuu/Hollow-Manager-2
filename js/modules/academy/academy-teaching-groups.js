@@ -34,6 +34,17 @@
  *   - Recurring meetings            (AcademyTeachingSessions)
  *   - Compound operations           (AcademySchedule)
  *
+ * STORAGE NAMESPACE (v28):
+ *   Teaching groups and their number sequences live at
+ *   academy.teachingGroups and academy.teachingGroupSequences.
+ *
+ *   The discipline records that `createGroup` and other mutations
+ *   validate against live at academy.disciplines. The legacy
+ *   curriculum.disciplines location was retired; the snapshot
+ *   validator reads from academy.disciplines and falls back to
+ *   curriculum.disciplines only for pre-v28 snapshots loaded
+ *   mid-transaction during an upgrade.
+ *
  * HISTORICAL-RECORD PRINCIPLE:
  *   A group is a historical fact. Ending a member's participation
  *   sets their endWeek; it does NOT delete the member entry. Ending
@@ -80,8 +91,7 @@
  *   a no-op: the caller asked for a state that already holds.
  *   Overlap rejection applies only to the case where the proposed
  *   interval would conflict with an existing interval that does NOT
- *   already contain the requested week. This mirrors the semantics
- *   of AcademyWeeklyTeams.syncAddMemberIntervalToPersistentRoster.
+ *   already contain the requested week.
  *
  * RANGE PREDICATES:
  *   The "does this range contain this week" question is owned by
@@ -404,20 +414,52 @@
         return record;
     }
 
+    /**
+     * Resolve a discipline reference against the transaction
+     * snapshot.
+     *
+     * Disciplines live at academy.disciplines. The legacy
+     * curriculum.disciplines location is checked as a fallback for
+     * pre-v28 snapshots that may still be in play mid-transaction
+     * during an upgrade. The primary store always wins when both
+     * are present.
+     */
     function findDisciplineInSnapshot(appData, disciplineId) {
-        if (!appData || !isPlainObject(appData.curriculum)) {
+        if (!appData || typeof appData !== 'object') {
             return null;
         }
-        var list = appData.curriculum.disciplines;
-        if (!Array.isArray(list)) { return null; }
-        if (!isNonEmptyString(disciplineId)) { return null; }
+        if (!isNonEmptyString(disciplineId)) {
+            return null;
+        }
+
         var target = String(disciplineId);
-        for (var i = 0; i < list.length; i++) {
-            var d = list[i];
-            if (d && String(d.id) === target) {
-                return d;
+
+        // Primary: academy.disciplines
+        if (appData.academy && typeof appData.academy === 'object') {
+            var academyList = appData.academy.disciplines;
+            if (Array.isArray(academyList)) {
+                for (var a = 0; a < academyList.length; a++) {
+                    var ad = academyList[a];
+                    if (ad && String(ad.id) === target) {
+                        return ad;
+                    }
+                }
             }
         }
+
+        // Legacy fallback: curriculum.disciplines
+        if (appData.curriculum && typeof appData.curriculum === 'object') {
+            var legacyList = appData.curriculum.disciplines;
+            if (Array.isArray(legacyList)) {
+                for (var l = 0; l < legacyList.length; l++) {
+                    var ld = legacyList[l];
+                    if (ld && String(ld.id) === target) {
+                        return ld;
+                    }
+                }
+            }
+        }
+
         return null;
     }
 
