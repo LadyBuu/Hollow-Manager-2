@@ -56,6 +56,11 @@
  *   without the context, the record is orphaned). This is the
  *   only sense in which classId is used.
  *
+ *   The projector's `projectForClass` includes commitments because
+ *   they carry classId. That is a projection consequence, not a
+ *   semantic one: the commitment is not "part of the class's
+ *   schedule" in any meaningful sense.
+ *
  * KIND DISCRIMINATION:
  *   The two kinds share every field except `characterId`.
  *   `characterId` is only accepted when kind is 'tutoring'. A
@@ -87,10 +92,35 @@
  *   "foreign key valid only when the module happens to be
  *   loaded" path.
  *
+ *   The location reference is validated against the transaction
+ *   snapshot, not against live state. The live check at preflight
+ *   is UX only.
+ *
+ * CALENDAR END BOUNDARY:
+ *   CALENDAR_END_HOUR is the last hour that may be OCCUPIED. A
+ *   commitment that starts at CALENDAR_END_HOUR with duration 1
+ *   occupies [CALENDAR_END_HOUR, CALENDAR_END_HOUR + 1), which is
+ *   valid. The exclusive end of the calendar day is therefore
+ *   CALENDAR_END_HOUR + 1, exposed here as CALENDAR_END_TIME.
+ *
+ *   The same derived constant appears in
+ *   academy-teaching-sessions.js and
+ *   academy-session-form-modal.js. Do not change the arithmetic
+ *   here without changing it there.
+ *
  * LABEL:
  *   The label is bounded by LABEL_MAX_LENGTH. An overlong label
  *   is REJECTED, not silently truncated. Silent truncation hides
  *   user error; the caller must supply a label within bounds.
+ *
+ * SELF-TUTORING:
+ *   A tutoring commitment whose characterId equals its
+ *   instructorId is REJECTED at commitment validation. The
+ *   commitment promises a mentor relationship; a self-mentor
+ *   relationship is not a meaningful record, and allowing the
+ *   commitment to save while silently skipping the hook would
+ *   leave the user with a commitment whose stated effect did not
+ *   happen.
  *
  * MENTORING HOOK (tutoring only):
  *   When a tutoring commitment is created or updated with a
@@ -110,9 +140,22 @@
  *                          not be verified. A failed read does not
  *                          silently become "assume absent."
  *
+ *   A save that completes the commitment write but does not
+ *   complete the mentor relationship notifies the user with a
+ *   message that names which of the three failure modes
+ *   occurred. The message is a single notification with a
+ *   reason-specific clause; the user sees one toast either way.
+ *
  * RANGE PREDICATES:
  *   Week-in-range questions in this module delegate to
  *   RangeUtils. This module does not reimplement range math.
+ *
+ * CASCADE STRICTNESS:
+ *   stripClassRefs, stripCharacterRefs, stripInstructorRefs, and
+ *   stripLocationRefs operate on a destructive cascade. A missing
+ *   or malformed store on the snapshot is a data-integrity
+ *   failure, not "no commitments"; the helpers throw rather than
+ *   silently reporting a zero-count success.
  *
  * MUTATION CONTRACT:
  *   Every public mutation returns Promise<{ success, data?, message? }>.
@@ -262,7 +305,18 @@
     var MAX_HOUR = CalendarConstants.MAX_HOUR;
     var MIN_DURATION = CalendarConstants.MIN_CLASS_DURATION;
     var MAX_DURATION = CalendarConstants.MAX_CLASS_DURATION;
-    var CALENDAR_END_HOUR = CalendarConstants.CALENDAR_END_HOUR;
+
+    // CALENDAR_END_HOUR is the last hour that may be occupied. A
+    // commitment that starts at that hour with duration 1 occupies
+    // [CALENDAR_END_HOUR, CALENDAR_END_HOUR + 1), which is valid.
+    // The exclusive end of the calendar day is therefore
+    // CALENDAR_END_HOUR + 1.
+    //
+    // The same derived constant appears in
+    // academy-teaching-sessions.js and
+    // academy-session-form-modal.js. Do not change the arithmetic
+    // here without changing it there.
+    var CALENDAR_END_TIME = CalendarConstants.CALENDAR_END_HOUR + 1;
 
     var KIND_OFFICE_HOURS = 'officeHours';
     var KIND_TUTORING = 'tutoring';
@@ -438,6 +492,34 @@
         return appData.academy.instructorCommitments;
     }
 
+    /**
+     * Resolve the commitments store on a snapshot, throwing when
+     * it is missing or malformed.
+     *
+     * Used by destructive cascades. A missing store on a cascade
+     * snapshot is a data-integrity failure; silently reporting a
+     * zero-count success would leave the cascade believing it had
+     * cleaned up.
+     */
+    function requireStoreFromSnapshot(appData, helperName) {
+        if (!appData || typeof appData !== 'object') {
+            throw new Error(
+                '[AcademyInstructorCommitments] ' + helperName +
+                ' requires an appData snapshot.'
+            );
+        }
+        if (!appData.academy ||
+            !isPlainObject(appData.academy.instructorCommitments)) {
+            throw new Error(
+                '[AcademyInstructorCommitments] ' + helperName +
+                ' requires the instructorCommitments store on the ' +
+                'snapshot. The store is missing or malformed; the ' +
+                'cascade cannot proceed.'
+            );
+        }
+        return appData.academy.instructorCommitments;
+    }
+
     function getRecordInternal(commitmentId) {
         if (!isNonEmptyString(commitmentId)) {
             return null;
@@ -511,6 +593,44 @@
         return record;
     }
 
+    /**
+     * Resolve a location reference against the transaction snapshot.
+     *
+     * AcademyLocations is MANDATORY when a non-null locationId is
+     * set. A missing module or a location that does not resolve in
+     * the snapshot is a validation failure. A null locationId passes
+     * without consulting AcademyLocations.
+     *
+     * The live check at preflight is UX only; this one is
+     * authoritative.
+     */
+    function findLocationInSnapshot(locationId) {
+        // Locations live at the top level of appData, not under
+        // academy. The check happens against the appData snapshot
+        // the caller supplies.
+        //
+        // This helper is a thin wrapper over the domain module,
+        // because the location store is a top-level array on
+        // appData and AcademyLocations owns the validation
+        // contract. It is called from validateCandidateAgainstSnapshot,
+        // which has appData in hand.
+        //
+        // The parameter is the id; the appData is read by the
+        // caller. Returning the location record or null.
+        var AL = getAcademyLocations();
+        if (!AL || typeof AL.getLocation !== 'function') {
+            // Reaching here means the caller checked for the module
+            // and it disappeared between checks. Signal a hard
+            // failure rather than silently missing the FK.
+            throw new Error(
+                '[AcademyInstructorCommitments] AcademyLocations ' +
+                'is required to validate a commitment location. ' +
+                'Check the script load order in index.html.'
+            );
+        }
+        return AL.getLocation(locationId);
+    }
+
     // ============================================================
     // PAYLOAD VALIDATION (user input)
     // ============================================================
@@ -521,6 +641,9 @@
     //
     // Reference existence is validateCandidateAgainstSnapshot()'s
     // job, which runs inside the pipeline.
+    //
+    // The calendar boundary is enforced here (and re-enforced by
+    // validateCandidate) using CALENDAR_END_TIME.
 
     function validateCommitmentPayload(payload, isPartial) {
         if (!isPlainObject(payload)) {
@@ -609,11 +732,11 @@
             normalised.duration = duration;
         }
 
-        // ---- end of day check ----
+        // ---- end-of-day check ----
         if (normalised.startTime !== undefined &&
             normalised.duration !== undefined) {
             if (normalised.startTime + normalised.duration >
-                CALENDAR_END_HOUR + 1) {
+                CALENDAR_END_TIME) {
                 return {
                     valid: false,
                     message: 'Commitment extends beyond the end of ' +
@@ -773,7 +896,7 @@
             return { valid: false, message: 'Candidate duration is invalid.' };
         }
 
-        if (startTime + duration > CALENDAR_END_HOUR + 1) {
+        if (startTime + duration > CALENDAR_END_TIME) {
             return {
                 valid: false,
                 message: 'Candidate extends beyond the end of the day.'
@@ -802,9 +925,14 @@
             }
         }
 
-        // ---- locationId: null or non-empty string ----
-        if (candidate.locationId !== null &&
-            candidate.locationId !== undefined) {
+        // ---- locationId: exactly null or a non-empty string ----
+        if (candidate.locationId === undefined) {
+            return {
+                valid: false,
+                message: 'Candidate locationId must be null, not undefined.'
+            };
+        }
+        if (candidate.locationId !== null) {
             if (!isNonEmptyString(candidate.locationId)) {
                 return {
                     valid: false,
@@ -814,10 +942,15 @@
             }
         }
 
-        // ---- characterId: null or non-empty string; not on
-        //      office hours ----
-        if (candidate.characterId !== null &&
-            candidate.characterId !== undefined) {
+        // ---- characterId: exactly null or a non-empty string;
+        //      not on office hours ----
+        if (candidate.characterId === undefined) {
+            return {
+                valid: false,
+                message: 'Candidate characterId must be null, not undefined.'
+            };
+        }
+        if (candidate.characterId !== null) {
             if (!isNonEmptyString(candidate.characterId)) {
                 return {
                     valid: false,
@@ -833,21 +966,35 @@
             }
         }
 
-        // ---- label length ----
-        if (candidate.label !== undefined && candidate.label !== null) {
-            if (typeof candidate.label !== 'string') {
-                return {
-                    valid: false,
-                    message: 'Candidate label must be a string.'
-                };
-            }
-            if (candidate.label.length > LABEL_MAX_LENGTH) {
-                return {
-                    valid: false,
-                    message: 'Candidate label must be ' +
-                        LABEL_MAX_LENGTH + ' characters or fewer.'
-                };
-            }
+        // ---- label: exactly a string ----
+        if (candidate.label === undefined) {
+            return {
+                valid: false,
+                message: 'Candidate label must be a string, not undefined.'
+            };
+        }
+        if (typeof candidate.label !== 'string') {
+            return {
+                valid: false,
+                message: 'Candidate label must be a string.'
+            };
+        }
+        if (candidate.label.length > LABEL_MAX_LENGTH) {
+            return {
+                valid: false,
+                message: 'Candidate label must be ' +
+                    LABEL_MAX_LENGTH + ' characters or fewer.'
+            };
+        }
+
+        // ---- Self-tutoring rejection ----
+        if (candidate.kind === KIND_TUTORING &&
+            isNonEmptyString(candidate.characterId) &&
+            String(candidate.characterId) === String(candidate.instructorId)) {
+            return {
+                valid: false,
+                message: 'An instructor cannot tutor themselves.'
+            };
         }
 
         return { valid: true };
@@ -897,6 +1044,15 @@
         }
 
         // ---- locationId ----
+        //
+        // When locationId is set, the snapshot must expose the
+        // location. The location store lives at the top of
+        // appData.locations, and AcademyLocations is the module
+        // that knows how to resolve it.
+        //
+        // A missing module here is a hard failure: the snapshot
+        // cannot be asked to validate a reference to a store it
+        // cannot see.
         if (isNonEmptyString(candidate.locationId)) {
             var AL = getAcademyLocations();
             if (!AL || typeof AL.getLocation !== 'function') {
@@ -907,8 +1063,31 @@
                         'order in index.html.'
                 };
             }
-            var loc = AL.getLocation(candidate.locationId);
-            if (!loc) {
+
+            // Locations live at appData.locations, not under
+            // appData.academy. Read the snapshot array directly,
+            // falling back to the live check only when the
+            // snapshot does not carry the store (which would be
+            // a data-integrity problem in its own right).
+            var locRecord = null;
+            if (Array.isArray(appData.locations)) {
+                var target = String(candidate.locationId);
+                for (var i = 0; i < appData.locations.length; i++) {
+                    var loc = appData.locations[i];
+                    if (loc && String(loc.id) === target) {
+                        locRecord = loc;
+                        break;
+                    }
+                }
+            } else {
+                // Snapshot does not carry a locations array. Fall
+                // back to the domain module so the reference
+                // check still runs; this path is expected only for
+                // unusual snapshots (tests, partial loads).
+                locRecord = AL.getLocation(candidate.locationId);
+            }
+
+            if (!locRecord) {
                 return {
                     valid: false,
                     message: 'Location not found: ' + candidate.locationId
@@ -956,6 +1135,13 @@
     //   doesn't exist      → create attempted
     //   couldn't determine → no create attempted; soft-failure
     //                        is reported to the user
+    //
+    // Failure-mode notification policy:
+    //   The hook returns a structured result. applyMentorHook
+    //   turns that result into exactly one notification, with a
+    //   reason-specific clause. The user always sees one toast;
+    //   the text says which of the possible failure modes
+    //   occurred.
 
     function ensureMentorRelationship(instructorId, characterId) {
         if (!isNonEmptyString(instructorId) ||
@@ -1011,7 +1197,8 @@
             return Promise.resolve({
                 attempted: false,
                 created: false,
-                reason: 'check-failed'
+                reason: 'check-failed',
+                checkError: String(e && e.message ? e.message : e)
             });
         }
 
@@ -1042,14 +1229,15 @@
             return {
                 attempted: true,
                 created: false,
-                reason: (result && result.message) || 'create-failed',
+                reason: 'create-failed',
                 failureMessage: result && result.message
             };
         }).catch(function (err) {
             return {
                 attempted: true,
                 created: false,
-                reason: String(err && err.message || err)
+                reason: 'create-threw',
+                failureMessage: String(err && err.message || err)
             };
         });
     }
@@ -1067,26 +1255,73 @@
             commitment.instructorId,
             commitment.characterId
         ).then(function (hook) {
-            if (!hook.attempted && hook.reason === 'check-failed') {
-                notify(
-                    'Tutoring block saved. The mentor relationship ' +
-                    'could not be verified; no attempt was made to ' +
-                    'create it. Check the Social tab and add the ' +
-                    'relationship manually if needed.',
-                    'warning'
-                );
-                return hook;
+            // Success cases: nothing to say.
+            if (hook.created === true) { return hook; }
+            if (hook.reason === 'already-exists') { return hook; }
+
+            // Failure / soft-failure: one notification, reason-
+            // specific clause.
+            var clause;
+            switch (hook.reason) {
+                case 'check-failed':
+                    clause =
+                        'The mentor relationship could not be verified' +
+                        (hook.checkError
+                            ? ' (' + hook.checkError + ')'
+                            : '') +
+                        '; no attempt was made to create it. Check ' +
+                        'the Social tab and add the relationship ' +
+                        'manually if needed.';
+                    break;
+                case 'queries-unavailable':
+                    clause =
+                        'The Social module is not loaded, so the ' +
+                        'mentor relationship could not be checked. ' +
+                        'Add it manually from the Social tab once ' +
+                        'Social is available.';
+                    break;
+                case 'core-unavailable':
+                    clause =
+                        'The Social module does not support creating ' +
+                        'relationships. Add the mentor relationship ' +
+                        'manually from the Social tab if it is ' +
+                        'needed.';
+                    break;
+                case 'create-failed':
+                    clause =
+                        'The mentor relationship could not be saved' +
+                        (hook.failureMessage
+                            ? ': ' + hook.failureMessage
+                            : '.') +
+                        ' Retry from the Social tab if needed.';
+                    break;
+                case 'create-threw':
+                    clause =
+                        'The mentor relationship could not be saved ' +
+                        'because the Social module threw an error' +
+                        (hook.failureMessage
+                            ? ': ' + hook.failureMessage
+                            : '.') +
+                        ' Retry from the Social tab if needed.';
+                    break;
+                case 'invalid-input':
+                case 'self-reference':
+                    // Neither of these should be reachable: the
+                    // commitment validator rejects self-tutoring,
+                    // and the hook is only invoked with a
+                    // non-empty characterId. Defensive.
+                    return hook;
+                default:
+                    clause =
+                        'The mentor relationship could not be ' +
+                        'created for an unknown reason.';
+                    break;
             }
 
-            if (hook.attempted && !hook.created) {
-                notify(
-                    'Tutoring block saved. The mentor relationship ' +
-                    'could not be saved: ' +
-                    (hook.reason || 'unknown error') +
-                    '. Retry from the Social tab if needed.',
-                    'warning'
-                );
-            }
+            notify(
+                'Tutoring block saved. ' + clause,
+                'warning'
+            );
 
             return hook;
         });
@@ -1419,9 +1654,46 @@
         return result;
     }
 
+    /**
+     * Batch read: every commitment whose [startWeek, endWeek]
+     * contains the given week, across every class.
+     *
+     * This is the read the teaching projector uses to enumerate
+     * commitments for a week. It replaces an O(classes) walk over
+     * getActiveCommitmentsForClass.
+     *
+     * Returns a fresh array of deep clones.
+     */
+    function getActiveCommitmentsForWeek(week) {
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return [];
+        }
+
+        var records = getAllRecordsInternal();
+        var result = [];
+
+        for (var i = 0; i < records.length; i++) {
+            var c = records[i];
+            if (!RangeUtils.containsWeek(
+                weekNum, c.startWeek, c.endWeek
+            )) {
+                continue;
+            }
+            result.push(deepClone(c));
+        }
+
+        return result;
+    }
+
     // ============================================================
     // CASCADE HELPERS
     // ============================================================
+    //
+    // All four helpers run inside another module's pipeline
+    // transaction. A missing or malformed store on the snapshot is
+    // a data-integrity failure; the helper throws rather than
+    // silently reporting a zero-count success.
 
     function stripClassRefs(appData, classId) {
         var result = { commitmentsRemoved: 0 };
@@ -1430,10 +1702,9 @@
             return result;
         }
 
-        var store = getStoreFromSnapshot(appData);
-        if (!store) {
-            return result;
-        }
+        var store = requireStoreFromSnapshot(
+            appData, 'stripClassRefs'
+        );
 
         var target = String(classId);
         var keys = Object.keys(store);
@@ -1462,10 +1733,9 @@
             return result;
         }
 
-        var store = getStoreFromSnapshot(appData);
-        if (!store) {
-            return result;
-        }
+        var store = requireStoreFromSnapshot(
+            appData, 'stripCharacterRefs'
+        );
 
         var target = String(characterId);
         var keys = Object.keys(store);
@@ -1520,10 +1790,9 @@
             return result;
         }
 
-        var store = getStoreFromSnapshot(appData);
-        if (!store) {
-            return result;
-        }
+        var store = requireStoreFromSnapshot(
+            appData, 'stripInstructorRefs'
+        );
 
         var target = String(instructorId);
         var keys = Object.keys(store);
@@ -1558,10 +1827,9 @@
             return result;
         }
 
-        var store = getStoreFromSnapshot(appData);
-        if (!store) {
-            return result;
-        }
+        var store = requireStoreFromSnapshot(
+            appData, 'stripLocationRefs'
+        );
 
         var target = String(locationId);
         var keys = Object.keys(store);
@@ -1586,6 +1854,21 @@
     }
 
     // ============================================================
+    // DATA STORE FOR PREFLIGHT
+    // ============================================================
+    //
+    // validateCandidateAgainstSnapshot is called at preflight with
+    // the live window.data. That is a UX-only read; the pipeline
+    // re-checks against its own snapshot.
+
+    function getDataStore() {
+        if (!window.data || typeof window.data !== 'object') {
+            return null;
+        }
+        return window.data;
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -1603,6 +1886,8 @@
             getActiveCommitmentsForInstructor,
         getActiveCommitmentsForClass:
             getActiveCommitmentsForClass,
+        getActiveCommitmentsForWeek:
+            getActiveCommitmentsForWeek,
 
         // Cascade helpers
         stripClassRefs: stripClassRefs,
@@ -1635,6 +1920,7 @@
             'getCommitmentsForClass',
             'getActiveCommitmentsForInstructor',
             'getActiveCommitmentsForClass',
+            'getActiveCommitmentsForWeek',
             'stripClassRefs',
             'stripCharacterRefs',
             'stripInstructorRefs',
@@ -1645,6 +1931,17 @@
             if (typeof exports[required[i]] !== 'function') {
                 missing.push(required[i]);
             }
+        }
+
+        try {
+            if (CALENDAR_END_TIME !==
+                CalendarConstants.CALENDAR_END_HOUR + 1) {
+                missing.push(
+                    'CALENDAR_END_TIME is not CALENDAR_END_HOUR + 1'
+                );
+            }
+        } catch (e) {
+            missing.push('boundary verification threw: ' + e.message);
         }
 
         if (missing.length > 0) {
