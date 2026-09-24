@@ -14,10 +14,20 @@
  * WINDOW:
  *   The session's startWeek / endWeek are ALWAYS the discipline's
  *   startWeek / endWeek. The modal does not surface week fields.
- *   The domain owns the window; the form never touches it.
  *
- *   On 'add', the modal reads the discipline for the group and
- *   passes its startWeek / endWeek through to createSession.
+ *   DERIVATION LOCATION:
+ *     The modal reads discipline.startWeek / discipline.endWeek and
+ *     passes them to AcademyTeachingSessions.createSession. This is
+ *     a DERIVED value, not a modal-owned fact. The correct long-term
+ *     home is inside createSession itself, which would read the
+ *     discipline and compute the window internally.
+ *
+ *     That move is deferred: it changes createSession's input
+ *     contract and cascades through the schedule coordinator's call
+ *     sites. Until it lands, this modal is the derivation point and
+ *     the header records that so the next reader does not assume
+ *     the modal owns the window.
+ *
  *   On 'edit', the modal does not change the window.
  *
  * DURATION ASYMMETRY:
@@ -31,6 +41,45 @@
  *   sessions of the same group can have different locations. The
  *   dropdown always carries an empty "(no location)" option.
  *
+ *   AcademyLocations is treated as MANDATORY here. When a query
+ *   fails, the failure propagates; the modal does not convert it
+ *   into "no locations available."
+ *
+ * CALENDAR END BOUNDARY:
+ *   CALENDAR_END_HOUR is the last hour that may be OCCUPIED. A
+ *   session that starts at CALENDAR_END_HOUR with duration 1
+ *   occupies [CALENDAR_END_HOUR, CALENDAR_END_HOUR + 1), which is
+ *   valid. The exclusive end of the calendar day is therefore
+ *   CALENDAR_END_HOUR + 1, exposed here as CALENDAR_END_TIME.
+ *
+ *   The same derived constant appears in
+ *   academy-teaching-sessions.js and
+ *   academy-instructor-commitments.js. Do not change the
+ *   arithmetic here without changing it there.
+ *
+ * ASYNC SAFETY:
+ *   Every asynchronous callback captures the current
+ *   `_sessionToken`. If a new modal has been opened (or the
+ *   current one closed) before the callback runs, the callback is
+ *   a no-op. This prevents stale operations from mutating a fresh
+ *   modal's state.
+ *
+ *   A `_busy` flag additionally disables the submit control while
+ *   a mutation is in flight, so a double-click cannot fire two
+ *   writes.
+ *
+ * DOMAIN READS:
+ *   The modal resolves the group, session, discipline, and
+ *   location list ONCE per open, into `_context`. Domain records
+ *   are NOT held across the modal's lifetime; the VM is rebuilt
+ *   from `_context` on every render and the identity fields
+ *   (`groupId`, `sessionId`, `mode`) are what persist.
+ *
+ *   This is the same pattern the discipline picker uses. Holding
+ *   a domain record across a modal's life is a stale-state window;
+ *   the record can change underneath the modal between render and
+ *   submit.
+ *
  * SUBMISSION:
  *   Add  -> AcademyTeachingSessions.createSession({
  *             groupId, day, startTime, duration, locationId,
@@ -43,12 +92,17 @@
  *   On success: close the modal.
  *   On failure: notify with the domain's message and stay open.
  *
+ *   The modal never touches window.data. It never writes. All
+ *   state changes go through AcademyTeachingSessions.
+ *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - The teaching-sessions store  (AcademyTeachingSessions)
  *   - The group record             (AcademyTeachingGroups)
- *   - The discipline window        (AcademyDisciplines)
+ *   - The discipline window        (AcademyDisciplines) — see
+ *                                    DERIVATION LOCATION above
  *   - The location list            (AcademyLocations)
  *   - Group membership             (AcademyTeachingGroups)
+ *   - Collision detection          (AcademyTeachingCollisions)
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -165,13 +219,36 @@
     var MAX_HOUR = CalendarConstants.MAX_HOUR;
     var MIN_DURATION = CalendarConstants.MIN_CLASS_DURATION;
     var MAX_DURATION = CalendarConstants.MAX_CLASS_DURATION;
-    var CALENDAR_END_HOUR = CalendarConstants.CALENDAR_END_HOUR;
+
+    // CALENDAR_END_HOUR is the last hour that may be occupied. A
+    // session that starts at that hour with duration 1 occupies
+    // [CALENDAR_END_HOUR, CALENDAR_END_HOUR + 1), which is valid.
+    // The exclusive end of the calendar day is therefore
+    // CALENDAR_END_HOUR + 1.
+    //
+    // The same derived constant appears in
+    // academy-teaching-sessions.js and
+    // academy-instructor-commitments.js. Do not change the
+    // arithmetic here without changing it there.
+    var CALENDAR_END_TIME = CalendarConstants.CALENDAR_END_HOUR + 1;
+
+    // Named default for the add form. Form convenience, not a
+    // domain default. The domain accepts any valid hour.
+    var DEFAULT_START_HOUR = 9;
+    var DEFAULT_DURATION = 1;
 
     var VALID_MODES = ['add', 'edit'];
 
     // ============================================================
     // MODULE STATE
     // ============================================================
+    //
+    // _context holds IDENTITY only. Domain records (group, session,
+    // discipline) are resolved fresh on every render from these IDs.
+    //
+    // _sessionToken is incremented on every open and close. Async
+    // callbacks capture the token at submit time and become no-ops
+    // if the token has advanced.
 
     var _modal = null;
     var _contentEl = null;
@@ -179,6 +256,9 @@
     var _onClose = null;
     var _contentClickHandler = null;
     var _contentSubmitHandler = null;
+
+    var _sessionToken = 0;
+    var _busy = false;
 
     // ============================================================
     // HELPERS
@@ -222,21 +302,46 @@
 
     function formatDayLabel(day) {
         if (!isFiniteNumber(day)) { return 'Day ?'; }
-        try {
-            return CalendarConstants.getDayName(day) || ('Day ' + day);
-        } catch (e) {
-            return 'Day ' + day;
-        }
+        return CalendarConstants.getDayName(day);
     }
 
     function formatHourLabel(hour) {
         if (!isFiniteNumber(hour)) { return '?:00'; }
-        try {
-            var s = CalendarConstants.formatHour(hour);
-            return isNonEmptyString(s) ? s : (hour + ':00');
-        } catch (e) {
-            return hour + ':00';
-        }
+        return CalendarConstants.formatHour(hour);
+    }
+
+    // ============================================================
+    // DOMAIN RESOLUTION
+    // ============================================================
+    //
+    // Every resolution distinguishes "not found" (returns null)
+    // from "query failed" (the exception propagates). A failed
+    // query is a broken dependency, not evidence that a record is
+    // absent.
+
+    function resolveGroup(groupId) {
+        if (!isNonEmptyString(groupId)) { return null; }
+        return AcademyTeachingGroups.getGroup(groupId);
+    }
+
+    function resolveSession(sessionId) {
+        if (!isNonEmptyString(sessionId)) { return null; }
+        return AcademyTeachingSessions.getSession(sessionId);
+    }
+
+    function resolveDiscipline(disciplineId) {
+        if (!isNonEmptyString(disciplineId)) { return null; }
+        return AcademyDisciplines.getDiscipline(disciplineId);
+    }
+
+    function resolveLocations() {
+        var all = AcademyLocations.getLocations() || [];
+        all.sort(function(a, b) {
+            return String(a.name || '').localeCompare(
+                String(b.name || '')
+            );
+        });
+        return all;
     }
 
     // ============================================================
@@ -274,29 +379,36 @@
             return null;
         }
 
-        var group = null;
+        var group;
         try {
-            group = AcademyTeachingGroups.getGroup(options.groupId);
+            group = resolveGroup(options.groupId);
         } catch (e) {
-            group = null;
+            console.warn(
+                '[AcademySessionFormModal] getGroup threw:', e
+            );
+            notify('Failed to load teaching group.', 'error');
+            return null;
         }
         if (!group) {
             notify('Teaching group not found.', 'error');
             return null;
         }
 
-        var session = null;
+        var sessionId = null;
         if (mode === 'edit') {
             if (!isNonEmptyString(options.sessionId)) {
                 notify('Session ID is required for editing.', 'error');
                 return null;
             }
+            var session;
             try {
-                session = AcademyTeachingSessions.getSession(
-                    options.sessionId
-                );
+                session = resolveSession(options.sessionId);
             } catch (e) {
-                session = null;
+                console.warn(
+                    '[AcademySessionFormModal] getSession threw:', e
+                );
+                notify('Failed to load session.', 'error');
+                return null;
             }
             if (!session) {
                 notify('Session not found.', 'error');
@@ -306,6 +418,7 @@
                 notify('Session does not belong to this group.', 'error');
                 return null;
             }
+            sessionId = String(session.id);
         }
 
         closeModal();
@@ -313,13 +426,18 @@
         _context = {
             mode: mode,
             groupId: String(group.id),
-            group: group,
-            sessionId: session ? String(session.id) : null,
-            session: session
+            sessionId: sessionId
         };
         _onClose = typeof options.onClose === 'function'
             ? options.onClose
             : null;
+
+        // Bump the token. Any callback from a previous instance
+        // becomes a no-op.
+        _sessionToken++;
+        var myToken = _sessionToken;
+
+        _busy = false;
 
         var shell = Modal.createModal('academy-session-form-modal');
         if (!shell) {
@@ -336,8 +454,13 @@
         _modal = shell;
         _contentEl = contentEl;
 
-        _contentClickHandler = handleContentClick;
-        _contentSubmitHandler = handleContentSubmit;
+        _contentClickHandler = function(e) {
+            handleContentClick(e, myToken);
+        };
+        _contentSubmitHandler = function(e) {
+            handleContentSubmit(e, myToken);
+        };
+
         contentEl.addEventListener('click', _contentClickHandler);
         contentEl.addEventListener('submit', _contentSubmitHandler);
 
@@ -371,6 +494,9 @@
             } catch (e) { /* ignore */ }
         }
 
+        // Invalidate any in-flight callbacks.
+        _sessionToken++;
+
         resetState();
 
         if (modal) {
@@ -399,84 +525,68 @@
         _onClose = null;
         _contentClickHandler = null;
         _contentSubmitHandler = null;
+        _busy = false;
     }
 
     // ============================================================
     // VIEW MODEL
     // ============================================================
+    //
+    // The VM is built fresh on every render from _context's IDs.
+    // Domain records are resolved here; the modal does not cache
+    // them across renders.
 
     function buildViewModel() {
         if (!_context) { return null; }
 
-        var group = _context.group;
-        var session = _context.session;
-
-        var disciplineName = 'Unknown Discipline';
-        var disciplineStartWeek = null;
-        var disciplineEndWeek = null;
-
-        if (isNonEmptyString(group.disciplineId)) {
-            var disc = null;
-            try {
-                disc = AcademyDisciplines.getDiscipline(
-                    group.disciplineId
-                );
-            } catch (e) {
-                disc = null;
-            }
-            if (disc) {
-                if (isNonEmptyString(disc.name)) {
-                    disciplineName = disc.name;
-                }
-                if (isFiniteNumber(disc.startWeek)) {
-                    disciplineStartWeek = disc.startWeek;
-                }
-                if (disc.endWeek !== undefined &&
-                    disc.endWeek !== null) {
-                    disciplineEndWeek = disc.endWeek;
-                }
-            }
+        var group = resolveGroup(_context.groupId);
+        if (!group) {
+            return null;
         }
+
+        var discipline = resolveDiscipline(group.disciplineId);
+        if (!discipline) {
+            return null;
+        }
+
+        var disciplineName = isNonEmptyString(discipline.name)
+            ? discipline.name
+            : 'Unnamed Discipline';
 
         var groupDisplayName = isNonEmptyString(group.customName)
             ? group.customName
             : disciplineName;
+
+        var session = null;
+        if (_context.mode === 'edit' && _context.sessionId) {
+            session = resolveSession(_context.sessionId);
+            if (!session) {
+                return null;
+            }
+        }
 
         var vm = {
             mode: _context.mode,
             groupId: _context.groupId,
             groupDisplayName: groupDisplayName,
             disciplineName: disciplineName,
-            disciplineStartWeek: disciplineStartWeek,
-            disciplineEndWeek: disciplineEndWeek,
-            isEdit: _context.mode === 'edit'
+            isEdit: _context.mode === 'edit',
+            busy: _busy
         };
 
-        if (_context.mode === 'edit' && session) {
+        if (session) {
             vm.currentDay = session.day;
             vm.currentStartTime = session.startTime;
             vm.currentDuration = session.duration;
             vm.currentLocationId = session.locationId || '';
         } else {
-            // Sensible defaults for the add form: Monday, 9am, 1h.
             vm.currentDay = MIN_DAY;
-            vm.currentStartTime = 9;
-            vm.currentDuration = 1;
+            vm.currentStartTime = DEFAULT_START_HOUR;
+            vm.currentDuration = DEFAULT_DURATION;
             vm.currentLocationId = '';
         }
 
-        var allLocations = [];
-        try {
-            allLocations = AcademyLocations.getLocations() || [];
-        } catch (e) {
-            allLocations = [];
-        }
-        allLocations.sort(function(a, b) {
-            return String(a.name || '').localeCompare(
-                String(b.name || '')
-            );
-        });
-        vm.locations = allLocations;
+        vm.locations = resolveLocations();
 
         return vm;
     }
@@ -488,7 +598,17 @@
     function renderContent() {
         if (!_contentEl) { return; }
         var vm = buildViewModel();
-        if (!vm) { return; }
+        if (!vm) {
+            // The VM could not be built because a referenced record
+            // vanished between open and render. Close cleanly rather
+            // than rendering a broken form.
+            notify(
+                'The teaching group or session is no longer available.',
+                'error'
+            );
+            closeModal();
+            return;
+        }
         _contentEl.innerHTML = buildModalHTML(vm);
     }
 
@@ -502,7 +622,9 @@
                         escapeAttribute(vm.groupId) + '" ' +
                     'data-session-id="' +
                         escapeAttribute(
-                            isEdit ? _context.sessionId : ''
+                            isEdit && _context.sessionId
+                                ? _context.sessionId
+                                : ''
                         ) + '">';
 
         // ---- Header ----
@@ -526,7 +648,8 @@
         html += '<div class="form-group">';
         html += '<label for="academy-session-day">Day</label>';
         html += '<select id="academy-session-day" ' +
-                    'class="academy-session-day">';
+                    'class="academy-session-day"' +
+                    (vm.busy ? ' disabled' : '') + '>';
         for (var d = MIN_DAY; d <= MAX_DAY; d++) {
             html += '<option value="' + d + '"' +
                         (d === vm.currentDay ? ' selected' : '') +
@@ -543,7 +666,8 @@
                     'Start Hour' +
                 '</label>';
         html += '<select id="academy-session-start-hour" ' +
-                    'class="academy-session-start-hour">';
+                    'class="academy-session-start-hour"' +
+                    (vm.busy ? ' disabled' : '') + '>';
         for (var h = MIN_HOUR; h <= MAX_HOUR; h++) {
             html += '<option value="' + h + '"' +
                         (h === vm.currentStartTime ? ' selected' : '') +
@@ -561,7 +685,8 @@
                         'Duration (hours)' +
                     '</label>';
             html += '<select id="academy-session-duration" ' +
-                        'class="academy-session-duration">';
+                        'class="academy-session-duration"' +
+                        (vm.busy ? ' disabled' : '') + '>';
             for (var dur = MIN_DURATION; dur <= MAX_DURATION; dur++) {
                 html += '<option value="' + dur + '"' +
                             (dur === vm.currentDuration
@@ -597,7 +722,8 @@
                     'Location' +
                 '</label>';
         html += '<select id="academy-session-location" ' +
-                    'class="academy-session-location">';
+                    'class="academy-session-location"' +
+                    (vm.busy ? ' disabled' : '') + '>';
         html += '<option value="">(no location)</option>';
         for (var i = 0; i < vm.locations.length; i++) {
             var loc = vm.locations[i];
@@ -621,8 +747,10 @@
         // ---- Footer ----
         html += '<div class="modal-footer academy-session-form-footer">';
         html += '<button type="button" class="secondary" ' +
-                    'data-session-action="close">Cancel</button>';
-        html += '<button type="submit" class="primary">' +
+                    'data-session-action="close"' +
+                    (vm.busy ? ' disabled' : '') + '>Cancel</button>';
+        html += '<button type="submit" class="primary"' +
+                    (vm.busy ? ' disabled' : '') + '>' +
                     escapeHtml(isEdit ? 'Save Changes' : 'Add Session') +
                 '</button>';
         html += '</div>';
@@ -635,7 +763,13 @@
     // EVENT HANDLERS
     // ============================================================
 
-    function handleContentClick(e) {
+    function handleContentClick(e, myToken) {
+        if (myToken !== _sessionToken) { return; }
+        if (_busy) {
+            e.preventDefault();
+            return;
+        }
+
         var target = e.target;
         if (!target || typeof target.closest !== 'function') {
             return;
@@ -653,28 +787,28 @@
         }
     }
 
-    function handleContentSubmit(e) {
+    function handleContentSubmit(e, myToken) {
+        if (myToken !== _sessionToken) { return; }
+
         var form = e.target;
         if (!form || form.id !== 'academy-session-form') {
             return;
         }
         e.preventDefault();
-        submitForm(form);
+        submitForm(form, myToken);
     }
 
     // ============================================================
     // SUBMIT
     // ============================================================
 
-    function submitForm(form) {
+    function submitForm(form, myToken) {
         if (!_context) { return; }
+        if (_busy) { return; }
 
         var dayInput = form.querySelector('.academy-session-day');
         var hourInput = form.querySelector(
             '.academy-session-start-hour'
-        );
-        var durationInput = form.querySelector(
-            '.academy-session-duration'
         );
         var locationInput = form.querySelector(
             '.academy-session-location'
@@ -703,15 +837,13 @@
             : null;
 
         if (_context.mode === 'edit') {
-            submitEdit(form, day, startTime, locationId);
+            submitEdit(day, startTime, locationId, myToken);
         } else {
-            submitAdd(
-                form, day, startTime, locationInput, locationId
-            );
+            submitAdd(form, day, startTime, locationId, myToken);
         }
     }
 
-    function submitAdd(form, day, startTime, locationInput, locationId) {
+    function submitAdd(form, day, startTime, locationId, myToken) {
         var durationInput = form.querySelector(
             '.academy-session-duration'
         );
@@ -729,7 +861,7 @@
             return;
         }
 
-        if (startTime + duration > CALENDAR_END_HOUR + 1) {
+        if (startTime + duration > CALENDAR_END_TIME) {
             notify(
                 'Session would extend beyond the end of the day.',
                 'error'
@@ -737,20 +869,21 @@
             return;
         }
 
-        // Resolve the discipline's window. The session's window
-        // IS the discipline's window; the form never surfaces
-        // week fields.
-        var group = _context.group;
-        var discipline = null;
-        try {
-            discipline = AcademyDisciplines.getDiscipline(
-                group.disciplineId
-            );
-        } catch (e) {
-            discipline = null;
+        // Resolve the group and its discipline fresh. See the
+        // DERIVATION LOCATION note in the header: the window is
+        // derived here, from the discipline's own startWeek /
+        // endWeek, and passed to createSession.
+        var group = resolveGroup(_context.groupId);
+        if (!group) {
+            notify('Teaching group is no longer available.', 'error');
+            closeModal();
+            return;
         }
+
+        var discipline = resolveDiscipline(group.disciplineId);
         if (!discipline) {
-            notify('Discipline not found.', 'error');
+            notify('Discipline is no longer available.', 'error');
+            closeModal();
             return;
         }
 
@@ -775,6 +908,9 @@
             }
         }
 
+        _busy = true;
+        renderContent();
+
         AcademyTeachingSessions.createSession({
             groupId: _context.groupId,
             day: day,
@@ -784,27 +920,39 @@
             startWeek: startWeek,
             endWeek: endWeek
         }).then(function(result) {
+            if (myToken !== _sessionToken) { return; }
+            _busy = false;
+
             if (result && result.success) {
                 notify('Session added.', 'success');
                 closeModal();
-            } else if (result && result.message) {
-                notify(result.message, 'error');
-            } else {
-                notify('Failed to add session.', 'error');
+                return;
             }
+
+            var msg = (result && result.message)
+                ? result.message
+                : 'Failed to add session.';
+            notify(msg, 'error');
+            renderContent();
         }).catch(function(err) {
+            if (myToken !== _sessionToken) { return; }
+            _busy = false;
             console.warn(
                 '[AcademySessionFormModal] createSession threw:', err
             );
             notify('Failed to add session.', 'error');
+            renderContent();
         });
     }
 
-    function submitEdit(form, day, startTime, locationId) {
+    function submitEdit(day, startTime, locationId, myToken) {
         if (!_context.sessionId) {
             notify('Session ID is missing.', 'error');
             return;
         }
+
+        _busy = true;
+        renderContent();
 
         AcademyTeachingSessions.updateSession(
             _context.sessionId,
@@ -814,19 +962,28 @@
                 locationId: locationId
             }
         ).then(function(result) {
+            if (myToken !== _sessionToken) { return; }
+            _busy = false;
+
             if (result && result.success) {
                 notify('Session updated.', 'success');
                 closeModal();
-            } else if (result && result.message) {
-                notify(result.message, 'error');
-            } else {
-                notify('Failed to update session.', 'error');
+                return;
             }
+
+            var msg = (result && result.message)
+                ? result.message
+                : 'Failed to update session.';
+            notify(msg, 'error');
+            renderContent();
         }).catch(function(err) {
+            if (myToken !== _sessionToken) { return; }
+            _busy = false;
             console.warn(
                 '[AcademySessionFormModal] updateSession threw:', err
             );
             notify('Failed to update session.', 'error');
+            renderContent();
         });
     }
 
@@ -858,6 +1015,42 @@
             console.warn(
                 '[AcademySessionFormModal] Verification - some ' +
                 'exports may be missing:', missing.join(', ')
+            );
+        }
+
+        try {
+            if (CALENDAR_END_TIME !==
+                CalendarConstants.CALENDAR_END_HOUR + 1) {
+                missing.push(
+                    'CALENDAR_END_TIME is not CALENDAR_END_HOUR + 1'
+                );
+            }
+            if (DEFAULT_START_HOUR < MIN_HOUR ||
+                DEFAULT_START_HOUR > MAX_HOUR) {
+                missing.push(
+                    'DEFAULT_START_HOUR is out of calendar bounds'
+                );
+            }
+            if (DEFAULT_DURATION < MIN_DURATION ||
+                DEFAULT_DURATION > MAX_DURATION) {
+                missing.push(
+                    'DEFAULT_DURATION is out of calendar bounds'
+                );
+            }
+            if (DEFAULT_START_HOUR + DEFAULT_DURATION > CALENDAR_END_TIME) {
+                missing.push(
+                    'Default start + duration extends past ' +
+                    'CALENDAR_END_TIME'
+                );
+            }
+        } catch (e) {
+            missing.push('verification threw: ' + e.message);
+        }
+
+        if (missing.length > 0) {
+            console.warn(
+                '[AcademySessionFormModal] Verification failed:',
+                missing.join(', ')
             );
         }
     })();
