@@ -85,14 +85,16 @@
  * DELETE CASCADE (v21):
  *   Deleting a discipline is a CASCADE. In a single transaction it:
  *     1. Deletes the discipline from curriculum.disciplines.
- *     2. Removes auto-groups whose disciplineId matches.
- *     3. Deletes grades keyed to this discipline.
- *     4. Cross-domain cleanup (delegated to AcademyCascade): removes
+ *     2. Deletes grades keyed to this discipline.
+ *     3. Cross-domain cleanup (delegated to AcademyCascade): removes
  *        enrolments, teaching groups, and teaching sessions.
  *
  *   The retired stored-schedule maps (curriculum.schedules,
  *   curriculum.locationSchedules, curriculum.metadata) are no longer
- *   touched. They were removed in database v21.
+ *   touched. They were removed in database v21. The retired
+ *   curriculum.autoGroups store is likewise no longer touched; its
+ *   successor (academy.teachingGroups) is cleaned up by the cascade
+ *   in step 3.
  *
  * MUTATION CONTRACT:
  *   - create / update / delete / saveDisciplines all return
@@ -671,7 +673,6 @@
     // owns. Cross-domain cleanup (enrolments, teaching groups, teaching
     // sessions) is delegated to AcademyCascade.disciplineDeleted.
 
-
     function stripDisciplineFromGrades(appData, disciplineId) {
         if (!appData.academy || !appData.academy.grades ||
             typeof appData.academy.grades !== 'object') {
@@ -954,14 +955,17 @@
      *
      * CASCADE (v21). In a single transaction it:
      *   1. Deletes the discipline entity.
-     *   2. Removes auto-groups whose disciplineId matches.
-     *   3. Deletes grades keyed to this discipline.
-     *   4. Cross-domain cleanup via AcademyCascade.disciplineDeleted,
+     *   2. Deletes grades keyed to this discipline.
+     *   3. Cross-domain cleanup via AcademyCascade.disciplineDeleted,
      *      which handles enrolments, teaching groups, and teaching
      *      sessions.
      *
-     * The retired stored-schedule maps are NOT touched. They were
-     * removed in database v21.
+     * The retired stored-schedule maps (curriculum.schedules,
+     * curriculum.locationSchedules, curriculum.metadata) are NOT
+     * touched. They were removed in database v21. The retired
+     * curriculum.autoGroups store is likewise no longer touched; its
+     * successor (academy.teachingGroups) is cleaned up by the cascade
+     * in step 3.
      */
     function deleteDiscipline(id) {
         if (!isNonEmptyString(id)) {
@@ -1015,10 +1019,8 @@
                 if (!appData.curriculum || typeof appData.curriculum !== 'object') {
                     appData.curriculum = {};
                 }
-                var curriculum = appData.curriculum;
 
                 // ---- 3. Curriculum-internal cleanup ----
-                var groupsRemoved = stripDisciplineFromAutoGroups(curriculum, target);
                 var gradesRemoved = stripDisciplineFromGrades(appData, target);
 
                 // ---- 4. Cross-domain cascade ----
@@ -1032,7 +1034,6 @@
                     deleted: true,
                     discipline: disciplineInfo,
                     curriculum: {
-                        autoGroupsRemoved: groupsRemoved,
                         gradesRemoved: gradesRemoved
                     },
                     academyCascade: cascade
@@ -1042,7 +1043,6 @@
                 var parts = [];
 
                 var c = result.curriculum || {};
-                if (c.autoGroupsRemoved > 0) parts.push(c.autoGroupsRemoved + ' group(s)');
                 if (c.gradesRemoved > 0) parts.push(c.gradesRemoved + ' grade(s)');
 
                 if (result.academyCascade) {
