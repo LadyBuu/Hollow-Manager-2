@@ -21,12 +21,6 @@
  *       updatedAt
  *     }
  *
- * WHAT THIS MODULE DOES NOT OWN:
- *   - Teaching group existence   (AcademyTeachingGroups)
- *   - Class-discipline windows   (AcademyClassDisciplines)
- *   - Student enrolment          (AcademyEnrolments)
- *   - Compound operations        (AcademySchedule)
- *
  * SESSIONS HAVE NO ROSTER:
  *   A session does not carry studentIds. Membership lives on the
  *   group. A session's effective roster is the group's roster,
@@ -34,60 +28,46 @@
  *   and the class-discipline's window. The projector does that
  *   intersection; this module never touches rosters.
  *
- *   Any session input containing studentIds is rejected.
- *
  * HISTORICAL-RECORD PRINCIPLE:
  *   A session is a historical fact. Ending a session sets its
  *   endWeek; it does NOT delete the record. Deleting a session
  *   outright is reserved for administrative cleanup and for cascade
- *   deletes (group delete, class delete).
+ *   deletes (group delete, class delete, discipline delete).
  *
- * WEEK SEMANTICS:
- *   - Weeks are bounded [MIN_WEEK, MAX_WEEK].
- *   - startWeek and endWeek are integers in that range.
- *   - endWeek === null means "ongoing".
- *   - endWeek is INCLUSIVE.
+ * CASCADE HELPERS:
+ *   stripGroupRefs(appData, groupId)          remove every session
+ *                                              of a group
+ *   stripLocationRefs(appData, locationId)    null the locationId
+ *                                              on every session that
+ *                                              referenced it
+ *   stripClassRefs(appData, classId)          remove every session of
+ *                                              every group in a class
+ *   stripDisciplineRefs(appData, disciplineId)
+ *                                              remove every session of
+ *                                              every group whose
+ *                                              disciplineId matches
  *
- * DAY AND TIME SEMANTICS:
- *   - day is an integer 1-7 (Monday=1 .. Sunday=7).
- *   - startTime is an integer hour 0-23.
- *   - duration is an integer 1..MAX_CLASS_DURATION.
- *   - startTime + duration must not exceed the calendar's end hour + 1.
+ *   stripDisciplineRefs resolves the discipline's groups internally,
+ *   via the group store on the same appData snapshot. Callers do not
+ *   need to enumerate groups. This is the discipline→group→session
+ *   knowledge living where it belongs.
  *
  * RANGE PREDICATES:
- *   - `sessionActiveInWeek` is a delegating wrapper around
- *     RangeUtils.containsWeek. The session-shape null check lives
- *     here; the week-containment question does not.
- *   - `sessionsOverlap` has two parts: a TIME overlap (day, hour,
- *     duration) and a WEEK-RANGE overlap. The time overlap is local
- *     — it has no analogue in RangeUtils, which is week-typed. The
- *     week-range overlap delegates to RangeUtils.weeksOverlap,
- *     which is the canonical "do two week ranges intersect"
- *     predicate.
- *
- * OVERLAP SEMANTICS:
- *   - A teaching GROUP may not have two sessions that overlap in
- *     time on the same day with overlapping week ranges. That rule
- *     is enforced here, since it is a property of the session set
- *     attached to a single group.
- *   - Two DIFFERENT groups may meet at the same time; that is not
- *     this module's concern. Collision detection across groups
- *     belongs to AcademyTeachingCollisions.
+ *   - `sessionActiveInWeek` delegates to RangeUtils.containsWeek.
+ *   - `sessionsOverlap` combines a local TIME overlap with a
+ *     RangeUtils.weeksOverlap call for the week ranges.
  *
  * DEPENDENCIES (MANDATORY):
- *   - window.ObjectUtils          (deepClone)
- *   - window.ValidationUtils      (isNonEmptyString)
- *   - window.CalendarValidation   (parseWeek, parseDay, parseHour, parseDuration)
- *   - window.CalendarConstants    (MIN_WEEK, MAX_WEEK, MIN_DAY, MAX_DAY,
- *                                  MIN_HOUR, MAX_HOUR, CALENDAR_END_HOUR,
- *                                  MIN_CLASS_DURATION, MAX_CLASS_DURATION)
- *   - window.RangeUtils           (containsWeek, weeksOverlap)
- *   - window.MutationPipeline     (performMutation)
- *   - window.AcademyTeachingGroups (group existence check)
+ *   - window.ObjectUtils
+ *   - window.ValidationUtils
+ *   - window.CalendarValidation
+ *   - window.CalendarConstants
+ *   - window.RangeUtils
+ *   - window.MutationPipeline
+ *   - window.AcademyTeachingGroups
  *
  * DEPENDENCIES (LAZY):
- *   - window.IdUtils              (session id generation; falls back
- *                                  to a local generator when absent)
+ *   - window.IdUtils
  */
 
 (function() {
@@ -242,24 +222,7 @@
     // ============================================================
     // RANGE PREDICATES — DELEGATE TO RangeUtils
     // ============================================================
-    //
-    // The week-containment and week-overlap questions are owned by
-    // RangeUtils. Both helpers below do shape checks only, then
-    // delegate. Do not reimplement range math here.
-    //
-    // sessionsOverlap also has a TIME dimension (day, hour,
-    // duration). That part is local because RangeUtils is week-typed
-    // and has no opinion about hours. The two dimensions are
-    // ANDed: sessions overlap when their weeks overlap AND their
-    // time windows overlap on the same day.
 
-    /**
-     * Is a session active during the given week?
-     *
-     * Shape check (session must be an object with a numeric
-     * startWeek) belongs here. The week-containment question
-     * belongs to RangeUtils.
-     */
     function sessionActiveInWeek(session, week) {
         if (!session) return false;
         if (session.startWeek === null || session.startWeek === undefined) {
@@ -272,19 +235,6 @@
         );
     }
 
-    /**
-     * Do two sessions overlap in both time and weeks?
-     *
-     * Time overlap: same day, and their [startTime, startTime +
-     * duration) intervals intersect. This is local — RangeUtils is
-     * week-typed and has no hour concept.
-     *
-     * Week overlap: delegates to RangeUtils.weeksOverlap, which is
-     * the canonical "do two week ranges intersect" predicate.
-     * Inclusive bounds on both ends; null end means unbounded.
-     *
-     * Two sessions on different days never overlap.
-     */
     function sessionsOverlap(a, b) {
         if (!a || !b) return false;
         if (a.day !== b.day) return false;
@@ -471,12 +421,6 @@
         return { valid: true, startWeek: startNum, endWeek: endNum };
     }
 
-    /**
-     * Enforce the "no two sessions of the same group overlap in both
-     * time and weeks" rule. `candidate` is the proposed session;
-     * `excludeId` is the session being edited (so it doesn't
-     * self-collide).
-     */
     function findOverlappingSession(groupId, candidate, excludeId) {
         var all = getAllSessionRecordsInternal();
         var targetGroup = String(groupId);
@@ -738,10 +682,6 @@
         });
     }
 
-    /**
-     * End a session from `effectiveWeek` onward.
-     * endWeek becomes effectiveWeek - 1.
-     */
     function endSession(sessionId, effectiveWeek) {
         if (!isNonEmptyString(sessionId)) {
             return Promise.resolve(failure('Session ID is required.'));
@@ -788,10 +728,6 @@
         });
     }
 
-    /**
-     * Hard-delete a session. Reserved for administrative cleanup and
-     * cascade deletes.
-     */
     function removeSessionRecord(sessionId) {
         if (!isNonEmptyString(sessionId)) {
             return Promise.resolve(failure('Session ID is required.'));
@@ -847,8 +783,9 @@
     }
 
     /**
-     * Strip all sessions for a location across all groups.
-     * Called from a location-delete cascade.
+     * Null the locationId on every session that referenced the
+     * deleted location. The session survives; the reference is
+     * cleared.
      */
     function stripLocationRefs(appData, locationId) {
         var result = { sessionsCleared: 0 };
@@ -872,7 +809,10 @@
 
     /**
      * Strip all sessions for every group in a class.
-     * Called from a class-delete cascade.
+     *
+     * The class→group resolution reads the group store on the same
+     * appData snapshot. Sessions are removed only when their group
+     * exists in the snapshot and that group's classId matches.
      */
     function stripClassRefs(appData, classId) {
         var result = { sessionsRemoved: 0 };
@@ -881,7 +821,8 @@
         var store = getStoreFromSnapshot(appData);
         if (!store) return result;
 
-        var groupStore = (appData.academy && isPlainObject(appData.academy.teachingGroups))
+        var groupStore = (appData.academy &&
+                          isPlainObject(appData.academy.teachingGroups))
             ? appData.academy.teachingGroups
             : {};
 
@@ -896,6 +837,53 @@
                 delete store[keys[i]];
                 result.sessionsRemoved++;
             }
+        }
+        return result;
+    }
+
+    /**
+     * Strip every session belonging to a group whose disciplineId
+     * matches the given discipline.
+     *
+     * The discipline→group→session resolution lives here, in the
+     * sessions domain, because the sessions domain owns the
+     * groupId → session relationship. Callers (AcademyCascade) do
+     * not need to enumerate groups or know that sessions reference
+     * groups.
+     *
+     * The group store is read from the same appData snapshot, so
+     * this helper is transaction-local: it sees the state as of the
+     * cascade's current mutation, not the live store.
+     *
+     * Sessions whose group no longer exists in the snapshot are not
+     * touched. Their groupId points at nothing, so the discipline
+     * relationship cannot be established. Cleaning orphan sessions
+     * of unknown discipline is out of scope; the caller (or a
+     * subsequent repair pass) is responsible.
+     */
+    function stripDisciplineRefs(appData, disciplineId) {
+        var result = { sessionsRemoved: 0 };
+        if (!appData || !isNonEmptyString(disciplineId)) return result;
+
+        var store = getStoreFromSnapshot(appData);
+        if (!store) return result;
+
+        var groupStore = (appData.academy &&
+                          isPlainObject(appData.academy.teachingGroups))
+            ? appData.academy.teachingGroups
+            : {};
+
+        var targetDiscipline = String(disciplineId);
+        var keys = Object.keys(store);
+
+        for (var i = 0; i < keys.length; i++) {
+            var s = store[keys[i]];
+            if (!isPlainObject(s)) continue;
+            var group = groupStore[String(s.groupId)];
+            if (!group) continue;
+            if (String(group.disciplineId) !== targetDiscipline) continue;
+            delete store[keys[i]];
+            result.sessionsRemoved++;
         }
         return result;
     }
@@ -923,6 +911,7 @@
         stripGroupRefs: stripGroupRefs,
         stripLocationRefs: stripLocationRefs,
         stripClassRefs: stripClassRefs,
+        stripDisciplineRefs: stripDisciplineRefs,
 
         // Helpers (exposed for testing)
         sessionsOverlap: sessionsOverlap,
@@ -952,6 +941,7 @@
             'createSession', 'updateSession', 'endSession',
             'removeSessionRecord',
             'stripGroupRefs', 'stripLocationRefs', 'stripClassRefs',
+            'stripDisciplineRefs',
             'sessionsOverlap', 'sessionActiveInWeek'
         ];
         var missing = [];
@@ -961,12 +951,7 @@
             }
         }
 
-        // Smoke tests on the two delegating predicates. These do not
-        // touch any store; they only exercise the delegation and the
-        // shape checks. A failure here means the RangeUtils
-        // delegation or the time-overlap logic is broken.
         try {
-            // sessionActiveInWeek delegates to RangeUtils.containsWeek.
             var activeSession = { startWeek: 1, endWeek: 10 };
             var ongoingSession = { startWeek: 5, endWeek: null };
             var noStartSession = { startWeek: null, endWeek: 20 };
@@ -990,50 +975,42 @@
                 missing.push('sessionActiveInWeek accepted a null session');
             }
 
-            // sessionsOverlap: time part is local; week part delegates.
-            // No overlap: back-to-back hours, same day, same weeks.
             if (sessionsOverlap(
                 { day: 1, startTime: 9, duration: 1, startWeek: 1, endWeek: 10 },
                 { day: 1, startTime: 10, duration: 1, startWeek: 1, endWeek: 10 }
             ) !== false) {
                 missing.push('sessionsOverlap flagged back-to-back hours');
             }
-            // Overlap: same hour, same day, same weeks.
             if (sessionsOverlap(
                 { day: 1, startTime: 9, duration: 1, startWeek: 1, endWeek: 10 },
                 { day: 1, startTime: 9, duration: 1, startWeek: 1, endWeek: 10 }
             ) !== true) {
                 missing.push('sessionsOverlap missed identical slots');
             }
-            // Overlap: partial hour, same day, same weeks.
             if (sessionsOverlap(
                 { day: 1, startTime: 9, duration: 2, startWeek: 1, endWeek: 10 },
                 { day: 1, startTime: 10, duration: 2, startWeek: 1, endWeek: 10 }
             ) !== true) {
                 missing.push('sessionsOverlap missed partial hour overlap');
             }
-            // No overlap: different days, same hour, same weeks.
             if (sessionsOverlap(
                 { day: 1, startTime: 9, duration: 2, startWeek: 1, endWeek: 10 },
                 { day: 2, startTime: 9, duration: 2, startWeek: 1, endWeek: 10 }
             ) !== false) {
                 missing.push('sessionsOverlap flagged different days');
             }
-            // No overlap: same hour, same day, DISJOINT weeks.
             if (sessionsOverlap(
                 { day: 1, startTime: 9, duration: 1, startWeek: 1, endWeek: 5 },
                 { day: 1, startTime: 9, duration: 1, startWeek: 6, endWeek: 10 }
             ) !== false) {
                 missing.push('sessionsOverlap ignored week disjointness');
             }
-            // Overlap: same hour, same day, weeks touch at endpoint.
             if (sessionsOverlap(
                 { day: 1, startTime: 9, duration: 1, startWeek: 1, endWeek: 5 },
                 { day: 1, startTime: 9, duration: 1, startWeek: 5, endWeek: 10 }
             ) !== true) {
                 missing.push('sessionsOverlap missed inclusive week endpoint');
             }
-            // Overlap: same hour, same day, one side ongoing.
             if (sessionsOverlap(
                 { day: 1, startTime: 9, duration: 1, startWeek: 1, endWeek: null },
                 { day: 1, startTime: 9, duration: 1, startWeek: 30, endWeek: 40 }
