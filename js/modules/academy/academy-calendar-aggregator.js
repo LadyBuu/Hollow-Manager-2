@@ -183,6 +183,39 @@
  *   student's schedule" passes none, and gets no rest-day
  *   decoration.
  *
+ * DISCIPLINE SCHEDULE SUMMARY:
+ *   The panel that sits below the discipline schedule grid. Two
+ *   questions: how many students are enrolled in this discipline
+ *   for this class, and how many of them do not have a group
+ *   assigned.
+ *
+ *   ENROLLED POPULATION — NOT WEEK-SCOPED. Every student in this
+ *   class whose enrolment record names this discipline. Enrolment
+ *   is a year-level fact. Instructors are filtered out by
+ *   `mode === 'instructor'`; a character enrolled to teach is not
+ *   a student.
+ *
+ *   ASSIGNED — NOT WEEK-SCOPED. A student is assigned when their
+ *   characterId appears in the `members[]` array of any teaching
+ *   group of this discipline for this class. Presence-based. A
+ *   student whose membership interval is entirely in the past
+ *   still counts; the panel reports the population, not the
+ *   current-week schedule. (The grid next to it is week-scoped;
+ *   the panel answers a different question.)
+ *
+ *   ELIMINATED — included in both enrolledCount and
+ *   unassignedCount, with `eliminated: true` on the row and the
+ *   elimination week when available. The panel reports the
+ *   population honestly; callers that want "how many can I
+ *   actually assign this week" subtract eliminatedCount
+ *   themselves.
+ *
+ *   The `week` argument is passed through to the VM for display
+ *   and for elimination resolution. It does not scope the
+ *   enrolled population, the assigned list, or the unassigned
+ *   list. Only the elimination flag is week-dependent (via
+ *   EliminationQueries.isCharacterEliminatedByWeek).
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.AcademyTeachingProjector
  *   - window.CalendarConstants
@@ -191,9 +224,12 @@
  *   - window.CharacterQueries
  *   - window.AcademyClasses
  *   - window.AcademyTeachingGroups
+ *   - window.AcademyEnrolments
  *
  * DEPENDENCIES (LAZY, used only if present):
  *   - window.AcademyLocations        (location display-name)
+ *   - window.EliminationQueries      (elimination flag on the
+ *                                     summary VM)
  */
 
 (function() {
@@ -214,6 +250,7 @@
     var CharacterQueries = window.CharacterQueries;
     var AcademyClasses = window.AcademyClasses;
     var AcademyTeachingGroups = window.AcademyTeachingGroups;
+    var AcademyEnrolments = window.AcademyEnrolments;
 
     var _missing = [];
 
@@ -275,6 +312,14 @@
         typeof AcademyTeachingGroups.getGroup !== 'function') {
         _missing.push('AcademyTeachingGroups.getGroup');
     }
+    if (!AcademyTeachingGroups ||
+        typeof AcademyTeachingGroups.getGroupsForDiscipline !== 'function') {
+        _missing.push('AcademyTeachingGroups.getGroupsForDiscipline');
+    }
+    if (!AcademyEnrolments ||
+        typeof AcademyEnrolments.getClassEnrolments !== 'function') {
+        _missing.push('AcademyEnrolments.getClassEnrolments');
+    }
 
     if (_missing.length > 0) {
         throw new Error(
@@ -291,6 +336,10 @@
 
     function getAcademyLocations() {
         return window.AcademyLocations || null;
+    }
+
+    function getEliminationQueries() {
+        return window.EliminationQueries || null;
     }
 
     // ============================================================
@@ -975,6 +1024,214 @@
     }
 
     // ============================================================
+    // DISCIPLINE SCHEDULE SUMMARY VM
+    // ============================================================
+    //
+    // The panel below the discipline schedule grid.
+    //
+    // ENROLLED — NOT WEEK-SCOPED. Every student in this class whose
+    // enrolment record names this discipline. Instructors are
+    // filtered out by mode === 'instructor'. The data comes from
+    // AcademyEnrolments.getClassEnrolments(classId), which returns
+    // { charId: [disciplineId, ...] } for the whole class window.
+    //
+    // ASSIGNED — NOT WEEK-SCOPED. A student is assigned when their
+    // characterId appears in the members[] array of any teaching
+    // group of this discipline for this class. Presence-based: a
+    // membership interval that ended weeks ago still counts. The
+    // panel reports the population, not the current-week schedule.
+    //
+    // ELIMINATED — included in both counts, marked on the row. The
+    // elimination flag is week-dependent (via
+    // EliminationQueries.isCharacterEliminatedByWeek); everything
+    // else is week-agnostic.
+    //
+    // The week parameter is passed through to the VM for display
+    // and for the elimination flag. It does not scope the enrolled
+    // population, the assigned list, or the unassigned list.
+
+    function getDisciplineScheduleSummaryViewModel(
+        classId,
+        disciplineId,
+        week
+    ) {
+        if (!isNonEmptyString(classId)) {
+            return null;
+        }
+        if (!isNonEmptyString(disciplineId)) {
+            return null;
+        }
+
+        var weekNum = parseWeek(week);
+        if (weekNum === null) {
+            return null;
+        }
+
+        var cls = AcademyClasses.getClass(classId);
+        if (!cls) {
+            return null;
+        }
+
+        var discipline = AcademyDisciplines.getDiscipline(disciplineId);
+        if (!discipline) {
+            return null;
+        }
+
+        var targetClass = String(classId);
+        var targetDiscipline = String(disciplineId);
+
+        // ---- Enrolled population (not week-scoped) ----
+        var enrolmentsByChar = {};
+        try {
+            enrolmentsByChar = AcademyEnrolments.getClassEnrolments(
+                targetClass
+            ) || {};
+        } catch (e) {
+            console.warn(
+                '[AcademyCalendarAggregator] getClassEnrolments failed:',
+                e
+            );
+            enrolmentsByChar = {};
+        }
+
+        // ---- Assigned set (not week-scoped) ----
+        //
+        // Build the set of characterIds that appear in the members[]
+        // array of ANY teaching group of this discipline for this
+        // class. Presence-based: no interval check, no week filter.
+        var assignedSet = Object.create(null);
+
+        var groups = [];
+        try {
+            groups = AcademyTeachingGroups.getGroupsForDiscipline(
+                targetClass, targetDiscipline
+            ) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademyCalendarAggregator] getGroupsForDiscipline ' +
+                'failed:', e
+            );
+            groups = [];
+        }
+
+        for (var g = 0; g < groups.length; g++) {
+            var group = groups[g];
+            if (!group || !Array.isArray(group.members)) { continue; }
+            for (var m = 0; m < group.members.length; m++) {
+                var member = group.members[m];
+                if (!member || !member.characterId) { continue; }
+                assignedSet[String(member.characterId)] = true;
+            }
+        }
+
+        // ---- Build the enrolled roster ----
+        var eligibleRows = [];
+        var charIds = Object.keys(enrolmentsByChar);
+
+        var EQ = getEliminationQueries();
+
+        for (var i = 0; i < charIds.length; i++) {
+            var charId = charIds[i];
+            var disciplines = enrolmentsByChar[charId];
+
+            if (!Array.isArray(disciplines)) { continue; }
+            if (disciplines.indexOf(targetDiscipline) === -1) {
+                continue;
+            }
+
+            var char = CharacterQueries.getCharacterById(charId);
+            if (!char) { continue; }
+
+            // Instructors are not students.
+            if (char.mode === 'instructor') { continue; }
+
+            var eliminated = false;
+            var eliminationWeek = null;
+
+            if (EQ &&
+                typeof EQ.isCharacterEliminatedByWeek === 'function') {
+                try {
+                    eliminated = EQ.isCharacterEliminatedByWeek(
+                        charId, weekNum
+                    ) === true;
+                } catch (e) {
+                    eliminated = false;
+                }
+            }
+
+            if (eliminated &&
+                EQ &&
+                typeof EQ.getEliminationWeek === 'function') {
+                try {
+                    var ew = EQ.getEliminationWeek(charId);
+                    if (isFiniteNumber(ew)) {
+                        eliminationWeek = ew;
+                    }
+                } catch (e) {
+                    eliminationWeek = null;
+                }
+            }
+
+            var assigned = assignedSet[String(charId)] === true;
+
+            eligibleRows.push({
+                id: charId,
+                name: CharacterQueries.getDisplayName(char),
+                status: CharacterQueries.getCurrentStatus(char),
+                eliminated: eliminated,
+                eliminationWeek: eliminationWeek,
+                assigned: assigned
+            });
+        }
+
+        var assigned = [];
+        var unassigned = [];
+
+        for (var s = 0; s < eligibleRows.length; s++) {
+            var entry = eligibleRows[s];
+            if (entry.assigned) {
+                assigned.push(entry);
+            } else {
+                unassigned.push(entry);
+            }
+        }
+
+        assigned.sort(function(a, b) {
+            return String(a.name).localeCompare(String(b.name));
+        });
+        unassigned.sort(function(a, b) {
+            return String(a.name).localeCompare(String(b.name));
+        });
+
+        var eliminatedInUnassigned = 0;
+        for (var u = 0; u < unassigned.length; u++) {
+            if (unassigned[u].eliminated) {
+                eliminatedInUnassigned++;
+            }
+        }
+
+        return {
+            classId: targetClass,
+            className: isNonEmptyString(cls.name)
+                ? cls.name
+                : 'Unnamed Class',
+            disciplineId: targetDiscipline,
+            disciplineName: isNonEmptyString(discipline.name)
+                ? discipline.name
+                : 'Unknown Discipline',
+            week: weekNum,
+
+            enrolledCount: eligibleRows.length,
+            assignedCount: assigned.length,
+            unassignedCount: unassigned.length,
+            eliminatedCount: eliminatedInUnassigned,
+
+            assigned: assigned,
+            unassigned: unassigned
+        };
+    }
+
+    // ============================================================
     // WEEK OVERVIEW VM
     // ============================================================
     //
@@ -1052,6 +1309,8 @@
         getLocationScheduleViewModel: getLocationScheduleViewModel,
         getClassScheduleViewModel: getClassScheduleViewModel,
         getDisciplineScheduleViewModel: getDisciplineScheduleViewModel,
+        getDisciplineScheduleSummaryViewModel:
+            getDisciplineScheduleSummaryViewModel,
         getWeekOverviewViewModel: getWeekOverviewViewModel,
 
         GROUP_COLOR_PALETTE_SIZE: GROUP_COLOR_PALETTE_SIZE
@@ -1071,6 +1330,7 @@
             'getLocationScheduleViewModel',
             'getClassScheduleViewModel',
             'getDisciplineScheduleViewModel',
+            'getDisciplineScheduleSummaryViewModel',
             'getWeekOverviewViewModel'
         ];
 
