@@ -11,32 +11,35 @@
  *   - Rendering the grade scheme editor (preset + band table + live preview)
  *   - Rendering the assessment weights editor (per-type weight inputs)
  *   - Rendering an empty state when no discipline is selected
+ *   - Rendering a tab bar in the detail panel: Edit | Schedule
+ *   - Rendering the Schedule tab body (week selector + grid host)
  *
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no domain logic.
  *   - Does NOT fetch data. Does NOT call AcademyDisciplines.
  *   - Receives a view model from AcademyDisciplineController.
- *   - The VM's editor section comes from
- *     AcademyAggregator.getDisciplineEditorViewModel.
  *   - Does NOT bind events. Rows, buttons, inputs, and selects emit
  *     data-* attributes (or stable ids) that AcademyView's delegated
  *     container listeners resolve.
  *   - Uses DomUtils for escaping (MANDATORY, no fallback).
  *   - Returns an HTML string.
  *
- * EDITOR MODE:
- *   The view model carries `editorMode`:
- *     'empty'  — nothing selected; render the empty state
- *     'create' — new discipline form, blank defaults
- *     'edit'   — existing discipline form, populated from `selected`
+ * TABS:
+ *   The detail panel gains a two-tab bar when a discipline is
+ *   selected or a new draft is open:
  *
- *   The renderer does NOT distinguish beyond that.
+ *     Edit       the existing discipline editor.
+ *     Schedule   a calendar grid scoped to (this discipline, the
+ *                Academy-selected class, the display week).
  *
- * INPUT BOUNDS:
- *   Numeric input bounds (week range, hours, weight, band percent)
- *   come from the view model, not from hardcoded literals. This keeps
- *   the view decoupled from AcademyDisciplines's constants and lets
- *   the aggregator own the values.
+ *   The active tab is carried on the VM as `activeTab`. When the
+ *   editor mode is 'empty' (no discipline selected, no draft),
+ *   neither tab renders; the empty state shows instead.
+ *
+ *   The Schedule tab is a READ-ONLY view: it renders a week input
+ *   and an empty grid host. The controller mounts the grid into
+ *   the host. The class is NOT selectable here; it comes from
+ *   AcademyUI.getSelectedClassId().
  *
  * EVENTS EMITTED (data-* attributes, for AcademyView to bind):
  *   Sidebar:
@@ -44,6 +47,12 @@
  *     #academy-discipline-search                     (input)
  *     #academy-discipline-type-filter                (change)
  *     .academy-discipline-row [data-discipline-id]   (click)
+ *
+ *   Tab bar:
+ *     [data-action="discipline-tab-select"] [data-tab="edit|schedule"]  (click)
+ *
+ *   Schedule tab:
+ *     #academy-discipline-schedule-week              (change / Enter)
  *
  *   Editor — top-level fields:
  *     [data-discipline-field="name"]
@@ -84,12 +93,16 @@
  *     AcademyDisciplines no longer carries an instructorIds field,
  *     and this editor no longer renders or emits one.
  *
+ * BATCH 2 CHANGES:
+ *   - Detail panel now carries an Edit | Schedule tab bar.
+ *   - Schedule tab body renders a week input and an empty grid host
+ *     (#academy-discipline-schedule-host).
+ *   - The empty state (editorMode === 'empty') is unchanged: no
+ *     tab bar, no editor, no schedule host.
+ *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
- *
- * USAGE:
- *   var html = AcademyDisciplineView.renderHTML(vm);
- *   container.innerHTML = html;
+ *   - window.CalendarConstants (MANDATORY) — week bounds
  */
 
 (function() {
@@ -100,6 +113,7 @@
     }
 
     var DomUtils = window.DomUtils;
+    var CalendarConstants = window.CalendarConstants;
 
     if (!DomUtils ||
         typeof DomUtils.escapeHtml !== 'function' ||
@@ -110,7 +124,23 @@
         );
     }
 
+    if (!CalendarConstants ||
+        typeof CalendarConstants.MIN_WEEK !== 'number' ||
+        typeof CalendarConstants.MAX_WEEK !== 'number') {
+        throw new Error(
+            '[AcademyDisciplineView] Missing mandatory dependency: ' +
+            'CalendarConstants.MIN_WEEK / MAX_WEEK'
+        );
+    }
+
     window.__academyDisciplineViewLoaded = true;
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
 
     // ============================================================
     // ESCAPING HELPERS
@@ -198,11 +228,20 @@
         var selected = vm.selected || null;
         var editorMode = vm.editorMode || 'empty';
         var filters = vm.filters || { type: 'all', search: '' };
+        var activeTab = isNonEmptyString(vm.activeTab) ? vm.activeTab : 'edit';
+        var scheduleWeek = isFiniteNumber(vm.scheduleWeek)
+            ? vm.scheduleWeek
+            : null;
 
         return (
             '<div class="academy-body academy-discipline-layout">' +
                 renderListPanel(disciplines, filters) +
-                renderDetailPanel(selected, editorMode) +
+                renderDetailPanel(
+                    selected,
+                    editorMode,
+                    activeTab,
+                    scheduleWeek
+                ) +
             '</div>'
         );
     }
@@ -326,15 +365,27 @@
     // DETAIL PANEL - Right side
     // ============================================================
 
-    function renderDetailPanel(selected, editorMode) {
+    function renderDetailPanel(selected, editorMode, activeTab, scheduleWeek) {
         var html = '<div class="academy-discipline-detail" ' +
                     'id="academy-discipline-detail">';
 
         if (editorMode === 'empty' || !selected) {
             html += renderEmptyDetailState();
+            html += '</div>';
+            return html;
+        }
+
+        html += renderTabBar(activeTab);
+
+        html += '<div class="academy-discipline-tab-body">';
+
+        if (activeTab === 'schedule') {
+            html += renderScheduleTab(scheduleWeek);
         } else {
             html += renderEditor(selected);
         }
+
+        html += '</div>';
 
         html += '</div>';
         return html;
@@ -352,6 +403,76 @@
     }
 
     // ============================================================
+    // TAB BAR
+    // ============================================================
+
+    function renderTabBar(activeTab) {
+        var tabs = [
+            { id: 'edit',     label: 'Edit' },
+            { id: 'schedule', label: 'Schedule' }
+        ];
+
+        var html = '';
+        html += '<div class="academy-discipline-tabs">';
+        for (var i = 0; i < tabs.length; i++) {
+            var t = tabs[i];
+            var isActive = t.id === activeTab;
+            html += '<button type="button" ' +
+                        'class="academy-discipline-tab-btn' +
+                            (isActive ? ' active' : '') + '" ' +
+                        'data-action="discipline-tab-select" ' +
+                        'data-tab="' + escapeAttribute(t.id) + '">' +
+                        escapeHtml(t.label) +
+                    '</button>';
+        }
+        html += '</div>';
+        return html;
+    }
+
+    // ============================================================
+    // SCHEDULE TAB
+    // ============================================================
+    //
+    // The schedule tab body: a week selector, an optional
+    // "no class selected" empty state, and the grid host.
+    //
+    // The class is NOT selectable here. It comes from
+    // AcademyUI.getSelectedClassId(), which the shell sets from
+    // People / Weekly Teams / Rankings. The controller reads the
+    // class and mounts the grid, or renders an empty state when
+    // no class is selected.
+    //
+    // The host is intentionally empty: the controller fills it.
+
+    function renderScheduleTab(week) {
+        var weekValue = isFiniteNumber(week) ? String(week) : '';
+
+        var html = '';
+        html += '<div class="academy-discipline-schedule-tab">';
+
+        html += '<div class="academy-discipline-schedule-header">';
+        html += '<label class="academy-top-label" ' +
+                    'for="academy-discipline-schedule-week">Week:</label>';
+        html += '<input type="number" ' +
+                    'id="academy-discipline-schedule-week" ' +
+                    'class="academy-week-input ' +
+                        'academy-discipline-schedule-week" ' +
+                    'value="' + escapeAttribute(weekValue) + '" ' +
+                    'min="' + escapeAttribute(String(MIN_WEEK)) + '" ' +
+                    'max="' + escapeAttribute(String(MAX_WEEK)) + '">';
+        html += '<span class="academy-discipline-schedule-hint">' +
+                    'Scoped to the Academy-selected class.' +
+                '</span>';
+        html += '</div>';
+
+        html += '<div id="academy-discipline-schedule-host" ' +
+                    'class="academy-discipline-schedule-host"></div>';
+
+        html += '</div>';
+        return html;
+    }
+
+    // ============================================================
     // EDITOR
     // ============================================================
 
@@ -362,7 +483,7 @@
 
         var isNew = d.isNew === true;
 
-        var weekBounds = d.weekBounds || { min: 1, max: 52 };
+        var weekBounds = d.weekBounds || { min: MIN_WEEK, max: MAX_WEEK };
         var weeklyHoursBounds = d.weeklyHoursBounds || { min: 0.5, max: 40, step: 0.5 };
         var weightBounds = d.weightBounds || { min: 0.1, max: 10, step: 0.1 };
         var bandPercentBounds = d.bandPercentBounds || { min: 0, max: 100, step: 1 };
@@ -668,12 +789,6 @@
     // ============================================================
     // ASSESSMENT WEIGHTS SECTION
     // ============================================================
-    //
-    // One numeric input per assessment type. Types come from the view
-    // model. Weights come from selected.assessmentWeights.
-    //
-    // No live preview. The editor edits configuration; it does not
-    // have student grades to preview against.
 
     function renderAssessmentWeightsSection(d, errors) {
         var types = Array.isArray(d.assessmentTypes) ? d.assessmentTypes : [];
