@@ -32,22 +32,34 @@
  *         * "Deceased" (if applicable)
  *         * "Eliminated YYYY WkN" (if applicable)
  *
- *   Team name replaces the class badge that used to appear here.
- *   Class membership is still computed by the aggregator and is
- *   used by the class filter, but is no longer displayed.
- *
  * STATUS FILTER:
  *   The sidebar contains a "Career Status" group of checkboxes.
  *   Read in getFilterValues() as an array of lowercase status
  *   names. An empty array means "no status filter".
  *
+ * CLASS FILTER (v30):
+ *   The class filter dropdown reads AcademyClasses.getClasses()
+ *   directly. The retired AcademyQueries facade is no longer
+ *   consulted.
+ *
+ * LOAD-ORDER WARNING (B5, removed):
+ *   The dependency check previously warned when
+ *   `window.getCurrentEditId` was not yet defined. That function is
+ *   installed by `characters/index.js`, which loads AFTER this
+ *   module. The warning fired on every page load even though
+ *   nothing was broken: `getCurrentEditId()` locally falls back to
+ *   `window._currentEditId`, then to null. The warning has been
+ *   removed. Nothing in this module depends on `getCurrentEditId`
+ *   being defined at module-load time; the resolve happens per
+ *   render.
+ *
  * DEPENDENCIES (lazily loaded):
  *   - window.CharacterAggregator (from character-aggregator.js)
  *   - window.CharacterQueries (from character-queries.js)
  *   - window.DomUtils (from dom-utils.js)
- *   - window.getCurrentEditId (from index.js)
+ *   - window.getCurrentEditId (from index.js) — resolved per render
  *   - window.CalendarConstants (from constants.js)
- *   - window.AcademyQueries (from academy-queries.js)
+ *   - window.AcademyClasses (from academy-classes.js)
  */
 
 (function() {
@@ -74,8 +86,8 @@
         return window.DomUtils || null;
     }
 
-    function getAcademyQueries() {
-        return window.AcademyQueries || null;
+    function getAcademyClasses() {
+        return window.AcademyClasses || null;
     }
 
     function getCalendarConstants() {
@@ -95,6 +107,10 @@
     // ============================================================
     // DEPENDENCY CHECK - Warns but doesn't fail
     // ============================================================
+    //
+    // `getCurrentEditId` is deliberately NOT part of the check.
+    // It is defined by `characters/index.js`, which loads after
+    // this module. See the LOAD-ORDER WARNING note in the header.
 
     function checkDependencies() {
         var missing = [];
@@ -107,10 +123,6 @@
         }
         if (!getDomUtils()) {
             missing.push('DomUtils (lazy)');
-        }
-
-        if (typeof window.getCurrentEditId !== 'function' && window._currentEditId === undefined) {
-            missing.push('getCurrentEditId (lazy)');
         }
 
         if (missing.length > 0) {
@@ -168,15 +180,6 @@
     // FILTER HELPERS
     // ============================================================
 
-    /**
-     * Read the career status filter checkboxes.
-     *
-     * The sidebar renders one checkbox per status, each carrying
-     * data-status="<status>". The value of the filter is the set
-     * of checked statuses, as an array of lowercase strings.
-     *
-     * An empty array means "no status filter".
-     */
     function getStatusFilterValues() {
         var container = document.getElementById('char-status-filter');
         if (!container) {
@@ -227,7 +230,7 @@
     }
 
     // ============================================================
-    // POPULATE CLASS FILTER - Uses AcademyQueries
+    // POPULATE CLASS FILTER - Uses AcademyClasses
     // ============================================================
 
     function populateClassFilter() {
@@ -237,13 +240,12 @@
         }
 
         var previousValue = select.value;
-        var AcademyQueries = getAcademyQueries();
+        var AcademyClasses = getAcademyClasses();
 
         var classes = [];
-        if (AcademyQueries && typeof AcademyQueries.getClasses === 'function') {
-            classes = AcademyQueries.getClasses() || [];
-        } else if (window.AcademyQueries && typeof window.AcademyQueries.getClasses === 'function') {
-            classes = window.AcademyQueries.getClasses() || [];
+        if (AcademyClasses &&
+            typeof AcademyClasses.getClasses === 'function') {
+            classes = AcademyClasses.getClasses() || [];
         }
 
         select.innerHTML = '<option value="all">All Classes</option>';
@@ -351,11 +353,6 @@
             html += '<span style="font-size:0.55rem;color:var(--text-dim);">' + safeStatus + '</span>';
             html += '</div>';
 
-            // ---- Badge line ----
-            //
-            // Order: team names first (most useful context), then
-            // status flags. A character can be on multiple teams at
-            // once; every active team gets a badge.
             var badges = [];
 
             var teams = Array.isArray(item.teamObjects) ? item.teamObjects : [];
