@@ -671,28 +671,6 @@
     // owns. Cross-domain cleanup (enrolments, teaching groups, teaching
     // sessions) is delegated to AcademyCascade.disciplineDeleted.
 
-    function stripDisciplineFromAutoGroups(curriculum, disciplineId) {
-        var store = curriculum.autoGroups;
-        if (!store || typeof store !== 'object') {
-            return 0;
-        }
-
-        var target = String(disciplineId);
-        var keysToRemove = [];
-
-        Object.keys(store).forEach(function(key) {
-            var group = store[key];
-            if (group && String(group.disciplineId) === target) {
-                keysToRemove.push(key);
-            }
-        });
-
-        for (var i = 0; i < keysToRemove.length; i++) {
-            delete store[keysToRemove[i]];
-        }
-
-        return keysToRemove.length;
-    }
 
     function stripDisciplineFromGrades(appData, disciplineId) {
         if (!appData.academy || !appData.academy.grades ||
