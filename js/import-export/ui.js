@@ -19,20 +19,49 @@
  *   - Uses TabManager for UI refresh
  *   - Self-contained UI lifecycle
  *
- * GRADUATES EXPORT:
- *   The two graduate buttons (JSON, CSV) open a picker modal
- *   listing every class. The user picks a class, then chooses
- *   JSON or CSV. The picker owns the download; ui.js only opens
- *   it.
+ * ACTIVE SURFACE:
+ *   Four header controls are wired today:
  *
- *   Both buttons open the SAME picker. The format is chosen
- *   inside the modal, not on the header.
+ *     export-json-btn              download JSON backup
+ *     import-json-btn              open the JSON file picker
+ *     json-file-input              the picker itself
+ *     export-graduates-json-btn    open the graduates export picker
+ *
+ *   Those are the buttons that exist in index.html's header. Every
+ *   other control this module used to bind was removed from the UI;
+ *   the handlers below were removed with them. Do not re-add a
+ *   bindButton() call for a control that is not in the markup: the
+ *   bind call emits a console.warn on every init, and the wall of
+ *   warnings makes the real signal harder to find.
+ *
+ *   If a control is restored later, add its bind call AND its
+ *   handler in the same change. Do not leave one without the other.
+ *
+ * REMOVED FROM THE UI (handlers kept as public exports for callers
+ * that still route to them programmatically, or for a future
+ * restore):
+ *
+ *     Character CSV:  export, import, template
+ *     Mission CSV:    export, import, template
+ *     Graduates CSV:  export (the picker is shared with JSON)
+ *     Teams JSON:     export (picker opens the same modal)
+ *     Teams CSV:      export (same)
+ *
+ *   The picker-open handlers for Graduates and Teams are still
+ *   exported because the picker modules themselves are unchanged
+ *   and can be opened from anywhere. The character and mission CSV
+ *   handlers are still exported because character-events.js and
+ *   mission-events.js may call them directly.
+ *
+ * GRADUATES EXPORT:
+ *   The graduate button opens a picker modal listing every class.
+ *   The user picks a class, then chooses JSON or CSV inside the
+ *   picker. The picker owns the download; ui.js only opens it.
  *
  * TEAMS EXPORT:
- *   The two team buttons (JSON, CSV) open a picker modal showing
- *   a pre-flight count of professional teams, members, and stints,
- *   with an optional status filter. Both buttons open the SAME
- *   picker. Same rationale as graduates.
+ *   The team pickers open a modal showing a pre-flight count of
+ *   professional teams, members, and stints, with an optional
+ *   status filter. Same rationale as graduates.
  *
  * DEPENDENCIES:
  *   - window.ExportUtils (from export-utils.js) - MANDATORY
@@ -114,8 +143,10 @@
             } else if (typeof notifier.notifyInfo === 'function') {
                 notifier.notifyInfo(message);
             } else {
+                console.log('[ImportExportUI]', message);
             }
         } else {
+            console.log('[ImportExportUI]', message);
         }
     }
 
@@ -147,7 +178,6 @@
                 window.renderAll();
             } else if (typeof window.renderAllFeatures === 'function') {
                 window.renderAllFeatures();
-            } else {
             }
         } catch (e) {
             console.warn('[ImportExportUI] UI refresh failed:', e.message);
@@ -157,6 +187,18 @@
     // ============================================================
     // BUTTON BINDING
     // ============================================================
+    //
+    // bindButton and bindFileInput are the shared machinery. Both
+    // now silently skip a missing target: a control that is not in
+    // the markup is not an error, it is a control the current UI
+    // does not render. The console.warn was removed because the
+    // "missing button" wall drowned out every other message during
+    // load.
+    //
+    // If a control is restored later, the bind call runs as before.
+    // The clone-and-replace pattern is retained so re-init (which
+    // some flows trigger via the dataReady event) does not stack
+    // duplicate listeners on the same element.
 
     function bindButton(id, handler) {
         if (_handlers[id]) return;
@@ -164,7 +206,6 @@
 
         var btn = document.getElementById(id);
         if (!btn) {
-            console.warn('[ImportExportUI] Button not found:', id);
             return;
         }
 
@@ -188,7 +229,6 @@
 
         var input = document.getElementById(id);
         if (!input) {
-            console.warn('[ImportExportUI] File input not found:', id);
             return;
         }
 
@@ -364,6 +404,11 @@
     // ============================================================
     // HANDLERS - Character CSV
     // ============================================================
+    //
+    // No bound controls today. Kept as public exports because
+    // character-events.js may route to them directly. If a control
+    // is restored, add the bindButton / bindFileInput calls in
+    // init() below.
 
     function handleCharacterExport() {
         var CharacterCSV = deps.CharacterCSV;
@@ -514,6 +559,9 @@
     // ============================================================
     // HANDLERS - Mission CSV
     // ============================================================
+    //
+    // Same status as Character CSV: no bound controls, kept as
+    // public exports.
 
     function handleMissionExport() {
         var MissionCSV = deps.MissionCSV;
@@ -664,6 +712,10 @@
     // ============================================================
     // HANDLERS - Graduates Export
     // ============================================================
+    //
+    // The header exposes one graduates button (JSON). The picker
+    // itself offers both JSON and CSV. The CSV handler remains
+    // exported for callers that open the picker directly.
 
     function getGraduatesExportPicker() {
         return window.GraduatesExportPicker || null;
@@ -699,9 +751,9 @@
     // HANDLERS - Teams Export
     // ============================================================
     //
-    // Both buttons open the same picker. The picker shows a
-    // pre-flight count and offers JSON / CSV export. The format
-    // is a decision made inside the modal, not on the header.
+    // No bound controls today. Both handlers open the same picker;
+    // the format is chosen inside the modal. Kept as public exports
+    // for callers that open the picker directly.
 
     function getTeamExportPicker() {
         return window.TeamExportPicker || null;
@@ -736,6 +788,14 @@
     // ============================================================
     // INITIALIZATION
     // ============================================================
+    //
+    // Only four controls are wired. See the ACTIVE SURFACE note in
+    // the header for the reasoning.
+    //
+    // If a control is restored to the markup, add its bind call
+    // here AND verify the handler above is still correct. Do not
+    // add a bind call for a control that is not in the DOM; the
+    // silent skip means it would be easy to forget.
 
     function init() {
         if (_initialized) return;
@@ -755,29 +815,29 @@
         });
         bindFileInput('json-file-input', handleJSONImport);
 
-        // ---- Character CSV ----
-        bindButton('export-characters-csv-btn', handleCharacterExport);
-        bindButton('import-characters-csv-btn', function() {
-            triggerFileInput('characters-csv-file-input');
-        });
-        bindFileInput('characters-csv-file-input', handleCharacterImport);
-        bindButton('template-characters-csv-btn', handleCharacterTemplate);
-
-        // ---- Mission CSV ----
-        bindButton('export-missions-csv-btn', handleMissionExport);
-        bindButton('import-missions-csv-btn', function() {
-            triggerFileInput('missions-csv-file-input');
-        });
-        bindFileInput('missions-csv-file-input', handleMissionImport);
-        bindButton('template-missions-csv-btn', handleMissionTemplate);
-
         // ---- Graduates Export ----
+        // One button. The picker offers JSON and CSV inside.
         bindButton('export-graduates-json-btn', handleGraduatesJSONExport);
-        bindButton('export-graduates-csv-btn', handleGraduatesCSVExport);
 
-        // ---- Teams Export ----
-        bindButton('export-teams-json-btn', handleTeamsJSONExport);
-        bindButton('export-teams-csv-btn', handleTeamsCSVExport);
+        // --------------------------------------------------------
+        // NOT WIRED
+        // --------------------------------------------------------
+        //
+        // The controls below have no markup in index.html. Their
+        // handlers are still exported above; do not bind them here
+        // until the markup returns.
+        //
+        //   export-characters-csv-btn
+        //   import-characters-csv-btn
+        //   characters-csv-file-input
+        //   template-characters-csv-btn
+        //   export-missions-csv-btn
+        //   import-missions-csv-btn
+        //   missions-csv-file-input
+        //   template-missions-csv-btn
+        //   export-graduates-csv-btn
+        //   export-teams-json-btn
+        //   export-teams-csv-btn
     }
 
     // ============================================================
@@ -809,7 +869,9 @@
         init: init,
         destroy: destroy,
 
-        // Handlers (exposed for testing)
+        // Handlers (exposed for testing and for callers that route
+        // to them programmatically; see the header's ACTIVE SURFACE
+        // and REMOVED FROM THE UI notes)
         handleJSONExport: handleJSONExport,
         handleJSONImport: handleJSONImport,
         handleCharacterExport: handleCharacterExport,
