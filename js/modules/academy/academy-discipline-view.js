@@ -12,7 +12,8 @@
  *   - Rendering the assessment weights editor (per-type weight inputs)
  *   - Rendering an empty state when no discipline is selected
  *   - Rendering a tab bar in the detail panel: Edit | Schedule
- *   - Rendering the Schedule tab body (week selector + grid host)
+ *   - Rendering the Schedule tab body (week selector + grid host +
+ *     enrollment summary host)
  *
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no domain logic.
@@ -30,16 +31,19 @@
  *
  *     Edit       the existing discipline editor.
  *     Schedule   a calendar grid scoped to (this discipline, the
- *                Academy-selected class, the display week).
+ *                Academy-selected class, the display week), plus a
+ *                summary panel below the grid that reports how many
+ *                students are enrolled and how many are still
+ *                without a group.
  *
  *   The active tab is carried on the VM as `activeTab`. When the
  *   editor mode is 'empty' (no discipline selected, no draft),
  *   neither tab renders; the empty state shows instead.
  *
- *   The Schedule tab is a READ-ONLY view: it renders a week input
- *   and an empty grid host. The controller mounts the grid into
- *   the host. The class is NOT selectable here; it comes from
- *   AcademyUI.getSelectedClassId().
+ *   The Schedule tab is READ-ONLY. The controller mounts the grid
+ *   into #academy-discipline-schedule-host and the summary into
+ *   #academy-discipline-schedule-summary-host. The class is NOT
+ *   selectable here; it comes from AcademyUI.getSelectedClassId().
  *
  * EVENTS EMITTED (data-* attributes, for AcademyView to bind):
  *   Sidebar:
@@ -81,24 +85,21 @@
  *     [data-action="discipline-delete"] [data-discipline-id]    (click)
  *
  * v27 CHANGES:
- *   - The "+ Add Discipline" button was previously id-addressed
- *     (#academy-add-discipline-btn) and did not route through the
- *     controller's dispatch. It is now emitted with
- *     data-action="discipline-add", matching every other action in
- *     this view. The controller's dispatch switch has a matching
- *     case.
+ *   - The "+ Add Discipline" button emits data-action="discipline-add".
  *   - The instructor selector was REMOVED from the discipline editor.
- *     The relationship it expressed ("who teaches this discipline")
- *     is class-scoped and lives on the class-disciplines picker.
- *     AcademyDisciplines no longer carries an instructorIds field,
- *     and this editor no longer renders or emits one.
+ *     Instructor-of-a-discipline is class-scoped and lives in
+ *     AcademyEnrolments, edited from the character's own
+ *     Disciplines tab.
  *
  * BATCH 2 CHANGES:
  *   - Detail panel now carries an Edit | Schedule tab bar.
- *   - Schedule tab body renders a week input and an empty grid host
- *     (#academy-discipline-schedule-host).
- *   - The empty state (editorMode === 'empty') is unchanged: no
- *     tab bar, no editor, no schedule host.
+ *   - Schedule tab body renders a week input and an empty grid host.
+ *
+ * BATCH 3 CHANGES:
+ *   - Schedule tab body adds a summary host below the grid host.
+ *     The controller mounts the enrollment summary into it after
+ *     mounting the grid. The panel reports enrolled/assigned/
+ *     unassigned counts for this class-discipline.
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
@@ -434,15 +435,16 @@
     // ============================================================
     //
     // The schedule tab body: a week selector, an optional
-    // "no class selected" empty state, and the grid host.
+    // "no class selected" empty state, the grid host, and the
+    // enrollment summary host.
     //
     // The class is NOT selectable here. It comes from
-    // AcademyUI.getSelectedClassId(), which the shell sets from
-    // People / Weekly Teams / Rankings. The controller reads the
-    // class and mounts the grid, or renders an empty state when
-    // no class is selected.
+    // AcademyUI.getSelectedClassId(). The controller reads the
+    // class, mounts the grid into the grid host, and mounts the
+    // enrollment summary into the summary host.
     //
-    // The host is intentionally empty: the controller fills it.
+    // Both hosts are intentionally empty at render time. The
+    // controller fills them.
 
     function renderScheduleTab(week) {
         var weekValue = isFiniteNumber(week) ? String(week) : '';
@@ -467,6 +469,12 @@
 
         html += '<div id="academy-discipline-schedule-host" ' +
                     'class="academy-discipline-schedule-host"></div>';
+
+        // Summary host. Populated by the controller after the grid
+        // is mounted. Empty on its own.
+        html += '<div id="academy-discipline-schedule-summary-host" ' +
+                    'class="academy-discipline-schedule-summary-host">' +
+                '</div>';
 
         html += '</div>';
         return html;
