@@ -18,7 +18,7 @@
  *                     session and student membership it owns
  *                     → AcademySchedule.removeTeachingGroup
  *
- * GROUP PICKER (this revision):
+ * GROUP PICKER:
  *   In 'assign' mode, once a discipline and instructor are resolved,
  *   the modal lists every existing teaching group for the current
  *   (classId, disciplineId, instructorId) triple. The user picks one,
@@ -29,11 +29,17 @@
  *     - payload.groupId      (existing group)
  *     - payload.forceNewGroup (new group sentinel)
  *
- *   Exactly one is set; never both.
+ *   EXACTLY ONE IS SET; NEVER BOTH. The sentinel is the constant
+ *   NEW_GROUP_SENTINEL, and the two states "nothing selected" and
+ *   "create new group" are distinct values:
  *
- *   The picker is refreshed whenever the discipline changes, because
- *   groups are keyed by discipline. It is cleared when the discipline
- *   is cleared.
+ *     ''           nothing selected  (discipline not yet chosen)
+ *     '__new__'    create new group
+ *     '<groupId>'  an existing group
+ *
+ *   The picker is refreshed whenever the discipline or instructor
+ *   changes, because groups are keyed by both. It is cleared when
+ *   the discipline is cleared.
  *
  *   Group count and student count are shown per option so the user
  *   can tell groups apart when the discipline has several.
@@ -58,6 +64,28 @@
  *   - Collision policy. The domain detects collisions; this modal
  *     surfaces the rejection and offers a retry with
  *     allowCollisions.
+ *
+ * QUERY FAILURE POLICY:
+ *   Every read from a domain module propagates its exception. The
+ *   modal does NOT catch a query failure and substitute an empty
+ *   list. A domain module that is loaded but broken is a
+ *   data-integrity failure, not "no data."
+ *
+ *   Load-time dependencies are mandatory. If a domain module is not
+ *   available when the modal opens, the modal refuses to open with a
+ *   message; it does not silently render a partially-functional
+ *   form.
+ *
+ *   The one exception is `getLocationName` on the character detail
+ *   path, which treats a missing location as 'Unknown' by design —
+ *   that is a display fallback, not a query-failure fallback.
+ *
+ * ASYNC SAFETY:
+ *   Every asynchronous callback captures the current
+ *   `_sessionToken`. If a new modal has been opened (or the
+ *   current one closed) before the callback runs, the callback is
+ *   a no-op. `_busy` additionally disables controls during an
+ *   in-flight mutation.
  *
  * SESSION LOCATION:
  *   The 'assign' mode form gains a location dropdown, sourced from
@@ -142,9 +170,12 @@
  *   The modal passes only `week`.
  *
  * INPUT VALIDATION:
- *   The modal performs strict numeric validation on the values it
- *   receives from the controller. This is UX validation, not
- *   authority. The domain re-validates everything.
+ *   The modal performs strict integer validation on the values it
+ *   receives from the controller, and validates them against
+ *   CalendarConstants bounds (MIN_WEEK/MAX_WEEK, MIN_DAY/MAX_DAY,
+ *   MIN_HOUR/MAX_HOUR, MIN_CLASS_DURATION/MAX_CLASS_DURATION). This
+ *   is UX validation, not authority. The domain re-validates
+ *   everything.
  *
  * LISTENER DISCIPLINE:
  *   Content listeners are bound ONCE, on the modal's content element,
@@ -162,6 +193,7 @@
  *   - window.AcademyLocations
  *   - window.AcademySchedule
  *   - window.AcademyTeachingGroups
+ *   - window.AcademyTeachingSessions
  *   - window.CharacterQueries
  *   - window.CalendarConstants
  */
@@ -188,6 +220,7 @@
     var AcademyLocations = window.AcademyLocations;
     var AcademySchedule = window.AcademySchedule;
     var AcademyTeachingGroups = window.AcademyTeachingGroups;
+    var AcademyTeachingSessions = window.AcademyTeachingSessions;
     var CharacterQueries = window.CharacterQueries;
     var CalendarConstants = window.CalendarConstants;
 
@@ -252,17 +285,27 @@
         typeof AcademyTeachingGroups.getActiveMembers !== 'function') {
         _missing.push('AcademyTeachingGroups.getActiveMembers');
     }
+    if (!AcademyTeachingSessions ||
+        typeof AcademyTeachingSessions.getSessionsForGroup !== 'function') {
+        _missing.push('AcademyTeachingSessions.getSessionsForGroup');
+    }
     if (!CharacterQueries ||
         typeof CharacterQueries.getCharacterById !== 'function' ||
         typeof CharacterQueries.getDisplayName !== 'function') {
         _missing.push('CharacterQueries API');
     }
     if (!CalendarConstants ||
+        typeof CalendarConstants.MIN_WEEK !== 'number' ||
+        typeof CalendarConstants.MAX_WEEK !== 'number' ||
+        typeof CalendarConstants.MIN_DAY !== 'number' ||
+        typeof CalendarConstants.MAX_DAY !== 'number' ||
+        typeof CalendarConstants.MIN_HOUR !== 'number' ||
+        typeof CalendarConstants.MAX_HOUR !== 'number' ||
         typeof CalendarConstants.MIN_CLASS_DURATION !== 'number' ||
         typeof CalendarConstants.MAX_CLASS_DURATION !== 'number' ||
         typeof CalendarConstants.getDayName !== 'function' ||
         typeof CalendarConstants.formatHour !== 'function') {
-        _missing.push('CalendarConstants duration/day-name/hour helpers');
+        _missing.push('CalendarConstants bounds / helpers');
     }
 
     if (_missing.length > 0) {
@@ -278,17 +321,24 @@
     // CONSTANTS
     // ============================================================
 
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
+    var MIN_DAY = CalendarConstants.MIN_DAY;
+    var MAX_DAY = CalendarConstants.MAX_DAY;
+    var MIN_HOUR = CalendarConstants.MIN_HOUR;
+    var MAX_HOUR = CalendarConstants.MAX_HOUR;
     var MIN_DURATION = CalendarConstants.MIN_CLASS_DURATION;
     var MAX_DURATION = CalendarConstants.MAX_CLASS_DURATION;
+
     var DEFAULT_DURATION = MIN_DURATION;
 
     var VALID_MODES = ['assign', 'remove-student', 'remove-group'];
 
     // Sentinel: the user chose "create a new group" rather than one
-    // of the existing groups. Empty string, to match how
-    // _selectedDisciplineId treats "no selection" at the top of
-    // the form.
-    var NEW_GROUP_SENTINEL = '';
+    // of the existing groups. Distinct from '' (which means "nothing
+    // selected") so the payload can carry exactly one of
+    // `groupId` / `forceNewGroup` without ambiguity.
+    var NEW_GROUP_SENTINEL = '__new__';
 
     // ============================================================
     // MODULE STATE
@@ -302,6 +352,9 @@
     var _contentChangeHandler = null;
     var _contentClickHandler = null;
 
+    var _sessionToken = 0;
+    var _busy = false;
+
     var _selectedDisciplineId = '';
     var _selectedDuration = DEFAULT_DURATION;
     var _selectedLocationId = '';
@@ -311,8 +364,7 @@
     //                        sessionCount }, ...] for the currently
     //                     selected (class, discipline, instructor)
     //                     triple, sorted by groupNumber.
-    //   _selectedGroupId  '' (NEW_GROUP_SENTINEL) or a group ID.
-    //                     '' means "new group".
+    //   _selectedGroupId  NEW_GROUP_SENTINEL or a group ID.
     var _availableGroups = [];
     var _selectedGroupId = NEW_GROUP_SENTINEL;
 
@@ -323,7 +375,6 @@
     var _showInstructorPicker = false;
 
     var _pendingCollision = null;
-    var _busy = false;
 
     // ============================================================
     // HELPERS
@@ -371,86 +422,53 @@
         return CharacterQueries.getDisplayName(char) || 'the character';
     }
 
+    /**
+     * Format a day for display. CalendarConstants is mandatory; a
+     * throw propagates.
+     */
     function formatDay(day) {
-        try {
-            return CalendarConstants.getDayName(day) || ('Day ' + day);
-        } catch (e) {
-            return 'Day ' + day;
-        }
+        return CalendarConstants.getDayName(day);
     }
 
+    /**
+     * Format an hour for display. CalendarConstants is mandatory; a
+     * throw propagates.
+     */
     function formatStartHour(hour) {
-        try {
-            var s = CalendarConstants.formatHour(hour);
-            return isNonEmptyString(s) ? s : (hour + ':00');
-        } catch (e) {
-            return hour + ':00';
-        }
+        return CalendarConstants.formatHour(hour);
     }
 
     function formatDuration(hours) {
         var n = parseStrictInteger(hours);
-        if (n === null) { n = 1; }
+        if (n === null) {
+            // Defensive: the caller supplied a malformed duration.
+            // This is a programming error on our side, not user
+            // input. Return an honest indicator rather than
+            // inventing a value.
+            return '\u2014';
+        }
         return n + ' hour' + (n === 1 ? '' : 's');
     }
 
-    // ============================================================
-    // LOCATION LIST
-    // ============================================================
-
-    function getAvailableLocations() {
-        var all = [];
-        try {
-            all = AcademyLocations.getLocations() || [];
-        } catch (e) {
-            all = [];
-        }
-        all.sort(function(a, b) {
-            return String(a.name || '').localeCompare(String(b.name || ''));
-        });
-        return all;
-    }
-
-    // ============================================================
-    // INSTRUCTOR RESOLUTION
-    // ============================================================
-
-    function readAvailableInstructors(classId, disciplineId, week) {
-        if (!isNonEmptyString(classId) ||
-            !isNonEmptyString(disciplineId)) {
-            return [];
-        }
-
-        var weekNum = parseStrictInteger(week);
-        if (weekNum === null) {
-            return [];
-        }
-
-        var rawIds = [];
-        try {
-            rawIds = AcademyClasses.getClassInstructorIds(
-                classId,
-                weekNum,
-                { disciplineId: String(disciplineId) }
-            ) || [];
-        } catch (e) {
-            console.warn(
-                '[AcademyScheduleAssignModal] ' +
-                'getClassInstructorIds failed:', e
-            );
-            return [];
-        }
-
-        if (!Array.isArray(rawIds)) {
-            return [];
-        }
+    /**
+     * Strictly typed instructor-option list.
+     *
+     * Single source of truth for "resolve a set of instructor IDs
+     * to displayable { id, name } rows, dedupe, sort by name."
+     *
+     * Used by both the pre-flight picker path (from
+     * getClassInstructorIds) and the fallback path (from the
+     * rejection's data.instructorIds).
+     */
+    function buildInstructorOptions(ids) {
+        if (!Array.isArray(ids)) { return []; }
 
         var seen = Object.create(null);
         var result = [];
 
-        for (var i = 0; i < rawIds.length; i++) {
-            if (!rawIds[i]) { continue; }
-            var id = String(rawIds[i]);
+        for (var i = 0; i < ids.length; i++) {
+            if (!ids[i]) { continue; }
+            var id = String(ids[i]);
             if (seen[id]) { continue; }
             seen[id] = true;
 
@@ -470,6 +488,30 @@
         });
 
         return result;
+    }
+
+    // ============================================================
+    // INSTRUCTOR RESOLUTION
+    // ============================================================
+
+    function readAvailableInstructors(classId, disciplineId, week) {
+        if (!isNonEmptyString(classId) ||
+            !isNonEmptyString(disciplineId)) {
+            return [];
+        }
+
+        var weekNum = parseStrictInteger(week);
+        if (weekNum === null) {
+            return [];
+        }
+
+        var rawIds = AcademyClasses.getClassInstructorIds(
+            classId,
+            weekNum,
+            { disciplineId: String(disciplineId) }
+        );
+
+        return buildInstructorOptions(rawIds);
     }
 
     // ============================================================
@@ -493,21 +535,12 @@
             return [];
         }
 
-        var rawGroups = [];
-        try {
-            rawGroups = AcademyTeachingGroups
-                .getGroupsForClassDisciplineInstructor(
-                    classId,
-                    disciplineId,
-                    instructorId
-                ) || [];
-        } catch (e) {
-            console.warn(
-                '[AcademyScheduleAssignModal] ' +
-                'getGroupsForClassDisciplineInstructor failed:', e
+        var rawGroups = AcademyTeachingGroups
+            .getGroupsForClassDisciplineInstructor(
+                classId,
+                disciplineId,
+                instructorId
             );
-            return [];
-        }
 
         if (!Array.isArray(rawGroups)) {
             return [];
@@ -518,23 +551,35 @@
             var g = rawGroups[i];
             if (!g || !g.id) { continue; }
 
+            // Strict bound checks. A malformed bound excludes the
+            // group rather than silently treating it as unbounded.
+            // Missing bounds are legitimate (unbounded on that side).
             var startOk = true;
+            if (g.startWeek !== undefined &&
+                g.startWeek !== null &&
+                g.startWeek !== '') {
+                if (typeof g.startWeek !== 'number' ||
+                    !isFinite(g.startWeek)) {
+                    startOk = false;
+                } else if (weekNum < g.startWeek) {
+                    startOk = false;
+                }
+            }
+
             var endOk = true;
-
-            if (typeof g.startWeek === 'number' &&
-                weekNum < g.startWeek) {
-                startOk = false;
-            }
-            if (g.endWeek !== null &&
+            if (startOk &&
                 g.endWeek !== undefined &&
-                typeof g.endWeek === 'number' &&
-                weekNum > g.endWeek) {
-                endOk = false;
+                g.endWeek !== null &&
+                g.endWeek !== '') {
+                if (typeof g.endWeek !== 'number' ||
+                    !isFinite(g.endWeek)) {
+                    endOk = false;
+                } else if (weekNum > g.endWeek) {
+                    endOk = false;
+                }
             }
 
-            if (startOk && endOk) {
-                active.push(g);
-            }
+            if (startOk && endOk) { active.push(g); }
         }
 
         active.sort(function(a, b) {
@@ -564,39 +609,27 @@
             var groupNumber = typeof group.groupNumber === 'number'
                 ? group.groupNumber : 0;
 
-            var displayName = customName !== null
-                ? customName
-                : (disciplineName + (groupNumber > 0
-                    ? ' ' + groupNumber
-                    : ''));
-
-            var memberCount = 0;
-            try {
-                var members = AcademyTeachingGroups.getActiveMembers(
-                    group.id, weekNum
-                );
-                if (Array.isArray(members)) {
-                    memberCount = members.length;
-                }
-            } catch (e) {
-                memberCount = 0;
+            var displayName;
+            if (customName !== null) {
+                displayName = customName;
+            } else if (groupNumber > 0) {
+                displayName = disciplineName + ' ' + groupNumber;
+            } else {
+                displayName = disciplineName || 'Unnamed Group';
             }
 
-            var sessionCount = 0;
-            var Sessions = window.AcademyTeachingSessions;
-            if (Sessions &&
-                typeof Sessions.getSessionsForGroup === 'function') {
-                try {
-                    var sessions = Sessions.getSessionsForGroup(
-                        group.id
-                    );
-                    if (Array.isArray(sessions)) {
-                        sessionCount = sessions.length;
-                    }
-                } catch (e) {
-                    sessionCount = 0;
-                }
-            }
+            var members = AcademyTeachingGroups.getActiveMembers(
+                group.id, weekNum
+            );
+            var memberCount = Array.isArray(members)
+                ? members.length
+                : 0;
+
+            var sessions = AcademyTeachingSessions
+                .getSessionsForGroup(group.id);
+            var sessionCount = Array.isArray(sessions)
+                ? sessions.length
+                : 0;
 
             result.push({
                 groupId: String(group.id),
@@ -712,20 +745,34 @@
         }
 
         var week = parseStrictInteger(options.week);
-        if (week === null) {
-            notify('Valid week is required.', 'error');
+        if (week === null || week < MIN_WEEK || week > MAX_WEEK) {
+            notify(
+                'Week must be an integer between ' + MIN_WEEK +
+                ' and ' + MAX_WEEK + '.',
+                'error'
+            );
             return null;
         }
 
         var day = parseStrictInteger(options.day);
-        if (day === null) {
-            notify('Valid day is required.', 'error');
+        if (day === null || day < MIN_DAY || day > MAX_DAY) {
+            notify(
+                'Day must be an integer between ' + MIN_DAY +
+                ' and ' + MAX_DAY + '.',
+                'error'
+            );
             return null;
         }
 
         var startHour = parseStrictInteger(options.startHour);
-        if (startHour === null) {
-            notify('Valid start hour is required.', 'error');
+        if (startHour === null ||
+            startHour < MIN_HOUR ||
+            startHour > MAX_HOUR) {
+            notify(
+                'Start hour must be an integer between ' + MIN_HOUR +
+                ' and ' + MAX_HOUR + '.',
+                'error'
+            );
             return null;
         }
 
@@ -789,6 +836,9 @@
         _pendingCollision = null;
         _busy = false;
 
+        _sessionToken++;
+        var myToken = _sessionToken;
+
         var shell = Modal.createModal('academy-schedule-assign-modal');
         if (!shell) {
             notify('Failed to create modal.', 'error');
@@ -804,8 +854,12 @@
         _modal = shell;
         _contentEl = contentEl;
 
-        _contentChangeHandler = handleContentChange;
-        _contentClickHandler = handleContentClick;
+        _contentChangeHandler = function(e) {
+            handleContentChange(e, myToken);
+        };
+        _contentClickHandler = function(e) {
+            handleContentClick(e, myToken);
+        };
         contentEl.addEventListener('change', _contentChangeHandler);
         contentEl.addEventListener('click', _contentClickHandler);
 
@@ -838,6 +892,8 @@
                 );
             } catch (e) { /* ignore */ }
         }
+
+        _sessionToken++;
 
         resetState();
 
@@ -910,9 +966,8 @@
         };
 
         if (_context.mode === 'assign') {
-            var rows = buildAssignDisciplineRows();
             base.charName = getCharacterName(_context.charId);
-            base.disciplines = rows;
+            base.disciplines = buildAssignDisciplineRows();
             base.selectedDisciplineId = _selectedDisciplineId;
             base.selectedDuration = _selectedDuration;
             base.durations = buildDurationOptions();
@@ -933,30 +988,20 @@
     }
 
     function buildAssignDisciplineRows() {
-        var offerings = [];
-        try {
-            offerings = AcademyClassDisciplinesQueries
-                .getClassDisciplinesForClass(_context.classId) || [];
-        } catch (e) {
-            offerings = [];
-        }
+        var offerings = AcademyClassDisciplinesQueries
+            .getClassDisciplinesForClass(_context.classId);
 
         var rows = [];
         for (var i = 0; i < offerings.length; i++) {
             var rec = offerings[i];
             if (!rec || !rec.disciplineId) { continue; }
 
-            var active = false;
-            try {
-                active = AcademyClassDisciplinesQueries
-                    .isActiveInWeek(
-                        _context.classId,
-                        rec.disciplineId,
-                        _context.week
-                    ) === true;
-            } catch (e) {
-                active = false;
-            }
+            var active = AcademyClassDisciplinesQueries
+                .isActiveInWeek(
+                    _context.classId,
+                    rec.disciplineId,
+                    _context.week
+                ) === true;
             if (!active) { continue; }
 
             var disc = AcademyDisciplines.getDiscipline(rec.disciplineId);
@@ -987,6 +1032,16 @@
             durations.push(d);
         }
         return durations;
+    }
+
+    function getAvailableLocations() {
+        var all = AcademyLocations.getLocations() || [];
+        all.sort(function(a, b) {
+            return String(a.name || '').localeCompare(
+                String(b.name || '')
+            );
+        });
+        return all;
     }
 
     // ============================================================
@@ -1555,7 +1610,8 @@
     // EVENT HANDLERS
     // ============================================================
 
-    function handleContentChange(e) {
+    function handleContentChange(e, myToken) {
+        if (myToken !== _sessionToken) { return; }
         if (_busy) { return; }
         if (!_context || _context.mode !== 'assign') { return; }
 
@@ -1575,8 +1631,11 @@
             'academy-schedule-assign-duration'
         )) {
             var dur = parseStrictInteger(target.value);
-            if (dur !== null) {
+            if (dur !== null &&
+                dur >= MIN_DURATION &&
+                dur <= MAX_DURATION) {
                 _selectedDuration = dur;
+                _pendingCollision = null;
             }
             return;
         }
@@ -1585,6 +1644,7 @@
             'academy-schedule-assign-location'
         )) {
             _selectedLocationId = target.value || '';
+            _pendingCollision = null;
             return;
         }
 
@@ -1613,7 +1673,8 @@
         }
     }
 
-    function handleContentClick(e) {
+    function handleContentClick(e, myToken) {
+        if (myToken !== _sessionToken) { return; }
         if (_busy) {
             e.preventDefault();
             return;
@@ -1637,25 +1698,25 @@
 
         if (action === 'schedule-assign-submit') {
             e.preventDefault();
-            submitAssign(false);
+            submitAssign(false, myToken);
             return;
         }
 
         if (action === 'schedule-assign-confirm') {
             e.preventDefault();
-            submitAssign(true);
+            submitAssign(true, myToken);
             return;
         }
 
         if (action === 'schedule-remove-student-submit') {
             e.preventDefault();
-            submitRemoveStudent();
+            submitRemoveStudent(myToken);
             return;
         }
 
         if (action === 'schedule-remove-group-submit') {
             e.preventDefault();
-            submitRemoveGroup();
+            submitRemoveGroup(myToken);
             return;
         }
     }
@@ -1664,7 +1725,8 @@
     // SUBMIT — ASSIGN
     // ============================================================
 
-    function submitAssign(allowCollisions) {
+    function submitAssign(allowCollisions, myToken) {
+        if (myToken !== _sessionToken) { return; }
         if (!_context || _context.mode !== 'assign') { return; }
         if (_busy) { return; }
 
@@ -1684,17 +1746,24 @@
         }
 
         var duration = parseStrictInteger(_selectedDuration);
-        if (duration === null) {
-            duration = DEFAULT_DURATION;
+        if (duration === null ||
+            duration < MIN_DURATION ||
+            duration > MAX_DURATION) {
+            notify(
+                'Duration must be between ' + MIN_DURATION +
+                ' and ' + MAX_DURATION + ' hours.',
+                'error'
+            );
+            return;
         }
 
         var locationId = isNonEmptyString(_selectedLocationId)
             ? String(_selectedLocationId)
             : null;
 
-        _busy = true;
-        renderContent();
-
+        // Build the payload with exactly one of groupId /
+        // forceNewGroup. The sentinel and the existing-group case
+        // are mutually exclusive states.
         var payload = {
             charId: _context.charId,
             classId: _context.classId,
@@ -1708,14 +1777,24 @@
             allowCollisions: allowCollisions === true
         };
 
-        if (isNonEmptyString(_selectedGroupId)) {
+        if (_selectedGroupId === NEW_GROUP_SENTINEL) {
+            payload.forceNewGroup = true;
+        } else if (isNonEmptyString(_selectedGroupId)) {
             payload.groupId = String(_selectedGroupId);
         } else {
+            // Defensive: _selectedGroupId should never be '' after
+            // refreshGroupState. If it is, force the sentinel
+            // rather than submitting a payload that satisfies
+            // neither branch.
             payload.forceNewGroup = true;
         }
 
+        _busy = true;
+        renderContent();
+
         AcademySchedule.assignStudentToSlot(payload)
             .then(function(result) {
+                if (myToken !== _sessionToken) { return; }
                 _busy = false;
 
                 if (result && result.success) {
@@ -1768,6 +1847,7 @@
                 renderContent();
             })
             .catch(function(err) {
+                if (myToken !== _sessionToken) { return; }
                 _busy = false;
                 _pendingCollision = null;
                 console.warn(
@@ -1783,29 +1863,7 @@
             ? result.data.instructorIds
             : [];
 
-        var resolved = [];
-        var seen = Object.create(null);
-
-        for (var i = 0; i < ids.length; i++) {
-            if (!ids[i]) { continue; }
-            var id = String(ids[i]);
-            if (seen[id]) { continue; }
-            seen[id] = true;
-
-            var char = CharacterQueries.getCharacterById(id);
-            if (!char) { continue; }
-
-            var name = CharacterQueries.getDisplayName(char);
-            if (!isNonEmptyString(name)) {
-                name = 'Unknown';
-            }
-
-            resolved.push({ id: id, name: name });
-        }
-
-        resolved.sort(function(a, b) {
-            return a.name.localeCompare(b.name);
-        });
+        var resolved = buildInstructorOptions(ids);
 
         if (resolved.length === 0) {
             _instructorError =
@@ -1843,7 +1901,8 @@
     // SUBMIT — REMOVE STUDENT
     // ============================================================
 
-    function submitRemoveStudent() {
+    function submitRemoveStudent(myToken) {
+        if (myToken !== _sessionToken) { return; }
         if (!_context || _context.mode !== 'remove-student') { return; }
         if (_busy) { return; }
 
@@ -1863,6 +1922,7 @@
             _context.groupId,
             _context.charId
         ).then(function(result) {
+            if (myToken !== _sessionToken) { return; }
             _busy = false;
 
             if (result && result.success) {
@@ -1877,6 +1937,7 @@
             notify(msg, 'error');
             renderContent();
         }).catch(function(err) {
+            if (myToken !== _sessionToken) { return; }
             _busy = false;
             console.warn(
                 '[AcademyScheduleAssignModal] removeMemberRecord threw:',
@@ -1891,7 +1952,8 @@
     // SUBMIT — REMOVE GROUP
     // ============================================================
 
-    function submitRemoveGroup() {
+    function submitRemoveGroup(myToken) {
+        if (myToken !== _sessionToken) { return; }
         if (!_context || _context.mode !== 'remove-group') { return; }
         if (_busy) { return; }
 
@@ -1911,6 +1973,7 @@
             groupId: _context.groupId,
             classId: _context.classId
         }).then(function(result) {
+            if (myToken !== _sessionToken) { return; }
             _busy = false;
 
             if (result && result.success) {
@@ -1940,6 +2003,7 @@
             notify(errMsg, 'error');
             renderContent();
         }).catch(function(err) {
+            if (myToken !== _sessionToken) { return; }
             _busy = false;
             console.warn(
                 '[AcademyScheduleAssignModal] removeTeachingGroup threw:',
@@ -1972,6 +2036,13 @@
             if (typeof exports[required[i]] !== 'function') {
                 missing.push(required[i]);
             }
+        }
+
+        if (NEW_GROUP_SENTINEL === '') {
+            missing.push(
+                'NEW_GROUP_SENTINEL is empty; it collides with ' +
+                '"nothing selected"'
+            );
         }
 
         if (missing.length > 0) {
