@@ -147,23 +147,6 @@
  *     fail count, pass rate, and a distribution.
  *   - `passing` is determined by the scheme when supplied.
  *
- * LEGACY CALCULATION PATHS:
- *   calculateClassRanking and calculateStudentGPA are LEGACY.
- *
- *   The canonical ranking calculation lives in
- *   AcademyPerformance.calculateRanking and is consumed by
- *   AcademyRanking. The canonical GPA-like mapping is a
- *   performance-layer concern.
- *
- *   Both functions are retained here for backward compatibility.
- *   Before deleting them, grep:
- *
- *     AcademyGrades.calculateClassRanking
- *     AcademyGrades.calculateStudentGPA
- *
- *   If there are no consumers, delete both. If there are consumers,
- *   migrate them to the performance/ranking path first.
- *
  * CASCADE SEMANTICS (stripCharacterRefs):
  *   When a character is deleted, all grade records keyed to that
  *   character are removed from academy.grades. This helper is called
@@ -392,9 +375,6 @@
             if (trimmed === '') {
                 return null;
             }
-            // The regex enforces the full shape: an optional sign,
-            // digits with optional decimal part, optional exponent.
-            // It does not accept any trailing garbage.
             if (!/^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/.test(trimmed)) {
                 return null;
             }
@@ -722,8 +702,6 @@
         }
 
         // ---- score <= maxScore ----
-        // Only check when both fields are present. Partial updates
-        // are checked against the candidate in `update`.
         if (data.score !== undefined && data.maxScore !== undefined) {
             var s = parseFiniteNumberStrict(data.score);
             var m = parseFiniteNumberStrict(data.maxScore);
@@ -1577,114 +1555,6 @@
     }
 
     // ============================================================
-    // LEGACY CALCULATION PATHS
-    // ============================================================
-    //
-    // calculateStudentGPA and calculateClassRanking are LEGACY.
-    // The canonical ranking calculation lives in AcademyPerformance
-    // and is consumed by AcademyRanking. The GPA-like mapping is a
-    // presentation concern that belongs in the performance layer.
-    //
-    // Both functions are retained for backward compatibility. They
-    // are marked here so a future pass can delete them once their
-    // consumers are migrated. See the file header for the grep
-    // list.
-
-    /**
-     * LEGACY. Calculate a student's GPA across all grades.
-     *
-     * The mapping (90→4.0, 80→3.0, 70→2.0, 60→1.0, else 0.0) is a
-     * presentation concern. Migrate consumers to the performance
-     * layer if this function is used.
-     */
-    function calculateStudentGPA(studentId, week, scheme) {
-        var grades = getStudentGrades(studentId, week);
-        var summary = calculateSummary(grades, scheme);
-
-        var gpa = 0;
-        if (summary.count > 0) {
-            var avg = summary.average;
-            if (avg >= 90) gpa = 4.0;
-            else if (avg >= 80) gpa = 3.0;
-            else if (avg >= 70) gpa = 2.0;
-            else if (avg >= 60) gpa = 1.0;
-            else gpa = 0.0;
-        }
-
-        return {
-            studentId: studentId,
-            gradeCount: summary.count,
-            average: summary.average,
-            passRate: summary.passRate,
-            gpa: gpa,
-            passing: summary.passing,
-            failing: summary.failing
-        };
-    }
-
-    /**
-     * LEGACY. Calculate class ranking for a specific week.
-     *
-     * Ranks by UNWEIGHTED average. The canonical ranking
-     * calculation lives in AcademyPerformance.calculateRanking and
-     * is consumed by AcademyRanking. This function is retained for
-     * callers that want a quick unweighted ordering.
-     */
-    function calculateClassRanking(classId, week, getCharacterById, scheme) {
-        if (!isNonEmptyString(classId)) {
-            return [];
-        }
-
-        var grades = getClassGrades(classId, week);
-        var studentAverages = {};
-
-        for (var i = 0; i < grades.length; i++) {
-            var grade = grades[i];
-            var studentId = grade.studentId;
-            var pct = calculatePercentage(grade.score, grade.maxScore);
-
-            if (!studentAverages[studentId]) {
-                studentAverages[studentId] = { total: 0, count: 0 };
-            }
-            studentAverages[studentId].total += pct;
-            studentAverages[studentId].count++;
-        }
-
-        var result = [];
-        for (var sid in studentAverages) {
-            if (Object.prototype.hasOwnProperty.call(studentAverages, sid)) {
-                var data = studentAverages[sid];
-                var avg = data.count > 0 ? data.total / data.count : 0;
-                var name = 'Unknown';
-                if (typeof getCharacterById === 'function') {
-                    var char = getCharacterById(sid);
-                    if (char && typeof char === 'object') {
-                        name = (char.firstName || '') + ' ' + (char.lastName || '');
-                        if (!name.trim()) name = 'Unknown';
-                    }
-                }
-                result.push({
-                    studentId: sid,
-                    name: name,
-                    average: Math.round(avg * 10) / 10,
-                    gradeCount: data.count,
-                    rank: 0
-                });
-            }
-        }
-
-        result.sort(function(a, b) {
-            return b.average - a.average;
-        });
-
-        for (var j = 0; j < result.length; j++) {
-            result[j].rank = j + 1;
-        }
-
-        return result;
-    }
-
-    // ============================================================
     // CASCADE HELPERS - Remove all references to a character ID
     // ============================================================
 
@@ -1997,12 +1867,6 @@
         // ---- Calculations (synchronous, pure) ----
         calculateSummary: calculateSummary,
         calculateClassSummary: calculateClassSummary,
-
-        // ---- LEGACY calculations ----
-        // Retained for backward compatibility. Migrate consumers,
-        // then delete. See the file header.
-        calculateStudentGPA: calculateStudentGPA,
-        calculateClassRanking: calculateClassRanking,
 
         // ---- Derived field helpers ----
         decorateGrade: decorateGrade,
