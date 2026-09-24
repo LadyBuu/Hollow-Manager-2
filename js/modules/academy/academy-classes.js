@@ -59,32 +59,36 @@
  *     getRestDaysForWeek(classId, week)
  *
  *   which returns restDaysByWeek[week] when present, and falls
- *   back to restDays otherwise. Consumers that need rest days
- *   for a specific week call this function; they do not read
- *   class.restDays directly.
+ *   back to restDays otherwise.
  *
- *   The calendar aggregator's readClassRestDays wraps
- *   getRestDaysForWeek. The teaching projector consults it to
- *   suppress occurrences whose day falls on a rest day for the
- *   target week. Nothing in this module consults rest days for
- *   any decision.
+ *   MALFORMED WEEK:
+ *     An invalid week (null, NaN, out of range) is NOT a request
+ *     for the default rest days. It is an unanswerable question.
+ *     getRestDaysForWeek returns [] in that case. The caller
+ *     cannot distinguish "the class has no rest days" from "the
+ *     week was invalid" at this API; callers that need the
+ *     distinction should pre-validate the week.
  *
- *   WHY A SPARSE MAP, NOT A RULE LIST:
- *     A rule list ("odd weeks: Sat/Sun", "week 7: none")
- *     expresses the same information more compactly, but
- *     requires every consumer to resolve a rule chain for every
- *     query. The sparse map turns the read path into a single
- *     hash lookup. The rule-list ergonomics live in the class
- *     form; on save, the form expands rules into per-week
- *     buckets. The map is the storage shape; the rules are the
- *     authoring shape.
+ * TRANSACTION SNAPSHOT RULE:
+ *   Every pipeline validate() callback resolves references against
+ *   the `appData` argument it is handed. It does not read
+ *   window.data. Preflight reads against window.data are for
+ *   early UX feedback only; the pipeline re-checks against the
+ *   snapshot.
  *
- * S10.1 MIGRATION:
- *   The four membership mutations (addToClass, removeClassById,
- *   addClassByName, removeFromAllClasses) and the two classIds-
- *   normalisation helpers (normaliseClassIds,
- *   getNormalisedClassIds) were moved here from
- *   character-classes.js. That file has been deleted.
+ *   This applies to:
+ *     - create: name-uniqueness against the snapshot
+ *     - update: name-uniqueness against the snapshot
+ *     - deleteClass: existence in the snapshot
+ *     - addToClass / removeClassById / addClassByName /
+ *       removeFromAllClasses: the character and class exist in
+ *       the snapshot, and the membership invariant holds there
+ *
+ * CLASS-NAME COMPARISON:
+ *   Two class names match when their normalised forms
+ *   (trim + lowercase) are equal. This is the SINGLE authority
+ *   for name comparison; every lookup and uniqueness check goes
+ *   through normaliseClassName().
  *
  * READ SAFETY (Phase 2):
  *   - getAcademyStore() returns null when the store is missing.
@@ -102,8 +106,13 @@
  *     1. Strips the classId from every character's classIds array.
  *     2. Deletes the class entity from academy.graduatingClasses.
  *     3. Cross-domain cleanup: enrolments, grades, rankings,
- *        social scores, weekly teams. Delegated to
+ *        social scores, weekly teams, teaching sessions, teaching
+ *        groups, instructor commitments. Delegated to
  *        AcademyCascade.classDeleted.
+ *
+ *   AcademyCascade.classDeleted is MANDATORY at deletion time.
+ *   Lazy lookup solves load order; it does not make the
+ *   dependency optional. A missing cascade fails the transaction.
  *
  * YEAR SEMANTICS:
  *   - Years are UNBOUNDED positive integers. A null year is valid.
@@ -117,10 +126,10 @@
  *   - window.CalendarValidation
  *   - window.RangeUtils
  *
- * DEPENDENCIES (LAZY):
- *   - window.AcademyCascade
- *   - window.CharacterQueries
- *   - window.AcademyClassDisciplinesQueries
+ * DEPENDENCIES (LAZY, mandatory at call time):
+ *   - window.AcademyCascade                    (deleteClass)
+ *   - window.CharacterQueries                  (membership mutations)
+ *   - window.AcademyClassDisciplinesQueries    (getClassInstructorIds)
  *
  * USAGE:
  *   var classes = window.AcademyClasses;
@@ -224,6 +233,13 @@
     // ============================================================
     // LAZY LOADING HELPERS
     // ============================================================
+    //
+    // Lazy resolution solves load order. It does NOT make a
+    // dependency optional at call time. Callers that need a
+    // dependency (deleteClass needs AcademyCascade; membership
+    // mutations need CharacterQueries; getClassInstructorIds
+    // needs AcademyClassDisciplinesQueries) throw when the
+    // dependency is absent.
 
     function getAcademyCascade() {
         return window.AcademyCascade || null;
@@ -235,6 +251,22 @@
 
     function getAcademyClassDisciplinesQueries() {
         return window.AcademyClassDisciplinesQueries || null;
+    }
+
+    /**
+     * Resolve CharacterQueries or throw. Used by every call site
+     * that depends on it.
+     */
+    function requireCharacterQueries(contextLabel) {
+        var CQ = getCharacterQueries();
+        if (!CQ || typeof CQ.getCharacterById !== 'function') {
+            throw new Error(
+                '[AcademyClasses] CharacterQueries.getCharacterById is ' +
+                'required by ' + contextLabel + '. Check the script load ' +
+                'order in index.html.'
+            );
+        }
+        return CQ;
     }
 
     // ============================================================
@@ -293,6 +325,22 @@
             return null;
         }
         return parsed;
+    }
+
+    /**
+     * Normalise a class name for comparison.
+     * Trims leading/trailing whitespace and lowercases. Empty or
+     * invalid input returns ''.
+     *
+     * This is the SINGLE authority for name comparison in this
+     * module. Every lookup and uniqueness check goes through it.
+     * Do not inline `String(x).toLowerCase().trim()` anywhere.
+     */
+    function normaliseClassName(name) {
+        if (name === null || name === undefined) {
+            return '';
+        }
+        return String(name).trim().toLowerCase();
     }
 
     // ============================================================
@@ -378,16 +426,16 @@
     }
 
     function getClassByNameInternal(name) {
-        if (!isNonEmptyString(name)) {
+        var target = normaliseClassName(name);
+        if (target === '') {
             return null;
         }
 
-        var target = String(name).toLowerCase().trim();
         var classes = getClassesInternal();
 
         for (var i = 0; i < classes.length; i++) {
             var cls = classes[i];
-            if (cls && cls.name && String(cls.name).toLowerCase().trim() === target) {
+            if (cls && normaliseClassName(cls.name) === target) {
                 return cls;
             }
         }
@@ -406,6 +454,73 @@
         }
 
         return cls.name || 'Unnamed Class';
+    }
+
+    // ============================================================
+    // SNAPSHOT-AWARE LOOKUPS
+    // ============================================================
+    //
+    // Used by pipeline validate() callbacks. Read from the appData
+    // snapshot, not window.data.
+
+    function findCharacterInSnapshot(appData, charId) {
+        if (!appData || !Array.isArray(appData.characters)) {
+            return null;
+        }
+        var target = String(charId);
+        for (var i = 0; i < appData.characters.length; i++) {
+            var c = appData.characters[i];
+            if (c && String(c.id) === target) {
+                return c;
+            }
+        }
+        return null;
+    }
+
+    function findClassInSnapshot(appData, classId) {
+        if (!appData || !appData.academy ||
+            !isObject(appData.academy.graduatingClasses)) {
+            return null;
+        }
+        var target = String(classId);
+        return appData.academy.graduatingClasses[target] || null;
+    }
+
+    /**
+     * Find a class by normalised name in the snapshot.
+     * Returns the matching record or null.
+     */
+    function findClassByNameInSnapshot(appData, name) {
+        var target = normaliseClassName(name);
+        if (target === '') {
+            return null;
+        }
+        if (!appData || !appData.academy ||
+            !isObject(appData.academy.graduatingClasses)) {
+            return null;
+        }
+        var store = appData.academy.graduatingClasses;
+        var keys = Object.keys(store);
+        for (var i = 0; i < keys.length; i++) {
+            var cls = store[keys[i]];
+            if (cls && normaliseClassName(cls.name) === target) {
+                return cls;
+            }
+        }
+        return null;
+    }
+
+    function characterHasClassId(char, classId) {
+        if (!char || !Array.isArray(char.classIds)) {
+            return false;
+        }
+        var target = String(classId);
+        for (var i = 0; i < char.classIds.length; i++) {
+            if (String(char.classIds[i]) === target) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ============================================================
@@ -476,22 +591,23 @@
     //
     //   getClassInstructorIds(classId, week, options)
     //     "Who teaches something in this class DURING this week?"
-    //     Week-scoped. Reads offerings via
-    //     AcademyClassDisciplinesQueries to filter out enrolments
-    //     whose discipline is not currently offered. Filters
-    //     enrolment intervals to those whose range contains the
-    //     week. Filters to instructor mode.
+    //     Week-scoped.
     //
     //   getClassInstructorIdsAllTime(classId)
     //     "Who has EVER taught something in this class?"
-    //     NOT week-scoped. Does NOT consult offerings; reads the
-    //     enrolment bucket directly.
+    //     NOT week-scoped.
     //
-    //   The two are deliberately separate. A character who taught
-    //   Combat for Class 2026 during weeks 1-8 and stopped is an
-    //   instructor for Class 2026 (all-time) but not for week 12
-    //   (week-scoped). Both answers are correct for their
-    //   respective questions.
+    // MANDATORY DEPENDENCIES:
+    //   getClassInstructorIds requires:
+    //     - AcademyClassDisciplinesQueries (offering filter)
+    //     - CharacterQueries (mode lookup)
+    //
+    //   getClassInstructorIdsAllTime requires:
+    //     - CharacterQueries
+    //
+    //   A missing dependency THROWS. It does not return [].
+    //   [] means "nobody teaches this class," which is a different
+    //   answer from "the answer could not be determined."
     //
     // NOT AUTHORITATIVE INSIDE A MUTATION TRANSACTION:
     //   Both functions read window.data through the live store.
@@ -525,35 +641,34 @@
             return [];
         }
 
-        var offeringSet = Object.create(null);
-        var offeringFilterAvailable = false;
-
+        // ---- Offering filter is MANDATORY ----
+        //
+        // The offering filter is part of the definition of "teaches
+        // this class this week." A missing offerings module is a
+        // failure, not a mode where every enrolment interval counts.
         var Queries = getAcademyClassDisciplinesQueries();
-        if (Queries &&
-            typeof Queries.getClassDisciplinesForClass === 'function' &&
-            typeof Queries.isActiveInWeek === 'function') {
-            var offerings = [];
-            try {
-                offerings = Queries.getClassDisciplinesForClass(classId) || [];
-            } catch (e) {
-                offerings = [];
+        if (!Queries ||
+            typeof Queries.getClassDisciplinesForClass !== 'function' ||
+            typeof Queries.isActiveInWeek !== 'function') {
+            throw new Error(
+                '[AcademyClasses] AcademyClassDisciplinesQueries ' +
+                '(getClassDisciplinesForClass, isActiveInWeek) is ' +
+                'required by getClassInstructorIds. Check the script ' +
+                'load order in index.html.'
+            );
+        }
+
+        var offeringSet = Object.create(null);
+        var offerings = Queries.getClassDisciplinesForClass(classId) || [];
+        for (var oi = 0; oi < offerings.length; oi++) {
+            var rec = offerings[oi];
+            if (!rec || !rec.disciplineId) { continue; }
+            var active = Queries.isActiveInWeek(
+                classId, rec.disciplineId, weekNum
+            ) === true;
+            if (active) {
+                offeringSet[String(rec.disciplineId)] = true;
             }
-            for (var oi = 0; oi < offerings.length; oi++) {
-                var rec = offerings[oi];
-                if (!rec || !rec.disciplineId) { continue; }
-                var active = false;
-                try {
-                    active = Queries.isActiveInWeek(
-                        classId, rec.disciplineId, weekNum
-                    ) === true;
-                } catch (e) {
-                    active = false;
-                }
-                if (active) {
-                    offeringSet[String(rec.disciplineId)] = true;
-                }
-            }
-            offeringFilterAvailable = true;
         }
 
         var disciplineFilter = null;
@@ -561,10 +676,12 @@
             disciplineFilter = String(options.disciplineId);
         }
 
-        var CQ = getCharacterQueries();
-        if (!CQ || typeof CQ.getCharacterById !== 'function') {
-            return [];
-        }
+        // ---- CharacterQueries is MANDATORY ----
+        //
+        // Without it, the module cannot determine whether an
+        // enrolled character is an instructor. Throwing is correct;
+        // returning [] would be a false answer.
+        var CQ = requireCharacterQueries('getClassInstructorIds');
 
         var result = Object.create(null);
         var charIds = Object.keys(byClass);
@@ -589,8 +706,7 @@
                     continue;
                 }
 
-                if (offeringFilterAvailable &&
-                    offeringSet[discId] !== true) {
+                if (offeringSet[discId] !== true) {
                     continue;
                 }
 
@@ -638,10 +754,7 @@
             return [];
         }
 
-        var CQ = getCharacterQueries();
-        if (!CQ || typeof CQ.getCharacterById !== 'function') {
-            return [];
-        }
+        var CQ = requireCharacterQueries('getClassInstructorIdsAllTime');
 
         var result = Object.create(null);
         var charIds = Object.keys(byClass);
@@ -691,19 +804,18 @@
     // REST DAYS VALIDATION
     // ============================================================
     //
-    // The accepted shape is an array of unique integers in
-    // [MIN_DAY, MAX_DAY]. Duplicates are collapsed. Order is not
-    // significant (the canonical form is sorted ascending by
-    // normaliseRestDays below), but callers may pass any order.
+    // Returns { valid: true, value: array|undefined } on success,
+    // or { valid: false, message } on failure.
     //
-    // Rejections:
-    //   - not an array
-    //   - any element that cannot be parsed to an integer in range
+    // The normaliser (normaliseRestDays) returns the array on
+    // success, and null on validation failure. null means "the
+    // stored value is invalid," which is distinguishable from []
+    // ("no rest days").
     //
     // Silent no-op:
     //   - a caller who passes `undefined` gets the current value
-    //     preserved. The validator does not treat `undefined` as
-    //     "clear the field"; that requires an explicit `[]`.
+    //     preserved (the normaliser returns [] in that case,
+    //     matching the historical shape for "no override").
 
     function validateRestDaysValue(value) {
         if (value === undefined) {
@@ -761,10 +873,22 @@
         return { valid: true, value: result };
     }
 
+    /**
+     * Normalise a rest-days value.
+     *
+     * Returns:
+     *   - the canonical array when the input is valid
+     *   - [] when the input is undefined (no override)
+     *   - null when the input is invalid (malformed array)
+     *
+     * null is the honest answer for "this stored value is corrupt."
+     * Callers that need to distinguish "no rest days" from "corrupt
+     * rest days" check for null.
+     */
     function normaliseRestDays(value) {
         var check = validateRestDaysValue(value);
         if (!check.valid) {
-            return [];
+            return null;
         }
         if (check.value === undefined) {
             return [];
@@ -775,23 +899,6 @@
     // ============================================================
     // REST DAYS BY WEEK VALIDATION
     // ============================================================
-    //
-    // The accepted shape is a plain object whose keys are week
-    // numbers (or digit strings that parse to weeks in
-    // [MIN_WEEK, MAX_WEEK]) and whose values are rest-day arrays.
-    //
-    // Duplicates across weeks are not a problem — each week's array
-    // is independent. Duplicates within a week are collapsed by
-    // validateRestDaysValue.
-    //
-    // Rejections:
-    //   - not a plain object
-    //   - any key that does not parse to a valid week
-    //   - any value that fails validateRestDaysValue
-    //
-    // Silent no-op:
-    //   - a caller who passes `undefined` gets the current value
-    //     preserved. `{}` explicitly clears.
 
     function validateRestDaysByWeekValue(value) {
         if (value === undefined) {
@@ -840,17 +947,24 @@
                 };
             }
 
-            // Store under canonical string week key.
             result[String(weekNum)] = dayCheck.value;
         }
 
         return { valid: true, value: result };
     }
 
+    /**
+     * Normalise a rest-days-by-week map.
+     *
+     * Returns:
+     *   - the canonical map when the input is valid
+     *   - {} when the input is undefined (no override)
+     *   - null when the input is invalid
+     */
     function normaliseRestDaysByWeek(value) {
         var check = validateRestDaysByWeekValue(value);
         if (!check.valid) {
-            return {};
+            return null;
         }
         if (check.value === undefined) {
             return {};
@@ -878,12 +992,6 @@
     // PUBLIC API - CLASS ENTITY CRUD
     // ============================================================
 
-    /**
-     * Create a new class.
-     *
-     * v30: restDays.
-     * v31: restDaysByWeek.
-     */
     function create(name, options) {
         if (!isNonEmptyString(name)) {
             return Promise.resolve(failure('Class name is required.'));
@@ -948,20 +1056,23 @@
             updatedAt: now
         };
 
+        var normalisedNewName = normaliseClassName(trimmedName);
+
         return MutationPipeline.performMutation({
             validate: function(appData) {
-                if (!appData || !appData.academy || !appData.academy.graduatingClasses) {
+                if (!appData || !appData.academy) {
                     return { valid: true };
                 }
-                var target = trimmedName.toLowerCase();
-                var store = appData.academy.graduatingClasses;
-                for (var id in store) {
-                    if (Object.prototype.hasOwnProperty.call(store, id)) {
-                        var cls = store[id];
-                        if (cls && cls.name && String(cls.name).toLowerCase().trim() === target) {
-                            return { valid: false, message: 'A class with this name already exists.' };
-                        }
-                    }
+
+                // Name uniqueness against the transaction snapshot.
+                var conflict = findClassByNameInSnapshot(
+                    appData, normalisedNewName
+                );
+                if (conflict) {
+                    return {
+                        valid: false,
+                        message: 'A class with this name already exists.'
+                    };
                 }
                 return { valid: true };
             },
@@ -987,12 +1098,6 @@
         });
     }
 
-    /**
-     * Update an existing class.
-     *
-     * v30: restDays.
-     * v31: restDaysByWeek.
-     */
     function update(classId, updates) {
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
@@ -1019,7 +1124,6 @@
             return Promise.resolve(failure('Failed to clone class data.'));
         }
 
-        // ---- Legacy guards ----
         if (!Array.isArray(candidate.restDays)) {
             candidate.restDays = [];
         }
@@ -1032,7 +1136,7 @@
                 return Promise.resolve(failure('Class name cannot be empty.'));
             }
             var newName = String(updates.name).trim();
-            if (newName !== existing.name) {
+            if (normaliseClassName(newName) !== normaliseClassName(existing.name)) {
                 var duplicate = getClassByNameInternal(newName);
                 if (duplicate && String(duplicate.id) !== target) {
                     return Promise.resolve(failure('A class with this name already exists.'));
@@ -1079,15 +1183,30 @@
         }
 
         candidate.updatedAt = new Date().toISOString();
+        var normalisedCandidateName = normaliseClassName(candidate.name);
 
         return MutationPipeline.performMutation({
             validate: function(appData) {
-                if (!appData || !appData.academy || !appData.academy.graduatingClasses) {
+                if (!appData || !appData.academy ||
+                    !isObject(appData.academy.graduatingClasses)) {
                     return { valid: false, message: 'Class no longer exists.' };
                 }
-                if (!appData.academy.graduatingClasses[target]) {
+                if (!findClassInSnapshot(appData, target)) {
                     return { valid: false, message: 'Class no longer exists.' };
                 }
+
+                // Name uniqueness against the snapshot. The
+                // conflicting class, if any, must not be this one.
+                var conflict = findClassByNameInSnapshot(
+                    appData, normalisedCandidateName
+                );
+                if (conflict && String(conflict.id) !== target) {
+                    return {
+                        valid: false,
+                        message: 'A class with this name already exists.'
+                    };
+                }
+
                 return { valid: true };
             },
             mutate: function(data) {
@@ -1110,6 +1229,8 @@
 
     /**
      * Delete a class permanently.
+     *
+     * AcademyCascade.classDeleted is MANDATORY at deletion time.
      */
     function deleteClass(classId) {
         if (!isNonEmptyString(classId)) {
@@ -1127,10 +1248,11 @@
 
         return MutationPipeline.performMutation({
             validate: function(appData) {
-                if (!appData || !appData.academy || !appData.academy.graduatingClasses) {
+                if (!appData || !appData.academy ||
+                    !isObject(appData.academy.graduatingClasses)) {
                     return { valid: false, message: 'Class no longer exists.' };
                 }
-                if (!appData.academy.graduatingClasses[target]) {
+                if (!findClassInSnapshot(appData, target)) {
                     return { valid: false, message: 'Class no longer exists.' };
                 }
                 return { valid: true };
@@ -1143,6 +1265,7 @@
                     throw new Error('Class not found in data store.');
                 }
 
+                // ---- 1. Strip classId from every character ----
                 var affectedCharacters = 0;
                 if (Array.isArray(data.characters)) {
                     for (var i = 0; i < data.characters.length; i++) {
@@ -1160,13 +1283,21 @@
                     }
                 }
 
+                // ---- 2. Delete the class entity ----
                 delete data.academy.graduatingClasses[target];
 
-                var cascade = null;
+                // ---- 3. Cross-domain cascade (MANDATORY) ----
                 var Cascade = getAcademyCascade();
-                if (Cascade && typeof Cascade.classDeleted === 'function') {
-                    cascade = Cascade.classDeleted(data, target);
+                if (!Cascade ||
+                    typeof Cascade.classDeleted !== 'function') {
+                    throw new Error(
+                        '[AcademyClasses] AcademyCascade.classDeleted ' +
+                        'is required for class deletion. Check the ' +
+                        'script load order in index.html.'
+                    );
                 }
+
+                var cascade = Cascade.classDeleted(data, target);
 
                 return {
                     deleted: true,
@@ -1255,18 +1386,29 @@
     // ============================================================
     // REST DAYS RESOLUTION
     // ============================================================
-    //
-    // The canonical reader: given a class and a week, return the
-    // effective rest days for that week.
-    //
-    // Precedence:
-    //   1. restDaysByWeek[week], when present.
-    //   2. restDays, otherwise.
-    //
-    // Returns a fresh array. The caller cannot mutate the underlying
-    // storage through the returned reference. A malformed entry is
-    // normalised defensively (empty array on any failure).
 
+    /**
+     * Get the effective rest days for a class at a given week.
+     *
+     * Precedence:
+     *   1. restDaysByWeek[week], when present
+     *   2. restDays, otherwise
+     *
+     * Returns a fresh array. Empty array means either:
+     *   - the class has no rest days for this week, OR
+     *   - the week was invalid, OR
+     *   - the stored rest days for this week are corrupt
+     *
+     * The three cases are indistinguishable at this API. Callers
+     * that need to distinguish them should pre-validate the week
+     * and inspect the stored fields directly.
+     *
+     * WHY [] FOR A MALFORMED WEEK:
+     *   A malformed week is not a request for the default rest
+     *   days. Returning the default on malformed input would
+     *   convert bad input into plausible data. [] is the honest
+     *   "no answer" signal for this API.
+     */
     function getRestDaysForWeek(classId, week) {
         var cls = getClassInternal(classId);
         if (!cls) {
@@ -1275,10 +1417,7 @@
 
         var weekNum = parseWeekStrict(week);
         if (weekNum === null) {
-            // Fall back to the default when the week is malformed.
-            // Callers that need a strict answer can pre-validate
-            // the week themselves.
-            return normaliseRestDays(cls.restDays);
+            return [];
         }
 
         if (isObject(cls.restDaysByWeek)) {
@@ -1286,15 +1425,19 @@
             if (Object.prototype.hasOwnProperty.call(
                 cls.restDaysByWeek, key
             )) {
-                return normaliseRestDays(cls.restDaysByWeek[key]);
+                var overrideResult = normaliseRestDays(
+                    cls.restDaysByWeek[key]
+                );
+                return overrideResult === null ? [] : overrideResult;
             }
         }
 
-        return normaliseRestDays(cls.restDays);
+        var defaultResult = normaliseRestDays(cls.restDays);
+        return defaultResult === null ? [] : defaultResult;
     }
 
     // ============================================================
-    // CLASS IDS NORMALISATION (moved here in S10.1)
+    // CLASS IDS NORMALISATION (S10.1)
     // ============================================================
 
     function normaliseClassIds(char) {
@@ -1329,8 +1472,12 @@
     }
 
     // ============================================================
-    // MEMBERSHIP MUTATIONS (moved here in S10.1)
+    // MEMBERSHIP MUTATIONS (S10.1)
     // ============================================================
+    //
+    // Every validator resolves references against the transaction
+    // snapshot. Preflight reads against window.data are for early
+    // UX feedback.
 
     function addToClass(charId, classId) {
         if (!charId) {
@@ -1340,12 +1487,14 @@
             return Promise.resolve(failure('Class ID is required.'));
         }
 
-        var CharacterQueries = getCharacterQueries();
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            return Promise.resolve(failure('CharacterQueries is not available.'));
+        var CQ;
+        try {
+            CQ = requireCharacterQueries('addToClass');
+        } catch (e) {
+            return Promise.resolve(failure(e.message));
         }
 
-        var char = CharacterQueries.getCharacterById(charId);
+        var char = CQ.getCharacterById(charId);
         if (!char) {
             return Promise.resolve(failure('Character not found.'));
         }
@@ -1360,21 +1509,29 @@
             return Promise.resolve(failure('Character is already in this class.'));
         }
 
-        var name = CharacterQueries.getDisplayName(char);
+        var name = CQ.getDisplayName(char);
+        var targetChar = String(charId);
+        var targetClass = String(classId);
 
         return MutationPipeline.performMutation({
-            validate: function(data) {
-                var currentChar = CharacterQueries.getCharacterById(charId);
+            validate: function(appData) {
+                if (!appData || !Array.isArray(appData.characters)) {
+                    return { valid: false, message: 'Character store is not available.' };
+                }
+
+                // Snapshot lookups.
+                var currentChar = findCharacterInSnapshot(
+                    appData, targetChar
+                );
                 if (!currentChar) {
                     return { valid: false, message: 'Character no longer exists.' };
                 }
 
-                if (!getClassInternal(classId)) {
+                if (!findClassInSnapshot(appData, targetClass)) {
                     return { valid: false, message: 'Class no longer exists.' };
                 }
 
-                var currentClassIds = getNormalisedClassIds(currentChar);
-                if (currentClassIds.some(function(cid) { return String(cid) === String(classId); })) {
+                if (characterHasClassId(currentChar, targetClass)) {
                     return { valid: false, message: 'Character is already in this class.' };
                 }
 
@@ -1382,25 +1539,22 @@
             },
 
             mutate: function(data) {
-                var currentChar = data.characters.find(function(c) {
-                    return c && String(c.id) === String(charId);
-                });
-
+                var currentChar = findCharacterInSnapshot(data, targetChar);
                 if (!currentChar) {
                     throw new Error('Character not found in data store.');
                 }
 
                 normaliseClassIds(currentChar);
 
-                if (currentChar.classIds.some(function(cid) { return String(cid) === String(classId); })) {
+                if (characterHasClassId(currentChar, targetClass)) {
                     throw new Error('Character is already in this class.');
                 }
 
-                currentChar.classIds.push(classId);
+                currentChar.classIds.push(targetClass);
 
                 return {
-                    characterId: charId,
-                    classId: classId,
+                    characterId: targetChar,
+                    classId: targetClass,
                     className: cls.name
                 };
             },
@@ -1424,12 +1578,14 @@
             return Promise.resolve(failure('Class ID is required.'));
         }
 
-        var CharacterQueries = getCharacterQueries();
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            return Promise.resolve(failure('CharacterQueries is not available.'));
+        var CQ;
+        try {
+            CQ = requireCharacterQueries('removeClassById');
+        } catch (e) {
+            return Promise.resolve(failure(e.message));
         }
 
-        var char = CharacterQueries.getCharacterById(charId);
+        var char = CQ.getCharacterById(charId);
         if (!char) {
             return Promise.resolve(failure('Character not found.'));
         }
@@ -1444,21 +1600,28 @@
             return Promise.resolve(failure('Character is not in this class.'));
         }
 
-        var name = CharacterQueries.getDisplayName(char);
+        var name = CQ.getDisplayName(char);
+        var targetChar = String(charId);
+        var targetClass = String(classId);
 
         return MutationPipeline.performMutation({
-            validate: function(data) {
-                var currentChar = CharacterQueries.getCharacterById(charId);
+            validate: function(appData) {
+                if (!appData || !Array.isArray(appData.characters)) {
+                    return { valid: false, message: 'Character store is not available.' };
+                }
+
+                var currentChar = findCharacterInSnapshot(
+                    appData, targetChar
+                );
                 if (!currentChar) {
                     return { valid: false, message: 'Character no longer exists.' };
                 }
 
-                if (!getClassInternal(classId)) {
+                if (!findClassInSnapshot(appData, targetClass)) {
                     return { valid: false, message: 'Class no longer exists.' };
                 }
 
-                var currentClassIds = getNormalisedClassIds(currentChar);
-                if (!currentClassIds.some(function(cid) { return String(cid) === String(classId); })) {
+                if (!characterHasClassId(currentChar, targetClass)) {
                     return { valid: false, message: 'Character is not in this class.' };
                 }
 
@@ -1466,10 +1629,7 @@
             },
 
             mutate: function(data) {
-                var currentChar = data.characters.find(function(c) {
-                    return c && String(c.id) === String(charId);
-                });
-
+                var currentChar = findCharacterInSnapshot(data, targetChar);
                 if (!currentChar) {
                     throw new Error('Character not found in data store.');
                 }
@@ -1478,7 +1638,7 @@
 
                 var found = false;
                 currentChar.classIds = currentChar.classIds.filter(function(cid) {
-                    if (String(cid) === String(classId)) {
+                    if (String(cid) === targetClass) {
                         found = true;
                         return false;
                     }
@@ -1490,8 +1650,8 @@
                 }
 
                 return {
-                    characterId: charId,
-                    classId: classId,
+                    characterId: targetChar,
+                    classId: targetClass,
                     className: cls.name
                 };
             },
@@ -1518,18 +1678,20 @@
 
         var trimmedName = className.trim();
 
-        var CharacterQueries = getCharacterQueries();
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            return Promise.resolve(failure('CharacterQueries is not available.'));
+        var CQ;
+        try {
+            CQ = requireCharacterQueries('addClassByName');
+        } catch (e) {
+            return Promise.resolve(failure(e.message));
         }
 
-        var char = CharacterQueries.getCharacterById(charId);
+        var char = CQ.getCharacterById(charId);
         if (!char) {
             return Promise.resolve(failure('Character not found.'));
         }
 
         var existingClass = getClassByNameInternal(trimmedName);
-        var name = CharacterQueries.getDisplayName(char);
+        var name = CQ.getDisplayName(char);
 
         if (existingClass) {
             var classIds = getNormalisedClassIds(char);
@@ -1538,17 +1700,27 @@
             }
         }
 
+        var targetChar = String(charId);
+        var normalisedTarget = normaliseClassName(trimmedName);
+
         return MutationPipeline.performMutation({
-            validate: function(data) {
-                var currentChar = CharacterQueries.getCharacterById(charId);
+            validate: function(appData) {
+                if (!appData || !Array.isArray(appData.characters)) {
+                    return { valid: false, message: 'Character store is not available.' };
+                }
+
+                var currentChar = findCharacterInSnapshot(
+                    appData, targetChar
+                );
                 if (!currentChar) {
                     return { valid: false, message: 'Character no longer exists.' };
                 }
 
-                var currentClass = getClassByNameInternal(trimmedName);
+                var currentClass = findClassByNameInSnapshot(
+                    appData, normalisedTarget
+                );
                 if (currentClass) {
-                    var currentClassIds = getNormalisedClassIds(currentChar);
-                    if (currentClassIds.some(function(cid) { return String(cid) === String(currentClass.id); })) {
+                    if (characterHasClassId(currentChar, currentClass.id)) {
                         return { valid: false, message: 'Character is already in this class.' };
                     }
                 }
@@ -1570,15 +1742,18 @@
                     data.academy.graduatingClasses = {};
                 }
 
-                var nameLower = trimmedName.toLowerCase();
+                // Class lookup by canonical name against the snapshot.
                 var existing = null;
-                Object.keys(data.academy.graduatingClasses).forEach(function(id) {
-                    var c = data.academy.graduatingClasses[id];
-                    if (c && c.name && String(c.name).toLowerCase() === nameLower) {
+                var store = data.academy.graduatingClasses;
+                var ids = Object.keys(store);
+                for (var i = 0; i < ids.length; i++) {
+                    var c = store[ids[i]];
+                    if (c && normaliseClassName(c.name) === normalisedTarget) {
                         existing = c;
-                        classId = id;
+                        classId = ids[i];
+                        break;
                     }
-                });
+                }
 
                 if (!existing) {
                     var now = new Date().toISOString();
@@ -1602,24 +1777,21 @@
                     className_ = existing.name;
                 }
 
-                var currentChar = data.characters.find(function(c) {
-                    return c && String(c.id) === String(charId);
-                });
-
+                var currentChar = findCharacterInSnapshot(data, targetChar);
                 if (!currentChar) {
                     throw new Error('Character not found in data store.');
                 }
 
                 normaliseClassIds(currentChar);
 
-                if (currentChar.classIds.some(function(cid) { return String(cid) === String(classId); })) {
+                if (characterHasClassId(currentChar, classId)) {
                     throw new Error('Character is already in this class.');
                 }
 
                 currentChar.classIds.push(classId);
 
                 return {
-                    characterId: charId,
+                    characterId: targetChar,
                     classId: classId,
                     className: className_,
                     classCreated: classCreated
@@ -1644,12 +1816,14 @@
             return Promise.resolve(failure('Character ID is required.'));
         }
 
-        var CharacterQueries = getCharacterQueries();
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            return Promise.resolve(failure('CharacterQueries is not available.'));
+        var CQ;
+        try {
+            CQ = requireCharacterQueries('removeFromAllClasses');
+        } catch (e) {
+            return Promise.resolve(failure(e.message));
         }
 
-        var char = CharacterQueries.getCharacterById(charId);
+        var char = CQ.getCharacterById(charId);
         if (!char) {
             return Promise.resolve(failure('Character not found.'));
         }
@@ -1662,11 +1836,15 @@
             }));
         }
 
-        var name = CharacterQueries.getDisplayName(char);
+        var name = CQ.getDisplayName(char);
+        var targetChar = String(charId);
 
         return MutationPipeline.performMutation({
             validate: function(data) {
-                var currentChar = CharacterQueries.getCharacterById(charId);
+                if (!data || !Array.isArray(data.characters)) {
+                    return { valid: false, message: 'Character store is not available.' };
+                }
+                var currentChar = findCharacterInSnapshot(data, targetChar);
                 if (!currentChar) {
                     return { valid: false, message: 'Character no longer exists.' };
                 }
@@ -1674,10 +1852,7 @@
             },
 
             mutate: function(data) {
-                var currentChar = data.characters.find(function(c) {
-                    return c && String(c.id) === String(charId);
-                });
-
+                var currentChar = findCharacterInSnapshot(data, targetChar);
                 if (!currentChar) {
                     throw new Error('Character not found in data store.');
                 }
@@ -1747,6 +1922,9 @@
         normaliseRestDaysByWeek: normaliseRestDaysByWeek,
         validateRestDaysByWeek: validateRestDaysByWeekValue,
         getRestDaysForWeek: getRestDaysForWeek,
+
+        // ---- Name comparison authority ----
+        normaliseClassName: normaliseClassName,
 
         // ---- Constants ----
         VALID_STATUSES: VALID_STATUSES,
