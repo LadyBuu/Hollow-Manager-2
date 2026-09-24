@@ -5,9 +5,8 @@
  * Path: js/modules/academy/member-adapter-academy.js
  *
  * Binds the shared MemberManager to the Academy Weekly Teams domain.
- * This is the second of two adapters; the other is
- * member-adapter-teams.js. Both implement the same six-method
- * contract defined in modules/shared/member-manager.js.
+ * The other adapter is member-adapter-teams.js. Both implement the
+ * six-method contract defined in modules/shared/member-manager.js.
  *
  * RESPONSIBILITY:
  *   Translate MemberManager's domain-agnostic requests into
@@ -27,45 +26,75 @@
  *   rejoinStint(teamId, period, identifier)
  *   removeMember(teamId, period, charId)
  *
- * DIFFERENCE FROM THE TEAMS ADAPTER — CLASS ID:
+ * CAPABILITIES:
+ *   The adapter publishes a `capabilities` object so the shared
+ *   MemberManager can decide which controls to render.
+ *
+ *     {
+ *       updateRole: false
+ *     }
+ *
+ *   AcademyWeeklyTeams has no role mutation. A member's role is set
+ *   at creation time; there is no updateMemberRole. Setting
+ *   updateRole to false tells the manager to render the role input
+ *   as read-only.
+ *
+ *   Before this flag existed, the manager rendered an editable role
+ *   input, accepted a new value, called updateMembers, and the
+ *   adapter silently dropped the role. The user saw "saved" and the
+ *   role had not changed. The flag closes that gap at the source:
+ *   if the manager honours it, the input never becomes editable.
+ *
+ *   As a defensive measure, updateMembers REJECTS a change entry
+ *   that carries only a role (no join, no leave). That path exists
+ *   so a caller that ignores capabilities still learns something
+ *   went wrong, instead of silently saving nothing.
+ *
+ * CLASS ID:
  *   AcademyWeeklyTeams mutations are CLASS-SCOPED. Every mutation
  *   requires (classId, teamId). The shared manager passes only
  *   teamId. This adapter resolves classId from the team record at
  *   the moment of the mutation, via TeamQueries.getTeamById.
  *
- *   It does so lazily, on each mutation call. A team that is
- *   reassigned to a different class between calls is picked up on
- *   the next mutation. There is no cache to invalidate.
+ *   The adapter resolves the class ID ONCE at the start of each
+ *   public call. For a multi-change updateMembers, one resolution
+ *   serves the entire batch. This is deliberate: the batch is one
+ *   logical operation and should be scoped to one class.
  *
- * DIFFERENCE — VM SHAPE:
- *   AcademyAggregator.getWeeklyTeamMemberManagerViewModel already
- *   returns members and formerMembers as separate lists, and its
- *   member VMs already carry the fields the shared manager wants.
- *   No partitioning is necessary.
+ * JOIN REPLACEMENT:
+ *   Changing a join is a COMPLETE INTERVAL REPLACEMENT: the old
+ *   interval is purged, a new one is added with the new bounds.
  *
- * DIFFERENCE — ROLE:
- *   AcademyWeeklyTeams has no role mutation. A member's role is
- *   set at creation time (addMember), and there is no
- *   updateMemberRole. The role stage in updateMembers is
- *   therefore a no-op on this adapter.
+ *   A change entry that supplies `join` MUST also supply `leave`.
+ *   A join replacement that omits `leave` is rejected, because the
+ *   adapter will not silently inherit the old interval's leave
+ *   value. If the caller wants the new interval to be open-ended,
+ *   it sends `leave: ''`.
  *
- *   Role inputs still render in the manager, and the user can edit
- *   them, but Save does not persist role changes on the Academy
- *   side until AcademyWeeklyTeams grows a role mutation. This is
- *   a documented limitation tracked in the pinboard as SIDE-3.
+ *   Purge failure aborts the replacement. If the old interval
+ *   cannot be removed, the new one is not added. That preserves
+ *   the user's intent ("this stint now has these dates") without
+ *   manufacturing overlapping membership history.
  *
- * JOIN IS IMMUTABLE ON AcademyWeeklyTeams:
- *   As with the Teams adapter, changing a Join is a purge-and-
- *   replace. The old interval is removed, a new one is added with
- *   the new bounds. Uses purgeMemberRecords and addMemberInterval.
+ * REJOIN AMBIGUITY:
+ *   rejoinStint can be called with a composite identifier
+ *   ({ characterId, joinPeriod }) or a bare memberId.
+ *
+ *   With a composite, the target stint is unambiguous.
+ *
+ *   With a bare memberId, and a member who has multiple former
+ *   stints, "rejoin" has no single obvious meaning. The adapter
+ *   picks the EARLIEST former stint (the one with the earliest
+ *   joinPeriod) and logs a warning. Callers that want deterministic
+ *   behaviour should always send a composite.
+ *
+ *   This is an API limitation, not an adapter bug. A rejoin
+ *   operation fundamentally needs to identify the stint when more
+ *   than one former stint exists.
  *
  * IDENTIFIER FORMS ACCEPTED:
  *   - { characterId, joinPeriod }
  *   - memberId string
- *
- *   AcademyWeeklyTeams.purgeMemberRecords accepts either form.
- *   joinPeriod is preferred; memberId is used when joinPeriod is
- *   blank.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.AcademyAggregator
@@ -181,8 +210,10 @@
     }
 
     /**
-     * Resolve the class ID for a team. AcademyWeeklyTeams mutations
-     * are class-scoped. The shared manager passes only a teamId.
+     * Resolve the class ID for a team.
+     *
+     * Called once at the start of each public method. For a batch
+     * update, one resolution serves the whole batch.
      */
     function resolveClassId(teamId) {
         if (!isNonEmptyString(teamId)) { return null; }
@@ -199,13 +230,6 @@
     // ============================================================
     // VM TRANSLATION
     // ============================================================
-    //
-    // AcademyAggregator.getWeeklyTeamMemberManagerViewModel returns
-    // the shape MemberManager expects, modulo a couple of renames
-    // on the member VMs (the aggregator's member VM carries `name`
-    // already, but uses `statusLabel` for status). The manager
-    // reads `name`, `role`, `deceased`, `intervals`, and
-    // `isFormer`, so a light pass-through is enough.
 
     function buildVM(teamId, period) {
         var classId = resolveClassId(teamId);
@@ -231,8 +255,9 @@
 
         if (!raw) { return null; }
 
-        var members = normalizeList(raw.members, false);
-        var formerMembers = normalizeList(raw.formerMembers, true);
+        var members = normalizeMemberList(raw.members, false);
+        var formerMembers = normalizeMemberList(raw.formerMembers, true);
+        var candidates = normalizeCandidateList(raw.candidates);
 
         return {
             teamId: raw.teamId,
@@ -240,11 +265,11 @@
             period: raw.week,
             members: members,
             formerMembers: formerMembers,
-            candidates: Array.isArray(raw.candidates) ? raw.candidates : []
+            candidates: candidates
         };
     }
 
-    function normalizeList(list, isFormer) {
+    function normalizeMemberList(list, isFormer) {
         if (!Array.isArray(list)) { return []; }
         var result = [];
         for (var i = 0; i < list.length; i++) {
@@ -291,6 +316,29 @@
         return result;
     }
 
+    /**
+     * Normalize the candidate list into the shape MemberManager
+     * expects. The aggregator already returns { id, name, status },
+     * but the adapter does not pass raw aggregator objects through;
+     * it produces exactly the fields the manager reads so a future
+     * change to the aggregator's VM does not silently reshape what
+     * the manager sees.
+     */
+    function normalizeCandidateList(list) {
+        if (!Array.isArray(list)) { return []; }
+        var result = [];
+        for (var i = 0; i < list.length; i++) {
+            var c = list[i];
+            if (!c || !c.id) { continue; }
+            result.push({
+                id: String(c.id),
+                name: isNonEmptyString(c.name) ? String(c.name) : 'Unknown',
+                status: isNonEmptyString(c.status) ? String(c.status) : ''
+            });
+        }
+        return result;
+    }
+
     function parseWeekStrict(value) {
         if (value === undefined || value === null || value === '') {
             return null;
@@ -328,11 +376,8 @@
     /**
      * Add a member.
      *
-     * Flow:
-     *   1. addMemberInterval(classId, teamId, charId, join, leave)
-     *   2. If role is non-empty and not the default, no follow-up
-     *      is possible — AcademyWeeklyTeams has no role mutation.
-     *      The role is silently dropped. Documented limitation.
+     * Role is set at creation time only. AcademyWeeklyTeams has no
+     * role mutation.
      */
     function addMember(teamId, period, opts) {
         if (!isNonEmptyString(teamId)) {
@@ -366,20 +411,32 @@
     }
 
     /**
-     * Apply a list of edits. Each change entry is one of:
-     *   { characterId, joinPeriod, leave }              → leave edit
-     *   { characterId, joinPeriod, join, leave }        → join replace
-     *   { characterId, joinPeriod, role }               → role (dropped)
-     *   { characterId, joinPeriod, join, leave, role }  → mixed
+     * Apply a list of edits.
      *
-     * Roles are dropped silently — AcademyWeeklyTeams has no role
-     * mutation. Log a warning once per call so the developer knows.
+     * Each change entry is one of:
      *
-     * Stages:
-     *   1. Join replacements (purge + add).
-     *   2. Leave-only edits (updateMemberWindows).
+     *   { characterId, joinPeriod, leave }
+     *     Leave edit. The interval identified by (characterId,
+     *     joinPeriod) has its leavePeriod set.
      *
-     * If any stage rejects, the chain stops.
+     *   { characterId, joinPeriod, join, leave }
+     *     Join replacement. The old interval is purged, a new one
+     *     with the new [join, leave] bounds is added. Both join and
+     *     leave are required; either may be the empty string, but
+     *     both must be present in the entry.
+     *
+     * A change entry that supplies `join` but not `leave` is
+     * REJECTED. The adapter does not inherit the old interval's
+     * leave value; the caller must specify the complete replacement
+     * interval.
+     *
+     * A change entry that supplies only a `role` (no join, no
+     * leave) is REJECTED. The adapter has no role mutation. This
+     * exists so a caller that ignores `capabilities.updateRole`
+     * still learns the change went nowhere.
+     *
+     * Class resolution: one resolveClassId call serves the whole
+     * batch.
      */
     function updateMembers(teamId, period, changes) {
         if (!isNonEmptyString(teamId)) {
@@ -396,10 +453,10 @@
             );
         }
 
-        var hasRoleEdits = false;
-
         var joinReplacements = [];
         var leaveEdits = [];
+        var rejectedRoleOnly = 0;
+        var rejectedIncompleteJoin = 0;
 
         for (var i = 0; i < changes.length; i++) {
             var c = changes[i];
@@ -411,25 +468,29 @@
                 ? ''
                 : String(c.joinPeriod);
 
-            var hasRole = c.role !== undefined && c.role !== null;
-            var hasJoin = c.join !== undefined && c.join !== null &&
-                          String(c.join) !== originalJoin;
+            var hasJoin = c.join !== undefined && c.join !== null;
             var hasLeave = c.leave !== undefined && c.leave !== null;
-
-            if (hasRole) { hasRoleEdits = true; }
+            var hasRole = c.role !== undefined && c.role !== null;
 
             if (hasJoin) {
+                // Join replacement. Both join and leave must be
+                // present. The leave value may be '' (open-ended),
+                // but the field must be on the entry.
+                if (!hasLeave) {
+                    rejectedIncompleteJoin++;
+                    continue;
+                }
                 if (String(c.join) === '') {
-                    // Join cannot be blank; skip the replacement.
-                    // The manager refuses to save blank joins, so
-                    // this is a defensive guard.
+                    // A join cannot be blank. The manager refuses to
+                    // save blank joins, so this is defensive.
+                    rejectedIncompleteJoin++;
                     continue;
                 }
                 joinReplacements.push({
                     characterId: charId,
                     oldJoin: originalJoin,
                     newJoin: String(c.join),
-                    newLeave: hasLeave ? String(c.leave) : ''
+                    newLeave: String(c.leave)
                 });
                 continue;
             }
@@ -440,14 +501,29 @@
                     joinPeriod: originalJoin,
                     leave: String(c.leave)
                 });
+                continue;
+            }
+
+            if (hasRole) {
+                // Role-only change. No other field to act on. The
+                // adapter has no role mutation. Reject.
+                rejectedRoleOnly++;
             }
         }
 
-        if (hasRoleEdits) {
-            console.warn(
-                '[MemberAdapterAcademy] updateMembers received role ' +
-                'changes. AcademyWeeklyTeams has no role mutation; ' +
-                'role edits are not persisted on this side.'
+        if (rejectedIncompleteJoin > 0) {
+            return failure(
+                'Join replacement requires both join and leave. ' +
+                rejectedIncompleteJoin + ' change(s) were rejected. ' +
+                'Send leave: "" for an open-ended interval.'
+            );
+        }
+
+        if (rejectedRoleOnly > 0) {
+            return failure(
+                'Role changes are not supported for Academy weekly ' +
+                'teams. ' + rejectedRoleOnly + ' role-only change(s) ' +
+                'were rejected.'
             );
         }
 
@@ -459,9 +535,6 @@
             chain = chain.then(function() {
                 if (failureResult) { return; }
 
-                // Purge the old interval first. When oldJoin is
-                // empty, pass the composite form; the aggregator
-                // and the mutation layer accept either shape.
                 var purgeIdentifier = jr.oldJoin !== ''
                     ? { characterId: jr.characterId,
                         joinPeriod: jr.oldJoin }
@@ -471,16 +544,18 @@
                 return AcademyWeeklyTeams.purgeMemberRecords(
                     classId, teamId, purgeIdentifier
                 ).then(function(purgeResult) {
-                    if (purgeResult && purgeResult.success === false) {
-                        // Purge failed. Add anyway. The user's
-                        // intent is "this stint now has these
-                        // dates."
-                        console.warn(
-                            '[MemberAdapterAcademy] purge before ' +
-                            'join replacement did not succeed; ' +
-                            'attempting add.'
-                        );
+                    // Purge failed → abort the replacement. Do NOT
+                    // add a new interval on top of an interval that
+                    // we could not remove.
+                    if (!purgeResult || purgeResult.success !== true) {
+                        failureResult = purgeResult || {
+                            success: false,
+                            message: 'Failed to remove the existing ' +
+                                'stint before replacement.'
+                        };
+                        return;
                     }
+
                     return AcademyWeeklyTeams.addMemberInterval(
                         classId,
                         teamId,
@@ -488,10 +563,11 @@
                         jr.newJoin,
                         jr.newLeave
                     ).then(function(addResult) {
-                        if (!addResult || !addResult.success) {
+                        if (!addResult || addResult.success !== true) {
                             failureResult = addResult || {
                                 success: false,
-                                message: 'Failed to replace join.'
+                                message: 'Failed to add the replacement ' +
+                                    'stint.'
                             };
                         }
                     });
@@ -517,7 +593,7 @@
                 return AcademyWeeklyTeams.updateMemberWindows(
                     classId, teamId, windows
                 ).then(function(result) {
-                    if (!result || !result.success) {
+                    if (!result || result.success !== true) {
                         failureResult = result || {
                             success: false,
                             message: 'Failed to update periods.'
@@ -535,11 +611,6 @@
         });
     }
 
-    /**
-     * Remove one stint. identifier is either a composite or a
-     * memberId string. AcademyWeeklyTeams.purgeMemberRecords
-     * accepts both.
-     */
     function removeStint(teamId, period, identifier) {
         var classId = resolveClassId(teamId);
         if (!classId) {
@@ -574,6 +645,10 @@
 
     /**
      * Rejoin: clear the leave on the identified stint.
+     *
+     * Prefers a composite identifier. When only a memberId is
+     * available and the member has multiple former stints, the
+     * adapter picks the earliest former stint and logs a warning.
      */
     function rejoinStint(teamId, period, identifier) {
         var classId = resolveClassId(teamId);
@@ -622,11 +697,20 @@
                 return failure('Member has no stints to rejoin.');
             }
 
-            // Prefer the interval with a leave set; that is the
-            // one the user is trying to reopen.
-            var target = pickFormerInterval(match);
-            if (!target) {
+            var formerStints = pickFormerIntervals(match);
+            if (formerStints.length === 0) {
                 return failure('No former stint to rejoin.');
+            }
+
+            var target = formerStints[0];
+            if (formerStints.length > 1) {
+                console.warn(
+                    '[MemberAdapterAcademy] rejoinStint called with a ' +
+                    'bare memberId; member has ' + formerStints.length +
+                    ' former stints. Picking the earliest (join period ' +
+                    target.joinPeriod + '). Send a composite ' +
+                    '{ characterId, joinPeriod } to disambiguate.'
+                );
             }
 
             return AcademyWeeklyTeams.updateMemberWindows(
@@ -699,18 +783,33 @@
         return null;
     }
 
-    function pickFormerInterval(member) {
+    /**
+     * Return every interval of the member that has a leave period
+     * set, sorted by joinPeriod (ascending). Intervals with a blank
+     * joinPeriod sort to the end.
+     */
+    function pickFormerIntervals(member) {
         if (!member || !Array.isArray(member.intervals)) {
-            return null;
+            return [];
         }
-        // Prefer an interval that has a leave period set.
+        var result = [];
         for (var i = 0; i < member.intervals.length; i++) {
             var iv = member.intervals[i];
             if (iv && isNonEmptyString(iv.leavePeriod)) {
-                return iv;
+                result.push(iv);
             }
         }
-        return null;
+        result.sort(function(a, b) {
+            var aj = isNonEmptyString(a.joinPeriod)
+                ? parseInt(a.joinPeriod, 10)
+                : Infinity;
+            var bj = isNonEmptyString(b.joinPeriod)
+                ? parseInt(b.joinPeriod, 10)
+                : Infinity;
+            if (aj !== bj) { return aj - bj; }
+            return 0;
+        });
+        return result;
     }
 
     // ============================================================
@@ -723,7 +822,11 @@
         updateMembers: updateMembers,
         removeStint: removeStint,
         rejoinStint: rejoinStint,
-        removeMember: removeMember
+        removeMember: removeMember,
+
+        capabilities: Object.freeze({
+            updateRole: false
+        })
     });
 
     // ============================================================
@@ -747,6 +850,11 @@
             if (typeof exports[required[i]] !== 'function') {
                 missing.push(required[i]);
             }
+        }
+
+        if (!exports.capabilities ||
+            exports.capabilities.updateRole !== false) {
+            missing.push('capabilities.updateRole');
         }
 
         if (missing.length > 0) {
