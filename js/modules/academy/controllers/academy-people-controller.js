@@ -4,10 +4,31 @@
  *
  * Path: js/modules/academy/controllers/academy-people-controller.js
  *
- * (Header unchanged; this revision adds the multi-select
- * teaching-group candidate picker: checkboxes, per-section
- * Select all / Clear, count badge, and a bulk submit that
- * adds every checked candidate sequentially.)
+ * The People feature controller. Owns the People view: its
+ * rendering, its event handling, and its sub-editor lifecycle
+ * (grades editor, schedule grid, teaching-group candidate picker).
+ *
+ * DISCIPLINE-HOURS PICKER — this revision:
+ *   The picker reads two new VM fields from the aggregator:
+ *
+ *     entry.hasCurrentGroup   true when the student is already a
+ *                             member of a group for this
+ *                             discipline.
+ *     entry.groups[].conflictingGroups
+ *                             the list of existing groups of the
+ *                             student that collide with this
+ *                             candidate, deduped by groupId.
+ *
+ *   When hasCurrentGroup is true, the picker does NOT list
+ *   alternative groups. It shows the current group and a single
+ *   "Leave this group" action.
+ *
+ *   When a candidate is red, the picker lists every conflicting
+ *   group the user would need to leave. The user chooses; the
+ *   picker does not pre-select.
+ *
+ *   A new action, 'schedule-discipline-picker-leave', routes to
+ *   AcademySchedule.dropStudentFromClass for the current group.
  */
 
 (function() {
@@ -123,6 +144,31 @@
 
     function escapeHtml(value) { return DomUtils.escapeHtml(value); }
     function escapeAttribute(value) { return DomUtils.escapeAttribute(value); }
+
+    function getDayName(day) {
+        var AC = window.CalendarConstants;
+        if (AC && typeof AC.getDayName === 'function') {
+            try {
+                return AC.getDayName(day) || ('Day ' + day);
+            } catch (e) {
+                return 'Day ' + day;
+            }
+        }
+        return 'Day ' + day;
+    }
+
+    function getHourLabel(hour) {
+        var AC = window.CalendarConstants;
+        if (AC && typeof AC.formatHour === 'function') {
+            try {
+                var s = AC.formatHour(hour);
+                return isNonEmptyString(s) ? s : (hour + ':00');
+            } catch (e) {
+                return hour + ':00';
+            }
+        }
+        return hour + ':00';
+    }
 
     // ============================================================
     // MODULE STATE
@@ -767,6 +813,9 @@
                 return;
             case 'schedule-discipline-picker-add':
                 handleDisciplinePickerAdd(el.dataset.groupId);
+                return;
+            case 'schedule-discipline-picker-leave':
+                handleDisciplinePickerLeave(el.dataset.groupId);
                 return;
 
             case 'teaching-groups-toggle-discipline':
@@ -1695,12 +1744,29 @@
         host.innerHTML = buildDisciplinePickerHTML(entry);
     }
 
+    /**
+     * Build the picker panel for a discipline-hours row.
+     *
+     * Two shapes:
+     *
+     *   entry.hasCurrentGroup === true
+     *     The student is already in a group for this discipline.
+     *     The panel shows the current group and a single "Leave
+     *     this group" action. No alternative groups are listed;
+     *     leaving is the only action, and the student reopens the
+     *     picker afterwards to choose a new group if they want.
+     *
+     *   entry.hasCurrentGroup === false
+     *     The panel lists every available group. Green groups are
+     *     clickable ("add"). Red groups are shown but not
+     *     selectable; each red group lists every existing group of
+     *     the student that would need to be left to free the slot.
+     *     The user reads the list and decides.
+     */
     function buildDisciplinePickerHTML(entry) {
         var disciplineName = isNonEmptyString(entry.disciplineName)
             ? entry.disciplineName
             : 'Unknown Discipline';
-
-        var groups = Array.isArray(entry.groups) ? entry.groups : [];
 
         var html = '';
         html += '<div class="schedule-discipline-picker">';
@@ -1709,14 +1775,30 @@
         html += '<span class="schedule-discipline-picker-title">' +
                     escapeHtml(disciplineName) +
                 '</span>';
-        html += '<span class="schedule-discipline-picker-hint">' +
-                    'Click a green group to add the student.' +
-                '</span>';
+
+        if (entry.hasCurrentGroup === true) {
+            html += '<span class="schedule-discipline-picker-hint">' +
+                        'You are in a group for this discipline.' +
+                    '</span>';
+        } else {
+            html += '<span class="schedule-discipline-picker-hint">' +
+                        'Click a green group to add the student.' +
+                    '</span>';
+        }
+
         html += '<button type="button" ' +
                     'class="schedule-discipline-picker-close" ' +
                     'data-action="schedule-discipline-picker-close" ' +
                     'aria-label="Close">&times;</button>';
         html += '</div>';
+
+        if (entry.hasCurrentGroup === true) {
+            html += renderCurrentGroupPanel(entry.currentGroup);
+            html += '</div>';
+            return html;
+        }
+
+        var groups = Array.isArray(entry.groups) ? entry.groups : [];
 
         if (groups.length === 0) {
             html += '<p class="empty-state small ' +
@@ -1734,6 +1816,61 @@
             html += renderDisciplinePickerGroupRow(groups[i]);
         }
         html += '</ul>';
+
+        html += '</div>';
+        return html;
+    }
+
+    /**
+     * The "already in a group" panel. Shows the current group and
+     * a single Leave action. No alternatives.
+     */
+    function renderCurrentGroupPanel(currentGroup) {
+        if (!currentGroup || !currentGroup.groupId) {
+            return (
+                '<p class="empty-state small">' +
+                    'Current group information is not available.' +
+                '</p>'
+            );
+        }
+
+        var displayName = isNonEmptyString(currentGroup.displayName)
+            ? currentGroup.displayName
+            : 'Unnamed Group';
+
+        var html = '';
+        html += '<div class="schedule-discipline-picker-current">';
+
+        html += '<div class="schedule-discipline-picker-current-main">';
+        html += '<span class="schedule-discipline-picker-current-name">' +
+                    escapeHtml(displayName) +
+                '</span>';
+        if (isNonEmptyString(currentGroup.instructorName)) {
+            html += '<span class="schedule-discipline-picker-current-instructor">' +
+                        escapeHtml(currentGroup.instructorName) +
+                    '</span>';
+        }
+        if (isFiniteNumber(currentGroup.classmateCount)) {
+            html += '<span class="schedule-discipline-picker-current-classmates">' +
+                        currentGroup.classmateCount + ' classmate' +
+                        (currentGroup.classmateCount === 1 ? '' : 's') +
+                    '</span>';
+        }
+        html += '</div>';
+
+        html += '<div class="schedule-discipline-picker-current-actions">';
+        html += '<button type="button" class="small danger" ' +
+                    'data-action="schedule-discipline-picker-leave" ' +
+                    'data-group-id="' +
+                        escapeAttribute(currentGroup.groupId) + '">' +
+                    'Leave this group' +
+                '</button>';
+        html += '</div>';
+
+        html += '<p class="field-hint schedule-discipline-picker-current-hint">' +
+                    'Leaving this group frees the slot. Reopen the ' +
+                    'picker afterwards to choose another group.' +
+                '</p>';
 
         html += '</div>';
         return html;
@@ -1795,27 +1932,23 @@
             html += '</ul>';
         }
 
-        if (isRed && group.conflict) {
-            var cDay = group.conflict.conflictDay;
-            var cStart = group.conflict.conflictStartTime;
-            var cDiscipline = group.conflict.conflictingDisciplineName;
+        // ---- Conflicting groups ----
+        //
+        // Every entry of `conflictingGroups` is rendered. The
+        // picker does not pre-select which group the user should
+        // leave; the user sees the list and decides.
+        var conflicts = Array.isArray(group.conflictingGroups)
+            ? group.conflictingGroups
+            : [];
 
-            var dayLabel = '';
-            var AC = window.CalendarConstants;
-            if (AC && typeof AC.getDayName === 'function') {
-                dayLabel = AC.getDayName(cDay) || ('Day ' + cDay);
-            }
-            var startLabel = '';
-            if (AC && typeof AC.formatHour === 'function') {
-                startLabel = AC.formatHour(cStart) ||
-                    (cStart + ':00');
-            }
-
+        if (isRed && conflicts.length > 0) {
+            html += renderConflictingGroupsList(conflicts);
+        } else if (isRed) {
+            // Defensive: red but no explicit list. Should not
+            // happen with the current aggregator, but render
+            // something rather than silence.
             html += '<div class="schedule-discipline-picker-conflict">' +
-                        'Conflicts with ' +
-                        escapeHtml(cDiscipline) +
-                        ' on ' + escapeHtml(dayLabel) +
-                        ' at ' + escapeHtml(startLabel) +
+                        'Conflicts with an existing session.' +
                     '</div>';
         }
 
@@ -1826,6 +1959,51 @@
         }
 
         html += '</li>';
+        return html;
+    }
+
+    function renderConflictingGroupsList(conflicts) {
+        var html = '';
+        html += '<div class="schedule-discipline-picker-conflicts">';
+        html += '<div class="schedule-discipline-picker-conflicts-title">' +
+                    'Would conflict with:' +
+                '</div>';
+        html += '<ul class="schedule-discipline-picker-conflicts-list">';
+
+        for (var i = 0; i < conflicts.length; i++) {
+            var c = conflicts[i];
+            if (!c) { continue; }
+
+            var name = isNonEmptyString(c.conflictingDisciplineName)
+                ? c.conflictingDisciplineName
+                : 'a scheduled session';
+
+            var when = '';
+            if (isFiniteNumber(c.conflictDay)) {
+                when += getDayName(c.conflictDay);
+                if (isFiniteNumber(c.conflictStartTime)) {
+                    when += ' at ' + getHourLabel(c.conflictStartTime);
+                }
+            }
+
+            html += '<li class="schedule-discipline-picker-conflicts-item">';
+            html += '<span class="schedule-discipline-picker-conflicts-discipline">' +
+                        escapeHtml(name) +
+                    '</span>';
+            if (when !== '') {
+                html += '<span class="schedule-discipline-picker-conflicts-when">' +
+                            escapeHtml(when) +
+                        '</span>';
+            }
+            html += '</li>';
+        }
+
+        html += '</ul>';
+        html += '<p class="schedule-discipline-picker-conflicts-hint">' +
+                    'Leave the conflicting group from its own ' +
+                    'discipline row, then come back here.' +
+                '</p>';
+        html += '</div>';
         return html;
     }
 
@@ -1843,10 +2021,15 @@
             : '';
 
         var isConflictSource = false;
-        if (group && group.status === 'red' && group.conflict) {
-            if (String(session.sessionId) ===
-                String(group.conflict.sessionId)) {
-                isConflictSource = true;
+        if (group && group.status === 'red' &&
+            Array.isArray(group.conflictingGroups)) {
+            for (var i = 0; i < group.conflictingGroups.length; i++) {
+                var c = group.conflictingGroups[i];
+                if (c && String(c.detectedSessionId) ===
+                    String(session.sessionId)) {
+                    isConflictSource = true;
+                    break;
+                }
             }
         }
 
@@ -1904,9 +2087,30 @@
                     notify('Student added to group.', 'success');
                     var ctx = getContext();
                     ctx.onChange();
-                } else if (result && result.message) {
-                    notify(result.message, 'error');
+                    return;
                 }
+
+                // Rejection. The domain refused the add (usually
+                // because the student's other groups collide with
+                // the target group's sessions and the domain's
+                // collision check rejected it, even though the
+                // picker showed green).
+                //
+                // Refresh so the panel reflects the domain's view.
+                // The rejection message is surfaced verbatim so
+                // the user sees why.
+                if (result && result.message) {
+                    notify(result.message, 'error');
+                } else {
+                    notify('Could not add the student to this group.', 'error');
+                }
+
+                // Re-fetch the grid VM by triggering a full
+                // re-render. The next mountDisciplinePickerPanel
+                // will use fresh data.
+                _openDisciplinePicker = null;
+                var c = getContext();
+                c.onChange();
             })
             .catch(function(err) {
                 console.warn(
@@ -1914,6 +2118,70 @@
                     'addStudentToTeachingGroup failed:', err
                 );
                 notify('Failed to add student to group.', 'error');
+            });
+    }
+
+    /**
+     * "Leave this group" from the picker's current-group panel.
+     *
+     * Routes to AcademySchedule.dropStudentFromClass, which ends
+     * every enrolment and membership for the student in this class
+     * — that is the domain's semantics for "leaving". The picker
+     * then closes and the grid refreshes with the freed slot.
+     *
+     * If a narrower operation is desired later ("leave this group
+     * only, keep the enrolment"), the domain will need a dedicated
+     * mutation. Today dropStudentFromClass is what exists.
+     */
+    function handleDisciplinePickerLeave(groupId) {
+        if (!isNonEmptyString(groupId)) { return; }
+
+        var charId = AcademyUI.getSelectedCharacterId();
+        if (!isNonEmptyString(charId)) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        var classId = AcademyUI.getSelectedClassId();
+        if (!isNonEmptyString(classId)) {
+            notify('No class selected.', 'error');
+            return;
+        }
+
+        var week = AcademyUI.getDisplayWeek();
+
+        if (!confirm('Leave this group? The slot will be freed.')) {
+            return;
+        }
+
+        var Schedule = getSchedule();
+        if (!Schedule ||
+            typeof Schedule.dropStudentFromClass !== 'function') {
+            notify('Schedule module not available.', 'error');
+            return;
+        }
+
+        Schedule.dropStudentFromClass(classId, charId, week)
+            .then(function(result) {
+                if (result && result.success) {
+                    _openDisciplinePicker = null;
+                    notify('Left the group.', 'success');
+                    var ctx = getContext();
+                    ctx.onChange();
+                    return;
+                }
+                if (result && result.message) {
+                    notify(result.message, 'error');
+                } else {
+                    notify('Could not leave the group.', 'error');
+                }
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[AcademyPeopleController] ' +
+                    'dropStudentFromClass failed:', err
+                );
+                notify('Failed to leave the group.', 'error');
             });
     }
 
