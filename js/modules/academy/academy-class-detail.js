@@ -8,7 +8,8 @@
  *   - Render the class summary header
  *   - Render the class description (when present)
  *   - Render the class action buttons (Add Character, Disciplines,
- *     Export Schedule, Edit, Delete)
+ *     Export Schedule, Export Graduates, Export Characters, Edit,
+ *     Delete)
  *   - Render an empty state when no class is selected
  *
  * NOT RESPONSIBLE FOR:
@@ -18,9 +19,13 @@
  *   - The class-disciplines picker. The button on the header emits
  *     data-action="edit-class-disciplines"; the People controller
  *     routes it to AcademyClassDisciplinesPicker.
- *   - The class schedule export. The button on the header emits
+ *   - The class schedule export. The button emits
  *     data-action="class-export-schedule"; the People controller
  *     routes it to ScheduleExport.exportClassScheduleText.
+ *   - The class roster exports. The buttons emit
+ *     data-action="class-export-graduates" and
+ *     data-action="class-export-characters"; the People controller
+ *     routes both to ClassRosterExport.
  *   - The class's instructors. Prior to v29 the panel rendered an
  *     "Instructor:" line sourced from `class.instructorId`. That
  *     field was retired; instructors are now per-discipline
@@ -35,8 +40,12 @@
  *   routes deterministically:
  *     edit-class-add-character   → handleEditDispatcher → openAddCharacterToClass
  *     edit-class-disciplines     → handleEditDispatcher → openDisciplinesPicker
- *     class-export-schedule      → handleClassExportSchedule (People
- *                                  controller)
+ *     class-export-schedule      → handleExportClassSchedule
+ *                                  (People controller, ScheduleExport)
+ *     class-export-graduates     → handleExportClassGraduates
+ *                                  (People controller, ClassRosterExport)
+ *     class-export-characters    → handleExportClassCharacters
+ *                                  (People controller, ClassRosterExport)
  *     edit-class                 → handleEditDispatcher → openClassForm
  *     delete-class               → handleDeleteDispatcher → openClassDelete
  *
@@ -232,6 +241,16 @@
                     'data-action="class-export-schedule" ' +
                     'data-class-id="' + escapeAttribute(classVM.id) + '">' +
                     'Export Schedule' +
+                '</button>';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-action="class-export-graduates" ' +
+                    'data-class-id="' + escapeAttribute(classVM.id) + '">' +
+                    'Export Graduates' +
+                '</button>';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-action="class-export-characters" ' +
+                    'data-class-id="' + escapeAttribute(classVM.id) + '">' +
+                    'Export Characters' +
                 '</button>';
         html += '<button type="button" class="small secondary" ' +
                     'data-action="edit-class" ' +
