@@ -115,6 +115,43 @@
  *     var status = CharacterQueries.getStatusAtYear(char, 1915);
  *     var tier   = CharacterConstants.classifyStatus(status);
  *
+ * CHARACTER ID INDEX (memoization):
+ *   getCharacterById is called in tight loops throughout the
+ *   codebase: the discipline view's filter VM, the teaching
+ *   collisions predicates, the class instructor derivation, the
+ *   enrollment modal, the character-detail aggregator. At 349
+ *   characters, a linear scan per call becomes tens of thousands
+ *   of string comparisons per render, and the cost is measurable
+ *   in the Academy Discipline Schedule tab.
+ *
+ *   This module therefore maintains a memoized Map<id, character>
+ *   keyed by the live character store. The index is rebuilt when
+ *   EITHER of these is true:
+ *
+ *     - window.data.characters is a different array reference
+ *       than the one the index was built from
+ *     - window.data.characters.length differs from the length the
+ *       index was built from
+ *
+ *   ASSUMPTION: mutation paths that add or remove a character
+ *   replace the array (or at least change its length). The
+ *   MutationPipeline snapshot model observed elsewhere in the
+ *   codebase does exactly this: mutate() operates on a cloned
+ *   snapshot and the result replaces the live store. If some
+ *   future path ever replaces chars[i] with a new object while
+ *   keeping the same array reference and length, the index will
+ *   return a stale entry for that id.
+ *
+ *   If that happens, call invalidateCharacterIndex() from the
+ *   mutation path. It exists for exactly this case. A caller that
+ *   suspects staleness can also call it unconditionally; the next
+ *   getCharacterById rebuilds the index.
+ *
+ *   The index stores the SAME object reference the live store
+ *   holds. It does NOT clone. Field-level edits to a character
+ *   (char.mode = 'instructor') are visible immediately through
+ *   the index, because the object reference is shared.
+ *
  * DEPENDENCIES:
  *   - window.data                 (canonical state)
  *   - window.CharacterConstants   (canonical status tiers; optional
@@ -143,17 +180,66 @@
         return Array.isArray(data.characters) ? data.characters : [];
     }
 
-    function getCharacterById(charId) {
-        if (!charId) { return null; }
-        var target = String(charId);
+    // ============================================================
+    // CHARACTER ID INDEX
+    // ============================================================
+    //
+    // Memoized Map<id, character> keyed by the live character
+    // store. Rebuilt when the array reference or its length
+    // changes. See the CHARACTER ID INDEX note in the file header
+    // for the assumption this relies on and the escape hatch.
+
+    var _idIndex = null;
+    var _idIndexSourceRef = null;
+    var _idIndexSourceLength = -1;
+
+    function getIdIndex() {
         var chars = getCharacterData();
+
+        if (_idIndex !== null &&
+            chars === _idIndexSourceRef &&
+            chars.length === _idIndexSourceLength) {
+            return _idIndex;
+        }
+
+        var map = new Map();
         for (var i = 0; i < chars.length; i++) {
             var c = chars[i];
-            if (c && typeof c === 'object' && String(c.id) === target) {
-                return c;
+            if (c && typeof c === 'object' &&
+                c.id !== undefined && c.id !== null) {
+                map.set(String(c.id), c);
             }
         }
-        return null;
+
+        _idIndex = map;
+        _idIndexSourceRef = chars;
+        _idIndexSourceLength = chars.length;
+        return _idIndex;
+    }
+
+    /**
+     * Force the id index to be rebuilt on the next lookup.
+     *
+     * Exposed for mutation paths that modify window.data.characters
+     * in a way that does not change the array reference or its
+     * length (in-place field replacement of a character record).
+     * Calling this is safe at any time; the next getCharacterById
+     * rebuilds the index from scratch.
+     *
+     * Not called by any code path in this module. It is a manual
+     * escape hatch. See the CHARACTER ID INDEX note in the header.
+     */
+    function invalidateCharacterIndex() {
+        _idIndex = null;
+        _idIndexSourceRef = null;
+        _idIndexSourceLength = -1;
+    }
+
+    function getCharacterById(charId) {
+        if (!charId) { return null; }
+        var idx = getIdIndex();
+        var found = idx.get(String(charId));
+        return found || null;
     }
 
     function getCharacterNameById(charId) {
@@ -821,6 +907,9 @@
         // Core lookup
         getCharacterById: getCharacterById,
         getCharacterNameById: getCharacterNameById,
+
+        // Cache control (see CHARACTER ID INDEX note in header)
+        invalidateCharacterIndex: invalidateCharacterIndex,
 
         // Display name
         getDisplayName: getDisplayName,
