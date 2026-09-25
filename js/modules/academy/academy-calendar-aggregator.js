@@ -175,14 +175,6 @@
  *   omitted (or null), the VM carries `restDays: []`; the
  *   aggregator does NOT pick a class on the caller's behalf.
  *
- *   This is deliberately explicit. The student schedule itself
- *   comes from `Projector.projectForStudent(studentId, week)` —
- *   it is not class-scoped. The rest days come from the class.
- *   A caller that wants "the student's schedule in the context of
- *   class X" passes classId. A caller that just wants "the
- *   student's schedule" passes none, and gets no rest-day
- *   decoration.
- *
  * DISCIPLINE SCHEDULE SUMMARY:
  *   The panel that sits below the discipline schedule grid. Two
  *   questions: how many students are enrolled in this discipline
@@ -197,34 +189,25 @@
  *
  *   ASSIGNED — NOT WEEK-SCOPED. A student is assigned when their
  *   characterId appears in the `members[]` array of any teaching
- *   group of this discipline for this class. Presence-based. A
- *   student whose membership interval is entirely in the past
- *   still counts; the panel reports the population, not the
- *   current-week schedule. (The grid next to it is week-scoped;
- *   the panel answers a different question.)
+ *   group of this discipline for this class. Presence-based.
  *
  *   ELIMINATED — included in both enrolledCount and
  *   unassignedCount, with `eliminated: true` on the row and the
- *   elimination week when available. The panel reports the
- *   population honestly; callers that want "how many can I
- *   actually assign this week" subtract eliminatedCount
- *   themselves.
+ *   elimination week when available.
  *
  *   The `week` argument is passed through to the VM for display
  *   and for elimination resolution. It does not scope the
  *   enrolled population, the assigned list, or the unassigned
- *   list. Only the elimination flag is week-dependent (via
- *   EliminationQueries.isCharacterEliminatedByWeek).
+ *   list.
  *
  * DISCIPLINE SCHEDULE — EDITABILITY AND HIGHLIGHTS:
- *   The discipline grid is now EDITABLE, matching the student and
+ *   The discipline grid is EDITABLE, matching the student and
  *   instructor grids. `getDisciplineScheduleViewModel` returns
  *   `canEditDisciplineSlot: true` and `mode: 'discipline'`. The
  *   renderer reads the new flag and emits
  *   `data-action="schedule-discipline-assign"` on empty cells and
  *   `data-action="schedule-discipline-slot-open"` on occupied
- *   cells, distinct from the student/instructor action names so
- *   the discipline controller can dispatch unambiguously.
+ *   cells.
  *
  *   A sibling projection, `getDisciplineScheduleHighlightViewModel`,
  *   takes the same inputs plus an options bag naming an instructor
@@ -233,34 +216,57 @@
  *   carries:
  *
  *     {
- *       instructorFree:  boolean,   // no session for this discipline
- *                                   // this week that touches the slot
- *                                   // for the named instructor
+ *       instructorFree:  boolean,   // no occurrence anywhere in
+ *                                   // the Academy, at this slot,
+ *                                   // across the candidate range
  *       allStudentsFree: boolean,   // additionally, none of the named
  *                                   // students has any occurrence at
- *                                   // the slot
+ *                                   // the slot across the range
  *       weeksFree:       number     // consecutive weeks from the
  *                                   // display week through
- *                                   // week + checkWeeks - 1 during
+ *                                   // discipline.endWeek during
  *                                   // which the slot remains fully
- *                                   // free; capped at checkWeeks
+ *                                   // free
  *     }
+ *
+ *   THE CANDIDATE RANGE IS THE DISCIPLINE'S FULL RUN:
+ *     The highlighter asks "is this slot free for the entire run
+ *     a new session would occupy?" A new session on this
+ *     discipline occupies [displayWeek, discipline.endWeek],
+ *     because that is what AcademySchedule.scheduleInstructorSlot
+ *     will resolve. So the highlight range is the same range.
+ *
+ *     This closes the bug where the highlighter said "free at week
+ *     5" and the write path rejected with "collides with a session
+ *     starting week 30." Both now answer the same question across
+ *     the same range, because they both call the same predicates in
+ *     AcademyTeachingCollisions.
+ *
+ *   BUSY IS ACADEMY-WIDE, NOT DISCIPLINE-SCOPED:
+ *     An instructor teaching English and Maths is busy in Maths at
+ *     11:00 Thursday when they are teaching English at 11:00
+ *     Thursday. The discipline grid shows English sessions, but the
+ *     busy question is not scoped to English — the instructor is
+ *     one person with one body.
+ *
+ *     This is why the highlighter does NOT simply filter the
+ *     discipline's occurrences. It calls
+ *     AcademyTeachingCollisions.isInstructorBusy, which is
+ *     academy-wide and range-aware. Both paths agree by
+ *     construction.
+ *
+ *   THE STUDENT PREDICATE IS ACADEMY-WIDE TOO:
+ *     A student is free at a slot only when they have no
+ *     occurrence anywhere — their other disciplines, their other
+ *     groups, their commitments, anything the projector emits for
+ *     them — across the candidate range.
  *
  *   The highlight map is FLAT, keyed by `"${day}:${hour}"`. A flat
  *   key makes the renderer's per-cell lookup a single object
- *   access. A nested map (`{ [day]: { [hour]: ... } }`) would be
- *   two accesses and a shape the renderer would have to walk.
- *
- *   `weeksFree` is computed by reprojecting the discipline for each
- *   week in the check range and testing the same predicate. The
- *   default checkWeeks is 4. A larger value costs more projector
- *   calls; the caller decides.
+ *   access.
  *
  *   The highlight projection does NOT reshape the slot data. It
- *   only adds a parallel `highlights` key. Slots that are occupied
- *   by anything can still carry an entry; the renderer decides how
- *   to tint. Free cells carry `instructorFree` / `allStudentsFree`
- *   honestly.
+ *   only adds a parallel `highlights` key.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.AcademyTeachingProjector
@@ -271,6 +277,14 @@
  *   - window.AcademyClasses
  *   - window.AcademyTeachingGroups
  *   - window.AcademyEnrolments
+ *
+ * DEPENDENCIES (LAZY-BUT-MANDATORY at call time):
+ *   - window.AcademyTeachingCollisions
+ *     Required by getDisciplineScheduleHighlightViewModel. Missing
+ *     → throws. The highlighter must ask the same collision
+ *     question the write path asks; a missing predicate means the
+ *     highlighter cannot answer, and a silent fallback would
+ *     reintroduce the divergence bug.
  *
  * DEPENDENCIES (LAZY, used only if present):
  *   - window.AcademyLocations        (location display-name)
@@ -388,22 +402,30 @@
         return window.EliminationQueries || null;
     }
 
+    /**
+     * Resolve AcademyTeachingCollisions. Required by the
+     * discipline-highlight projection. Missing → throws.
+     */
+    function requireAcademyTeachingCollisions(contextLabel) {
+        var ATC = window.AcademyTeachingCollisions;
+        if (!ATC ||
+            typeof ATC.buildInstructorBusyMap !== 'function' ||
+            typeof ATC.buildStudentsBusyMap !== 'function') {
+            throw new Error(
+                '[AcademyCalendarAggregator] AcademyTeachingCollisions ' +
+                '(buildInstructorBusyMap, buildStudentsBusyMap) is ' +
+                'required by ' + contextLabel + '. Check the script ' +
+                'load order in index.html.'
+            );
+        }
+        return ATC;
+    }
+
     // ============================================================
     // CONSTANTS
     // ============================================================
 
     var GROUP_COLOR_PALETTE_SIZE = 8;
-
-    // Default check range for the highlight projection. Four weeks
-    // is enough to distinguish "one-off gap" from "a stable hole in
-    // the timetable" without exploding the projector call count.
-    var DEFAULT_HIGHLIGHT_CHECK_WEEKS = 4;
-
-    // Hard ceiling on the check range. A caller that asks for more
-    // gets the ceiling. Fifty-two weeks would be 52 projector calls
-    // per highlight request; the ceiling exists so a UI slider
-    // cannot accidentally ask for that.
-    var MAX_HIGHLIGHT_CHECK_WEEKS = 12;
 
     // ============================================================
     // HELPERS
@@ -475,8 +497,7 @@
      * That is a documented optional dependency.
      *
      * When AcademyLocations IS loaded and its lookup throws, the
-     * exception propagates. The aggregator does not mask a domain
-     * failure as "use the ID instead."
+     * exception propagates.
      */
     function getLocationDisplayName(locationId) {
         if (!isNonEmptyString(locationId)) {
@@ -520,14 +541,6 @@
     // ============================================================
     // PROJECTOR CALL — STRUCTURED RESULT
     // ============================================================
-    //
-    // The projector is mandatory. When it succeeds and returns an
-    // array, the caller gets `{ ok: true, occurrences: [...] }`.
-    // When it throws, or returns a non-array, the caller gets
-    // `{ ok: false, message }`.
-    //
-    // The caller decides what to do. Public VMs return null on
-    // failure. They do not substitute an empty schedule.
 
     function callProjector(fn, label) {
         var result;
@@ -584,15 +597,6 @@
         return (num - 1) % GROUP_COLOR_PALETTE_SIZE;
     }
 
-    /**
-     * Build the groupId → displayName and groupId → colorIndex maps
-     * for the given set of group IDs.
-     *
-     * AcademyTeachingGroups is mandatory. A group ID that does not
-     * resolve gets an empty display name and null color index; the
-     * caller decides what to render in that case. The lookup itself
-     * can throw and that exception propagates.
-     */
     function buildGroupMaps(groupIds) {
         var names = Object.create(null);
         var colors = Object.create(null);
@@ -825,11 +829,6 @@
     // ============================================================
     // STUDENT SCHEDULE VM
     // ============================================================
-    //
-    // Options: { week, classId }
-    //
-    // classId, when present, is the class context for rest days.
-    // When absent or null, the VM carries restDays: [].
 
     function getStudentScheduleViewModel(studentId, weekOrOptions) {
         if (!isNonEmptyString(studentId)) {
@@ -883,9 +882,6 @@
     // ============================================================
     // INSTRUCTOR SCHEDULE VM
     // ============================================================
-    //
-    // Options: { week, classId }
-    // Same class-context semantics as the student VM.
 
     function getInstructorScheduleViewModel(instructorId, weekOrOptions) {
         if (!isNonEmptyString(instructorId)) {
@@ -1022,22 +1018,6 @@
     // ============================================================
     // DISCIPLINE SCHEDULE VM
     // ============================================================
-    //
-    // One discipline, one class, one week. Every instructor of that
-    // discipline, every group, every session.
-    //
-    // Data source: Projector.projectForClassDiscipline, which is a
-    // filter over projectWeek. Same teaching-model projection every
-    // other grid uses. No parallel scheduling model.
-    //
-    // Rest days apply, because a discipline grid is class-scoped.
-    //
-    // EDITABILITY:
-    //   The VM carries `canEditDisciplineSlot: true` and
-    //   `mode: 'discipline'`. The renderer reads the flag and emits
-    //   the discipline-scoped action names. This is what makes the
-    //   grid interactive without touching the student or instructor
-    //   code paths.
 
     function getDisciplineScheduleViewModel(classId, disciplineId, week) {
         if (!isNonEmptyString(classId)) {
@@ -1098,51 +1078,29 @@
     // ============================================================
     //
     // Same VM shape as getDisciplineScheduleViewModel, plus a flat
-    // `highlights` map. See the file header for the entry shape and
-    // the flat-key rationale.
+    // `highlights` map.
+    //
+    // THE CANDIDATE RANGE IS [displayWeek, discipline.endWeek].
+    // That is what a new session on this discipline will occupy.
+    // The highlight predicates and the write path both use this
+    // range, which is what makes them agree.
+    //
+    // The predicates are ACADEMY-WIDE. An instructor teaching a
+    // different discipline at the same (day, hour) is busy here.
+    // See the file header for the reasoning.
     //
     // OPTIONS:
     //   {
     //     instructorId: string,     // required
-    //     studentIds:   string[],   // optional, default []
-    //     checkWeeks:   number      // optional, default 4, capped 12
+    //     studentIds:   string[]    // optional, default []
     //   }
-    //
-    // PREDICATE:
-    //   For a given week W and a slot (day, hour):
-    //
-    //     instructorFree  = no session of this discipline in week W
-    //                       assigns this instructor at (day, hour)
-    //
-    //     allStudentsFree = instructorFree AND no named student has
-    //                       any occurrence in week W at (day, hour)
-    //
-    //   "Session at (day, hour)" means an occurrence whose
-    //   [startTime, startTime + duration) window contains the hour.
-    //   A one-hour session at 9:00 occupies only hour 9. A two-hour
-    //   session at 9:00 occupies hours 9 and 10.
-    //
-    //   The instructor predicate is discipline-scoped: a session for
-    //   this discipline. An instructor's commitments and their
-    //   other-discipline sessions do not affect this grid — the
-    //   discipline grid shows one discipline, and "free for this
-    //   discipline" is the honest question.
-    //
-    //   The student predicate is NOT discipline-scoped. A student is
-    //   "free at (day, hour)" when they have no occurrence of any
-    //   kind there. Their commitments, their other disciplines,
-    //   anything the projector emits for them.
-    //
-    // weeksFree:
-    //   The number of consecutive weeks starting at `week` during
-    //   which the slot remains fully free (instructorFree AND
-    //   allStudentsFree). Capped at checkWeeks. Computed by
-    //   reprojecting the discipline for each week in the range.
     //
     // FAILURE:
     //   If the base projection fails, the whole VM is null.
-    //   If a highlight-week projection fails, weeksFree stops at
-    //   the last week that succeeded. The base VM is not lost.
+    //   If AcademyTeachingCollisions is missing, the projection
+    //     throws. There is no fallback: a highlighter that cannot
+    //     ask the collision question cannot be trusted, and a
+    //     silent "assume free" would reintroduce the bug.
 
     function getDisciplineScheduleHighlightViewModel(
         classId,
@@ -1174,102 +1132,71 @@
             }
         }
 
-        var checkWeeks = DEFAULT_HIGHLIGHT_CHECK_WEEKS;
-        if (isFiniteNumber(options.checkWeeks) &&
-            options.checkWeeks >= 1) {
-            checkWeeks = Math.min(
-                Math.floor(options.checkWeeks),
-                MAX_HIGHLIGHT_CHECK_WEEKS
-            );
-        }
-
         var weekNum = parseWeek(week);
         if (weekNum === null) {
-            // The base VM would already have returned null; this is
-            // a defensive guard.
             baseVM.highlights = {};
             return baseVM;
         }
 
-        // ---- Build the highlight map ----
+        // ---- Resolve the candidate range ----
         //
-        // The map keys every (day, hour) cell in the grid. Cells
-        // that do not exist in the schedule still get entries, so
-        // the renderer can tint empty cells without checking
+        // [displayWeek, discipline.endWeek]. When the discipline
+        // has no endWeek, the range is open-ended; the predicates
+        // pass null endWeek through to RangeUtils, which treats it
+        // as +infinity.
+
+        var discipline = AcademyDisciplines.getDiscipline(disciplineId);
+        var rangeEndWeek = null;
+        if (discipline &&
+            discipline.endWeek !== undefined &&
+            discipline.endWeek !== null &&
+            discipline.endWeek !== '') {
+            var parsedEnd = parseWeek(discipline.endWeek);
+            if (parsedEnd !== null) {
+                rangeEndWeek = parsedEnd;
+            }
+        }
+
+        var ATC = requireAcademyTeachingCollisions(
+            'getDisciplineScheduleHighlightViewModel'
+        );
+
+        // ---- Build the busy maps ----
+        //
+        // The two calls are made once, across the whole range. The
+        // per-cell work is then a lookup, not a projector call.
+
+        var instructorBusyMap = Object.create(null);
+        if (instructorId !== null) {
+            instructorBusyMap = ATC.buildInstructorBusyMap(
+                instructorId,
+                weekNum,
+                rangeEndWeek,
+                {}
+            );
+        }
+
+        var studentsBusyMap = Object.create(null);
+        if (studentIds.length > 0) {
+            studentsBusyMap = ATC.buildStudentsBusyMap(
+                studentIds,
+                weekNum,
+                rangeEndWeek,
+                {}
+            );
+        }
+
+        // ---- Seed the highlight map with every cell ----
+        //
+        // Every (day, hour) cell in the grid gets an entry. The
+        // renderer can then read the map without checking
         // membership first.
-        //
-        // Occupied cells also get entries. An occupied cell whose
-        // occupant is not this instructor / these students is
-        // legitimately "free" from the highlight's point of view.
-        // The renderer decides whether to tint an occupied cell.
 
         var highlights = {};
 
         var day;
         var hour;
 
-        // Seed the map with every cell in the grid.
-        for (day = CalendarConstants.MIN_DAY;
-             day <= CalendarConstants.MAX_DAY;
-             day++) {
-            for (hour = CalendarConstants.CALENDAR_START_HOUR;
-                 hour <= CalendarConstants.CALENDAR_END_HOUR;
-                 hour++) {
-                highlights[makeHighlightKey(day, hour)] = {
-                    instructorFree: false,
-                    allStudentsFree: false,
-                    weeksFree: 0
-                };
-            }
-        }
-
-        // ---- Week 0: the display week ----
-        //
-        // Use the already-fetched occurrences. We could reproject,
-        // but the base VM already has them and the discipline grid
-        // is small. Reusing the base projection is cheaper and
-        // guarantees the highlight agrees with the grid it decorates.
-
-        var baseCall = callProjector(function() {
-            return Projector.projectForClassDiscipline(
-                classId, disciplineId, weekNum
-            );
-        }, 'projectForClassDiscipline (highlight base)');
-
-        if (!baseCall.ok) {
-            // The VM returned by getDisciplineScheduleViewModel
-            // used a different projector call. If THAT succeeded
-            // and THIS one failed, that is a projector
-            // nondeterminism, not a realistic case; treat it as
-            // "no highlights" rather than nulling the grid.
-            baseVM.highlights = highlights;
-            return baseVM;
-        }
-
-        var baseOccurrences = baseCall.occurrences;
-
-        // Build the instructor's occupied cells for the display
-        // week. Discipline-scoped by construction — baseOccurrences
-        // is already the projection for one discipline.
-        var instructorOccupied = Object.create(null);
-        // Build the students' occupied cells. Student occurrences
-        // are NOT discipline-scoped; that is a separate projector
-        // call.
-        var studentOccupied = Object.create(null);
-
-        if (instructorId !== null) {
-            markInstructorOccupied(
-                baseOccurrences, instructorId, instructorOccupied
-            );
-        }
-
-        if (studentIds.length > 0) {
-            markStudentsOccupied(
-                studentIds, weekNum, studentOccupied
-            );
-        }
-
-        // Stamp week-0 entries.
         for (day = CalendarConstants.MIN_DAY;
              day <= CalendarConstants.MAX_DAY;
              day++) {
@@ -1277,90 +1204,77 @@
                  hour <= CalendarConstants.CALENDAR_END_HOUR;
                  hour++) {
                 var key0 = makeHighlightKey(day, hour);
-                var entry = highlights[key0];
-                var iFree = !instructorOccupied[key0];
-                var sFree = true;
-                if (studentIds.length > 0) {
-                    sFree = !studentOccupied[key0];
-                }
-                entry.instructorFree = iFree;
-                entry.allStudentsFree = iFree && sFree;
-                entry.weeksFree = entry.allStudentsFree ? 1 : 0;
+
+                var instructorFree = instructorId === null
+                    ? true
+                    : instructorBusyMap[key0] !== true;
+
+                var studentsFree = studentIds.length === 0
+                    ? true
+                    : studentsBusyMap[key0] !== true;
+
+                var allFree = instructorFree && studentsFree;
+
+                highlights[key0] = {
+                    instructorFree: instructorFree,
+                    allStudentsFree: allFree,
+                    weeksFree: allFree ? 1 : 0
+                };
             }
         }
 
-        // ---- Weeks 1..checkWeeks-1: extension of weeksFree ----
+        // ---- Compute weeksFree ----
         //
-        // For each subsequent week, reproject the discipline (for
-        // the instructor) and projectForStudent for each student.
-        // A cell whose weeksFree is already 0 cannot recover; skip
-        // it entirely.
+        // The busy maps are computed across the whole range, so
+        // they cannot tell us WHICH weeks are busy — only that
+        // the slot is busy somewhere in the range.
         //
-        // A cell keeps its weeksFree counting up until a week in
-        // which it becomes unavailable. That week stops the count.
-        // Cells that are available through every week in the range
-        // end at checkWeeks.
+        // To compute the run length, we need per-week busy
+        // information. That means one projector-window walk per
+        // cell's streak, bounded by the range.
+        //
+        // The cost is bounded: for each cell that is fully free
+        // in the whole range (all of them, if there are no
+        // collisions), we walk forward until we find a busy week.
+        // For a typical case — no collisions, range of 10 weeks —
+        // that is 84 cells × 10 weeks = 840 cheap lookups, all
+        // in-memory after the initial projector calls inside
+        // buildBusyMap.
+        //
+        // The alternative — recomputing the busy maps per week —
+        // would be 10 projector calls per cell. Not acceptable.
+        //
+        // The compromise: use the existing maps to determine the
+        // whole-range answer, then walk the range with a
+        // per-week projector query ONLY for cells that are fully
+        // free in the whole range. Cells that are busy somewhere
+        // in the range already have weeksFree = 0 and do not need
+        // the walk.
 
-        for (var wOffset = 1; wOffset < checkWeeks; wOffset++) {
-            var w = weekNum + wOffset;
-            if (w > CalendarConstants.MAX_WEEK) {
-                break;
-            }
+        var rangeEndForWalk = (rangeEndWeek === null)
+            ? CalendarConstants.MAX_WEEK
+            : rangeEndWeek;
 
-            var weekCall = callProjector(function() {
-                return Projector.projectForClassDiscipline(
-                    classId, disciplineId, w
+        for (day = CalendarConstants.MIN_DAY;
+             day <= CalendarConstants.MAX_DAY;
+             day++) {
+            for (hour = CalendarConstants.CALENDAR_START_HOUR;
+                 hour <= CalendarConstants.CALENDAR_END_HOUR;
+                 hour++) {
+                var key = makeHighlightKey(day, hour);
+                var entry = highlights[key];
+
+                if (entry.allStudentsFree !== true) { continue; }
+                if (rangeEndForWalk <= weekNum) { continue; }
+
+                entry.weeksFree = countConsecutiveFreeWeeks(
+                    instructorId,
+                    studentIds,
+                    day,
+                    hour,
+                    weekNum,
+                    rangeEndForWalk
                 );
-            }, 'projectForClassDiscipline (highlight week ' +
-               w + ')');
-
-            if (!weekCall.ok) {
-                // Stop extending. Cells keep the weeksFree they
-                // have earned so far.
-                break;
-            }
-
-            var weekOccurrences = weekCall.occurrences;
-
-            var weekInstructor = Object.create(null);
-            if (instructorId !== null) {
-                markInstructorOccupied(
-                    weekOccurrences, instructorId, weekInstructor
-                );
-            }
-
-            var weekStudents = Object.create(null);
-            if (studentIds.length > 0) {
-                markStudentsOccupied(
-                    studentIds, w, weekStudents
-                );
-            }
-
-            for (day = CalendarConstants.MIN_DAY;
-                 day <= CalendarConstants.MAX_DAY;
-                 day++) {
-                for (hour = CalendarConstants.CALENDAR_START_HOUR;
-                     hour <= CalendarConstants.CALENDAR_END_HOUR;
-                     hour++) {
-                    var key = makeHighlightKey(day, hour);
-                    var e = highlights[key];
-
-                    // Cells already at zero stay at zero.
-                    if (e.weeksFree === 0) { continue; }
-
-                    var instructorBusy =
-                        !!weekInstructor[key];
-                    var studentsBusy =
-                        studentIds.length > 0 &&
-                        !!weekStudents[key];
-
-                    if (instructorBusy || studentsBusy) {
-                        // This week breaks the streak.
-                        continue;
-                    }
-
-                    e.weeksFree++;
-                }
             }
         }
 
@@ -1369,113 +1283,75 @@
     }
 
     /**
-     * Populate `out` with a `true` value for every (day, hour)
-     * cell this instructor occupies in the given occurrences.
+     * Count how many consecutive weeks, starting from `startWeek`
+     * and ending at `endWeek` inclusive, are free at (day, hour)
+     * for the given instructor and students.
      *
-     * The occurrences are already filtered to one discipline, so
-     * no discipline check is needed here.
-     */
-    function markInstructorOccupied(occurrences, instructorId, out) {
-        if (!Array.isArray(occurrences)) { return; }
-        var target = String(instructorId);
-
-        for (var i = 0; i < occurrences.length; i++) {
-            var occ = occurrences[i];
-            if (!occ) { continue; }
-            if (!isNonEmptyString(occ.instructorId)) { continue; }
-            if (String(occ.instructorId) !== target) { continue; }
-
-            markOccurrenceCells(occ, out);
-        }
-    }
-
-    /**
-     * Populate `out` with a `true` value for every (day, hour) cell
-     * ANY of the named students occupies in the given week.
+     * Returns 1 when only the display week is free. Returns the
+     * full count when the slot is free across the whole range.
      *
-     * Student occurrences are NOT discipline-scoped; the caller
-     * passes a fresh projector call.
+     * Uses the collision predicates week-by-week. Each call to
+     * the predicates walks the instructor's / students'
+     * occurrences for one week; the underlying projector is
+     * in-memory, so this is cheap per call.
+     *
+     * The bound is the range end, which the caller already
+     * computed from the discipline.
      */
-    function markStudentsOccupied(studentIds, week, out) {
-        for (var s = 0; s < studentIds.length; s++) {
-            var studentId = studentIds[s];
-            var call = callProjector(function() {
-                return Projector.projectForStudent(studentId, week);
-            }, 'projectForStudent (highlight)');
+    function countConsecutiveFreeWeeks(
+        instructorId,
+        studentIds,
+        day,
+        hour,
+        startWeek,
+        endWeek
+    ) {
+        var ATC = window.AcademyTeachingCollisions;
+        if (!ATC) { return 1; }
 
-            if (!call.ok) {
-                // If we cannot get a student's schedule, we cannot
-                // honestly claim their slots are free. Mark every
-                // cell as occupied so allStudentsFree is false
-                // everywhere. This is the conservative direction:
-                // the grid says "not free" rather than lying.
-                markAllCellsOccupied(out);
-                return;
+        var count = 0;
+
+        for (var w = startWeek; w <= endWeek; w++) {
+            var busy = false;
+
+            if (instructorId !== null) {
+                try {
+                    if (ATC.isInstructorBusy(
+                        instructorId, day, hour, 1, w, w, {}
+                    ) === true) {
+                        busy = true;
+                    }
+                } catch (e) {
+                    busy = true;
+                }
             }
 
-            var occurrences = call.occurrences;
-            for (var i = 0; i < occurrences.length; i++) {
-                markOccurrenceCells(occurrences[i], out);
+            if (!busy && studentIds.length > 0) {
+                for (var s = 0; s < studentIds.length; s++) {
+                    try {
+                        if (ATC.isStudentBusy(
+                            studentIds[s], day, hour, 1, w, w, {}
+                        ) === true) {
+                            busy = true;
+                            break;
+                        }
+                    } catch (e) {
+                        busy = true;
+                        break;
+                    }
+                }
             }
+
+            if (busy) { break; }
+            count++;
         }
-    }
 
-    function markOccurrenceCells(occ, out) {
-        if (!occ) { return; }
-        if (!isFiniteNumber(occ.day)) { return; }
-        if (!isFiniteNumber(occ.startTime)) { return; }
-
-        var duration = isFiniteNumber(occ.duration) && occ.duration > 0
-            ? Math.round(occ.duration)
-            : 1;
-
-        var day = occ.day;
-        for (var h = 0; h < duration; h++) {
-            var hour = occ.startTime + h;
-            if (hour < CalendarConstants.MIN_HOUR) { continue; }
-            if (hour > CalendarConstants.MAX_HOUR) { break; }
-            out[makeHighlightKey(day, hour)] = true;
-        }
-    }
-
-    function markAllCellsOccupied(out) {
-        for (var day = CalendarConstants.MIN_DAY;
-             day <= CalendarConstants.MAX_DAY;
-             day++) {
-            for (var hour = CalendarConstants.CALENDAR_START_HOUR;
-                 hour <= CalendarConstants.CALENDAR_END_HOUR;
-                 hour++) {
-                out[makeHighlightKey(day, hour)] = true;
-            }
-        }
+        return count === 0 ? 1 : count;
     }
 
     // ============================================================
     // DISCIPLINE SCHEDULE SUMMARY VM
     // ============================================================
-    //
-    // The panel below the discipline schedule grid.
-    //
-    // ENROLLED — NOT WEEK-SCOPED. Every student in this class whose
-    // enrolment record names this discipline. Instructors are
-    // filtered out by mode === 'instructor'. The data comes from
-    // AcademyEnrolments.getClassEnrolments(classId), which returns
-    // { charId: [disciplineId, ...] } for the whole class window.
-    //
-    // ASSIGNED — NOT WEEK-SCOPED. A student is assigned when their
-    // characterId appears in the members[] array of any teaching
-    // group of this discipline for this class. Presence-based: a
-    // membership interval that ended weeks ago still counts. The
-    // panel reports the population, not the current-week schedule.
-    //
-    // ELIMINATED — included in both counts, marked on the row. The
-    // elimination flag is week-dependent (via
-    // EliminationQueries.isCharacterEliminatedByWeek); everything
-    // else is week-agnostic.
-    //
-    // The week parameter is passed through to the VM for display
-    // and for the elimination flag. It does not scope the enrolled
-    // population, the assigned list, or the unassigned list.
 
     function getDisciplineScheduleSummaryViewModel(
         classId,
@@ -1507,7 +1383,6 @@
         var targetClass = String(classId);
         var targetDiscipline = String(disciplineId);
 
-        // ---- Enrolled population (not week-scoped) ----
         var enrolmentsByChar = {};
         try {
             enrolmentsByChar = AcademyEnrolments.getClassEnrolments(
@@ -1521,11 +1396,6 @@
             enrolmentsByChar = {};
         }
 
-        // ---- Assigned set (not week-scoped) ----
-        //
-        // Build the set of characterIds that appear in the members[]
-        // array of ANY teaching group of this discipline for this
-        // class. Presence-based: no interval check, no week filter.
         var assignedSet = Object.create(null);
 
         var groups = [];
@@ -1551,7 +1421,6 @@
             }
         }
 
-        // ---- Build the enrolled roster ----
         var eligibleRows = [];
         var charIds = Object.keys(enrolmentsByChar);
 
@@ -1569,7 +1438,6 @@
             var char = CharacterQueries.getCharacterById(charId);
             if (!char) { continue; }
 
-            // Instructors are not students.
             if (char.mode === 'instructor') { continue; }
 
             var eliminated = false;
@@ -1661,11 +1529,6 @@
     // ============================================================
     // WEEK OVERVIEW VM
     // ============================================================
-    //
-    // `studentAssignmentCount` is the sum, across every occurrence,
-    // of occ.studentIds.length. It counts student-session
-    // assignments represented in the projection, not unique
-    // students: one session with 20 students contributes 20.
 
     function getWeekOverviewViewModel(week) {
         var weekNum = parseWeek(week);
@@ -1742,9 +1605,7 @@
             getDisciplineScheduleSummaryViewModel,
         getWeekOverviewViewModel: getWeekOverviewViewModel,
 
-        GROUP_COLOR_PALETTE_SIZE: GROUP_COLOR_PALETTE_SIZE,
-        DEFAULT_HIGHLIGHT_CHECK_WEEKS: DEFAULT_HIGHLIGHT_CHECK_WEEKS,
-        MAX_HIGHLIGHT_CHECK_WEEKS: MAX_HIGHLIGHT_CHECK_WEEKS
+        GROUP_COLOR_PALETTE_SIZE: GROUP_COLOR_PALETTE_SIZE
     });
 
     // ============================================================
