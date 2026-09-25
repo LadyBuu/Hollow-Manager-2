@@ -8,7 +8,7 @@
  *   - Render the class summary header
  *   - Render the class description (when present)
  *   - Render the class action buttons (Add Character, Disciplines,
- *     Edit, Delete)
+ *     Export Schedule, Edit, Delete)
  *   - Render an empty state when no class is selected
  *
  * NOT RESPONSIBLE FOR:
@@ -18,14 +18,14 @@
  *   - The class-disciplines picker. The button on the header emits
  *     data-action="edit-class-disciplines"; the People controller
  *     routes it to AcademyClassDisciplinesPicker.
+ *   - The class schedule export. The button on the header emits
+ *     data-action="class-export-schedule"; the People controller
+ *     routes it to ScheduleExport.exportClassScheduleText.
  *   - The class's instructors. Prior to v29 the panel rendered an
  *     "Instructor:" line sourced from `class.instructorId`. That
  *     field was retired; instructors are now per-discipline
  *     enrolments. The panel does not replace the line with a
- *     derived list. Instructor-of-a-class is a discipline-level
- *     relationship, and the class panel is not the place for it.
- *     The instructor's own Disciplines tab is where the
- *     relationship is edited and viewed.
+ *     derived list.
  *
  * ROLE VOCABULARY:
  *   'student' | 'instructor'. There is no 'trainee'.
@@ -35,12 +35,10 @@
  *   routes deterministically:
  *     edit-class-add-character   → handleEditDispatcher → openAddCharacterToClass
  *     edit-class-disciplines     → handleEditDispatcher → openDisciplinesPicker
+ *     class-export-schedule      → handleClassExportSchedule (People
+ *                                  controller)
  *     edit-class                 → handleEditDispatcher → openClassForm
  *     delete-class               → handleDeleteDispatcher → openClassDelete
- *
- *   The "+ Add Character" button was previously data-action="add-character",
- *   whose 'add' prefix misrouted it to the discipline editor handler. The
- *   current action name matches the edit-prefix dispatcher.
  *
  * IMPORTANT:
  *   - RENDER ONLY. No mutations. No domain reads. No state.
@@ -229,6 +227,11 @@
                     'data-action="edit-class-disciplines" ' +
                     'data-class-id="' + escapeAttribute(classVM.id) + '">' +
                     'Disciplines' +
+                '</button>';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-action="class-export-schedule" ' +
+                    'data-class-id="' + escapeAttribute(classVM.id) + '">' +
+                    'Export Schedule' +
                 '</button>';
         html += '<button type="button" class="small secondary" ' +
                     'data-action="edit-class" ' +
