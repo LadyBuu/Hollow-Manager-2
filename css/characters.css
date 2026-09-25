@@ -134,10 +134,27 @@
 }
 
 /* ============================================================
-   CHARACTER LIST
+   CHARACTER LIST — MOBILE DRAWER, DESKTOP ALWAYS-OPEN
+   ============================================================
+   The list is a collapsible drawer on narrow screens and a
+   permanent part of the sidebar on wide screens.
+
+   Default state (no .open class): hidden. This is the mobile
+   default. The ☰ toggle button in the header adds .open to
+   reveal it.
+
+   Desktop override: always visible, and the toggle button is
+   hidden entirely, because there is nothing to toggle.
+
+   The breakpoint (769px) matches the .characters-layout grid
+   breakpoint above. Below 768px the layout is single-column and
+   the sidebar sits above the form; that is exactly when a
+   collapsible drawer is useful. Above 768px the sidebar is a
+   fixed 300px column on the left, and the list is always shown.
    ============================================================ */
 
 #char-list-panel {
+    display: none;
     max-height: 400px;
     overflow-y: auto;
 }
@@ -156,6 +173,19 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
+}
+
+@media (min-width: 769px) {
+    /* Desktop: the drawer behaviour is disabled. The panel is
+       always shown, and the toggle button (which would have no
+       effect) is hidden. */
+    #char-list-panel {
+        display: block;
+    }
+
+    #toggle-char-list {
+        display: none;
+    }
 }
 
 .char-list-item {
