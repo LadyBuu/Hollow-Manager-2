@@ -13,7 +13,7 @@
  *   - Rendering an empty state when no discipline is selected
  *   - Rendering a tab bar in the detail panel: Edit | Schedule
  *   - Rendering the Schedule tab body (week selector + grid host +
- *     enrollment summary host)
+ *     enrollment summary host + sessions host)
  *
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no domain logic.
@@ -89,9 +89,11 @@
  *   neither tab renders; the empty state shows instead.
  *
  *   The Schedule tab is READ-ONLY. The controller mounts the grid
- *   into #academy-discipline-schedule-host and the summary into
- *   #academy-discipline-schedule-summary-host. The class is NOT
- *   selectable here; it comes from AcademyUI.getSelectedClassId().
+ *   into #academy-discipline-schedule-host, the summary into
+ *   #academy-discipline-schedule-summary-host, and the discipline
+ *   sessions panel into #academy-discipline-sessions-host. The
+ *   class is NOT selectable here; it comes from
+ *   AcademyUI.getSelectedClassId().
  *
  * EVENTS EMITTED (data-* attributes, for AcademyView to bind):
  *   Sidebar:
@@ -529,15 +531,17 @@
     // SCHEDULE TAB
     // ============================================================
     //
-    // The schedule tab body: a week selector, the grid host, and the
-    // enrollment summary host.
+    // The schedule tab body: a week selector, the grid host, the
+    // enrollment summary host, and the discipline sessions panel
+    // host.
     //
     // The class is NOT selectable here. It comes from
     // AcademyUI.getSelectedClassId(). The controller reads the
-    // class, mounts the grid into the grid host, and mounts the
-    // enrollment summary into the summary host.
+    // class, mounts the grid into the grid host, mounts the
+    // enrollment summary into the summary host, and mounts the
+    // sessions panel into the sessions host.
     //
-    // Both hosts are intentionally empty at render time. The
+    // All three hosts are intentionally empty at render time. The
     // controller fills them.
     //
     // `week` is guaranteed a finite number by the VM contract.
@@ -571,6 +575,13 @@
         html += '<div id="academy-discipline-schedule-summary-host" ' +
                     'class="academy-discipline-schedule-summary-host">' +
                 '</div>';
+
+        // Sessions panel host. Populated by the controller after
+        // the summary is mounted. Lists every teaching group of
+        // this discipline for the week, across every instructor,
+        // with each group's sessions and roster.
+        html += '<div id="academy-discipline-sessions-host" ' +
+                    'class="academy-discipline-sessions-host"></div>';
 
         html += '</div>';
         return html;
