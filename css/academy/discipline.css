@@ -6,7 +6,7 @@
  *
  * The shell (academy.css) provides the shared layout, sidebar,
  * list rows, filters, and search input. This file adds the pieces
- * specific to the discipline editor.
+ * specific to the discipline editor and its schedule tab.
  *
  * Covers:
  *   - Add Discipline button
@@ -19,11 +19,20 @@
  *   - Field error state
  *   - Class-disciplines picker modal (opened from the class
  *     detail panel)
- *   - Discipline schedule tab: grid host, summary host, sessions
- *     panel, inline candidate picker
+ *   - Discipline schedule tab: header row, header actions,
+ *     grid host, summary host, sessions panel, inline candidate
+ *     picker
+ *   - Free slots filter panel: launcher, disclosure body, form,
+ *     summary, two-column student grid
  *   - Discipline schedule summary — done state
  *
  * Load order: shared.css → academy.css → academy/discipline.css
+ *
+ * HIGHLIGHT TINTS:
+ *   The four .schedule-highlight-* rules (all-free,
+ *   instructor-free, weeks-N, and the badge) do NOT live here.
+ *   They are properties of the schedule grid's cells and belong
+ *   in css/calendar.css alongside the rest of the grid styling.
  */
 
 /* ============================================================
@@ -622,24 +631,312 @@
 }
 
 /* ============================================================
+   DISCIPLINE SCHEDULE TAB — HEADER
+   ============================================================
+   Two-part header row:
+
+     .academy-discipline-schedule-header-week
+       The week label and its number input. Sits at the start.
+
+     .academy-discipline-schedule-header-actions
+       The "Manage Groups" and "Rebalance Groups" buttons. Sit
+       at the end.
+
+   The row wraps on narrow viewports; the actions push below the
+   week input rather than crowding it. Both wrappers are
+   horizontally aligned to the start of the row.
+ */
+
+.academy-discipline-schedule-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 6px 0 8px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-discipline-schedule-header-week {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+}
+
+.academy-discipline-schedule-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+}
+
+.academy-discipline-schedule-header-actions button {
+    font-size: 0.68rem;
+    padding: 4px 10px;
+    white-space: nowrap;
+}
+
+/* ============================================================
    DISCIPLINE SCHEDULE TAB — HOSTS
    ============================================================
-   The Schedule tab of the discipline detail panel renders three
-   hosts in vertical order:
+   The Schedule tab renders three hosts in vertical order:
 
      #academy-discipline-schedule-host          the calendar grid
      #academy-discipline-schedule-summary-host  the enrollment summary
      #academy-discipline-sessions-host          the sessions panel
 
    Each is filled by the discipline controller after the tab body
-   is written. An empty host must not occupy vertical space; the
-   :empty rule below handles that without the controller needing
-   to toggle a class.
+   is written. An empty host must not occupy vertical space.
  */
 
 #academy-discipline-schedule-summary-host:empty,
 #academy-discipline-sessions-host:empty {
     display: none;
+}
+
+/* ============================================================
+   FREE SLOTS FILTER PANEL
+   ============================================================
+   A disclosure that opens below the schedule header. Its
+   launcher is a full-width button. When collapsed, only the
+   launcher is visible. When expanded, the body shows:
+
+     - instructor select
+     - student multi-select (two-column grid)
+     - check-weeks number input
+     - Apply button
+
+   When a highlight filter is active, the launcher is disabled
+   and the body shows a summary line and a Clear button instead
+   of the form.
+ */
+
+.discipline-highlight-filter {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 8px;
+    background: var(--panel-alt);
+}
+
+.discipline-highlight-launcher {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 6px 10px;
+    background: transparent;
+    border: none;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    border-radius: var(--radius) var(--radius) 0 0;
+}
+
+.discipline-highlight-launcher[disabled] {
+    cursor: default;
+    opacity: 0.85;
+}
+
+.discipline-highlight-launcher-caret {
+    width: 12px;
+    display: inline-block;
+    font-size: 0.75rem;
+    opacity: 0.7;
+    flex: 0 0 auto;
+}
+
+.discipline-highlight-launcher-label {
+    font-weight: 600;
+    font-size: 0.78rem;
+    color: var(--text);
+}
+
+.discipline-highlight-body {
+    padding: 8px 10px 10px;
+    border-top: 1px solid var(--border-soft);
+}
+
+.discipline-highlight-field {
+    margin-bottom: 10px;
+}
+
+.discipline-highlight-field:last-child {
+    margin-bottom: 0;
+}
+
+.discipline-highlight-label {
+    display: block;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.75;
+    margin-bottom: 4px;
+    font-weight: 600;
+    color: var(--text-dim);
+}
+
+.discipline-highlight-instructor-select {
+    width: 100%;
+    max-width: 320px;
+    box-sizing: border-box;
+    padding: 5px 8px;
+    font-size: 0.75rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-family: 'Inter', sans-serif;
+}
+
+.discipline-highlight-instructor-select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* ---------- Two-column student grid ---------- */
+/*
+ * The student list is a two-column grid, not a running list.
+ * Each row stays on one line; the name ellipsizes inside its
+ * column. This is deliberate: a running list of a hundred names
+ * pushes the Apply button off-screen, and a single-line column
+ * keeps the panel a stable height.
+ *
+ * The grid is scoped to the panel. The `1fr 1fr` split gives
+ * two equal columns; `gap: 2px 8px` is tighter vertically than
+ * horizontally so adjacent names read as a column, not a
+ * paragraph.
+ */
+
+.discipline-highlight-students {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px 8px;
+    max-height: 180px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    background: var(--bg);
+}
+
+.discipline-highlight-student-option {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 4px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    border-radius: 3px;
+    min-width: 0;
+    color: var(--text);
+}
+
+.discipline-highlight-student-option:hover {
+    background: var(--panel-alt);
+}
+
+.discipline-highlight-student-checkbox {
+    margin: 0;
+    flex: 0 0 auto;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.discipline-highlight-student-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.discipline-highlight-check-weeks {
+    width: 80px;
+    box-sizing: border-box;
+    padding: 5px 8px;
+    font-size: 0.75rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-family: 'Inter', sans-serif;
+    font-variant-numeric: tabular-nums;
+}
+
+.discipline-highlight-check-weeks:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.discipline-highlight-hint,
+.discipline-highlight-empty {
+    font-size: 0.7rem;
+    opacity: 0.75;
+    margin: 4px 0 0;
+    line-height: 1.4;
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+.discipline-highlight-actions {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-soft);
+}
+
+.discipline-highlight-actions button {
+    font-size: 0.72rem;
+    padding: 5px 12px;
+}
+
+/* ---------- Active-filter summary ---------- */
+
+.discipline-highlight-summary {
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: var(--text);
+}
+
+.discipline-highlight-summary-line {
+    margin-bottom: 2px;
+}
+
+.discipline-highlight-summary-label {
+    opacity: 0.75;
+    color: var(--text-dim);
+}
+
+.discipline-highlight-summary-value {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.discipline-highlight-summary-sep {
+    opacity: 0.75;
+    color: var(--text-dim);
+}
+
+.discipline-highlight-summary-meta {
+    font-size: 0.7rem;
+    opacity: 0.7;
+    margin-bottom: 8px;
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+.discipline-highlight-summary-actions {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border-soft);
+}
+
+.discipline-highlight-summary-actions button {
+    font-size: 0.7rem;
+    padding: 4px 10px;
 }
 
 /* ============================================================
@@ -660,11 +957,6 @@
          Every enrolled student has a group.
        </span>
      </div>
-
-   Layout: the two spans sit on one line with flex-wrap so
-   narrower viewports drop the note to a second row instead of
-   crowding the counts. The note is italicised and dimmed to read
-   as a confirmation, not a heading.
  */
 
 .academy-discipline-summary-done {
@@ -1008,6 +1300,43 @@
 
     .academy-discipline-weights-grid {
         grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+    }
+
+    /* ---------- Schedule header (mobile) ---------- */
+
+    .academy-discipline-schedule-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+    }
+
+    .academy-discipline-schedule-header-week {
+        justify-content: space-between;
+    }
+
+    .academy-discipline-schedule-header-actions {
+        justify-content: stretch;
+    }
+
+    .academy-discipline-schedule-header-actions button {
+        flex: 1;
+        text-align: center;
+    }
+
+    /* ---------- Free slots panel (mobile) ---------- */
+
+    .discipline-highlight-instructor-select {
+        max-width: none;
+    }
+
+    .discipline-highlight-students {
+        grid-template-columns: 1fr;
+        max-height: 220px;
+    }
+
+    .discipline-highlight-actions button,
+    .discipline-highlight-summary-actions button {
+        width: 100%;
     }
 
     /* ---------- Class-disciplines picker (mobile) ---------- */
