@@ -5,39 +5,69 @@
  * Path: js/modules/academy/academy-schedule-instructor-modal.js
  *
  * The modal that lets an instructor claim an empty slot in their
- * own schedule grid for one of their disciplines.
+ * own schedule grid for one of their disciplines, OR that lets a
+ * discipline-grid click open a picker to choose which instructor
+ * owns a new session at that slot.
  *
- * MODE:
- *   'add' only. Editing an existing session is done from the
- *   Teaching Groups tab's Sessions list, not from the grid.
+ * MODES:
+ *   'direct'  (default) — instructorId is required; the modal is
+ *                         opened from the instructor grid, which
+ *                         already knows who the instructor is.
+ *                         Behavior is unchanged from prior
+ *                         revisions.
  *
- * FORM FIELDS:
- *   - Discipline  dropdown, sourced from the instructor's
- *                 disciplines for the currently selected class.
- *                 Required.
+ *   'picker'             — instructorId is optional. When absent,
+ *                         the modal renders a discipline-scoped
+ *                         instructor picker above the discipline
+ *                         dropdown. When present, the picker is
+ *                         skipped and the modal behaves like
+ *                         'direct'. `disciplineId` is REQUIRED in
+ *                         picker mode and pre-selects the
+ *                         discipline dropdown, which renders
+ *                         disabled.
+ *
+ * PICKER SOURCE:
+ *   The instructor list is built from
+ *   AcademyClasses.getClassInstructorIds(
+ *     classId, week, { disciplineId }
+ *   )
+ *   then resolved to { id, name } via CharacterQueries. This is the
+ *   canonical week-scoped query for "who teaches this discipline
+ *   for this class this week" and it is already used by
+ *   AcademyScheduleAssignModal for the same purpose.
+ *
+ *   A zero-instructor result is an inline error with a disabled
+ *   submit. A one-instructor result is auto-selected (picker is not
+ *   rendered). A multi-instructor result renders the picker.
+ *
+ * DISCIPLINE DROPDOWN IN PICKER MODE:
+ *   When mode === 'picker', the discipline is fixed to the
+ *   disciplineId passed in. The dropdown is rendered for
+ *   orientation (the user sees which discipline they are
+ *   scheduling for) but is disabled. Changing it would contradict
+ *   the grid the user clicked on.
+ *
+ * FORM FIELDS (both modes):
+ *   - Discipline  dropdown. Required.
+ *   - Instructor  picker (picker mode only; direct mode has it
+ *                 resolved by the caller).
  *   - Group       dropdown, sourced from the existing teaching
  *                 groups for the selected (class, discipline,
  *                 instructor) triple. Offers every existing group
  *                 plus a "create new group" sentinel. Only
- *                 rendered once a discipline is chosen.
+ *                 rendered once a discipline AND an instructor are
+ *                 resolved.
  *   - Duration    dropdown, MIN_CLASS_DURATION to
  *                 MAX_CLASS_DURATION. Required.
  *   - Location    dropdown, sourced from AcademyLocations.
  *                 Optional. An empty selection sends null.
  *
- * The slot's (day, startHour) come from the clicked grid cell.
- * The week comes from the display week. Neither is editable.
- *
  * SESSION LOCATION:
  *   The location is applied ONLY when the domain creates a new
- *   session. When the resolver finds an exact-match session
- *   (same day / start hour / duration on a candidate group), the
+ *   session. When the resolver finds an exact-match session, the
  *   location select is ignored — the session keeps its own
  *   location. That is the domain's rule and this modal honors it
  *   by not pretending to override it.
- *
- *   To change an existing session's location, use the session
- *   form (from the Teaching Groups tab's Sessions list).
  *
  * WINDOW:
  *   The session's startWeek / endWeek are the discipline's.
@@ -47,6 +77,10 @@
  *   When the instructor teaches no disciplines for the currently
  *   selected class, the modal opens with a message and a disabled
  *   submit. There is nothing to offer.
+ *
+ *   In picker mode, when the discipline has no instructors this
+ *   week, the modal shows the same style of empty state but with
+ *   a different message.
  *
  * SUBMISSION:
  *   AcademySchedule.scheduleInstructorSlot({
@@ -72,12 +106,14 @@
  *   - window.DomUtils
  *   - window.Modal
  *   - window.NotificationSystem
+ *   - window.AcademyClasses
  *   - window.AcademyAggregator
  *   - window.AcademySchedule
  *   - window.AcademyLocations
  *   - window.AcademyTeachingGroups
  *   - window.AcademyDisciplines
  *   - window.AcademyUI
+ *   - window.CharacterQueries
  *   - window.CalendarConstants
  */
 
@@ -95,12 +131,14 @@
     var DomUtils = window.DomUtils;
     var Modal = window.Modal;
     var NotificationSystem = window.NotificationSystem;
+    var AcademyClasses = window.AcademyClasses;
     var AcademyAggregator = window.AcademyAggregator;
     var AcademySchedule = window.AcademySchedule;
     var AcademyLocations = window.AcademyLocations;
     var AcademyTeachingGroups = window.AcademyTeachingGroups;
     var AcademyDisciplines = window.AcademyDisciplines;
     var AcademyUI = window.AcademyUI;
+    var CharacterQueries = window.CharacterQueries;
     var CalendarConstants = window.CalendarConstants;
 
     var _missing = [];
@@ -121,9 +159,17 @@
         typeof NotificationSystem.notify !== 'function') {
         _missing.push('NotificationSystem.notify');
     }
+    if (!AcademyClasses ||
+        typeof AcademyClasses.getClassInstructorIds !== 'function') {
+        _missing.push('AcademyClasses.getClassInstructorIds');
+    }
     if (!AcademyAggregator ||
         typeof AcademyAggregator.getClassStudentsViewModel !== 'function') {
         _missing.push('AcademyAggregator.getClassStudentsViewModel');
+    }
+    if (!AcademyAggregator ||
+        typeof AcademyAggregator.getClassInstructorDisciplines !== 'function') {
+        _missing.push('AcademyAggregator.getClassInstructorDisciplines');
     }
     if (!AcademySchedule ||
         typeof AcademySchedule.scheduleInstructorSlot !== 'function') {
@@ -150,6 +196,11 @@
     if (!AcademyUI ||
         typeof AcademyUI.getDisplayWeek !== 'function') {
         _missing.push('AcademyUI.getDisplayWeek');
+    }
+    if (!CharacterQueries ||
+        typeof CharacterQueries.getCharacterById !== 'function' ||
+        typeof CharacterQueries.getDisplayName !== 'function') {
+        _missing.push('CharacterQueries API');
     }
     if (!CalendarConstants ||
         typeof CalendarConstants.MIN_CLASS_DURATION !== 'number' ||
@@ -178,6 +229,8 @@
 
     var NEW_GROUP_SENTINEL = '';
 
+    var VALID_MODES = ['direct', 'picker'];
+
     // ============================================================
     // MODULE STATE
     // ============================================================
@@ -196,6 +249,12 @@
     var _selectedLocationId = '';
     var _selectedGroupId = NEW_GROUP_SENTINEL;
     var _availableGroups = [];
+
+    // Instructor picker state (picker mode only).
+    var _availableInstructors = [];
+    var _selectedInstructorId = '';
+    var _instructorError = '';
+
     var _pendingCollision = null;
     var _busy = false;
 
@@ -263,6 +322,134 @@
             return String(a.name || '').localeCompare(String(b.name || ''));
         });
         return all;
+    }
+
+    function getCharacterName(charId) {
+        if (!isNonEmptyString(charId)) { return 'Unknown'; }
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char) { return 'Unknown'; }
+        return CharacterQueries.getDisplayName(char) || 'Unknown';
+    }
+
+    // ============================================================
+    // INSTRUCTOR RESOLUTION (picker mode)
+    // ============================================================
+
+    /**
+     * Build the list of instructors for a (class, discipline, week)
+     * triple. Uses AcademyClasses.getClassInstructorIds — the
+     * canonical week-scoped query — then resolves names through
+     * CharacterQueries.
+     *
+     * Returns an array of { id, name }, deduplicated, sorted by
+     * name. An empty array means "nobody teaches this discipline
+     * this week" and is reported as such by the caller; it is not
+     * coerced into a synthetic entry.
+     */
+    function readAvailableInstructors(classId, disciplineId, week) {
+        if (!isNonEmptyString(classId)) { return []; }
+        if (!isNonEmptyString(disciplineId)) { return []; }
+
+        var weekNum = parseStrictInteger(week);
+        if (weekNum === null) { return []; }
+
+        var ids = [];
+        try {
+            ids = AcademyClasses.getClassInstructorIds(
+                classId,
+                weekNum,
+                { disciplineId: String(disciplineId) }
+            ) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademyScheduleInstructorModal] ' +
+                'getClassInstructorIds threw:', e
+            );
+            return [];
+        }
+
+        if (!Array.isArray(ids)) { return []; }
+
+        var seen = Object.create(null);
+        var result = [];
+
+        for (var i = 0; i < ids.length; i++) {
+            if (!isNonEmptyString(ids[i])) { continue; }
+            var id = String(ids[i]);
+            if (seen[id]) { continue; }
+            seen[id] = true;
+
+            var char = CharacterQueries.getCharacterById(id);
+            if (!char) { continue; }
+
+            var name = CharacterQueries.getDisplayName(char);
+            if (!isNonEmptyString(name)) { name = 'Unknown'; }
+
+            result.push({ id: id, name: name });
+        }
+
+        result.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
+
+        return result;
+    }
+
+    /**
+     * Apply the picker's auto-select rules to the current state.
+     *
+     *   zero instructors  → _instructorError set, _selectedInstructorId ''
+     *   one instructor    → _selectedInstructorId set, error cleared
+     *   many instructors  → _selectedInstructorId '' unless already
+     *                       valid, error cleared
+     *
+     * Called on open and whenever the discipline changes (which in
+     * picker mode is never, because the discipline is locked; in
+     * direct mode the picker is not rendered at all). Kept
+     * symmetric so a future caller can invoke it after any state
+     * change that could affect the instructor list.
+     */
+    function refreshInstructorPickerState() {
+        if (!_context || _context.mode !== 'picker') { return; }
+
+        var instructorList = readAvailableInstructors(
+            _context.classId,
+            _selectedDisciplineId,
+            _context.week
+        );
+
+        _availableInstructors = instructorList;
+
+        if (instructorList.length === 0) {
+            _instructorError =
+                'No instructor teaches this discipline for this ' +
+                'class during the requested week.';
+            _selectedInstructorId = '';
+            _availableGroups = [];
+            _selectedGroupId = NEW_GROUP_SENTINEL;
+            return;
+        }
+
+        _instructorError = '';
+
+        if (instructorList.length === 1) {
+            _selectedInstructorId = instructorList[0].id;
+        } else {
+            // Multi-instructor: only keep a selection that is still
+            // valid. Otherwise force the user to pick.
+            var stillValid = false;
+            for (var i = 0; i < instructorList.length; i++) {
+                if (instructorList[i].id === _selectedInstructorId) {
+                    stillValid = true;
+                    break;
+                }
+            }
+            if (!stillValid) {
+                _selectedInstructorId = '';
+            }
+        }
+
+        refreshGroupState();
     }
 
     // ============================================================
@@ -385,11 +572,12 @@
 
         if (!_context) { return; }
         if (!isNonEmptyString(_selectedDisciplineId)) { return; }
+        if (!isNonEmptyString(_selectedInstructorId)) { return; }
 
         _availableGroups = readAvailableGroups(
             _context.classId,
             _selectedDisciplineId,
-            _context.instructorId,
+            _selectedInstructorId,
             _context.week
         );
 
@@ -404,16 +592,45 @@
     // ENTRY POINT
     // ============================================================
 
+    /**
+     * Open the instructor slot modal.
+     *
+     * @param {object} options
+     * @param {string} [options.mode]         'direct' (default) |
+     *                                        'picker'
+     * @param {string} [options.instructorId] Required in 'direct'
+     *                                        mode. Optional in
+     *                                        'picker' mode; when
+     *                                        present, the picker
+     *                                        is skipped.
+     * @param {string} options.classId        Required.
+     * @param {string} [options.disciplineId] Required in 'picker'
+     *                                        mode. Optional in
+     *                                        'direct' mode; when
+     *                                        present, the
+     *                                        discipline dropdown
+     *                                        pre-selects it.
+     * @param {number} options.week           Required.
+     * @param {number} options.day            Required.
+     * @param {number} options.startHour      Required.
+     * @param {function} [options.onClose]
+     * @returns {object|null} The modal element, or null on failure.
+     */
     function openModal(options) {
         if (!options || typeof options !== 'object') {
             notify('Invalid slot request.', 'error');
             return null;
         }
 
-        if (!isNonEmptyString(options.instructorId)) {
-            notify('Instructor ID is required.', 'error');
+        var mode = isNonEmptyString(options.mode)
+            ? String(options.mode)
+            : 'direct';
+
+        if (VALID_MODES.indexOf(mode) === -1) {
+            notify('Unknown modal mode.', 'error');
             return null;
         }
+
         if (!isNonEmptyString(options.classId)) {
             notify('Class ID is required.', 'error');
             return null;
@@ -437,10 +654,29 @@
             return null;
         }
 
+        // Mode-specific requirements.
+        var instructorId = isNonEmptyString(options.instructorId)
+            ? String(options.instructorId)
+            : null;
+        var disciplineId = isNonEmptyString(options.disciplineId)
+            ? String(options.disciplineId)
+            : null;
+
+        if (mode === 'direct' && instructorId === null) {
+            notify('Instructor ID is required.', 'error');
+            return null;
+        }
+        if (mode === 'picker' && disciplineId === null) {
+            notify('Discipline ID is required.', 'error');
+            return null;
+        }
+
         closeModal();
 
         _context = {
-            instructorId: String(options.instructorId),
+            mode: mode,
+            instructorId: instructorId,
+            disciplineId: disciplineId,
             classId: String(options.classId),
             week: week,
             day: day,
@@ -449,13 +685,30 @@
         _onClose = typeof options.onClose === 'function'
             ? options.onClose
             : null;
-        _selectedDisciplineId = '';
+
+        _selectedDisciplineId = disciplineId !== null
+            ? disciplineId
+            : '';
         _selectedDuration = DEFAULT_DURATION;
         _selectedLocationId = '';
         _selectedGroupId = NEW_GROUP_SENTINEL;
         _availableGroups = [];
+        _availableInstructors = [];
+        _selectedInstructorId = instructorId !== null
+            ? instructorId
+            : '';
+        _instructorError = '';
         _pendingCollision = null;
         _busy = false;
+
+        // In picker mode, resolve instructors and (if the picker
+        // has a single candidate or is already resolved) populate
+        // groups immediately.
+        if (mode === 'picker') {
+            refreshInstructorPickerState();
+        } else if (disciplineId !== null && instructorId !== null) {
+            refreshGroupState();
+        }
 
         var shell = Modal.createModal(
             'academy-schedule-instructor-modal'
@@ -553,6 +806,9 @@
         _selectedLocationId = '';
         _selectedGroupId = NEW_GROUP_SENTINEL;
         _availableGroups = [];
+        _availableInstructors = [];
+        _selectedInstructorId = '';
+        _instructorError = '';
         _pendingCollision = null;
         _busy = false;
     }
@@ -569,26 +825,46 @@
                           ', Week ' + _context.week;
 
         var disciplines = [];
-        try {
-            disciplines = AcademyAggregator
-                .getClassInstructorDisciplines(
+        if (_context.mode === 'picker' &&
+            isNonEmptyString(_context.disciplineId)) {
+            // Picker mode: single fixed discipline.
+            var disc = AcademyDisciplines.getDiscipline(
+                _context.disciplineId
+            );
+            if (disc) {
+                disciplines.push({
+                    id: String(disc.id),
+                    name: isNonEmptyString(disc.name)
+                        ? disc.name
+                        : 'Unnamed Discipline',
+                    type: disc.type || 'mandatory'
+                });
+            }
+        } else if (isNonEmptyString(_context.instructorId)) {
+            // Direct mode: the instructor's disciplines for this
+            // class this week.
+            try {
+                disciplines = AcademyAggregator
+                    .getClassInstructorDisciplines(
+                        _context.classId,
+                        _context.instructorId,
+                        _context.week
+                    ) || [];
+            } catch (e) {
+                disciplines = [];
+            }
+
+            if (disciplines.length === 0) {
+                disciplines = deriveInstructorDisciplines(
                     _context.classId,
                     _context.instructorId,
                     _context.week
-                ) || [];
-        } catch (e) {
-            disciplines = [];
-        }
-
-        if (disciplines.length === 0) {
-            disciplines = deriveInstructorDisciplines(
-                _context.classId,
-                _context.instructorId,
-                _context.week
-            );
+                );
+            }
         }
 
         return {
+            mode: _context.mode,
             instructorId: _context.instructorId,
             classId: _context.classId,
             week: _context.week,
@@ -605,17 +881,32 @@
             selectedGroupId: _selectedGroupId,
             newGroupSentinel: NEW_GROUP_SENTINEL,
             pendingCollision: _pendingCollision,
-            busy: _busy
+            busy: _busy,
+            // Picker-mode fields.
+            showInstructorPicker:
+                _context.mode === 'picker' &&
+                _availableInstructors.length > 1,
+            instructors: _availableInstructors,
+            selectedInstructorId: _selectedInstructorId,
+            instructorError: _instructorError
         };
     }
 
+    /**
+     * Fallback derivation for the instructor's disciplines.
+     *
+     * Used only when the aggregator is absent or returns an empty
+     * list. It reads the class's offerings and filters to those the
+     * instructor is enrolled to teach in the given week. This
+     * duplicates the aggregator's logic but guarantees the modal
+     * works when the aggregator is missing.
+     */
     function deriveInstructorDisciplines(classId, charId, week) {
         var result = [];
 
         var ACDQ = window.AcademyClassDisciplinesQueries;
         var AD = window.AcademyDisciplines;
         var AE = window.AcademyEnrolments;
-        var CQ = window.CharacterQueries;
 
         if (!ACDQ || typeof ACDQ.getClassDisciplinesForClass !== 'function') {
             return result;
@@ -627,10 +918,7 @@
             return result;
         }
 
-        var char = null;
-        if (CQ && typeof CQ.getCharacterById === 'function') {
-            char = CQ.getCharacterById(charId);
-        }
+        var char = CharacterQueries.getCharacterById(charId);
         if (!char || char.mode !== 'instructor') {
             return result;
         }
@@ -698,13 +986,20 @@
     function buildModalHTML(vm) {
         var html = '';
         html += '<form id="academy-schedule-instructor-form" ' +
-                    'data-instructor-id="' +
-                        escapeAttribute(vm.instructorId) + '" ' +
+                    'data-mode="' + escapeAttribute(vm.mode) + '" ' +
                     'data-class-id="' +
-                        escapeAttribute(vm.classId) + '">';
+                        escapeAttribute(vm.classId) + '"' +
+                    (vm.instructorId
+                        ? ' data-instructor-id="' +
+                            escapeAttribute(vm.instructorId) + '"'
+                        : '') + '>';
 
         html += '<div class="modal-header">';
-        html += '<h3>Add to instructor schedule</h3>';
+        html += '<h3>' + escapeHtml(
+            vm.mode === 'picker'
+                ? 'Add session to discipline'
+                : 'Add to instructor schedule'
+        ) + '</h3>';
         html += '<button type="button" class="close-modal" ' +
                     'data-instructor-action="close" ' +
                     'aria-label="Close">&times;</button>';
@@ -718,7 +1013,25 @@
                     '</strong>' +
                 '</p>';
 
-        if (vm.disciplines.length === 0) {
+        // ---- Picker-mode empty state ----
+        //
+        // When the picker is empty (no instructors) we render an
+        // inline error and a disabled submit. We do NOT render the
+        // discipline dropdown in an editable state; there is
+        // nothing to select.
+        if (vm.mode === 'picker' &&
+            isNonEmptyString(vm.instructorError) &&
+            vm.instructors.length === 0) {
+            html += renderNoInstructorsState(vm);
+            html += '</div>';
+            html += renderFooter(vm, true);
+            html += '</form>';
+            return html;
+        }
+
+        // ---- Direct-mode empty state ----
+        if (vm.mode === 'direct' &&
+            vm.disciplines.length === 0) {
             html += '<p class="empty-state small">' +
                         'Not assigned to teach any disciplines for ' +
                         'this class. Use the Disciplines tab to add ' +
@@ -726,57 +1039,43 @@
                     '</p>';
             html += '</div>';
             html += renderFooter(vm, true);
+            html += '</form>';
             return html;
         }
 
-        // ---- Discipline ----
-        html += '<div class="form-group">';
-        html += '<label for="academy-schedule-instructor-discipline">' +
-                    'Discipline *' +
-                '</label>';
-        html += '<select id="academy-schedule-instructor-discipline" ' +
-                    'class="academy-schedule-instructor-discipline"' +
-                    (vm.busy ? ' disabled' : '') + '>';
-        html += '<option value="">Select a discipline...</option>';
-        for (var i = 0; i < vm.disciplines.length; i++) {
-            var d = vm.disciplines[i];
-            var selected = String(d.id) === String(vm.selectedDisciplineId)
-                ? ' selected'
-                : '';
-            html += '<option value="' + escapeAttribute(d.id) + '"' +
-                        selected + '>' +
-                        escapeHtml(d.name) +
-                    '</option>';
+        // ---- Picker-mode instructor picker ----
+        if (vm.mode === 'picker' &&
+            vm.showInstructorPicker &&
+            vm.instructors.length > 1) {
+            html += renderInstructorPicker(vm);
+        } else if (vm.mode === 'picker' &&
+                   vm.instructors.length === 1) {
+            html += renderInstructorAutoSelected(vm);
         }
-        html += '</select>';
-        html += '</div>';
 
-        // ---- Group picker (only when discipline is chosen) ----
-        if (isNonEmptyString(vm.selectedDisciplineId)) {
+        // ---- Discipline dropdown ----
+        //
+        // Picker mode: rendered but disabled, fixed to the passed
+        // discipline. The user sees which discipline they are
+        // scheduling for. Changing it would contradict the grid
+        // they clicked on.
+        //
+        // Direct mode: editable, single-select across the
+        // instructor's disciplines for this class.
+        html += renderDisciplineField(vm);
+
+        // ---- Group picker (only when discipline + instructor
+        //      are both resolved) ----
+        if (isNonEmptyString(vm.selectedDisciplineId) &&
+            isNonEmptyString(vm.selectedInstructorId) &&
+            !isNonEmptyString(vm.instructorError)) {
             html += renderGroupPicker(vm);
         }
 
         // ---- Duration ----
-        html += '<div class="form-group">';
-        html += '<label for="academy-schedule-instructor-duration">' +
-                    'Duration (hours)' +
-                '</label>';
-        html += '<select id="academy-schedule-instructor-duration" ' +
-                    'class="academy-schedule-instructor-duration"' +
-                    (vm.busy ? ' disabled' : '') + '>';
-        for (var j = 0; j < vm.durations.length; j++) {
-            var dur = vm.durations[j];
-            var durSelected = dur === vm.selectedDuration
-                ? ' selected'
-                : '';
-            html += '<option value="' + dur + '"' + durSelected + '>' +
-                        dur + ' hour' + (dur === 1 ? '' : 's') +
-                    '</option>';
-        }
-        html += '</select>';
-        html += '</div>';
+        html += renderDurationField(vm);
 
-        // ---- Location (optional) ----
+        // ---- Location ----
         html += renderLocationSelect(vm);
 
         if (vm.pendingCollision) {
@@ -788,6 +1087,134 @@
         html += renderFooter(vm, false);
 
         html += '</form>';
+        return html;
+    }
+
+    function renderNoInstructorsState(vm) {
+        var html = '';
+        html += '<p class="empty-state small">' +
+                    escapeHtml(vm.instructorError) +
+                '</p>';
+        html += '<p class="field-hint">' +
+                    'Assign an instructor from the character\'s ' +
+                    'Disciplines tab before scheduling sessions for ' +
+                    'this discipline.' +
+                '</p>';
+        return html;
+    }
+
+    function renderInstructorPicker(vm) {
+        var html = '';
+        html += '<div class="form-group academy-schedule-instructor-picker">';
+        html += '<label class="academy-schedule-instructor-picker-label">' +
+                    'Instructor *' +
+                '</label>';
+        html += '<p class="field-hint academy-schedule-instructor-picker-hint">' +
+                    'More than one instructor teaches this discipline ' +
+                    'for this class. Choose which one owns the session.' +
+                '</p>';
+
+        html += '<div class="academy-schedule-instructor-picker-list">';
+
+        for (var i = 0; i < vm.instructors.length; i++) {
+            var instr = vm.instructors[i];
+            if (!instr || !instr.id) { continue; }
+
+            var checked = String(instr.id) ===
+                String(vm.selectedInstructorId)
+                ? ' checked'
+                : '';
+
+            html += '<label class="academy-schedule-instructor-picker-option">';
+            html += '<input type="radio" ' +
+                        'name="academy-schedule-instructor-picker" ' +
+                        'class="academy-schedule-instructor-picker-radio" ' +
+                        'data-instructor-id="' +
+                            escapeAttribute(instr.id) + '"' +
+                        checked +
+                        (vm.busy ? ' disabled' : '') + '>';
+            html += '<span class="academy-schedule-instructor-picker-name">' +
+                        escapeHtml(instr.name) +
+                    '</span>';
+            html += '</label>';
+        }
+
+        html += '</div>';
+        html += '</div>';
+        return html;
+    }
+
+    function renderInstructorAutoSelected(vm) {
+        var instructor = null;
+        for (var i = 0; i < vm.instructors.length; i++) {
+            if (String(vm.instructors[i].id) ===
+                String(vm.selectedInstructorId)) {
+                instructor = vm.instructors[i];
+                break;
+            }
+        }
+        if (!instructor) { return ''; }
+
+        var html = '';
+        html += '<div class="form-group academy-schedule-instructor-single">';
+        html += '<label class="academy-schedule-instructor-single-label">' +
+                    'Instructor' +
+                '</label>';
+        html += '<p class="academy-schedule-instructor-single-value">' +
+                    escapeHtml(instructor.name) +
+                    ' <span class="academy-schedule-instructor-single-note">' +
+                        '(only instructor for this discipline)' +
+                    '</span>' +
+                '</p>';
+        html += '</div>';
+        return html;
+    }
+
+    function renderDisciplineField(vm) {
+        var isPickerMode = vm.mode === 'picker';
+        var isDisabled = isPickerMode || vm.busy;
+
+        var html = '';
+        html += '<div class="form-group">';
+        html += '<label for="academy-schedule-instructor-discipline">' +
+                    'Discipline *' +
+                '</label>';
+        html += '<select id="academy-schedule-instructor-discipline" ' +
+                    'class="academy-schedule-instructor-discipline"' +
+                    (isDisabled ? ' disabled' : '') + '>';
+
+        if (vm.disciplines.length === 0) {
+            html += '<option value="">' +
+                        'No disciplines available' +
+                    '</option>';
+        } else {
+            if (!isPickerMode) {
+                html += '<option value="">Select a discipline...</option>';
+            }
+            for (var i = 0; i < vm.disciplines.length; i++) {
+                var d = vm.disciplines[i];
+                var selected = String(d.id) ===
+                    String(vm.selectedDisciplineId)
+                    ? ' selected'
+                    : '';
+                html += '<option value="' + escapeAttribute(d.id) + '"' +
+                            selected + '>' +
+                            escapeHtml(d.name) +
+                        '</option>';
+            }
+        }
+
+        html += '</select>';
+
+        if (isPickerMode) {
+            html += '<p class="field-hint">' +
+                        'Fixed to the discipline of the grid you ' +
+                        'clicked. To schedule a different discipline, ' +
+                        'use that discipline\'s grid.' +
+                    '</p>';
+        }
+
+        html += '</div>';
         return html;
     }
 
@@ -867,6 +1294,29 @@
         return html;
     }
 
+    function renderDurationField(vm) {
+        var html = '';
+        html += '<div class="form-group">';
+        html += '<label for="academy-schedule-instructor-duration">' +
+                    'Duration (hours)' +
+                '</label>';
+        html += '<select id="academy-schedule-instructor-duration" ' +
+                    'class="academy-schedule-instructor-duration"' +
+                    (vm.busy ? ' disabled' : '') + '>';
+        for (var j = 0; j < vm.durations.length; j++) {
+            var dur = vm.durations[j];
+            var durSelected = dur === vm.selectedDuration
+                ? ' selected'
+                : '';
+            html += '<option value="' + dur + '"' + durSelected + '>' +
+                        dur + ' hour' + (dur === 1 ? '' : 's') +
+                    '</option>';
+        }
+        html += '</select>';
+        html += '</div>';
+        return html;
+    }
+
     function renderLocationSelect(vm) {
         var locations = Array.isArray(vm.locations) ? vm.locations : [];
 
@@ -900,13 +1350,31 @@
         return html;
     }
 
+    /**
+     * Footer.
+     *
+     * Submit is disabled when:
+     *   - noDisciplines (nothing to submit)
+     *   - busy (mutation in flight)
+     *   - pending collision AND already in retry mode (retry is
+     *     always enabled to allow "Add anyway")
+     *   - no discipline selected (direct mode, no selection yet)
+     *   - picker mode with an empty instructor list
+     *   - picker mode with multi-instructor but none selected
+     */
     function renderFooter(vm, noDisciplines) {
         var busy = vm.busy === true;
         var hasCollision = !!vm.pendingCollision;
         var hasDiscipline = isNonEmptyString(vm.selectedDisciplineId);
+        var hasInstructor = isNonEmptyString(vm.selectedInstructorId);
 
-        var submitDisabled = noDisciplines || busy ||
-            (!hasCollision && !hasDiscipline);
+        var submitDisabled = noDisciplines || busy;
+        if (!hasCollision) {
+            if (!hasDiscipline) { submitDisabled = true; }
+            if (vm.mode === 'picker' && !hasInstructor) {
+                submitDisabled = true;
+            }
+        }
 
         var submitLabel = hasCollision ? 'Add anyway' : 'Add';
         var submitAction = hasCollision
@@ -1004,10 +1472,15 @@
         if (target.classList.contains(
             'academy-schedule-instructor-discipline'
         )) {
-            _selectedDisciplineId = target.value || '';
-            _pendingCollision = null;
-            refreshGroupState();
-            renderContent();
+            // Only reachable in direct mode; picker mode disables
+            // the field. A discipline change invalidates the
+            // resolved instructor and the group list.
+            if (_context && _context.mode === 'direct') {
+                _selectedDisciplineId = target.value || '';
+                _pendingCollision = null;
+                refreshGroupState();
+                renderContent();
+            }
             return;
         }
 
@@ -1035,6 +1508,21 @@
             _pendingCollision = null;
             return;
         }
+
+        if (target.classList.contains(
+            'academy-schedule-instructor-picker-radio'
+        )) {
+            var instrId = target.dataset
+                ? target.dataset.instructorId
+                : '';
+            _selectedInstructorId = isNonEmptyString(instrId)
+                ? String(instrId)
+                : '';
+            _pendingCollision = null;
+            refreshGroupState();
+            renderContent();
+            return;
+        }
     }
 
     function handleContentSubmit(e) {
@@ -1058,6 +1546,24 @@
             return;
         }
 
+        if (_context.mode === 'picker' &&
+            !isNonEmptyString(_selectedInstructorId)) {
+            notify('Choose an instructor.', 'error');
+            return;
+        }
+
+        // In direct mode, the instructor is fixed; the picker is
+        // not shown and _selectedInstructorId was seeded from
+        // _context.instructorId on open.
+        var instructorId = _context.mode === 'direct'
+            ? _context.instructorId
+            : _selectedInstructorId;
+
+        if (!isNonEmptyString(instructorId)) {
+            notify('Instructor is required.', 'error');
+            return;
+        }
+
         var duration = parseStrictInteger(_selectedDuration);
         if (duration === null) {
             duration = DEFAULT_DURATION;
@@ -1071,7 +1577,7 @@
         renderContent();
 
         var payload = {
-            instructorId: _context.instructorId,
+            instructorId: instructorId,
             classId: _context.classId,
             disciplineId: _selectedDisciplineId,
             week: _context.week,
@@ -1093,7 +1599,7 @@
                 _busy = false;
 
                 if (result && result.success) {
-                    notify('Slot added to instructor schedule.', 'success');
+                    notify('Session scheduled.', 'success');
                     closeModal();
                     return;
                 }
@@ -1149,6 +1655,12 @@
             if (typeof exports[required[i]] !== 'function') {
                 missing.push(required[i]);
             }
+        }
+
+        if (VALID_MODES.length !== 2 ||
+            VALID_MODES.indexOf('direct') === -1 ||
+            VALID_MODES.indexOf('picker') === -1) {
+            missing.push('VALID_MODES is missing direct or picker');
         }
 
         if (missing.length > 0) {
