@@ -14,12 +14,10 @@
  * IMPORTANT:
  *   - This module OWNS ranking data - it does NOT depend on AcademyQueries.
  *   - Uses AcademyClasses for class existence checks (no circular dep).
- *   - Uses AcademyPerformance for the calculation. Ranking CONSUMES
- *     performance. It does NOT calculate averages.
+ *   - Uses AcademyPerformance for the per-student aggregates. Ranking
+ *     CONSUMES performance. It does NOT calculate averages.
  *   - Uses AcademyAggregator.getClassStudentsViewModel to resolve the
- *     class roster for auto-generate. The aggregator is the canonical
- *     roster source; AcademyQueries was the previous source and has
- *     been retired from this module.
+ *     class roster for auto-generate.
  *   - Uses CharacterQueries for name resolution ONLY in the enriched
  *     query variants. The base ranking record does not carry a name.
  *   - All MUTATIONS go through MutationPipeline.
@@ -33,30 +31,28 @@
  *   - Public queries return DEEP CLONES. Callers cannot mutate live state.
  *   - Internal accessors return LIVE REFERENCES.
  *   - Pipeline validate() callbacks read from the `appData` argument.
- *   - Post-mutation reads inside mutate() callbacks read from the
- *     appData snapshot, not from window.data.
  *   - ObjectUtils.deepClone throws if cloning fails or if the clone
  *     aliases the input.
  *
- * PERFORMANCE INTEGRATION:
- *   - autoGenerate reads ranking data from
- *     AcademyPerformance.calculateRanking. The fourth argument
- *     (getCharacterById) was removed from calculateRanking's signature;
- *     names are resolved by the aggregator layer, not by performance.
- *   - autoGenerate does not require names, only IDs.
- *   - Students with no score (academic null AND overall null) are SKIPPED.
- *     Writing a ranking record with rank: null for an ungraded student
- *     would produce records the UI cannot render. Absence of a record
- *     means "not yet graded".
+ * PERFORMANCE INTEGRATION (v30):
+ *   - autoGenerate calls AcademyPerformance.calculateClassPerformance,
+ *     which returns per-student aggregates in input order.
+ *   - The performance layer does NOT order or rank. Ranking ordering
+ *     and rank assignment live HERE, in this module.
+ *   - autoGenerate sorts the aggregates by overall score (falling back
+ *     to academic average), assigns rank numbers, then writes the
+ *     ranking records.
+ *   - Students with no score (academic null AND overall null) are
+ *     SKIPPED. Writing a ranking record with rank: null for an
+ *     ungraded student would produce records the UI cannot render.
+ *     Absence of a record means "not yet graded".
  *
- *   MIGRATION NOTE:
- *     AcademyPerformance.calculateRanking is marked DEPRECATED. The
- *     eventual path is: autoGenerate calls
- *     AcademyPerformance.calculateClassPerformance, and the ordering
- *     and rank assignment moves into this module. This module already
- *     owns the ordering invariant (rank <= totalStudents); moving
- *     the ordering itself here closes the last circle. Not done in
- *     this pass; the migration is a follow-up.
+ *   MIGRATION COMPLETED (v30):
+ *     AcademyPerformance.calculateRanking has been deleted. This
+ *     module no longer references it. The ordering invariant (rank <=
+ *     totalStudents) is enforced by this module's own sort and rank
+ *     assignment pass, and validated by the pipeline validator
+ *     against the transaction snapshot.
  *
  * RANKING RECORD SHAPE:
  *   {
@@ -82,14 +78,8 @@
  *     students are enrolled and 17 have grades this week,
  *     totalStudents is 17, and rank 17 is last.
  *
- *     This is the correct denominator for percentile: rank is
- *     relative to the ranked population, not the enrolled
- *     population. It is NOT a proxy for class size. Callers that
- *     need class size read it from the class roster.
- *
- *     The field name `totalStudents` is retained for storage
- *     stability. It is a historical name; its meaning is
- *     "ranked students this week", not "students in the class".
+ *     This is the correct denominator for percentile. It is NOT a
+ *     proxy for class size.
  *
  *   `score` and `averageScore` are REMOVED. The record carries the
  *   three scores produced by the performance layer.
@@ -108,9 +98,6 @@
  *   - academicAverage, when present, must be in [0, 100].
  *   - socialScore, when present, must be in [0, 100].
  *   - overallScore, when present, must be in [0, 100].
- *   These fields are percentages. A value outside the range is a
- *   data-integrity failure from upstream (a grade, a performance
- *   calculation, or a social score). The validator rejects it.
  *
  * PERCENTILE SEMANTICS:
  *   calculatePercentile(rank, total) returns:
@@ -120,35 +107,38 @@
  *
  *   This is "percentage of ranked students at or below this
  *   student's position, with rank 1 = 100%". It is NOT the
- *   statistics-textbook percentile. Documented here so a future
- *   reader does not "fix" it to some other formula.
+ *   statistics-textbook percentile.
+ *
+ * ENRICHED QUERY VARIANTS REMOVED (v30):
+ *   The enriched `getClassRankings(classId, week, includeStudentDetails)`
+ *   and `getStudentRank(classId, studentId, week, includeDetails)`
+ *   forms, and the standalone `getRankingsWithDetails(classId, week)`,
+ *   were removed. Names and student records belong to the aggregator
+ *   layer, not the ranking query surface.
+ *
+ *   The current API:
+ *     getClassRankings(classId, week)   — base records, decorated
+ *     getStudentRank(classId, sid, wk)  — base record, decorated
+ *
+ *   Callers that want names call CharacterQueries.getCharacterById
+ *   on the studentId, or go through the aggregator.
+ *
+ *   The only live consumer was the aggregator, which already calls
+ *   `getClassRankings(classId, week, false)` and then reads names
+ *   itself when it needs them. The enriched path was dead.
  *
  * TRANSACTION SNAPSHOT RULE:
  *   Every pipeline validate() callback resolves references against
  *   the appData argument it is handed. It does not read window.data.
- *   Preflight reads against window.data are for early UX feedback
- *   only; the pipeline re-checks against the snapshot.
- *
- *   Foreign keys (classId, studentId) are validated against the
- *   snapshot, not against AcademyClasses or CharacterQueries.
  *
  * WEEK PARSING:
  *   Week parsing goes through CalendarValidation.parseWeek, the
- *   canonical strict parser. No `parseInt` coercion. "5bananas"
- *   is rejected, not silently accepted as 5.
+ *   canonical strict parser.
  *
  * CASCADE STRICTNESS:
  *   stripCharacterRefs and stripClassRefs operate on a destructive
  *   cascade. A missing store is a no-op; a malformed store (present
- *   but not a plain object, or an array) is an error. Silently
- *   reporting a zero-count success on malformed state would let a
- *   corrupted store masquerade as "nothing to clean up".
- *
- * ENRICHED QUERY VARIANTS:
- *   getClassRankings(classId, week, true), getStudentRank(..., true),
- *   and getRankingsWithDetails attach studentName and student to
- *   each record. These are candidates for removal once their
- *   consumers migrate to the aggregator layer. Retained for now.
+ *   but not a plain object, or an array) is an error.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.ObjectUtils
@@ -156,9 +146,11 @@
  *   - window.ValidationUtils
  *   - window.CalendarValidation
  *   - window.CalendarConstants
- *   - window.AcademyPerformance
+ *   - window.AcademyPerformance        (calculateClassPerformance)
  *   - window.AcademyClasses
- *   - window.CharacterQueries
+ *   - window.CharacterQueries          (uniqueness validation on
+ *                                       candidate reference; not
+ *                                       used for names)
  *   - window.MutationPipeline
  *
  * DEPENDENCIES (LAZY, mandatory at call time):
@@ -208,8 +200,9 @@
         missing.push('CalendarConstants.MIN_WEEK/MAX_WEEK');
     }
 
-    if (!window.AcademyPerformance || typeof window.AcademyPerformance.calculateRanking !== 'function') {
-        missing.push('AcademyPerformance.calculateRanking');
+    if (!window.AcademyPerformance ||
+        typeof window.AcademyPerformance.calculateClassPerformance !== 'function') {
+        missing.push('AcademyPerformance.calculateClassPerformance');
     }
 
     if (!window.AcademyClasses || typeof window.AcademyClasses.getClass !== 'function') {
@@ -218,9 +211,6 @@
 
     if (!window.CharacterQueries || typeof window.CharacterQueries.getCharacterById !== 'function') {
         missing.push('CharacterQueries.getCharacterById');
-    }
-    if (!window.CharacterQueries || typeof window.CharacterQueries.getDisplayName !== 'function') {
-        missing.push('CharacterQueries.getDisplayName');
     }
 
     if (!window.MutationPipeline || typeof window.MutationPipeline.performMutation !== 'function') {
@@ -317,10 +307,6 @@
         return { success: true, data: data };
     }
 
-    /**
-     * Parse a week via the canonical parser.
-     * Returns an integer in [MIN_WEEK, MAX_WEEK], or null.
-     */
     function parseWeekStrict(week) {
         var parsed = CalendarValidation.parseWeek(week);
         if (parsed === null) {
@@ -332,12 +318,6 @@
         return parsed;
     }
 
-    /**
-     * Parse an integer strictly.
-     *
-     * Accepts numbers that are integers, or strings of pure digits.
-     * Rejects "5abc", "5.5", "", NaN, Infinity, non-integer numbers.
-     */
     function parseStrictInteger(value) {
         if (value === undefined || value === null) {
             return null;
@@ -546,8 +526,6 @@
 
         var filterClass = isNonEmptyString(classId) ? String(classId) : null;
 
-        // A provided-but-invalid week is a filter that matches
-        // nothing, not "no filter".
         var filterWeek = null;
         if (week !== undefined) {
             filterWeek = parseWeekStrict(week);
@@ -708,8 +686,6 @@
             }
         }
 
-        // Score fields. Each, when present and non-null, must be a
-        // finite non-negative number in [0, 100].
         var scoreFields = ['academicAverage', 'socialScore', 'overallScore'];
         for (var i = 0; i < scoreFields.length; i++) {
             var field = scoreFields[i];
@@ -762,8 +738,6 @@
             };
         }
 
-        // Score bounds. Each, when present and non-null, must be in
-        // [0, 100].
         var scoreFields = ['academicAverage', 'socialScore', 'overallScore'];
         for (var i = 0; i < scoreFields.length; i++) {
             var field = scoreFields[i];
@@ -782,10 +756,6 @@
         return { valid: true };
     }
 
-    /**
-     * Authoritative candidate validation against the transaction
-     * snapshot.
-     */
     function validateCandidateAgainstSnapshot(candidate, appData, excludeId) {
         var structural = validateCandidate(candidate);
         if (!structural.valid) {
@@ -1144,14 +1114,6 @@
         });
     }
 
-    /**
-     * Delete all rankings for a (class, week) pair.
-     *
-     * IDEMPOTENT CLEANUP: a (class, week) with no rankings deletes
-     * zero records and returns success. The operation is not scoped
-     * to the existence of the class; it is a bulk cleanup of a
-     * bucket, not a class-scoped mutation.
-     */
     function deleteClassRankings(classId, week) {
         if (!isNonEmptyString(classId)) {
             return Promise.resolve(failure('Class ID is required.'));
@@ -1210,64 +1172,26 @@
     // ============================================================
     // PUBLIC READ SURFACE (CLONES)
     // ============================================================
+    //
+    // Base records, decorated with a derived percentile.
+    //
+    // Names are NOT attached. Callers that need them call
+    // CharacterQueries.getCharacterById on the studentId, or route
+    // through the aggregator.
 
-    function getClassRankings(classId, week, includeStudentDetails) {
+    function getClassRankings(classId, week) {
         var rankings = getClassRankingsInternal(classId, week);
-
-        if (!includeStudentDetails) {
-            return decorateRankings(rankings);
-        }
-
-        var enriched = [];
-        for (var i = 0; i < rankings.length; i++) {
-            var rank = decorateRanking(rankings[i]);
-            var student = CharacterQueries.getCharacterById(rank.studentId);
-            if (student) {
-                rank.studentName = CharacterQueries.getDisplayName(student);
-                rank.student = student;
-            }
-            enriched.push(rank);
-        }
-
-        return enriched;
+        return decorateRankings(rankings);
     }
 
-    function getStudentRank(classId, studentId, week, includeDetails) {
+    function getStudentRank(classId, studentId, week) {
         var rank = getStudentRankInternal(classId, studentId, week);
 
         if (!rank) {
             return null;
         }
 
-        var result = decorateRanking(rank);
-
-        if (includeDetails) {
-            var student = CharacterQueries.getCharacterById(result.studentId);
-            if (student) {
-                result.studentName = CharacterQueries.getDisplayName(student);
-                result.student = student;
-            }
-
-            var allRankings = getClassRankingsInternal(classId, week);
-            result.totalRanked = allRankings.length;
-        }
-
-        return result;
-    }
-
-    function getRankingsWithDetails(classId, week) {
-        var rankings = getClassRankings(classId, week, true);
-        var summary = calculateRankingSummary(rankings);
-        var distribution = calculateRankDistribution(rankings);
-
-        return {
-            classId: classId,
-            week: week,
-            rankings: rankings,
-            summary: summary,
-            distribution: distribution,
-            count: rankings.length
-        };
+        return decorateRanking(rank);
     }
 
     function getRankings(classId, week) {
@@ -1312,11 +1236,11 @@
 
             if (rankValue < minRank) {
                 minRank = rankValue;
-                topStudent = rank.studentName || rank.studentId;
+                topStudent = rank.studentId;
             }
             if (rankValue > maxRank) {
                 maxRank = rankValue;
-                bottomStudent = rank.studentName || rank.studentId;
+                bottomStudent = rank.studentId;
             }
         }
 
@@ -1355,13 +1279,10 @@
             }
 
             if (!distribution[binLabel]) {
-                distribution[binLabel] = { count: 0, students: [] };
+                distribution[binLabel] = { count: 0 };
             }
 
             distribution[binLabel].count++;
-            if (rank.studentName) {
-                distribution[binLabel].students.push(rank.studentName);
-            }
         }
 
         return distribution;
@@ -1370,6 +1291,91 @@
     // ============================================================
     // AUTO-GENERATE RANKINGS FROM PERFORMANCE
     // ============================================================
+    //
+    // MIGRATION (v30):
+    //   This module used to call AcademyPerformance.calculateRanking,
+    //   which returned an ORDERED, RANK-ASSIGNED list. The
+    //   performance layer has been reduced to
+    //   calculateClassPerformance, which returns per-student
+    //   aggregates in input order without any ordering or rank.
+    //
+    //   The ordering and rank assignment now live HERE, in
+    //   assignRanks:
+    //     1. Sort the aggregates by score (overall, falling back to
+    //        academic), descending.
+    //     2. Skip entries with no score at all.
+    //     3. Assign rank 1 to the first placed entry, rank 2 to the
+    //        second, and so on. Ties are ordered by studentId.
+    //
+    //   The rank bound invariant (rank <= totalStudents) is satisfied
+    //   by construction, and validated by the pipeline.
+
+    /**
+     * Assign ranks to a list of performance aggregates.
+     *
+     * INPUT:
+     *   An array of { studentId, academicAverage, socialScore,
+     *   overallScore, disciplineCount, gradeCount }, in any order.
+     *
+     * OUTPUT:
+     *   A sorted array of the same shape plus a `rank` field. Only
+     *   entries with at least one score participate. Entries with
+     *   both academicAverage and overallScore null are DROPPED.
+     *
+     *   totalStudents (the count of participants) is returned
+     *   separately; callers use it as the record's denominator.
+     */
+    function assignRanks(entries) {
+        if (!Array.isArray(entries) || entries.length === 0) {
+            return { ranked: [], totalStudents: 0 };
+        }
+
+        var participants = [];
+        for (var i = 0; i < entries.length; i++) {
+            var e = entries[i];
+            if (!e || !isNonEmptyString(e.studentId)) { continue; }
+
+            var overall = isNumber(e.overallScore) ? e.overallScore : null;
+            var academic = isNumber(e.academicAverage) ? e.academicAverage : null;
+
+            if (overall === null && academic === null) {
+                continue;
+            }
+
+            participants.push({
+                studentId: String(e.studentId),
+                academicAverage: academic,
+                socialScore: isNumber(e.socialScore) ? e.socialScore : null,
+                overallScore: overall,
+                disciplineCount: isNumber(e.disciplineCount) ? e.disciplineCount : 0,
+                gradeCount: isNumber(e.gradeCount) ? e.gradeCount : 0
+            });
+        }
+
+        participants.sort(function(a, b) {
+            var aVal = a.overallScore !== null ? a.overallScore : a.academicAverage;
+            var bVal = b.overallScore !== null ? b.overallScore : b.academicAverage;
+
+            if (aVal === null && bVal === null) {
+                return a.studentId.localeCompare(b.studentId);
+            }
+            if (aVal === null) { return 1; }
+            if (bVal === null) { return -1; }
+            if (bVal !== aVal) { return bVal - aVal; }
+            return a.studentId.localeCompare(b.studentId);
+        });
+
+        var totalStudents = participants.length;
+
+        for (var j = 0; j < participants.length; j++) {
+            participants[j].rank = j + 1;
+        }
+
+        return {
+            ranked: participants,
+            totalStudents: totalStudents
+        };
+    }
 
     function autoGenerate(classId, week, options) {
         if (!isNonEmptyString(classId)) {
@@ -1403,16 +1409,14 @@
             return Promise.resolve(failure('No students found in this class.'));
         }
 
-        // ---- Ask performance for the ranked list ----
+        // ---- Ask performance for the per-student aggregates ----
         //
-        // calculateRanking is DEPRECATED. It is called with the
-        // three-argument signature: (studentIds, classId, week).
-        // The previous fourth argument (getCharacterById) was
-        // removed from its signature; names are resolved by the
-        // aggregator layer.
-        var rankingData;
+        // calculateClassPerformance returns aggregates in the same
+        // order as the input student IDs. It does NOT order them
+        // and it does NOT assign rank.
+        var aggregates;
         try {
-            rankingData = AcademyPerformance.calculateRanking(
+            aggregates = AcademyPerformance.calculateClassPerformance(
                 studentIds,
                 classId,
                 weekNum
@@ -1421,28 +1425,20 @@
             return Promise.resolve(failure('Failed to calculate performance: ' + e.message));
         }
 
-        if (!Array.isArray(rankingData) || rankingData.length === 0) {
+        if (!Array.isArray(aggregates) || aggregates.length === 0) {
             return Promise.resolve(failure('No performance data available for this class and week.'));
         }
 
-        // ---- Filter to students who were actually ranked ----
-        var rankedEntries = [];
-        for (var i = 0; i < rankingData.length; i++) {
-            var entry = rankingData[i];
-            if (!entry) { continue; }
-            if (entry.rank === null) { continue; }
-            var hasScore = (entry.overallScore !== null && entry.overallScore !== undefined) ||
-                           (entry.academicAverage !== null && entry.academicAverage !== undefined);
-            if (!hasScore) { continue; }
-            rankedEntries.push(entry);
-        }
+        // ---- Order and rank ----
+        var ranked = assignRanks(aggregates);
+        var rankedEntries = ranked.ranked;
+        var totalStudents = ranked.totalStudents;
 
         if (rankedEntries.length === 0) {
             return Promise.resolve(failure('No students have grades for this class and week.'));
         }
 
         // ---- Plan ----
-        var totalStudents = rankedEntries.length;
         var planned = [];
         var errors = [];
         var seenKeys = {};
@@ -1460,15 +1456,6 @@
             }
             seenKeys[uniqueKey] = true;
 
-            var rankPosition = data.rank;
-            if (rankPosition > totalStudents) {
-                errors.push({
-                    studentId: data.studentId,
-                    error: 'Rank ' + rankPosition + ' exceeds total students ' + totalStudents + '.'
-                });
-                continue;
-            }
-
             var existing = getStudentRankInternal(classId, data.studentId, weekNum);
 
             if (existing && !overwrite) {
@@ -1478,7 +1465,7 @@
 
             if (existing) {
                 var candidate = deepClone(existing);
-                candidate.rank = rankPosition;
+                candidate.rank = data.rank;
                 candidate.totalStudents = totalStudents;
                 candidate.academicAverage = data.academicAverage;
                 candidate.socialScore = data.socialScore;
@@ -1492,7 +1479,7 @@
                         classId: classId,
                         studentId: data.studentId,
                         week: weekNum,
-                        rank: rankPosition,
+                        rank: data.rank,
                         totalStudents: totalStudents,
                         academicAverage: data.academicAverage,
                         socialScore: data.socialScore,
@@ -1910,9 +1897,12 @@
         saveRankings: saveRankings,
 
         // ---- Public queries (synchronous, CLONES) ----
+        //
+        // Base records, decorated with a derived percentile.
+        // Names are NOT attached. See the ENRICHED QUERY VARIANTS
+        // REMOVED note in the header.
         getClassRankings: getClassRankings,
         getStudentRank: getStudentRank,
-        getRankingsWithDetails: getRankingsWithDetails,
         getRankings: getRankings,
         getRanking: getRanking,
 
