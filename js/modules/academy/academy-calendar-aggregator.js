@@ -216,12 +216,8 @@
  *   carries:
  *
  *     {
- *       instructorFree:  boolean,   // no occurrence anywhere in
- *                                   // the Academy, at this slot,
- *                                   // across the candidate range
- *       allStudentsFree: boolean,   // additionally, none of the named
- *                                   // students has any occurrence at
- *                                   // the slot across the range
+ *       instructorFree:  boolean,
+ *       allStudentsFree: boolean,
  *       weeksFree:       number     // consecutive weeks from the
  *                                   // display week through
  *                                   // discipline.endWeek during
@@ -260,6 +256,20 @@
  *     occurrence anywhere — their other disciplines, their other
  *     groups, their commitments, anything the projector emits for
  *     them — across the candidate range.
+ *
+ *   PER-WEEK PROJECTION:
+ *     The highlight computation projects each week in the range
+ *     exactly once per resource (once for the instructor, once per
+ *     selected student). The per-cell work is then a map lookup.
+ *
+ *     An earlier revision called the per-week busy predicates
+ *     inside a loop over cells × weeks × students. Each per-week
+ *     predicate re-projects the entire academy from scratch, so an
+ *     84-cell grid across a 24-week range with 1 student issued
+ *     roughly 4,000 full academy projections per render. Measured
+ *     cost: ~4.7 seconds. The fix is the same shape the batch
+ *     predicates already have: project the range, then answer
+ *     every cell from the projection.
  *
  *   The highlight map is FLAT, keyed by `"${day}:${hour}"`. A flat
  *   key makes the renderer's per-cell lookup a single object
@@ -1082,12 +1092,22 @@
     //
     // THE CANDIDATE RANGE IS [displayWeek, discipline.endWeek].
     // That is what a new session on this discipline will occupy.
-    // The highlight predicates and the write path both use this
-    // range, which is what makes them agree.
     //
-    // The predicates are ACADEMY-WIDE. An instructor teaching a
-    // different discipline at the same (day, hour) is busy here.
-    // See the file header for the reasoning.
+    // THE PREDICATES ARE ACADEMY-WIDE. See the file header.
+    //
+    // PER-WEEK PROJECTION:
+    //   The highlight computation projects each week in the range
+    //   exactly once per resource (once for the instructor, once per
+    //   selected student). The per-cell work is then a map lookup.
+    //
+    //   An earlier revision called the per-week busy predicates
+    //   inside a loop over cells × weeks × students. Each per-week
+    //   predicate re-projects the entire academy from scratch, so an
+    //   84-cell grid across a 24-week range with 1 student issued
+    //   roughly 4,000 full academy projections per render. Measured
+    //   cost: ~4.7 seconds. The fix is the same shape the batch
+    //   predicates already have: project the range, then answer
+    //   every cell from the projection.
     //
     // OPTIONS:
     //   {
@@ -1141,9 +1161,8 @@
         // ---- Resolve the candidate range ----
         //
         // [displayWeek, discipline.endWeek]. When the discipline
-        // has no endWeek, the range is open-ended; the predicates
-        // pass null endWeek through to RangeUtils, which treats it
-        // as +infinity.
+        // has no endWeek, the range is open-ended; the range end
+        // is the calendar maximum.
 
         var discipline = AcademyDisciplines.getDiscipline(disciplineId);
         var rangeEndWeek = null;
@@ -1157,33 +1176,53 @@
             }
         }
 
+        var rangeEndForWalk = (rangeEndWeek === null)
+            ? CalendarConstants.MAX_WEEK
+            : rangeEndWeek;
+
         var ATC = requireAcademyTeachingCollisions(
             'getDisciplineScheduleHighlightViewModel'
         );
 
-        // ---- Build the busy maps ----
+        // ---- Build per-week busy maps ----
         //
-        // The two calls are made once, across the whole range. The
-        // per-cell work is then a lookup, not a projector call.
+        // Keyed by week. Each entry is a { [cellKey]: true } map for
+        // that week. Projecting the range costs
+        // (rangeEndForWalk - weekNum + 1) projector calls per
+        // resource, once.
+        //
+        // An earlier revision unioned the range into a single map
+        // and then re-projected per cell to recover the per-week
+        // answer. That is the bug this revision fixes.
 
-        var instructorBusyMap = Object.create(null);
+        var instructorBusyByWeek = Object.create(null);
         if (instructorId !== null) {
-            instructorBusyMap = ATC.buildInstructorBusyMap(
-                instructorId,
-                weekNum,
-                rangeEndWeek,
-                {}
-            );
+            for (var wInstr = weekNum;
+                 wInstr <= rangeEndForWalk;
+                 wInstr++) {
+                instructorBusyByWeek[wInstr] =
+                    ATC.buildInstructorBusyMap(
+                        instructorId,
+                        wInstr,
+                        wInstr,
+                        {}
+                    );
+            }
         }
 
-        var studentsBusyMap = Object.create(null);
+        var studentsBusyByWeek = Object.create(null);
         if (studentIds.length > 0) {
-            studentsBusyMap = ATC.buildStudentsBusyMap(
-                studentIds,
-                weekNum,
-                rangeEndWeek,
-                {}
-            );
+            for (var wStud = weekNum;
+                 wStud <= rangeEndForWalk;
+                 wStud++) {
+                studentsBusyByWeek[wStud] =
+                    ATC.buildStudentsBusyMap(
+                        studentIds,
+                        wStud,
+                        wStud,
+                        {}
+                    );
+            }
         }
 
         // ---- Seed the highlight map with every cell ----
@@ -1205,148 +1244,78 @@
                  hour++) {
                 var key0 = makeHighlightKey(day, hour);
 
-                var instructorFree = instructorId === null
-                    ? true
-                    : instructorBusyMap[key0] !== true;
+                var instructorFreeAtDisplayWeek =
+                    instructorId === null ||
+                    instructorBusyByWeek[weekNum][key0] !== true;
 
-                var studentsFree = studentIds.length === 0
-                    ? true
-                    : studentsBusyMap[key0] !== true;
+                var studentsFreeAtDisplayWeek =
+                    studentIds.length === 0 ||
+                    studentsBusyByWeek[weekNum][key0] !== true;
 
-                var allFree = instructorFree && studentsFree;
+                var allFreeAtDisplayWeek =
+                    instructorFreeAtDisplayWeek &&
+                    studentsFreeAtDisplayWeek;
 
                 highlights[key0] = {
-                    instructorFree: instructorFree,
-                    allStudentsFree: allFree,
-                    weeksFree: allFree ? 1 : 0
+                    instructorFree: instructorFreeAtDisplayWeek,
+                    allStudentsFree: allFreeAtDisplayWeek,
+                    weeksFree: allFreeAtDisplayWeek ? 1 : 0
                 };
             }
         }
 
-        // ---- Compute weeksFree ----
+        // ---- Compute weeksFree from the per-week maps ----
         //
-        // The busy maps are computed across the whole range, so
-        // they cannot tell us WHICH weeks are busy — only that
-        // the slot is busy somewhere in the range.
-        //
-        // To compute the run length, we need per-week busy
-        // information. That means one projector-window walk per
-        // cell's streak, bounded by the range.
-        //
-        // The cost is bounded: for each cell that is fully free
-        // in the whole range (all of them, if there are no
-        // collisions), we walk forward until we find a busy week.
-        // For a typical case — no collisions, range of 10 weeks —
-        // that is 84 cells × 10 weeks = 840 cheap lookups, all
-        // in-memory after the initial projector calls inside
-        // buildBusyMap.
-        //
-        // The alternative — recomputing the busy maps per week —
-        // would be 10 projector calls per cell. Not acceptable.
-        //
-        // The compromise: use the existing maps to determine the
-        // whole-range answer, then walk the range with a
-        // per-week projector query ONLY for cells that are fully
-        // free in the whole range. Cells that are busy somewhere
-        // in the range already have weeksFree = 0 and do not need
-        // the walk.
+        // For each cell that is free at the display week, walk the
+        // range forward until the cell is busy in any week, or
+        // until the range ends. Every lookup is a plain object
+        // access into a map that was built once.
 
-        var rangeEndForWalk = (rangeEndWeek === null)
-            ? CalendarConstants.MAX_WEEK
-            : rangeEndWeek;
+        var maxWeeksFree = rangeEndForWalk - weekNum + 1;
 
-        for (day = CalendarConstants.MIN_DAY;
-             day <= CalendarConstants.MAX_DAY;
-             day++) {
-            for (hour = CalendarConstants.CALENDAR_START_HOUR;
-                 hour <= CalendarConstants.CALENDAR_END_HOUR;
-                 hour++) {
-                var key = makeHighlightKey(day, hour);
-                var entry = highlights[key];
+        if (maxWeeksFree > 1) {
+            for (day = CalendarConstants.MIN_DAY;
+                 day <= CalendarConstants.MAX_DAY;
+                 day++) {
+                for (hour = CalendarConstants.CALENDAR_START_HOUR;
+                     hour <= CalendarConstants.CALENDAR_END_HOUR;
+                     hour++) {
+                    var key = makeHighlightKey(day, hour);
+                    var entry = highlights[key];
 
-                if (entry.allStudentsFree !== true) { continue; }
-                if (rangeEndForWalk <= weekNum) { continue; }
+                    if (entry.allStudentsFree !== true) {
+                        continue;
+                    }
 
-                entry.weeksFree = countConsecutiveFreeWeeks(
-                    instructorId,
-                    studentIds,
-                    day,
-                    hour,
-                    weekNum,
-                    rangeEndForWalk
-                );
+                    var runLength = 1;
+
+                    for (var wWalk = weekNum + 1;
+                         wWalk <= rangeEndForWalk;
+                         wWalk++) {
+                        var instructorBusyThisWeek =
+                            instructorId !== null &&
+                            instructorBusyByWeek[wWalk] &&
+                            instructorBusyByWeek[wWalk][key] === true;
+
+                        if (instructorBusyThisWeek) { break; }
+
+                        var studentsBusyThisWeek =
+                            studentIds.length > 0 &&
+                            studentsBusyByWeek[wWalk] &&
+                            studentsBusyByWeek[wWalk][key] === true;
+
+                        if (studentsBusyThisWeek) { break; }
+
+                        runLength++;
+                    }
+
+                    entry.weeksFree = runLength;
+                }
             }
         }
 
         baseVM.highlights = highlights;
         return baseVM;
-    }
-
-    /**
-     * Count how many consecutive weeks, starting from `startWeek`
-     * and ending at `endWeek` inclusive, are free at (day, hour)
-     * for the given instructor and students.
-     *
-     * Returns 1 when only the display week is free. Returns the
-     * full count when the slot is free across the whole range.
-     *
-     * Uses the collision predicates week-by-week. Each call to
-     * the predicates walks the instructor's / students'
-     * occurrences for one week; the underlying projector is
-     * in-memory, so this is cheap per call.
-     *
-     * The bound is the range end, which the caller already
-     * computed from the discipline.
-     */
-    function countConsecutiveFreeWeeks(
-        instructorId,
-        studentIds,
-        day,
-        hour,
-        startWeek,
-        endWeek
-    ) {
-        var ATC = window.AcademyTeachingCollisions;
-        if (!ATC) { return 1; }
-
-        var count = 0;
-
-        for (var w = startWeek; w <= endWeek; w++) {
-            var busy = false;
-
-            if (instructorId !== null) {
-                try {
-                    if (ATC.isInstructorBusy(
-                        instructorId, day, hour, 1, w, w, {}
-                    ) === true) {
-                        busy = true;
-                    }
-                } catch (e) {
-                    busy = true;
-                }
-            }
-
-            if (!busy && studentIds.length > 0) {
-                for (var s = 0; s < studentIds.length; s++) {
-                    try {
-                        if (ATC.isStudentBusy(
-                            studentIds[s], day, hour, 1, w, w, {}
-                        ) === true) {
-                            busy = true;
-                            break;
-                        }
-                    } catch (e) {
-                        busy = true;
-                        break;
-                    }
-                }
-            }
-
-            if (busy) { break; }
-            count++;
-        }
-
-        return count === 0 ? 1 : count;
     }
 
     // ============================================================
