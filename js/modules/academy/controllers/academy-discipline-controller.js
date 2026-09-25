@@ -22,8 +22,11 @@
  *   - The Schedule tab's highlight filter: selected instructor,
  *     selected student set, check-weeks count. Cleared on unmount.
  *   - The Schedule tab's highlight filter panel disclosure (open
- *     vs. closed). This is a DOM-only state, not module state; the
- *     controller flips an attribute and an inline style.
+ *     vs. closed). This is a DOM-only state.
+ *   - The Schedule tab's free-slot candidate students. This is a
+ *     DOMAIN READ, now owned by the controller. It reads
+ *     AcademyAggregator.getFreeSlotCandidateStudentsViewModel and
+ *     passes the result to the view as `highlightFilterVM`.
  *   - Per-field and per-band validation errors on the draft.
  *   - The list filter (type, search) as feature state.
  *   - The search debounce timer.
@@ -46,12 +49,17 @@
  *       schedule-discipline-slot-open      — open the session actions
  *                                             modal for the clicked
  *                                             occupied cell
- *   - The Schedule tab's highlight filter actions:
+ *   - The Schedule tab's free-slots actions:
  *       discipline-schedule-toggle-filter-panel — open/close the
  *                                                 filter form panel
  *       discipline-schedule-find-free-slot      — read the filter
  *                                                 form, apply it
  *       discipline-schedule-clear-highlight     — clear the filter
+ *   - The Schedule tab's group management:
+ *       discipline-manage-groups           — open the group
+ *                                             management modal
+ *       discipline-rebalance               — open the rebalance
+ *                                             modal
  *
  * WHAT THIS DOES NOT OWN:
  *   - The content host. The shell provides it.
@@ -68,10 +76,15 @@
  *   - The discipline sessions panel content.
  *     AcademyDisciplineSessionsPanel produces the VM and renders the
  *     HTML; the controller mounts it and handles the inline picker.
+ *   - The free-slot candidate students list. AcademyAggregator owns
+ *     the read; the controller passes it to the view.
  *   - The instructor slot modal. AcademyScheduleInstructorModal owns
  *     it.
  *   - The session actions modal. AcademySessionActionsModal owns it.
  *   - The session edit form. AcademySessionFormModal owns it.
+ *   - The group management modal. AcademyGroupManagementModal owns
+ *     it.
+ *   - The rebalance modal. AcademyRebalanceModal owns it.
  *
  * EDITOR BOUNDS (v31):
  *   The editor VM carries four bounds objects that the view uses
@@ -83,96 +96,51 @@
  *     bandPercentBounds   { min, max, step }
  *
  *   These are the single source of truth for those attributes.
- *   The bounds mirror the same limits AcademyDisciplines enforces
- *   at the domain layer. The view asserts that they are present;
- *   a missing bound is a controller bug, not a reason for the view
- *   to invent one.
  *
  * SCHEDULE TAB:
- *   The Schedule tab renders a week selector, a highlight filter
- *   panel, a grid host, an enrollment summary host, and a
- *   discipline sessions host.
+ *   The Schedule tab renders a week selector, header actions
+ *   (Manage Groups, Rebalance Groups), a free-slots filter panel,
+ *   a grid host, an enrollment summary host, and a discipline
+ *   sessions host.
  *
  *   The grid is mounted by this controller via
- *   AcademyCalendarAggregator.getDisciplineScheduleViewModel,
- *   which projects Projector.projectForClassDiscipline. One
- *   discipline, one class, one week, every instructor.
- *
+ *   AcademyCalendarAggregator.getDisciplineScheduleViewModel.
  *   When a highlight filter is active, the controller calls
- *   getDisciplineScheduleHighlightViewModel instead, which
- *   returns the same VM plus a flat `highlights` map. The
- *   renderer tints cells based on the map. Highlights are purely
- *   decorative; the grid's action dispatch is unchanged.
+ *   getDisciplineScheduleHighlightViewModel instead.
  *
  *   The class is AcademyUI.getSelectedClassId(). When no class is
- *   selected, the controller renders an explicit empty state into
- *   each host instead of inventing a class.
- *
- *   Rest days apply (the grid is class-scoped).
+ *   selected, the controller renders explicit empty states.
  *
  * GRID EDITABILITY:
  *   The discipline grid is interactive. Empty cells dispatch
  *   `schedule-discipline-assign`; occupied cells dispatch
- *   `schedule-discipline-slot-open`. The renderer emits both
- *   actions because the VM carries `canEditDisciplineSlot: true`.
- *
- *   Clicking an empty cell opens AcademyScheduleInstructorModal in
- *   picker mode with the discipline pre-selected and locked. The
- *   user picks an instructor (or has one auto-selected), then
- *   picks a group, duration, and location. The write path is
- *   AcademySchedule.scheduleInstructorSlot — unchanged.
- *
- *   Clicking an occupied cell opens AcademySessionActionsModal
- *   with the session id and group id read from the cell. The
- *   modal offers Edit and Delete. Continuation cells carry the
- *   same sessionId as their start cell, so the controller does
- *   not need to walk backward.
+ *   `schedule-discipline-slot-open`.
  *
  * HIGHLIGHT FILTER:
  *   The filter lives in the Schedule tab header. Three inputs:
  *
- *     - instructor select (from the class's instructors for this
- *       discipline this week)
- *     - student multi-select (from the class roster, filtered to
- *       students enrolled in this discipline)
+ *     - instructor select
+ *     - student multi-select (unassigned, eligible students only)
  *     - check-weeks number (default 4, max 12)
  *
- *   The panel is rendered by the view; the controller reads the
- *   form on submit and stamps `_scheduleHighlight`. The next
- *   render calls the highlight VM projection and the renderer
- *   tints accordingly.
+ *   The student list is provided by the aggregator's
+ *   getFreeSlotCandidateStudentsViewModel. It has already been
+ *   filtered to unassigned, non-eliminated, non-deceased,
+ *   enrolled students. The controller builds the filter VM the
+ *   view consumes; it does not re-filter.
+ *
+ *   The instructor list is built here via
+ *   AcademyClasses.getClassInstructorIds + CharacterQueries.
  *
  *   DISCLOSURE STATE:
  *     The panel's open/closed state is DOM-only. The launcher emits
  *     data-action="discipline-schedule-toggle-filter-panel"; the
  *     controller flips data-expanded on the wrapper, the caret
- *     glyph, and the inline display on the body. The state is not
- *     held on module state, because nothing else reads it and a
- *     re-render resets it to closed, which is the desired default.
+ *     glyph, and the inline display on the body. When a filter is
+ *     ACTIVE, the wrapper is force-open and the launcher is
+ *     disabled.
  *
- *     When a filter is ACTIVE, the wrapper is force-open and the
- *     launcher is disabled; the toggle action is a no-op.
- *
- *   The filter state is CLEARED on unmount. This is deliberate:
- *   a returning user should not land on a grid still highlighted
- *   for a different discipline's students.
- *
- * ENROLLMENT SUMMARY:
- *   The panel below the grid answers two questions: how many
- *   students are enrolled in this discipline for this class, and
- *   how many of them do not have a group assigned.
- *
- *   Both are answered by
- *   AcademyCalendarAggregator.getDisciplineScheduleSummaryViewModel.
- *   The enrollment population and the assigned predicate are both
- *   not week-scoped. The week is passed through only for display
- *   and for the elimination flag.
- *
- * DISCIPLINE SESSIONS PANEL:
- *   The panel below the enrollment summary. Lists every teaching
- *   group of the discipline for the week, across every instructor,
- *   with each group's sessions and roster. Supports an inline
- *   candidate picker per group and a per-student remove button.
+ *   The filter state is CLEARED on unmount.
  *
  * PICKER STAMPING:
  *   AcademyDisciplineSessionsPanel.renderGroupBlock reads two
@@ -189,8 +157,7 @@
  *   - Draft is created by openEditor('create'), or by selecting a
  *     discipline row (which initializes from the record).
  *   - Draft is cleared by cancel ('empty' mode).
- *   - Draft is cleared by unmount (view switch away from
- *     Disciplines).
+ *   - Draft is cleared by unmount.
  *   - The list filter is NOT cleared by unmount.
  *   - The search debounce timer IS cleared by unmount.
  *   - The discipline-sessions picker state IS cleared by unmount.
@@ -228,11 +195,14 @@
  *   - window.AcademyDisciplineSessionsPanel
  *   - window.AcademyCharacterDetailAggregator
  *   - window.AcademyTeachingGroups
+ *   - window.AcademyClasses            (free-slot instructor list)
+ *   - window.CharacterQueries          (free-slot instructor names)
  *   - window.CalendarRenderer
  *   - window.AcademyCRUDModals
  *   - window.AcademyScheduleInstructorModal
  *   - window.AcademySessionActionsModal
- *   - window.CharacterQueries
+ *   - window.AcademyGroupManagementModal
+ *   - window.AcademyRebalanceModal
  */
 
 (function() {
@@ -267,6 +237,13 @@
         typeof AcademyAggregator.getDisciplineListViewModel !== 'function' ||
         typeof AcademyAggregator.getDisciplineEditorViewModel !== 'function') {
         _missing.push('AcademyAggregator discipline VMs');
+    }
+    if (!AcademyAggregator ||
+        typeof AcademyAggregator.getFreeSlotCandidateStudentsViewModel !==
+            'function') {
+        _missing.push(
+            'AcademyAggregator.getFreeSlotCandidateStudentsViewModel'
+        );
     }
     if (!AcademyDisciplines ||
         typeof AcademyDisciplines.getDiscipline !== 'function' ||
@@ -333,6 +310,22 @@
 
     function getSessionActionsModal() {
         return window.AcademySessionActionsModal || null;
+    }
+
+    function getGroupManagementModal() {
+        return window.AcademyGroupManagementModal || null;
+    }
+
+    function getRebalanceModal() {
+        return window.AcademyRebalanceModal || null;
+    }
+
+    function getAcademyClasses() {
+        return window.AcademyClasses || null;
+    }
+
+    function getCharacterQueries() {
+        return window.CharacterQueries || null;
     }
 
     // ============================================================
@@ -445,16 +438,6 @@
     //     studentIds:   string[],
     //     checkWeeks:   number
     //   }
-    //
-    // When non-null, the grid uses the highlight VM projection.
-    // Cleared on unmount and by the "clear highlight" action.
-    //
-    // NOTE: the filter panel's open/closed DISCLOSURE state is not
-    // stored here. It lives in the DOM (data-expanded on the
-    // wrapper, style.display on the body). The controller flips it
-    // directly. A re-render resets the panel to closed by
-    // construction, because the view emits the closed markup unless
-    // a filter is active; that is the desired default.
     var _scheduleHighlight = null;
 
     // ============================================================
@@ -495,6 +478,160 @@
     }
 
     // ============================================================
+    // HIGHLIGHT FILTER VM
+    // ============================================================
+    //
+    // Assembles the VM the view consumes for the free-slots filter
+    // panel:
+    //
+    //   {
+    //     students:    [ { id, name }, ... ],
+    //     instructors: [ { id, name }, ... ],
+    //     unavailable: boolean
+    //   }
+    //
+    // `students` comes from the aggregator's
+    // getFreeSlotCandidateStudentsViewModel, which has already
+    // filtered to unassigned, eligible, enrolled students. The
+    // controller does NOT re-filter.
+    //
+    // `instructors` comes from AcademyClasses.getClassInstructorIds
+    // (week-scoped, discipline-scoped), with display names resolved
+    // via CharacterQueries.
+    //
+    // `unavailable` is true when:
+    //   - the discipline is an unsaved draft (no id)
+    //   - no class is selected
+    //   - the schedule week cannot be resolved
+    //
+    // When `unavailable` is true, `students` and `instructors` are
+    // empty arrays. The view is responsible for rendering the
+    // appropriate message.
+
+    function buildHighlightFilterVM() {
+        var result = {
+            students: [],
+            instructors: [],
+            unavailable: false
+        };
+
+        // Discipline must be persisted.
+        if (!_disciplineDraft ||
+            !isNonEmptyString(_disciplineDraft.id)) {
+            result.unavailable = true;
+            return result;
+        }
+
+        // Class must be selected.
+        var classId = AcademyUI.getSelectedClassId();
+        if (!isNonEmptyString(classId)) {
+            result.unavailable = true;
+            return result;
+        }
+
+        // Week must resolve.
+        var week = resolveScheduleWeek();
+        if (week === null) {
+            result.unavailable = true;
+            return result;
+        }
+
+        var disciplineId = String(_disciplineDraft.id);
+        var targetClass = String(classId);
+
+        // ---- Students ----
+        //
+        // The aggregator throws when AcademyTeachingGroups is
+        // missing. That is a load-order bug, not a data problem.
+        // Catch it here so the filter panel renders "unavailable"
+        // rather than crashing the render.
+        try {
+            var studentsVM = AcademyAggregator
+                .getFreeSlotCandidateStudentsViewModel(
+                    targetClass,
+                    disciplineId,
+                    week
+                );
+
+            if (studentsVM && Array.isArray(studentsVM.students)) {
+                result.students = studentsVM.students;
+            }
+        } catch (e) {
+            console.warn(
+                '[AcademyDisciplineController] ' +
+                'getFreeSlotCandidateStudentsViewModel threw:', e
+            );
+            result.students = [];
+        }
+
+        // ---- Instructors ----
+        //
+        // Week-scoped, discipline-scoped. Same source the instructor
+        // modal's picker uses.
+        result.instructors = buildInstructorOptions(
+            targetClass, disciplineId, week
+        );
+
+        return result;
+    }
+
+    function buildInstructorOptions(classId, disciplineId, week) {
+        var AcademyClasses = getAcademyClasses();
+        var CQ = getCharacterQueries();
+
+        if (!AcademyClasses ||
+            typeof AcademyClasses.getClassInstructorIds !== 'function') {
+            return [];
+        }
+        if (!CQ ||
+            typeof CQ.getCharacterById !== 'function' ||
+            typeof CQ.getDisplayName !== 'function') {
+            return [];
+        }
+
+        var ids = [];
+        try {
+            ids = AcademyClasses.getClassInstructorIds(
+                classId,
+                week,
+                { disciplineId: disciplineId }
+            ) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademyDisciplineController] getClassInstructorIds ' +
+                'threw:', e
+            );
+            return [];
+        }
+
+        if (!Array.isArray(ids)) { return []; }
+
+        var seen = Object.create(null);
+        var result = [];
+
+        for (var i = 0; i < ids.length; i++) {
+            if (!isNonEmptyString(ids[i])) { continue; }
+            var id = String(ids[i]);
+            if (seen[id]) { continue; }
+            seen[id] = true;
+
+            var char = CQ.getCharacterById(id);
+            if (!char) { continue; }
+
+            var name = CQ.getDisplayName(char);
+            if (!isNonEmptyString(name)) { name = 'Unknown'; }
+
+            result.push({ id: id, name: name });
+        }
+
+        result.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
+
+        return result;
+    }
+
+    // ============================================================
     // RENDER
     // ============================================================
 
@@ -511,6 +648,7 @@
         );
         var editorVM = buildEditorVM();
         var scheduleWeek = resolveScheduleWeek();
+        var highlightFilterVM = buildHighlightFilterVM();
 
         var html;
         try {
@@ -522,7 +660,8 @@
                 total: listVM.total,
                 activeTab: _activeDisciplineTab,
                 scheduleWeek: scheduleWeek,
-                scheduleHighlightVM: buildScheduleHighlightVM()
+                scheduleHighlightVM: buildScheduleHighlightVM(),
+                highlightFilterVM: highlightFilterVM
             });
         } catch (e) {
             console.warn(
@@ -555,10 +694,6 @@
 
     /**
      * Build the editor VM.
-     *
-     * Returns null in 'empty' mode. Otherwise, it takes the
-     * aggregator's editor VM and attaches the four bounds objects
-     * the view requires.
      */
     function buildEditorVM() {
         if (_disciplineDraftMode === 'empty' || !_disciplineDraft) {
@@ -582,21 +717,13 @@
     }
 
     /**
-     * Build the highlight VM the view renders in the Schedule tab
-     * header, or null when no filter is active.
-     *
-     * The view uses this to render the "filter is active" summary
-     * (instructor name, student count, weeks count) and the Clear
-     * button. When null, the view renders the launcher and the
-     * filter form (collapsed by default).
-     *
-     * We resolve the instructor's display name here so the view
-     * does not need CharacterQueries.
+     * Build the highlight VM the view renders when a filter is
+     * active, or null when no filter is active.
      */
     function buildScheduleHighlightVM() {
         if (!_scheduleHighlight) { return null; }
 
-        var CQ = window.CharacterQueries;
+        var CQ = getCharacterQueries();
         var instructorName = '';
         if (CQ && typeof CQ.getCharacterById === 'function') {
             var char = CQ.getCharacterById(
@@ -624,18 +751,6 @@
     // SCHEDULE GRID MOUNT
     // ============================================================
 
-    /**
-     * Mount the discipline schedule grid into its host.
-     *
-     * When a highlight filter is active, uses
-     * getDisciplineScheduleHighlightViewModel instead of the base
-     * projection. Both return the same VM shape; the highlight
-     * version adds a `highlights` map.
-     *
-     * The renderVM passed to CalendarRenderer carries
-     * `canEditDisciplineSlot: true` so the renderer emits the
-     * discipline-scoped action names on empty and occupied cells.
-     */
     function mountDisciplineScheduleGridIfPresent(disciplineId, week) {
         var host = document.getElementById(
             'academy-discipline-schedule-host'
@@ -1075,6 +1190,14 @@
                 e.preventDefault();
                 handleScheduleDisciplineSlotOpen(actionEl);
                 return;
+            case 'discipline-manage-groups':
+                e.preventDefault();
+                handleManageGroups();
+                return;
+            case 'discipline-rebalance':
+                e.preventDefault();
+                handleRebalance();
+                return;
             case 'discipline-schedule-toggle-filter-panel':
                 e.preventDefault();
                 handleToggleHighlightFilterPanel(actionEl);
@@ -1222,17 +1345,6 @@
     // GRID CELL ACTIONS
     // ============================================================
 
-    /**
-     * Empty-cell click on the discipline grid.
-     *
-     * Opens the instructor modal in picker mode, pre-scoped to this
-     * discipline. The discipline is locked (the user clicked a cell
-     * on that discipline's grid). The user picks an instructor
-     * (unless there is exactly one, in which case it is
-     * auto-selected), then picks a group, duration, and location.
-     *
-     * The class and week come from the controller's own state.
-     */
     function handleScheduleDisciplineAssign(actionEl) {
         if (!actionEl || !actionEl.dataset) { return; }
 
@@ -1283,13 +1395,6 @@
         });
     }
 
-    /**
-     * Occupied-cell click on the discipline grid.
-     *
-     * Opens the session actions modal with the session id read from
-     * the cell. Continuation cells carry the same sessionId as their
-     * start cell, so no backward-walk is needed.
-     */
     function handleScheduleDisciplineSlotOpen(actionEl) {
         if (!actionEl || !actionEl.dataset) { return; }
 
@@ -1332,21 +1437,78 @@
     }
 
     // ============================================================
+    // GROUP MANAGEMENT + REBALANCE
+    // ============================================================
+
+    function handleManageGroups() {
+        if (!_disciplineDraft || !_disciplineDraft.id) {
+            notify('Save the discipline first.', 'error');
+            return;
+        }
+
+        var classId = AcademyUI.getSelectedClassId();
+        if (!isNonEmptyString(classId)) {
+            notify('Select a class first.', 'error');
+            return;
+        }
+
+        var Modal = getGroupManagementModal();
+        if (!Modal || typeof Modal.openModal !== 'function') {
+            notify('Group management is not available.', 'error');
+            return;
+        }
+
+        var ctx = getContext();
+
+        Modal.openModal({
+            classId: String(classId),
+            disciplineId: String(_disciplineDraft.id),
+            onClose: function() {
+                ctx.onChange();
+            }
+        });
+    }
+
+    function handleRebalance() {
+        if (!_disciplineDraft || !_disciplineDraft.id) {
+            notify('Save the discipline first.', 'error');
+            return;
+        }
+
+        var classId = AcademyUI.getSelectedClassId();
+        if (!isNonEmptyString(classId)) {
+            notify('Select a class first.', 'error');
+            return;
+        }
+
+        var week = resolveScheduleWeek();
+        if (week === null) {
+            notify('Select a valid week.', 'error');
+            return;
+        }
+
+        var Modal = getRebalanceModal();
+        if (!Modal || typeof Modal.openModal !== 'function') {
+            notify('Rebalance is not available.', 'error');
+            return;
+        }
+
+        var ctx = getContext();
+
+        Modal.openModal({
+            classId: String(classId),
+            disciplineId: String(_disciplineDraft.id),
+            week: week,
+            onClose: function() {
+                ctx.onChange();
+            }
+        });
+    }
+
+    // ============================================================
     // HIGHLIGHT FILTER
     // ============================================================
 
-    /**
-     * Toggle the highlight filter panel's disclosure.
-     *
-     * DOM-only. Flips data-expanded on the wrapper, the caret glyph,
-     * and the inline display on the body.
-     *
-     * When a filter is active, the wrapper is force-open and the
-     * launcher is disabled; the toggle is a no-op. That is
-     * deliberate: an active filter has no "closed" state that makes
-     * sense, because the grid is highlighted. The user clears the
-     * filter (which closes the panel) via the Clear button.
-     */
     function handleToggleHighlightFilterPanel(buttonEl) {
         if (!buttonEl || typeof buttonEl.closest !== 'function') {
             return;
@@ -1378,16 +1540,6 @@
         }
     }
 
-    /**
-     * Read the highlight filter form, validate, and apply.
-     *
-     * On success, stores the filter on _scheduleHighlight and
-     * triggers a re-render. The next render uses the highlight VM
-     * projection.
-     *
-     * On validation failure, notifies and returns without touching
-     * state.
-     */
     function handleFindFreeSlotSubmit() {
         if (!_host || typeof _host.querySelector !== 'function') {
             return;
@@ -1704,7 +1856,7 @@
         }
 
         var name = 'this student';
-        var CQ = window.CharacterQueries;
+        var CQ = getCharacterQueries();
         if (CQ && typeof CQ.getCharacterById === 'function') {
             var char = CQ.getCharacterById(charId);
             if (char) {
@@ -2060,10 +2212,6 @@
         // The schedule week is deliberately NOT cleared.
         // The discipline-sessions picker state IS cleared.
         // The schedule highlight filter IS cleared.
-        //
-        // The highlight filter panel's DOM disclosure state is not
-        // module state and is not cleared here; it disappears with
-        // the host's innerHTML when the shell re-renders.
 
         _openDisciplineSessionsGroupId = null;
         _openDisciplineSessionsCandidates = null;
