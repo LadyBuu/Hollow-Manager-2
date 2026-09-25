@@ -144,22 +144,28 @@
  *        Ties broken by groupId.
  *        Place the student.
  *
- *   5. Local improvement — bounded swap passes:
- *      While there is an improving swap and we have not exceeded
- *      MAX_SWAP_PASSES:
- *        For each pair (studentA in an over-target group,
- *                      studentB in an under-target group):
- *          If swapping them reduces the sum of squared deviations
- *          AND neither student collides in the other's group AND
- *          neither student's own group is unchanged by the swap
- *          in the trivial sense:
- *            Perform the swap.
+ *   5. Local improvement — bounded MOVE passes:
+ *      While there is an improving move and we have not exceeded
+ *      MAX_MOVE_PASSES:
+ *        For each pair (over-target group, under-target group):
+ *          For each student in the over-target group who is
+ *          allowed in the under-target group:
+ *            If moving that student reduces the sum of squared
+ *            deviations:
+ *              Perform the move.
  *
- *      A "swap" here means: A and B exchange groups. This is the
- *      simplest improvement move that respects hard constraints.
- *      Moves that require three-way exchange are not attempted.
+ *      A "move" here means: one student relocates from an
+ *      over-target group to an under-target group. The
+ *      over-target group shrinks by one; the under-target group
+ *      grows by one. Neither group's membership is exchanged.
  *
- *      MAX_SWAP_PASSES bounds the runtime. In practice, 3 to 5
+ *      Two-way SWAPS (exchanging one student from each group) are
+ *      NOT attempted, because exchanging one student from each
+ *      group leaves both sizes unchanged and therefore cannot
+ *      improve balance. The move is the correct improvement
+ *      operator for the balance problem.
+ *
+ *      MAX_MOVE_PASSES bounds the runtime. In practice, 3 to 5
  *      passes are enough to reach a local minimum on the class
  *      sizes this app deals with.
  *
@@ -178,7 +184,7 @@
  *   Every ordering in the algorithm has an explicit tiebreaker.
  *   Students sorted by (constraint count ascending, id ascending).
  *   Groups sorted by (current size ascending, id ascending).
- *   Swap candidates sorted by (improvement descending, ids
+ *   Move candidates sorted by (improvement descending, ids
  *   ascending). Same input → same output.
  *
  *   This matters: a user who runs the same rebalance twice should
@@ -217,7 +223,7 @@
     // are typical; ten is generous. The cost of one pass is
     // O(students × groupSize) worst case, which is trivial for the
     // instance sizes here.
-    var MAX_SWAP_PASSES = 10;
+    var MAX_MOVE_PASSES = 10;
 
     // ============================================================
     // HELPERS
@@ -411,7 +417,7 @@
         // unplaceable. They are reported and excluded from the
         // packing.
         //
-        // We compute this once. The swap pass reuses it.
+        // We compute this once. The move pass reuses it.
 
         var studentRecords = [];
         var unplaceable = [];
@@ -511,15 +517,15 @@
             groupAssignment[bestIndex].push(student.id);
         }
 
-        // ---- Local improvement: bounded swap passes ----
+        // ---- Local improvement: bounded move passes ----
 
         var studentById = Object.create(null);
         for (var bi = 0; bi < studentRecords.length; bi++) {
             studentById[studentRecords[bi].id] = studentRecords[bi];
         }
 
-        for (var pass = 0; pass < MAX_SWAP_PASSES; pass++) {
-            var improved = runSwapPass(
+        for (var pass = 0; pass < MAX_MOVE_PASSES; pass++) {
+            var improved = runMovePass(
                 groupAssignment,
                 usableGroups,
                 studentById,
@@ -617,32 +623,45 @@
     }
 
     // ============================================================
-    // SWAP PASS
+    // MOVE PASS
     // ============================================================
     //
-    // One pass: examine every (studentA, studentB) pair where A is
-    // in a group over target and B is in a group under target.
-    // If swapping reduces the sum of squared deviations AND both
-    // students are allowed in each other's group, perform the swap.
+    // One pass: examine every (over-target group, under-target
+    // group) pair. For each student currently in the over-target
+    // group who is allowed in the under-target group, compute
+    // whether moving them would reduce the sum of squared
+    // deviations. If so, perform the move.
     //
-    // Repeat until no improving swap is found in a pass, or until
-    // MAX_SWAP_PASSES is reached.
+    // The move is a single relocation: one student leaves the
+    // over-target group and joins the under-target group. Neither
+    // group is otherwise disturbed.
+    //
+    // Repeat until no improving move is found in a pass, or until
+    // MAX_MOVE_PASSES is reached.
     //
     // COST:
-    //   One pass is O(students × students) worst case, bounded by
-    //   over-target × under-target students. For 40 students, this
-    //   is at most 400 comparisons. Trivial.
+    //   One pass is O(overGroupSize × underGroupCount) plus the
+    //   per-student allowed check, bounded by total students.
+    //   For 40 students across 8 groups, this is trivial.
+    //
+    // WHY MOVES AND NOT SWAPS:
+    //   A two-way swap exchanges one student from each group. Both
+    //   sizes are unchanged. That cannot improve balance. The
+    //   correct improvement operator for the balance problem is a
+    //   move: relocate one student from a group that is over the
+    //   target into a group that is under the target.
     //
     // WHY NOT MORE SOPHISTICATED MOVES:
-    //   Two-way swaps capture the vast majority of improvements on
-    //   balanced-size problems. Three-way exchanges add complexity
-    //   for negligible gain at these sizes. If the algorithm
-    //   converges with a sum-of-squared deviation above zero, that
-    //   is almost always because the constraint graph prevents
-    //   further improvement — not because two-way swaps are too
-    //   weak.
+    //   Single-student moves capture the vast majority of
+    //   improvements on balanced-size problems. Multi-student
+    //   exchanges (two-for-one, three-way rotations) add
+    //   complexity for negligible gain at these sizes. If the
+    //   algorithm converges with a sum-of-squared deviation above
+    //   zero, that is almost always because the constraint graph
+    //   prevents further improvement — not because single-student
+    //   moves are too weak.
 
-    function runSwapPass(
+    function runMovePass(
         groupAssignment,
         usableGroups,
         studentById,
@@ -662,15 +681,13 @@
             return false;
         }
 
-        var anyImprovement = false;
-
         for (var oi = 0; oi < overIndices.length; oi++) {
             var overIndex = overIndices[oi];
 
             for (var ui = 0; ui < underIndices.length; ui++) {
                 var underIndex = underIndices[ui];
 
-                var improved = trySwapBetweenGroups(
+                var moved = tryMoveBetweenGroups(
                     groupAssignment,
                     overIndex,
                     underIndex,
@@ -678,22 +695,29 @@
                     target
                 );
 
-                if (improved) {
-                    anyImprovement = true;
-                    // Recompute the group sizes because a swap may
-                    // have moved a group across the target line.
-                    // The simplest correct approach is to restart
-                    // the pass; the bound on passes keeps this from
-                    // exploding.
+                if (moved) {
+                    // A move changes the group sizes. Restart the
+                    // pass so the over/under classification is
+                    // recomputed. The MAX_MOVE_PASSES bound keeps
+                    // this from exploding.
                     return true;
                 }
             }
         }
 
-        return anyImprovement;
+        return false;
     }
 
-    function trySwapBetweenGroups(
+    /**
+     * Try to move one student from groupAssignment[overIndex] to
+     * groupAssignment[underIndex], if the move is legal
+     * (student's allowed matrix permits it) and improving
+     * (reduces the sum of squared deviations for this pair of
+     * groups).
+     *
+     * Returns true when a move was performed, false otherwise.
+     */
+    function tryMoveBetweenGroups(
         groupAssignment,
         overIndex,
         underIndex,
@@ -706,27 +730,20 @@
         var overBefore = overGroup.length;
         var underBefore = underGroup.length;
 
-        // Compute the score change from swapping any pair of
-        // students. A swap changes overBefore -> overBefore - 1 + 1
-        // = overBefore (if both students stay in the pair) which is
-        // wrong: a swap exchanges one student from each group, so
-        // both sizes stay the same. Which means a two-way swap
-        // between two groups does not change their sizes at all.
-        //
-        // The correct improvement is a MOVE, not a swap: take one
-        // student from the over-target group and put them into the
-        // under-target group. That reduces over by 1 and increases
-        // under by 1.
-        //
-        // A swap (exchange) is only useful when moving one student
-        // alone would leave them unplaceable, and putting a
-        // different student in their place keeps the target group's
-        // size unchanged. That is not what the balance problem
-        // needs.
-        //
-        // So: this function tries MOVES, not swaps. The name is
-        // kept for symmetry with the caller's structure, but the
-        // operation is a single move from over to under.
+        var beforeScore =
+            (overBefore - target) * (overBefore - target) +
+            (underBefore - target) * (underBefore - target);
+
+        var afterScore =
+            (overBefore - 1 - target) * (overBefore - 1 - target) +
+            (underBefore + 1 - target) * (underBefore + 1 - target);
+
+        // A move that does not improve the score is not performed,
+        // regardless of whether it would be legal. This is the
+        // termination condition: no legal improving move exists.
+        if (afterScore >= beforeScore) {
+            return false;
+        }
 
         for (var oi = 0; oi < overGroup.length; oi++) {
             var studentId = overGroup[oi];
@@ -734,25 +751,10 @@
             if (!student) { continue; }
 
             // Is the student allowed in the under-target group?
+            // A student who would collide in the target group
+            // cannot be moved there, no matter how much it would
+            // help balance.
             if (!student.allowed[underIndex]) { continue; }
-
-            // Compute the score change.
-            //
-            // Before: (overBefore - target)^2 + (underBefore - target)^2
-            // After:  (overBefore - 1 - target)^2 +
-            //         (underBefore + 1 - target)^2
-            //
-            // A move is improving iff After < Before.
-
-            var beforeScore =
-                (overBefore - target) * (overBefore - target) +
-                (underBefore - target) * (underBefore - target);
-
-            var afterScore =
-                (overBefore - 1 - target) * (overBefore - 1 - target) +
-                (underBefore + 1 - target) * (underBefore + 1 - target);
-
-            if (afterScore >= beforeScore) { continue; }
 
             // Perform the move.
             overGroup.splice(oi, 1);
@@ -779,7 +781,7 @@
         studentCollidesWithGroup: studentCollidesWithGroup,
         computeScore: computeScore,
 
-        MAX_SWAP_PASSES: MAX_SWAP_PASSES
+        MAX_MOVE_PASSES: MAX_MOVE_PASSES
     });
 
     // ============================================================
