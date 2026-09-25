@@ -1591,7 +1591,7 @@
 
         var ranked;
         try {
-            ranked = Ranking.getClassRankings(classId, week, false) || [];
+            ranked = Ranking.getClassRankings(classId, week) || [];
         } catch (e) {
             return [];
         }
