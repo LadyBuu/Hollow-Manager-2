@@ -57,6 +57,22 @@
  *   Both are confirmed inline before dispatch. The confirmation
  *   message names the group, and for delete-group names the
  *   session and member counts.
+ *
+ * CLASS SCHEDULE EXPORT:
+ *   The class detail panel action row carries an "Export Schedule"
+ *   button, which is only visible when no character is selected
+ *   (i.e. when the class detail is showing).
+ *
+ *     class-export-schedule
+ *       Downloads a readable plain-text dump of the class's
+ *       schedule for the current display week.
+ *
+ *       Contents: every teaching session of every group in the
+ *       class for that week, plus every instructor commitment
+ *       attached to the class for that week.
+ *
+ *       Routes to ScheduleExport.exportClassScheduleText, which
+ *       owns the projection and serialization.
  */
 
 (function() {
@@ -153,6 +169,7 @@
     function getTeachingGroups() { return window.AcademyTeachingGroups || null; }
     function getTeachingSessions() { return window.AcademyTeachingSessions || null; }
     function getSchedule() { return window.AcademySchedule || null; }
+    function getScheduleExport() { return window.ScheduleExport || null; }
 
     // ============================================================
     // SMALL HELPERS
@@ -813,6 +830,10 @@
                 handleClassAction('delete-class', el.dataset.classId);
                 return;
 
+            case 'class-export-schedule':
+                handleExportClassSchedule(el);
+                return;
+
             case 'schedule-assign':
                 handleScheduleAssign(el.dataset.day, el.dataset.hour);
                 return;
@@ -1051,6 +1072,73 @@
             );
             notify('Failed to open the disciplines picker.', 'error');
         }
+    }
+
+    // ============================================================
+    // CLASS SCHEDULE EXPORT FLOW
+    // ============================================================
+    //
+    // Downloads a readable plain-text dump of the class's schedule
+    // for the current display week. The schedule is composed of
+    // every teaching session of every group in the class, plus
+    // every instructor commitment attached to the class, both
+    // filtered to the display week.
+    //
+    // The button carries data-class-id from the class detail
+    // panel's action row. The handler reads it from the button
+    // rather than re-reading AcademyUI.getSelectedClassId(), so
+    // the button is robust to selection changes between render and
+    // click.
+    //
+    // The export module (window.ScheduleExport) owns the
+    // projection and serialization. This handler only resolves the
+    // week, dispatches the export, and notifies.
+
+    function handleExportClassSchedule(el) {
+        var classId = el && el.dataset ? el.dataset.classId : null;
+
+        if (!isNonEmptyString(classId)) {
+            notify('No class selected.', 'error');
+            return;
+        }
+
+        var week = AcademyUI.getDisplayWeek();
+        if (!isFiniteNumber(week)) {
+            notify('No display week set.', 'error');
+            return;
+        }
+
+        var Exporter = getScheduleExport();
+        if (!Exporter ||
+            typeof Exporter.exportClassScheduleText !== 'function') {
+            notify('Schedule export module is not loaded.', 'error');
+            return;
+        }
+
+        var result;
+        try {
+            result = Exporter.exportClassScheduleText(classId, week);
+        } catch (e) {
+            console.warn(
+                '[AcademyPeopleController] exportClassScheduleText ' +
+                'threw:', e
+            );
+            notify('Schedule export failed.', 'error');
+            return;
+        }
+
+        if (result && result.exported) {
+            notify(
+                'Schedule exported: ' + result.filename,
+                'success'
+            );
+            return;
+        }
+
+        notify(
+            (result && result.error) || 'Schedule export failed.',
+            'error'
+        );
     }
 
     // ============================================================
@@ -2291,8 +2379,7 @@
 
         var vm = null;
         try {
-            vm = AcademyCharacterDetailAggregator
-                .getTeachingGroupCandidateViewModel(charId, groupId, {
+            vm = AcademyCharacterDetailAggregator                .getTeachingGroupCandidateViewModel(charId, groupId, {
                     week: week
                 });
         } catch (e) {
