@@ -12,18 +12,31 @@
  *   - Rendering the assessment weights editor (per-type weight inputs)
  *   - Rendering an empty state when no discipline is selected
  *   - Rendering a tab bar in the detail panel: Edit | Schedule
- *   - Rendering the Schedule tab body (week selector + grid host +
- *     enrollment summary host + sessions host)
+ *   - Rendering the Schedule tab body (week selector, highlight filter
+ *     panel, grid host, enrollment summary host, sessions host)
  *
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no domain logic.
- *   - Does NOT fetch data. Does NOT call AcademyDisciplines.
- *   - Receives a view model from AcademyDisciplineController.
+ *   - Does NOT fetch data for the editor or list. Receives a view
+ *     model from AcademyDisciplineController.
  *   - Does NOT bind events. Rows, buttons, inputs, and selects emit
  *     data-* attributes (or stable ids) that AcademyView's delegated
  *     container listeners resolve.
  *   - Uses DomUtils for escaping (MANDATORY, no fallback).
  *   - Returns an HTML string.
+ *
+ * THE ONE DOMAIN READ:
+ *   The highlight filter panel needs the class roster to populate
+ *   its student multi-select. Rendering that list from the VM would
+ *   mean threading `AcademyAggregator.getClassStudentsViewModel` and
+ *   `AcademyEnrolments.getStudentDisciplineIds` through the
+ *   controller. Instead, the view reads them directly, in exactly
+ *   one function: buildHighlightFilterStudents(). That is the only
+ *   domain read in this module.
+ *
+ *   When the class cannot be resolved, or the aggregator is absent,
+ *   the filter panel renders with an empty student list and the user
+ *   sees why. It does NOT fabricate students.
  *
  * VM CONTRACT (STRICT):
  *   The renderer trusts the VM. Every field it reads is guaranteed by
@@ -37,7 +50,8 @@
  *     editorMode:    'empty' | 'edit',
  *     filters:       { type, search },      // guaranteed object
  *     activeTab:     'edit' | 'schedule',
- *     scheduleWeek:  number                  // valid while Schedule tab exists
+ *     scheduleWeek:  number,                // valid while Schedule tab exists
+ *     scheduleHighlightVM: highlightVM | null
  *   }
  *
  *   listRowVM:
@@ -69,9 +83,13 @@
  *     bandPercentBounds: { min, max, step }
  *   }
  *
- *   Every bound object and every list is guaranteed present. This
- *   renderer does not fall back; if a field the contract names is
- *   missing, that is the controller's bug.
+ *   highlightVM (present when a highlight filter is active):
+ *   {
+ *     instructorId:   string,
+ *     instructorName: string,
+ *     studentCount:   number,
+ *     checkWeeks:     number
+ *   }
  *
  * TABS:
  *   The detail panel gains a two-tab bar when a discipline is
@@ -80,20 +98,50 @@
  *     Edit       the existing discipline editor.
  *     Schedule   a calendar grid scoped to (this discipline, the
  *                Academy-selected class, the display week), plus a
- *                summary panel below the grid that reports how many
- *                students are enrolled and how many are still
- *                without a group.
+ *                summary panel below the grid and a discipline
+ *                sessions panel below the summary.
  *
  *   The active tab is carried on the VM as `activeTab`. When the
  *   editor mode is 'empty' (no discipline selected, no draft),
  *   neither tab renders; the empty state shows instead.
  *
- *   The Schedule tab is READ-ONLY. The controller mounts the grid
- *   into #academy-discipline-schedule-host, the summary into
- *   #academy-discipline-schedule-summary-host, and the discipline
- *   sessions panel into #academy-discipline-sessions-host. The
- *   class is NOT selectable here; it comes from
+ *   The Schedule tab is INTERACTIVE. The grid emits
+ *   schedule-discipline-assign on empty cells and
+ *   schedule-discipline-slot-open on occupied cells; the controller
+ *   routes both. The class is NOT selectable here; it comes from
  *   AcademyUI.getSelectedClassId().
+ *
+ * HIGHLIGHT FILTER:
+ *   The Schedule tab header carries a "Find free slot" section. It
+ *   is rendered as an inline disclosure:
+ *
+ *     - Closed state: a single button labeled "Find free slot".
+ *       Emits data-action="discipline-schedule-find-free-slot"? No —
+ *       that action is reserved for the "apply" button inside the
+ *       expanded panel. The launcher is a plain toggle that flips a
+ *       data-expanded attribute on the wrapper. See TOGGLE BELOW.
+ *
+ *     - Open state: instructor select, student multi-select,
+ *       check-weeks number input, and an Apply button that emits
+ *       data-action="discipline-schedule-find-free-slot".
+ *
+ *   The disclosure is driven purely by a data-expanded attribute on
+ *   the wrapper and a small amount of inline style on the body. The
+ *   launcher button does not carry a data-action, because there is
+ *   no handler for it; the shell routes nothing. It is toggled by
+ *   the browser? No — it needs a handler. See TOGGLE BELOW.
+ *
+ *   Actually, the disclosure toggle is a controller concern. The
+ *   launcher emits data-action="discipline-schedule-toggle-filter-panel"
+ *   and the controller flips the attribute and inline display. This
+ *   keeps the view stateless and matches the summary disclosure
+ *   pattern used elsewhere in this file (which is also controller-
+ *   toggled, via discipline-summary-toggle).
+ *
+ *   When a highlight filter is ACTIVE (scheduleHighlightVM non-null),
+ *   the panel is FORCED OPEN and shows a summary line plus a Clear
+ *   button. The Clear button emits
+ *   data-action="discipline-schedule-clear-highlight".
  *
  * EVENTS EMITTED (data-* attributes, for AcademyView to bind):
  *   Sidebar:
@@ -107,41 +155,34 @@
  *
  *   Schedule tab:
  *     #academy-discipline-schedule-week              (change / Enter)
+ *     [data-action="discipline-schedule-toggle-filter-panel"]  (click)
+ *     [data-action="discipline-schedule-find-free-slot"]       (click)
+ *     [data-action="discipline-schedule-clear-highlight"]      (click)
  *
- *   Editor — top-level fields:
- *     [data-discipline-field="name"]
- *     [data-discipline-field="type"]
- *     [data-discipline-field="startWeek"]
- *     [data-discipline-field="endWeek"]
- *     [data-discipline-field="weeklyHours"]
- *     [data-discipline-field="weight"]
+ *   The grid cells (emitted by CalendarRenderer, not by this file):
+ *     [data-action="schedule-discipline-assign"]
+ *     [data-action="schedule-discipline-slot-open"]
  *
- *   Editor — grade scheme:
- *     [data-discipline-field="schemeLabel"]
- *     [data-discipline-field="schemePresetId"]
- *     [data-action="discipline-apply-scheme-preset"]            (click)
- *     [data-band-index="N"] [data-band-field="label"]           (input)
- *     [data-band-index="N"] [data-band-field="minPercent"]      (input)
- *     [data-action="discipline-add-band"]                       (click)
- *     [data-action="discipline-remove-band"] [data-band-index="N"] (click)
+ *   The summary panel (emitted by AcademyDisciplineScheduleSummary):
+ *     [data-action="discipline-summary-toggle"]
  *
- *   Editor — assessment weights:
- *     [data-assessment-weight-type="exam"]                      (input)
- *     [data-action="discipline-reset-assessment-weights"]       (click)
- *
- *   Editor — actions:
- *     [data-action="discipline-save"]                           (click)
- *     [data-action="discipline-cancel"]                         (click)
- *     [data-action="discipline-delete"] [data-discipline-id]    (click)
+ *   The sessions panel (emitted by AcademyDisciplineSessionsPanel):
+ *     [data-action="discipline-sessions-add-student"]
+ *     [data-action="discipline-sessions-add-student-cancel"]
+ *     [data-action="discipline-sessions-add-student-submit"]
+ *     [data-action="discipline-sessions-remove-student"]
  *
  * TERMINOLOGY:
  *   The discipline domain is an Academy concern. The retired
- *   `curriculum` subsystem is no longer referenced here. The word
- *   "curriculum" does not appear in this module.
+ *   `curriculum` subsystem is no longer referenced here.
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
  *   - window.CalendarConstants (MANDATORY) — week bounds
+ *   - window.AcademyUI (LAZY, for the highlight filter's class)
+ *   - window.AcademyAggregator (LAZY, for the highlight filter's roster)
+ *   - window.AcademyEnrolments (LAZY, for the highlight filter's
+ *     enrolment filter)
  */
 
 (function() {
@@ -183,6 +224,9 @@
 
     var VALID_TABS = ['edit', 'schedule'];
     var DEFAULT_TAB = 'edit';
+
+    var DEFAULT_HIGHLIGHT_CHECK_WEEKS = 4;
+    var MAX_HIGHLIGHT_CHECK_WEEKS = 12;
 
     // ============================================================
     // ESCAPING HELPERS
@@ -261,11 +305,208 @@
     }
 
     // ============================================================
-    // VM VALIDATION
+    // HIGHLIGHT FILTER — DOMAIN READS
     // ============================================================
     //
-    // Strict. The renderer trusts the VM's shape. Missing fields are
-    // controller bugs and must surface, not be silently replaced.
+    // This is the ONLY place in this module that reads from a domain
+    // module. Everything else is pure rendering from the VM.
+    //
+    // The reads are:
+    //   - AcademyUI.getSelectedClassId()             class context
+    //   - AcademyAggregator.getClassStudentsViewModel(classId, week)
+    //                                                 roster + name
+    //   - AcademyEnrolments.getStudentDisciplineIds(charId, classId)
+    //                                                 enrolment filter
+    //
+    // A student appears in the filter list when they are enrolled in
+    // THIS discipline for THIS class. The view does not know the
+    // discipline id — it is not on the highlight VM. So we take the
+    // discipline id from the SELECTED discipline VM, which the
+    // caller passes in. When there is no selected discipline, the
+    // filter list is empty.
+    //
+    // Failure modes:
+    //   - AcademyUI or AcademyAggregator missing → empty list
+    //   - no class selected                     → empty list
+    //   - no selected discipline                → empty list
+    //   - aggregator throws                     → empty list, logged
+    //
+    // Empty list is honest: the user sees "no students available"
+    // and the panel's hint text explains why (see the caller).
+
+    function buildHighlightFilterStudents(selectedDiscipline, week) {
+        if (!selectedDiscipline || !selectedDiscipline.id) {
+            return [];
+        }
+        if (typeof week !== 'number') {
+            return [];
+        }
+
+        var AcademyUI = window.AcademyUI;
+        var Aggregator = window.AcademyAggregator;
+        var Enrolments = window.AcademyEnrolments;
+
+        if (!AcademyUI ||
+            typeof AcademyUI.getSelectedClassId !== 'function') {
+            return [];
+        }
+        if (!Aggregator ||
+            typeof Aggregator.getClassStudentsViewModel !== 'function') {
+            return [];
+        }
+
+        var classId = AcademyUI.getSelectedClassId();
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
+
+        var roster = [];
+        try {
+            roster = Aggregator.getClassStudentsViewModel(
+                classId, week
+            ) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademyDisciplineView] getClassStudentsViewModel ' +
+                'threw while building the highlight filter:', e
+            );
+            return [];
+        }
+
+        if (!Array.isArray(roster) || roster.length === 0) {
+            return [];
+        }
+
+        var disciplineId = String(selectedDiscipline.id);
+        var targetClass = String(classId);
+
+        var result = [];
+
+        for (var i = 0; i < roster.length; i++) {
+            var student = roster[i];
+            if (!student || !student.id) { continue; }
+
+            var enrolledHere = true;
+            if (Enrolments &&
+                typeof Enrolments.getStudentDisciplineIds ===
+                    'function') {
+                try {
+                    var ids = Enrolments.getStudentDisciplineIds(
+                        student.id, targetClass
+                    ) || [];
+                    enrolledHere = ids.indexOf(disciplineId) !== -1;
+                } catch (e) {
+                    // A read failure here is a data-integrity
+                    // problem; treat the student as not enrolled so
+                    // the filter list stays honest. The user can
+                    // still see the roster elsewhere.
+                    enrolledHere = false;
+                }
+            }
+
+            if (!enrolledHere) { continue; }
+
+            result.push({
+                id: String(student.id),
+                name: isNonEmptyString(student.name)
+                    ? student.name
+                    : 'Unknown'
+            });
+        }
+
+        result.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
+
+        return result;
+    }
+
+    // ============================================================
+    // HIGHLIGHT FILTER — INSTRUCTOR OPTIONS
+    // ============================================================
+    //
+    // The instructor list is resolved from
+    // AcademyClasses.getClassInstructorIds, week-scoped to the
+    // schedule week and discipline-scoped to the selected discipline.
+    // That is the same source the instructor picker modal uses; the
+    // filter offers the same set of instructors the picker would.
+    //
+    // Failure modes collapse to "empty list," same as students.
+
+    function buildHighlightFilterInstructors(selectedDiscipline, week) {
+        if (!selectedDiscipline || !selectedDiscipline.id) {
+            return [];
+        }
+        if (typeof week !== 'number') {
+            return [];
+        }
+
+        var AcademyUI = window.AcademyUI;
+        var AcademyClasses = window.AcademyClasses;
+        var CQ = window.CharacterQueries;
+
+        if (!AcademyUI ||
+            typeof AcademyUI.getSelectedClassId !== 'function') {
+            return [];
+        }
+        if (!AcademyClasses ||
+            typeof AcademyClasses.getClassInstructorIds !== 'function') {
+            return [];
+        }
+        if (!CQ || typeof CQ.getCharacterById !== 'function') {
+            return [];
+        }
+
+        var classId = AcademyUI.getSelectedClassId();
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
+
+        var ids = [];
+        try {
+            ids = AcademyClasses.getClassInstructorIds(
+                String(classId),
+                week,
+                { disciplineId: String(selectedDiscipline.id) }
+            ) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademyDisciplineView] getClassInstructorIds threw ' +
+                'while building the highlight filter:', e
+            );
+            return [];
+        }
+
+        if (!Array.isArray(ids)) { return []; }
+
+        var seen = Object.create(null);
+        var result = [];
+
+        for (var i = 0; i < ids.length; i++) {
+            if (!isNonEmptyString(ids[i])) { continue; }
+            var id = String(ids[i]);
+            if (seen[id]) { continue; }
+            seen[id] = true;
+
+            var char = CQ.getCharacterById(id);
+            if (!char) { continue; }
+
+            var name = CQ.getDisplayName(char);
+            if (!isNonEmptyString(name)) { name = 'Unknown'; }
+
+            result.push({ id: id, name: name });
+        }
+
+        result.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
+
+        return result;
+    }
+
+    // ============================================================
+    // VM VALIDATION
+    // ============================================================
 
     function validateVM(viewModel) {
         if (!viewModel || typeof viewModel !== 'object') {
@@ -335,7 +576,8 @@
                     vm.selected,
                     vm.editorMode,
                     vm.activeTab,
-                    vm.scheduleWeek
+                    vm.scheduleWeek,
+                    vm.scheduleHighlightVM
                 ) +
             '</div>'
         );
@@ -463,7 +705,13 @@
     // DETAIL PANEL - Right side
     // ============================================================
 
-    function renderDetailPanel(selected, editorMode, activeTab, scheduleWeek) {
+    function renderDetailPanel(
+        selected,
+        editorMode,
+        activeTab,
+        scheduleWeek,
+        highlightVM
+    ) {
         var html = '<div class="academy-discipline-detail" ' +
                     'id="academy-discipline-detail">';
 
@@ -478,7 +726,7 @@
         html += '<div class="academy-discipline-tab-body">';
 
         if (activeTab === 'schedule') {
-            html += renderScheduleTab(scheduleWeek);
+            html += renderScheduleTab(scheduleWeek, highlightVM, selected);
         } else {
             html += renderEditor(selected);
         }
@@ -531,9 +779,9 @@
     // SCHEDULE TAB
     // ============================================================
     //
-    // The schedule tab body: a week selector, the grid host, the
-    // enrollment summary host, and the discipline sessions panel
-    // host.
+    // The schedule tab body: a week selector, the highlight filter
+    // panel, the grid host, the enrollment summary host, and the
+    // discipline sessions panel host.
     //
     // The class is NOT selectable here. It comes from
     // AcademyUI.getSelectedClassId(). The controller reads the
@@ -543,10 +791,8 @@
     //
     // All three hosts are intentionally empty at render time. The
     // controller fills them.
-    //
-    // `week` is guaranteed a finite number by the VM contract.
 
-    function renderScheduleTab(week) {
+    function renderScheduleTab(week, highlightVM, selectedDiscipline) {
         var weekValue = String(week);
 
         var html = '';
@@ -567,23 +813,257 @@
                 '</span>';
         html += '</div>';
 
+        html += renderHighlightFilterPanel(
+            week, highlightVM, selectedDiscipline
+        );
+
         html += '<div id="academy-discipline-schedule-host" ' +
                     'class="academy-discipline-schedule-host"></div>';
 
-        // Summary host. Populated by the controller after the grid
-        // is mounted. Empty on its own.
         html += '<div id="academy-discipline-schedule-summary-host" ' +
                     'class="academy-discipline-schedule-summary-host">' +
                 '</div>';
 
-        // Sessions panel host. Populated by the controller after
-        // the summary is mounted. Lists every teaching group of
-        // this discipline for the week, across every instructor,
-        // with each group's sessions and roster.
         html += '<div id="academy-discipline-sessions-host" ' +
                     'class="academy-discipline-sessions-host"></div>';
 
         html += '</div>';
+        return html;
+    }
+
+    // ============================================================
+    // HIGHLIGHT FILTER PANEL
+    // ============================================================
+    //
+    // Two states:
+    //
+    //   No active filter (highlightVM === null):
+    //     Closed disclosure. A single toggle button. Clicking it
+    //     emits data-action="discipline-schedule-toggle-filter-panel"
+    //     which the controller handles by flipping data-expanded on
+    //     the wrapper and toggling inline display on the body.
+    //     The body carries the instructor select, student multi-
+    //     select, check-weeks input, and an Apply button emitting
+    //     data-action="discipline-schedule-find-free-slot".
+    //
+    //   Active filter (highlightVM !== null):
+    //     Forced-open disclosure. The body shows a summary line
+    //     (instructor name, student count, weeks) and a Clear
+    //     button. The Apply button is hidden, since the filter is
+    //     already applied. The toggle button is disabled and the
+    //     body is shown unconditionally.
+    //
+    // The launcher's data-action is on the wrapper, not the body,
+    // so the delegated click finds the toggle even when a caller
+    // clicks somewhere inside the button's padding.
+
+    function renderHighlightFilterPanel(
+        week,
+        highlightVM,
+        selectedDiscipline
+    ) {
+        var isActive = highlightVM !== null &&
+            typeof highlightVM === 'object';
+
+        var expanded = isActive ? 'true' : 'false';
+
+        var html = '';
+        html += '<div class="discipline-highlight-filter" ' +
+                    'data-expanded="' + expanded + '">';
+
+        // ---- Launcher ----
+        html += '<button type="button" ' +
+                    'class="discipline-highlight-launcher" ' +
+                    'data-action="discipline-schedule-toggle-filter-panel"' +
+                    (isActive ? ' disabled' : '') + '>';
+        html += '<span class="discipline-highlight-launcher-caret">' +
+                    (isActive ? '\u25be' : '\u25b8') +
+                '</span>';
+        html += '<span class="discipline-highlight-launcher-label">' +
+                    'Find free slot' +
+                '</span>';
+        html += '</button>';
+
+        // ---- Body ----
+        html += '<div class="discipline-highlight-body" ' +
+                    'style="display:' +
+                    (isActive ? 'block' : 'none') + ';">';
+
+        if (isActive) {
+            html += renderHighlightSummary(highlightVM);
+        } else {
+            html += renderHighlightForm(
+                week, selectedDiscipline
+            );
+        }
+
+        html += '</div>';
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderHighlightSummary(highlightVM) {
+        var instructorName = isNonEmptyString(highlightVM.instructorName)
+            ? highlightVM.instructorName
+            : 'Unknown instructor';
+
+        var studentCount = isFiniteNumber(highlightVM.studentCount)
+            ? highlightVM.studentCount
+            : 0;
+
+        var checkWeeks = isFiniteNumber(highlightVM.checkWeeks)
+            ? highlightVM.checkWeeks
+            : DEFAULT_HIGHLIGHT_CHECK_WEEKS;
+
+        var studentLabel = studentCount === 1
+            ? '1 student'
+            : studentCount + ' students';
+
+        var weekLabel = checkWeeks === 1
+            ? '1 week'
+            : checkWeeks + ' weeks';
+
+        var html = '';
+        html += '<div class="discipline-highlight-summary">';
+        html += '<div class="discipline-highlight-summary-line">';
+        html += '<span class="discipline-highlight-summary-label">' +
+                    'Highlighting slots for ' +
+                '</span>';
+        html += '<span class="discipline-highlight-summary-value">' +
+                    escapeHtml(instructorName) +
+                '</span>';
+        html += '<span class="discipline-highlight-summary-sep">' +
+                    ' with ' +
+                '</span>';
+        html += '<span class="discipline-highlight-summary-value">' +
+                    escapeHtml(studentLabel) +
+                '</span>';
+        html += '</div>';
+
+        html += '<div class="discipline-highlight-summary-meta">' +
+                    'Checking ' + escapeHtml(weekLabel) +
+                    ' ahead from the current week.' +
+                '</div>';
+
+        html += '<div class="discipline-highlight-summary-actions">';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-action="discipline-schedule-clear-highlight">' +
+                    'Clear highlight' +
+                '</button>';
+        html += '</div>';
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderHighlightForm(week, selectedDiscipline) {
+        var instructors = buildHighlightFilterInstructors(
+            selectedDiscipline, week
+        );
+        var students = buildHighlightFilterStudents(
+            selectedDiscipline, week
+        );
+
+        var html = '';
+
+        // ---- Instructor ----
+        html += '<div class="discipline-highlight-field">';
+        html += '<label class="discipline-highlight-label" ' +
+                    'for="discipline-highlight-instructor">' +
+                    'Instructor' +
+                '</label>';
+
+        if (instructors.length === 0) {
+            html += '<p class="discipline-highlight-empty">' +
+                        'No instructor teaches this discipline for ' +
+                        'the selected class during this week.' +
+                    '</p>';
+            html += '<select class="discipline-highlight-instructor-select" ' +
+                        'id="discipline-highlight-instructor" disabled>';
+            html += '<option value="">' +
+                        'No instructors available' +
+                    '</option>';
+            html += '</select>';
+        } else {
+            html += '<select class="discipline-highlight-instructor-select" ' +
+                        'id="discipline-highlight-instructor">';
+            html += '<option value="">Select an instructor...</option>';
+            for (var i = 0; i < instructors.length; i++) {
+                var instr = instructors[i];
+                html += '<option value="' +
+                            escapeAttribute(instr.id) + '">' +
+                            escapeHtml(instr.name) +
+                        '</option>';
+            }
+            html += '</select>';
+        }
+
+        html += '</div>';
+
+        // ---- Students ----
+        html += '<div class="discipline-highlight-field">';
+        html += '<label class="discipline-highlight-label">' +
+                    'Students' +
+                '</label>';
+
+        if (students.length === 0) {
+            html += '<p class="discipline-highlight-empty">' +
+                        'No students are enrolled in this discipline ' +
+                        'for the selected class.' +
+                    '</p>';
+        } else {
+            html += '<div class="discipline-highlight-students">';
+            for (var s = 0; s < students.length; s++) {
+                var stu = students[s];
+                html += '<label class="discipline-highlight-student-option">';
+                html += '<input type="checkbox" ' +
+                            'class="discipline-highlight-student-checkbox" ' +
+                            'value="' + escapeAttribute(stu.id) + '">';
+                html += '<span class="discipline-highlight-student-name">' +
+                            escapeHtml(stu.name) +
+                        '</span>';
+                html += '</label>';
+            }
+            html += '</div>';
+        }
+
+        html += '</div>';
+
+        // ---- Check weeks ----
+        html += '<div class="discipline-highlight-field">';
+        html += '<label class="discipline-highlight-label" ' +
+                    'for="discipline-highlight-check-weeks">' +
+                    'Check weeks ahead' +
+                '</label>';
+        html += '<input type="number" ' +
+                    'id="discipline-highlight-check-weeks" ' +
+                    'class="discipline-highlight-check-weeks" ' +
+                    'value="' +
+                        escapeAttribute(String(DEFAULT_HIGHLIGHT_CHECK_WEEKS)) +
+                    '" ' +
+                    'min="1" ' +
+                    'max="' +
+                        escapeAttribute(String(MAX_HIGHLIGHT_CHECK_WEEKS)) +
+                    '">';
+        html += '<p class="discipline-highlight-hint">' +
+                    'How many weeks ahead to test. The badge on a ' +
+                    'highlighted cell shows the length of the free ' +
+                    'run.' +
+                '</p>';
+        html += '</div>';
+
+        // ---- Apply ----
+        html += '<div class="discipline-highlight-actions">';
+        html += '<button type="button" class="primary small" ' +
+                    'data-action="discipline-schedule-find-free-slot"' +
+                    (instructors.length === 0 || students.length === 0
+                        ? ' disabled'
+                        : '') + '>' +
+                    'Highlight slots' +
+                '</button>';
+        html += '</div>';
+
         return html;
     }
 
@@ -603,9 +1083,6 @@
         var weightBounds = d.weightBounds;
         var bandPercentBounds = d.bandPercentBounds;
 
-        // Every bounds object is guaranteed by the VM contract. A
-        // missing one is a controller bug, not a request for the
-        // legacy hard-coded default.
         if (!weekBounds || typeof weekBounds !== 'object') {
             throw new Error(
                 '[AcademyDisciplineView] VM.selected.weekBounds is ' +
@@ -660,7 +1137,6 @@
         html += '<div class="academy-discipline-editor-section">';
         html += '<div class="academy-discipline-editor-grid">';
 
-        // Name
         html += '<div class="academy-discipline-editor-field ' +
                     'academy-discipline-editor-field-wide">';
         html += '<label for="academy-discipline-name">Name</label>';
@@ -672,7 +1148,6 @@
         html += renderFieldError(errors, 'name');
         html += '</div>';
 
-        // Type
         html += '<div class="academy-discipline-editor-field">';
         html += '<label for="academy-discipline-type">Type</label>';
         html += '<select id="academy-discipline-type" ' +
@@ -688,7 +1163,6 @@
         html += renderFieldError(errors, 'type');
         html += '</div>';
 
-        // Start week
         html += '<div class="academy-discipline-editor-field">';
         html += '<label for="academy-discipline-start-week">Start Week</label>';
         html += '<input type="number" id="academy-discipline-start-week" ' +
@@ -700,7 +1174,6 @@
         html += renderFieldError(errors, 'startWeek');
         html += '</div>';
 
-        // End week
         html += '<div class="academy-discipline-editor-field">';
         html += '<label for="academy-discipline-end-week">End Week</label>';
         html += '<input type="number" id="academy-discipline-end-week" ' +
@@ -712,7 +1185,6 @@
         html += renderFieldError(errors, 'endWeek');
         html += '</div>';
 
-        // Weekly hours
         html += '<div class="academy-discipline-editor-field">';
         html += '<label for="academy-discipline-weekly-hours">Weekly Hours</label>';
         html += '<input type="number" id="academy-discipline-weekly-hours" ' +
@@ -725,7 +1197,6 @@
         html += renderFieldError(errors, 'weeklyHours');
         html += '</div>';
 
-        // Weight
         html += '<div class="academy-discipline-editor-field">';
         html += '<label for="academy-discipline-weight">Weight</label>';
         html += '<input type="number" id="academy-discipline-weight" ' +
@@ -738,8 +1209,8 @@
         html += renderFieldError(errors, 'weight');
         html += '</div>';
 
-        html += '</div>'; // grid
-        html += '</div>'; // section
+        html += '</div>';
+        html += '</div>';
 
         // ---- Grade scheme ----
         html += renderGradeSchemeSection(d, errors, bandPercentBounds);
@@ -758,9 +1229,6 @@
     // ============================================================
 
     function renderGradeSchemeSection(d, errors, bandPercentBounds) {
-        // The canonical shape is guaranteed by the VM contract. A
-        // missing scheme is a controller bug; the renderer does not
-        // fabricate a numeric default.
         if (!d.gradeScheme || typeof d.gradeScheme !== 'object') {
             throw new Error(
                 '[AcademyDisciplineView] VM.selected.gradeScheme is ' +
@@ -835,7 +1303,7 @@
                 '</p>';
         html += '</div>';
 
-        html += '</div>'; // grid
+        html += '</div>';
 
         // ---- Band editor ----
         html += '<div class="academy-discipline-scheme-bands">';
@@ -870,7 +1338,7 @@
             html += '</table>';
         }
 
-        html += '</div>'; // bands
+        html += '</div>';
 
         if (isNonEmptyString(preview)) {
             html += '<div class="academy-discipline-scheme-preview">';
@@ -883,7 +1351,7 @@
             html += '</div>';
         }
 
-        html += '</div>'; // section
+        html += '</div>';
         return html;
     }
 
@@ -1027,8 +1495,8 @@
             html += '</div>';
         }
 
-        html += '</div>'; // grid
-        html += '</div>'; // section
+        html += '</div>';
+        html += '</div>';
 
         return html;
     }
