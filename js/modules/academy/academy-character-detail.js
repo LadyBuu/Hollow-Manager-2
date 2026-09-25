@@ -1822,7 +1822,8 @@
 
     window.AcademyCharacterDetail = {
         renderHTML: renderHTML,
-        openCreateGroupModal: openCreateGroupModal
+        openCreateGroupModal: openCreateGroupModal,
+        renderCandidatePicker: renderCandidatePicker
     };
 
 })();
