@@ -24,7 +24,7 @@
  *   - The Schedule tab's highlight filter panel disclosure (open
  *     vs. closed). This is a DOM-only state.
  *   - The Schedule tab's free-slot candidate students. This is a
- *     DOMAIN READ, now owned by the controller. It reads
+ *     DOMAIN READ, owned by the controller. It reads
  *     AcademyAggregator.getFreeSlotCandidateStudentsViewModel and
  *     passes the result to the view as `highlightFilterVM`.
  *   - Per-field and per-band validation errors on the draft.
@@ -41,133 +41,26 @@
  *   - Toggling the summary panel open and closed.
  *   - The inline candidate picker and roster actions inside the
  *     discipline sessions panel.
- *   - The discipline grid's cell actions:
- *       schedule-discipline-assign         — open the instructor
- *                                             modal in picker mode
- *                                             for the clicked empty
- *                                             cell
- *       schedule-discipline-slot-open      — open the session actions
- *                                             modal for the clicked
- *                                             occupied cell
- *   - The Schedule tab's free-slots actions:
- *       discipline-schedule-toggle-filter-panel — open/close the
- *                                                 filter form panel
- *       discipline-schedule-find-free-slot      — read the filter
- *                                                 form, apply it
- *       discipline-schedule-clear-highlight     — clear the filter
- *   - The Schedule tab's group management:
- *       discipline-manage-groups           — open the group
- *                                             management modal
- *       discipline-rebalance               — open the rebalance
- *                                             modal
+ *   - The discipline grid's cell actions.
+ *   - The Schedule tab's free-slots actions.
+ *   - The Schedule tab's group management.
  *
- * WHAT THIS DOES NOT OWN:
- *   - The content host. The shell provides it.
- *   - The class selection. The Schedule tab uses
- *     AcademyUI.getSelectedClassId(); there is no second class
- *     selector.
- *   - Re-rendering the shell. When a mutation or draft change should
- *     re-render, the controller calls context.onChange().
- *   - Discipline domain reads and writes. AcademyDisciplines owns
- *     them; AcademyAggregator produces the VMs.
- *   - The schedule projection. AcademyCalendarAggregator owns it.
- *   - The enrollment summary content. AcademyDisciplineScheduleSummary
- *     renders the HTML; the controller mounts and wires the toggle.
- *   - The discipline sessions panel content.
- *     AcademyDisciplineSessionsPanel produces the VM and renders the
- *     HTML; the controller mounts it and handles the inline picker.
- *   - The free-slot candidate students list. AcademyAggregator owns
- *     the read; the controller passes it to the view.
- *   - The instructor slot modal. AcademyScheduleInstructorModal owns
- *     it.
- *   - The session actions modal. AcademySessionActionsModal owns it.
- *   - The session edit form. AcademySessionFormModal owns it.
- *   - The group management modal. AcademyGroupManagementModal owns
- *     it.
- *   - The rebalance modal. AcademyRebalanceModal owns it.
+ * CANDIDATE PICKER STATE:
+ *   The Add button in the discipline sessions panel's candidate
+ *   picker ships disabled. Ticking a checkbox must enable it. The
+ *   People view's picker has a checkbox handler (in
+ *   academy-people-controller.js) that does this; the discipline
+ *   sessions panel's picker was added without one, so the button
+ *   stayed disabled and clicking it produced a forbidden cursor.
  *
- * EDITOR BOUNDS (v31):
- *   The editor VM carries four bounds objects that the view uses
- *   to stamp min/max/step attributes onto its number inputs:
+ *   updateDisciplineCandidateSelectionState() is the counterpart.
+ *   It is called from:
+ *     - the checkbox-change branch in handleChange
+ *     - the bulk select-all / clear branch in handleClick,
+ *       after the checkboxes have been flipped
  *
- *     weekBounds          { min, max }
- *     weeklyHoursBounds   { min, max, step }
- *     weightBounds        { min, max, step }
- *     bandPercentBounds   { min, max, step }
- *
- *   These are the single source of truth for those attributes.
- *
- * SCHEDULE TAB:
- *   The Schedule tab renders a week selector, header actions
- *   (Manage Groups, Rebalance Groups), a free-slots filter panel,
- *   a grid host, an enrollment summary host, and a discipline
- *   sessions host.
- *
- *   The grid is mounted by this controller via
- *   AcademyCalendarAggregator.getDisciplineScheduleViewModel.
- *   When a highlight filter is active, the controller calls
- *   getDisciplineScheduleHighlightViewModel instead.
- *
- *   The class is AcademyUI.getSelectedClassId(). When no class is
- *   selected, the controller renders explicit empty states.
- *
- * GRID EDITABILITY:
- *   The discipline grid is interactive. Empty cells dispatch
- *   `schedule-discipline-assign`; occupied cells dispatch
- *   `schedule-discipline-slot-open`.
- *
- * HIGHLIGHT FILTER:
- *   The filter lives in the Schedule tab header. Three inputs:
- *
- *     - instructor select
- *     - student multi-select (unassigned, eligible students only)
- *     - check-weeks number (default 4, max 12)
- *
- *   The student list is provided by the aggregator's
- *   getFreeSlotCandidateStudentsViewModel. It has already been
- *   filtered to unassigned, non-eliminated, non-deceased,
- *   enrolled students. The controller builds the filter VM the
- *   view consumes; it does not re-filter.
- *
- *   The instructor list is built here via
- *   AcademyClasses.getClassInstructorIds + CharacterQueries.
- *
- *   DISCLOSURE STATE:
- *     The panel's open/closed state is DOM-only. The launcher emits
- *     data-action="discipline-schedule-toggle-filter-panel"; the
- *     controller flips data-expanded on the wrapper, the caret
- *     glyph, and the inline display on the body. When a filter is
- *     ACTIVE, the wrapper is force-open and the launcher is
- *     disabled.
- *
- *   The filter state is CLEARED on unmount.
- *
- * PICKER STAMPING:
- *   AcademyDisciplineSessionsPanel.renderGroupBlock reads two
- *   fields off each GROUP VM (not off the VM root):
- *
- *     group.isPickerOpen       boolean
- *     group.pickerCandidates   { candidates, blocked } | null
- *
- *   The controller iterates vm.groups and stamps those two fields
- *   onto the group whose groupId matches
- *   _openDisciplineSessionsGroupId.
- *
- * DRAFT LIFECYCLE:
- *   - Draft is created by openEditor('create'), or by selecting a
- *     discipline row (which initializes from the record).
- *   - Draft is cleared by cancel ('empty' mode).
- *   - Draft is cleared by unmount.
- *   - The list filter is NOT cleared by unmount.
- *   - The search debounce timer IS cleared by unmount.
- *   - The discipline-sessions picker state IS cleared by unmount.
- *   - The schedule highlight filter IS cleared by unmount.
- *   - The schedule week is NOT cleared by unmount.
- *
- * B4-1 — "+ ADD DISCIPLINE" BUTTON FIX:
- *   The button used to be id-addressed and had no data-action. It
- *   now emits data-action="discipline-add" and the switch below
- *   routes it.
+ *   Without both call sites, the button state can fall out of sync
+ *   with the checkbox state.
  *
  * DEPENDENCY DIRECTION:
  *   Shell → registry → this controller.
@@ -179,30 +72,6 @@
  *   host    — the HTMLElement the shell allocates for the active
  *             controller.
  *   context — { onChange: function() }
- *
- * DEPENDENCIES:
- *   - window.AcademyUI
- *   - window.AcademyAggregator
- *   - window.AcademyDisciplines
- *   - window.AcademyDisciplineView
- *   - window.AcademyGradeSchemes
- *   - window.NotificationSystem
- *   - window.CalendarConstants
- *
- * DEPENDENCIES (LAZY, resolved at call time):
- *   - window.AcademyCalendarAggregator
- *   - window.AcademyDisciplineScheduleSummary
- *   - window.AcademyDisciplineSessionsPanel
- *   - window.AcademyCharacterDetailAggregator
- *   - window.AcademyTeachingGroups
- *   - window.AcademyClasses            (free-slot instructor list)
- *   - window.CharacterQueries          (free-slot instructor names)
- *   - window.CalendarRenderer
- *   - window.AcademyCRUDModals
- *   - window.AcademyScheduleInstructorModal
- *   - window.AcademySessionActionsModal
- *   - window.AcademyGroupManagementModal
- *   - window.AcademyRebalanceModal
  */
 
 (function() {
@@ -430,14 +299,6 @@
     var _openDisciplineSessionsGroupId = null;
     var _openDisciplineSessionsCandidates = null;
 
-    // Highlight filter state. Null when no filter is active.
-    //
-    // Shape:
-    //   {
-    //     instructorId: string,
-    //     studentIds:   string[],
-    //     checkWeeks:   number
-    //   }
     var _scheduleHighlight = null;
 
     // ============================================================
@@ -480,33 +341,6 @@
     // ============================================================
     // HIGHLIGHT FILTER VM
     // ============================================================
-    //
-    // Assembles the VM the view consumes for the free-slots filter
-    // panel:
-    //
-    //   {
-    //     students:    [ { id, name }, ... ],
-    //     instructors: [ { id, name }, ... ],
-    //     unavailable: boolean
-    //   }
-    //
-    // `students` comes from the aggregator's
-    // getFreeSlotCandidateStudentsViewModel, which has already
-    // filtered to unassigned, eligible, enrolled students. The
-    // controller does NOT re-filter.
-    //
-    // `instructors` comes from AcademyClasses.getClassInstructorIds
-    // (week-scoped, discipline-scoped), with display names resolved
-    // via CharacterQueries.
-    //
-    // `unavailable` is true when:
-    //   - the discipline is an unsaved draft (no id)
-    //   - no class is selected
-    //   - the schedule week cannot be resolved
-    //
-    // When `unavailable` is true, `students` and `instructors` are
-    // empty arrays. The view is responsible for rendering the
-    // appropriate message.
 
     function buildHighlightFilterVM() {
         var result = {
@@ -515,21 +349,18 @@
             unavailable: false
         };
 
-        // Discipline must be persisted.
         if (!_disciplineDraft ||
             !isNonEmptyString(_disciplineDraft.id)) {
             result.unavailable = true;
             return result;
         }
 
-        // Class must be selected.
         var classId = AcademyUI.getSelectedClassId();
         if (!isNonEmptyString(classId)) {
             result.unavailable = true;
             return result;
         }
 
-        // Week must resolve.
         var week = resolveScheduleWeek();
         if (week === null) {
             result.unavailable = true;
@@ -539,12 +370,6 @@
         var disciplineId = String(_disciplineDraft.id);
         var targetClass = String(classId);
 
-        // ---- Students ----
-        //
-        // The aggregator throws when AcademyTeachingGroups is
-        // missing. That is a load-order bug, not a data problem.
-        // Catch it here so the filter panel renders "unavailable"
-        // rather than crashing the render.
         try {
             var studentsVM = AcademyAggregator
                 .getFreeSlotCandidateStudentsViewModel(
@@ -564,10 +389,6 @@
             result.students = [];
         }
 
-        // ---- Instructors ----
-        //
-        // Week-scoped, discipline-scoped. Same source the instructor
-        // modal's picker uses.
         result.instructors = buildInstructorOptions(
             targetClass, disciplineId, week
         );
@@ -692,9 +513,6 @@
         }
     }
 
-    /**
-     * Build the editor VM.
-     */
     function buildEditorVM() {
         if (_disciplineDraftMode === 'empty' || !_disciplineDraft) {
             return null;
@@ -716,10 +534,6 @@
         return vm;
     }
 
-    /**
-     * Build the highlight VM the view renders when a filter is
-     * active, or null when no filter is active.
-     */
     function buildScheduleHighlightVM() {
         if (!_scheduleHighlight) { return null; }
 
@@ -1144,6 +958,34 @@
             return;
         }
 
+        // ---- Bulk actions inside the candidate picker ----
+        var bulkBtn = target.closest('[data-bulk-action]');
+        if (bulkBtn && bulkBtn.dataset) {
+            var bulkAction = bulkBtn.dataset.bulkAction;
+            var bulkSection = bulkBtn.dataset.section;
+
+            if (bulkAction === 'select-all' ||
+                bulkAction === 'clear') {
+                e.preventDefault();
+
+                var picker = bulkBtn.closest(
+                    '.academy-teaching-group-candidate-picker'
+                );
+                if (!picker) { return; }
+
+                if (bulkAction === 'select-all') {
+                    selectAllVisibleInDisciplineSection(picker, bulkSection);
+                } else {
+                    clearDisciplineSection(picker, bulkSection);
+                }
+
+                // Keep the Add button's disabled state in sync with
+                // the checkbox state.
+                updateDisciplineCandidateSelectionState(picker);
+                return;
+            }
+        }
+
         // ---- Delegated action dispatch ----
         var actionEl = target.closest('[data-action]');
         if (!actionEl || !actionEl.dataset) { return; }
@@ -1270,6 +1112,30 @@
             ctx.onChange();
             return;
         }
+
+        // ---- Candidate picker checkbox ----
+        //
+        // The picker's Add button ships disabled. Ticking a checkbox
+        // must enable it. Without this branch, the button stays
+        // disabled and the browser shows a forbidden cursor when the
+        // user hovers it.
+        //
+        // The People view's picker has the same handler under the
+        // name updateCandidateSelectionState (in
+        // academy-people-controller.js). This is the discipline
+        // sessions panel's counterpart.
+        if (target.classList &&
+            target.classList.contains(
+                'academy-teaching-group-candidate-checkbox'
+            )) {
+            var picker = target.closest(
+                '.academy-teaching-group-candidate-picker'
+            );
+            if (picker) {
+                updateDisciplineCandidateSelectionState(picker);
+            }
+            return;
+        }
     }
 
     function handleInput(e) {
@@ -1297,6 +1163,15 @@
             debounceDisciplineSearch(target.value);
             return;
         }
+
+        // ---- Candidate picker search ----
+        if (target.classList &&
+            target.classList.contains(
+                'academy-teaching-group-candidate-search'
+            )) {
+            applyDisciplineCandidateSearchFilter(target);
+            return;
+        }
     }
 
     function handleKeydown(e) {
@@ -1307,6 +1182,151 @@
             e.preventDefault();
             handleScheduleWeekChange(target.value);
             return;
+        }
+    }
+
+    // ============================================================
+    // CANDIDATE PICKER STATE (discipline sessions panel)
+    // ============================================================
+    //
+    // Counterpart to AcademyPeopleController's
+    // updateCandidateSelectionState. The two read the same structural
+    // selectors, but the discipline picker's submit button uses the
+    // action name "discipline-sessions-add-student-submit" while the
+    // People picker's uses "teaching-groups-add-student-submit".
+    //
+    // The two actions exist because the two panels are wired by
+    // different controllers with different dispatch tables. They
+    // could be unified under a single action name; that unification
+    // is deliberately not part of this fix.
+
+    function updateDisciplineCandidateSelectionState(picker) {
+        if (!picker) { return; }
+
+        // Update the eligible section's count badge.
+        var eligibleSection = picker.querySelector(
+            '.academy-teaching-group-candidate-section' +
+            '[data-section="eligible"]'
+        );
+
+        if (eligibleSection) {
+            var totalCbs = eligibleSection.querySelectorAll(
+                '.academy-teaching-group-candidate-checkbox'
+            );
+            var checkedCbs = eligibleSection.querySelectorAll(
+                '.academy-teaching-group-candidate-checkbox:checked'
+            );
+
+            var countEl = eligibleSection.querySelector(
+                '[data-section-count="eligible"]'
+            );
+            if (countEl) {
+                countEl.textContent =
+                    checkedCbs.length + ' / ' + totalCbs.length;
+            }
+        }
+
+        // Enable or disable the Add button based on the total
+        // count of checked boxes across both sections.
+        var addBtn = picker.querySelector(
+            '[data-action="discipline-sessions-add-student-submit"]'
+        );
+        if (!addBtn) { return; }
+
+        var checked = picker.querySelectorAll(
+            '.academy-teaching-group-candidate-checkbox:checked'
+        ).length;
+
+        if (checked === 0) {
+            addBtn.setAttribute('disabled', 'disabled');
+            addBtn.textContent = 'Add';
+        } else {
+            addBtn.removeAttribute('disabled');
+            addBtn.textContent = 'Add (' + checked + ')';
+        }
+    }
+
+    function selectAllVisibleInDisciplineSection(picker, sectionKey) {
+        if (!picker || !sectionKey) { return; }
+
+        var section = picker.querySelector(
+            '.academy-teaching-group-candidate-section' +
+            '[data-section="' + cssEscapeLocal(sectionKey) + '"]'
+        );
+        if (!section) { return; }
+
+        var rows = section.querySelectorAll(
+            '.academy-teaching-group-candidate-row'
+        );
+        for (var i = 0; i < rows.length; i++) {
+            var row = rows[i];
+            if (row.style.display === 'none') { continue; }
+            var cb = row.querySelector(
+                '.academy-teaching-group-candidate-checkbox'
+            );
+            if (cb) { cb.checked = true; }
+        }
+    }
+
+    function clearDisciplineSection(picker, sectionKey) {
+        if (!picker || !sectionKey) { return; }
+
+        var section = picker.querySelector(
+            '.academy-teaching-group-candidate-section' +
+            '[data-section="' + cssEscapeLocal(sectionKey) + '"]'
+        );
+        if (!section) { return; }
+
+        var cbs = section.querySelectorAll(
+            '.academy-teaching-group-candidate-checkbox'
+        );
+        for (var i = 0; i < cbs.length; i++) {
+            cbs[i].checked = false;
+        }
+    }
+
+    function applyDisciplineCandidateSearchFilter(inputEl) {
+        if (!inputEl) { return; }
+        var picker = inputEl.closest(
+            '.academy-teaching-group-candidate-picker'
+        );
+        if (!picker) { return; }
+
+        var term = (inputEl.value || '').toLowerCase().trim();
+        var rows = picker.querySelectorAll(
+            '.academy-teaching-group-candidate-row'
+        );
+
+        for (var i = 0; i < rows.length; i++) {
+            var row = rows[i];
+            var key = row.dataset ? (row.dataset.searchKey || '') : '';
+            var matches = term === '' || key.indexOf(term) !== -1;
+            row.style.display = matches ? '' : 'none';
+        }
+
+        var sections = picker.querySelectorAll(
+            '.academy-teaching-group-candidate-section'
+        );
+        var totalVisible = 0;
+
+        for (var s = 0; s < sections.length; s++) {
+            var section = sections[s];
+            var sectionRows = section.querySelectorAll(
+                '.academy-teaching-group-candidate-row'
+            );
+            var visibleInSection = 0;
+            for (var r = 0; r < sectionRows.length; r++) {
+                if (sectionRows[r].style.display !== 'none') {
+                    visibleInSection++;
+                }
+            }
+            totalVisible += visibleInSection;
+            section.style.display = visibleInSection === 0 ? 'none' : '';
+        }
+
+        var noMatches = picker.querySelector('[data-no-matches]');
+        if (noMatches) {
+            noMatches.style.display = totalVisible === 0 ? '' : 'none';
         }
     }
 
@@ -1515,7 +1535,6 @@
         }
 
         if (_scheduleHighlight !== null) {
-            // Filter is active; the panel is force-open.
             return;
         }
 
@@ -1762,7 +1781,7 @@
         }
 
         var submitBtn = picker.querySelector(
-            '[data-action="teaching-groups-add-student-submit"]'
+            '[data-action="discipline-sessions-add-student-submit"]'
         );
         if (submitBtn) {
             submitBtn.disabled = true;
@@ -2207,11 +2226,6 @@
             clearTimeout(_disciplineSearchTimer);
             _disciplineSearchTimer = null;
         }
-
-        // The list filter is deliberately NOT cleared.
-        // The schedule week is deliberately NOT cleared.
-        // The discipline-sessions picker state IS cleared.
-        // The schedule highlight filter IS cleared.
 
         _openDisciplineSessionsGroupId = null;
         _openDisciplineSessionsCandidates = null;
