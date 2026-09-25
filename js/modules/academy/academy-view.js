@@ -92,6 +92,9 @@
  *     - #academy-people-detail             (character detail panel)
  *     - .academy-teaching-group-discipline-list
  *     - .academy-character-discipline-list
+ *     - .academy-discipline-sidebar         (discipline list)
+ *     - .academy-discipline-detail          (discipline editor
+ *                                            and Schedule tab)
  *
  *   Rules:
  *     - A selector that is absent before the swap is not captured.
@@ -99,12 +102,12 @@
  *     - No fallback to document scroll.
  *     - Not persisted. Leaving a view and returning resets to 0.
  *
- *   The last three selectors cover the character detail panel and
- *   its inner scrollable lists. Without them, any re-render fired
- *   from a teaching-groups action (add student, remove student,
- *   session edit) jumped the panel back to the top. With them, the
- *   panel and the nested lists keep their scroll position across
- *   every refresh.
+ *   The discipline selectors matter because the Sessions panel
+ *   inside the Schedule tab fires ctx.onChange() on every add,
+ *   remove, and picker submit. Without them, every such action
+ *   jumps the user back to the top of the discipline detail panel.
+ *   Same failure mode the character-detail selectors prevent for
+ *   the People view's teaching-groups actions.
  */
 
 (function() {
@@ -223,6 +226,7 @@
         '.academy-weekly-teams-sidebar',
         '.academy-exams-sidebar',
         '.academy-exams-detail',
+
         // Character detail panel and its inner scrollable lists.
         // These preserve scroll across any refresh that replaces
         // the shell's innerHTML, including refreshes fired from
@@ -230,7 +234,16 @@
         // discipline picker.
         '#academy-people-detail',
         '.academy-teaching-group-discipline-list',
-        '.academy-character-discipline-list'
+        '.academy-character-discipline-list',
+
+        // Discipline view panels. The discipline detail panel is
+        // where the Sessions panel lives. Without it, any refresh
+        // fired from the panel (add student, remove student, picker
+        // submit) jumps the user back to the top of the detail
+        // panel. The sidebar selector preserves the list scroll
+        // when the filter changes.
+        '.academy-discipline-sidebar',
+        '.academy-discipline-detail'
     ];
 
     function captureSidebarScroll(container) {
