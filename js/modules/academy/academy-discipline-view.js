@@ -12,35 +12,45 @@
  *   - Rendering the assessment weights editor (per-type weight inputs)
  *   - Rendering an empty state when no discipline is selected
  *   - Rendering a tab bar in the detail panel: Edit | Schedule
- *   - Rendering the Schedule tab body (week selector, highlight filter
- *     panel, grid host, enrollment summary host, sessions host)
+ *   - Rendering the Schedule tab body (week selector, header actions,
+ *     free-slots filter panel, grid host, enrollment summary host,
+ *     sessions host)
  *
  * IMPORTANT:
- *   - RENDER ONLY - no mutations, no domain logic.
- *   - Does NOT fetch data for the editor or list. Receives a view
- *     model from AcademyDisciplineController.
+ *   - RENDER ONLY - no mutations, no domain reads, no logic.
+ *   - Receives a view model from AcademyDisciplineController.
  *   - Does NOT bind events. Rows, buttons, inputs, and selects emit
  *     data-* attributes (or stable ids) that AcademyView's delegated
  *     container listeners resolve.
  *   - Uses DomUtils for escaping (MANDATORY, no fallback).
  *   - Returns an HTML string.
  *
- * THE ONE DOMAIN READ:
- *   The highlight filter panel needs the class roster to populate
- *   its student multi-select. Rendering that list from the VM would
- *   mean threading `AcademyAggregator.getClassStudentsViewModel` and
- *   `AcademyEnrolments.getStudentDisciplineIds` through the
- *   controller. Instead, the view reads them directly, in exactly
- *   one function: buildHighlightFilterStudents(). That is the only
- *   domain read in this module.
+ * PURITY:
+ *   This module does NOT read from any domain module. Earlier
+ *   revisions read the class roster and the discipline enrolment
+ *   list directly from inside buildHighlightFilterStudents. That
+ *   put domain reads inside a renderer, which is exactly the
+ *   architectural smell the aggregator layer exists to prevent.
  *
- *   When the class cannot be resolved, or the aggregator is absent,
- *   the filter panel renders with an empty student list and the user
- *   sees why. It does NOT fabricate students.
+ *   The controller now owns those reads. It calls
+ *   AcademyAggregator.getFreeSlotCandidateStudentsViewModel and
+ *   AcademyAggregator.getClassInstructorDisciplines, then hands
+ *   this view a `highlightFilterVM`:
+ *
+ *     {
+ *       students:    [ { id, name }, ... ],
+ *       instructors: [ { id, name }, ... ],
+ *       unavailable: boolean    // true when the class/discipline
+ *                               // context is missing
+ *     }
+ *
+ *   The view renders that VM verbatim. It does not compute
+ *   eligibility, does not filter, and does not reach into a domain
+ *   module for anything.
  *
  * VM CONTRACT (STRICT):
- *   The renderer trusts the VM. Every field it reads is guaranteed by
- *   the controller. A malformed VM is a controller bug and must
+ *   The renderer trusts the VM. Every field it reads is guaranteed
+ *   by the controller. A malformed VM is a controller bug and must
  *   surface as a thrown error, not as an empty panel that quietly
  *   claims fewer disciplines than exist.
  *
@@ -50,8 +60,9 @@
  *     editorMode:    'empty' | 'edit',
  *     filters:       { type, search },      // guaranteed object
  *     activeTab:     'edit' | 'schedule',
- *     scheduleWeek:  number,                // valid while Schedule tab exists
- *     scheduleHighlightVM: highlightVM | null
+ *     scheduleWeek:  number,
+ *     scheduleHighlightVM: highlightVM | null,
+ *     highlightFilterVM: filterVM            // guaranteed object
  *   }
  *
  *   listRowVM:
@@ -62,33 +73,23 @@
  *
  *   disciplineVM (editorMode === 'edit'):
  *   {
- *     id:               string | null,      // null when isNew
- *     isNew:            boolean,
- *     name:             string,
- *     type:             'mandatory' | 'optional',
- *     startWeek:        number,
- *     endWeek:          number,
- *     weeklyHours:      number,
- *     weight:           number,
- *     gradeScheme:      schemeObject,       // canonical shape
- *     schemePresetId:   string,
- *     schemePreview:    string,
- *     schemePresets:    [ { id, label }, ... ],
- *     assessmentTypes:  [ string, ... ],
- *     assessmentWeights: { [type]: number },
- *     fieldErrors:      { [field]: string },
- *     weekBounds:       { min, max },
- *     weeklyHoursBounds: { min, max, step },
- *     weightBounds:     { min, max, step },
- *     bandPercentBounds: { min, max, step }
+ *     id, isNew, name, type, startWeek, endWeek, weeklyHours, weight,
+ *     gradeScheme, schemePresetId, schemePreview, schemePresets,
+ *     assessmentTypes, assessmentWeights, defaultAssessmentWeights,
+ *     fieldErrors, weekBounds, weeklyHoursBounds, weightBounds,
+ *     bandPercentBounds
  *   }
  *
  *   highlightVM (present when a highlight filter is active):
  *   {
- *     instructorId:   string,
- *     instructorName: string,
- *     studentCount:   number,
- *     checkWeeks:     number
+ *     instructorId, instructorName, studentCount, checkWeeks
+ *   }
+ *
+ *   filterVM (always present):
+ *   {
+ *     students:    [ { id, name }, ... ],
+ *     instructors: [ { id, name }, ... ],
+ *     unavailable: boolean
  *   }
  *
  * TABS:
@@ -101,45 +102,42 @@
  *                summary panel below the grid and a discipline
  *                sessions panel below the summary.
  *
- *   The active tab is carried on the VM as `activeTab`. When the
- *   editor mode is 'empty' (no discipline selected, no draft),
- *   neither tab renders; the empty state shows instead.
- *
  *   The Schedule tab is INTERACTIVE. The grid emits
  *   schedule-discipline-assign on empty cells and
  *   schedule-discipline-slot-open on occupied cells; the controller
- *   routes both. The class is NOT selectable here; it comes from
- *   AcademyUI.getSelectedClassId().
+ *   routes both.
  *
- * HIGHLIGHT FILTER:
- *   The Schedule tab header carries a "Find free slot" section. It
- *   is rendered as an inline disclosure:
+ * SCHEDULE HEADER ACTIONS:
+ *   The Schedule tab header carries three buttons:
  *
- *     - Closed state: a single button labeled "Find free slot".
- *       Emits data-action="discipline-schedule-find-free-slot"? No —
- *       that action is reserved for the "apply" button inside the
- *       expanded panel. The launcher is a plain toggle that flips a
- *       data-expanded attribute on the wrapper. See TOGGLE BELOW.
+ *     Manage Groups    emits data-action="discipline-manage-groups"
+ *     Rebalance Groups emits data-action="discipline-rebalance"
+ *     Find free slot   the launcher for the free-slots filter panel;
+ *                      emits data-action="discipline-schedule-toggle-filter-panel"
  *
- *     - Open state: instructor select, student multi-select,
- *       check-weeks number input, and an Apply button that emits
- *       data-action="discipline-schedule-find-free-slot".
+ *   The first two are new. The controller routes each to its modal.
  *
- *   The disclosure is driven purely by a data-expanded attribute on
- *   the wrapper and a small amount of inline style on the body. The
- *   launcher button does not carry a data-action, because there is
- *   no handler for it; the shell routes nothing. It is toggled by
- *   the browser? No — it needs a handler. See TOGGLE BELOW.
+ * FREE SLOTS FILTER PANEL:
+ *   The panel is a disclosure:
  *
- *   Actually, the disclosure toggle is a controller concern. The
- *   launcher emits data-action="discipline-schedule-toggle-filter-panel"
- *   and the controller flips the attribute and inline display. This
- *   keeps the view stateless and matches the summary disclosure
- *   pattern used elsewhere in this file (which is also controller-
- *   toggled, via discipline-summary-toggle).
+ *     Closed: a single launcher button.
+ *     Open:   instructor select, student multi-select, check-weeks
+ *             number, Apply button.
  *
- *   When a highlight filter is ACTIVE (scheduleHighlightVM non-null),
- *   the panel is FORCED OPEN and shows a summary line plus a Clear
+ *   Students come from `highlightFilterVM.students`. This list has
+ *   already been filtered to unassigned, eligible students by the
+ *   aggregator. The view does not filter further.
+ *
+ *   The student list is rendered as a two-column grid, not a
+ *   running list. That was the "clunky" layout fix.
+ *
+ *   When `highlightFilterVM.unavailable` is true, the panel renders
+ *   an explanatory message and disables the Apply button. That
+ *   happens when the class is not selected or the discipline has
+ *   not been saved.
+ *
+ *   When a filter is ACTIVE (scheduleHighlightVM non-null), the
+ *   panel is FORCED OPEN and shows a summary line plus a Clear
  *   button. The Clear button emits
  *   data-action="discipline-schedule-clear-highlight".
  *
@@ -155,34 +153,18 @@
  *
  *   Schedule tab:
  *     #academy-discipline-schedule-week              (change / Enter)
+ *     [data-action="discipline-manage-groups"]       (click)
+ *     [data-action="discipline-rebalance"]           (click)
  *     [data-action="discipline-schedule-toggle-filter-panel"]  (click)
  *     [data-action="discipline-schedule-find-free-slot"]       (click)
  *     [data-action="discipline-schedule-clear-highlight"]      (click)
  *
- *   The grid cells (emitted by CalendarRenderer, not by this file):
- *     [data-action="schedule-discipline-assign"]
- *     [data-action="schedule-discipline-slot-open"]
- *
- *   The summary panel (emitted by AcademyDisciplineScheduleSummary):
- *     [data-action="discipline-summary-toggle"]
- *
- *   The sessions panel (emitted by AcademyDisciplineSessionsPanel):
- *     [data-action="discipline-sessions-add-student"]
- *     [data-action="discipline-sessions-add-student-cancel"]
- *     [data-action="discipline-sessions-add-student-submit"]
- *     [data-action="discipline-sessions-remove-student"]
- *
  * TERMINOLOGY:
- *   The discipline domain is an Academy concern. The retired
- *   `curriculum` subsystem is no longer referenced here.
+ *   The discipline domain is an Academy concern.
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
  *   - window.CalendarConstants (MANDATORY) — week bounds
- *   - window.AcademyUI (LAZY, for the highlight filter's class)
- *   - window.AcademyAggregator (LAZY, for the highlight filter's roster)
- *   - window.AcademyEnrolments (LAZY, for the highlight filter's
- *     enrolment filter)
  */
 
 (function() {
@@ -223,7 +205,6 @@
     var MAX_WEEK = CalendarConstants.MAX_WEEK;
 
     var VALID_TABS = ['edit', 'schedule'];
-    var DEFAULT_TAB = 'edit';
 
     var DEFAULT_HIGHLIGHT_CHECK_WEEKS = 4;
     var MAX_HIGHLIGHT_CHECK_WEEKS = 12;
@@ -305,206 +286,6 @@
     }
 
     // ============================================================
-    // HIGHLIGHT FILTER — DOMAIN READS
-    // ============================================================
-    //
-    // This is the ONLY place in this module that reads from a domain
-    // module. Everything else is pure rendering from the VM.
-    //
-    // The reads are:
-    //   - AcademyUI.getSelectedClassId()             class context
-    //   - AcademyAggregator.getClassStudentsViewModel(classId, week)
-    //                                                 roster + name
-    //   - AcademyEnrolments.getStudentDisciplineIds(charId, classId)
-    //                                                 enrolment filter
-    //
-    // A student appears in the filter list when they are enrolled in
-    // THIS discipline for THIS class. The view does not know the
-    // discipline id — it is not on the highlight VM. So we take the
-    // discipline id from the SELECTED discipline VM, which the
-    // caller passes in. When there is no selected discipline, the
-    // filter list is empty.
-    //
-    // Failure modes:
-    //   - AcademyUI or AcademyAggregator missing → empty list
-    //   - no class selected                     → empty list
-    //   - no selected discipline                → empty list
-    //   - aggregator throws                     → empty list, logged
-    //
-    // Empty list is honest: the user sees "no students available"
-    // and the panel's hint text explains why (see the caller).
-
-    function buildHighlightFilterStudents(selectedDiscipline, week) {
-        if (!selectedDiscipline || !selectedDiscipline.id) {
-            return [];
-        }
-        if (typeof week !== 'number') {
-            return [];
-        }
-
-        var AcademyUI = window.AcademyUI;
-        var Aggregator = window.AcademyAggregator;
-        var Enrolments = window.AcademyEnrolments;
-
-        if (!AcademyUI ||
-            typeof AcademyUI.getSelectedClassId !== 'function') {
-            return [];
-        }
-        if (!Aggregator ||
-            typeof Aggregator.getClassStudentsViewModel !== 'function') {
-            return [];
-        }
-
-        var classId = AcademyUI.getSelectedClassId();
-        if (!isNonEmptyString(classId)) {
-            return [];
-        }
-
-        var roster = [];
-        try {
-            roster = Aggregator.getClassStudentsViewModel(
-                classId, week
-            ) || [];
-        } catch (e) {
-            console.warn(
-                '[AcademyDisciplineView] getClassStudentsViewModel ' +
-                'threw while building the highlight filter:', e
-            );
-            return [];
-        }
-
-        if (!Array.isArray(roster) || roster.length === 0) {
-            return [];
-        }
-
-        var disciplineId = String(selectedDiscipline.id);
-        var targetClass = String(classId);
-
-        var result = [];
-
-        for (var i = 0; i < roster.length; i++) {
-            var student = roster[i];
-            if (!student || !student.id) { continue; }
-
-            var enrolledHere = true;
-            if (Enrolments &&
-                typeof Enrolments.getStudentDisciplineIds ===
-                    'function') {
-                try {
-                    var ids = Enrolments.getStudentDisciplineIds(
-                        student.id, targetClass
-                    ) || [];
-                    enrolledHere = ids.indexOf(disciplineId) !== -1;
-                } catch (e) {
-                    // A read failure here is a data-integrity
-                    // problem; treat the student as not enrolled so
-                    // the filter list stays honest. The user can
-                    // still see the roster elsewhere.
-                    enrolledHere = false;
-                }
-            }
-
-            if (!enrolledHere) { continue; }
-
-            result.push({
-                id: String(student.id),
-                name: isNonEmptyString(student.name)
-                    ? student.name
-                    : 'Unknown'
-            });
-        }
-
-        result.sort(function(a, b) {
-            return a.name.localeCompare(b.name);
-        });
-
-        return result;
-    }
-
-    // ============================================================
-    // HIGHLIGHT FILTER — INSTRUCTOR OPTIONS
-    // ============================================================
-    //
-    // The instructor list is resolved from
-    // AcademyClasses.getClassInstructorIds, week-scoped to the
-    // schedule week and discipline-scoped to the selected discipline.
-    // That is the same source the instructor picker modal uses; the
-    // filter offers the same set of instructors the picker would.
-    //
-    // Failure modes collapse to "empty list," same as students.
-
-    function buildHighlightFilterInstructors(selectedDiscipline, week) {
-        if (!selectedDiscipline || !selectedDiscipline.id) {
-            return [];
-        }
-        if (typeof week !== 'number') {
-            return [];
-        }
-
-        var AcademyUI = window.AcademyUI;
-        var AcademyClasses = window.AcademyClasses;
-        var CQ = window.CharacterQueries;
-
-        if (!AcademyUI ||
-            typeof AcademyUI.getSelectedClassId !== 'function') {
-            return [];
-        }
-        if (!AcademyClasses ||
-            typeof AcademyClasses.getClassInstructorIds !== 'function') {
-            return [];
-        }
-        if (!CQ || typeof CQ.getCharacterById !== 'function') {
-            return [];
-        }
-
-        var classId = AcademyUI.getSelectedClassId();
-        if (!isNonEmptyString(classId)) {
-            return [];
-        }
-
-        var ids = [];
-        try {
-            ids = AcademyClasses.getClassInstructorIds(
-                String(classId),
-                week,
-                { disciplineId: String(selectedDiscipline.id) }
-            ) || [];
-        } catch (e) {
-            console.warn(
-                '[AcademyDisciplineView] getClassInstructorIds threw ' +
-                'while building the highlight filter:', e
-            );
-            return [];
-        }
-
-        if (!Array.isArray(ids)) { return []; }
-
-        var seen = Object.create(null);
-        var result = [];
-
-        for (var i = 0; i < ids.length; i++) {
-            if (!isNonEmptyString(ids[i])) { continue; }
-            var id = String(ids[i]);
-            if (seen[id]) { continue; }
-            seen[id] = true;
-
-            var char = CQ.getCharacterById(id);
-            if (!char) { continue; }
-
-            var name = CQ.getDisplayName(char);
-            if (!isNonEmptyString(name)) { name = 'Unknown'; }
-
-            result.push({ id: id, name: name });
-        }
-
-        result.sort(function(a, b) {
-            return a.name.localeCompare(b.name);
-        });
-
-        return result;
-    }
-
-    // ============================================================
     // VM VALIDATION
     // ============================================================
 
@@ -550,6 +331,14 @@
             );
         }
 
+        if (!viewModel.highlightFilterVM ||
+            typeof viewModel.highlightFilterVM !== 'object') {
+            throw new Error(
+                '[AcademyDisciplineView] VM.highlightFilterVM must be ' +
+                'an object. The controller is responsible for building it.'
+            );
+        }
+
         if (viewModel.editorMode === 'edit') {
             if (!viewModel.selected || typeof viewModel.selected !== 'object') {
                 throw new Error(
@@ -577,7 +366,8 @@
                     vm.editorMode,
                     vm.activeTab,
                     vm.scheduleWeek,
-                    vm.scheduleHighlightVM
+                    vm.scheduleHighlightVM,
+                    vm.highlightFilterVM
                 ) +
             '</div>'
         );
@@ -710,7 +500,8 @@
         editorMode,
         activeTab,
         scheduleWeek,
-        highlightVM
+        highlightVM,
+        filterVM
     ) {
         var html = '<div class="academy-discipline-detail" ' +
                     'id="academy-discipline-detail">';
@@ -726,7 +517,12 @@
         html += '<div class="academy-discipline-tab-body">';
 
         if (activeTab === 'schedule') {
-            html += renderScheduleTab(scheduleWeek, highlightVM, selected);
+            html += renderScheduleTab(
+                scheduleWeek,
+                highlightVM,
+                selected,
+                filterVM
+            );
         } else {
             html += renderEditor(selected);
         }
@@ -778,27 +574,19 @@
     // ============================================================
     // SCHEDULE TAB
     // ============================================================
-    //
-    // The schedule tab body: a week selector, the highlight filter
-    // panel, the grid host, the enrollment summary host, and the
-    // discipline sessions panel host.
-    //
-    // The class is NOT selectable here. It comes from
-    // AcademyUI.getSelectedClassId(). The controller reads the
-    // class, mounts the grid into the grid host, mounts the
-    // enrollment summary into the summary host, and mounts the
-    // sessions panel into the sessions host.
-    //
-    // All three hosts are intentionally empty at render time. The
-    // controller fills them.
 
-    function renderScheduleTab(week, highlightVM, selectedDiscipline) {
+    function renderScheduleTab(week, highlightVM, selectedDiscipline, filterVM) {
         var weekValue = String(week);
+        var isNewDraft = !selectedDiscipline ||
+            !isNonEmptyString(selectedDiscipline.id);
 
         var html = '';
         html += '<div class="academy-discipline-schedule-tab">';
 
+        // ---- Header row: week selector + actions ----
         html += '<div class="academy-discipline-schedule-header">';
+
+        html += '<div class="academy-discipline-schedule-header-week">';
         html += '<label class="academy-top-label" ' +
                     'for="academy-discipline-schedule-week">Week:</label>';
         html += '<input type="number" ' +
@@ -808,13 +596,37 @@
                     'value="' + escapeAttribute(weekValue) + '" ' +
                     'min="' + escapeAttribute(String(MIN_WEEK)) + '" ' +
                     'max="' + escapeAttribute(String(MAX_WEEK)) + '">';
-        html += '<span class="academy-discipline-schedule-hint">' +
-                    'Scoped to the Academy-selected class.' +
-                '</span>';
         html += '</div>';
 
-        html += renderHighlightFilterPanel(
-            week, highlightVM, selectedDiscipline
+        // ---- Header actions: Manage Groups, Rebalance, Find free slot ----
+        //
+        // The first two open modals. They are disabled while the
+        // discipline is an unsaved draft, because both operate on a
+        // persisted discipline.
+        //
+        // The "Find free slot" launcher is part of the free-slots
+        // filter panel, which lives below.
+        html += '<div class="academy-discipline-schedule-header-actions">';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-action="discipline-manage-groups"' +
+                    (isNewDraft ? ' disabled' : '') + '>' +
+                    'Manage Groups' +
+                '</button>';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-action="discipline-rebalance"' +
+                    (isNewDraft ? ' disabled' : '') + '>' +
+                    'Rebalance Groups' +
+                '</button>';
+        html += '</div>';
+
+        html += '</div>';
+
+        html += renderFreeSlotsPanel(
+            week,
+            highlightVM,
+            selectedDiscipline,
+            filterVM,
+            isNewDraft
         );
 
         html += '<div id="academy-discipline-schedule-host" ' +
@@ -832,35 +644,44 @@
     }
 
     // ============================================================
-    // HIGHLIGHT FILTER PANEL
+    // FREE SLOTS FILTER PANEL
     // ============================================================
     //
     // Two states:
     //
     //   No active filter (highlightVM === null):
-    //     Closed disclosure. A single toggle button. Clicking it
-    //     emits data-action="discipline-schedule-toggle-filter-panel"
-    //     which the controller handles by flipping data-expanded on
-    //     the wrapper and toggling inline display on the body.
-    //     The body carries the instructor select, student multi-
-    //     select, check-weeks input, and an Apply button emitting
-    //     data-action="discipline-schedule-find-free-slot".
+    //     Closed disclosure by default. The launcher toggles it.
+    //     The open form shows:
+    //       - instructor select (from filterVM.instructors)
+    //       - student multi-select (from filterVM.students)
+    //       - check-weeks number input
+    //       - Apply button
     //
     //   Active filter (highlightVM !== null):
-    //     Forced-open disclosure. The body shows a summary line
-    //     (instructor name, student count, weeks) and a Clear
-    //     button. The Apply button is hidden, since the filter is
-    //     already applied. The toggle button is disabled and the
-    //     body is shown unconditionally.
+    //     Force-open. The form is replaced by a summary line and a
+    //     Clear button.
     //
-    // The launcher's data-action is on the wrapper, not the body,
-    // so the delegated click finds the toggle even when a caller
-    // clicks somewhere inside the button's padding.
+    // The form's markup contract with the controller:
+    //   .discipline-highlight-instructor-select
+    //   .discipline-highlight-student-checkbox
+    //   .discipline-highlight-check-weeks
+    //
+    // Those three class names are read by the controller's
+    // handleFindFreeSlotSubmit. Rename them here and you must
+    // rename them there.
+    //
+    // The students list is a TWO-COLUMN grid, not a running list.
+    // That is the layout fix. The wrapper carries
+    // `.discipline-highlight-students` and each row carries
+    // `.discipline-highlight-student-option`; the CSS defines the
+    // grid.
 
-    function renderHighlightFilterPanel(
+    function renderFreeSlotsPanel(
         week,
         highlightVM,
-        selectedDiscipline
+        selectedDiscipline,
+        filterVM,
+        isNewDraft
     ) {
         var isActive = highlightVM !== null &&
             typeof highlightVM === 'object';
@@ -893,7 +714,10 @@
             html += renderHighlightSummary(highlightVM);
         } else {
             html += renderHighlightForm(
-                week, selectedDiscipline
+                week,
+                selectedDiscipline,
+                filterVM,
+                isNewDraft
             );
         }
 
@@ -957,13 +781,24 @@
         return html;
     }
 
-    function renderHighlightForm(week, selectedDiscipline) {
-        var instructors = buildHighlightFilterInstructors(
-            selectedDiscipline, week
-        );
-        var students = buildHighlightFilterStudents(
-            selectedDiscipline, week
-        );
+    function renderHighlightForm(week, selectedDiscipline, filterVM, isNewDraft) {
+        // ---- Unavailable context ----
+        //
+        // The panel cannot produce useful results without a
+        // persisted discipline and a selected class. When the
+        // controller flags the filter VM as unavailable, render an
+        // explanation and disable Apply. Do not fabricate an empty
+        // dropdown.
+        if (filterVM.unavailable === true || isNewDraft) {
+            return renderHighlightUnavailable(isNewDraft);
+        }
+
+        var instructors = Array.isArray(filterVM.instructors)
+            ? filterVM.instructors
+            : [];
+        var students = Array.isArray(filterVM.students)
+            ? filterVM.students
+            : [];
 
         var html = '';
 
@@ -1002,6 +837,10 @@
         html += '</div>';
 
         // ---- Students ----
+        //
+        // The students list is a two-column grid. Every student
+        // here is already unassigned and eligible; the aggregator
+        // filtered them. The view does not filter further.
         html += '<div class="discipline-highlight-field">';
         html += '<label class="discipline-highlight-label">' +
                     'Students' +
@@ -1009,8 +848,8 @@
 
         if (students.length === 0) {
             html += '<p class="discipline-highlight-empty">' +
-                        'No students are enrolled in this discipline ' +
-                        'for the selected class.' +
+                        'No unassigned students are eligible for a ' +
+                        'new slot in this discipline this week.' +
                     '</p>';
         } else {
             html += '<div class="discipline-highlight-students">';
@@ -1054,17 +893,32 @@
         html += '</div>';
 
         // ---- Apply ----
+        var canApply = instructors.length > 0 && students.length > 0;
+
         html += '<div class="discipline-highlight-actions">';
         html += '<button type="button" class="primary small" ' +
                     'data-action="discipline-schedule-find-free-slot"' +
-                    (instructors.length === 0 || students.length === 0
-                        ? ' disabled'
-                        : '') + '>' +
+                    (canApply ? '' : ' disabled') + '>' +
                     'Highlight slots' +
                 '</button>';
         html += '</div>';
 
         return html;
+    }
+
+    function renderHighlightUnavailable(isNewDraft) {
+        var message = isNewDraft
+            ? 'Save the discipline first to search for free slots.'
+            : 'Select a class in the Academy header to search for ' +
+              'free slots.';
+
+        return (
+            '<div class="discipline-highlight-field">' +
+                '<p class="discipline-highlight-empty">' +
+                    escapeHtml(message) +
+                '</p>' +
+            '</div>'
+        );
     }
 
     // ============================================================
