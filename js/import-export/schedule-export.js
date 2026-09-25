@@ -18,6 +18,23 @@
  *   Exams, tournaments, and weekly-team assignments are NOT part
  *   of this export. The export is about time slots.
  *
+ * SESSION ROSTERS:
+ *   Each teaching session lists the students of its group who are
+ *   active at the exported week. Roster source:
+ *   AcademyTeachingGroups.getActiveMembers(groupId, week), which
+ *   returns the character IDs whose membership interval for the
+ *   group contains the week. Names come from CharacterQueries.
+ *
+ *   The roster is printed as a header line followed by one name
+ *   per line, indented under the session block. This layout never
+ *   overflows regardless of roster size, at the cost of vertical
+ *   space. Chosen over the comma-wrapped variant because roster
+ *   sizes vary widely and vertical readability matters more than
+ *   compactness for a document meant to be read by humans.
+ *
+ *   A session whose group has no active members at the week emits
+ *   no roster block at all. The absence is the answer.
+ *
  * WEEK SCOPE:
  *   One week. The caller supplies it. The Academy UI passes the
  *   display week; other callers may pass any valid week.
@@ -36,14 +53,16 @@
  *   ────────────────────────────────────────────────
  *     09:00–10:00  Combat Training · Group 1
  *                  Instructor: Jane Smith · Room 3A
+ *                  Students (3):
+ *                    Aldric Blackwood
+ *                    Cassia Vane
+ *                    Marco Thrace
  *
  *     10:00–11:00  Combat Training · Group 2
  *                  Instructor: Jane Smith · Room 3A
- *
- *   ────────────────────────────────────────────────
- *   TUESDAY
- *   ────────────────────────────────────────────────
- *     — no sessions —
+ *                  Students (2):
+ *                    Nyla Pemberton
+ *                    Osric Wren
  *
  * FAIL-CLOSED:
  *   When a mandatory dependency is unavailable, the export
@@ -99,6 +118,10 @@
     if (!AcademyTeachingGroups ||
         typeof AcademyTeachingGroups.getGroup !== 'function') {
         _missing.push('AcademyTeachingGroups.getGroup');
+    }
+    if (!AcademyTeachingGroups ||
+        typeof AcademyTeachingGroups.getActiveMembers !== 'function') {
+        _missing.push('AcademyTeachingGroups.getActiveMembers');
     }
     if (!AcademyInstructorCommitments ||
         typeof AcademyInstructorCommitments.getActiveCommitmentsForClass !== 'function') {
@@ -159,6 +182,16 @@
     // exporter's convention so the two exports read consistently.
     var BANNER_WIDTH = 64;
     var DAY_BANNER_WIDTH = 48;
+
+    // Continuation lines align under the text after the time-range
+    // column. A time label such as "09:00–10:00" is 11 characters;
+    // padding to 13 leaves two spaces before the discipline name.
+    var CONTINUATION_INDENT = 13;
+
+    // Roster lines indent one level deeper than the session
+    // details, so the header reads as belonging to the session and
+    // the names read as belonging to the header.
+    var ROSTER_INDENT = 15;
 
     // Kind labels for commitments.
     var KIND_LABEL = {
@@ -251,11 +284,11 @@
         return d.name;
     }
 
-    function getInstructorName(instructorId) {
-        if (!isNonEmptyString(instructorId)) {
+    function getCharacterName(charId) {
+        if (!isNonEmptyString(charId)) {
             return '';
         }
-        var char = CharacterQueries.getCharacterById(instructorId);
+        var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
             return '';
         }
@@ -287,10 +320,6 @@
 
     /**
      * Display label for a teaching group.
-     *
-     * customName when set; otherwise "<discipline> <groupNumber>".
-     * A group with neither a custom name nor a group number gets
-     * just the discipline name.
      */
     function getGroupDisplayName(group) {
         if (!group) { return 'Unnamed Group'; }
@@ -310,21 +339,59 @@
         return disciplineName;
     }
 
+    /**
+     * Build the roster list for a group at a given week.
+     *
+     * Returns an array of { id, name }. Sorted alphabetically by
+     * name, with a fallback to id for stability when two students
+     * share a name.
+     *
+     * A student whose character record no longer exists is
+     * included with name '(missing character)'. The roster is a
+     * fact about the group, not about whether the character still
+     * resolves; dropping the entry would under-report the roster.
+     */
+    function buildSessionRoster(groupId, weekNum) {
+        var raw = [];
+        try {
+            raw = AcademyTeachingGroups.getActiveMembers(
+                groupId, weekNum
+            ) || [];
+        } catch (e) {
+            raw = [];
+        }
+
+        if (!Array.isArray(raw)) { return []; }
+
+        var result = [];
+        for (var i = 0; i < raw.length; i++) {
+            var charId = raw[i];
+            if (!isNonEmptyString(charId)) { continue; }
+
+            var name = getCharacterName(charId);
+            if (name === '') {
+                name = '(missing character)';
+            }
+
+            result.push({
+                id: String(charId),
+                name: name
+            });
+        }
+
+        result.sort(function(a, b) {
+            var cmp = a.name.localeCompare(b.name);
+            if (cmp !== 0) { return cmp; }
+            return a.id.localeCompare(b.id);
+        });
+
+        return result;
+    }
+
     // ============================================================
     // COLLECTION
     // ============================================================
 
-    /**
-     * Gather every teaching session of every group in the class
-     * that is active during the target week.
-     *
-     * "Active" means the session's [startWeek, endWeek] contains
-     * the week. Group membership and the group's own window are
-     * NOT checked here; those are the projector's job. The export
-     * is a schedule dump, not a projected occurrence list.
-     *
-     * @returns {array} session rows
-     */
     function collectSessionsForWeek(classId, weekNum) {
         var allSessions = AcademyTeachingSessions.getAllSessions() || [];
         var result = [];
@@ -344,9 +411,6 @@
             if (!group) { continue; }
             if (String(group.classId) !== String(classId)) { continue; }
 
-            // Session window: skip sessions whose own range does
-            // not include the target week. A session with a null
-            // endWeek is open-ended.
             if (!weekInRange(
                 weekNum, session.startWeek, session.endWeek
             )) {
@@ -356,6 +420,8 @@
             var duration = isFiniteNumber(session.duration)
                 ? session.duration
                 : 1;
+
+            var roster = buildSessionRoster(group.id, weekNum);
 
             result.push({
                 source: 'session',
@@ -369,24 +435,19 @@
                 disciplineName: getDisciplineName(group.disciplineId),
                 groupDisplayName: getGroupDisplayName(group),
                 instructorId: group.instructorId,
-                instructorName: getInstructorName(group.instructorId),
+                instructorName: getCharacterName(group.instructorId),
                 locationId: isNonEmptyString(session.locationId)
                     ? String(session.locationId)
                     : null,
                 locationName: getLocationName(session.locationId),
-                kindLabel: ''
+                kindLabel: '',
+                students: roster
             });
         }
 
         return result;
     }
 
-    /**
-     * Gather every instructor commitment attached to the class
-     * that is active during the target week.
-     *
-     * @returns {array} commitment rows
-     */
     function collectCommitmentsForWeek(classId, weekNum) {
         var raw;
         try {
@@ -425,7 +486,7 @@
                 duration: duration,
                 endTime: c.startTime + duration,
                 instructorId: c.instructorId,
-                instructorName: getInstructorName(c.instructorId),
+                instructorName: getCharacterName(c.instructorId),
                 locationId: isNonEmptyString(c.locationId)
                     ? String(c.locationId)
                     : null,
@@ -438,19 +499,15 @@
                     ? String(c.characterId)
                     : null,
                 characterName: isNonEmptyString(c.characterId)
-                    ? getInstructorName(c.characterId)
-                    : ''
+                    ? getCharacterName(c.characterId)
+                    : '',
+                students: []
             });
         }
 
         return result;
     }
 
-    /**
-     * Does [startWeek, endWeek] contain week?
-     * endWeek === null means "ongoing".
-     * endWeek === undefined is treated the same as null.
-     */
     function weekInRange(week, startWeek, endWeek) {
         if (!isFiniteNumber(week)) { return false; }
         if (!isFiniteNumber(startWeek)) { return false; }
@@ -466,23 +523,6 @@
     // PUBLIC PROJECTION
     // ============================================================
 
-    /**
-     * Build the export view model for one (class, week) pair.
-     *
-     * @param {string} classId
-     * @param {number|string} week
-     * @returns {object|null}
-     *   null when the class does not exist or the week is invalid.
-     *   Otherwise:
-     *   {
-     *     classId, className,
-     *     week,
-     *     rows: [ combined row, ... ],   // sorted by day, then time
-     *     days: [ { day, dayName, rows: [...] }, ... ],
-     *     sessionCount, commitmentCount,
-     *     disciplineCount
-     *   }
-     */
     function getClassScheduleExport(classId, week) {
         var cls = resolveClass(classId);
         if (!cls) { return null; }
@@ -500,8 +540,6 @@
             if (a.startTime !== b.startTime) {
                 return a.startTime - b.startTime;
             }
-            // Sessions before commitments at the same start time.
-            // Deterministic, readable.
             if (a.source !== b.source) {
                 return a.source === 'session' ? -1 : 1;
             }
@@ -532,11 +570,6 @@
         };
     }
 
-    /**
-     * Group sorted rows into day buckets, one per day in
-     * [MIN_DAY, MAX_DAY]. Days with no rows are still returned, so
-     * the text output can print "no sessions" for them.
-     */
     function groupRowsByDay(rows) {
         var buckets = Object.create(null);
         for (var d = MIN_DAY; d <= MAX_DAY; d++) {
@@ -600,17 +633,45 @@
     }
 
     /**
-     * Emit a single schedule row:
+     * Emit a Students block, one name per line.
      *
-     *   09:00–10:00  Combat Training · Group 1
-     *                Instructor: Jane Smith · Room 3A
+     *   <CONTINUATION_INDENT spaces>Students (N):
+     *   <ROSTER_INDENT spaces><name>
+     *   <ROSTER_INDENT spaces><name>
+     *   ...
      *
-     * Continuation lines are indented by 13 characters, aligning
-     * with the text after the time range column.
+     * Every name occupies its own line, indented one level deeper
+     * than the header. Never wraps. Any roster size renders
+     * identically except for the number of lines.
+     *
+     * Returns '' when the roster is empty.
      */
+    function emitStudentsBlock(students) {
+        if (!Array.isArray(students) || students.length === 0) {
+            return '';
+        }
+
+        var headerIndent = repeat(' ', CONTINUATION_INDENT);
+        var nameIndent = repeat(' ', ROSTER_INDENT);
+
+        var lines = [];
+        lines.push(headerIndent + 'Students (' + students.length + '):');
+
+        for (var i = 0; i < students.length; i++) {
+            var s = students[i];
+            if (!s) { continue; }
+            var name = isNonEmptyString(s.name)
+                ? s.name
+                : '(unknown)';
+            lines.push(nameIndent + name);
+        }
+
+        return lines.join('\n');
+    }
+
     function emitRow(row) {
         var timeLabel = formatHourRange(row.startTime, row.duration);
-        var timeCol = padRight(timeLabel, 13);
+        var timeCol = padRight(timeLabel, CONTINUATION_INDENT);
 
         var lines = [];
 
@@ -626,8 +687,15 @@
                 details.push(row.locationName);
             }
             if (details.length > 0) {
-                lines.push(repeat(' ', 13) + details.join(' \u00b7 '));
+                lines.push(repeat(' ', CONTINUATION_INDENT) +
+                    details.join(' \u00b7 '));
             }
+
+            var studentsBlock = emitStudentsBlock(row.students);
+            if (studentsBlock !== '') {
+                lines.push(studentsBlock);
+            }
+
             return lines.join('\n');
         }
 
@@ -649,7 +717,7 @@
             commitmentDetails.push(row.locationName);
         }
         if (commitmentDetails.length > 0) {
-            lines.push(repeat(' ', 13) +
+            lines.push(repeat(' ', CONTINUATION_INDENT) +
                 commitmentDetails.join(' \u00b7 '));
         }
 
@@ -693,29 +761,12 @@
     // PUBLIC API
     // ============================================================
 
-    /**
-     * Get the plain-text content as a string. No download.
-     */
     function getClassScheduleTextContent(classId, week) {
         var vm = getClassScheduleExport(classId, week);
         if (!vm) { return ''; }
         return buildClassScheduleText(vm);
     }
 
-    /**
-     * Export the class schedule as a .txt file.
-     *
-     * @param {string} classId
-     * @param {number|string} week
-     * @param {object} [options] { filename? }
-     * @returns {{
-     *   exported: boolean,
-     *   filename: string|null,
-     *   sessionCount: number,
-     *   commitmentCount: number,
-     *   error: string|null
-     * }}
-     */
     function exportClassScheduleText(classId, week, options) {
         options = options || {};
 
