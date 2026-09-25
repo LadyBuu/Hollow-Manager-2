@@ -42,6 +42,9 @@
  *   Rebalance (v32):
  *     getRebalanceInputViewModel(classId, disciplineId, week, options)
  *
+ *   Free slots (v33):
+ *     getFreeSlotCandidateStudentsViewModel(classId, disciplineId, week)
+ *
  * IMPORTANT:
  *   - Projection builder. Never mutates. No UI dependencies.
  *   - Composes domain modules. Never walks raw storage.
@@ -156,21 +159,6 @@
  *   Options:
  *     { excludedStudentIds?: string[], groupIds?: string[] }
  *
- *     `excludedStudentIds` filters the returned students array.
- *     `groupIds` filters the returned groups array.
- *
- *     Both are optional and pass straight through. The algorithm
- *     also accepts them on its own input, so a caller can filter
- *     either at VM-build time (cheaper, less data crosses the
- *     boundary) or at algorithm-run time (more flexible). The
- *     recommended place is at VM-build time.
- *
- *   What the VM does NOT carry:
- *     - The target size. That is a user input; the modal supplies
- *       it to the algorithm.
- *     - A plan. This projection builds the input; the algorithm
- *       builds the plan; a separate modal renders it.
- *
  *   FAILURE POLICY:
  *     Missing class, missing discipline, invalid week → null.
  *     Missing enrolled students → empty students array (a class
@@ -182,6 +170,52 @@
  *     meaningless without groups).
  *     Missing teaching sessions module → each group's sessions
  *     array is empty; the group can accept any student.
+ *
+ * FREE SLOT CANDIDATE STUDENTS (v33):
+ *   getFreeSlotCandidateStudentsViewModel(classId, disciplineId,
+ *   week) answers "which students are eligible to be placed into a
+ *   new session for this discipline right now?"
+ *
+ *   This is the student list the free-slots filter panel consumes.
+ *   The question is deliberately narrower than "every enrolled
+ *   student" and the answer is deliberately conservative:
+ *
+ *     A student is a candidate when ALL of the following hold:
+ *       - they are enrolled in this discipline for this class at
+ *         this week
+ *       - they are not in instructor mode (instructors are not
+ *         students)
+ *       - they are not eliminated as of this week
+ *       - they are not deceased
+ *       - they are not currently an active member of any teaching
+ *         group of this (class, discipline) pair at this week
+ *
+ *   The last condition is the important one. A student already in
+ *   a group has nowhere to go; the free-slots panel is a search
+ *   for candidates who need placement, not a roster. Excluding
+ *   assigned students keeps the list short and its meaning clear.
+ *
+ *   The result is an array of:
+ *     { id, name, status }
+ *   sorted by name ascending, then id ascending.
+ *
+ *   FAILURE POLICY:
+ *     Missing class, missing discipline, invalid week → null.
+ *     Missing AcademyTeachingGroups → throws (via require); the
+ *       "already assigned" question cannot be answered without it.
+ *     Missing enrolment or elimination data → conservative
+ *       exclusion. If we cannot confirm a student is unassigned
+ *       and eligible, they do not appear.
+ *
+ *   WHY THIS PROJECTION EXISTS:
+ *     An earlier revision built this list inside the view
+ *     (academy-discipline-view.js). That put domain reads —
+ *     enrolment, elimination, teaching-group membership — inside a
+ *     renderer. Moving it here centralizes the "who is a valid
+ *     candidate for a new slot" question in one place, so the
+ *     rebalance modal and the free-slots panel agree by
+ *     construction. It also means the view is a renderer again,
+ *     which is what it was supposed to be.
  *
  * RANGE PREDICATES:
  *   The "does this range contain this week" question is owned by
@@ -283,10 +317,10 @@
  *   - AcademyCalendarAggregator
  *   - AcademyGrades
  *   - EliminationQueries
- *   - AcademyTeachingGroups      (rebalance VM; also used by the
- *                                 instructor group picker)
- *   - AcademyTeachingSessions    (rebalance VM; also used by the
- *                                 instructor group picker)
+ *   - AcademyTeachingGroups      (rebalance VM, free-slot candidates,
+ *                                 and the instructor group picker)
+ *   - AcademyTeachingSessions    (rebalance VM and the instructor
+ *                                 group picker)
  *   - AcademyTeachingProjector   (rebalance VM)
  */
 
@@ -454,8 +488,9 @@
     // is deferred, mandatory-ness is not.
 
     /**
-     * Resolve AcademyTeachingGroups for the group-picker projection
-     * and for the rebalance VM.
+     * Resolve AcademyTeachingGroups for the group-picker projection,
+     * the rebalance VM, and the free-slot candidate students
+     * projection.
      * Throws when the module is missing or malformed.
      */
     function requireAcademyTeachingGroups(contextLabel) {
@@ -560,16 +595,9 @@
      * the query is unavailable or the class has no active
      * instructors that week.
      *
-     * The optional disciplineId narrows the result to instructors
-     * enrolled in that specific discipline.
-     *
-     * The returned IDs are strings. They are deduplicated by the
-     * query, so callers can treat them as a set.
-     *
      * USE THIS FOR:
      *   - Schedule collision detection
      *   - "Who is teaching this class this week?" displays
-     *   - Anything that needs to know what is actually running
      *
      * DO NOT USE THIS FOR:
      *   - Roster derivation
@@ -578,7 +606,7 @@
      *   - Anything that answers "who is an instructor OF this class?"
      *
      * Those questions are YEAR-LEVEL and use
-     * getClassInstructorSetForClass below. See the file header.
+     * getClassInstructorSetForClass below.
      */
     function getClassInstructorIds(classId, week, disciplineId) {
         if (!isNonEmptyString(classId)) {
@@ -617,20 +645,10 @@
      *
      * That is the whole rule. A character who is an instructor of
      * this class stays an instructor of this class when their
-     * disciplines stop running for the term. The role is theirs
-     * until the class or the role itself changes.
+     * disciplines stop running for the term.
      *
      * Returns an object shaped as a set for O(1) membership tests:
      *   { [charId: string]: true }
-     *
-     * USE THIS FOR:
-     *   - Roster derivation (excluding instructors from students)
-     *   - Role classification on the People sidebar
-     *   - Candidate pools (Weekly Teams, Add-Character-to-Class)
-     *
-     * DO NOT USE THIS FOR:
-     *   - "Who is teaching this class this week?" — that is
-     *     getClassInstructorIds above, week-scoped.
      */
     function getClassInstructorSetForClass(classId) {
         var set = Object.create(null);
@@ -873,71 +891,7 @@
     // Assembles the input object AcademyBalanceSuggestions.suggest
     // consumes. Does NOT run the algorithm.
     //
-    // The VM has two sections:
-    //
-    //   students:
-    //     Every enrolled student of this class-discipline who is
-    //     active this week. Each entry carries:
-    //       id             — studentId
-    //       name           — display name (presentation only)
-    //       status         — current status (presentation only)
-    //       occupied       — [{ day, startTime, duration }, ...]
-    //                        the student's sessions this week,
-    //                        INCLUDING sessions of groups they
-    //                        are currently in
-    //       currentGroupId — the group they are currently in for
-    //                        this discipline, or null. Presentation
-    //                        only; the algorithm does not read it.
-    //       occupiedUnavailable — boolean; true when the projector
-    //                        failed for this student, in which case
-    //                        `occupied` is [] and the caller should
-    //                        warn before trusting the plan
-    //
-    //   groups:
-    //     Every teaching group of this (class, discipline) pair.
-    //     Each entry carries:
-    //       groupId        — groupId
-    //       displayName    — resolved display name (presentation)
-    //       instructorId   — the group's instructor
-    //       instructorName — display name (presentation)
-    //       memberCount    — current active members
-    //       sessions       — [{ day, startTime, duration }, ...]
-    //                        the group's sessions
-    //
-    // The algorithm reads only:
-    //   students[].id
-    //   students[].occupied
-    //   groups[].groupId
-    //   groups[].sessions
-    //
-    // Everything else is metadata the modal displays.
-    //
-    // OPTIONS:
-    //   {
-    //     excludedStudentIds: string[],   // optional filter
-    //     groupIds:           string[]    // optional filter
-    //   }
-    //
-    // FAILURE POLICY:
-    //   Missing class, missing discipline, invalid week → null.
-    //   Missing AcademyTeachingGroups → throws (via require).
-    //   Missing AcademyTeachingSessions → throws (via require).
-    //   Missing AcademyTeachingProjector → throws (via require).
-    //   Projector throws for one student → that student's occupied
-    //     list is [] and occupiedUnavailable is true. The
-    //     projection does not abort; a single projector failure
-    //     should not remove the ability to plan.
-    //
-    // WHY THE PROJECTOR IS MANDATORY-BUT-LENIENT:
-    //   The rebalance algorithm relies on `occupied` to determine
-    //   collisions. If the projector is entirely absent, no student
-    //   can have their collisions checked, and the plan would place
-    //   students in colliding groups. So the module is required.
-    //
-    //   But a projector failure for ONE student should not fail the
-    //   whole projection; the caller is told via
-    //   occupiedUnavailable, and can warn the user that the plan for
-    //   that student is not reliable.
+    // See the file header for the full contract.
 
     function getRebalanceInputViewModel(
         classId,
@@ -964,11 +918,6 @@
         var targetClass = String(classId);
         var targetDiscipline = String(disciplineId);
 
-        // ---- Lazy-but-mandatory resolutions ----
-        //
-        // These throw when the modules are absent. See require*
-        // above. The rebalance is meaningless without them.
-
         var ATG = requireAcademyTeachingGroups(
             'getRebalanceInputViewModel'
         );
@@ -978,8 +927,6 @@
         var ATP = requireAcademyTeachingProjector(
             'getRebalanceInputViewModel'
         );
-
-        // ---- Filter sets ----
 
         var excludedStudentSet = buildIdSet(
             Array.isArray(options.excludedStudentIds)
@@ -991,8 +938,6 @@
         if (Array.isArray(options.groupIds)) {
             groupFilter = buildIdSet(options.groupIds);
         }
-
-        // ---- Enrolled students this week ----
 
         var enrolledStudentIds = [];
         try {
@@ -1010,8 +955,6 @@
             enrolledStudentIds = [];
         }
 
-        // ---- Groups ----
-
         var rawGroups = [];
         try {
             rawGroups = ATG.getGroupsForDiscipline(
@@ -1027,10 +970,6 @@
         if (!Array.isArray(rawGroups)) {
             rawGroups = [];
         }
-
-        // Resolve group instructor display names once per group.
-        // The instructor set is small; a direct call is cheaper
-        // than a cache.
 
         var disciplineName = isNonEmptyString(discipline.name)
             ? discipline.name
@@ -1099,9 +1038,6 @@
                 var s = rawSessions[si];
                 if (!s) { continue; }
 
-                // Filter sessions to those active in the week. A
-                // session that does not cover the week is not a
-                // collision source this week.
                 var sStart = isFiniteNumber(s.startWeek)
                     ? s.startWeek : null;
                 var sEnd = (s.endWeek !== undefined &&
@@ -1133,12 +1069,9 @@
             });
         }
 
-        // Sort groups by displayName for deterministic output.
         groupVMs.sort(function(a, b) {
             return a.displayName.localeCompare(b.displayName);
         });
-
-        // ---- Students ----
 
         var studentVMs = [];
 
@@ -1155,12 +1088,8 @@
             var char = CharacterQueries.getCharacterById(studentId);
             if (!char) { continue; }
 
-            // Instructors are not students. Even if an instructor
-            // enrolment exists, they do not participate in a
-            // student rebalance.
             if (char.mode === 'instructor') { continue; }
 
-            // Occupied slots this week.
             var occupied = [];
             var occupiedUnavailable = false;
 
@@ -1195,13 +1124,6 @@
                 occupiedUnavailable = true;
             }
 
-            // Current group for this discipline, if any.
-            //
-            // Presentation metadata only. The rebalance algorithm
-            // does NOT read it. The projector's occurrences already
-            // include the sessions of the current group, so the
-            // algorithm correctly treats those sessions as
-            // commitments.
             var currentGroupId = null;
             try {
                 if (typeof ATG.getGroupForStudentInClassDiscipline ===
@@ -1231,7 +1153,6 @@
             });
         }
 
-        // Deterministic sort by name, then id.
         studentVMs.sort(function(a, b) {
             var an = String(a.name || '');
             var bn = String(b.name || '');
@@ -1240,8 +1161,6 @@
             }
             return a.id.localeCompare(b.id);
         });
-
-        // ---- Build the VM ----
 
         return {
             classId: targetClass,
@@ -1270,6 +1189,232 @@
             }
         }
         return n;
+    }
+
+    // ============================================================
+    // FREE SLOT CANDIDATE STUDENTS (v33)
+    // ============================================================
+    //
+    // The student list the free-slots filter panel consumes.
+    //
+    // A student is a CANDIDATE for a free slot when ALL of these
+    // hold:
+    //
+    //   - they are enrolled in this discipline for this class at
+    //     this week
+    //   - they are not in instructor mode
+    //   - they are not eliminated as of this week
+    //   - they are not deceased
+    //   - they are not currently an active member of ANY teaching
+    //     group of this (class, discipline) pair at this week
+    //
+    // See the file header for why this projection exists, and why
+    // the last condition is the important one.
+    //
+    // FAILURE POLICY:
+    //   Missing class, discipline, or week → null.
+    //   Missing AcademyTeachingGroups → throws (via require).
+    //   Missing EliminationQueries → conservative exclusion: with
+    //     no way to check elimination, we cannot confirm a student
+    //     is eligible, so the projection returns [] for the
+    //     elimination-dependent portion. In practice this is very
+    //     unlikely (EliminationQueries is loaded early) but the
+    //     failure mode is safe: fewer candidates, never more.
+    //   Missing enrolment data → the student is not in the enrolled
+    //     set, so they do not appear.
+
+    function getFreeSlotCandidateStudentsViewModel(
+        classId,
+        disciplineId,
+        week
+    ) {
+        if (!isNonEmptyString(classId)) { return null; }
+        if (!isNonEmptyString(disciplineId)) { return null; }
+
+        var weekNum = resolveWeek(week);
+        if (weekNum === null) { return null; }
+
+        var cls = AcademyClasses.getClass(classId);
+        if (!cls) { return null; }
+
+        var discipline = AcademyDisciplines.getDiscipline(disciplineId);
+        if (!discipline) { return null; }
+
+        var targetClass = String(classId);
+        var targetDiscipline = String(disciplineId);
+
+        var ATG = requireAcademyTeachingGroups(
+            'getFreeSlotCandidateStudentsViewModel'
+        );
+
+        // ---- Enrolled students this week ----
+        var enrolledStudentIds = [];
+        try {
+            enrolledStudentIds = AcademyEnrolments.getEnrolledStudents(
+                targetClass, targetDiscipline, weekNum
+            ) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademyAggregator] getEnrolledStudents failed:', e
+            );
+            enrolledStudentIds = [];
+        }
+
+        if (!Array.isArray(enrolledStudentIds)) {
+            enrolledStudentIds = [];
+        }
+
+        // ---- Assigned students: active member of any group ----
+        //
+        // A student who appears in the members[] array of any
+        // teaching group of this (class, discipline) pair AND has
+        // an active interval at this week is already assigned. They
+        // are not a candidate.
+        //
+        // Note: this is NOT the same as `getGroupForStudentInClassDiscipline`.
+        // That function returns the single group a student is in,
+        // which is correct for that question. Here we want "is this
+        // student in any group at all," which needs the union
+        // across all groups. We build it directly.
+
+        var assignedSet = Object.create(null);
+
+        var groups = [];
+        try {
+            groups = ATG.getGroupsForDiscipline(
+                targetClass, targetDiscipline
+            ) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademyAggregator] getGroupsForDiscipline failed:', e
+            );
+            groups = [];
+        }
+
+        if (!Array.isArray(groups)) {
+            groups = [];
+        }
+
+        for (var g = 0; g < groups.length; g++) {
+            var group = groups[g];
+            if (!group || !group.id) { continue; }
+
+            var activeMembers = [];
+            try {
+                activeMembers = ATG.getActiveMembers(
+                    group.id, weekNum
+                ) || [];
+            } catch (e) {
+                activeMembers = [];
+            }
+            if (!Array.isArray(activeMembers)) {
+                activeMembers = [];
+            }
+
+            for (var m = 0; m < activeMembers.length; m++) {
+                if (isNonEmptyString(activeMembers[m])) {
+                    assignedSet[String(activeMembers[m])] = true;
+                }
+            }
+        }
+
+        // ---- Elimination dependency ----
+        //
+        // Conservative: without EliminationQueries we cannot
+        // confirm eligibility. Return [] so the caller does not
+        // present a list we cannot stand behind. This is the
+        // fail-closed rule, matching the weekly-team member manager.
+
+        var EQ = getEliminationQueries();
+        if (!EQ ||
+            typeof EQ.isCharacterEliminatedByWeek !== 'function') {
+            console.warn(
+                '[AcademyAggregator] ' +
+                'getFreeSlotCandidateStudentsViewModel requires ' +
+                'EliminationQueries.isCharacterEliminatedByWeek. ' +
+                'Returning an empty candidate list rather than ' +
+                'presenting unverified students.'
+            );
+            return {
+                classId: targetClass,
+                className: isNonEmptyString(cls.name)
+                    ? cls.name
+                    : 'Unnamed Class',
+                disciplineId: targetDiscipline,
+                disciplineName: isNonEmptyString(discipline.name)
+                    ? discipline.name
+                    : 'Unnamed Discipline',
+                week: weekNum,
+                students: [],
+                studentCount: 0
+            };
+        }
+
+        // ---- Build the candidate list ----
+
+        var result = [];
+
+        for (var i = 0; i < enrolledStudentIds.length; i++) {
+            var studentIdRaw = enrolledStudentIds[i];
+            if (!isNonEmptyString(studentIdRaw)) { continue; }
+
+            var studentId = String(studentIdRaw);
+
+            // Already in a group? Not a candidate.
+            if (assignedSet[studentId] === true) { continue; }
+
+            var char = CharacterQueries.getCharacterById(studentId);
+            if (!char) { continue; }
+
+            // Instructors are not students.
+            if (char.mode === 'instructor') { continue; }
+
+            // Deceased at any point? Not a candidate.
+            if (char.deceased === true) { continue; }
+
+            // Eliminated as of this week? Not a candidate.
+            var eliminated = false;
+            try {
+                eliminated = EQ.isCharacterEliminatedByWeek(
+                    studentId, weekNum
+                ) === true;
+            } catch (e) {
+                // If the elimination check throws for this
+                // student, we cannot confirm eligibility.
+                // Conservative: exclude them.
+                eliminated = true;
+            }
+            if (eliminated) { continue; }
+
+            result.push({
+                id: studentId,
+                name: CharacterQueries.getDisplayName(char),
+                status: CharacterQueries.getCurrentStatus(char)
+            });
+        }
+
+        result.sort(function(a, b) {
+            var an = String(a.name || '');
+            var bn = String(b.name || '');
+            if (an !== bn) {
+                return an.localeCompare(bn);
+            }
+            return a.id.localeCompare(b.id);
+        });
+
+        return {
+            classId: targetClass,
+            className: isNonEmptyString(cls.name)
+                ? cls.name
+                : 'Unnamed Class',
+            disciplineId: targetDiscipline,
+            disciplineName: isNonEmptyString(discipline.name)
+                ? discipline.name
+                : 'Unnamed Discipline',
+            week: weekNum,
+            students: result,
+            studentCount: result.length
+        };
     }
 
     // ============================================================
@@ -1326,7 +1471,6 @@
         var weekNum = resolveWeek(week);
 
         // YEAR-LEVEL instructor exclusion. Not week-scoped.
-        // See getClassInstructorSetForClass.
         var instructorSet = getClassInstructorSetForClass(classId);
 
         var all = CharacterQueries.getCharacters() || [];
@@ -1872,9 +2016,7 @@
             return [];
         }
 
-        // WEEK-SCOPED instructor exclusion. Ranking eligibility is
-        // "is this character currently teaching this class?", which
-        // is a live-schedule question.
+        // WEEK-SCOPED instructor exclusion.
         var weekNum = resolveWeek(week);
         var instructorIds = getClassInstructorIds(classId, weekNum);
         var instructorSet = buildIdSet(instructorIds);
@@ -2564,7 +2706,6 @@
             }
         }
 
-        // YEAR-LEVEL instructor exclusion. Not week-scoped.
         var instructorSet = getClassInstructorSetForClass(classId);
 
         var roster = deriveClassRoster(classId, weekNum);
@@ -2654,10 +2795,11 @@
         // Rebalance input (v32)
         getRebalanceInputViewModel: getRebalanceInputViewModel,
 
-        // Instructor-of-class (YEAR-LEVEL rule). Exposed so
-        // external callers that need "who are the instructors of
-        // this class?" do not have to re-derive it. Returns a set
-        // shaped as { [charId: string]: true }.
+        // Free slot candidates (v33)
+        getFreeSlotCandidateStudentsViewModel:
+            getFreeSlotCandidateStudentsViewModel,
+
+        // Instructor-of-class (YEAR-LEVEL rule).
         getClassInstructorSetForClass: getClassInstructorSetForClass
     });
 
@@ -2687,6 +2829,7 @@
             'getWeeklyTeamMemberManagerViewModel',
             'getUnassignedTeamsViewModel',
             'getRebalanceInputViewModel',
+            'getFreeSlotCandidateStudentsViewModel',
             'getClassInstructorSetForClass'
         ];
 
