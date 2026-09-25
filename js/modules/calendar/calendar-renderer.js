@@ -12,13 +12,59 @@
  *   - Uses DomUtils.escapeHtml() as the single escaping source.
  *
  * GRID EDITABILITY:
- *   The renderer reads two flags on the view model:
+ *   The renderer reads three flags on the view model:
  *
- *     canEdit               student-mode grids.
- *     canEditInstructorSlot instructor-mode grids.
+ *     canEdit                  student-mode grids.
+ *     canEditInstructorSlot    instructor-mode grids.
+ *     canEditDisciplineSlot    discipline-mode grids.
  *
- *   A location grid (both false) emits no cell actions except
- *   the co-occupant marker's, which is separate.
+ *   Each flag maps to its own pair of action names. The action
+ *   names are deliberately distinct so a controller can dispatch
+ *   on the action alone, without consulting the mode:
+ *
+ *     canEdit              → schedule-assign / schedule-slot-open
+ *     canEditInstructorSlot → schedule-assign-instructor
+ *                           / schedule-slot-open
+ *     canEditDisciplineSlot → schedule-discipline-assign
+ *                           / schedule-discipline-slot-open
+ *
+ *   Note that schedule-slot-open is shared by the student and
+ *   instructor grids. That predates this revision; the discipline
+ *   grid deliberately does NOT reuse it, because discipline slots
+ *   open a discipline-scoped action modal (pick instructor, pick
+ *   session) that is a different shape from the student/instructor
+ *   slot menu.
+ *
+ *   When both canEdit and canEditInstructorSlot are false and
+ *   canEditDisciplineSlot is false, the grid is a location grid:
+ *   no cell actions except the co-occupant marker's, which is
+ *   separate.
+ *
+ * HIGHLIGHTS:
+ *   The discipline grid may carry a `highlights` map on the view
+ *   model. When present, each cell is tinted based on its entry:
+ *
+ *     .schedule-highlight-all-free
+ *       The instructor AND every named student are free. This is a
+ *       candidate slot for the group.
+ *
+ *     .schedule-highlight-instructor-free
+ *       The instructor is free, but one or more named students are
+ *       occupied. The slot is not usable as-is; a different student
+ *       subset might fit.
+ *
+ *     .schedule-highlight-weeks-N
+ *       Applied alongside all-free; N is the number of consecutive
+ *       weeks the slot stays free, capped at 4 for CSS brevity.
+ *       The badge carries the true (uncapped) week count as text.
+ *
+ *   The map is FLAT, keyed "day:hour". A missing key means no
+ *   highlight data for that cell; the cell renders normally.
+ *
+ *   Highlights are purely decorative. They do not change the
+ *   cell's action. A highlighted empty cell still emits
+ *   schedule-discipline-assign; a highlighted occupied cell still
+ *   emits schedule-discipline-slot-open.
  *
  * HOSTS EMITTED BELOW THE GRID:
  *   #academy-schedule-co-occupants-host
@@ -210,6 +256,69 @@
     }
 
     // ============================================================
+    // HIGHLIGHT CLASS
+    // ============================================================
+    //
+    // The discipline grid may carry a `highlights` map keyed by
+    // "day:hour". Each entry carries:
+    //
+    //   {
+    //     instructorFree:  boolean,
+    //     allStudentsFree: boolean,
+    //     weeksFree:       number
+    //   }
+    //
+    // The renderer maps this to CSS classes:
+    //
+    //   allStudentsFree === true → 'schedule-highlight-all-free'
+    //                              plus 'schedule-highlight-weeks-N'
+    //                              where N is min(weeksFree, 4)
+    //
+    //   instructorFree === true  → 'schedule-highlight-instructor-free'
+    //
+    //   neither                  → '' (no highlight tint)
+    //
+    // The weeksFree cap is CSS brevity. The true number is emitted
+    // as a text badge on the cell so the user sees the real value
+    // (e.g. "12wk" even when the tint class caps at N=4).
+    //
+    // A missing entry, or an entry with both flags false, produces
+    // no class. The cell renders normally.
+
+    var HIGHLIGHT_WEEKS_CSS_CAP = 4;
+
+    function getHighlightClass(highlightEntry) {
+        if (!highlightEntry) { return ''; }
+
+        if (highlightEntry.allStudentsFree === true) {
+            var weeks = isFiniteNumber(highlightEntry.weeksFree)
+                ? Math.floor(highlightEntry.weeksFree)
+                : 0;
+            var capped = Math.min(weeks, HIGHLIGHT_WEEKS_CSS_CAP);
+            var cls = 'schedule-highlight-all-free';
+            if (capped > 0) {
+                cls += ' schedule-highlight-weeks-' + capped;
+            }
+            return cls;
+        }
+
+        if (highlightEntry.instructorFree === true) {
+            return 'schedule-highlight-instructor-free';
+        }
+
+        return '';
+    }
+
+    function getHighlightBadgeText(highlightEntry) {
+        if (!highlightEntry) { return ''; }
+        if (highlightEntry.allStudentsFree !== true) { return ''; }
+        if (!isFiniteNumber(highlightEntry.weeksFree)) { return ''; }
+        var n = Math.floor(highlightEntry.weeksFree);
+        if (n <= 1) { return ''; }
+        return n + 'wk';
+    }
+
+    // ============================================================
     // BUILD OCCUPIED MAP
     // ============================================================
 
@@ -311,6 +420,18 @@
                         ) + '">' +
                     '+' + count +
                 '</button>';
+    }
+
+    // ============================================================
+    // HIGHLIGHT BADGE
+    // ============================================================
+
+    function renderHighlightBadge(highlightEntry) {
+        var text = getHighlightBadgeText(highlightEntry);
+        if (text === '') { return ''; }
+        return '<div class="schedule-highlight-badge">' +
+                    escapeHtml(text) +
+                '</div>';
     }
 
     // ============================================================
@@ -491,6 +612,13 @@
         var canEdit = viewModel.canEdit === true;
         var canEditInstructorSlot =
             viewModel.canEditInstructorSlot === true;
+        var canEditDisciplineSlot =
+            viewModel.canEditDisciplineSlot === true;
+
+        var highlights = (viewModel.highlights &&
+                          typeof viewModel.highlights === 'object')
+            ? viewModel.highlights
+            : null;
 
         var occupiedCellMode = getOccupiedCellMode(viewModel.mode);
 
@@ -527,6 +655,17 @@
                 var isOccupied = !!slotData && !slotData.isBlock;
                 var isBlock = !!slotData && slotData.isBlock === true;
 
+                // ---- Highlight entry ----
+                //
+                // Looked up once per cell. The flat key matches
+                // what the aggregator emits. A missing entry, or
+                // an entry with both flags false, produces no
+                // class.
+                var highlightEntry = null;
+                if (highlights !== null && !isRestDay && !isBlock) {
+                    highlightEntry = highlights[day + ':' + hour] || null;
+                }
+
                 var classes = 'schedule-cell schedule-slot';
                 if (isOccupied) { classes += ' schedule-occupied'; } else { classes += ' schedule-empty'; }
                 if (isRestDay) { classes += ' schedule-rest-day'; }
@@ -544,12 +683,32 @@
                     }
                 }
 
+                // ---- Highlight tint ----
+                //
+                // Applied to any non-rest, non-block cell that
+                // carries an entry. Highlighting an occupied cell
+                // is legitimate: a slot occupied by a DIFFERENT
+                // group of the same discipline may still be a
+                // candidate for this instructor's session, and the
+                // highlight tells the user whether this instructor
+                // and their students are free.
+                if (highlightEntry !== null) {
+                    var highlightClass = getHighlightClass(highlightEntry);
+                    if (highlightClass !== '') {
+                        classes += ' ' + highlightClass;
+                    }
+                }
+
                 var cellAction = null;
                 if (!isRestDay && !isBlock) {
                     if (isOccupied) {
-                        if (canEdit || canEditInstructorSlot) {
+                        if (canEditDisciplineSlot) {
+                            cellAction = 'schedule-discipline-slot-open';
+                        } else if (canEdit || canEditInstructorSlot) {
                             cellAction = 'schedule-slot-open';
                         }
+                    } else if (canEditDisciplineSlot) {
+                        cellAction = 'schedule-discipline-assign';
                     } else if (canEditInstructorSlot) {
                         cellAction = 'schedule-assign-instructor';
                     } else if (canEdit) {
@@ -562,6 +721,8 @@
                     dataAttrs += ' data-action="schedule-assign"';
                 } else if (cellAction === 'schedule-assign-instructor') {
                     dataAttrs += ' data-action="schedule-assign-instructor"';
+                } else if (cellAction === 'schedule-discipline-assign') {
+                    dataAttrs += ' data-action="schedule-discipline-assign"';
                 } else if (cellAction === 'schedule-slot-open') {
                     dataAttrs += ' data-action="schedule-slot-open"';
                     if (slotData && slotData.groupId) {
@@ -574,6 +735,16 @@
                     }
                     dataAttrs += ' data-mode="' +
                         escapeAttribute(occupiedCellMode) + '"';
+                } else if (cellAction === 'schedule-discipline-slot-open') {
+                    dataAttrs += ' data-action="schedule-discipline-slot-open"';
+                    if (slotData && slotData.groupId) {
+                        dataAttrs += ' data-group-id="' +
+                            escapeAttribute(slotData.groupId) + '"';
+                    }
+                    if (slotData && slotData.sessionId) {
+                        dataAttrs += ' data-session-id="' +
+                            escapeAttribute(slotData.sessionId) + '"';
+                    }
                 }
 
                 html += '<div class="' + classes + '" ' + dataAttrs + '>';
@@ -594,12 +765,14 @@
                         html += '<div class="schedule-continuation">\u2195</div>';
                     }
                     html += renderCoOccupantMarker(slotData, day, hour);
+                    html += renderHighlightBadge(highlightEntry);
 
                 } else if (isBlock && !isRestDay) {
                     html += '<div class="schedule-blocked-label">\u25a0 ' + escapeHtml(slotData.label || 'Blocked') + '</div>';
 
                 } else if (!isRestDay && showEmptySlots) {
                     html += '<div class="schedule-empty-label">+</div>';
+                    html += renderHighlightBadge(highlightEntry);
                 }
 
                 html += '</div>';
