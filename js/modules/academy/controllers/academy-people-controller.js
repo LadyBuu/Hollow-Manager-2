@@ -58,21 +58,38 @@
  *   message names the group, and for delete-group names the
  *   session and member counts.
  *
- * CLASS SCHEDULE EXPORT:
- *   The class detail panel action row carries an "Export Schedule"
- *   button, which is only visible when no character is selected
- *   (i.e. when the class detail is showing).
+ * CLASS EXPORTS:
+ *   The class detail panel action row carries three export
+ *   buttons. All three are class-scoped, all three produce a
+ *   plain-text file, all three are wired by the People controller
+ *   because the class detail panel is the People view's right
+ *   pane.
  *
  *     class-export-schedule
  *       Downloads a readable plain-text dump of the class's
- *       schedule for the current display week.
+ *       schedule for the current display week. Contents:
+ *       every teaching session of every group in the class for
+ *       that week, plus every instructor commitment attached to
+ *       the class for that week. Routes to
+ *       ScheduleExport.exportClassScheduleText.
  *
- *       Contents: every teaching session of every group in the
- *       class for that week, plus every instructor commitment
- *       attached to the class for that week.
+ *     class-export-graduates
+ *       Downloads a plain-text document listing the class's
+ *       graduates. A graduate is a student with no eliminations
+ *       of any kind. Routes to
+ *       ClassRosterExport.exportClassGraduatesText.
  *
- *       Routes to ScheduleExport.exportClassScheduleText, which
- *       owns the projection and serialization.
+ *     class-export-characters
+ *       Downloads a plain-text document listing every student in
+ *       the class, including eliminated students. Same field set
+ *       and layout as the graduates export; the elimination
+ *       filter is not applied. Routes to
+ *       ClassRosterExport.exportClassCharactersText.
+ *
+ *   All three buttons carry data-class-id from the class detail
+ *   panel. The handlers read it off the button rather than
+ *   re-reading AcademyUI.getSelectedClassId(), so the buttons are
+ *   robust to selection changes between render and click.
  */
 
 (function() {
@@ -170,6 +187,7 @@
     function getTeachingSessions() { return window.AcademyTeachingSessions || null; }
     function getSchedule() { return window.AcademySchedule || null; }
     function getScheduleExport() { return window.ScheduleExport || null; }
+    function getClassRosterExport() { return window.ClassRosterExport || null; }
 
     // ============================================================
     // SMALL HELPERS
@@ -833,6 +851,12 @@
             case 'class-export-schedule':
                 handleExportClassSchedule(el);
                 return;
+            case 'class-export-graduates':
+                handleExportClassGraduates(el);
+                return;
+            case 'class-export-characters':
+                handleExportClassCharacters(el);
+                return;
 
             case 'schedule-assign':
                 handleScheduleAssign(el.dataset.day, el.dataset.hour);
@@ -1075,24 +1099,33 @@
     }
 
     // ============================================================
-    // CLASS SCHEDULE EXPORT FLOW
+    // CLASS EXPORTS
     // ============================================================
     //
-    // Downloads a readable plain-text dump of the class's schedule
-    // for the current display week. The schedule is composed of
-    // every teaching session of every group in the class, plus
-    // every instructor commitment attached to the class, both
-    // filtered to the display week.
+    // Three class-scoped plain-text exports, all triggered from the
+    // class detail panel's action row.
     //
-    // The button carries data-class-id from the class detail
-    // panel's action row. The handler reads it from the button
+    //   class-export-schedule
+    //     The class's weekly schedule: every teaching session of
+    //     every group in the class, plus every instructor
+    //     commitment attached to the class, both for the current
+    //     display week. Routes through ScheduleExport.
+    //
+    //   class-export-graduates
+    //     Students of the class who have no eliminations of any
+    //     kind. Routes through ClassRosterExport.
+    //
+    //   class-export-characters
+    //     Every student in the class, including eliminated ones.
+    //     Same field set and file layout as graduates; the
+    //     elimination filter is not applied. Routes through
+    //     ClassRosterExport.
+    //
+    // Every button carries data-class-id from the class detail
+    // panel's action row. The handlers read it off the button
     // rather than re-reading AcademyUI.getSelectedClassId(), so
-    // the button is robust to selection changes between render and
-    // click.
-    //
-    // The export module (window.ScheduleExport) owns the
-    // projection and serialization. This handler only resolves the
-    // week, dispatches the export, and notifies.
+    // the buttons are robust to selection changes between render
+    // and click.
 
     function handleExportClassSchedule(el) {
         var classId = el && el.dataset ? el.dataset.classId : null;
@@ -1139,6 +1172,92 @@
             (result && result.error) || 'Schedule export failed.',
             'error'
         );
+    }
+
+    function handleExportClassGraduates(el) {
+        var classId = el && el.dataset ? el.dataset.classId : null;
+
+        if (!isNonEmptyString(classId)) {
+            notify('No class selected.', 'error');
+            return;
+        }
+
+        var Exporter = getClassRosterExport();
+        if (!Exporter ||
+            typeof Exporter.exportClassGraduatesText !== 'function') {
+            notify('Roster export module is not loaded.', 'error');
+            return;
+        }
+
+        var result;
+        try {
+            result = Exporter.exportClassGraduatesText(classId);
+        } catch (e) {
+            console.warn(
+                '[AcademyPeopleController] exportClassGraduatesText ' +
+                'threw:', e
+            );
+            notify('Graduates export failed.', 'error');
+            return;
+        }
+
+        if (result && result.exported) {
+            notify(
+                'Graduates exported: ' + result.filename,
+                'success'
+            );
+            return;
+        }
+
+        var err = (result && result.error) ? result.error : '';
+        if (err === 'No graduates found for this class.') {
+            notify(err, 'warning');
+            return;
+        }
+        notify(err || 'Graduates export failed.', 'error');
+    }
+
+    function handleExportClassCharacters(el) {
+        var classId = el && el.dataset ? el.dataset.classId : null;
+
+        if (!isNonEmptyString(classId)) {
+            notify('No class selected.', 'error');
+            return;
+        }
+
+        var Exporter = getClassRosterExport();
+        if (!Exporter ||
+            typeof Exporter.exportClassCharactersText !== 'function') {
+            notify('Roster export module is not loaded.', 'error');
+            return;
+        }
+
+        var result;
+        try {
+            result = Exporter.exportClassCharactersText(classId);
+        } catch (e) {
+            console.warn(
+                '[AcademyPeopleController] exportClassCharactersText ' +
+                'threw:', e
+            );
+            notify('Characters export failed.', 'error');
+            return;
+        }
+
+        if (result && result.exported) {
+            notify(
+                'Characters exported: ' + result.filename,
+                'success'
+            );
+            return;
+        }
+
+        var err = (result && result.error) ? result.error : '';
+        if (err === 'No characters found for this class.') {
+            notify(err, 'warning');
+            return;
+        }
+        notify(err || 'Characters export failed.', 'error');
     }
 
     // ============================================================
@@ -2379,7 +2498,8 @@
 
         var vm = null;
         try {
-            vm = AcademyCharacterDetailAggregator                .getTeachingGroupCandidateViewModel(charId, groupId, {
+            vm = AcademyCharacterDetailAggregator
+                .getTeachingGroupCandidateViewModel(charId, groupId, {
                     week: week
                 });
         } catch (e) {
