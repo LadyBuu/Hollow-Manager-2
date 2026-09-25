@@ -20,7 +20,8 @@
  *   - Class-disciplines picker modal (opened from the class
  *     detail panel)
  *   - Discipline schedule tab: grid host, summary host, sessions
- *     panel, inline candidate picker (this file's final section)
+ *     panel, inline candidate picker
+ *   - Discipline schedule summary — done state
  *
  * Load order: shared.css → academy.css → academy/discipline.css
  */
@@ -642,6 +643,62 @@
 }
 
 /* ============================================================
+   DISCIPLINE SCHEDULE SUMMARY — DONE STATE
+   ============================================================
+   Rendered by AcademyDisciplineScheduleSummary when every
+   enrolled student has a group. There is nothing to disclose;
+   a single status line replaces the disclosure block.
+
+   Markup:
+
+     <div class="academy-discipline-summary-done">
+       <span class="academy-discipline-summary-done-text">
+         <span class="academy-discipline-summary-count">68</span> enrolled ·
+         <span class="academy-discipline-summary-count">68</span> assigned
+       </span>
+       <span class="academy-discipline-summary-done-note">
+         Every enrolled student has a group.
+       </span>
+     </div>
+
+   Layout: the two spans sit on one line with flex-wrap so
+   narrower viewports drop the note to a second row instead of
+   crowding the counts. The note is italicised and dimmed to read
+   as a confirmation, not a heading.
+ */
+
+.academy-discipline-summary-done {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 12px;
+    padding: 8px 12px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius);
+}
+
+.academy-discipline-summary-done-text {
+    font-size: 0.75rem;
+    color: var(--text);
+    line-height: 1.4;
+}
+
+.academy-discipline-summary-done-text .academy-discipline-summary-count {
+    font-weight: 700;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+}
+
+.academy-discipline-summary-done-note {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    font-style: italic;
+    line-height: 1.4;
+}
+
+/* ============================================================
    DISCIPLINE SESSIONS PANEL
    ============================================================
    The panel below the enrollment summary. Lists every teaching
@@ -650,8 +707,9 @@
 
    The candidate picker inside each block reuses the exact
    classes and data attributes from the character detail panel.
-   The picker's own styling therefore lives in character-detail.css;
-   this file only adjusts the panel frame and the group block.
+   The picker's own styling therefore lives in
+   character-detail.css; this file only adjusts the panel frame
+   and the group block.
  */
 
 .academy-discipline-sessions-panel {
