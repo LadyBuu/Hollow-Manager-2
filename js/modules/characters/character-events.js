@@ -20,25 +20,15 @@
  *   - Modals are HIDDEN (not destroyed) so they can be reused:
  *     use Modal.hideModal() not Modal.closeModal().
  *
- * CHARACTER CSV CONTROLS (this revision):
- *   Import / Export / Template buttons for characters now live in
- *   the character module's page header (next to "+ Add"), rendered
- *   by characters/index.js's getCharactersHTML(). They are bound
- *   here via delegation because the page is re-rendered whenever
- *   the character list refreshes.
+ * CHARACTER CSV CONTROLS:
+ *   The Import / Export / Template buttons in the character page
+ *   header are bound by ImportExportUI (js/import-export/ui.js),
+ *   not here. See the ONE BINDING PER CONTROL note in that
+ *   module's header for the reasoning.
  *
- *   The three actions are:
- *     #export-characters-csv-btn    → export all characters to CSV
- *     #import-characters-csv-btn    → open file picker, import CSV
- *     #template-characters-csv-btn  → download empty CSV template
- *
- *   The handler for each first looks for a named function on window
- *   (the import-export module's public surface), and falls back to
- *   a console warning if not present. If your import-export module
- *   exposes the actions under different names, adjust the lookups
- *   in the handlers below. The IDs are preserved so any existing
- *   `ui.js` delegation that ran on the old header buttons continues
- *   to find them in the new location.
+ *   This module does not touch those buttons, does not know their
+ *   IDs, and does not delegate on their class. Character-events
+ *   owns only the events that occur inside the character form.
  *
  * PER-FIELD RANDOM:
  *   The Physical and Personality tabs render a small ⟳ button
@@ -378,10 +368,6 @@
         bindClickOutside(container);
         bindCharacterList(container);
 
-        // Character CSV controls (this revision — moved from the
-        // global page header into the character module header)
-        bindCharacterCsvControls();
-
         // Dynamically-rendered elements - DELEGATED
         bindTabSwitching();
         bindCancelButton();
@@ -412,201 +398,6 @@
         removeAllEventListeners();
         _initialized = false;
         _socialEditId = null;
-    }
-
-    // ============================================================
-    // CHARACTER CSV CONTROLS (this revision)
-    // ============================================================
-    //
-    // The three buttons that used to live in the global header now
-    // live in the character module's page header, next to "+ Add".
-    // They are bound here via delegation because the page is
-    // re-rendered on every list refresh.
-    //
-    // Each handler looks for a named function on window first. The
-    // import-export module's public surface is expected to expose
-    // the actions under one of the names listed below. If none of
-    // them resolve, a console warning is logged and no action is
-    // taken. The IDs are preserved so any other module that
-    // delegates on them still works.
-
-    function bindCharacterCsvControls() {
-        addSafeDelegatedListener(
-            '#export-characters-csv-btn',
-            'click',
-            function(e, target) {
-                e.preventDefault();
-                handleCharacterExport();
-            }
-        );
-
-        addSafeDelegatedListener(
-            '#import-characters-csv-btn',
-            'click',
-            function(e, target) {
-                e.preventDefault();
-                handleCharacterImport();
-            }
-        );
-
-        addSafeDelegatedListener(
-            '#template-characters-csv-btn',
-            'click',
-            function(e, target) {
-                e.preventDefault();
-                handleCharacterTemplate();
-            }
-        );
-
-        // The hidden file input lives next to the buttons.
-        // A change on it dispatches the actual import.
-        addSafeDelegatedListener(
-            '#characters-csv-file-input',
-            'change',
-            function(e, target) {
-                handleCharacterCsvFileChosen(target);
-            }
-        );
-    }
-
-    function handleCharacterExport() {
-        // Preferred: a named function on the import-export surface.
-        var candidates = [
-            'exportCharactersCSV',
-            'exportCharactersToCSV',
-            'exportCharactersCsv',
-            'exportCharacters'
-        ];
-        for (var i = 0; i < candidates.length; i++) {
-            var fn = window[candidates[i]];
-            if (typeof fn === 'function') {
-                try {
-                    fn();
-                    return;
-                } catch (err) {
-                    console.warn(
-                        '[CharacterEvents] ' + candidates[i] +
-                        ' threw:', err
-                    );
-                    notify('Character export failed.', 'error');
-                    return;
-                }
-            }
-        }
-        console.warn(
-            '[CharacterEvents] No character export function found on ' +
-            'window. Expected one of: ' + candidates.join(', ')
-        );
-        notify('Character export is not available.', 'error');
-    }
-
-    function handleCharacterImport() {
-        var input = document.getElementById('characters-csv-file-input');
-        if (!input) {
-            notify('Character import is not available.', 'error');
-            return;
-        }
-        input.value = '';
-        input.click();
-    }
-
-    function handleCharacterTemplate() {
-        var candidates = [
-            'downloadCharacterCSVTemplate',
-            'downloadCharactersCSVTemplate',
-            'downloadCharacterTemplate',
-            'characterCSVTemplate'
-        ];
-        for (var i = 0; i < candidates.length; i++) {
-            var fn = window[candidates[i]];
-            if (typeof fn === 'function') {
-                try {
-                    fn();
-                    return;
-                } catch (err) {
-                    console.warn(
-                        '[CharacterEvents] ' + candidates[i] +
-                        ' threw:', err
-                    );
-                    notify('Character template failed.', 'error');
-                    return;
-                }
-            }
-        }
-        console.warn(
-            '[CharacterEvents] No character template function found on ' +
-            'window. Expected one of: ' + candidates.join(', ')
-        );
-        notify('Character template is not available.', 'error');
-    }
-
-    function handleCharacterCsvFileChosen(input) {
-        if (!input || !input.files || input.files.length === 0) {
-            return;
-        }
-
-        var file = input.files[0];
-        if (!file) { return; }
-
-        var candidates = [
-            'importCharactersCSV',
-            'importCharactersFromCSV',
-            'importCharactersCsv',
-            'importCharacters'
-        ];
-
-        var reader = new FileReader();
-        reader.onload = function(evt) {
-            var content = evt && evt.target ? evt.target.result : '';
-            if (typeof content !== 'string' || content === '') {
-                notify('Character file is empty.', 'error');
-                return;
-            }
-
-            for (var i = 0; i < candidates.length; i++) {
-                var fn = window[candidates[i]];
-                if (typeof fn === 'function') {
-                    try {
-                        var result = fn(content);
-                        if (result && typeof result.then === 'function') {
-                            result.then(function() {
-                                refreshUI(null);
-                            }).catch(function(err) {
-                                console.warn(
-                                    '[CharacterEvents] ' + candidates[i] +
-                                    ' promise rejected:', err
-                                );
-                                notify(
-                                    'Character import failed.', 'error'
-                                );
-                            });
-                        } else {
-                            refreshUI(null);
-                        }
-                        return;
-                    } catch (err) {
-                        console.warn(
-                            '[CharacterEvents] ' + candidates[i] +
-                            ' threw:', err
-                        );
-                        notify('Character import failed.', 'error');
-                        return;
-                    }
-                }
-            }
-
-            console.warn(
-                '[CharacterEvents] No character import function found on ' +
-                'window. Expected one of: ' + candidates.join(', ')
-            );
-            notify('Character import is not available.', 'error');
-        };
-
-        reader.onerror = function() {
-            notify('Failed to read the character file.', 'error');
-        };
-
-        reader.readAsText(file);
     }
 
     // ============================================================
