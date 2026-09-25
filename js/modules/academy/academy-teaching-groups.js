@@ -1,6 +1,7 @@
 /**
  * modules/academy/academy-teaching-groups.js - Academy Teaching Groups
- * SINGLE SOURCE OF TRUTH for teaching relationships.
+ * SINGLE SOURCE OF TRUTH for teaching relationships AND group-number
+ * allocation.
  *
  * Path: js/modules/academy/academy-teaching-groups.js
  *
@@ -27,6 +28,45 @@
  *   Plus a sequence store for group numbers:
  *
  *     academy.teachingGroupSequences["classId|disciplineId|instructorId"] = N
+ *
+ *   Plus the ALLOCATOR that advances the sequence:
+ *
+ *     AcademyTeachingGroups.allocateGroupNumber(
+ *       appData, classId, disciplineId, instructorId
+ *     ) → integer
+ *
+ *   The allocator is the single source of truth for "how do group
+ *   numbers advance." AcademySchedule calls it too; there is no
+ *   second implementation.
+ *
+ * GROUP NUMBER ALLOCATION — THE SEQUENCE INVARIANT:
+ *   For a given (classId, disciplineId, instructorId) triple, the
+ *   sequence store holds the highest group number currently in use.
+ *
+ *     - allocateGroupNumber returns (stored + 1) and writes it.
+ *     - renumberTeachingGroups reassigns 1..N to every group of the
+ *       triple, then writes N to the sequence.
+ *
+ *   Because both operations maintain this invariant, the sequence
+ *   never has to be recomputed from the group records. Every group
+ *   in the triple has a groupNumber <= the sequence value, and
+ *   every number in [1, sequence] belongs to some group — except
+ *   after a delete, where compaction has not yet run.
+ *
+ *   GAPS ARE ALLOWED. Deleting a group does not decrement the
+ *   sequence; the next group created gets the next number above the
+ *   gap. The gap persists until the user runs renumberTeachingGroups,
+ *   which is a deliberate user action, not an automatic side effect
+ *   of delete.
+ *
+ *   WHY GAPS PERSIST:
+ *     Group numbers are STABLE IDENTIFIERS as much as they are
+ *     display labels. A user with "Group 2" on a printed roster, or
+ *     a lesson plan that says "Group 3 meets at 10:00," expects
+ *     those numbers to still mean the same group next week.
+ *     Automatic renumbering after every delete would silently
+ *     change what "Group 2" refers to. Explicit renumbering lets
+ *     the user say "yes, I want the labels to close up now."
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - Class-discipline windows      (AcademyClassDisciplines)
@@ -72,6 +112,37 @@
  *   The group itself and its sessions are NOT touched. Only the
  *   members array is emptied.
  *
+ * RENUMBERING — HARD REASSIGNMENT:
+ *   renumberTeachingGroups(classId, disciplineId, instructorId)
+ *   collects every group of the triple, sorts them, assigns 1..N
+ *   in that order, and writes N to the sequence.
+ *
+ *   WHAT IT TOUCHES:
+ *     - each group's groupNumber
+ *     - the sequence value for the triple
+ *
+ *   WHAT IT DOES NOT TOUCH:
+ *     - id, customName, members, startWeek, endWeek, createdAt,
+ *       updatedAt (updatedAt is refreshed, other fields unchanged)
+ *     - teachingSessions (sessions reference groupId, not
+ *       groupNumber)
+ *     - enrolments
+ *     - anything outside the triple
+ *
+ *   SORT ORDER:
+ *     Ascending groupNumber, then createdAt, then id. Groups whose
+ *     groupNumber is missing or malformed sort last, ordered by
+ *     createdAt and id. This preserves the user's existing mental
+ *     order (the groups keep their relative positions) while
+ *     closing gaps. A group that was #3 stays before the group
+ *     that was #5; after renumbering they become #2 and #3.
+ *
+ *   SCOPING:
+ *     One triple. Every group of the triple is renumbered
+ *     independently of groups belonging to other instructors or
+ *     other disciplines. This matches the sequence's per-triple
+ *     key exactly.
+ *
  * WEEK SEMANTICS:
  *   - Weeks are bounded [MIN_WEEK, MAX_WEEK].
  *   - startWeek and endWeek are integers in that range.
@@ -79,45 +150,22 @@
  *   - endWeek is INCLUSIVE.
  *
  * MEMBERSHIP INVARIANT — AT MOST ONE ACTIVE INTERVAL PER CHARACTER:
- *   A character has at most one interval per group that contains any
- *   given week. This is enforced at add time (addMemberToGroup
+ *   A character has at most one interval per group that contains
+ *   any given week. This is enforced at add time (addMemberToGroup
  *   rejects a new interval that would overlap an existing non-active
  *   interval) and at end time (endMembership rejects when the stored
  *   history contains more than one interval containing the effective
  *   week, which is a data-integrity failure rather than a normal
  *   state).
  *
- *   "Already active at this week" is NOT an overlap rejection. It is
- *   a no-op: the caller asked for a state that already holds.
- *   Overlap rejection applies only to the case where the proposed
- *   interval would conflict with an existing interval that does NOT
- *   already contain the requested week.
- *
  * RANGE PREDICATES:
  *   The "does this range contain this week" question is owned by
- *   window.RangeUtils, which is the canonical range-predicate module
- *   for the whole application. The two local helpers
- *   `memberActiveInWeek` and `groupActiveInWeek` are delegating
- *   wrappers: they do the member-shape / group-shape null checks and
- *   then call RangeUtils.containsWeek. Do not reimplement the range
- *   math here; it lives in one place, on purpose.
- *
- * DISPLAY NAME:
- *   A group's display name is:
- *     customName if set
- *     otherwise `${discipline.name} ${letterFromNumber(groupNumber)}`
- *
- *   The letter is derived from groupNumber. Group 1 → A, 2 → B, ...
- *   27 → AA, 28 → AB, etc. (base-26 alphabetic).
- *
- *   The aggregator resolves the display name. This module provides
- *   the raw inputs (groupNumber, customName, disciplineId).
+ *   window.RangeUtils. The two local helpers `memberActiveInWeek`
+ *   and `groupActiveInWeek` are delegating wrappers.
  *
  * TRANSACTION SNAPSHOT RULE:
  *   Every pipeline validate() callback resolves references against
  *   the appData argument it is handed. It does not read window.data.
- *   Preflight reads against window.data are for early UX feedback
- *   only; the pipeline re-checks against the snapshot.
  *
  * CASCADE STRICTNESS:
  *   stripClassRefs, stripDisciplineRefs, stripInstructorRefs, and
@@ -125,17 +173,6 @@
  *   or malformed group store on the snapshot is a data-integrity
  *   failure, not "no groups"; the helpers throw rather than silently
  *   reporting a zero-count success.
- *
- *   stripCharacterRefs is called during character deletion. It ends
- *   the character's memberships rather than deleting entries, so
- *   historical records survive.
- *
- * REMOVE-GROUP-RECORD IS LOW-LEVEL:
- *   removeGroupRecord deletes the group record from the group store.
- *   It does NOT remove teaching sessions owned by the group. Cross-
- *   domain callers that want a group and its sessions removed in one
- *   transaction use AcademySchedule.removeTeachingGroup, which is
- *   the compound operation that owns that orchestration.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.ObjectUtils
@@ -152,11 +189,9 @@
  * USAGE:
  *   AcademyTeachingGroups.createGroup(classId, disciplineId, instructorId, week)
  *       .then(...);
+ *   AcademyTeachingGroups.renumberTeachingGroups(classId, disciplineId, instructorId)
+ *       .then(...);
  *   AcademyTeachingGroups.addMemberToGroup(groupId, charId, week)
- *       .then(...);
- *   AcademyTeachingGroups.endMembership(groupId, charId, effectiveWeek)
- *       .then(...);
- *   AcademyTeachingGroups.clearGroupRoster(groupId)
  *       .then(...);
  */
 
@@ -288,11 +323,6 @@
     }
 
     function resolveGroupNameMaxLength() {
-        // TeamConstants is not a dependency of this module, and
-        // group name length is not a team concern. The bound is
-        // local; callers that need a different one must state it
-        // here. This is not a silent truncation: an overlong name
-        // is rejected, not trimmed.
         return DEFAULT_GROUP_NAME_MAX_LENGTH;
     }
 
@@ -365,20 +395,6 @@
         return store;
     }
 
-    function getSequenceStore() {
-        if (!window.data || typeof window.data !== 'object') {
-            return null;
-        }
-        if (!window.data.academy || typeof window.data.academy !== 'object') {
-            return null;
-        }
-        var store = window.data.academy.teachingGroupSequences;
-        if (!store || typeof store !== 'object' || Array.isArray(store)) {
-            return null;
-        }
-        return store;
-    }
-
     function getGroupStoreFromSnapshot(appData) {
         if (!appData || typeof appData !== 'object') {
             return null;
@@ -414,16 +430,6 @@
         return record;
     }
 
-    /**
-     * Resolve a discipline reference against the transaction
-     * snapshot.
-     *
-     * Disciplines live at academy.disciplines. The legacy
-     * curriculum.disciplines location is checked as a fallback for
-     * pre-v28 snapshots that may still be in play mid-transaction
-     * during an upgrade. The primary store always wins when both
-     * are present.
-     */
     function findDisciplineInSnapshot(appData, disciplineId) {
         if (!appData || typeof appData !== 'object') {
             return null;
@@ -839,37 +845,59 @@
     }
 
     // ============================================================
-    // CANDIDATE BUILDER
+    // GROUP-NUMBER ALLOCATOR
     // ============================================================
+    //
+    // THE single source of truth for "how do group numbers
+    // advance." AcademySchedule calls this too.
+    //
+    // The allocator operates on the appData SNAPSHOT the caller
+    // hands it. It does not read window.data. This is what makes it
+    // safe to call from inside a pipeline mutate() callback: the
+    // sequence store is read and written on the same snapshot the
+    // surrounding transaction is working on.
+    //
+    // INVARIANT:
+    //   On return, sequence[key] === the number just returned, and
+    //   that number is 1 more than whatever was stored before (or 1
+    //   if the key was absent).
+    //
+    // MALFORMED SEQUENCE:
+    //   A stored value that is not a non-negative integer is a data-
+    //   integrity failure. The allocator throws rather than
+    //   silently starting from 1, because starting from 1 would
+    //   produce duplicate group numbers.
+    //
+    // THROWS:
+    //   - when the appData snapshot is missing
+    //   - when the sequence store is missing
+    //   - when the stored value is malformed
 
-    function buildNewGroupRecord(classId, disciplineId, instructorId, groupNumber, week) {
-        var now = new Date().toISOString();
-        return {
-            id: null,
-            classId: String(classId),
-            disciplineId: String(disciplineId),
-            instructorId: String(instructorId),
-            groupNumber: groupNumber,
-            customName: null,
-            members: [],
-            startWeek: week,
-            endWeek: null,
-            createdAt: now,
-            updatedAt: now
-        };
-    }
-
-    // ============================================================
-    // SEQUENCE VALIDATION
-    // ============================================================
-
-    function allocateGroupNumber(seqStore, seqKey) {
-        if (!isPlainObject(seqStore)) {
+    function allocateGroupNumber(
+        appData,
+        classId,
+        disciplineId,
+        instructorId
+    ) {
+        if (!appData || typeof appData !== 'object') {
             throw new Error(
-                '[AcademyTeachingGroups] The sequence store is not ' +
-                'available on the snapshot.'
+                '[AcademyTeachingGroups] allocateGroupNumber requires ' +
+                'an appData snapshot.'
             );
         }
+        if (!isNonEmptyString(classId) ||
+            !isNonEmptyString(disciplineId) ||
+            !isNonEmptyString(instructorId)) {
+            throw new Error(
+                '[AcademyTeachingGroups] allocateGroupNumber requires ' +
+                'classId, disciplineId, and instructorId.'
+            );
+        }
+
+        var seqStore = ensureSequenceStore(appData);
+        var seqKey = makeSequenceKey(
+            classId, disciplineId, instructorId
+        );
 
         var stored = seqStore[seqKey];
 
@@ -893,6 +921,143 @@
         var next = stored + 1;
         seqStore[seqKey] = next;
         return next;
+    }
+
+    /**
+     * Read-only preview of the next group number that would be
+     * allocated, without advancing the sequence.
+     *
+     * Returns the integer, or null when the triple is malformed or
+     * the sequence value is unreadable. Does NOT throw on a
+     * malformed sequence; the caller sees null.
+     */
+    function peekNextGroupNumber(classId, disciplineId, instructorId) {
+        if (!isNonEmptyString(classId) ||
+            !isNonEmptyString(disciplineId) ||
+            !isNonEmptyString(instructorId)) {
+            return null;
+        }
+        if (!window.data || typeof window.data !== 'object') {
+            return null;
+        }
+        if (!window.data.academy || typeof window.data.academy !== 'object') {
+            return null;
+        }
+        var seqStore = window.data.academy.teachingGroupSequences;
+        if (!isPlainObject(seqStore)) {
+            return 1;
+        }
+        var seqKey = makeSequenceKey(
+            classId, disciplineId, instructorId
+        );
+        var stored = seqStore[seqKey];
+        if (stored === undefined) {
+            return 1;
+        }
+        if (typeof stored !== 'number' ||
+            !isFinite(stored) ||
+            !Number.isInteger(stored) ||
+            stored < 0) {
+            return null;
+        }
+        return stored + 1;
+    }
+
+    /**
+     * Read-only view of the stored sequence value for a triple.
+     * Returns 0 when the key is absent, or null when the stored
+     * value is malformed or the input is invalid.
+     */
+    function getGroupNumberSequence(classId, disciplineId, instructorId) {
+        if (!isNonEmptyString(classId) ||
+            !isNonEmptyString(disciplineId) ||
+            !isNonEmptyString(instructorId)) {
+            return null;
+        }
+        if (!window.data || typeof window.data !== 'object') {
+            return 0;
+        }
+        if (!window.data.academy || typeof window.data.academy !== 'object') {
+            return 0;
+        }
+        var seqStore = window.data.academy.teachingGroupSequences;
+        if (!isPlainObject(seqStore)) {
+            return 0;
+        }
+        var seqKey = makeSequenceKey(
+            classId, disciplineId, instructorId
+        );
+        var stored = seqStore[seqKey];
+        if (stored === undefined) {
+            return 0;
+        }
+        if (typeof stored !== 'number' ||
+            !isFinite(stored) ||
+            !Number.isInteger(stored) ||
+            stored < 0) {
+            return null;
+        }
+        return stored;
+    }
+
+    // ============================================================
+    // SORT FOR RENUMBER
+    // ============================================================
+    //
+    // Ascending groupNumber, then createdAt, then id.
+    //
+    // Malformed groupNumbers (missing, non-integer, negative) sort
+    // last. Among groups with malformed numbers, sort by createdAt
+    // and id, so a group that was created before another still
+    // comes first.
+
+    function compareForRenumber(a, b) {
+        var aNum = (typeof a.groupNumber === 'number' &&
+                    isFinite(a.groupNumber) &&
+                    Number.isInteger(a.groupNumber) &&
+                    a.groupNumber > 0)
+            ? a.groupNumber
+            : null;
+        var bNum = (typeof b.groupNumber === 'number' &&
+                    isFinite(b.groupNumber) &&
+                    Number.isInteger(b.groupNumber) &&
+                    b.groupNumber > 0)
+            ? b.groupNumber
+            : null;
+
+        if (aNum !== null && bNum !== null && aNum !== bNum) {
+            return aNum - bNum;
+        }
+        if (aNum !== null && bNum === null) { return -1; }
+        if (aNum === null && bNum !== null) { return 1; }
+
+        var aCreated = isNonEmptyString(a.createdAt) ? a.createdAt : '';
+        var bCreated = isNonEmptyString(b.createdAt) ? b.createdAt : '';
+        if (aCreated !== bCreated) {
+            return aCreated < bCreated ? -1 : 1;
+        }
+        return String(a.id).localeCompare(String(b.id));
+    }
+
+    // ============================================================
+    // CANDIDATE BUILDER
+    // ============================================================
+
+    function buildNewGroupRecord(classId, disciplineId, instructorId, groupNumber, week) {
+        var now = new Date().toISOString();
+        return {
+            id: null,
+            classId: String(classId),
+            disciplineId: String(disciplineId),
+            instructorId: String(instructorId),
+            groupNumber: groupNumber,
+            customName: null,
+            members: [],
+            startWeek: week,
+            endWeek: null,
+            createdAt: now,
+            updatedAt: now
+        };
     }
 
     // ============================================================
@@ -920,7 +1085,6 @@
         var targetClass = String(classId);
         var targetDiscipline = String(disciplineId);
         var targetInstructor = String(instructorId);
-        var seqKey = makeSequenceKey(targetClass, targetDiscipline, targetInstructor);
 
         var newGroupId = IdUtils.generateId('tgroup');
 
@@ -964,9 +1128,13 @@
             },
             mutate: function(appData) {
                 var groupStore = ensureGroupStore(appData);
-                var seqStore = ensureSequenceStore(appData);
 
-                var nextNumber = allocateGroupNumber(seqStore, seqKey);
+                var nextNumber = allocateGroupNumber(
+                    appData,
+                    targetClass,
+                    targetDiscipline,
+                    targetInstructor
+                );
 
                 var group = buildNewGroupRecord(
                     targetClass,
@@ -986,6 +1154,182 @@
                 ' with ' + (instCheck.character ? instCheck.character.firstName : targetInstructor),
             successMessage: 'Teaching group created.',
             failureMessage: 'Failed to create teaching group.'
+        });
+    }
+
+    /**
+     * Renumber every group of a (classId, disciplineId, instructorId)
+     * triple to 1..N, and set the sequence value to N.
+     *
+     * See the file header, RENUMBERING — HARD REASSIGNMENT, for what
+     * this touches and what it does not.
+     *
+     * The mutation does not require any of the groups to exist
+     * pre-flight. A triple with no groups produces a successful
+     * no-op that ALSO writes the sequence to 0 (so future
+     * createGroup calls start at 1). That is a legitimate use: it
+     * resets a triple's numbering to a known baseline.
+     *
+     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
+     */
+    function renumberTeachingGroups(classId, disciplineId, instructorId) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        if (!isNonEmptyString(disciplineId)) {
+            return Promise.resolve(failure('Discipline ID is required.'));
+        }
+        if (!isNonEmptyString(instructorId)) {
+            return Promise.resolve(failure('Instructor ID is required.'));
+        }
+
+        var targetClass = String(classId);
+        var targetDiscipline = String(disciplineId);
+        var targetInstructor = String(instructorId);
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+
+                if (!findClassInSnapshot(appData, targetClass)) {
+                    return {
+                        valid: false,
+                        message: 'Class no longer exists.'
+                    };
+                }
+
+                if (!findDisciplineInSnapshot(
+                    appData, targetDiscipline
+                )) {
+                    return {
+                        valid: false,
+                        message: 'Discipline no longer exists.'
+                    };
+                }
+
+                if (!findCharacterInSnapshot(appData, targetInstructor)) {
+                    return {
+                        valid: false,
+                        message: 'Instructor no longer exists.'
+                    };
+                }
+
+                return { valid: true };
+            },
+
+            mutate: function(appData) {
+                var groupStore = ensureGroupStore(appData);
+                var seqStore = ensureSequenceStore(appData);
+
+                // ---- Collect the triple's groups ----
+                //
+                // We work on LIVE references from the snapshot's
+                // group store, so the assignment below mutates the
+                // store in place. That is what the pipeline expects
+                // from a mutate callback.
+
+                var targets = [];
+                var keys = Object.keys(groupStore);
+
+                for (var i = 0; i < keys.length; i++) {
+                    var g = groupStore[keys[i]];
+                    if (!isPlainObject(g)) { continue; }
+                    if (String(g.classId) !== targetClass) { continue; }
+                    if (String(g.disciplineId) !== targetDiscipline) {
+                        continue;
+                    }
+                    if (String(g.instructorId) !== targetInstructor) {
+                        continue;
+                    }
+                    targets.push(g);
+                }
+
+                if (targets.length === 0) {
+                    // No groups. Reset the sequence so the next
+                    // createGroup for this triple starts at 1.
+                    var seqKey0 = makeSequenceKey(
+                        targetClass, targetDiscipline, targetInstructor
+                    );
+                    seqStore[seqKey0] = 0;
+                    return {
+                        groupsRenumbered: 0,
+                        highestNumber: 0
+                    };
+                }
+
+                // ---- Sort and reassign ----
+
+                targets.sort(compareForRenumber);
+
+                var renumberMap = [];
+                var nowIso = new Date().toISOString();
+
+                for (var j = 0; j < targets.length; j++) {
+                    var group = targets[j];
+                    var newNumber = j + 1;
+                    var oldNumber = (typeof group.groupNumber === 'number')
+                        ? group.groupNumber
+                        : null;
+                    if (group.groupNumber !== newNumber) {
+                        group.groupNumber = newNumber;
+                        group.updatedAt = nowIso;
+                        renumberMap.push({
+                            groupId: String(group.id),
+                            oldNumber: oldNumber,
+                            newNumber: newNumber
+                        });
+                    }
+                }
+
+                // ---- Write the sequence ----
+                //
+                // After renumbering, the highest group number in use
+                // is N (targets.length). The next allocateGroupNumber
+                // call must therefore return N + 1.
+
+                var seqKey = makeSequenceKey(
+                    targetClass, targetDiscipline, targetInstructor
+                );
+                seqStore[seqKey] = targets.length;
+
+                return {
+                    groupsRenumbered: targets.length,
+                    groupsChanged: renumberMap.length,
+                    highestNumber: targets.length,
+                    renumberMap: renumberMap
+                };
+            },
+
+            logMessage: function(result) {
+                if (result.groupsChanged === 0) {
+                    return 'Renumbered groups for ' +
+                        targetDiscipline + ' / ' + targetInstructor +
+                        ' (already contiguous)';
+                }
+                return 'Renumbered ' + result.groupsRenumbered +
+                    ' group(s) for ' + targetDiscipline + ' / ' +
+                    targetInstructor +
+                    ' (' + result.groupsChanged + ' changed)';
+            },
+
+            successMessage: function(result) {
+                if (result.groupsRenumbered === 0) {
+                    return 'No groups to renumber.';
+                }
+                if (result.groupsChanged === 0) {
+                    return 'Group numbers are already contiguous.';
+                }
+                return 'Renumbered ' + result.groupsRenumbered +
+                    ' group' +
+                    (result.groupsRenumbered === 1 ? '' : 's') + '.';
+            },
+
+            failureMessage: 'Failed to renumber groups.'
         });
     }
 
@@ -1641,8 +1985,14 @@
         isMemberOfGroup: isMemberOfGroup,
         getGroupForStudentInClassDiscipline: getGroupForStudentInClassDiscipline,
 
+        // Group-number allocation (public for AcademySchedule)
+        allocateGroupNumber: allocateGroupNumber,
+        peekNextGroupNumber: peekNextGroupNumber,
+        getGroupNumberSequence: getGroupNumberSequence,
+
         // Mutations
         createGroup: createGroup,
+        renumberTeachingGroups: renumberTeachingGroups,
         addMemberToGroup: addMemberToGroup,
         endMembership: endMembership,
         removeMemberRecord: removeMemberRecord,
@@ -1674,7 +2024,10 @@
             'getGroupsForStudent', 'getGroupsForClassDisciplineInstructor',
             'getActiveMembers', 'isMemberOfGroup',
             'getGroupForStudentInClassDiscipline',
-            'createGroup', 'addMemberToGroup', 'endMembership',
+            'allocateGroupNumber', 'peekNextGroupNumber',
+            'getGroupNumberSequence',
+            'createGroup', 'renumberTeachingGroups',
+            'addMemberToGroup', 'endMembership',
             'removeMemberRecord', 'clearGroupRoster', 'endGroup',
             'setGroupCustomName', 'removeGroupRecord',
             'stripCharacterRefs', 'stripClassRefs',
@@ -1687,7 +2040,10 @@
             }
         }
         if (missing.length > 0) {
-            console.warn('[AcademyTeachingGroups] Verification missing:', missing.join(', '));
+            console.warn(
+                '[AcademyTeachingGroups] Verification missing:',
+                missing.join(', ')
+            );
         }
 
         try {
@@ -1758,8 +2114,37 @@
             ) !== false) {
                 missing.push('memberIntervalsOverlap accepted a null startWeek');
             }
+
+            // Allocator smoke test on a synthetic snapshot.
+            var snap = { academy: { teachingGroupSequences: {} } };
+            var n1 = allocateGroupNumber(snap, 'c', 'd', 'i');
+            var n2 = allocateGroupNumber(snap, 'c', 'd', 'i');
+            var n3 = allocateGroupNumber(snap, 'c', 'd', 'i');
+            if (n1 !== 1 || n2 !== 2 || n3 !== 3) {
+                missing.push(
+                    'allocateGroupNumber did not produce 1,2,3 ' +
+                    '(got ' + n1 + ',' + n2 + ',' + n3 + ')'
+                );
+            }
+
+            // Renumber's sort order.
+            var sorted = [
+                { id: 'g3', groupNumber: 3, createdAt: '2024-01-03' },
+                { id: 'g1', groupNumber: 1, createdAt: '2024-01-01' },
+                { id: 'g5', groupNumber: 5, createdAt: '2024-01-05' },
+                { id: 'gX', groupNumber: null, createdAt: '2024-01-02' }
+            ].sort(compareForRenumber);
+
+            if (sorted[0].id !== 'g1' ||
+                sorted[1].id !== 'g3' ||
+                sorted[2].id !== 'g5' ||
+                sorted[3].id !== 'gX') {
+                missing.push(
+                    'compareForRenumber did not sort as expected'
+                );
+            }
         } catch (e) {
-            missing.push('range-wrapper smoke test threw: ' + e.message);
+            missing.push('smoke test threw: ' + e.message);
         }
 
         if (missing.length > 0) {
