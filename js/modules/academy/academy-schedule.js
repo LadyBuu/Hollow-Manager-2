@@ -121,9 +121,10 @@
  *     applied. Every group's roster becomes exactly the proposed
  *     list: current members who are not in the proposed list have
  *     their membership ended (endWeek = week - 1 on the active
- *     interval), and members in the proposed list who are not
- *     currently active in the group are added (startWeek = week,
- *     endWeek = null).
+ *     interval, OR the entry is removed entirely when its
+ *     startWeek is at or after the effective week), and members in
+ *     the proposed list who are not currently active in the group
+ *     are added (startWeek = week, endWeek = null).
  *
  *   WHAT IT DOES NOT DO:
  *     - It does not touch groups not mentioned in the plan.
@@ -155,7 +156,11 @@
  *   WEEK SEMANTICS:
  *     The `week` argument is the effective week of the change.
  *     - Members leaving have their active interval's endWeek set
- *       to week - 1.
+ *       to week - 1, unless their interval started on or after
+ *       the effective week, in which case the entry is removed
+ *       entirely (the historical-preservation convention: an
+ *       interval that starts on or after week W is inconsistent
+ *       with "left at week W").
  *     - Members joining start at week with an open-ended interval.
  *
  * TRANSACTION MODEL:
@@ -1942,45 +1947,20 @@
     // Apply a rebalance plan produced by
     // AcademyBalanceSuggestions.suggest in ONE transaction.
     //
-    // WHAT THIS DOES:
-    //   For each entry in plan.assignments, the group's roster is
-    //   rewritten to match `proposedMemberIds` exactly.
+    // See the file header for the full contract.
     //
-    //     - Members currently active in the group who are NOT in
-    //       the proposed list: their active interval's endWeek is
-    //       set to week - 1.
-    //
-    //     - Members in the proposed list who are NOT currently
-    //       active in the group: a new interval is added with
-    //       startWeek = week, endWeek = null.
-    //
-    //     - Members who are active in the group AND in the
-    //       proposed list: untouched. Their existing interval
-    //       continues.
-    //
-    // WHAT THIS DOES NOT DO:
-    //   - It does not touch groups not mentioned in the plan.
-    //   - It does not touch sessions.
-    //   - It does not touch enrolments.
-    //   - It does not run the algorithm.
-    //
-    // TRANSACTIONALITY:
-    //   One pipeline. One transaction. Either every group's roster
-    //   is updated, or none is.
-    //
-    // VALIDATION:
-    //   Pre-flight validates the plan's shape.
-    //   Pipeline validate() checks that:
-    //     - the class exists in the snapshot
-    //     - the discipline exists in the snapshot
-    //     - every groupId in the plan exists in the snapshot
-    //     - every groupId's classId and disciplineId match the
-    //       (classId, disciplineId) arguments
-    //     - every proposedMemberId resolves to a character in the
-    //       snapshot
-    //     - every proposedMemberId is enrolled in this discipline
-    //       at the week
-    //   A validation failure rejects the whole transaction.
+    // THE END-MEMBERSHIP LOOP USES indexOf + splice:
+    //   An earlier revision used
+    //     group.members = group.members.filter(function(m) {
+    //       return m !== activeEntry;
+    //     });
+    //   That closure captures `activeEntry` from the enclosing
+    //   loop body. It works because the filter is invoked
+    //   synchronously, before the next iteration reassigns the
+    //   variable, but it looks like a stale-closure bug and is
+    //   fragile against any future refactor that defers the filter.
+    //   indexOf + splice is clearer and immune to the same class of
+    //   mistake.
 
     function applyRebalancePlan(classId, disciplineId, week, plan) {
         if (!isNonEmptyString(classId)) {
@@ -2256,22 +2236,16 @@
                         }
 
                         var activeEntry = activeSet[activeId];
+
                         if (activeEntry.startWeek >= weekNum) {
                             // The interval starts on or after the
                             // effective week. Per the historical-
                             // preservation convention, remove the
                             // entry entirely rather than writing an
                             // endWeek that precedes its startWeek.
-                            //
-                            // Filter this specific entry out of
-                            // group.members.
-                            var beforeLen = group.members.length;
-                            group.members = group.members.filter(
-                                function(m) {
-                                    return m !== activeEntry;
-                                }
-                            );
-                            if (group.members.length !== beforeLen) {
+                            var idx = group.members.indexOf(activeEntry);
+                            if (idx !== -1) {
+                                group.members.splice(idx, 1);
                                 membershipsEnded++;
                             }
                         } else {
@@ -3532,8 +3506,7 @@
                                     group: instructorCollision.group
                                         ? {
                                             id: instructorCollision.group.id,
-                                            name: instructorCollision.group.name
-                                          }
+                                            name: instructorCollision.group.name                                          }
                                         : null,
                                     commitment: instructorCollision.commitment
                                         || null
