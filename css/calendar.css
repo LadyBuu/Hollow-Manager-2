@@ -11,6 +11,7 @@
  *   - Header row
  *   - Occupied slots, empty slots, rest-day columns, blocked slots
  *   - Group color coding
+ *   - Highlight tints (all-free, instructor-free, weeks-N, badge)
  *   - The co-occupant marker and its detail panel
  *   - The discipline-hours panel, its rows, and its current-group
  *     sub-block
@@ -36,6 +37,31 @@
  *   resolved by the aggregator from the group's groupNumber.
  *   The palette below defines 0 through 7. The classes override
  *   `background` and `border-left-color` on `.schedule-occupied`.
+ *
+ * HIGHLIGHT TINTS:
+ *   The discipline grid may carry a `highlights` map. When
+ *   present, cells are tinted based on their entry:
+ *
+ *     .schedule-highlight-all-free
+ *       The instructor AND every named student are free. This is
+ *       a candidate slot for the group.
+ *
+ *     .schedule-highlight-instructor-free
+ *       The instructor is free, but one or more named students
+ *       are occupied. The slot is not usable as-is.
+ *
+ *     .schedule-highlight-weeks-N  (N in 1..4)
+ *       Applied alongside all-free; N is the number of weeks the
+ *       slot stays free, capped at 4 for CSS brevity. The true
+ *       count is shown in the badge, uncapped.
+ *
+ *   The highlight tints coexist with the group color classes.
+ *   An occupied cell may carry both `.acad-group-color-N` and
+ *   `.schedule-highlight-instructor-free`; the highlight tint
+ *   sits on top of the group tint via the box-shadow ring and
+ *   the increased background opacity. The group tint's
+ *   `border-left-color` remains visible because the highlight
+ *   tints do not set it.
  *
  * RADIO LISTS (instructor picker, candidate picker):
  *   Both lists share the same defensive layout:
@@ -211,7 +237,7 @@
 
 .schedule-slot {
     transition: background 0.15s ease, border-color 0.15s ease,
-                outline-color 0.15s ease;
+                outline-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .schedule-occupied {
@@ -231,6 +257,22 @@
 }
 
 .schedule-cell[data-action="schedule-slot-open"]:hover
+    .schedule-continuation {
+    color: var(--accent);
+    opacity: 1;
+}
+
+.schedule-cell[data-action="schedule-discipline-slot-open"] {
+    cursor: pointer;
+}
+
+.schedule-cell[data-action="schedule-discipline-slot-open"]:hover {
+    background: var(--accent-hover);
+    outline: 1px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.schedule-cell[data-action="schedule-discipline-slot-open"]:hover
     .schedule-continuation {
     color: var(--accent);
     opacity: 1;
@@ -281,6 +323,108 @@
 }
 
 /* ============================================================
+   HIGHLIGHT TINTS
+   ============================================================
+   Applied to any non-rest, non-block cell that carries a
+   highlight entry. This includes occupied cells: a slot occupied
+   by a DIFFERENT group of the same discipline may still be a
+   candidate for this instructor's session, and the highlight
+   tells the user whether this instructor and their students are
+   free.
+
+   TINTS:
+
+     all-free
+       Green wash + inset ring. The instructor AND every named
+       student are free. This is a direct candidate.
+
+     instructor-free
+       Yellow wash + inset ring. The instructor is free, but one
+       or more named students are occupied. The slot is a
+       partial fit.
+
+   STACKING:
+
+     Both tints use box-shadow for their ring, so they do not
+     clash with the group color classes' `background` and
+     `border-left-color`. When a cell carries both a group color
+     and a highlight tint, the tint sits on top of the group
+     wash; the group's left border stays visible underneath.
+
+   weeks-N:
+
+     The weeks-N variation is not a separate color. It exists so
+     the renderer can emit a class whose name carries the run
+     length (1..4, capped for CSS brevity) without inventing a
+     new visual for each length. The visible indicator of the
+     run is the badge; the class exists for a future caller that
+     wants to graduate the wash intensity.
+ */
+
+.schedule-cell.schedule-highlight-all-free {
+    background: rgba(90, 170, 60, 0.22);
+    box-shadow: inset 0 0 0 1px rgba(90, 170, 60, 0.55);
+}
+
+.schedule-cell.schedule-highlight-instructor-free {
+    background: rgba(190, 170, 60, 0.18);
+    box-shadow: inset 0 0 0 1px rgba(190, 170, 60, 0.45);
+}
+
+/*
+ * weeks-N classes are currently aliases of the all-free wash.
+ * They are declared so the renderer can emit them without a
+ * missing-class warning, and so a future pass can graduate the
+ * wash by N without changing the renderer.
+ */
+.schedule-cell.schedule-highlight-weeks-1,
+.schedule-cell.schedule-highlight-weeks-2,
+.schedule-cell.schedule-highlight-weeks-3,
+.schedule-cell.schedule-highlight-weeks-4 {
+    background: rgba(90, 170, 60, 0.22);
+}
+
+/*
+ * The badge shows the length of the free run. It sits in the
+ * top-right corner. It is rendered on both empty and occupied
+ * cells when the cell's weeksFree is > 1.
+ *
+ * The badge is deliberately small and pointer-events:none so it
+ * never intercepts a click on the cell. The cell's action (open
+ * a session, assign a slot) is what matters; the badge is
+ * information.
+ */
+.schedule-highlight-badge {
+    position: absolute;
+    top: 2px;
+    right: 3px;
+    font-size: 0.58rem;
+    font-weight: 700;
+    padding: 0 4px;
+    border-radius: 6px;
+    background: rgba(90, 170, 60, 0.95);
+    color: #fff;
+    line-height: 1.35;
+    pointer-events: none;
+    z-index: 1;
+    white-space: nowrap;
+}
+
+/*
+ * When the cell also carries a co-occupant marker, the badge and
+ * the marker would collide in the top-right corner. The marker
+ * takes precedence; the badge steps down one row. This is the
+ * same reasoning that pushed .schedule-continuation to the
+ * bottom-right.
+ */
+.schedule-cell.schedule-highlight-all-free
+    .schedule-co-occupant-marker ~ .schedule-highlight-badge,
+.schedule-cell.schedule-highlight-instructor-free
+    .schedule-co-occupant-marker ~ .schedule-highlight-badge {
+    top: 17px;
+}
+
+/* ============================================================
    EMPTY SLOT
    ============================================================ */
 
@@ -304,8 +448,13 @@
     cursor: pointer;
 }
 
+.schedule-cell[data-action="schedule-discipline-assign"] {
+    cursor: pointer;
+}
+
 .schedule-cell[data-action="schedule-assign"]:hover,
-.schedule-cell[data-action="schedule-assign-instructor"]:hover {
+.schedule-cell[data-action="schedule-assign-instructor"]:hover,
+.schedule-cell[data-action="schedule-discipline-assign"]:hover {
     background: var(--accent-soft);
     outline: 1px dashed var(--accent);
     outline-offset: -2px;
@@ -313,9 +462,25 @@
 
 .schedule-cell[data-action="schedule-assign"]:hover .schedule-empty-label,
 .schedule-cell[data-action="schedule-assign-instructor"]:hover
+    .schedule-empty-label,
+.schedule-cell[data-action="schedule-discipline-assign"]:hover
     .schedule-empty-label {
     opacity: 1;
     color: var(--accent);
+}
+
+/*
+ * When a highlight tint is present on an empty cell, the empty
+ * slot's hover state must not clobber the tint. The order of
+ * these rules matters: the tint selectors are more specific
+ * (two classes), so hover from a single-class selector loses.
+ * If a future revision adds a hover rule with matching
+ * specificity, keep hover AFTER the tint rules.
+ */
+.schedule-cell.schedule-highlight-all-free:hover,
+.schedule-cell.schedule-highlight-instructor-free:hover {
+    outline: 1px solid var(--accent);
+    outline-offset: -2px;
 }
 
 /* ============================================================
@@ -1018,6 +1183,16 @@
 .legend-color.schedule-empty {
     background: var(--panel);
     border: 1px dashed var(--border);
+}
+
+.legend-color.schedule-highlight-all-free {
+    background: rgba(90, 170, 60, 0.22);
+    border: 1px solid rgba(90, 170, 60, 0.55);
+}
+
+.legend-color.schedule-highlight-instructor-free {
+    background: rgba(190, 170, 60, 0.18);
+    border: 1px solid rgba(190, 170, 60, 0.45);
 }
 
 .legend-color.acad-group-color-0,
