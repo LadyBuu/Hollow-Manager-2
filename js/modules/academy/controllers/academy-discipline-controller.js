@@ -55,6 +55,22 @@
  *     that wiring (via AcademyCRUDModals.setOnChangeCallback), and
  *     the controller simply opens the modal.
  *
+ * EDITOR BOUNDS (v31):
+ *   The editor VM carries four bounds objects that the view uses
+ *   to stamp min/max/step attributes onto its number inputs:
+ *
+ *     weekBounds          { min, max }
+ *     weeklyHoursBounds   { min, max, step }
+ *     weightBounds        { min, max, step }
+ *     bandPercentBounds   { min, max, step }
+ *
+ *   These are the single source of truth for those attributes.
+ *   The bounds mirror the same limits AcademyDisciplines enforces
+ *   at the domain layer (MIN_WEEKLY_HOURS, MAX_WEEKLY_HOURS,
+ *   MIN_WEIGHT, MAX_WEIGHT, and the 0-100 band-percent range).
+ *   The view asserts that they are present; a missing bound is a
+ *   controller bug, not a reason for the view to invent one.
+ *
  * SCHEDULE TAB:
  *   The Schedule tab renders a week selector, a grid host, and an
  *   enrollment summary host. The grid is mounted by this controller
@@ -226,6 +242,51 @@
 
     var VALID_DETAIL_TABS = ['edit', 'schedule'];
 
+    // ---- Editor bounds ---------------------------------------------------
+    //
+    // These are the single source of truth for the min/max/step
+    // attributes on the editor's number inputs. They mirror the same
+    // limits AcademyDisciplines enforces at the domain layer.
+    //
+    // The values come from AcademyDisciplines' own exported constants
+    // where those exist (MIN_WEEKLY_HOURS, MAX_WEEKLY_HOURS,
+    // MIN_WEIGHT, MAX_WEIGHT). The band-percent range is a fixed
+    // 0-100 and is not exported by the domain module.
+    //
+    // Do NOT duplicate these numbers in the view. If a bound changes
+    // here, the view picks it up automatically on the next render.
+
+    var EDITOR_WEEK_BOUNDS = Object.freeze({
+        min: MIN_WEEK,
+        max: MAX_WEEK
+    });
+
+    var EDITOR_WEEKLY_HOURS_BOUNDS = Object.freeze({
+        min: (typeof AcademyDisciplines.MIN_WEEKLY_HOURS === 'number')
+            ? AcademyDisciplines.MIN_WEEKLY_HOURS
+            : 0.5,
+        max: (typeof AcademyDisciplines.MAX_WEEKLY_HOURS === 'number')
+            ? AcademyDisciplines.MAX_WEEKLY_HOURS
+            : 40,
+        step: 0.5
+    });
+
+    var EDITOR_WEIGHT_BOUNDS = Object.freeze({
+        min: (typeof AcademyDisciplines.MIN_WEIGHT === 'number')
+            ? AcademyDisciplines.MIN_WEIGHT
+            : 0.1,
+        max: (typeof AcademyDisciplines.MAX_WEIGHT === 'number')
+            ? AcademyDisciplines.MAX_WEIGHT
+            : 10,
+        step: 0.1
+    });
+
+    var EDITOR_BAND_PERCENT_BOUNDS = Object.freeze({
+        min: 0,
+        max: 100,
+        step: 1
+    });
+
     // ============================================================
     // SMALL HELPERS
     // ============================================================
@@ -363,15 +424,39 @@
         }
     }
 
+    /**
+     * Build the editor VM.
+     *
+     * Returns null in 'empty' mode. Otherwise, it takes the
+     * aggregator's editor VM and attaches the four bounds objects
+     * the view requires. The bounds are the same for every
+     * discipline; they describe the input ranges the editor renders,
+     * not the discipline's stored values.
+     *
+     * The bounds are attached here, not in the aggregator, because
+     * they are presentation metadata for the editor surface. A
+     * different caller of getDisciplineEditorViewModel (if one ever
+     * exists) does not need them.
+     */
     function buildEditorVM() {
         if (_disciplineDraftMode === 'empty' || !_disciplineDraft) {
             return null;
         }
-        return AcademyAggregator.getDisciplineEditorViewModel({
+
+        var vm = AcademyAggregator.getDisciplineEditorViewModel({
             draft: _disciplineDraft,
             isNew: _disciplineDraftMode === 'create',
             errors: _disciplineDraftErrors
         });
+
+        if (!vm) { return null; }
+
+        vm.weekBounds = EDITOR_WEEK_BOUNDS;
+        vm.weeklyHoursBounds = EDITOR_WEEKLY_HOURS_BOUNDS;
+        vm.weightBounds = EDITOR_WEIGHT_BOUNDS;
+        vm.bandPercentBounds = EDITOR_BAND_PERCENT_BOUNDS;
+
+        return vm;
     }
 
     function getContext() {
