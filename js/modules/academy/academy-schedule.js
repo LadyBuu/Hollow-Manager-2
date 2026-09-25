@@ -44,6 +44,28 @@
  *   - Rendering                      (views)
  *   - Location entities              (AcademyLocations)
  *   - Instructor commitments store   (AcademyInstructorCommitments)
+ *   - Group-number allocation        (AcademyTeachingGroups)
+ *
+ * ALLOCATOR UNIFICATION:
+ *   Group numbers are allocated exclusively by
+ *   AcademyTeachingGroups.allocateGroupNumber(appData, ...). This
+ *   module does NOT carry a local allocator. The two call sites
+ *   that need a number — resolveOrCreateGroupAndSession (when
+ *   creating a group) and createTeachingGroup — call the shared
+ *   allocator with the appData snapshot the pipeline handed them.
+ *
+ *   Why this matters: the allocator maintains the sequence
+ *   invariant "sequence[key] = highest number in use for this
+ *   triple." AcademyTeachingGroups.renumberTeachingGroups also
+ *   maintains that invariant, by writing the sequence directly
+ *   after compaction. If this module carried its own allocator,
+ *   a future divergence between the two would silently break
+ *   renumbering. One allocator, one invariant, one file.
+ *
+ *   resolveOrCreateGroupAndSession therefore takes appData, not
+ *   academy. It resolves academy internally via
+ *   getAcademySnapshot(appData), the same way every pipeline
+ *   mutate callback in this file does.
  *
  * LOCATION DEPENDENCY:
  *   When a mutation supplies a locationId, AcademyLocations is
@@ -106,7 +128,8 @@
  *   - window.AcademyDisciplines
  *   - window.AcademyClassDisciplinesQueries
  *   - window.AcademyEnrolments
- *   - window.AcademyTeachingGroups
+ *   - window.AcademyTeachingGroups   (also: the group-number
+ *                                      allocator)
  *   - window.AcademyTeachingSessions
  *   - window.CharacterQueries
  *   - window.EliminationQueries
@@ -219,6 +242,10 @@
     if (!AcademyTeachingGroups ||
         typeof AcademyTeachingGroups.getActiveMembers !== 'function') {
         _missing.push('AcademyTeachingGroups.getActiveMembers');
+    }
+    if (!AcademyTeachingGroups ||
+        typeof AcademyTeachingGroups.allocateGroupNumber !== 'function') {
+        _missing.push('AcademyTeachingGroups.allocateGroupNumber');
     }
     if (!AcademyTeachingSessions ||
         typeof AcademyTeachingSessions.getAllSessions !== 'function') {
@@ -2016,29 +2043,6 @@
         return IdUtils.generateId('tsession');
     }
 
-    function allocateGroupNumber(
-        academy,
-        classId,
-        disciplineId,
-        instructorId
-    ) {
-        if (!isPlainObject(academy.teachingGroupSequences)) {
-            academy.teachingGroupSequences = {};
-        }
-        var seqStore = academy.teachingGroupSequences;
-        var seqKey = String(classId) + '|' +
-                     String(disciplineId) + '|' +
-                     String(instructorId);
-
-        var nextNumber = 1;
-        if (typeof seqStore[seqKey] === 'number' &&
-            seqStore[seqKey] >= 0) {
-            nextNumber = seqStore[seqKey] + 1;
-        }
-        seqStore[seqKey] = nextNumber;
-        return nextNumber;
-    }
-
     function resolveInstructorFromSnapshot(
         appData,
         classId,
@@ -2535,7 +2539,7 @@
                 }
 
                 var resolved = resolveOrCreateGroupAndSession(
-                    academy,
+                    appData,
                     targetClass,
                     targetDiscipline,
                     targetInstructor,
@@ -2928,7 +2932,7 @@
                 }
 
                 var resolved = resolveOrCreateGroupAndSession(
-                    academy,
+                    appData,
                     targetClass,
                     targetDiscipline,
                     targetInstructor,
@@ -3020,9 +3024,21 @@
     // ============================================================
     // SHARED RESOLVERS
     // ============================================================
+    //
+    // resolveOrCreateGroupAndSession takes appData, not academy.
+    //
+    // Why: the group-number allocator lives on AcademyTeachingGroups
+    // and operates on an appData snapshot. That is what lets the
+    // renumber operation and the allocator share one invariant.
+    // Passing academy here and re-wrapping it as { academy: academy }
+    // at the allocator call site would work today but break the
+    // moment the allocator grows a read outside of appData.academy.
+    // So this function's contract matches every other pipeline
+    // resolver in the file: it takes appData and resolves academy
+    // internally.
 
     function resolveOrCreateGroupAndSession(
-        academy,
+        appData,
         classId,
         disciplineId,
         instructorId,
@@ -3035,6 +3051,11 @@
         explicitGroupId,
         forceNewGroup
     ) {
+        var academy = getAcademySnapshot(appData);
+        if (!academy) {
+            throw new Error('Academy store is not available.');
+        }
+
         var resolvedGroup = null;
         var resolvedSession = null;
         var createdGroup = false;
@@ -3197,8 +3218,8 @@
 
         if (!resolvedGroup) {
             var newGroupId = generateGroupId();
-            var groupNumber = allocateGroupNumber(
-                academy,
+            var groupNumber = AcademyTeachingGroups.allocateGroupNumber(
+                appData,
                 classId,
                 disciplineId,
                 instructorId
@@ -3410,8 +3431,8 @@
                 }
 
                 var newGroupId = generateGroupId();
-                var groupNumber = allocateGroupNumber(
-                    academy,
+                var groupNumber = AcademyTeachingGroups.allocateGroupNumber(
+                    appData,
                     targetClass,
                     targetDiscipline,
                     targetInstructor
