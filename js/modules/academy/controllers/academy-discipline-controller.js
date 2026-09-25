@@ -21,20 +21,20 @@
  *     on first render; the user can change it locally).
  *   - The Schedule tab's highlight filter: selected instructor,
  *     selected student set, check-weeks count. Cleared on unmount.
+ *   - The Schedule tab's highlight filter panel disclosure (open
+ *     vs. closed). This is a DOM-only state, not module state; the
+ *     controller flips an attribute and an inline style.
  *   - Per-field and per-band validation errors on the draft.
  *   - The list filter (type, search) as feature state.
  *   - The search debounce timer.
- *   - The editor's live preview (the "range label" text under the
- *     scheme preset row).
+ *   - The editor's live preview.
  *   - The editor's save, cancel, apply-preset, add-band, remove-band,
  *     and reset-weights actions.
  *   - The "+ Add Discipline" flow (B4-1).
  *   - The discipline delete confirm modal, via AcademyCRUDModals.
  *   - Mounting the calendar grid into the Schedule tab host.
- *   - Mounting the enrollment summary panel into the Schedule tab
- *     summary host, below the grid.
- *   - Mounting the discipline sessions panel into the Schedule tab
- *     sessions host, below the summary.
+ *   - Mounting the enrollment summary panel below the grid.
+ *   - Mounting the discipline sessions panel below the summary.
  *   - Toggling the summary panel open and closed.
  *   - The inline candidate picker and roster actions inside the
  *     discipline sessions panel.
@@ -47,10 +47,11 @@
  *                                             modal for the clicked
  *                                             occupied cell
  *   - The Schedule tab's highlight filter actions:
- *       discipline-schedule-find-free-slot — read the highlight
- *                                             filter form, apply it
- *       discipline-schedule-clear-highlight — clear the highlight
- *                                             filter
+ *       discipline-schedule-toggle-filter-panel — open/close the
+ *                                                 filter form panel
+ *       discipline-schedule-find-free-slot      — read the filter
+ *                                                 form, apply it
+ *       discipline-schedule-clear-highlight     — clear the filter
  *
  * WHAT THIS DOES NOT OWN:
  *   - The content host. The shell provides it.
@@ -141,6 +142,17 @@
  *   render calls the highlight VM projection and the renderer
  *   tints accordingly.
  *
+ *   DISCLOSURE STATE:
+ *     The panel's open/closed state is DOM-only. The launcher emits
+ *     data-action="discipline-schedule-toggle-filter-panel"; the
+ *     controller flips data-expanded on the wrapper, the caret
+ *     glyph, and the inline display on the body. The state is not
+ *     held on module state, because nothing else reads it and a
+ *     re-render resets it to closed, which is the desired default.
+ *
+ *     When a filter is ACTIVE, the wrapper is force-open and the
+ *     launcher is disabled; the toggle action is a no-op.
+ *
  *   The filter state is CLEARED on unmount. This is deliberate:
  *   a returning user should not land on a grid still highlighted
  *   for a different discipline's students.
@@ -161,9 +173,6 @@
  *   group of the discipline for the week, across every instructor,
  *   with each group's sessions and roster. Supports an inline
  *   candidate picker per group and a per-student remove button.
- *
- *   The panel's markup and its per-group VM builder come from
- *   AcademyDisciplineSessionsPanel.
  *
  * PICKER STAMPING:
  *   AcademyDisciplineSessionsPanel.renderGroupBlock reads two
@@ -439,6 +448,13 @@
     //
     // When non-null, the grid uses the highlight VM projection.
     // Cleared on unmount and by the "clear highlight" action.
+    //
+    // NOTE: the filter panel's open/closed DISCLOSURE state is not
+    // stored here. It lives in the DOM (data-expanded on the
+    // wrapper, style.display on the body). The controller flips it
+    // directly. A re-render resets the panel to closed by
+    // construction, because the view emits the closed markup unless
+    // a filter is active; that is the desired default.
     var _scheduleHighlight = null;
 
     // ============================================================
@@ -571,8 +587,8 @@
      *
      * The view uses this to render the "filter is active" summary
      * (instructor name, student count, weeks count) and the Clear
-     * button. When null, the view renders only the "Find free slot"
-     * launcher.
+     * button. When null, the view renders the launcher and the
+     * filter form (collapsed by default).
      *
      * We resolve the instructor's display name here so the view
      * does not need CharacterQueries.
@@ -1002,14 +1018,6 @@
             return;
         }
 
-        // ---- Schedule grid cell click (checked before the
-        //      generic [data-action] dispatch, because grid cells
-        //      are the most specific) ----
-        //
-        // Actually, grid cells carry data-action, so the generic
-        // dispatch below covers them. We keep this comment for the
-        // reader: the discipline-schedule-* cases are the grid's.
-
         // ---- Discipline row selection ----
         var discRow = target.closest('.academy-discipline-row');
         if (discRow && discRow.dataset && discRow.dataset.disciplineId) {
@@ -1066,6 +1074,10 @@
             case 'schedule-discipline-slot-open':
                 e.preventDefault();
                 handleScheduleDisciplineSlotOpen(actionEl);
+                return;
+            case 'discipline-schedule-toggle-filter-panel':
+                e.preventDefault();
+                handleToggleHighlightFilterPanel(actionEl);
                 return;
             case 'discipline-schedule-find-free-slot':
                 e.preventDefault();
@@ -1219,9 +1231,7 @@
      * (unless there is exactly one, in which case it is
      * auto-selected), then picks a group, duration, and location.
      *
-     * The class and week come from the controller's own state: the
-     * class is what the grid is scoped to (AcademyUI.getSelectedClassId),
-     * and the week is the Schedule tab's week.
+     * The class and week come from the controller's own state.
      */
     function handleScheduleDisciplineAssign(actionEl) {
         if (!actionEl || !actionEl.dataset) { return; }
@@ -1279,9 +1289,6 @@
      * Opens the session actions modal with the session id read from
      * the cell. Continuation cells carry the same sessionId as their
      * start cell, so no backward-walk is needed.
-     *
-     * The group id is also on the cell, but the session already
-     * carries it; we pass it along for the modal to use as context.
      */
     function handleScheduleDisciplineSlotOpen(actionEl) {
         if (!actionEl || !actionEl.dataset) { return; }
@@ -1291,11 +1298,6 @@
         var classId = AcademyUI.getSelectedClassId();
 
         if (!isNonEmptyString(sessionId)) {
-            // A cell without a sessionId is anomalous for an
-            // occupied cell; the renderer only emits
-            // schedule-discipline-slot-open on occupied cells with a
-            // sessionId. Bail silently rather than open a broken
-            // modal.
             console.warn(
                 '[AcademyDisciplineController] ' +
                 'schedule-discipline-slot-open fired without a ' +
@@ -1332,6 +1334,49 @@
     // ============================================================
     // HIGHLIGHT FILTER
     // ============================================================
+
+    /**
+     * Toggle the highlight filter panel's disclosure.
+     *
+     * DOM-only. Flips data-expanded on the wrapper, the caret glyph,
+     * and the inline display on the body.
+     *
+     * When a filter is active, the wrapper is force-open and the
+     * launcher is disabled; the toggle is a no-op. That is
+     * deliberate: an active filter has no "closed" state that makes
+     * sense, because the grid is highlighted. The user clears the
+     * filter (which closes the panel) via the Clear button.
+     */
+    function handleToggleHighlightFilterPanel(buttonEl) {
+        if (!buttonEl || typeof buttonEl.closest !== 'function') {
+            return;
+        }
+
+        if (_scheduleHighlight !== null) {
+            // Filter is active; the panel is force-open.
+            return;
+        }
+
+        var wrap = buttonEl.closest('.discipline-highlight-filter');
+        if (!wrap) { return; }
+
+        var expanded = wrap.getAttribute('data-expanded') === 'true';
+        var next = !expanded;
+
+        wrap.setAttribute('data-expanded', next ? 'true' : 'false');
+
+        var caret = buttonEl.querySelector(
+            '.discipline-highlight-launcher-caret'
+        );
+        if (caret) {
+            caret.textContent = next ? '\u25be' : '\u25b8';
+        }
+
+        var body = wrap.querySelector('.discipline-highlight-body');
+        if (body) {
+            body.style.display = next ? 'block' : 'none';
+        }
+    }
 
     /**
      * Read the highlight filter form, validate, and apply.
@@ -1375,7 +1420,6 @@
             return;
         }
 
-        // Students: collected from the multi-select checkboxes.
         var studentBoxes = _host.querySelectorAll(
             '.discipline-highlight-student-checkbox:checked'
         );
@@ -2016,6 +2060,10 @@
         // The schedule week is deliberately NOT cleared.
         // The discipline-sessions picker state IS cleared.
         // The schedule highlight filter IS cleared.
+        //
+        // The highlight filter panel's DOM disclosure state is not
+        // module state and is not cleared here; it disappears with
+        // the host's innerHTML when the shell re-renders.
 
         _openDisciplineSessionsGroupId = null;
         _openDisciplineSessionsCandidates = null;
