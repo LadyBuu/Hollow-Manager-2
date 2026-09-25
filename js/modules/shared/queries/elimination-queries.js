@@ -87,9 +87,10 @@
  *   When passed an ID, the character is looked up in window.data.
  *   This lets callers that already have an object skip the lookup.
  *
- *   The lookup is bounded by the character list. Calling these
- *   functions in a tight loop with IDs is O(N·M). For hot paths, pass
- *   the object.
+ *   The lookup is memoized (see CHARACTER ID INDEX below). It is not
+ *   a linear scan. Callers in hot loops may pass either form; the
+ *   ID form is now O(1) per call after the first call per store
+ *   generation.
  *
  * LIVE READS ONLY:
  *   This module reads window.data. It does NOT accept an appData
@@ -98,6 +99,49 @@
  *   supplies; that is the cascade's concern, not this module's.
  *   Keeping the two surfaces separate prevents live-read semantics
  *   from leaking into transaction code and vice versa.
+ *
+ * CHARACTER ID INDEX (memoization):
+ *   The ID-form lookup in resolveCharacter was a linear scan of
+ *   window.data.characters. It is called once per student per
+ *   render in several Academy paths (the free-slot candidate
+ *   students aggregator, the discipline schedule highlight, the
+ *   weekly-team member manager, the exam pool builder). At 349
+ *   characters, that was ~349 string comparisons per call.
+ *
+ *   This module therefore maintains a memoized Map<id, character>
+ *   keyed by the live character store. The index is rebuilt when
+ *   EITHER of these is true:
+ *
+ *     - window.data.characters is a different array reference
+ *       than the one the index was built from
+ *     - window.data.characters.length differs from the length the
+ *       index was built from
+ *
+ *   ASSUMPTION: mutation paths that add or remove a character
+ *   replace the array (or at least change its length). The
+ *   MutationPipeline snapshot model observed elsewhere in the
+ *   codebase does exactly this. If some future path ever replaces
+ *   chars[i] with a new object while keeping the same array
+ *   reference and length, the index will return a stale entry for
+ *   that id.
+ *
+ *   If that happens, call invalidateCharacterIndex() from the
+ *   mutation path. It exists for exactly this case.
+ *
+ *   The index stores the SAME object reference the live store
+ *   holds. It does NOT clone. This module reads fields off the
+ *   character (char.eliminations) and does not care about field
+ *   identity; the shared reference is what makes field edits
+ *   visible immediately.
+ *
+ *   DUPLICATION NOTE: CharacterQueries maintains its own index over
+ *   the same array, with the same invalidation rule. This module
+ *   does not depend on CharacterQueries, and the two indexes are
+ *   independent. The duplication is deliberate. Adding a dependency
+ *   edge between two query modules in service of removing a few
+ *   hundred microseconds of maintenance is the wrong trade for a
+ *   read-only surface that explicitly has no cross-module
+ *   dependencies.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.CalendarValidation
@@ -135,9 +179,67 @@
         return Array.isArray(data.characters) ? data.characters : [];
     }
 
+    // ============================================================
+    // CHARACTER ID INDEX
+    // ============================================================
+    //
+    // Memoized Map<id, character> keyed by the live character
+    // store. Rebuilt when the array reference or its length
+    // changes. See the CHARACTER ID INDEX note in the file header
+    // for the assumption this relies on and the escape hatch.
+
+    var _charIndex = null;
+    var _charIndexSourceRef = null;
+    var _charIndexSourceLength = -1;
+
+    function getCharacterIndex() {
+        var chars = getCharacterData();
+
+        if (_charIndex !== null &&
+            chars === _charIndexSourceRef &&
+            chars.length === _charIndexSourceLength) {
+            return _charIndex;
+        }
+
+        var map = new Map();
+        for (var i = 0; i < chars.length; i++) {
+            var c = chars[i];
+            if (c && typeof c === 'object' &&
+                c.id !== undefined && c.id !== null) {
+                map.set(String(c.id), c);
+            }
+        }
+
+        _charIndex = map;
+        _charIndexSourceRef = chars;
+        _charIndexSourceLength = chars.length;
+        return _charIndex;
+    }
+
+    /**
+     * Force the id index to be rebuilt on the next lookup.
+     *
+     * Exposed for mutation paths that modify window.data.characters
+     * in a way that does not change the array reference or its
+     * length (in-place field replacement of a character record).
+     * Calling this is safe at any time; the next resolveCharacter
+     * rebuilds the index from scratch.
+     *
+     * Not called by any code path in this module. It is a manual
+     * escape hatch. See the CHARACTER ID INDEX note in the header.
+     */
+    function invalidateCharacterIndex() {
+        _charIndex = null;
+        _charIndexSourceRef = null;
+        _charIndexSourceLength = -1;
+    }
+
     /**
      * Resolve a character ID or character object to a character
      * object. Returns null when the input cannot be resolved.
+     *
+     * Object form: used directly, no lookup, no index involvement.
+     * ID form: memoized O(1) Map lookup.
      *
      * @param {string|object} charIdOrObject
      * @returns {object|null}
@@ -152,16 +254,10 @@
             return charIdOrObject;
         }
 
-        // ID form: look up in the live store.
-        var target = String(charIdOrObject);
-        var chars = getCharacterData();
-        for (var i = 0; i < chars.length; i++) {
-            var c = chars[i];
-            if (c && String(c.id) === target) {
-                return c;
-            }
-        }
-        return null;
+        // ID form: memoized lookup.
+        var idx = getCharacterIndex();
+        var found = idx.get(String(charIdOrObject));
+        return found || null;
     }
 
     /**
@@ -648,7 +744,10 @@
         getActiveCharactersByYear: getActiveCharactersByYear,
 
         // Derived cache maintenance (used by both mutation modules)
-        rebuildEliminatedWeeks: rebuildEliminatedWeeks
+        rebuildEliminatedWeeks: rebuildEliminatedWeeks,
+
+        // Cache control (see CHARACTER ID INDEX note in header)
+        invalidateCharacterIndex: invalidateCharacterIndex
     };
 
 })();
