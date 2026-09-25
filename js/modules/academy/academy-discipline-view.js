@@ -1,6 +1,6 @@
 /**
  * modules/academy/academy-discipline-view.js - Academy Discipline View
- * Standalone view for browsing and editing disciplines (curriculum)
+ * Standalone view for browsing and editing Academy disciplines.
  *
  * Path: js/modules/academy/academy-discipline-view.js
  *
@@ -25,6 +25,54 @@
  *   - Uses DomUtils for escaping (MANDATORY, no fallback).
  *   - Returns an HTML string.
  *
+ * VM CONTRACT (STRICT):
+ *   The renderer trusts the VM. Every field it reads is guaranteed by
+ *   the controller. A malformed VM is a controller bug and must
+ *   surface as a thrown error, not as an empty panel that quietly
+ *   claims fewer disciplines than exist.
+ *
+ *   {
+ *     disciplines:   [ listRowVM, ... ],    // guaranteed array
+ *     selected:      disciplineVM | null,   // null when no selection
+ *     editorMode:    'empty' | 'edit',
+ *     filters:       { type, search },      // guaranteed object
+ *     activeTab:     'edit' | 'schedule',
+ *     scheduleWeek:  number                  // valid while Schedule tab exists
+ *   }
+ *
+ *   listRowVM:
+ *   {
+ *     id, name, type, typeLabel,
+ *     startWeek, endWeek, weeklyHours
+ *   }
+ *
+ *   disciplineVM (editorMode === 'edit'):
+ *   {
+ *     id:               string | null,      // null when isNew
+ *     isNew:            boolean,
+ *     name:             string,
+ *     type:             'mandatory' | 'optional',
+ *     startWeek:        number,
+ *     endWeek:          number,
+ *     weeklyHours:      number,
+ *     weight:           number,
+ *     gradeScheme:      schemeObject,       // canonical shape
+ *     schemePresetId:   string,
+ *     schemePreview:    string,
+ *     schemePresets:    [ { id, label }, ... ],
+ *     assessmentTypes:  [ string, ... ],
+ *     assessmentWeights: { [type]: number },
+ *     fieldErrors:      { [field]: string },
+ *     weekBounds:       { min, max },
+ *     weeklyHoursBounds: { min, max, step },
+ *     weightBounds:     { min, max, step },
+ *     bandPercentBounds: { min, max, step }
+ *   }
+ *
+ *   Every bound object and every list is guaranteed present. This
+ *   renderer does not fall back; if a field the contract names is
+ *   missing, that is the controller's bug.
+ *
  * TABS:
  *   The detail panel gains a two-tab bar when a discipline is
  *   selected or a new draft is open:
@@ -47,7 +95,7 @@
  *
  * EVENTS EMITTED (data-* attributes, for AcademyView to bind):
  *   Sidebar:
- *     [data-action="discipline-add"]                 (click) — v27
+ *     [data-action="discipline-add"]                 (click)
  *     #academy-discipline-search                     (input)
  *     #academy-discipline-type-filter                (change)
  *     .academy-discipline-row [data-discipline-id]   (click)
@@ -84,22 +132,10 @@
  *     [data-action="discipline-cancel"]                         (click)
  *     [data-action="discipline-delete"] [data-discipline-id]    (click)
  *
- * v27 CHANGES:
- *   - The "+ Add Discipline" button emits data-action="discipline-add".
- *   - The instructor selector was REMOVED from the discipline editor.
- *     Instructor-of-a-discipline is class-scoped and lives in
- *     AcademyEnrolments, edited from the character's own
- *     Disciplines tab.
- *
- * BATCH 2 CHANGES:
- *   - Detail panel now carries an Edit | Schedule tab bar.
- *   - Schedule tab body renders a week input and an empty grid host.
- *
- * BATCH 3 CHANGES:
- *   - Schedule tab body adds a summary host below the grid host.
- *     The controller mounts the enrollment summary into it after
- *     mounting the grid. The panel reports enrolled/assigned/
- *     unassigned counts for this class-discipline.
+ * TERMINOLOGY:
+ *   The discipline domain is an Academy concern. The retired
+ *   `curriculum` subsystem is no longer referenced here. The word
+ *   "curriculum" does not appear in this module.
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
@@ -142,6 +178,9 @@
 
     var MIN_WEEK = CalendarConstants.MIN_WEEK;
     var MAX_WEEK = CalendarConstants.MAX_WEEK;
+
+    var VALID_TABS = ['edit', 'schedule'];
+    var DEFAULT_TAB = 'edit';
 
     // ============================================================
     // ESCAPING HELPERS
@@ -220,28 +259,81 @@
     }
 
     // ============================================================
+    // VM VALIDATION
+    // ============================================================
+    //
+    // Strict. The renderer trusts the VM's shape. Missing fields are
+    // controller bugs and must surface, not be silently replaced.
+
+    function validateVM(viewModel) {
+        if (!viewModel || typeof viewModel !== 'object') {
+            throw new Error(
+                '[AcademyDisciplineView] renderHTML requires a view model.'
+            );
+        }
+
+        if (!Array.isArray(viewModel.disciplines)) {
+            throw new Error(
+                '[AcademyDisciplineView] VM.disciplines must be an array.'
+            );
+        }
+
+        if (!viewModel.filters || typeof viewModel.filters !== 'object') {
+            throw new Error(
+                '[AcademyDisciplineView] VM.filters must be an object.'
+            );
+        }
+
+        if (viewModel.editorMode !== 'empty' && viewModel.editorMode !== 'edit') {
+            throw new Error(
+                '[AcademyDisciplineView] VM.editorMode must be ' +
+                '"empty" or "edit"; got ' +
+                JSON.stringify(viewModel.editorMode) + '.'
+            );
+        }
+
+        if (VALID_TABS.indexOf(viewModel.activeTab) === -1) {
+            throw new Error(
+                '[AcademyDisciplineView] VM.activeTab must be one of: ' +
+                VALID_TABS.join(', ') + '; got ' +
+                JSON.stringify(viewModel.activeTab) + '.'
+            );
+        }
+
+        if (!isFiniteNumber(viewModel.scheduleWeek)) {
+            throw new Error(
+                '[AcademyDisciplineView] VM.scheduleWeek must be a ' +
+                'finite number.'
+            );
+        }
+
+        if (viewModel.editorMode === 'edit') {
+            if (!viewModel.selected || typeof viewModel.selected !== 'object') {
+                throw new Error(
+                    '[AcademyDisciplineView] VM.selected must be an ' +
+                    'object when editorMode is "edit".'
+                );
+            }
+        }
+
+        return viewModel;
+    }
+
+    // ============================================================
     // RENDER - Top-level entry point
     // ============================================================
 
     function renderHTML(viewModel) {
-        var vm = viewModel || {};
-        var disciplines = Array.isArray(vm.disciplines) ? vm.disciplines : [];
-        var selected = vm.selected || null;
-        var editorMode = vm.editorMode || 'empty';
-        var filters = vm.filters || { type: 'all', search: '' };
-        var activeTab = isNonEmptyString(vm.activeTab) ? vm.activeTab : 'edit';
-        var scheduleWeek = isFiniteNumber(vm.scheduleWeek)
-            ? vm.scheduleWeek
-            : null;
+        var vm = validateVM(viewModel);
 
         return (
             '<div class="academy-body academy-discipline-layout">' +
-                renderListPanel(disciplines, filters) +
+                renderListPanel(vm.disciplines, vm.filters) +
                 renderDetailPanel(
-                    selected,
-                    editorMode,
-                    activeTab,
-                    scheduleWeek
+                    vm.selected,
+                    vm.editorMode,
+                    vm.activeTab,
+                    vm.scheduleWeek
                 ) +
             '</div>'
         );
@@ -303,7 +395,7 @@
         var html = '<div class="academy-discipline-list" ' +
                     'id="academy-discipline-list">';
 
-        if (!Array.isArray(disciplines) || disciplines.length === 0) {
+        if (disciplines.length === 0) {
             html += '<p class="empty-state small">' +
                         'No disciplines match the current filters.' +
                     '</p>';
@@ -314,7 +406,10 @@
         for (var i = 0; i < disciplines.length; i++) {
             var d = disciplines[i];
             if (!d || !d.id) {
-                continue;
+                throw new Error(
+                    '[AcademyDisciplineView] VM.disciplines[' + i +
+                    '] must be an object with an id.'
+                );
             }
             html += renderListRow(d);
         }
@@ -370,7 +465,7 @@
         var html = '<div class="academy-discipline-detail" ' +
                     'id="academy-discipline-detail">';
 
-        if (editorMode === 'empty' || !selected) {
+        if (editorMode === 'empty') {
             html += renderEmptyDetailState();
             html += '</div>';
             return html;
@@ -434,8 +529,7 @@
     // SCHEDULE TAB
     // ============================================================
     //
-    // The schedule tab body: a week selector, an optional
-    // "no class selected" empty state, the grid host, and the
+    // The schedule tab body: a week selector, the grid host, and the
     // enrollment summary host.
     //
     // The class is NOT selectable here. It comes from
@@ -445,9 +539,11 @@
     //
     // Both hosts are intentionally empty at render time. The
     // controller fills them.
+    //
+    // `week` is guaranteed a finite number by the VM contract.
 
     function renderScheduleTab(week) {
-        var weekValue = isFiniteNumber(week) ? String(week) : '';
+        var weekValue = String(week);
 
         var html = '';
         html += '<div class="academy-discipline-schedule-tab">';
@@ -491,10 +587,38 @@
 
         var isNew = d.isNew === true;
 
-        var weekBounds = d.weekBounds || { min: MIN_WEEK, max: MAX_WEEK };
-        var weeklyHoursBounds = d.weeklyHoursBounds || { min: 0.5, max: 40, step: 0.5 };
-        var weightBounds = d.weightBounds || { min: 0.1, max: 10, step: 0.1 };
-        var bandPercentBounds = d.bandPercentBounds || { min: 0, max: 100, step: 1 };
+        var weekBounds = d.weekBounds;
+        var weeklyHoursBounds = d.weeklyHoursBounds;
+        var weightBounds = d.weightBounds;
+        var bandPercentBounds = d.bandPercentBounds;
+
+        // Every bounds object is guaranteed by the VM contract. A
+        // missing one is a controller bug, not a request for the
+        // legacy hard-coded default.
+        if (!weekBounds || typeof weekBounds !== 'object') {
+            throw new Error(
+                '[AcademyDisciplineView] VM.selected.weekBounds is ' +
+                'required by the editor.'
+            );
+        }
+        if (!weeklyHoursBounds || typeof weeklyHoursBounds !== 'object') {
+            throw new Error(
+                '[AcademyDisciplineView] VM.selected.weeklyHoursBounds ' +
+                'is required by the editor.'
+            );
+        }
+        if (!weightBounds || typeof weightBounds !== 'object') {
+            throw new Error(
+                '[AcademyDisciplineView] VM.selected.weightBounds is ' +
+                'required by the editor.'
+            );
+        }
+        if (!bandPercentBounds || typeof bandPercentBounds !== 'object') {
+            throw new Error(
+                '[AcademyDisciplineView] VM.selected.bandPercentBounds ' +
+                'is required by the editor.'
+            );
+        }
 
         var html = '';
 
@@ -623,17 +747,31 @@
     // ============================================================
 
     function renderGradeSchemeSection(d, errors, bandPercentBounds) {
-        var scheme = d.gradeScheme && typeof d.gradeScheme === 'object'
-            ? d.gradeScheme
-            : { id: 'numeric', label: 'Numeric', bands: [{ label: '%', minPercent: 0 }] };
+        // The canonical shape is guaranteed by the VM contract. A
+        // missing scheme is a controller bug; the renderer does not
+        // fabricate a numeric default.
+        if (!d.gradeScheme || typeof d.gradeScheme !== 'object') {
+            throw new Error(
+                '[AcademyDisciplineView] VM.selected.gradeScheme is ' +
+                'required by the editor.'
+            );
+        }
+        if (!Array.isArray(d.schemePresets)) {
+            throw new Error(
+                '[AcademyDisciplineView] VM.selected.schemePresets is ' +
+                'required by the editor.'
+            );
+        }
 
+        var scheme = d.gradeScheme;
         var bands = Array.isArray(scheme.bands) ? scheme.bands : [];
+
         var presetId = isNonEmptyString(d.schemePresetId)
             ? d.schemePresetId
             : 'numeric';
         var preview = isNonEmptyString(d.schemePreview) ? d.schemePreview : '';
 
-        var presets = Array.isArray(d.schemePresets) ? d.schemePresets : [];
+        var presets = d.schemePresets;
 
         var html = '';
         html += '<div class="academy-discipline-editor-section ' +
@@ -664,7 +802,12 @@
                     'data-discipline-field="schemePresetId">';
         for (var p = 0; p < presets.length; p++) {
             var preset = presets[p];
-            if (!preset || !preset.id) { continue; }
+            if (!preset || !preset.id) {
+                throw new Error(
+                    '[AcademyDisciplineView] VM.selected.schemePresets[' +
+                    p + '] must be an object with an id.'
+                );
+            }
             html += '<option value="' + escapeAttribute(preset.id) + '"' +
                         (presetId === preset.id ? ' selected' : '') + '>' +
                         escapeHtml(preset.label) +
@@ -799,10 +942,21 @@
     // ============================================================
 
     function renderAssessmentWeightsSection(d, errors) {
-        var types = Array.isArray(d.assessmentTypes) ? d.assessmentTypes : [];
-        var weights = d.assessmentWeights && typeof d.assessmentWeights === 'object'
-            ? d.assessmentWeights
-            : {};
+        if (!Array.isArray(d.assessmentTypes)) {
+            throw new Error(
+                '[AcademyDisciplineView] VM.selected.assessmentTypes ' +
+                'is required by the editor.'
+            );
+        }
+        if (!d.assessmentWeights || typeof d.assessmentWeights !== 'object') {
+            throw new Error(
+                '[AcademyDisciplineView] VM.selected.assessmentWeights ' +
+                'is required by the editor.'
+            );
+        }
+
+        var types = d.assessmentTypes;
+        var weights = d.assessmentWeights;
 
         var html = '';
         html += '<div class="academy-discipline-editor-section ' +
@@ -835,7 +989,12 @@
 
         for (var i = 0; i < types.length; i++) {
             var type = types[i];
-            if (!isNonEmptyString(type)) { continue; }
+            if (!isNonEmptyString(type)) {
+                throw new Error(
+                    '[AcademyDisciplineView] VM.selected.assessmentTypes[' +
+                    i + '] must be a non-empty string.'
+                );
+            }
 
             var value = isFiniteNumber(weights[type]) ? weights[type] : '';
             var label = type.charAt(0).toUpperCase() + type.slice(1);
@@ -904,5 +1063,25 @@
     window.AcademyDisciplineView = Object.freeze({
         renderHTML: renderHTML
     });
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.AcademyDisciplineView;
+        var missing = [];
+
+        if (typeof exports.renderHTML !== 'function') {
+            missing.push('renderHTML');
+        }
+
+        if (missing.length > 0) {
+            console.warn(
+                '[AcademyDisciplineView] Verification - some exports ' +
+                'may be missing:', missing.join(', ')
+            );
+        }
+    })();
 
 })();
