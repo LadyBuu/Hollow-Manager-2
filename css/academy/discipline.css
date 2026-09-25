@@ -19,6 +19,8 @@
  *   - Field error state
  *   - Class-disciplines picker modal (opened from the class
  *     detail panel)
+ *   - Discipline schedule tab: grid host, summary host, sessions
+ *     panel, inline candidate picker (this file's final section)
  *
  * Load order: shared.css → academy.css → academy/discipline.css
  */
@@ -619,6 +621,295 @@
 }
 
 /* ============================================================
+   DISCIPLINE SCHEDULE TAB — HOSTS
+   ============================================================
+   The Schedule tab of the discipline detail panel renders three
+   hosts in vertical order:
+
+     #academy-discipline-schedule-host          the calendar grid
+     #academy-discipline-schedule-summary-host  the enrollment summary
+     #academy-discipline-sessions-host          the sessions panel
+
+   Each is filled by the discipline controller after the tab body
+   is written. An empty host must not occupy vertical space; the
+   :empty rule below handles that without the controller needing
+   to toggle a class.
+ */
+
+#academy-discipline-schedule-summary-host:empty,
+#academy-discipline-sessions-host:empty {
+    display: none;
+}
+
+/* ============================================================
+   DISCIPLINE SESSIONS PANEL
+   ============================================================
+   The panel below the enrollment summary. Lists every teaching
+   group of the discipline (across every instructor), each with
+   its sessions and its roster.
+
+   The candidate picker inside each block reuses the exact
+   classes and data attributes from the character detail panel.
+   The picker's own styling therefore lives in character-detail.css;
+   this file only adjusts the panel frame and the group block.
+ */
+
+.academy-discipline-sessions-panel {
+    margin-top: 12px;
+    padding: 12px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.academy-discipline-sessions-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding-bottom: 6px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-discipline-sessions-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--accent);
+    margin: 0;
+}
+
+.academy-discipline-sessions-subtitle {
+    font-size: 0.72rem;
+    color: var(--text);
+    font-weight: 500;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.academy-discipline-sessions-meta {
+    font-size: 0.62rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+.academy-discipline-sessions-empty {
+    margin: 0;
+    padding: 8px 0;
+}
+
+.academy-discipline-sessions-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+/* ---- Group block ---- */
+
+.academy-discipline-session-group {
+    padding: 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius);
+}
+
+.academy-discipline-session-group-header {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding-bottom: 6px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-discipline-session-group-name {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.academy-discipline-session-group-instructor {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    flex: 0 1 auto;
+    white-space: nowrap;
+}
+
+.academy-discipline-session-group-instructor-empty {
+    font-style: italic;
+    opacity: 0.7;
+}
+
+.academy-discipline-session-group-members {
+    font-size: 0.62rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    background: var(--panel);
+    padding: 1px 7px;
+    border-radius: 10px;
+    border: 1px solid var(--border-soft);
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+/* ---- Sessions list ---- */
+
+.academy-discipline-session-group-sessions {
+    list-style: none;
+    margin: 0 0 8px 0;
+    padding: 0 0 0 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.academy-discipline-session-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 3px 6px;
+    background: var(--bg);
+    border-radius: 3px;
+    font-size: 0.72rem;
+    border-left: 2px solid var(--border-soft);
+}
+
+.academy-discipline-session-time {
+    color: var(--text);
+    font-weight: 500;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+.academy-discipline-session-duration {
+    font-size: 0.62rem;
+    color: var(--text-dim);
+    background: var(--panel);
+    padding: 0 5px;
+    border-radius: 6px;
+    border: 1px solid var(--border-soft);
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+.academy-discipline-session-location {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-style: italic;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.academy-discipline-session-group-sessions-empty {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    font-style: italic;
+    padding: 4px 6px;
+    margin: 0 0 8px 0;
+}
+
+/* ---- Roster ---- */
+
+.academy-discipline-session-group-roster {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.academy-discipline-session-group-roster-empty {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    font-style: italic;
+    padding: 4px 6px;
+    margin: 0;
+}
+
+.academy-discipline-session-roster-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 8px;
+    background: var(--bg);
+    border-radius: 3px;
+    font-size: 0.72rem;
+}
+
+.academy-discipline-session-roster-name {
+    flex: 1;
+    min-width: 0;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.academy-discipline-session-roster-status {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+.academy-discipline-session-roster-row button {
+    font-size: 0.62rem;
+    padding: 2px 8px;
+    flex: 0 0 auto;
+}
+
+/* ---- Group actions row ---- */
+
+.academy-discipline-session-group-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border-soft);
+}
+
+.academy-discipline-session-group-actions button {
+    font-size: 0.65rem;
+    padding: 3px 10px;
+    white-space: nowrap;
+}
+
+/* ---- Inline picker inside a group block ----
+ *
+ * The picker markup is the same as the instructor tab's (from
+ * academy-character-detail.js). Its base styling lives in
+ * character-detail.css. The rule here nudges it to sit flush
+ * inside the discipline block, with less outer padding than the
+ * character-detail panel gives it.
+ */
+
+.academy-discipline-session-group
+    .academy-teaching-group-candidate-picker {
+    margin: 8px 0 0 0;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+}
+
+/* ============================================================
    MOBILE
    ============================================================ */
 
@@ -697,6 +988,44 @@
     }
 
     .academy-picker-footer button {
+        width: 100%;
+    }
+
+    /* ---------- Discipline sessions panel (mobile) ---------- */
+
+    .academy-discipline-sessions-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .academy-discipline-sessions-meta {
+        white-space: normal;
+    }
+
+    .academy-discipline-session-group-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .academy-discipline-session-row {
+        flex-wrap: wrap;
+        gap: 4px;
+    }
+
+    .academy-discipline-session-time {
+        flex-basis: 100%;
+    }
+
+    .academy-discipline-session-location {
+        white-space: normal;
+    }
+
+    .academy-discipline-session-group-actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .academy-discipline-session-group-actions button {
         width: 100%;
     }
 }
