@@ -31,6 +31,10 @@
  *                               session owned by it, in one
  *                               transaction
  *     createTeachingGroup       explicit new-group allocation
+ *     applyRebalancePlan        apply a rebalance plan produced by
+ *                               AcademyBalanceSuggestions across
+ *                               every affected group, in one
+ *                               transaction
  *     createInstructorCommitment   forward to the commitments module
  *     updateInstructorCommitment   forward to the commitments module
  *     removeInstructorCommitment   forward to the commitments module
@@ -45,6 +49,7 @@
  *   - Location entities              (AcademyLocations)
  *   - Instructor commitments store   (AcademyInstructorCommitments)
  *   - Group-number allocation        (AcademyTeachingGroups)
+ *   - Rebalance algorithm            (AcademyBalanceSuggestions)
  *
  * ALLOCATOR UNIFICATION:
  *   Group numbers are allocated exclusively by
@@ -95,6 +100,63 @@
  *       untouched. Other groups are untouched. character.classIds
  *       is untouched. The student remains enrolled and remains
  *       a member of the class.
+ *
+ * APPLY REBALANCE PLAN:
+ *   applyRebalancePlan(classId, disciplineId, week, plan) applies
+ *   the output of AcademyBalanceSuggestions.suggest in ONE
+ *   pipeline transaction.
+ *
+ *   PLAN SHAPE (from AcademyBalanceSuggestions.suggest):
+ *     {
+ *       ok: true,
+ *       assignments: [
+ *         { groupId, proposedMemberIds: [...], ... },
+ *         ...
+ *       ],
+ *       unplaceable: [ ... ]   // ignored by apply
+ *     }
+ *
+ *   WHAT IT DOES:
+ *     For each group in the plan, its proposedMemberIds list is
+ *     applied. Every group's roster becomes exactly the proposed
+ *     list: current members who are not in the proposed list have
+ *     their membership ended (endWeek = week - 1 on the active
+ *     interval), and members in the proposed list who are not
+ *     currently active in the group are added (startWeek = week,
+ *     endWeek = null).
+ *
+ *   WHAT IT DOES NOT DO:
+ *     - It does not touch groups not mentioned in the plan.
+ *     - It does not touch sessions.
+ *     - It does not touch enrolments.
+ *     - It does not run the algorithm. The plan is supplied by the
+ *       caller, who is responsible for having produced it via
+ *       AcademyBalanceSuggestions.suggest.
+ *
+ *   TRANSACTIONALITY:
+ *     One pipeline. One transaction. Either every group's roster
+ *     is updated, or none is. A half-applied rebalance is worse
+ *     than no rebalance.
+ *
+ *   VALIDATION:
+ *     Pre-flight validates the plan's shape.
+ *     Pipeline validate() checks that:
+ *       - the class exists in the snapshot
+ *       - the discipline exists in the snapshot
+ *       - every groupId in the plan exists in the snapshot
+ *       - every groupId's classId and disciplineId match the
+ *         (classId, disciplineId) arguments
+ *       - every proposedMemberId resolves to a character in the
+ *         snapshot
+ *       - every proposedMemberId is currently enrolled in this
+ *         discipline at the week
+ *     A validation failure rejects the whole transaction.
+ *
+ *   WEEK SEMANTICS:
+ *     The `week` argument is the effective week of the change.
+ *     - Members leaving have their active interval's endWeek set
+ *       to week - 1.
+ *     - Members joining start at week with an open-ended interval.
  *
  * TRANSACTION MODEL:
  *   Every public function here is a single
@@ -370,16 +432,6 @@
     // ============================================================
     // LOCATION RESOLUTION
     // ============================================================
-    //
-    // Inputs:
-    //   null / undefined / '' → no location. Passes without
-    //     consulting AcademyLocations.
-    //   non-empty string       → AcademyLocations is MANDATORY.
-    //     Missing module, missing getLocation, or a location that
-    //     does not resolve is a failure.
-    //
-    // Lazy resolution solves load order. It does not make the
-    // dependency optional at the moment a location is being set.
 
     function resolveLocationId(rawLocationId) {
         if (rawLocationId === undefined ||
@@ -1881,6 +1933,513 @@
             successMessage: 'Teaching group deleted.',
             failureMessage: 'Failed to delete teaching group.'
         });
+    }
+
+    // ============================================================
+    // applyRebalancePlan
+    // ============================================================
+    //
+    // Apply a rebalance plan produced by
+    // AcademyBalanceSuggestions.suggest in ONE transaction.
+    //
+    // WHAT THIS DOES:
+    //   For each entry in plan.assignments, the group's roster is
+    //   rewritten to match `proposedMemberIds` exactly.
+    //
+    //     - Members currently active in the group who are NOT in
+    //       the proposed list: their active interval's endWeek is
+    //       set to week - 1.
+    //
+    //     - Members in the proposed list who are NOT currently
+    //       active in the group: a new interval is added with
+    //       startWeek = week, endWeek = null.
+    //
+    //     - Members who are active in the group AND in the
+    //       proposed list: untouched. Their existing interval
+    //       continues.
+    //
+    // WHAT THIS DOES NOT DO:
+    //   - It does not touch groups not mentioned in the plan.
+    //   - It does not touch sessions.
+    //   - It does not touch enrolments.
+    //   - It does not run the algorithm.
+    //
+    // TRANSACTIONALITY:
+    //   One pipeline. One transaction. Either every group's roster
+    //   is updated, or none is.
+    //
+    // VALIDATION:
+    //   Pre-flight validates the plan's shape.
+    //   Pipeline validate() checks that:
+    //     - the class exists in the snapshot
+    //     - the discipline exists in the snapshot
+    //     - every groupId in the plan exists in the snapshot
+    //     - every groupId's classId and disciplineId match the
+    //       (classId, disciplineId) arguments
+    //     - every proposedMemberId resolves to a character in the
+    //       snapshot
+    //     - every proposedMemberId is enrolled in this discipline
+    //       at the week
+    //   A validation failure rejects the whole transaction.
+
+    function applyRebalancePlan(classId, disciplineId, week, plan) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        if (!isNonEmptyString(disciplineId)) {
+            return Promise.resolve(failure('Discipline ID is required.'));
+        }
+
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return Promise.resolve(failure(
+                'Valid week is required (' +
+                MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
+        }
+
+        if (!isPlainObject(plan)) {
+            return Promise.resolve(failure(
+                'Plan must be an object.'
+            ));
+        }
+        if (plan.ok !== true) {
+            return Promise.resolve(failure(
+                'Plan is not marked ok; refusing to apply.'
+            ));
+        }
+        if (!Array.isArray(plan.assignments)) {
+            return Promise.resolve(failure(
+                'Plan.assignments must be an array.'
+            ));
+        }
+
+        var targetClass = String(classId);
+        var targetDiscipline = String(disciplineId);
+
+        // Pre-flight: normalize and dedup the plan's assignments.
+        //
+        // A group appearing twice in assignments is a caller bug.
+        // A memberId appearing in two groups is a caller bug. Both
+        // are caught here so the pipeline does not have to reason
+        // about ordering.
+
+        var normalizedAssignments = [];
+        var seenGroupIds = Object.create(null);
+        var seenMemberIds = Object.create(null);
+
+        for (var ai = 0; ai < plan.assignments.length; ai++) {
+            var a = plan.assignments[ai];
+            if (!isPlainObject(a)) {
+                return Promise.resolve(failure(
+                    'Plan.assignments[' + ai + '] must be an object.'
+                ));
+            }
+            if (!isNonEmptyString(a.groupId)) {
+                return Promise.resolve(failure(
+                    'Plan.assignments[' + ai + '].groupId is required.'
+                ));
+            }
+
+            var groupId = String(a.groupId);
+
+            if (seenGroupIds[groupId] === true) {
+                return Promise.resolve(failure(
+                    'Plan.assignments contains duplicate groupId: ' +
+                    groupId
+                ));
+            }
+            seenGroupIds[groupId] = true;
+
+            var proposed = Array.isArray(a.proposedMemberIds)
+                ? a.proposedMemberIds
+                : [];
+
+            var cleanedMembers = [];
+            for (var mi = 0; mi < proposed.length; mi++) {
+                if (!isNonEmptyString(proposed[mi])) { continue; }
+                var memberId = String(proposed[mi]);
+
+                if (seenMemberIds[memberId] === true) {
+                    return Promise.resolve(failure(
+                        'Plan.assignments places student ' + memberId +
+                        ' in more than one group.'
+                    ));
+                }
+                seenMemberIds[memberId] = true;
+                cleanedMembers.push(memberId);
+            }
+
+            normalizedAssignments.push({
+                groupId: groupId,
+                proposedMemberIds: cleanedMembers
+            });
+        }
+
+        // Pre-flight class existence (live read). The pipeline
+        // re-checks against the snapshot.
+        var cls = AcademyClasses.getClass(targetClass);
+        if (!cls) {
+            return Promise.resolve(failure('Class not found.'));
+        }
+
+        // Pre-flight discipline existence (live read).
+        var discipline = AcademyDisciplines.getDiscipline(
+            targetDiscipline
+        );
+        if (!discipline) {
+            return Promise.resolve(failure('Discipline not found.'));
+        }
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+
+                var academy = getAcademySnapshot(appData);
+                if (!academy) {
+                    return {
+                        valid: false,
+                        message: 'Academy store is not available.'
+                    };
+                }
+
+                // Class in snapshot.
+                if (!findClassInSnapshot(appData, targetClass)) {
+                    return {
+                        valid: false,
+                        message: 'Class no longer exists.'
+                    };
+                }
+
+                // Discipline in snapshot.
+                if (!findDisciplineInSnapshot(
+                    appData, targetDiscipline
+                )) {
+                    return {
+                        valid: false,
+                        message: 'Discipline no longer exists.'
+                    };
+                }
+
+                // Every group in the plan exists, and belongs to
+                // (targetClass, targetDiscipline).
+                for (var i = 0; i < normalizedAssignments.length; i++) {
+                    var na = normalizedAssignments[i];
+                    var group = getGroupFromSnapshot(appData, na.groupId);
+                    if (!group) {
+                        return {
+                            valid: false,
+                            message: 'Teaching group no longer exists: ' +
+                                na.groupId
+                        };
+                    }
+                    if (String(group.classId) !== targetClass) {
+                        return {
+                            valid: false,
+                            message: 'Group ' + na.groupId +
+                                ' does not belong to the specified class.'
+                        };
+                    }
+                    if (String(group.disciplineId) !== targetDiscipline) {
+                        return {
+                            valid: false,
+                            message: 'Group ' + na.groupId +
+                                ' does not belong to the specified ' +
+                                'discipline.'
+                        };
+                    }
+                }
+
+                // Every proposed member exists, and is enrolled in
+                // this discipline at this week.
+                for (var j = 0; j < normalizedAssignments.length; j++) {
+                    var na2 = normalizedAssignments[j];
+                    for (var k = 0;
+                         k < na2.proposedMemberIds.length;
+                         k++) {
+                        var memberId = na2.proposedMemberIds[k];
+
+                        if (!findCharacterInSnapshot(appData, memberId)) {
+                            return {
+                                valid: false,
+                                message: 'Student no longer exists: ' +
+                                    memberId
+                            };
+                        }
+
+                        if (!isEnrolledInSnapshot(
+                            appData,
+                            memberId,
+                            targetClass,
+                            targetDiscipline,
+                            weekNum
+                        )) {
+                            return {
+                                valid: false,
+                                message: 'Student ' + memberId +
+                                    ' is not enrolled in this discipline ' +
+                                    'at week ' + weekNum + '.'
+                            };
+                        }
+                    }
+                }
+
+                return { valid: true };
+            },
+
+            mutate: function(appData) {
+                var academy = getAcademySnapshot(appData);
+                if (!academy) {
+                    throw new Error('Academy store is not available.');
+                }
+
+                var endWeek = weekNum - 1;
+                var now = new Date().toISOString();
+
+                var membershipsEnded = 0;
+                var membershipsStarted = 0;
+
+                for (var ai2 = 0; ai2 < normalizedAssignments.length; ai2++) {
+                    var na3 = normalizedAssignments[ai2];
+                    var group = academy.teachingGroups[na3.groupId];
+                    if (!isPlainObject(group)) {
+                        throw new Error(
+                            'Group not found during apply: ' +
+                            na3.groupId
+                        );
+                    }
+
+                    if (!Array.isArray(group.members)) {
+                        group.members = [];
+                    }
+
+                    // Build a set of proposed memberIds for this
+                    // group, so we can decide which current entries
+                    // to end and which proposed members to add.
+                    var proposedSet = Object.create(null);
+                    for (var pi = 0;
+                         pi < na3.proposedMemberIds.length;
+                         pi++) {
+                        proposedSet[na3.proposedMemberIds[pi]] = true;
+                    }
+
+                    // Active member set for this group at this week.
+                    var activeSet = Object.create(null);
+                    for (var mi2 = 0; mi2 < group.members.length; mi2++) {
+                        var entry = group.members[mi2];
+                        if (!entry) { continue; }
+                        if (!isNonEmptyString(entry.characterId)) {
+                            continue;
+                        }
+                        if (!weekInRange(
+                            weekNum,
+                            entry.startWeek,
+                            entry.endWeek
+                        )) {
+                            continue;
+                        }
+                        activeSet[String(entry.characterId)] = entry;
+                    }
+
+                    // ---- End memberships: active but not proposed ----
+
+                    var activeIds = Object.keys(activeSet);
+                    for (var ei = 0; ei < activeIds.length; ei++) {
+                        var activeId = activeIds[ei];
+                        if (proposedSet[activeId] === true) {
+                            continue;
+                        }
+
+                        var activeEntry = activeSet[activeId];
+                        if (activeEntry.startWeek >= weekNum) {
+                            // The interval starts on or after the
+                            // effective week. Per the historical-
+                            // preservation convention, remove the
+                            // entry entirely rather than writing an
+                            // endWeek that precedes its startWeek.
+                            //
+                            // Filter this specific entry out of
+                            // group.members.
+                            var beforeLen = group.members.length;
+                            group.members = group.members.filter(
+                                function(m) {
+                                    return m !== activeEntry;
+                                }
+                            );
+                            if (group.members.length !== beforeLen) {
+                                membershipsEnded++;
+                            }
+                        } else {
+                            activeEntry.endWeek = endWeek;
+                            membershipsEnded++;
+                        }
+                    }
+
+                    // ---- Start memberships: proposed but not active ----
+
+                    for (var si2 = 0;
+                         si2 < na3.proposedMemberIds.length;
+                         si2++) {
+                        var proposedId = na3.proposedMemberIds[si2];
+                        if (activeSet[proposedId] !== undefined) {
+                            // Already active. Leave the existing
+                            // interval alone.
+                            continue;
+                        }
+
+                        group.members.push({
+                            characterId: proposedId,
+                            startWeek: weekNum,
+                            endWeek: null
+                        });
+                        membershipsStarted++;
+                    }
+
+                    group.updatedAt = now;
+                }
+
+                return {
+                    groupsProcessed: normalizedAssignments.length,
+                    membershipsEnded: membershipsEnded,
+                    membershipsStarted: membershipsStarted
+                };
+            },
+
+            logMessage: function(result) {
+                return 'Applied rebalance plan: ' +
+                    result.groupsProcessed + ' group(s), ' +
+                    result.membershipsEnded + ' membership(s) ended, ' +
+                    result.membershipsStarted + ' membership(s) started';
+            },
+
+            successMessage: function(result) {
+                return 'Rebalance applied. ' +
+                    result.membershipsStarted + ' started, ' +
+                    result.membershipsEnded + ' ended.';
+            },
+
+            failureMessage: 'Failed to apply the rebalance plan.'
+        });
+    }
+
+    /**
+     * Snapshot lookup: is this character enrolled in this
+     * discipline for this class at this week?
+     *
+     * Reads the snapshot's academy.enrolments bucket directly.
+     * The bucket shape is:
+     *   academy.enrolments[classId][charId] = [
+     *     { disciplineId, startWeek, endWeek }, ...
+     *   ]
+     */
+    function isEnrolledInSnapshot(
+        appData,
+        charId,
+        classId,
+        disciplineId,
+        week
+    ) {
+        var academy = getAcademySnapshot(appData);
+        if (!academy) { return false; }
+        var enrBucket = academy.enrolments &&
+            academy.enrolments[classId];
+        if (!isPlainObject(enrBucket)) { return false; }
+        var intervals = enrBucket[charId];
+        if (!Array.isArray(intervals)) { return false; }
+
+        var targetDiscipline = String(disciplineId);
+        for (var i = 0; i < intervals.length; i++) {
+            var entry = intervals[i];
+            if (!entry || typeof entry !== 'object') { continue; }
+            if (String(entry.disciplineId) !== targetDiscipline) {
+                continue;
+            }
+            if (weekInRange(week, entry.startWeek, entry.endWeek)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Snapshot lookup: does this class exist in the snapshot?
+     * Mirrors the shape used elsewhere in this file.
+     */
+    function findClassInSnapshot(appData, classId) {
+        if (!appData || !isPlainObject(appData.academy)) {
+            return null;
+        }
+        var store = appData.academy.graduatingClasses;
+        if (!isPlainObject(store)) { return null; }
+        if (!isNonEmptyString(classId)) { return null; }
+        var record = store[String(classId)];
+        if (!isPlainObject(record)) { return null; }
+        return record;
+    }
+
+    /**
+     * Snapshot lookup: does this discipline exist in the snapshot?
+     * Mirrors the shape used elsewhere in this file.
+     */
+    function findDisciplineInSnapshot(appData, disciplineId) {
+        if (!appData || typeof appData !== 'object') {
+            return null;
+        }
+        if (!isNonEmptyString(disciplineId)) {
+            return null;
+        }
+
+        var target = String(disciplineId);
+
+        if (appData.academy && typeof appData.academy === 'object') {
+            var academyList = appData.academy.disciplines;
+            if (Array.isArray(academyList)) {
+                for (var a = 0; a < academyList.length; a++) {
+                    var ad = academyList[a];
+                    if (ad && String(ad.id) === target) {
+                        return ad;
+                    }
+                }
+            }
+        }
+
+        if (appData.curriculum && typeof appData.curriculum === 'object') {
+            var legacyList = appData.curriculum.disciplines;
+            if (Array.isArray(legacyList)) {
+                for (var l = 0; l < legacyList.length; l++) {
+                    var ld = legacyList[l];
+                    if (ld && String(ld.id) === target) {
+                        return ld;
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Snapshot lookup: does this character exist in the snapshot?
+     * Mirrors the shape used elsewhere in this file.
+     */
+    function findCharacterInSnapshot(appData, charId) {
+        if (!appData || !Array.isArray(appData.characters)) {
+            return null;
+        }
+        if (!isNonEmptyString(charId)) { return null; }
+        var target = String(charId);
+        for (var i = 0; i < appData.characters.length; i++) {
+            var c = appData.characters[i];
+            if (c && String(c.id) === target) {
+                return c;
+            }
+        }
+        return null;
     }
 
     // ============================================================
@@ -3659,6 +4218,7 @@
         assignStudentToSlot: assignStudentToSlot,
         removeTeachingGroup: removeTeachingGroup,
         createTeachingGroup: createTeachingGroup,
+        applyRebalancePlan: applyRebalancePlan,
 
         // Instructor-commitment forwarders
         createInstructorCommitment: createInstructorCommitment,
@@ -3688,6 +4248,7 @@
             'assignStudentToSlot',
             'removeTeachingGroup',
             'createTeachingGroup',
+            'applyRebalancePlan',
             'createInstructorCommitment',
             'updateInstructorCommitment',
             'removeInstructorCommitment'
