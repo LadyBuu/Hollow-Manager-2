@@ -25,71 +25,49 @@
  *   cannot be changed. New grades are stamped with the mounted
  *   week.
  *
- *   This resolves a previous contradiction: the header said "the
- *   class and week are fixed at mount time" but the render called
- *   getStudentClassGrades(charId, classId) without a week. The
- *   editor displayed all class grades while claiming week scoping.
- *
- *   The surrounding UI (the character detail panel's Schedule tab)
- *   already owns the selected week. This editor inherits it.
- *
  * CONTEXT VERIFICATION:
  *   Every mutation is checked against the mounted context before
  *   dispatch. A grade being edited or deleted MUST belong to the
- *   mounted (character, class) pair. A stale DOM event or a
- *   programming error cannot make this editor mutate a grade it
- *   does not own.
+ *   mounted (character, class) pair.
  *
  *   For edit, the update payload sends only the fields the editor
- *   actually allows the user to change: score, maxScore, type,
- *   date, notes, disciplineId. It does NOT send studentId or
- *   classId. Those are contextual identity fields; the editor
- *   does not own them. If a future design wants the editor to
- *   move a grade between classes or students, that is a different
- *   operation and should be its own surface.
- *
- *   Week is not in the edit payload either. Grade identity is
- *   (studentId, classId, disciplineId, week, type); the editor
- *   treats week as fixed by its mount.
+ *   actually allows the user to change. It does NOT send studentId
+ *   or classId.
  *
  * ASYNC SAFETY:
- *   Every asynchronous callback captures the current
- *   `_openToken`. If the editor is re-mounted (or the modal is
- *   closed) before the callback runs, the callback is a no-op.
- *
- *   A `_busy` flag per modal additionally disables the submit and
- *   delete buttons while a mutation is in flight, so a
- *   double-click cannot fire two writes.
+ *   Every asynchronous callback captures the current `_openToken`.
  *
  * GRADE SCHEME:
  *   Grades are stored as percentages (score + maxScore). The scheme
  *   is a display layer. It is read from
- *   AcademyDisciplines.getGradeScheme, which normalizes on read.
+ *   AcademyDisciplines.getGradeScheme.
+ *
+ *   NULL SCHEME HANDLING (v30):
+ *     AcademyDisciplines.getGradeScheme(id) returns null when the
+ *     discipline does not exist. A discipline that exists but has
+ *     no stored scheme returns the numeric default.
+ *
+ *     This editor treats a null scheme as "no scheme available" and
+ *     falls back to the numeric default. The alternative — throwing
+ *     — would blank the grade row for a student whose discipline
+ *     was deleted between render and open, which is worse than
+ *     showing the raw percentage.
+ *
+ *     The fallback is applied at exactly one place:
+ *     getSchemeForDiscipline. Every scheme reader in this module
+ *     goes through it.
  *
  * PERCENTAGE:
  *   The editor does NOT calculate percentages itself. It calls
- *   AcademyGrades.calculatePercentage, which is the single
- *   implementation. The editor does not prefer a stored
- *   `percentage` field when present; the field is derived and any
- *   stored value is ignored.
+ *   AcademyGrades.calculatePercentage.
  *
  * ENROLLMENT:
  *   The discipline picker sources its options from the student's
  *   enrollment for the selected class via AcademyEnrolments.
- *   Enrollment is class-scoped. character.disciplineIds is not
- *   read.
- *
- *   The picker does NOT filter by week. A discipline the student
- *   is enrolled in for the class appears in the picker, even if
- *   the discipline's own active window does not include the
- *   mounted week. The picker shows the option as disabled when the
- *   discipline is not active this week; the user sees it, but
- *   cannot select it.
  *
  * MODAL CONTENT CONTRACT:
  *   Modal.createModal returns a bare .modal shell. The modal content
- *   helper here appends a fresh .modal-content wrapper, matching the
- *   pattern used by the rest of the Academy shell.
+ *   helper here appends a fresh .modal-content wrapper.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -267,21 +245,39 @@
 
     /**
      * Get the normalized grade scheme for a discipline.
-     * AcademyDisciplines.getGradeScheme normalizes on read.
+     *
+     * NULL HANDLING (v30):
+     *   AcademyDisciplines.getGradeScheme(id) returns null when the
+     *   discipline does not exist. A discipline that exists but has
+     *   no stored scheme returns the numeric default.
+     *
+     *   This helper converts the null case into the numeric default.
+     *   The display layer never has to branch on null; it always
+     *   receives an object with a bands array.
+     *
+     *   The numeric default is obtained from
+     *   GradeSchemes.normalizeScheme(null), which is the canonical
+     *   constructor for the default scheme.
      */
     function getSchemeForDiscipline(disciplineId) {
         if (!isNonEmptyString(disciplineId)) {
             return GradeSchemes.normalizeScheme(null);
         }
-        return AcademyDisciplines.getGradeScheme(disciplineId);
+
+        var scheme = AcademyDisciplines.getGradeScheme(disciplineId);
+
+        if (scheme === null || scheme === undefined) {
+            return GradeSchemes.normalizeScheme(null);
+        }
+
+        return scheme;
     }
 
     /**
      * Get the numeric percentage of a grade.
      *
      * ALWAYS delegates to AcademyGrades.calculatePercentage. Does
-     * NOT prefer a stored `percentage` field. Phase 3 rule:
-     * percentage is derived, not stored.
+     * NOT prefer a stored `percentage` field.
      *
      * Returns null when the grade's score / maxScore are not valid.
      */
@@ -378,7 +374,7 @@
         var closeBtn = modal.querySelector('.close-modal');
         if (closeBtn) { closeBtn.addEventListener('click', close); }
 
-        var cancelBtn = modal.querySelector('.cancel-modal-btn');
+        var cancelBtn = modal.querySelector('.modal-cancel-btn');
         if (cancelBtn) { cancelBtn.addEventListener('click', close); }
 
         modal.addEventListener('click', function(e) {
@@ -394,15 +390,6 @@
      * Get the discipline options from the student's enrollment for a
      * class. Returns an array of
      * { id, name, activeThisWeek, missing }.
-     *
-     * `missing` is true when the enrollment references a discipline
-     * that does not resolve. The option is returned (so the caller
-     * can decide how to render a broken reference) rather than
-     * silently skipped.
-     *
-     * `activeThisWeek` reflects whether the DISCIPLINE's own
-     * startWeek / endWeek window contains the mounted week. It is a
-     * presentation hint. The picker does NOT filter by week.
      */
     function getEnrolledDisciplineOptions(studentId, classId, week) {
         if (!isNonEmptyString(studentId) || !isNonEmptyString(classId)) {
@@ -482,9 +469,6 @@
 
     var _delegatedHandler = null;
 
-    // Token incremented on mount, unmount, and each modal open.
-    // Async callbacks capture the current token and become no-ops
-    // if it has changed.
     var _openToken = 0;
 
     // ============================================================
@@ -560,13 +544,6 @@
     // CONTEXT VERIFICATION
     // ============================================================
 
-    /**
-     * Does a grade belong to the mounted (character, class) pair?
-     *
-     * Every mutation routes through this check. A grade that does
-     * not belong to the mounted context is not this editor's to
-     * touch.
-     */
     function gradeBelongsToMountedContext(grade) {
         if (!grade) { return false; }
         if (!_state.charId) { return false; }
@@ -589,7 +566,6 @@
         var classId = _state.classId;
         var weekNum = _state.week;
 
-        // Week-scoped: fetch only the grades for the mounted week.
         var grades = AcademyGrades.getStudentClassGrades(
             charId, classId, weekNum
         ) || [];
@@ -742,8 +718,6 @@
                 return;
             }
 
-            // Context check. A grade being edited must belong to
-            // the mounted (character, class) pair.
             if (!gradeBelongsToMountedContext(existing)) {
                 console.warn(
                     '[AcademyGradesEditor] Refusing to edit grade ' +
@@ -777,9 +751,6 @@
 
         var myToken = _openToken;
 
-        // Initial discipline:
-        //   - Edit mode: the grade's own discipline.
-        //   - Create mode: first active enrollment, if any.
         var initialDisciplineId = g.disciplineId || null;
         if (!initialDisciplineId) {
             for (var i = 0; i < disciplineOptions.length; i++) {
@@ -811,7 +782,6 @@
             }
         }
 
-        // Week is fixed. The form displays it read-only.
         var weekDisplay = String(_state.week);
 
         var html = '';
@@ -826,7 +796,6 @@
 
         html += '<div class="modal-body">';
 
-        // ---- Week (read-only) ----
         html += '<div class="form-group academy-grade-week-readonly">';
         html += '<label>Week</label>';
         html += '<p class="academy-grade-week-value">' +
@@ -837,7 +806,6 @@
                 '</p>';
         html += '</div>';
 
-        // ---- Discipline picker ----
         html += '<div class="form-group">';
         html += '<label for="ag-disc-select">Discipline *</label>';
         html += '<select id="ag-disc-select" class="ag-disc-select" required>';
@@ -891,7 +859,6 @@
 
         html += '</div>';
 
-        // ---- Type ----
         html += '<div class="form-group">';
         html += '<label for="ag-type-select">Type</label>';
         html += '<select id="ag-type-select" class="ag-type-select">';
@@ -908,7 +875,6 @@
                 '</p>';
         html += '</div>';
 
-        // ---- Score / Max score ----
         html += '<div class="form-row" ' +
                     'style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
         html += '<div class="form-group">';
@@ -931,7 +897,6 @@
         html += '</div>';
         html += '</div>';
 
-        // ---- Live label preview ----
         html += '<div class="form-group ag-grade-preview-group">';
         html += '<span class="ag-grade-preview-label">Converted:</span> ';
         html += '<span id="ag-grade-preview" class="ag-grade-preview">' +
@@ -939,14 +904,12 @@
                 '</span>';
         html += '</div>';
 
-        // ---- Date ----
         html += '<div class="form-group">';
         html += '<label for="ag-date-input">Date</label>';
         html += '<input type="date" id="ag-date-input" class="ag-date-input" ' +
                     'value="' + escapeAttribute(g.date || '') + '">';
         html += '</div>';
 
-        // ---- Notes ----
         html += '<div class="form-group">';
         html += '<label for="ag-notes-input">Notes</label>';
         html += '<textarea id="ag-notes-input" class="ag-notes-input" ' +
@@ -955,7 +918,6 @@
                 '</textarea>';
         html += '</div>';
 
-        // ---- Actions ----
         var submitDisabled = (!hasEnrollment || !hasSelectable)
             ? ' disabled'
             : '';
@@ -1050,18 +1012,8 @@
                 return;
             }
 
-            // Week is fixed by the mount. The form does not send a
-            // week field; the domain uses the mounted week from the
-            // payload below.
             var week = _state.week;
 
-            // For create: send the full payload including
-            // studentId, classId, and week.
-            //
-            // For update: send ONLY the fields the editor allows
-            // the user to change. studentId and classId are
-            // contextual identity; the editor does not own them.
-            // week is fixed by the mount.
             var payload;
             if (existing && existing.id) {
                 payload = {
@@ -1105,8 +1057,6 @@
                     close();
                     refresh();
                 }
-                // On failure, the pipeline has already notified.
-                // Modal stays open so the user can retry.
             }).catch(function(err) {
                 if (myToken !== _openToken) { return; }
                 busy = false;
@@ -1128,8 +1078,6 @@
             return;
         }
 
-        // Context check. A grade being deleted must belong to the
-        // mounted (character, class) pair.
         if (!gradeBelongsToMountedContext(grade)) {
             console.warn(
                 '[AcademyGradesEditor] Refusing to delete grade ' +
