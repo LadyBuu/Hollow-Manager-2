@@ -20,28 +20,47 @@
  *   - Self-contained UI lifecycle
  *
  * ACTIVE SURFACE:
- *   Four header controls are wired today:
+ *   Eight controls are wired today:
  *
  *     export-json-btn              download JSON backup
  *     import-json-btn              open the JSON file picker
  *     json-file-input              the picker itself
  *     export-graduates-json-btn    open the graduates export picker
+ *     export-characters-csv-btn    export all characters to CSV
+ *     import-characters-csv-btn    open the characters CSV picker
+ *     characters-csv-file-input    the picker itself
+ *     template-characters-csv-btn  download a characters CSV template
  *
- *   Those are the buttons that exist in index.html's header. Every
- *   other control this module used to bind was removed from the UI;
- *   the handlers below were removed with them. Do not re-add a
- *   bindButton() call for a control that is not in the markup: the
- *   bind call emits a console.warn on every init, and the wall of
- *   warnings makes the real signal harder to find.
+ *   The character CSV controls live in the character module's page
+ *   header (rendered by characters/index.js's getCharactersHTML),
+ *   not in the application header. That is deliberate: they are
+ *   character-specific, they belong with the character list, and
+ *   they sit next to "+ Add" where the user is already looking.
  *
- *   If a control is restored later, add its bind call AND its
- *   handler in the same change. Do not leave one without the other.
+ *   Every control's binding lives here, in one place. There is no
+ *   second binding path. See the "ONE BINDING PER CONTROL" note
+ *   below.
+ *
+ * ONE BINDING PER CONTROL:
+ *   Each header button is bound exactly once, by this module's
+ *   init(). There is no delegation fallback elsewhere in the tree.
+ *
+ *   This is a deliberate architectural choice. Earlier revisions
+ *   had character-events.js also bind the same three character CSV
+ *   buttons via delegated document-level listeners, and those
+ *   listeners pointed at window-level function names that never
+ *   existed. The result was a button that looked wired and did
+ *   nothing.
+ *
+ *   If a control is ever restored to a different module's markup,
+ *   add its bind call HERE, not in that module. Do not split the
+ *   binding across two files. The two-path pattern is what caused
+ *   the character export to appear broken for a release.
  *
  * REMOVED FROM THE UI (handlers kept as public exports for callers
  * that still route to them programmatically, or for a future
  * restore):
  *
- *     Character CSV:  export, import, template
  *     Mission CSV:    export, import, template
  *     Graduates CSV:  export (the picker is shared with JSON)
  *     Teams JSON:     export (picker opens the same modal)
@@ -49,9 +68,7 @@
  *
  *   The picker-open handlers for Graduates and Teams are still
  *   exported because the picker modules themselves are unchanged
- *   and can be opened from anywhere. The character and mission CSV
- *   handlers are still exported because character-events.js and
- *   mission-events.js may call them directly.
+ *   and can be opened from anywhere.
  *
  * GRADUATES EXPORT:
  *   The graduate button opens a picker modal listing every class.
@@ -189,13 +206,10 @@
     // ============================================================
     //
     // bindButton and bindFileInput are the shared machinery. Both
-    // now silently skip a missing target: a control that is not in
-    // the markup is not an error, it is a control the current UI
-    // does not render. The console.warn was removed because the
-    // "missing button" wall drowned out every other message during
-    // load.
+    // silently skip a missing target: a control that is not in the
+    // markup is not an error, it is a control the current UI does
+    // not render.
     //
-    // If a control is restored later, the bind call runs as before.
     // The clone-and-replace pattern is retained so re-init (which
     // some flows trigger via the dataReady event) does not stack
     // duplicate listeners on the same element.
@@ -405,10 +419,9 @@
     // HANDLERS - Character CSV
     // ============================================================
     //
-    // No bound controls today. Kept as public exports because
-    // character-events.js may route to them directly. If a control
-    // is restored, add the bindButton / bindFileInput calls in
-    // init() below.
+    // Bound by init() above. The three header buttons in the
+    // character module's page header route here through
+    // bindButton / bindFileInput.
 
     function handleCharacterExport() {
         var CharacterCSV = deps.CharacterCSV;
@@ -527,7 +540,7 @@
             })
             .then(function(importResult) {
                 if (importResult && importResult.success !== false) {
-                    var added = importResult.added || importResult.count || candidates.length;
+                    var added = importResult.added || importResult.count || 0;
                     notifySuccess('Character import completed: ' + added + ' characters processed');
                     refreshUI();
                 }
@@ -560,8 +573,8 @@
     // HANDLERS - Mission CSV
     // ============================================================
     //
-    // Same status as Character CSV: no bound controls, kept as
-    // public exports.
+    // No bound controls today. Kept as public exports for a future
+    // restore of the mission CSV buttons.
 
     function handleMissionExport() {
         var MissionCSV = deps.MissionCSV;
@@ -680,7 +693,7 @@
             })
             .then(function(importResult) {
                 if (importResult && importResult.success !== false) {
-                    var added = importResult.added || importResult.count || candidates.length;
+                    var added = importResult.added || importResult.count || 0;
                     notifySuccess('Mission import completed: ' + added + ' missions processed');
                     refreshUI();
                 }
@@ -789,13 +802,11 @@
     // INITIALIZATION
     // ============================================================
     //
-    // Only four controls are wired. See the ACTIVE SURFACE note in
-    // the header for the reasoning.
+    // Every header control is bound here, and only here. See the
+    // ONE BINDING PER CONTROL note in the file header.
     //
     // If a control is restored to the markup, add its bind call
-    // here AND verify the handler above is still correct. Do not
-    // add a bind call for a control that is not in the DOM; the
-    // silent skip means it would be easy to forget.
+    // here. Do not split the binding across two files.
 
     function init() {
         if (_initialized) return;
@@ -819,6 +830,22 @@
         // One button. The picker offers JSON and CSV inside.
         bindButton('export-graduates-json-btn', handleGraduatesJSONExport);
 
+        // ---- Character CSV ----
+        // Three buttons in the character module's page header
+        // (rendered by characters/index.js's getCharactersHTML),
+        // plus the hidden file input next to them.
+        //
+        // The character page re-renders on every list refresh, so
+        // the buttons are re-created each time. bindButton uses the
+        // clone-and-replace pattern, which means a re-bind after a
+        // re-render works correctly without stacking listeners.
+        bindButton('export-characters-csv-btn', handleCharacterExport);
+        bindButton('import-characters-csv-btn', function() {
+            triggerFileInput('characters-csv-file-input');
+        });
+        bindFileInput('characters-csv-file-input', handleCharacterImport);
+        bindButton('template-characters-csv-btn', handleCharacterTemplate);
+
         // --------------------------------------------------------
         // NOT WIRED
         // --------------------------------------------------------
@@ -827,10 +854,6 @@
         // handlers are still exported above; do not bind them here
         // until the markup returns.
         //
-        //   export-characters-csv-btn
-        //   import-characters-csv-btn
-        //   characters-csv-file-input
-        //   template-characters-csv-btn
         //   export-missions-csv-btn
         //   import-missions-csv-btn
         //   missions-csv-file-input
