@@ -126,6 +126,8 @@
  *     - mounting the panel into #academy-discipline-sessions-host
  *     - the module-level picker state (_openDisciplineSessionsGroupId,
  *       _openDisciplineSessionsCandidates)
+ *     - stamping that state onto the matching group VM before
+ *       render (see the PICKER STAMPING note below)
  *     - the four session-picker actions:
  *         discipline-sessions-add-student
  *         discipline-sessions-add-student-cancel
@@ -138,6 +140,21 @@
  *   uses. That builder is scoped to (instructor, group, week); the
  *   controller resolves the group's instructor internally before
  *   calling it.
+ *
+ * PICKER STAMPING:
+ *   AcademyDisciplineSessionsPanel.renderGroupBlock reads two
+ *   fields off each GROUP VM (not off the VM root):
+ *
+ *     group.isPickerOpen       boolean
+ *     group.pickerCandidates   { candidates, blocked } | null
+ *
+ *   The panel does NOT read VM-level fields. So the controller must
+ *   iterate vm.groups and set those two fields on the group whose
+ *   groupId matches _openDisciplineSessionsGroupId.
+ *
+ *   Setting _openPickerGroupId on the VM root (as an earlier
+ *   revision did) is inert: the panel never looks there. The
+ *   picker never opens.
  *
  * DRAFT LIFECYCLE:
  *   - Draft is created by openEditor('create'), or by selecting a
@@ -774,11 +791,12 @@
     // Advisory: any failure to build the VM or render the HTML
     // leaves the host empty. The grid and summary are unaffected.
     //
-    // The panel's own VM builder (buildSessionViewModel) does not
-    // know about the picker state; the controller stamps
-    // _openPickerGroupId and _pickerCandidates onto the VM before
-    // handing it to the renderer. That mirrors how the character
-    // detail panel carries the same two fields.
+    // PICKER STAMPING:
+    //   The panel reads group.isPickerOpen and group.pickerCandidates
+    //   off each GROUP VM. This function therefore iterates
+    //   vm.groups and stamps those two fields onto the group whose
+    //   groupId matches _openDisciplineSessionsGroupId. It does NOT
+    //   set VM-level fields; the panel never reads them.
 
     function mountDisciplineSessionsPanelIfPresent(disciplineId, week) {
         var host = document.getElementById(
@@ -821,8 +839,10 @@
 
         if (!vm) { return; }
 
-        vm._openPickerGroupId = _openDisciplineSessionsGroupId;
-        vm._pickerCandidates = _openDisciplineSessionsCandidates;
+        // Stamp the picker state onto the matching group VM. The
+        // panel's renderGroupBlock reads group.isPickerOpen and
+        // group.pickerCandidates; it does not read VM-level fields.
+        stampPickerStateOntoMatchingGroup(vm);
 
         var html = '';
         try {
@@ -836,6 +856,41 @@
         }
 
         host.innerHTML = html;
+    }
+
+    /**
+     * Walk vm.groups and set isPickerOpen / pickerCandidates on the
+     * group whose groupId matches the currently-open picker, if any.
+     *
+     * When no picker is open, every group is left at its defaults
+     * (isPickerOpen: false, pickerCandidates: null), which is what
+     * buildSessionViewModel already produces.
+     *
+     * Groups that do not match are explicitly reset to the closed
+     * state. buildSessionViewModel already initialises them that
+     * way, but the explicit reset is cheap and defends against a
+     * future change to the builder that forgets to.
+     */
+    function stampPickerStateOntoMatchingGroup(vm) {
+        if (!vm || !Array.isArray(vm.groups)) { return; }
+
+        var targetId = isNonEmptyString(_openDisciplineSessionsGroupId)
+            ? String(_openDisciplineSessionsGroupId)
+            : null;
+
+        for (var i = 0; i < vm.groups.length; i++) {
+            var group = vm.groups[i];
+            if (!group || !group.groupId) { continue; }
+
+            if (targetId !== null &&
+                String(group.groupId) === targetId) {
+                group.isPickerOpen = true;
+                group.pickerCandidates = _openDisciplineSessionsCandidates;
+            } else {
+                group.isPickerOpen = false;
+                group.pickerCandidates = null;
+            }
+        }
     }
 
     // ============================================================
