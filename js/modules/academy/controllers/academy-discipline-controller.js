@@ -6,7 +6,8 @@
  *
  * The Disciplines feature controller. Owns the Disciplines view:
  * its render, its event handlers, its editor draft state, its
- * schedule-tab state, and its search debounce.
+ * schedule-tab state, its highlight filter state, and its search
+ * debounce.
  *
  * WHAT THIS OWNS:
  *   - Rendering the Disciplines view into the shell's content host.
@@ -18,6 +19,8 @@
  *   - The active detail-panel tab: 'edit' | 'schedule'.
  *   - The Schedule tab's week (defaults to AcademyUI's display week
  *     on first render; the user can change it locally).
+ *   - The Schedule tab's highlight filter: selected instructor,
+ *     selected student set, check-weeks count. Cleared on unmount.
  *   - Per-field and per-band validation errors on the draft.
  *   - The list filter (type, search) as feature state.
  *   - The search debounce timer.
@@ -29,12 +32,25 @@
  *   - The discipline delete confirm modal, via AcademyCRUDModals.
  *   - Mounting the calendar grid into the Schedule tab host.
  *   - Mounting the enrollment summary panel into the Schedule tab
- *     summary host, below the grid. (BATCH 3)
+ *     summary host, below the grid.
  *   - Mounting the discipline sessions panel into the Schedule tab
- *     sessions host, below the summary. (BATCH 4)
- *   - Toggling the summary panel open and closed. (BATCH 3)
+ *     sessions host, below the summary.
+ *   - Toggling the summary panel open and closed.
  *   - The inline candidate picker and roster actions inside the
- *     discipline sessions panel. (BATCH 4)
+ *     discipline sessions panel.
+ *   - The discipline grid's cell actions:
+ *       schedule-discipline-assign         — open the instructor
+ *                                             modal in picker mode
+ *                                             for the clicked empty
+ *                                             cell
+ *       schedule-discipline-slot-open      — open the session actions
+ *                                             modal for the clicked
+ *                                             occupied cell
+ *   - The Schedule tab's highlight filter actions:
+ *       discipline-schedule-find-free-slot — read the highlight
+ *                                             filter form, apply it
+ *       discipline-schedule-clear-highlight — clear the highlight
+ *                                             filter
  *
  * WHAT THIS DOES NOT OWN:
  *   - The content host. The shell provides it.
@@ -45,22 +61,16 @@
  *     re-render, the controller calls context.onChange().
  *   - Discipline domain reads and writes. AcademyDisciplines owns
  *     them; AcademyAggregator produces the VMs.
- *   - The schedule projection. AcademyCalendarAggregator owns it;
- *     the controller just mounts the grid into the host.
- *   - The enrollment summary content. AcademyCalendarAggregator
- *     produces the summary VM and
- *     AcademyDisciplineScheduleSummary renders it; the controller
- *     only mounts and wires the toggle.
- *   - The discipline sessions panel content. AcademyDisciplineSessionsPanel
- *     produces the VM and renders the HTML; the controller mounts it
- *     and handles the inline picker's actions.
- *   - Instructor assignment for a discipline. That relationship is
- *     class-scoped and is owned by the class-disciplines picker.
- *     The discipline editor does not offer an instructor picker
- *     (v27).
- *   - The delete-confirm modal's onChange wiring. The shell keeps
- *     that wiring (via AcademyCRUDModals.setOnChangeCallback), and
- *     the controller simply opens the modal.
+ *   - The schedule projection. AcademyCalendarAggregator owns it.
+ *   - The enrollment summary content. AcademyDisciplineScheduleSummary
+ *     renders the HTML; the controller mounts and wires the toggle.
+ *   - The discipline sessions panel content.
+ *     AcademyDisciplineSessionsPanel produces the VM and renders the
+ *     HTML; the controller mounts it and handles the inline picker.
+ *   - The instructor slot modal. AcademyScheduleInstructorModal owns
+ *     it.
+ *   - The session actions modal. AcademySessionActionsModal owns it.
+ *   - The session edit form. AcademySessionFormModal owns it.
  *
  * EDITOR BOUNDS (v31):
  *   The editor VM carries four bounds objects that the view uses
@@ -73,19 +83,25 @@
  *
  *   These are the single source of truth for those attributes.
  *   The bounds mirror the same limits AcademyDisciplines enforces
- *   at the domain layer (MIN_WEEKLY_HOURS, MAX_WEEKLY_HOURS,
- *   MIN_WEIGHT, MAX_WEIGHT, and the 0-100 band-percent range).
- *   The view asserts that they are present; a missing bound is a
- *   controller bug, not a reason for the view to invent one.
+ *   at the domain layer. The view asserts that they are present;
+ *   a missing bound is a controller bug, not a reason for the view
+ *   to invent one.
  *
  * SCHEDULE TAB:
- *   The Schedule tab renders a week selector, a grid host, an
- *   enrollment summary host, and a discipline sessions host.
+ *   The Schedule tab renders a week selector, a highlight filter
+ *   panel, a grid host, an enrollment summary host, and a
+ *   discipline sessions host.
  *
  *   The grid is mounted by this controller via
  *   AcademyCalendarAggregator.getDisciplineScheduleViewModel,
  *   which projects Projector.projectForClassDiscipline. One
  *   discipline, one class, one week, every instructor.
+ *
+ *   When a highlight filter is active, the controller calls
+ *   getDisciplineScheduleHighlightViewModel instead, which
+ *   returns the same VM plus a flat `highlights` map. The
+ *   renderer tints cells based on the map. Highlights are purely
+ *   decorative; the grid's action dispatch is unchanged.
  *
  *   The class is AcademyUI.getSelectedClassId(). When no class is
  *   selected, the controller renders an explicit empty state into
@@ -93,53 +109,61 @@
  *
  *   Rest days apply (the grid is class-scoped).
  *
- * ENROLLMENT SUMMARY (BATCH 3):
+ * GRID EDITABILITY:
+ *   The discipline grid is interactive. Empty cells dispatch
+ *   `schedule-discipline-assign`; occupied cells dispatch
+ *   `schedule-discipline-slot-open`. The renderer emits both
+ *   actions because the VM carries `canEditDisciplineSlot: true`.
+ *
+ *   Clicking an empty cell opens AcademyScheduleInstructorModal in
+ *   picker mode with the discipline pre-selected and locked. The
+ *   user picks an instructor (or has one auto-selected), then
+ *   picks a group, duration, and location. The write path is
+ *   AcademySchedule.scheduleInstructorSlot — unchanged.
+ *
+ *   Clicking an occupied cell opens AcademySessionActionsModal
+ *   with the session id and group id read from the cell. The
+ *   modal offers Edit and Delete. Continuation cells carry the
+ *   same sessionId as their start cell, so the controller does
+ *   not need to walk backward.
+ *
+ * HIGHLIGHT FILTER:
+ *   The filter lives in the Schedule tab header. Three inputs:
+ *
+ *     - instructor select (from the class's instructors for this
+ *       discipline this week)
+ *     - student multi-select (from the class roster, filtered to
+ *       students enrolled in this discipline)
+ *     - check-weeks number (default 4, max 12)
+ *
+ *   The panel is rendered by the view; the controller reads the
+ *   form on submit and stamps `_scheduleHighlight`. The next
+ *   render calls the highlight VM projection and the renderer
+ *   tints accordingly.
+ *
+ *   The filter state is CLEARED on unmount. This is deliberate:
+ *   a returning user should not land on a grid still highlighted
+ *   for a different discipline's students.
+ *
+ * ENROLLMENT SUMMARY:
  *   The panel below the grid answers two questions: how many
  *   students are enrolled in this discipline for this class, and
  *   how many of them do not have a group assigned.
  *
- *   Both questions are answered by
+ *   Both are answered by
  *   AcademyCalendarAggregator.getDisciplineScheduleSummaryViewModel.
- *   The enrollment population is not week-scoped. The assigned
- *   predicate is not week-scoped either: a student is assigned when
- *   their characterId appears in the members[] array of any teaching
- *   group of this discipline for this class. The week is passed
- *   through only for display and for the elimination flag.
+ *   The enrollment population and the assigned predicate are both
+ *   not week-scoped. The week is passed through only for display
+ *   and for the elimination flag.
  *
- *   The panel's markup and its disclosure come from
- *   AcademyDisciplineScheduleSummary. This controller mounts the
- *   HTML and toggles the disclosure on click.
- *
- * DISCIPLINE SESSIONS PANEL (BATCH 4):
+ * DISCIPLINE SESSIONS PANEL:
  *   The panel below the enrollment summary. Lists every teaching
  *   group of the discipline for the week, across every instructor,
  *   with each group's sessions and roster. Supports an inline
  *   candidate picker per group and a per-student remove button.
  *
  *   The panel's markup and its per-group VM builder come from
- *   AcademyDisciplineSessionsPanel. The inline picker markup comes
- *   from that panel's own renderer (structurally identical to the
- *   character detail panel's picker, but with a distinct set of
- *   data-action values).
- *
- *   This controller owns:
- *     - mounting the panel into #academy-discipline-sessions-host
- *     - the module-level picker state (_openDisciplineSessionsGroupId,
- *       _openDisciplineSessionsCandidates)
- *     - stamping that state onto the matching group VM before
- *       render (see the PICKER STAMPING note below)
- *     - the four session-picker actions:
- *         discipline-sessions-add-student
- *         discipline-sessions-add-student-cancel
- *         discipline-sessions-add-student-submit
- *         discipline-sessions-remove-student
- *
- *   The candidates VM is sourced from
- *   AcademyCharacterDetailAggregator.getTeachingGroupCandidateViewModel,
- *   which is the same builder the character detail panel's own picker
- *   uses. That builder is scoped to (instructor, group, week); the
- *   controller resolves the group's instructor internally before
- *   calling it.
+ *   AcademyDisciplineSessionsPanel.
  *
  * PICKER STAMPING:
  *   AcademyDisciplineSessionsPanel.renderGroupBlock reads two
@@ -148,33 +172,26 @@
  *     group.isPickerOpen       boolean
  *     group.pickerCandidates   { candidates, blocked } | null
  *
- *   The panel does NOT read VM-level fields. So the controller must
- *   iterate vm.groups and set those two fields on the group whose
- *   groupId matches _openDisciplineSessionsGroupId.
- *
- *   Setting _openPickerGroupId on the VM root (as an earlier
- *   revision did) is inert: the panel never looks there. The
- *   picker never opens.
+ *   The controller iterates vm.groups and stamps those two fields
+ *   onto the group whose groupId matches
+ *   _openDisciplineSessionsGroupId.
  *
  * DRAFT LIFECYCLE:
  *   - Draft is created by openEditor('create'), or by selecting a
  *     discipline row (which initializes from the record).
  *   - Draft is cleared by cancel ('empty' mode).
  *   - Draft is cleared by unmount (view switch away from
- *     Disciplines). This matches pre-S1.3 behavior: switching away
- *     abandons an in-progress edit.
- *   - The list filter is NOT cleared by unmount. This also matches
- *     pre-S1.3: the filter survives a view switch.
+ *     Disciplines).
+ *   - The list filter is NOT cleared by unmount.
  *   - The search debounce timer IS cleared by unmount.
  *   - The discipline-sessions picker state IS cleared by unmount.
+ *   - The schedule highlight filter IS cleared by unmount.
+ *   - The schedule week is NOT cleared by unmount.
  *
  * B4-1 — "+ ADD DISCIPLINE" BUTTON FIX:
- *   The button used to be id-addressed (#academy-add-discipline-btn)
- *   and had no data-action. The shell routes clicks through
- *   [data-action] elements to this controller's dispatch switch.
- *   Without a data-action, the button never reached the controller.
- *   B4-1 changes the button to data-action="discipline-add" and
- *   adds a matching case here.
+ *   The button used to be id-addressed and had no data-action. It
+ *   now emits data-action="discipline-add" and the switch below
+ *   routes it.
  *
  * DEPENDENCY DIRECTION:
  *   Shell → registry → this controller.
@@ -193,15 +210,20 @@
  *   - window.AcademyDisciplines
  *   - window.AcademyDisciplineView
  *   - window.AcademyGradeSchemes
- *   - window.AcademyCalendarAggregator  (lazy; for the Schedule tab)
- *   - window.AcademyDisciplineScheduleSummary (lazy; for the summary panel)
- *   - window.AcademyDisciplineSessionsPanel   (lazy; for the sessions panel)
- *   - window.AcademyCharacterDetailAggregator (lazy; for the candidate VM)
- *   - window.AcademyTeachingGroups            (lazy; for group resolution)
- *   - window.CalendarRenderer           (lazy; for the Schedule tab)
- *   - window.AcademyCRUDModals          (lazy; delete confirm)
  *   - window.NotificationSystem
  *   - window.CalendarConstants
+ *
+ * DEPENDENCIES (LAZY, resolved at call time):
+ *   - window.AcademyCalendarAggregator
+ *   - window.AcademyDisciplineScheduleSummary
+ *   - window.AcademyDisciplineSessionsPanel
+ *   - window.AcademyCharacterDetailAggregator
+ *   - window.AcademyTeachingGroups
+ *   - window.CalendarRenderer
+ *   - window.AcademyCRUDModals
+ *   - window.AcademyScheduleInstructorModal
+ *   - window.AcademySessionActionsModal
+ *   - window.CharacterQueries
  */
 
 (function() {
@@ -296,6 +318,14 @@
         return window.AcademyDisciplineSessionsPanel || null;
     }
 
+    function getScheduleInstructorModal() {
+        return window.AcademyScheduleInstructorModal || null;
+    }
+
+    function getSessionActionsModal() {
+        return window.AcademySessionActionsModal || null;
+    }
+
     // ============================================================
     // CONSTANTS
     // ============================================================
@@ -305,19 +335,10 @@
 
     var VALID_DETAIL_TABS = ['edit', 'schedule'];
 
+    var DEFAULT_HIGHLIGHT_CHECK_WEEKS = 4;
+    var MAX_HIGHLIGHT_CHECK_WEEKS = 12;
+
     // ---- Editor bounds ---------------------------------------------------
-    //
-    // These are the single source of truth for the min/max/step
-    // attributes on the editor's number inputs. They mirror the same
-    // limits AcademyDisciplines enforces at the domain layer.
-    //
-    // The values come from AcademyDisciplines' own exported constants
-    // where those exist (MIN_WEEKLY_HOURS, MAX_WEEKLY_HOURS,
-    // MIN_WEIGHT, MAX_WEIGHT). The band-percent range is a fixed
-    // 0-100 and is not exported by the domain module.
-    //
-    // Do NOT duplicate these numbers in the view. If a bound changes
-    // here, the view picks it up automatically on the next render.
 
     var EDITOR_WEEK_BOUNDS = Object.freeze({
         min: MIN_WEEK,
@@ -370,28 +391,25 @@
         return String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
     }
 
+    function parseStrictInteger(value) {
+        if (value === undefined || value === null) { return null; }
+        if (typeof value === 'number') {
+            return Number.isInteger(value) ? value : null;
+        }
+        if (typeof value === 'string') {
+            var trimmed = value.trim();
+            if (trimmed === '' || !/^-?\d+$/.test(trimmed)) {
+                return null;
+            }
+            var n = Number(trimmed);
+            return Number.isInteger(n) ? n : null;
+        }
+        return null;
+    }
+
     // ============================================================
     // MODULE STATE
     // ============================================================
-    //
-    // Feature state. The host and context are stashed on each render
-    // so event handlers can find them. The draft and filter are the
-    // feature's own state; the draft is cleared on unmount, the
-    // filter is not.
-    //
-    // Schedule-tab state:
-    //   _activeDisciplineTab   'edit' | 'schedule'
-    //   _scheduleWeek          number | null (null = unset; falls
-    //                          back to AcademyUI's display week)
-    //
-    // Discipline-sessions-panel state:
-    //   _openDisciplineSessionsGroupId     string | null
-    //   _openDisciplineSessionsCandidates  { candidates, blocked } | null
-    //
-    //   The picker is opened per group. The open group's ID and its
-    //   resolved candidate list survive the re-render triggered by
-    //   ctx.onChange() so the picker re-opens in place. Cleared on
-    //   cancel, on submit, and on unmount.
 
     var _host = null;
     var _context = null;
@@ -409,6 +427,19 @@
 
     var _openDisciplineSessionsGroupId = null;
     var _openDisciplineSessionsCandidates = null;
+
+    // Highlight filter state. Null when no filter is active.
+    //
+    // Shape:
+    //   {
+    //     instructorId: string,
+    //     studentIds:   string[],
+    //     checkWeeks:   number
+    //   }
+    //
+    // When non-null, the grid uses the highlight VM projection.
+    // Cleared on unmount and by the "clear highlight" action.
+    var _scheduleHighlight = null;
 
     // ============================================================
     // CONTEXT NORMALISATION
@@ -430,12 +461,6 @@
     // SCHEDULE WEEK RESOLUTION
     // ============================================================
 
-    /**
-     * Resolve the effective week for the Schedule tab.
-     * Priority: explicit `_scheduleWeek`, then AcademyUI's display
-     * week. Returns a bounded integer, or null when neither source
-     * yields one.
-     */
     function resolveScheduleWeek() {
         if (typeof _scheduleWeek === 'number' &&
             _scheduleWeek >= MIN_WEEK &&
@@ -480,7 +505,8 @@
                 filters: _disciplineFilters,
                 total: listVM.total,
                 activeTab: _activeDisciplineTab,
-                scheduleWeek: scheduleWeek
+                scheduleWeek: scheduleWeek,
+                scheduleHighlightVM: buildScheduleHighlightVM()
             });
         } catch (e) {
             console.warn(
@@ -516,14 +542,7 @@
      *
      * Returns null in 'empty' mode. Otherwise, it takes the
      * aggregator's editor VM and attaches the four bounds objects
-     * the view requires. The bounds are the same for every
-     * discipline; they describe the input ranges the editor renders,
-     * not the discipline's stored values.
-     *
-     * The bounds are attached here, not in the aggregator, because
-     * they are presentation metadata for the editor surface. A
-     * different caller of getDisciplineEditorViewModel (if one ever
-     * exists) does not need them.
+     * the view requires.
      */
     function buildEditorVM() {
         if (_disciplineDraftMode === 'empty' || !_disciplineDraft) {
@@ -546,6 +565,40 @@
         return vm;
     }
 
+    /**
+     * Build the highlight VM the view renders in the Schedule tab
+     * header, or null when no filter is active.
+     *
+     * The view uses this to render the "filter is active" summary
+     * (instructor name, student count, weeks count) and the Clear
+     * button. When null, the view renders only the "Find free slot"
+     * launcher.
+     *
+     * We resolve the instructor's display name here so the view
+     * does not need CharacterQueries.
+     */
+    function buildScheduleHighlightVM() {
+        if (!_scheduleHighlight) { return null; }
+
+        var CQ = window.CharacterQueries;
+        var instructorName = '';
+        if (CQ && typeof CQ.getCharacterById === 'function') {
+            var char = CQ.getCharacterById(
+                _scheduleHighlight.instructorId
+            );
+            if (char) {
+                instructorName = CQ.getDisplayName(char) || '';
+            }
+        }
+
+        return {
+            instructorId: _scheduleHighlight.instructorId,
+            instructorName: instructorName,
+            studentCount: _scheduleHighlight.studentIds.length,
+            checkWeeks: _scheduleHighlight.checkWeeks
+        };
+    }
+
     function getContext() {
         if (_context) { return _context; }
         return normaliseContext(null);
@@ -558,19 +611,14 @@
     /**
      * Mount the discipline schedule grid into its host.
      *
-     * On every code path where the summary is still meaningful,
-     * mountDisciplineScheduleSummaryIfPresent is called. It is a
-     * separate host and a separate renderer; its success is
-     * independent of the grid's.
+     * When a highlight filter is active, uses
+     * getDisciplineScheduleHighlightViewModel instead of the base
+     * projection. Both return the same VM shape; the highlight
+     * version adds a `highlights` map.
      *
-     * Skips the grid when:
-     *   - the host is absent (the tab body was not rendered)
-     *   - the CalendarRenderer is missing
-     *   - no disciplineId is available (draft is new; grid needs
-     *     a persisted discipline to scope to)
-     *   - no class is selected (renders an empty state instead)
-     *   - the week is invalid
-     *   - the CalendarAggregator is missing
+     * The renderVM passed to CalendarRenderer carries
+     * `canEditDisciplineSlot: true` so the renderer emits the
+     * discipline-scoped action names on empty and occupied cells.
      */
     function mountDisciplineScheduleGridIfPresent(disciplineId, week) {
         var host = document.getElementById(
@@ -578,7 +626,6 @@
         );
 
         if (!host) {
-            // No host: the tab body was not rendered. Skip both.
             return;
         }
 
@@ -592,9 +639,6 @@
             return;
         }
 
-        // A brand-new draft has no persisted discipline yet. The
-        // grid needs a real discipline to scope to, and so does the
-        // summary.
         if (!isNonEmptyString(disciplineId)) {
             host.innerHTML =
                 '<p class="empty-state small">' +
@@ -627,8 +671,7 @@
         }
 
         var ACA = getCalendarAggregator();
-        if (!ACA ||
-            typeof ACA.getDisciplineScheduleViewModel !== 'function') {
+        if (!ACA) {
             host.innerHTML =
                 '<p class="empty-state small">' +
                     'Calendar aggregator is not available.' +
@@ -639,15 +682,30 @@
 
         var gridVM = null;
         try {
-            gridVM = ACA.getDisciplineScheduleViewModel(
-                classId,
-                disciplineId,
-                week
-            );
+            if (_scheduleHighlight !== null &&
+                typeof ACA.getDisciplineScheduleHighlightViewModel ===
+                    'function') {
+                gridVM = ACA.getDisciplineScheduleHighlightViewModel(
+                    classId,
+                    disciplineId,
+                    week,
+                    {
+                        instructorId: _scheduleHighlight.instructorId,
+                        studentIds: _scheduleHighlight.studentIds,
+                        checkWeeks: _scheduleHighlight.checkWeeks
+                    }
+                );
+            } else {
+                gridVM = ACA.getDisciplineScheduleViewModel(
+                    classId,
+                    disciplineId,
+                    week
+                );
+            }
         } catch (e) {
             console.warn(
                 '[AcademyDisciplineController] ' +
-                'getDisciplineScheduleViewModel threw:', e
+                'discipline schedule VM fetch threw:', e
             );
             gridVM = null;
         }
@@ -671,6 +729,7 @@
             mode: 'discipline',
             canEdit: false,
             canEditInstructorSlot: false,
+            canEditDisciplineSlot: true,
             schedule: gridVM.schedule,
             restDays: gridVM.restDays,
             entityName: gridVM.entityName,
@@ -678,7 +737,8 @@
             showEmptySlots: false,
             showRestDays: true,
             hours: gridVM.hours,
-            disciplineHours: []
+            disciplineHours: [],
+            highlights: gridVM.highlights || null
         };
 
         try {
@@ -699,15 +759,6 @@
     // ============================================================
     // ENROLLMENT SUMMARY MOUNT
     // ============================================================
-    //
-    // The panel below the grid. Advisory: any failure to build the
-    // VM or render the HTML leaves its host empty. The grid is
-    // unaffected.
-    //
-    // The VM's enrollment population and its assigned predicate are
-    // both not week-scoped. The week parameter flows through only
-    // for display and the elimination flag. See the aggregator's
-    // header for the full rationale.
 
     function mountDisciplineScheduleSummaryIfPresent(disciplineId, week) {
         var host = document.getElementById(
@@ -783,20 +834,6 @@
     // ============================================================
     // DISCIPLINE SESSIONS PANEL MOUNT
     // ============================================================
-    //
-    // The panel below the enrollment summary. Lists every teaching
-    // group of the discipline for the week, across every instructor,
-    // with the roster and inline add/remove affordances.
-    //
-    // Advisory: any failure to build the VM or render the HTML
-    // leaves the host empty. The grid and summary are unaffected.
-    //
-    // PICKER STAMPING:
-    //   The panel reads group.isPickerOpen and group.pickerCandidates
-    //   off each GROUP VM. This function therefore iterates
-    //   vm.groups and stamps those two fields onto the group whose
-    //   groupId matches _openDisciplineSessionsGroupId. It does NOT
-    //   set VM-level fields; the panel never reads them.
 
     function mountDisciplineSessionsPanelIfPresent(disciplineId, week) {
         var host = document.getElementById(
@@ -839,9 +876,6 @@
 
         if (!vm) { return; }
 
-        // Stamp the picker state onto the matching group VM. The
-        // panel's renderGroupBlock reads group.isPickerOpen and
-        // group.pickerCandidates; it does not read VM-level fields.
         stampPickerStateOntoMatchingGroup(vm);
 
         var html = '';
@@ -858,19 +892,6 @@
         host.innerHTML = html;
     }
 
-    /**
-     * Walk vm.groups and set isPickerOpen / pickerCandidates on the
-     * group whose groupId matches the currently-open picker, if any.
-     *
-     * When no picker is open, every group is left at its defaults
-     * (isPickerOpen: false, pickerCandidates: null), which is what
-     * buildSessionViewModel already produces.
-     *
-     * Groups that do not match are explicitly reset to the closed
-     * state. buildSessionViewModel already initialises them that
-     * way, but the explicit reset is cheap and defends against a
-     * future change to the builder that forgets to.
-     */
     function stampPickerStateOntoMatchingGroup(vm) {
         if (!vm || !Array.isArray(vm.groups)) { return; }
 
@@ -981,6 +1002,14 @@
             return;
         }
 
+        // ---- Schedule grid cell click (checked before the
+        //      generic [data-action] dispatch, because grid cells
+        //      are the most specific) ----
+        //
+        // Actually, grid cells carry data-action, so the generic
+        // dispatch below covers them. We keep this comment for the
+        // reader: the discipline-schedule-* cases are the grid's.
+
         // ---- Discipline row selection ----
         var discRow = target.closest('.academy-discipline-row');
         if (discRow && discRow.dataset && discRow.dataset.disciplineId) {
@@ -1030,6 +1059,22 @@
                 e.preventDefault();
                 handleDisciplineSessionsRemoveStudent(actionEl);
                 return;
+            case 'schedule-discipline-assign':
+                e.preventDefault();
+                handleScheduleDisciplineAssign(actionEl);
+                return;
+            case 'schedule-discipline-slot-open':
+                e.preventDefault();
+                handleScheduleDisciplineSlotOpen(actionEl);
+                return;
+            case 'discipline-schedule-find-free-slot':
+                e.preventDefault();
+                handleFindFreeSlotSubmit();
+                return;
+            case 'discipline-schedule-clear-highlight':
+                e.preventDefault();
+                handleClearHighlight();
+                return;
             case 'discipline-apply-scheme-preset':
                 e.preventDefault();
                 handleApplySchemePreset(actionEl);
@@ -1067,19 +1112,16 @@
         var target = e.target;
         if (!target) { return; }
 
-        // ---- Schedule tab week input ----
         if (target.id === 'academy-discipline-schedule-week') {
             handleScheduleWeekChange(target.value);
             return;
         }
 
-        // ---- Editor field changes ----
         if (target.dataset && target.dataset.disciplineField) {
             handleDisciplineFieldChange(target);
             return;
         }
 
-        // ---- Band label changes ----
         if (target.dataset &&
             target.dataset.bandIndex !== undefined &&
             target.dataset.bandField === 'label') {
@@ -1087,7 +1129,6 @@
             return;
         }
 
-        // ---- List filter ----
         if (target.id === 'academy-discipline-type-filter') {
             _disciplineFilters.type = target.value;
             var ctx = getContext();
@@ -1100,19 +1141,16 @@
         var target = e.target;
         if (!target) { return; }
 
-        // ---- Assessment weight inputs ----
         if (target.dataset && target.dataset.assessmentWeightType) {
             handleAssessmentWeightChange(target);
             return;
         }
 
-        // ---- Editor field changes (inputs) ----
         if (target.dataset && target.dataset.disciplineField) {
             handleDisciplineFieldChange(target);
             return;
         }
 
-        // ---- Band field changes (inputs) ----
         if (target.dataset &&
             target.dataset.bandIndex !== undefined &&
             target.dataset.bandField) {
@@ -1120,7 +1158,6 @@
             return;
         }
 
-        // ---- Search debounce ----
         if (target.id === 'academy-discipline-search') {
             debounceDisciplineSearch(target.value);
             return;
@@ -1170,18 +1207,223 @@
     }
 
     // ============================================================
+    // GRID CELL ACTIONS
+    // ============================================================
+
+    /**
+     * Empty-cell click on the discipline grid.
+     *
+     * Opens the instructor modal in picker mode, pre-scoped to this
+     * discipline. The discipline is locked (the user clicked a cell
+     * on that discipline's grid). The user picks an instructor
+     * (unless there is exactly one, in which case it is
+     * auto-selected), then picks a group, duration, and location.
+     *
+     * The class and week come from the controller's own state: the
+     * class is what the grid is scoped to (AcademyUI.getSelectedClassId),
+     * and the week is the Schedule tab's week.
+     */
+    function handleScheduleDisciplineAssign(actionEl) {
+        if (!actionEl || !actionEl.dataset) { return; }
+
+        if (!_disciplineDraft || !_disciplineDraft.id) {
+            notify('Save the discipline first.', 'error');
+            return;
+        }
+
+        var classId = AcademyUI.getSelectedClassId();
+        if (!isNonEmptyString(classId)) {
+            notify('Select a class first.', 'error');
+            return;
+        }
+
+        var week = resolveScheduleWeek();
+        if (week === null) {
+            notify('Select a valid week.', 'error');
+            return;
+        }
+
+        var day = parseStrictInteger(actionEl.dataset.day);
+        var hour = parseStrictInteger(actionEl.dataset.hour);
+        if (day === null || hour === null) {
+            return;
+        }
+
+        var Modal = getScheduleInstructorModal();
+        if (!Modal || typeof Modal.openModal !== 'function') {
+            notify(
+                'Instructor scheduler is not available.',
+                'error'
+            );
+            return;
+        }
+
+        var ctx = getContext();
+
+        Modal.openModal({
+            mode: 'picker',
+            classId: String(classId),
+            disciplineId: String(_disciplineDraft.id),
+            week: week,
+            day: day,
+            startHour: hour,
+            onClose: function() {
+                ctx.onChange();
+            }
+        });
+    }
+
+    /**
+     * Occupied-cell click on the discipline grid.
+     *
+     * Opens the session actions modal with the session id read from
+     * the cell. Continuation cells carry the same sessionId as their
+     * start cell, so no backward-walk is needed.
+     *
+     * The group id is also on the cell, but the session already
+     * carries it; we pass it along for the modal to use as context.
+     */
+    function handleScheduleDisciplineSlotOpen(actionEl) {
+        if (!actionEl || !actionEl.dataset) { return; }
+
+        var sessionId = actionEl.dataset.sessionId;
+        var groupId = actionEl.dataset.groupId;
+        var classId = AcademyUI.getSelectedClassId();
+
+        if (!isNonEmptyString(sessionId)) {
+            // A cell without a sessionId is anomalous for an
+            // occupied cell; the renderer only emits
+            // schedule-discipline-slot-open on occupied cells with a
+            // sessionId. Bail silently rather than open a broken
+            // modal.
+            console.warn(
+                '[AcademyDisciplineController] ' +
+                'schedule-discipline-slot-open fired without a ' +
+                'sessionId'
+            );
+            return;
+        }
+
+        var Modal = getSessionActionsModal();
+        if (!Modal || typeof Modal.openModal !== 'function') {
+            notify(
+                'Session actions are not available.',
+                'error'
+            );
+            return;
+        }
+
+        var ctx = getContext();
+
+        Modal.openModal({
+            sessionId: String(sessionId),
+            groupId: isNonEmptyString(groupId)
+                ? String(groupId)
+                : null,
+            classId: isNonEmptyString(classId)
+                ? String(classId)
+                : null,
+            onClose: function() {
+                ctx.onChange();
+            }
+        });
+    }
+
+    // ============================================================
+    // HIGHLIGHT FILTER
+    // ============================================================
+
+    /**
+     * Read the highlight filter form, validate, and apply.
+     *
+     * On success, stores the filter on _scheduleHighlight and
+     * triggers a re-render. The next render uses the highlight VM
+     * projection.
+     *
+     * On validation failure, notifies and returns without touching
+     * state.
+     */
+    function handleFindFreeSlotSubmit() {
+        if (!_host || typeof _host.querySelector !== 'function') {
+            return;
+        }
+
+        if (!_disciplineDraft || !_disciplineDraft.id) {
+            notify('Save the discipline first.', 'error');
+            return;
+        }
+
+        var classId = AcademyUI.getSelectedClassId();
+        if (!isNonEmptyString(classId)) {
+            notify('Select a class first.', 'error');
+            return;
+        }
+
+        var instructorInput = _host.querySelector(
+            '.discipline-highlight-instructor-select'
+        );
+        if (!instructorInput) {
+            notify('Instructor field not found.', 'error');
+            return;
+        }
+
+        var instructorId = isNonEmptyString(instructorInput.value)
+            ? String(instructorInput.value)
+            : null;
+        if (instructorId === null) {
+            notify('Select an instructor.', 'error');
+            return;
+        }
+
+        // Students: collected from the multi-select checkboxes.
+        var studentBoxes = _host.querySelectorAll(
+            '.discipline-highlight-student-checkbox:checked'
+        );
+        var studentIds = [];
+        for (var i = 0; i < studentBoxes.length; i++) {
+            var v = studentBoxes[i].value;
+            if (isNonEmptyString(v)) {
+                studentIds.push(String(v));
+            }
+        }
+        if (studentIds.length === 0) {
+            notify('Select at least one student.', 'error');
+            return;
+        }
+
+        var weeksInput = _host.querySelector(
+            '.discipline-highlight-check-weeks'
+        );
+        var checkWeeks = DEFAULT_HIGHLIGHT_CHECK_WEEKS;
+        if (weeksInput) {
+            var parsedWeeks = parseStrictInteger(weeksInput.value);
+            if (parsedWeeks !== null &&
+                parsedWeeks >= 1 &&
+                parsedWeeks <= MAX_HIGHLIGHT_CHECK_WEEKS) {
+                checkWeeks = parsedWeeks;
+            }
+        }
+
+        _scheduleHighlight = {
+            instructorId: instructorId,
+            studentIds: studentIds,
+            checkWeeks: checkWeeks
+        };
+
+        var ctx = getContext();
+        ctx.onChange();
+    }
+
+    function handleClearHighlight() {
+        if (_scheduleHighlight === null) { return; }
+        _scheduleHighlight = null;
+        var ctx = getContext();
+        ctx.onChange();
+    }
+
+    // ============================================================
     // SUMMARY PANEL TOGGLE
     // ============================================================
-    //
-    // The panel's markup lives in
-    // AcademyDisciplineScheduleSummary. Its disclosure behaviour
-    // lives here: flip data-expanded, rotate the caret, show or
-    // hide the body.
-    //
-    // The disclosure pattern matches the orphan-teams section in
-    // academy-weekly-teams-view.js. The state is held in the DOM
-    // only; it is not persisted, and it resets on any re-render
-    // because the shell replaces the host's innerHTML.
 
     function handleDisciplineSummaryToggle(buttonEl) {
         if (!buttonEl || typeof buttonEl.closest !== 'function') {
@@ -1215,15 +1457,6 @@
     // ============================================================
     // DISCIPLINE SESSIONS — INLINE PICKER + ROSTER ACTIONS
     // ============================================================
-    //
-    // The discipline sessions panel uses the same candidate picker
-    // and the same mutations as the instructor tab's teaching
-    // groups. The only difference is the entry point: the panel is
-    // scoped to one discipline, and the picker is opened per group.
-    //
-    // The controller stashes the open group ID on module state so
-    // that a refresh re-opens the picker on the same group. This
-    // mirrors _openPickerGroupId in the People controller.
 
     function handleDisciplineSessionsAddStudent(actionEl) {
         if (!actionEl || !actionEl.dataset) { return; }
@@ -1242,8 +1475,6 @@
         var week = resolveScheduleWeek();
         if (week === null) { return; }
 
-        // The picker is scoped to (instructor, group, week). Resolve
-        // the group's instructor first; the aggregator needs it.
         var group = null;
         var TG = window.AcademyTeachingGroups;
         if (TG && typeof TG.getGroup === 'function') {
@@ -1453,8 +1684,6 @@
                     if (_openDisciplineSessionsGroupId &&
                         String(_openDisciplineSessionsGroupId) ===
                             String(groupId)) {
-                        // Re-resolve the candidates for the open
-                        // picker so it reflects the removal.
                         handleDisciplineSessionsAddStudent({
                             dataset: { groupId: groupId }
                         });
@@ -1784,14 +2013,13 @@
         }
 
         // The list filter is deliberately NOT cleared.
-        // The schedule week is deliberately NOT cleared; a return
-        // visit lands on the same week the user was last looking at.
-        // The discipline-sessions picker state IS cleared: a return
-        // visit should not re-open a picker on a group the user has
-        // navigated away from.
+        // The schedule week is deliberately NOT cleared.
+        // The discipline-sessions picker state IS cleared.
+        // The schedule highlight filter IS cleared.
 
         _openDisciplineSessionsGroupId = null;
         _openDisciplineSessionsCandidates = null;
+        _scheduleHighlight = null;
 
         _host = null;
         _context = null;
