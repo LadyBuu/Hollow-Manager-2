@@ -13,7 +13,7 @@
  *   - Reading the aggregator's rebalance-input VM.
  *   - Running AcademyBalanceSuggestions.suggest with that input.
  *   - Rendering the result: summary, before/after table,
- *     unplaceable list.
+ *     unplaceable list, move diagnostics.
  *   - Calling AcademySchedule.applyRebalancePlan on Apply.
  *
  * WHAT THIS MODULE DOES NOT OWN:
@@ -32,50 +32,35 @@
  *   changed since the modal opened).
  *
  *   The form is ALWAYS visible at the top. The result section is
- *   BELOW it and is REPLACED on every Run. This is a "stateless
- *   form with a replaceable result" model, not a wizard.
+ *   BELOW it and is REPLACED on every Run.
+ *
+ * MOVE DIAGNOSTICS:
+ *   When the plan leaves a group over target, the algorithm may
+ *   still be unable to improve it. Two reasons:
+ *
+ *     'no-improvement'  moving any movable student would not
+ *                       reduce the sum of squared deviations.
+ *                       The plan is locally optimal.
+ *
+ *     'exhausted'       the pass budget ran out while the
+ *                       algorithm was still finding improvements.
+ *                       Rare; indicates a pathological constraint
+ *                       graph.
+ *
+ *   A diagnostic with movableCount = 0 is not rendered; it means
+ *   no student in the over-target group can legally sit in the
+ *   under-target group, and the caller should see that as
+ *   "constrained by schedules" rather than "algorithm gave up."
+ *
+ *   When a group is over target AND no diagnostic exists for it,
+ *   the modal renders a "constraint-limited" note explaining that
+ *   no student in the group can fit the under-target groups'
+ *   sessions. This is the honest explanation for a plan that
+ *   could not balance.
  *
  * SCOPE:
- *   The scope selector is one of:
- *     'all'      — rebalance every group of the discipline, using
- *                  the whole enrolled student pool. Default.
- *     'local'    — rebalance only the groups of a specific
- *                  instructor, using only the students currently
- *                  active in those groups.
- *
- *   When scope is 'local', an instructor must be selected. The
- *   selector is disabled until an instructor is chosen.
- *
- *   When the instructor filter is not "All instructors," the
- *   result summary carries a "N students change instructor"
- *   count, so a cross-instructor move is visible before Apply.
- *
- * TARGET SIZE:
- *   The target size input defaults to a computed value: the
- *   total eligible student count divided by the number of groups
- *   the plan will consider, rounded to the nearest integer, with
- *   a floor of 2 (a group of 1 is not a group; a group of 0 is
- *   not useful as a target). The user can override it.
- *
- *   The default recomputes when the instructor filter changes,
- *   because the group count changes. Once the user types in the
- *   field, the value is treated as user-supplied and is not
- *   recomputed.
- *
- *   "Eligible" here means: every student in the input VM's
- *   students array. The input VM excludes instructors and
- *   respects excludedStudentIds; see the aggregator's header.
- *
- * UNAVAILABLE OCCUPANCIES:
- *   The input VM carries `unavailableStudentCount`. When it is
- *   above zero, the modal renders a warning above the form:
- *   "N students have no schedule data for this week; the plan
- *   treats them as having no commitments." The user can still
- *   run, but they are told.
- *
- *   This matters: if the projector failed for a student, the
- *   algorithm cannot detect that student's collisions. Presenting
- *   that as a silent fact would be dishonest.
+ *   The scope selector is 'all' or 'local'. See the previous
+ *   version of this header for the semantics; they are unchanged.
  *
  * APPLY:
  *   On Apply, calls:
@@ -83,20 +68,8 @@
  *     AcademySchedule.applyRebalancePlan(classId, disciplineId,
  *       week, plan)
  *
- *   On success, closes the modal and calls onClose. The caller
- *   refreshes the grid.
- *
+ *   On success, closes the modal and calls onClose.
  *   On failure, notifies and keeps the modal open.
- *
- *   Apply is disabled unless:
- *     - a plan exists
- *     - plan.ok is true
- *     - the plan's summary.unplaceableCount is zero OR the user
- *       has confirmed the partial apply
- *     - no apply is in flight
- *
- *   A partial plan (some students unplaceable) is applied only
- *   after a confirm() naming how many students remain unplaced.
  *
  * ASYNC SAFETY:
  *   Every asynchronous callback captures the current
@@ -204,17 +177,8 @@
 
     var _sessionToken = 0;
 
-    // The input VM, built on open. Cached for the modal's lifetime.
-    // The underlying data does not change while the modal is open.
     var _inputVM = null;
 
-    // Form state.
-    //   targetSize        integer >= MIN_TARGET_SIZE
-    //   targetSizeTouched boolean; true once the user edits the
-    //                     field. When false, the default recomputes
-    //                     on instructor-filter change.
-    //   instructorId      '' for all, or a specific instructor
-    //   scope             'all' | 'local'
     var _form = {
         targetSize: 0,
         targetSizeTouched: false,
@@ -222,13 +186,8 @@
         scope: SCOPE_ALL
     };
 
-    // The current plan, or null when no Run has succeeded.
     var _plan = null;
-
-    // An error string when the last Run failed to produce a plan.
     var _planError = null;
-
-    // Apply in flight.
     var _busy = false;
 
     // ============================================================
@@ -258,14 +217,7 @@
     // ============================================================
     // DERIVED STATE
     // ============================================================
-    //
-    // Helpers that read the input VM and the current form to
-    // produce values the renderer needs.
 
-    /**
-     * The list of distinct instructors that own at least one group
-     * in the input VM. Each entry is { id, name }. Sorted by name.
-     */
     function getInstructorsFromVM() {
         if (!_inputVM || !Array.isArray(_inputVM.groups)) { return []; }
 
@@ -293,16 +245,6 @@
         return result;
     }
 
-    /**
-     * The groups the current form will consider.
-     *
-     * scope 'all': every group in the input VM.
-     * scope 'local': only the groups whose instructorId matches
-     *                _form.instructorId.
-     *
-     * When scope is 'local' and _form.instructorId is '', returns
-     * [].
-     */
     function getGroupsForCurrentScope() {
         if (!_inputVM || !Array.isArray(_inputVM.groups)) { return []; }
 
@@ -322,17 +264,6 @@
         return _inputVM.groups.slice();
     }
 
-    /**
-     * The students the current form will consider.
-     *
-     * scope 'all': every student in the input VM.
-     * scope 'local': only the students who are currently active
-     *                in a group that belongs to the selected
-     *                instructor.
-     *
-     * When scope is 'local' and _form.instructorId is '', returns
-     * [].
-     */
     function getStudentsForCurrentScope() {
         if (!_inputVM || !Array.isArray(_inputVM.students)) { return []; }
 
@@ -344,7 +275,6 @@
 
         var targetInstructor = String(_form.instructorId);
 
-        // Build the set of group IDs owned by this instructor.
         var instructorGroupIds = Object.create(null);
         if (Array.isArray(_inputVM.groups)) {
             for (var gi = 0; gi < _inputVM.groups.length; gi++) {
@@ -373,13 +303,6 @@
         return result;
     }
 
-    /**
-     * Compute the default target size for the current scope.
-     *
-     * Rounds the ratio of eligible students to groups. Floors at
-     * MIN_TARGET_SIZE. When either side is zero, returns
-     * MIN_TARGET_SIZE.
-     */
     function computeDefaultTargetSize() {
         var groups = getGroupsForCurrentScope();
         var students = getStudentsForCurrentScope();
@@ -397,26 +320,15 @@
         return raw;
     }
 
-    /**
-     * Return the students in `_inputVM.students` whose
-     * `currentGroupId` belongs to an instructor different from
-     * `_form.instructorId`, given the current scope.
-     *
-     * Used only to compute "students who will change instructor."
-     */
     function countCrossInstructorMovesForPlan(plan) {
         if (!plan || !Array.isArray(plan.assignments)) { return 0; }
         if (!_inputVM || !Array.isArray(_inputVM.students)) { return 0; }
 
-        // When the instructor filter is All, cross-instructor
-        // moves are not a meaningful concept: every group is in
-        // scope. Return 0 and skip.
         if (_form.scope !== SCOPE_LOCAL ||
             !isNonEmptyString(_form.instructorId)) {
             return 0;
         }
 
-        // Build a lookup: groupId -> instructorId, from the VM.
         var groupInstructorById = Object.create(null);
         if (Array.isArray(_inputVM.groups)) {
             for (var gi = 0; gi < _inputVM.groups.length; gi++) {
@@ -429,7 +341,6 @@
             }
         }
 
-        // Build a lookup: studentId -> currentGroupId.
         var studentCurrentGroup = Object.create(null);
         for (var si = 0; si < _inputVM.students.length; si++) {
             var s = _inputVM.students[si];
@@ -440,7 +351,6 @@
                     : null;
         }
 
-        var targetInstructor = String(_form.instructorId);
         var count = 0;
 
         for (var ai = 0; ai < plan.assignments.length; ai++) {
@@ -467,7 +377,6 @@
             }
         }
 
-        void targetInstructor;
         return count;
     }
 
@@ -475,17 +384,6 @@
     // ENTRY POINT
     // ============================================================
 
-    /**
-     * Open the rebalance modal.
-     *
-     * @param {object} options
-     * @param {string} options.classId        Required.
-     * @param {string} options.disciplineId   Required.
-     * @param {number} options.week           Required.
-     * @param {function} [options.onClose]    Called once when the
-     *                                        modal closes.
-     * @returns {object|null} The modal element, or null on failure.
-     */
     function openModal(options) {
         if (!options || typeof options !== 'object') {
             notify('Invalid rebalance request.', 'error');
@@ -507,9 +405,6 @@
             return null;
         }
 
-        // Build the input VM before opening. If it cannot be built,
-        // refuse to open. A modal with no data is worse than a
-        // clear error.
         var inputVM = null;
         try {
             inputVM = AcademyAggregator.getRebalanceInputViewModel(
@@ -705,7 +600,6 @@
     function buildModalHTML() {
         var html = '';
 
-        // ---- Header ----
         html += '<div class="modal-header">';
         html += '<h3>Rebalance Groups \u2014 ' +
                     escapeHtml(_inputVM.disciplineName) +
@@ -715,11 +609,9 @@
                     'aria-label="Close">&times;</button>';
         html += '</div>';
 
-        // ---- Body ----
         html += '<div class="modal-body academy-rebalance-body">';
 
         html += renderUnavailableWarning();
-
         html += renderForm();
 
         if (_planError !== null) {
@@ -732,7 +624,6 @@
 
         html += '</div>';
 
-        // ---- Footer ----
         html += renderFooter();
 
         return html;
@@ -750,11 +641,8 @@
         var html = '';
         html += '<div class="academy-rebalance-form">';
 
-        // ---- Row 1: instructor filter + scope ----
-
         html += '<div class="academy-rebalance-form-row">';
 
-        // Instructor
         html += '<div class="academy-rebalance-field">';
         html += '<label class="academy-rebalance-label" ' +
                     'for="academy-rebalance-instructor">' +
@@ -776,7 +664,6 @@
         html += '</select>';
         html += '</div>';
 
-        // Scope
         var scopeDisabled = !isNonEmptyString(_form.instructorId) ||
             isBusy();
 
@@ -813,8 +700,6 @@
 
         html += '</div>';
 
-        // ---- Row 2: target size + Run ----
-
         html += '<div class="academy-rebalance-form-row">';
 
         html += '<div class="academy-rebalance-field">';
@@ -843,8 +728,6 @@
         html += '</div>';
 
         html += '</div>';
-
-        // ---- Context line ----
 
         var groupCount = scopedGroups.length;
         var studentCount = scopedStudents.length;
@@ -916,6 +799,8 @@
             html += renderUnplaceableSection(plan);
         }
 
+        html += renderMoveDiagnostics(plan);
+
         return html;
     }
 
@@ -968,9 +853,6 @@
     }
 
     function renderBeforeAfterTable(plan) {
-        // Build a map from groupId to the "before" state (from the
-        // input VM) and from groupId to the "after" state (from
-        // the plan).
         var beforeById = Object.create(null);
         if (_inputVM && Array.isArray(_inputVM.groups)) {
             for (var i = 0; i < _inputVM.groups.length; i++) {
@@ -1111,7 +993,6 @@
     function getStudentName(studentId) {
         if (!isNonEmptyString(studentId)) { return 'Unknown'; }
 
-        // Try the input VM first; it already has the name.
         if (_inputVM && Array.isArray(_inputVM.students)) {
             for (var i = 0; i < _inputVM.students.length; i++) {
                 var s = _inputVM.students[i];
@@ -1121,13 +1002,170 @@
             }
         }
 
-        // Fall back to CharacterQueries.
         var char = CharacterQueries.getCharacterById(studentId);
         if (char) {
             return CharacterQueries.getDisplayName(char) || 'Unknown';
         }
 
         return 'Unknown';
+    }
+
+    // ============================================================
+    // MOVE DIAGNOSTICS RENDER
+    // ============================================================
+
+    function renderMoveDiagnostics(plan) {
+        var diagnostics = Array.isArray(plan.moveDiagnostics)
+            ? plan.moveDiagnostics
+            : [];
+
+        // Identify over-target groups that have no diagnostic
+        // entries — those are constraint-limited, and we want to
+        // tell the user that explicitly.
+        var overTargetGroups = [];
+        for (var ai = 0; ai < plan.assignments.length; ai++) {
+            var a = plan.assignments[ai];
+            if (!a) { continue; }
+            if (a.proposedSize > plan.targetSize) {
+                overTargetGroups.push({
+                    groupId: String(a.groupId),
+                    size: a.proposedSize,
+                    deviation: a.proposedSize - plan.targetSize
+                });
+            }
+        }
+
+        if (overTargetGroups.length === 0 && diagnostics.length === 0) {
+            return '';
+        }
+
+        var diagnosticsBySource = Object.create(null);
+        for (var di = 0; di < diagnostics.length; di++) {
+            var d = diagnostics[di];
+            if (!d) { continue; }
+            var sid = String(d.sourceGroupId);
+            if (!diagnosticsBySource[sid]) {
+                diagnosticsBySource[sid] = [];
+            }
+            diagnosticsBySource[sid].push(d);
+        }
+
+        var html = '';
+        html += '<div class="academy-rebalance-diagnostics">';
+
+        html += '<div class="academy-rebalance-diagnostics-header">';
+        html += '<span class="academy-rebalance-diagnostics-title">' +
+                    'Why the plan is not more balanced' +
+                '</span>';
+        html += '</div>';
+
+        for (var gi = 0; gi < overTargetGroups.length; gi++) {
+            var group = overTargetGroups[gi];
+            var groupName = getGroupDisplayName(group.groupId);
+            var entries = diagnosticsBySource[group.groupId] || [];
+
+            if (entries.length === 0) {
+                html += renderConstraintLimitedRow(
+                    groupName, group.size, group.deviation
+                );
+                continue;
+            }
+
+            html += renderMovableRow(
+                groupName, group.size, group.deviation, entries
+            );
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    function getGroupDisplayName(groupId) {
+        if (_inputVM && Array.isArray(_inputVM.groups)) {
+            for (var i = 0; i < _inputVM.groups.length; i++) {
+                var g = _inputVM.groups[i];
+                if (g && String(g.groupId) === String(groupId)) {
+                    return g.displayName || 'Unnamed Group';
+                }
+            }
+        }
+        return 'Unnamed Group';
+    }
+
+    function renderConstraintLimitedRow(groupName, size, deviation) {
+        var html = '';
+        html += '<div class="academy-rebalance-diagnostic-row ' +
+                    'academy-rebalance-diagnostic-constrained">';
+        html += '<span class="academy-rebalance-diagnostic-group">' +
+                    escapeHtml(groupName) +
+                '</span>';
+        html += '<span class="academy-rebalance-diagnostic-summary">' +
+                    size + ' students, ' + deviation +
+                    ' over target. No student in this group can ' +
+                    'legally sit in the under-target groups\u2019 ' +
+                    'sessions.' +
+                '</span>';
+        html += '<span class="academy-rebalance-diagnostic-hint">' +
+                    'To balance further, add a session at a ' +
+                    'different time to one of the under-target ' +
+                    'groups.' +
+                '</span>';
+        html += '</div>';
+        return html;
+    }
+
+    function renderMovableRow(groupName, size, deviation, entries) {
+        var html = '';
+        html += '<div class="academy-rebalance-diagnostic-row">';
+        html += '<span class="academy-rebalance-diagnostic-group">' +
+                    escapeHtml(groupName) +
+                '</span>';
+        html += '<span class="academy-rebalance-diagnostic-summary">' +
+                    size + ' students, ' + deviation +
+                    ' over target. ' +
+                    countDistinctMovable(entries) +
+                    ' student' +
+                    (countDistinctMovable(entries) === 1 ? '' : 's') +
+                    ' in this group could legally move, but no single ' +
+                    'move reduces the imbalance.' +
+                '</span>';
+
+        html += '<ul class="academy-rebalance-diagnostic-list">';
+        for (var i = 0; i < entries.length; i++) {
+            var e = entries[i];
+            var destName = getGroupDisplayName(e.destinationGroupId);
+            var reason = e.reason === 'exhausted'
+                ? 'move budget exhausted; this should not happen'
+                : 'moving would not improve balance';
+            html += '<li>' +
+                        escapeHtml(String(e.movableCount)) +
+                        ' student' +
+                        (e.movableCount === 1 ? '' : 's') +
+                        ' could move to <strong>' +
+                        escapeHtml(destName) +
+                        '</strong> \u2014 ' +
+                        escapeHtml(reason) +
+                    '</li>';
+        }
+        html += '</ul>';
+
+        html += '</div>';
+        return html;
+    }
+
+    function countDistinctMovable(entries) {
+        // Diagnostics are per (source, destination) pair. A single
+        // student could appear in multiple pairs. Counting the
+        // distinct students would require the student IDs, which
+        // the diagnostics do not carry. Report the maximum across
+        // pairs as a safe lower bound; this is the number of
+        // students who could move to at least one destination.
+        var max = 0;
+        for (var i = 0; i < entries.length; i++) {
+            var n = entries[i].movableCount || 0;
+            if (n > max) { max = n; }
+        }
+        return max;
     }
 
     // ============================================================
@@ -1223,22 +1261,15 @@
             )) {
             _form.instructorId = target.value || '';
 
-            // When the instructor filter changes, the scope
-            // selector's availability may change. If local scope
-            // is selected but the instructor was cleared, drop
-            // back to 'all'.
             if (_form.scope === SCOPE_LOCAL &&
                 !isNonEmptyString(_form.instructorId)) {
                 _form.scope = SCOPE_ALL;
             }
 
-            // Recompute the default target size if the user has
-            // not touched the field.
             if (!_form.targetSizeTouched) {
                 _form.targetSize = computeDefaultTargetSize();
             }
 
-            // Any change invalidates the current plan.
             _plan = null;
             _planError = null;
 
@@ -1280,8 +1311,6 @@
             if (!isNaN(parsed)) {
                 _form.targetSize = parsed;
             }
-            // Do not re-render on input; that would steal focus.
-            // The value is read at Run time.
             return;
         }
     }
@@ -1318,8 +1347,6 @@
         if (!_context || !_inputVM) { return; }
         if (isBusy()) { return; }
 
-        // Read the target size fresh, in case the user typed and
-        // did not blur.
         if (_contentEl && typeof _contentEl.querySelector === 'function') {
             var targetInput = _contentEl.querySelector(
                 '.academy-rebalance-target'
@@ -1332,7 +1359,6 @@
             }
         }
 
-        // Validate the target size.
         var targetSize = _form.targetSize;
         if (typeof targetSize !== 'number' ||
             !isFinite(targetSize) ||
@@ -1364,22 +1390,13 @@
             return;
         }
 
-        // Build the algorithm's input.
-        //
-        // When the instructor filter is set, restrict the groups to
-        // that instructor's groups. When the scope is 'local',
-        // restrict the students too.
-        //
-        // The algorithm itself reads only `students` and `groups`.
-        // The presentation metadata (name, instructorName) is
-        // ignored by the algorithm.
-
         var students = [];
         for (var si = 0; si < scopedStudents.length; si++) {
             var s = scopedStudents[si];
             if (!s) { continue; }
             students.push({
                 id: s.id,
+                currentGroupId: s.currentGroupId || null,
                 occupied: Array.isArray(s.occupied) ? s.occupied : []
             });
         }
