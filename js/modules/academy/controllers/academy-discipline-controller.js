@@ -30,7 +30,11 @@
  *   - Mounting the calendar grid into the Schedule tab host.
  *   - Mounting the enrollment summary panel into the Schedule tab
  *     summary host, below the grid. (BATCH 3)
+ *   - Mounting the discipline sessions panel into the Schedule tab
+ *     sessions host, below the summary. (BATCH 4)
  *   - Toggling the summary panel open and closed. (BATCH 3)
+ *   - The inline candidate picker and roster actions inside the
+ *     discipline sessions panel. (BATCH 4)
  *
  * WHAT THIS DOES NOT OWN:
  *   - The content host. The shell provides it.
@@ -47,6 +51,9 @@
  *     produces the summary VM and
  *     AcademyDisciplineScheduleSummary renders it; the controller
  *     only mounts and wires the toggle.
+ *   - The discipline sessions panel content. AcademyDisciplineSessionsPanel
+ *     produces the VM and renders the HTML; the controller mounts it
+ *     and handles the inline picker's actions.
  *   - Instructor assignment for a discipline. That relationship is
  *     class-scoped and is owned by the class-disciplines picker.
  *     The discipline editor does not offer an instructor picker
@@ -72,9 +79,11 @@
  *   controller bug, not a reason for the view to invent one.
  *
  * SCHEDULE TAB:
- *   The Schedule tab renders a week selector, a grid host, and an
- *   enrollment summary host. The grid is mounted by this controller
- *   via AcademyCalendarAggregator.getDisciplineScheduleViewModel,
+ *   The Schedule tab renders a week selector, a grid host, an
+ *   enrollment summary host, and a discipline sessions host.
+ *
+ *   The grid is mounted by this controller via
+ *   AcademyCalendarAggregator.getDisciplineScheduleViewModel,
  *   which projects Projector.projectForClassDiscipline. One
  *   discipline, one class, one week, every instructor.
  *
@@ -101,6 +110,35 @@
  *   AcademyDisciplineScheduleSummary. This controller mounts the
  *   HTML and toggles the disclosure on click.
  *
+ * DISCIPLINE SESSIONS PANEL (BATCH 4):
+ *   The panel below the enrollment summary. Lists every teaching
+ *   group of the discipline for the week, across every instructor,
+ *   with each group's sessions and roster. Supports an inline
+ *   candidate picker per group and a per-student remove button.
+ *
+ *   The panel's markup and its per-group VM builder come from
+ *   AcademyDisciplineSessionsPanel. The inline picker markup comes
+ *   from that panel's own renderer (structurally identical to the
+ *   character detail panel's picker, but with a distinct set of
+ *   data-action values).
+ *
+ *   This controller owns:
+ *     - mounting the panel into #academy-discipline-sessions-host
+ *     - the module-level picker state (_openDisciplineSessionsGroupId,
+ *       _openDisciplineSessionsCandidates)
+ *     - the four session-picker actions:
+ *         discipline-sessions-add-student
+ *         discipline-sessions-add-student-cancel
+ *         discipline-sessions-add-student-submit
+ *         discipline-sessions-remove-student
+ *
+ *   The candidates VM is sourced from
+ *   AcademyCharacterDetailAggregator.getTeachingGroupCandidateViewModel,
+ *   which is the same builder the character detail panel's own picker
+ *   uses. That builder is scoped to (instructor, group, week); the
+ *   controller resolves the group's instructor internally before
+ *   calling it.
+ *
  * DRAFT LIFECYCLE:
  *   - Draft is created by openEditor('create'), or by selecting a
  *     discipline row (which initializes from the record).
@@ -111,6 +149,7 @@
  *   - The list filter is NOT cleared by unmount. This also matches
  *     pre-S1.3: the filter survives a view switch.
  *   - The search debounce timer IS cleared by unmount.
+ *   - The discipline-sessions picker state IS cleared by unmount.
  *
  * B4-1 — "+ ADD DISCIPLINE" BUTTON FIX:
  *   The button used to be id-addressed (#academy-add-discipline-btn)
@@ -139,6 +178,9 @@
  *   - window.AcademyGradeSchemes
  *   - window.AcademyCalendarAggregator  (lazy; for the Schedule tab)
  *   - window.AcademyDisciplineScheduleSummary (lazy; for the summary panel)
+ *   - window.AcademyDisciplineSessionsPanel   (lazy; for the sessions panel)
+ *   - window.AcademyCharacterDetailAggregator (lazy; for the candidate VM)
+ *   - window.AcademyTeachingGroups            (lazy; for group resolution)
  *   - window.CalendarRenderer           (lazy; for the Schedule tab)
  *   - window.AcademyCRUDModals          (lazy; delete confirm)
  *   - window.NotificationSystem
@@ -233,6 +275,10 @@
         return window.AcademyDisciplineScheduleSummary || null;
     }
 
+    function getDisciplineSessionsPanel() {
+        return window.AcademyDisciplineSessionsPanel || null;
+    }
+
     // ============================================================
     // CONSTANTS
     // ============================================================
@@ -299,6 +345,14 @@
         NotificationSystem.notify(message, type || 'info');
     }
 
+    function cssEscapeLocal(value) {
+        if (typeof CSS !== 'undefined' &&
+            typeof CSS.escape === 'function') {
+            return CSS.escape(String(value));
+        }
+        return String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+    }
+
     // ============================================================
     // MODULE STATE
     // ============================================================
@@ -312,6 +366,15 @@
     //   _activeDisciplineTab   'edit' | 'schedule'
     //   _scheduleWeek          number | null (null = unset; falls
     //                          back to AcademyUI's display week)
+    //
+    // Discipline-sessions-panel state:
+    //   _openDisciplineSessionsGroupId     string | null
+    //   _openDisciplineSessionsCandidates  { candidates, blocked } | null
+    //
+    //   The picker is opened per group. The open group's ID and its
+    //   resolved candidate list survive the re-render triggered by
+    //   ctx.onChange() so the picker re-opens in place. Cleared on
+    //   cancel, on submit, and on unmount.
 
     var _host = null;
     var _context = null;
@@ -326,6 +389,9 @@
 
     var _activeDisciplineTab = 'edit';
     var _scheduleWeek = null;
+
+    var _openDisciplineSessionsGroupId = null;
+    var _openDisciplineSessionsCandidates = null;
 
     // ============================================================
     // CONTEXT NORMALISATION
@@ -418,6 +484,10 @@
             _disciplineDraftMode !== 'empty' &&
             _disciplineDraft) {
             mountDisciplineScheduleGridIfPresent(
+                _disciplineDraft.id,
+                scheduleWeek
+            );
+            mountDisciplineSessionsPanelIfPresent(
                 _disciplineDraft.id,
                 scheduleWeek
             );
@@ -694,6 +764,81 @@
     }
 
     // ============================================================
+    // DISCIPLINE SESSIONS PANEL MOUNT
+    // ============================================================
+    //
+    // The panel below the enrollment summary. Lists every teaching
+    // group of the discipline for the week, across every instructor,
+    // with the roster and inline add/remove affordances.
+    //
+    // Advisory: any failure to build the VM or render the HTML
+    // leaves the host empty. The grid and summary are unaffected.
+    //
+    // The panel's own VM builder (buildSessionViewModel) does not
+    // know about the picker state; the controller stamps
+    // _openPickerGroupId and _pickerCandidates onto the VM before
+    // handing it to the renderer. That mirrors how the character
+    // detail panel carries the same two fields.
+
+    function mountDisciplineSessionsPanelIfPresent(disciplineId, week) {
+        var host = document.getElementById(
+            'academy-discipline-sessions-host'
+        );
+        if (!host) { return; }
+
+        host.innerHTML = '';
+
+        if (!isNonEmptyString(disciplineId)) { return; }
+
+        var classId = AcademyUI.getSelectedClassId();
+        if (!isNonEmptyString(classId)) { return; }
+
+        if (typeof week !== 'number' ||
+            week < MIN_WEEK ||
+            week > MAX_WEEK) {
+            return;
+        }
+
+        var Panel = getDisciplineSessionsPanel();
+        if (!Panel) { return; }
+
+        var vm = null;
+        try {
+            if (typeof Panel.buildSessionViewModel === 'function') {
+                vm = Panel.buildSessionViewModel(
+                    classId,
+                    disciplineId,
+                    week
+                );
+            }
+        } catch (e) {
+            console.warn(
+                '[AcademyDisciplineController] sessions VM build ' +
+                'failed:', e
+            );
+            return;
+        }
+
+        if (!vm) { return; }
+
+        vm._openPickerGroupId = _openDisciplineSessionsGroupId;
+        vm._pickerCandidates = _openDisciplineSessionsCandidates;
+
+        var html = '';
+        try {
+            html = Panel.renderHTML(vm);
+        } catch (e) {
+            console.warn(
+                '[AcademyDisciplineController] sessions render failed:',
+                e
+            );
+            return;
+        }
+
+        host.innerHTML = html;
+    }
+
+    // ============================================================
     // DRAFT LIFECYCLE
     // ============================================================
 
@@ -813,6 +958,22 @@
             case 'discipline-summary-toggle':
                 e.preventDefault();
                 handleDisciplineSummaryToggle(actionEl);
+                return;
+            case 'discipline-sessions-add-student':
+                e.preventDefault();
+                handleDisciplineSessionsAddStudent(actionEl);
+                return;
+            case 'discipline-sessions-add-student-cancel':
+                e.preventDefault();
+                handleDisciplineSessionsAddStudentCancel(actionEl);
+                return;
+            case 'discipline-sessions-add-student-submit':
+                e.preventDefault();
+                handleDisciplineSessionsAddStudentSubmit(actionEl);
+                return;
+            case 'discipline-sessions-remove-student':
+                e.preventDefault();
+                handleDisciplineSessionsRemoveStudent(actionEl);
                 return;
             case 'discipline-apply-scheme-preset':
                 e.preventDefault();
@@ -994,6 +1155,269 @@
         if (body) {
             body.style.display = next ? 'block' : 'none';
         }
+    }
+
+    // ============================================================
+    // DISCIPLINE SESSIONS — INLINE PICKER + ROSTER ACTIONS
+    // ============================================================
+    //
+    // The discipline sessions panel uses the same candidate picker
+    // and the same mutations as the instructor tab's teaching
+    // groups. The only difference is the entry point: the panel is
+    // scoped to one discipline, and the picker is opened per group.
+    //
+    // The controller stashes the open group ID on module state so
+    // that a refresh re-opens the picker on the same group. This
+    // mirrors _openPickerGroupId in the People controller.
+
+    function handleDisciplineSessionsAddStudent(actionEl) {
+        if (!actionEl || !actionEl.dataset) { return; }
+
+        var groupId = actionEl.dataset.groupId;
+        if (!isNonEmptyString(groupId)) { return; }
+
+        var Aggregator = window.AcademyCharacterDetailAggregator;
+        if (!Aggregator ||
+            typeof Aggregator.getTeachingGroupCandidateViewModel !==
+                'function') {
+            notify('Candidate picker is not available.', 'error');
+            return;
+        }
+
+        var week = resolveScheduleWeek();
+        if (week === null) { return; }
+
+        // The picker is scoped to (instructor, group, week). Resolve
+        // the group's instructor first; the aggregator needs it.
+        var group = null;
+        var TG = window.AcademyTeachingGroups;
+        if (TG && typeof TG.getGroup === 'function') {
+            try {
+                group = TG.getGroup(groupId);
+            } catch (e) {
+                group = null;
+            }
+        }
+        if (!group || !group.instructorId) {
+            notify('Teaching group not found.', 'error');
+            return;
+        }
+
+        var vm = null;
+        try {
+            vm = Aggregator.getTeachingGroupCandidateViewModel(
+                String(group.instructorId),
+                String(groupId),
+                { week: week }
+            );
+        } catch (e) {
+            console.warn(
+                '[AcademyDisciplineController] ' +
+                'getTeachingGroupCandidateViewModel threw:', e
+            );
+            vm = null;
+        }
+
+        if (!vm) {
+            notify('Could not open the candidate list.', 'error');
+            return;
+        }
+
+        _openDisciplineSessionsGroupId = String(groupId);
+        _openDisciplineSessionsCandidates = {
+            candidates: Array.isArray(vm.candidates)
+                ? vm.candidates
+                : [],
+            blocked: Array.isArray(vm.blocked)
+                ? vm.blocked
+                : []
+        };
+
+        var ctx = getContext();
+        ctx.onChange();
+    }
+
+    function handleDisciplineSessionsAddStudentCancel() {
+        _openDisciplineSessionsGroupId = null;
+        _openDisciplineSessionsCandidates = null;
+        var ctx = getContext();
+        ctx.onChange();
+    }
+
+    function handleDisciplineSessionsAddStudentSubmit(actionEl) {
+        if (!actionEl || !actionEl.dataset) { return; }
+
+        var groupId = actionEl.dataset.groupId;
+        if (!isNonEmptyString(groupId)) { return; }
+
+        var TG = window.AcademyTeachingGroups;
+        if (!TG || typeof TG.addMemberToGroup !== 'function') {
+            notify('Teaching groups module not available.', 'error');
+            return;
+        }
+
+        var picker = document.querySelector(
+            '.academy-teaching-group-candidate-picker' +
+            '[data-group-id="' + cssEscapeLocal(groupId) + '"]'
+        );
+        if (!picker) {
+            notify('Could not read the selected students.', 'error');
+            return;
+        }
+
+        var checkedEls = picker.querySelectorAll(
+            '.academy-teaching-group-candidate-checkbox:checked'
+        );
+        var charIds = [];
+        for (var i = 0; i < checkedEls.length; i++) {
+            var v = checkedEls[i].value;
+            if (isNonEmptyString(v)) { charIds.push(String(v)); }
+        }
+
+        if (charIds.length === 0) {
+            notify('Select at least one student.', 'error');
+            return;
+        }
+
+        var submitBtn = picker.querySelector(
+            '[data-action="teaching-groups-add-student-submit"]'
+        );
+        if (submitBtn) {
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Adding\u2026';
+        }
+
+        var week = resolveScheduleWeek();
+        if (week === null) { return; }
+
+        var succeeded = 0;
+        var failures = [];
+        var chain = Promise.resolve();
+
+        charIds.forEach(function (charId) {
+            chain = chain.then(function () {
+                return TG.addMemberToGroup(groupId, charId, week)
+                    .then(function (result) {
+                        if (result && result.success) {
+                            succeeded++;
+                        } else {
+                            failures.push({
+                                characterId: charId,
+                                message: (result && result.message) ||
+                                    'Unknown error'
+                            });
+                        }
+                    })
+                    .catch(function (err) {
+                        failures.push({
+                            characterId: charId,
+                            message: String(
+                                (err && err.message) || err
+                            )
+                        });
+                    });
+            });
+        });
+
+        chain.then(function () {
+            var total = succeeded + failures.length;
+
+            if (failures.length === 0) {
+                notify(
+                    'Added ' + succeeded + ' student' +
+                    (succeeded === 1 ? '' : 's') + ' to the group.',
+                    'success'
+                );
+            } else if (succeeded === 0) {
+                notify(
+                    'Could not add any of the ' + total +
+                    ' selected students. See console for details.',
+                    'error'
+                );
+            } else {
+                notify(
+                    'Added ' + succeeded + ' of ' + total +
+                    ' students. Some failed. See console for details.',
+                    'warning'
+                );
+            }
+
+            for (var f = 0; f < failures.length; f++) {
+                console.warn(
+                    '[AcademyDisciplineController] candidate add ' +
+                    'failed:', failures[f]
+                );
+            }
+
+            _openDisciplineSessionsGroupId = null;
+            _openDisciplineSessionsCandidates = null;
+            var ctx = getContext();
+            ctx.onChange();
+        });
+    }
+
+    function handleDisciplineSessionsRemoveStudent(actionEl) {
+        if (!actionEl || !actionEl.dataset) { return; }
+
+        var groupId = actionEl.dataset.groupId;
+        var charId = actionEl.dataset.characterId;
+
+        if (!isNonEmptyString(groupId) ||
+            !isNonEmptyString(charId)) {
+            return;
+        }
+
+        var TG = window.AcademyTeachingGroups;
+        if (!TG || typeof TG.removeMemberRecord !== 'function') {
+            notify('Teaching groups module not available.', 'error');
+            return;
+        }
+
+        var name = 'this student';
+        var CQ = window.CharacterQueries;
+        if (CQ && typeof CQ.getCharacterById === 'function') {
+            var char = CQ.getCharacterById(charId);
+            if (char) {
+                name = '"' + CQ.getDisplayName(char) + '"';
+            }
+        }
+
+        if (!confirm(
+            'Remove ' + name + ' from this group?\n\n' +
+            'This is a correction. The student is completely removed ' +
+            'from the group; there is no record of them having been in ' +
+            'it. To change a group, remove here and re-assign from the ' +
+            'schedule grid.'
+        )) {
+            return;
+        }
+
+        TG.removeMemberRecord(groupId, charId)
+            .then(function (result) {
+                if (result && result.success) {
+                    if (_openDisciplineSessionsGroupId &&
+                        String(_openDisciplineSessionsGroupId) ===
+                            String(groupId)) {
+                        // Re-resolve the candidates for the open
+                        // picker so it reflects the removal.
+                        handleDisciplineSessionsAddStudent({
+                            dataset: { groupId: groupId }
+                        });
+                        return;
+                    }
+                    var ctx = getContext();
+                    ctx.onChange();
+                } else if (result && result.message) {
+                    notify(result.message, 'error');
+                }
+            })
+            .catch(function (err) {
+                console.warn(
+                    '[AcademyDisciplineController] ' +
+                    'removeMemberRecord failed:', err
+                );
+                notify('Failed to remove student from group.', 'error');
+            });
     }
 
     // ============================================================
@@ -1307,6 +1731,12 @@
         // The list filter is deliberately NOT cleared.
         // The schedule week is deliberately NOT cleared; a return
         // visit lands on the same week the user was last looking at.
+        // The discipline-sessions picker state IS cleared: a return
+        // visit should not re-open a picker on a group the user has
+        // navigated away from.
+
+        _openDisciplineSessionsGroupId = null;
+        _openDisciplineSessionsCandidates = null;
 
         _host = null;
         _context = null;
