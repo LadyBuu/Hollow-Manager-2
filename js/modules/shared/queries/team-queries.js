@@ -934,6 +934,99 @@
         return out;
     }
 
+    /**
+     * Get every team a character has EVER been a member of, by their
+     * presence in the team's members array — INCLUDING deprecated
+     * teams.
+     *
+     * This is the historical-completeness variant of
+     * getTeamsForCharacterAllTime. The all-time variant excludes
+     * deprecated teams, because a deprecated team is not a thing a
+     * live caller should be shown. An export is not a live caller:
+     * "this character was on a team that was later deprecated" is
+     * exactly the kind of fact a historical report should carry.
+     *
+     * Deprecated teams are the ONLY difference. Archived missions,
+     * ended stints, and departed members are handled by the callers.
+     *
+     * Why this exists as a sibling rather than as an option on the
+     * original: the two functions have different audiences. A live
+     * caller wants the operational set; an export wants the complete
+     * set. An option would have to be documented at every call site
+     * of the original, and the default would be wrong for half of
+     * them. Two functions, two questions, no default to get wrong.
+     *
+     * @param {string} characterId
+     * @param {string} [teamType] - optional type filter
+     * @returns {array} Array of cloned team objects
+     */
+    function getTeamsForCharacterAllTimeIncludingDeprecated(
+        characterId,
+        teamType
+    ) {
+        if (!isNonEmptyString(characterId)) {
+            return [];
+        }
+
+        var normalizedFilter = null;
+        if (teamType !== undefined &&
+            teamType !== null &&
+            teamType !== '') {
+            normalizedFilter = TeamConstants.normalizeTeamType(teamType);
+            if (normalizedFilter === null) {
+                return [];
+            }
+        }
+
+        var teams = getTeamArray();
+        var target = String(characterId);
+        var result = [];
+
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (!team || typeof team !== 'object') {
+                continue;
+            }
+
+            if (normalizedFilter !== null) {
+                if (TeamConstants.normalizeTeamType(team.type) !==
+                    normalizedFilter) {
+                    continue;
+                }
+            }
+
+            if (!Array.isArray(team.members)) {
+                continue;
+            }
+
+            var found = false;
+            for (var m = 0; m < team.members.length; m++) {
+                var member = team.members[m];
+                if (!member || typeof member !== 'object') {
+                    continue;
+                }
+                if (String(member.characterId) === target) {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (found) {
+                result.push(team);
+            }
+        }
+
+        result.sort(function(a, b) {
+            return (a.name || '').localeCompare(b.name || '');
+        });
+
+        var out = [];
+        for (var k = 0; k < result.length; k++) {
+            out.push(clone(result[k]));
+        }
+        return out;
+    }
+
     function getCharacterTeamMembership(teamId, characterId) {
         var team = getTeamByIdInternal(teamId);
         if (!team) {
@@ -1481,6 +1574,8 @@
         getAllTeamMemberRecords: getAllTeamMemberRecords,
         getTeamsForCharacter: getTeamsForCharacter,
         getTeamsForCharacterAllTime: getTeamsForCharacterAllTime,
+        getTeamsForCharacterAllTimeIncludingDeprecated:
+            getTeamsForCharacterAllTimeIncludingDeprecated,
         getCharacterTeamMembership: getCharacterTeamMembership,
 
         // Professional-team-eligible roster
@@ -1519,6 +1614,7 @@
             'getTeamMemberByMemberId', 'getTeamMemberByComposite',
             'getAllTeamMemberRecords',
             'getTeamsForCharacter', 'getTeamsForCharacterAllTime',
+            'getTeamsForCharacterAllTimeIncludingDeprecated',
             'getCharacterTeamMembership',
             'getProfessionalTeamEligibleRoster',
             'isCharacterStaffAtYear', 'getStaffInfoAtYear',
