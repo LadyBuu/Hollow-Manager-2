@@ -20,8 +20,8 @@
  *   - Class-disciplines picker modal (opened from the class
  *     detail panel)
  *   - Discipline schedule tab: header row, header actions,
- *     grid host, summary host, sessions panel, inline candidate
- *     picker
+ *     grid host, summary host, sessions panel (collapsible
+ *     group blocks), inline candidate picker
  *   - Free slots filter panel: launcher, disclosure body, form,
  *     summary, two-column student grid
  *   - Discipline schedule summary — done state
@@ -997,6 +997,12 @@
    group of the discipline (across every instructor), each with
    its sessions and its roster.
 
+   Each group is a collapsible block. The block root carries
+   data-expanded="true|false"; the body hides when false. The
+   collapse state is keyed "tg:<groupId>" in AcademyUI and is
+   SHARED with the instructor detail panel, so a group collapsed
+   in one surface is collapsed in both.
+
    The candidate picker inside each block reuses the exact
    classes and data attributes from the character detail panel.
    The picker's own styling therefore lives in
@@ -1059,7 +1065,7 @@
     gap: 10px;
 }
 
-/* ---- Group block ---- */
+/* ---- Group block (collapsible) ---- */
 
 .academy-discipline-session-group {
     padding: 10px;
@@ -1078,6 +1084,56 @@
     margin-bottom: 8px;
     border-bottom: 1px solid var(--border-soft);
 }
+
+/* The group body is what collapses. The header row stays
+   visible so the toggle remains reachable. */
+.academy-discipline-session-group-body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.academy-discipline-session-group[data-expanded="false"]
+    .academy-discipline-session-group-body {
+    display: none;
+}
+
+/* Collapse toggle (caret button). Mirrors the instructor
+   panel's toggle so the two surfaces read identically. */
+.academy-discipline-session-group-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    flex: 0 0 auto;
+    border-radius: 3px;
+    transition: color 0.15s, background 0.15s;
+}
+
+.academy-discipline-session-group-toggle:hover {
+    color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.academy-discipline-session-group-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+.academy-discipline-session-group-caret {
+    display: inline-block;
+    font-size: 0.7rem;
+    line-height: 1;
+    pointer-events: none;
+}
+
+/* ---- Group header cells ---- */
 
 .academy-discipline-session-group-name {
     font-size: 0.85rem;
