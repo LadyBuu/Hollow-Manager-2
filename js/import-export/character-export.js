@@ -388,12 +388,6 @@
     // ============================================================
     // TIMELINE
     // ============================================================
-    //
-    // A timeline entry is { sortKey, display }.
-    //
-    // sortKey is a zero-padded string that sorts lexicographically
-    // in chronological order. Years are padded to four digits;
-    // weeks to two. Entries with no year fall to the top.
 
     function makeTimelineEntry(year, week, display) {
         var yearNum = parseInt(year, 10);
@@ -1470,6 +1464,136 @@
                 'Period',
                 formatWeekRange(c.startWeek, c.endWeek)
             );
+        }
+
+        return out;
+    }
+
+    /**
+     * Class-scoped commitments block, for the CLASSES TAUGHT
+     * section.
+     *
+     * Differs from buildCommitmentsSection (the top-level section
+     * builder) in two ways:
+     *
+     *   1. It takes a classId and filters to the commitments
+     *      attached to that class. The top-level builder covers
+     *      every commitment the instructor owns, regardless of
+     *      class.
+     *
+     *   2. It returns indented lines in the sub-block format the
+     *      CLASSES TAUGHT section uses, not the top-level section
+     *      format with its own labelled lines.
+     *
+     * A commitment belongs to exactly one class (see
+     * AcademyInstructorCommitments). So the union of every class's
+     * block is exactly the set the top-level builder would list,
+     * just partitioned by class.
+     *
+     * Returns '' when the class has no commitments, so the caller's
+     * blank-line handling stays correct.
+     */
+    function buildCommitmentsBlock(classId, charId) {
+        var Commit = getAcademyInstructorCommitments();
+        if (!Commit ||
+            typeof Commit.getCommitmentsForInstructor !== 'function') {
+            return '';
+        }
+
+        var all = [];
+        try {
+            all = Commit.getCommitmentsForInstructor(charId) || [];
+        } catch (e) {
+            return '';
+        }
+
+        if (!Array.isArray(all) || all.length === 0) {
+            return '';
+        }
+
+        // Filter to this class.
+        var target = String(classId);
+        var mine = [];
+        for (var i = 0; i < all.length; i++) {
+            var c = all[i];
+            if (!c || typeof c !== 'object') { continue; }
+            if (String(c.classId) !== target) { continue; }
+            mine.push(c);
+        }
+
+        if (mine.length === 0) {
+            return '';
+        }
+
+        // Sort by day, then startTime. Stable output regardless of
+        // the store's insertion order.
+        mine.sort(function(a, b) {
+            var da = isFiniteNumber(a.day) ? a.day : 99;
+            var db = isFiniteNumber(b.day) ? b.day : 99;
+            if (da !== db) { return da - db; }
+            var sa = isFiniteNumber(a.startTime) ? a.startTime : 99;
+            var sb = isFiniteNumber(b.startTime) ? b.startTime : 99;
+            return sa - sb;
+        });
+
+        var out = '  ' + 'Commitments:' + '\n';
+
+        for (var m = 0; m < mine.length; m++) {
+            var cm = mine[m];
+
+            var kind = isNonEmptyString(cm.kind) ? cm.kind : 'commitment';
+            var kindLabel;
+            if (kind === 'officeHours') {
+                kindLabel = 'Office hours';
+            } else if (kind === 'tutoring') {
+                kindLabel = 'Tutoring';
+            } else {
+                kindLabel = kind;
+            }
+
+            var dayLabel = 'Day ' + String(cm.day || '?');
+            var AC = getCalendarConstants();
+            if (AC && typeof AC.getDayName === 'function') {
+                var dn = AC.getDayName(cm.day);
+                if (isNonEmptyString(dn)) { dayLabel = dn; }
+            }
+
+            var timeLabel = '';
+            if (isFiniteNumber(cm.startTime)) {
+                var start = String(cm.startTime).padStart(2, '0');
+                var dur = isFiniteNumber(cm.duration) ? cm.duration : 1;
+                var end = String(cm.startTime + dur).padStart(2, '0');
+                timeLabel = start + ':00\u2013' + end + ':00';
+            }
+
+            var lineText = kindLabel + ': ' + dayLabel;
+            if (timeLabel) { lineText += ' ' + timeLabel; }
+            out += '    ' + lineText + '\n';
+
+            if (isNonEmptyString(cm.characterId)) {
+                out += '      ' + 'With'.padEnd(LABEL_WIDTH) +
+                    ': ' + resolveCharName(cm.characterId) + '\n';
+            }
+            if (isNonEmptyString(cm.label)) {
+                out += '      ' + 'Label'.padEnd(LABEL_WIDTH) +
+                    ': ' + cm.label + '\n';
+            }
+            if (isNonEmptyString(cm.locationId)) {
+                var Loc = window.LocationQueries;
+                if (Loc && typeof Loc.getLocationName === 'function') {
+                    var locName = Loc.getLocationName(cm.locationId);
+                    if (isNonEmptyString(locName) && locName !== 'Unknown') {
+                        out += '      ' + 'Location'.padEnd(LABEL_WIDTH) +
+                            ': ' + locName + '\n';
+                    }
+                }
+            }
+            if (isFiniteNumber(cm.startWeek) ||
+                isFiniteNumber(cm.endWeek)) {
+                out += '      ' + 'Period'.padEnd(LABEL_WIDTH) +
+                    ': ' + formatWeekRange(cm.startWeek, cm.endWeek) +
+                    '\n';
+            }
         }
 
         return out;
