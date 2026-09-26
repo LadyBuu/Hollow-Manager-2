@@ -90,6 +90,29 @@
  *   panel. The handlers read it off the button rather than
  *   re-reading AcademyUI.getSelectedClassId(), so the buttons are
  *   robust to selection changes between render and click.
+ *
+ * CHARACTER EXPORT:
+ *   The character detail panel's header carries one Export
+ *   button. It emits:
+ *
+ *     data-action="character-export"
+ *     data-character-id="<the character id>"
+ *
+ *   dispatchAction routes the marker to handleCharacterExport,
+ *   which calls CharacterExport.exportCharacterText(charId) and
+ *   reports the result via NotificationSystem. The report itself
+ *   is built by the export module; this controller never walks
+ *   character data.
+ *
+ *   The button reads its character id off its own dataset rather
+ *   than re-reading AcademyUI.getSelectedCharacterId(). This
+ *   matches the class export buttons and keeps the handler robust
+ *   to selection changes between render and click.
+ *
+ *   The export module is looked up on window.CharacterExport at
+ *   click time. It is not a load-time dependency of this
+ *   controller; a missing module produces a clear error
+ *   notification rather than a load-time throw.
  */
 
 (function() {
@@ -188,6 +211,7 @@
     function getSchedule() { return window.AcademySchedule || null; }
     function getScheduleExport() { return window.ScheduleExport || null; }
     function getClassRosterExport() { return window.ClassRosterExport || null; }
+    function getCharacterExport() { return window.CharacterExport || null; }
 
     // ============================================================
     // SMALL HELPERS
@@ -831,6 +855,10 @@
                 );
                 return;
 
+            case 'character-export':
+                handleCharacterExport(el.dataset.characterId);
+                return;
+
             case 'edit-social-score':
                 handleEditSocialScore(el.dataset.characterId);
                 return;
@@ -1099,33 +1127,73 @@
     }
 
     // ============================================================
-    // CLASS EXPORTS
+    // CHARACTER EXPORT
     // ============================================================
     //
-    // Three class-scoped plain-text exports, all triggered from the
-    // class detail panel's action row.
+    // The character detail panel's header carries one Export
+    // button. It emits `character-export` with the character id in
+    // its own dataset.
     //
-    //   class-export-schedule
-    //     The class's weekly schedule: every teaching session of
-    //     every group in the class, plus every instructor
-    //     commitment attached to the class, both for the current
-    //     display week. Routes through ScheduleExport.
+    // The handler reads the id off the button, not off AcademyUI.
+    // This matches the class export handlers below and keeps the
+    // button robust to selection changes between render and click.
     //
-    //   class-export-graduates
-    //     Students of the class who have no eliminations of any
-    //     kind. Routes through ClassRosterExport.
-    //
-    //   class-export-characters
-    //     Every student in the class, including eliminated ones.
-    //     Same field set and file layout as graduates; the
-    //     elimination filter is not applied. Routes through
-    //     ClassRosterExport.
-    //
-    // Every button carries data-class-id from the class detail
-    // panel's action row. The handlers read it off the button
-    // rather than re-reading AcademyUI.getSelectedClassId(), so
-    // the buttons are robust to selection changes between render
-    // and click.
+    // The export module is resolved at click time. It is not a
+    // load-time dependency of this controller; a missing module
+    // produces a notification rather than a load-time throw.
+
+    function handleCharacterExport(charId) {
+        if (!isNonEmptyString(charId)) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        var Exporter = getCharacterExport();
+        if (!Exporter ||
+            typeof Exporter.exportCharacterText !== 'function') {
+            notify(
+                'Character export module is not loaded.',
+                'error'
+            );
+            return;
+        }
+
+        var result;
+        try {
+            result = Exporter.exportCharacterText(String(charId));
+        } catch (e) {
+            console.warn(
+                '[AcademyPeopleController] ' +
+                'exportCharacterText threw:', e
+            );
+            notify('Character export failed: ' + e.message, 'error');
+            return;
+        }
+
+        if (result && result.exported) {
+            notify(
+                'Exported character report: ' + result.filename,
+                'success'
+            );
+            return;
+        }
+
+        var err = (result && result.error) ? result.error : '';
+
+        if (err === 'Character not found.') {
+            notify(err, 'warning');
+            return;
+        }
+
+        notify(
+            'Character export failed: ' + (err || 'Unknown error'),
+            'error'
+        );
+    }
+
+    // ============================================================
+    // CLASS EXPORTS
+    // ============================================================
 
     function handleExportClassSchedule(el) {
         var classId = el && el.dataset ? el.dataset.classId : null;
@@ -2701,20 +2769,6 @@
     // TEACHING GROUPS — BULK ROSTER OPERATIONS
     // ============================================================
 
-    /**
-     * Clear Roster: remove every member from a group, keeping the
-     * group and its sessions.
-     *
-     * HARD DELETE. The member records are removed entirely. No
-     * history survives. This matches the per-student Remove button
-     * in the group block header, which also calls a hard-delete
-     * operation. The intent is correction: "this assignment was a
-     * mistake and the records should not have existed."
-     *
-     * The group record, its startWeek / endWeek, its customName,
-     * its groupNumber, and every teaching session owned by it are
-     * unchanged.
-     */
     function handleClearTeachingGroupRoster(groupId) {
         if (!isNonEmptyString(groupId)) { return; }
 
@@ -2781,17 +2835,6 @@
             });
     }
 
-    /**
-     * Delete Group: remove the teaching group and every session on
-     * it, in one transaction. Members are unassigned.
-     *
-     * Routes to AcademySchedule.removeTeachingGroup, which owns
-     * the compound operation. It deletes the group record and
-     * every teaching session whose groupId matches. Students
-     * enrolled in the discipline are not affected; their
-     * enrolments are independent of their membership in this
-     * group.
-     */
     function handleDeleteTeachingGroup(groupId, classId) {
         if (!isNonEmptyString(groupId)) { return; }
 
