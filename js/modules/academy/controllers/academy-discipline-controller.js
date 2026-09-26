@@ -41,7 +41,14 @@
  *   - Toggling the summary panel open and closed.
  *   - The inline candidate picker and roster actions inside the
  *     discipline sessions panel.
- *   - The discipline grid's cell actions.
+ *   - The discipline grid's cell actions:
+ *       schedule-discipline-assign         — open the instructor
+ *                                             modal in picker mode
+ *                                             for the clicked empty
+ *                                             cell
+ *       schedule-discipline-slot-open      — open the session actions
+ *                                             modal for the clicked
+ *                                             occupied cell
  *   - The Schedule tab's free-slots actions.
  *   - The Schedule tab's group management.
  *
@@ -61,6 +68,23 @@
  *
  *   Without both call sites, the button state can fall out of sync
  *   with the checkbox state.
+ *
+ * ADD-ANOTHER-INSTRUCTOR:
+ *   The session actions modal (academy-session-actions-modal.js)
+ *   gained a third action, "Add another instructor here." When it
+ *   fires, it calls the callback this controller supplies via
+ *   `onAddInstructor`. The callback opens the instructor picker
+ *   (academy-schedule-instructor-modal.js) in `picker` mode with
+ *   the same (class, discipline, week) that the discipline grid is
+ *   showing, and the day/hour of the session the user clicked.
+ *
+ *   The actions modal closes itself before invoking the callback.
+ *   The callback therefore opens the picker into an empty modal
+ *   slot; there is no stacking.
+ *
+ *   The picker creates a second session at the same (day, hour) for
+ *   a different instructor. The grid then renders two co-occupants
+ *   in the cell.
  *
  * DEPENDENCY DIRECTION:
  *   Shell → registry → this controller.
@@ -1119,11 +1143,6 @@
         // must enable it. Without this branch, the button stays
         // disabled and the browser shows a forbidden cursor when the
         // user hovers it.
-        //
-        // The People view's picker has the same handler under the
-        // name updateCandidateSelectionState (in
-        // academy-people-controller.js). This is the discipline
-        // sessions panel's counterpart.
         if (target.classList &&
             target.classList.contains(
                 'academy-teaching-group-candidate-checkbox'
@@ -1188,22 +1207,10 @@
     // ============================================================
     // CANDIDATE PICKER STATE (discipline sessions panel)
     // ============================================================
-    //
-    // Counterpart to AcademyPeopleController's
-    // updateCandidateSelectionState. The two read the same structural
-    // selectors, but the discipline picker's submit button uses the
-    // action name "discipline-sessions-add-student-submit" while the
-    // People picker's uses "teaching-groups-add-student-submit".
-    //
-    // The two actions exist because the two panels are wired by
-    // different controllers with different dispatch tables. They
-    // could be unified under a single action name; that unification
-    // is deliberately not part of this fix.
 
     function updateDisciplineCandidateSelectionState(picker) {
         if (!picker) { return; }
 
-        // Update the eligible section's count badge.
         var eligibleSection = picker.querySelector(
             '.academy-teaching-group-candidate-section' +
             '[data-section="eligible"]'
@@ -1226,8 +1233,6 @@
             }
         }
 
-        // Enable or disable the Add button based on the total
-        // count of checked boxes across both sections.
         var addBtn = picker.querySelector(
             '[data-action="discipline-sessions-add-student-submit"]'
         );
@@ -1450,6 +1455,57 @@
             classId: isNonEmptyString(classId)
                 ? String(classId)
                 : null,
+
+            // ---- Add-another-instructor callback ----
+            //
+            // The actions modal closes itself before invoking this.
+            // Our job is to open the instructor picker in `picker`
+            // mode, pre-filled with the clicked slot. The picker
+            // creates a second session at the same (day, hour) for
+            // a different instructor; the grid then renders two
+            // co-occupants in the cell.
+            onAddInstructor: function(day, hour) {
+                var InstructorModal = getScheduleInstructorModal();
+                if (!InstructorModal ||
+                    typeof InstructorModal.openModal !== 'function') {
+                    notify(
+                        'Instructor scheduler is not available.',
+                        'error'
+                    );
+                    return;
+                }
+
+                if (!_disciplineDraft || !_disciplineDraft.id) {
+                    notify('Discipline is not available.', 'error');
+                    return;
+                }
+
+                var resolvedClassId = AcademyUI.getSelectedClassId();
+                if (!isNonEmptyString(resolvedClassId)) {
+                    notify('Select a class first.', 'error');
+                    return;
+                }
+
+                var week = resolveScheduleWeek();
+                if (week === null) {
+                    notify('Select a valid week.', 'error');
+                    return;
+                }
+
+                InstructorModal.openModal({
+                    mode: 'picker',
+                    classId: String(resolvedClassId),
+                    disciplineId: String(_disciplineDraft.id),
+                    week: week,
+                    day: day,
+                    startHour: hour,
+                    onClose: function() {
+                        var c = getContext();
+                        c.onChange();
+                    }
+                });
+            },
+
             onClose: function() {
                 ctx.onChange();
             }
