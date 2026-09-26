@@ -1,0 +1,975 @@
+/**
+ * css/academy/modals.css - Academy modal content
+ *
+ * Every Academy modal family in one place. Grouped deliberately:
+ * each modal is built by Modal.createModal() and rendered into a
+ * .modal-content wrapper, so the "which file styles this modal?"
+ * question has exactly one answer.
+ *
+ * The shared modal chrome — .modal, .modal-content, .modal-header,
+ * .modal-body, .modal-footer, .close-modal, .modal-content.wide,
+ * .modal-content.small — is owned by shared.css. This file does
+ * NOT redefine it.
+ *
+ * Families covered:
+ *
+ *   .academy-rebalance-*          Rebalance modal
+ *   .academy-group-management-*   Group Management modal
+ *   .academy-session-actions-*    Session Actions modal
+ *   .academy-session-form-*       Session Form modal
+ *   .academy-session-*            (shared session summary row)
+ *   .academy-grade-*              Grades editor modals
+ *   .ag-*                         Grades editor form fields
+ *
+ * Load order:
+ *   shared.css
+ *   academy.css
+ *   academy/<per-view>.css
+ *   academy/modals.css            <- this file
+ */
+
+/* ============================================================
+   REBALANCE MODAL
+   ============================================================
+   Opened from the discipline Schedule tab's "Rebalance Groups"
+   button. Two visible parts:
+     - A form (instructor, scope, target size, Run button).
+     - A result section (summary, before/after table, unplaceable
+       disclosure, move diagnostics, stale ribbon).
+   The form is always visible. The result section is replaced on
+   every Run.
+ */
+
+.academy-rebalance-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-height: 65vh;
+    overflow-y: auto;
+}
+
+/* ---------- Form ---------- */
+
+.academy-rebalance-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px 12px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+}
+
+.academy-rebalance-form-row {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    align-items: flex-end;
+}
+
+.academy-rebalance-field {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    flex: 1 1 220px;
+    min-width: 0;
+}
+
+.academy-rebalance-field-actions {
+    flex: 0 0 auto;
+    justify-content: flex-end;
+}
+
+.academy-rebalance-label {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    font-weight: 500;
+}
+
+.academy-rebalance-instructor,
+.academy-rebalance-target {
+    width: 100%;
+    padding: 6px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.academy-rebalance-target {
+    max-width: 120px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.academy-rebalance-instructor:focus,
+.academy-rebalance-target:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.academy-rebalance-scope-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+}
+
+.academy-rebalance-radio-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.72rem;
+    color: var(--text);
+    cursor: pointer;
+    user-select: none;
+}
+
+.academy-rebalance-radio-label input[type="radio"] {
+    width: auto;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+
+.academy-rebalance-context {
+    margin: 0;
+    padding-top: 6px;
+    border-top: 1px solid var(--border-soft);
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    line-height: 1.4;
+}
+
+.academy-rebalance-context strong {
+    color: var(--text);
+    font-weight: 600;
+}
+
+/* ---------- Unavailable-students warning ---------- */
+
+.academy-rebalance-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--warning-soft);
+    border-left: 3px solid var(--warning);
+    border-radius: 4px;
+}
+
+.academy-rebalance-warning-icon {
+    flex: 0 0 auto;
+    font-size: 0.9rem;
+    line-height: 1.2;
+    color: var(--warning);
+}
+
+.academy-rebalance-warning-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    line-height: 1.4;
+}
+
+/* ---------- Empty and error states ---------- */
+
+.academy-rebalance-empty {
+    padding: 24px 12px;
+    text-align: center;
+    background: var(--panel);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius);
+}
+
+.academy-rebalance-error {
+    padding: 12px 14px;
+    background: var(--danger-soft);
+    border-left: 3px solid var(--danger);
+    border-radius: 4px;
+    font-size: 0.75rem;
+    color: var(--danger);
+    line-height: 1.4;
+}
+
+.academy-rebalance-error p {
+    margin: 0;
+}
+
+/* ---------- Result summary ---------- */
+
+.academy-rebalance-summary {
+    padding: 10px 12px;
+    background: var(--panel);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+}
+
+.academy-rebalance-summary-line {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+}
+
+.academy-rebalance-summary-item strong {
+    color: var(--text);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.academy-rebalance-summary-warning strong {
+    color: var(--warning);
+}
+
+.academy-rebalance-summary-cross {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border-soft);
+    font-size: 0.7rem;
+    color: var(--warning);
+    font-weight: 600;
+}
+
+/* ---------- Before / after table ---------- */
+
+.academy-rebalance-table-wrapper {
+    max-height: 260px;
+    overflow-y: auto;
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+}
+
+.academy-rebalance-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.72rem;
+    background: var(--bg);
+}
+
+.academy-rebalance-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    text-align: left;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    color: var(--text-dim);
+    font-size: 0.62rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+}
+
+.academy-rebalance-table thead th.num,
+.academy-rebalance-table tbody td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    width: 80px;
+}
+
+.academy-rebalance-table tbody td {
+    padding: 5px 10px;
+    border-bottom: 1px solid var(--border-soft);
+    color: var(--text);
+    vertical-align: middle;
+}
+
+.academy-rebalance-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.academy-rebalance-delta-positive {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.academy-rebalance-delta-negative {
+    color: var(--info);
+    font-weight: 600;
+}
+
+/* ---------- Unplaceable disclosure ---------- */
+
+.academy-rebalance-unplaceable {
+    border: 1px solid var(--danger-soft);
+    border-left: 3px solid var(--danger);
+    border-radius: 4px;
+    background: var(--danger-soft);
+}
+
+.academy-rebalance-unplaceable-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 12px;
+    background: transparent;
+    border: none;
+    text-align: left;
+    font: inherit;
+    color: var(--danger);
+    cursor: pointer;
+    border-radius: 4px;
+}
+
+.academy-rebalance-unplaceable-toggle:hover {
+    background: rgba(193, 69, 60, 0.18);
+}
+
+.academy-rebalance-unplaceable-caret {
+    display: inline-block;
+    width: 12px;
+    font-size: 0.75rem;
+    flex: 0 0 auto;
+}
+
+.academy-rebalance-unplaceable-title {
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.academy-rebalance-unplaceable-body {
+    padding: 6px 12px 10px;
+    border-top: 1px solid rgba(193, 69, 60, 0.35);
+}
+
+.academy-rebalance-unplaceable-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 0.72rem;
+}
+
+.academy-rebalance-unplaceable-list li {
+    color: var(--text);
+}
+
+.academy-rebalance-unplaceable-reason {
+    color: var(--text-dim);
+    font-style: italic;
+    font-size: 0.68rem;
+}
+
+/* ---------- Move diagnostics ---------- */
+
+.academy-rebalance-diagnostics {
+    padding: 10px 12px;
+    background: var(--panel);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+}
+
+.academy-rebalance-diagnostics-header {
+    padding-bottom: 6px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-rebalance-diagnostics-title {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--accent);
+}
+
+.academy-rebalance-diagnostic-row {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 0.72rem;
+}
+
+.academy-rebalance-diagnostic-row:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.academy-rebalance-diagnostic-group {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.academy-rebalance-diagnostic-summary {
+    color: var(--text-dim);
+    line-height: 1.4;
+}
+
+.academy-rebalance-diagnostic-hint {
+    font-size: 0.68rem;
+    color: var(--info);
+    font-style: italic;
+    line-height: 1.4;
+}
+
+.academy-rebalance-diagnostic-constrained
+    .academy-rebalance-diagnostic-group {
+    color: var(--warning);
+}
+
+.academy-rebalance-diagnostic-list {
+    list-style: disc;
+    margin: 2px 0 0 0;
+    padding-left: 18px;
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    line-height: 1.5;
+}
+
+.academy-rebalance-diagnostic-list li strong {
+    color: var(--text);
+    font-weight: 600;
+}
+
+/* ---------- Footer + stale ribbon ---------- */
+
+.academy-rebalance-footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.academy-rebalance-stale-ribbon {
+    flex: 1 1 auto;
+    font-size: 0.7rem;
+    color: var(--warning);
+    font-style: italic;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ---------- Mobile ---------- */
+
+@media (max-width: 600px) {
+    .academy-rebalance-body {
+        max-height: none;
+        gap: 10px;
+    }
+
+    .academy-rebalance-form-row {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .academy-rebalance-field,
+    .academy-rebalance-field-actions {
+        flex: 1 1 auto;
+    }
+
+    .academy-rebalance-target {
+        max-width: none;
+    }
+
+    .academy-rebalance-field-actions button {
+        width: 100%;
+    }
+
+    .academy-rebalance-summary-line {
+        flex-direction: column;
+        gap: 3px;
+    }
+
+    .academy-rebalance-table {
+        font-size: 0.68rem;
+    }
+
+    .academy-rebalance-table thead th,
+    .academy-rebalance-table tbody td {
+        padding: 4px 6px;
+    }
+
+    .academy-rebalance-footer {
+        flex-direction: column-reverse;
+        align-items: stretch;
+    }
+
+    .academy-rebalance-footer button {
+        width: 100%;
+    }
+
+    .academy-rebalance-stale-ribbon {
+        white-space: normal;
+        text-align: center;
+    }
+}
+
+/* ============================================================
+   GROUP MANAGEMENT MODAL
+   ============================================================
+   Opened from the discipline Schedule tab's "Manage Groups"
+   button. Per-instructor sections, each holding a list of group
+   rows (number badge, rename input, display preview, meta).
+ */
+
+.academy-group-management-body {
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+.academy-group-management-summary {
+    margin: 0 0 10px 0;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+}
+
+/* ---------- Instructor section ---------- */
+
+.academy-group-management-instructor {
+    margin-bottom: 12px;
+    padding: 8px 10px;
+    background: var(--panel);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+}
+
+.academy-group-management-instructor:last-child {
+    margin-bottom: 0;
+}
+
+.academy-group-management-instructor-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding-bottom: 6px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-group-management-instructor-name {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--info);
+    flex: 1;
+    min-width: 0;
+}
+
+.academy-group-management-instructor-count {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+
+.academy-group-management-renumber-btn {
+    flex: 0 0 auto;
+    font-size: 0.65rem;
+    padding: 3px 10px;
+}
+
+/* ---------- Group list ---------- */
+
+.academy-group-management-group-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.academy-group-management-group-row {
+    display: grid;
+    grid-template-columns: 32px 1fr 1fr auto;
+    gap: 8px;
+    align-items: center;
+    padding: 6px 8px;
+    background: var(--bg);
+    border-radius: 4px;
+    font-size: 0.72rem;
+}
+
+@media (max-width: 600px) {
+    .academy-group-management-group-row {
+        grid-template-columns: 32px 1fr;
+        grid-template-rows: auto auto auto;
+    }
+
+    .academy-group-management-name-input {
+        grid-column: 2;
+    }
+
+    .academy-group-management-display-preview {
+        grid-column: 1 / -1;
+    }
+
+    .academy-group-management-meta {
+        grid-column: 1 / -1;
+    }
+}
+
+.academy-group-management-number-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    border-radius: 50%;
+    font-size: 0.7rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    flex: 0 0 auto;
+}
+
+.academy-group-management-name-input {
+    width: 100%;
+    min-width: 0;
+    padding: 4px 8px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.academy-group-management-name-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.academy-group-management-name-input:disabled {
+    opacity: 0.6;
+    cursor: wait;
+}
+
+.academy-group-management-display-preview {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    font-style: italic;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+
+.academy-group-management-meta {
+    font-size: 0.62rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    flex: 0 0 auto;
+}
+
+/* ---------- Footer ---------- */
+
+.academy-group-management-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+@media (max-width: 600px) {
+    .academy-group-management-footer {
+        flex-direction: column-reverse;
+    }
+
+    .academy-group-management-footer button {
+        width: 100%;
+    }
+}
+
+/* ============================================================
+   SESSION ACTIONS MODAL
+   ============================================================
+   Opened when the user clicks an occupied cell on the
+   discipline schedule grid. Offers Edit / Delete / (optional)
+   Add-another-instructor. Inline confirm state for Delete.
+ */
+
+.academy-session-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+.academy-session-actions-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.academy-session-actions-add-instructor {
+    margin-top: 4px;
+}
+
+/* ---------- Session summary rows ---------- */
+
+.academy-session-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: 8px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    font-size: 0.72rem;
+}
+
+.academy-session-summary-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    padding: 2px 0;
+}
+
+.academy-session-summary-row + .academy-session-summary-row {
+    border-top: 1px solid var(--border-soft);
+}
+
+.academy-session-summary-label {
+    color: var(--text-dim);
+    flex-shrink: 0;
+}
+
+.academy-session-summary-value {
+    color: var(--text);
+    font-weight: 500;
+    text-align: right;
+    word-break: break-word;
+    min-width: 0;
+}
+
+.academy-session-delete-warning {
+    margin: 8px 0 0 0;
+    font-size: 0.7rem;
+    line-height: 1.4;
+}
+
+@media (max-width: 480px) {
+    .academy-session-actions-footer {
+        flex-direction: column-reverse;
+    }
+
+    .academy-session-actions-footer button {
+        width: 100%;
+    }
+}
+
+/* ============================================================
+   SESSION FORM MODAL
+   ============================================================
+   Add / Edit form for a single teaching-group session.
+ */
+
+.academy-session-form-summary {
+    margin: 0 0 10px 0;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+}
+
+.academy-session-form-summary strong {
+    color: var(--text);
+    font-weight: 600;
+}
+
+/* ---------- Fields ---------- */
+
+.academy-session-day,
+.academy-session-start-hour,
+.academy-session-duration,
+.academy-session-location {
+    width: 100%;
+    max-width: 320px;
+    padding: 6px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.academy-session-day:focus,
+.academy-session-start-hour:focus,
+.academy-session-duration:focus,
+.academy-session-location:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* ---------- Duration read-only (edit mode) ---------- */
+
+.academy-session-duration-readonly {
+    margin-bottom: 8px;
+}
+
+.academy-session-duration-value {
+    margin: 0;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    font-size: 0.75rem;
+    color: var(--text);
+}
+
+.academy-session-duration-locked {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-style: italic;
+    margin-left: 4px;
+}
+
+/* ---------- Footer ---------- */
+
+.academy-session-form-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+@media (max-width: 480px) {
+    .academy-session-form-footer {
+        flex-direction: column-reverse;
+    }
+
+    .academy-session-form-footer button {
+        width: 100%;
+    }
+}
+
+/* ============================================================
+   GRADES EDITOR MODALS
+   ============================================================
+   Two modals: the grade form (Add / Edit) and the delete
+   confirm. Field inputs use the .ag- prefix to stay out of
+   the broader academy- namespace.
+ */
+
+/* ---------- Grade form modal ---------- */
+
+.academy-grade-form-modal .modal-content,
+.academy-grade-delete-modal .modal-content {
+    max-width: 520px;
+}
+
+.academy-grade-week-readonly {
+    margin-bottom: 10px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border-radius: 4px;
+}
+
+.academy-grade-week-readonly label {
+    display: block;
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 2px;
+}
+
+.academy-grade-week-value {
+    margin: 0;
+    font-size: 0.78rem;
+    color: var(--text);
+    font-weight: 500;
+}
+
+.academy-grade-week-locked {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-style: italic;
+    font-weight: 400;
+    margin-left: 4px;
+}
+
+/* ---------- Grade form fields ---------- */
+
+.ag-disc-select,
+.ag-type-select,
+.ag-score-input,
+.ag-max-score-input,
+.ag-date-input,
+.ag-notes-input {
+    width: 100%;
+    padding: 6px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.ag-score-input,
+.ag-max-score-input {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.ag-notes-input {
+    resize: vertical;
+    min-height: 48px;
+}
+
+.ag-disc-select:focus,
+.ag-type-select:focus,
+.ag-score-input:focus,
+.ag-max-score-input:focus,
+.ag-date-input:focus,
+.ag-notes-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* ---------- Converted-grade preview ---------- */
+
+.ag-grade-preview-group {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    font-size: 0.75rem;
+}
+
+.ag-grade-preview-label {
+    color: var(--text-dim);
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+}
+
+.ag-grade-preview {
+    color: var(--text);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Mobile ---------- */
+
+@media (max-width: 480px) {
+    .academy-grade-form-modal .modal-content,
+    .academy-grade-delete-modal .modal-content {
+        max-width: none;
+    }
+}
