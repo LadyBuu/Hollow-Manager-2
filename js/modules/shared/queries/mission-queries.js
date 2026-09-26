@@ -1,11 +1,10 @@
 /**
- * shared/queries/mission-queries.js - Mission Queries
+ * modules/shared/queries/mission-queries.js - Mission Queries
+ * Read-only facade for mission data.
  *
- * Path: js/shared/queries/mission-queries.js
+ * Path: js/modules/shared/queries/mission-queries.js
  *
- * Read-only access to mission data.
- *
- * WHAT THIS MODULE OWNS:
+ * RESPONSIBILITIES:
  *   - Reading missions from window.data.missions.
  *   - Filtering, searching, sorting missions.
  *   - Aggregating statistics over missions.
@@ -59,6 +58,13 @@
  *   - window.IdUtils
  *   - window.MissionConstants
  *   - window.MissionId            (MissionId.derive)
+ *
+ * DEPENDENCIES (LAZY, resolved at call time by getMissionsForCharacter):
+ *   - window.TeamQueries
+ *     Used only by getMissionsForCharacter. The two-hop derivation
+ *     character → teams → missions belongs to the mission domain
+ *     because the mission domain owns the assignment relationship,
+ *     but the team lookup itself is delegated to TeamQueries.
  */
 
 (function() {
@@ -380,6 +386,139 @@
         return result;
     }
 
+    /**
+     * Get every mission a character is connected to, via the teams
+     * they are or were members of.
+     *
+     * A mission is assigned to a team (assignedTeamId). A character
+     * is connected to a mission when they are or were a member of
+     * that team. This is the participation model the mission domain
+     * actually has; there is no per-character participants array on
+     * the mission record.
+     *
+     * TWO-HOP DERIVATION:
+     *   character → teams (via TeamQueries) → missions (via the
+     *   team's assignedTeamId).
+     *
+     *   The derivation lives here, on the query surface, rather than
+     *   inside a consumer, for the same reason getTeamsForCharacter
+     *   lives on TeamQueries: the mission domain owns the
+     *   assignment relationship, and the derivation is a read of
+     *   that relationship.
+     *
+     * TEAM SET:
+     *   Every team the character has ever been a member of,
+     *   INCLUDING deprecated teams, via
+     *   TeamQueries.getTeamsForCharacterAllTimeIncludingDeprecated.
+     *   A deprecated team's missions still happened.
+     *
+     * MISSION SET:
+     *   Archived missions ARE included. A mission that was archived
+     *   still happened. The caller decides whether to display
+     *   archive state.
+     *
+     * DEDUPLICATION:
+     *   A character on two teams that both ran the same mission
+     *   appears once. The first team to claim the mission wins;
+     *   the team set is sorted by name, so the choice is
+     *   deterministic.
+     *
+     * RETURNS:
+     *   Array of { mission, teamId, teamName }, sorted by team name
+     *   ascending, then by mission createdAt descending.
+     *
+     * DEPENDENCY:
+     *   TeamQueries is resolved lazily at call time. When it is
+     *   unavailable, returns []. This is a read; an absent
+     *   dependency is "no answer", not a failure.
+     *
+     * @param {string} charId
+     * @returns {array}
+     */
+    function getMissionsForCharacter(charId) {
+        if (!isNonEmptyString(charId)) {
+            return [];
+        }
+
+        var TeamQueries = window.TeamQueries;
+        if (!TeamQueries ||
+            typeof TeamQueries.getTeamsForCharacterAllTimeIncludingDeprecated !==
+                'function') {
+            return [];
+        }
+
+        var target = String(charId);
+        var teams = [];
+
+        try {
+            teams = TeamQueries
+                .getTeamsForCharacterAllTimeIncludingDeprecated(target) || [];
+        } catch (e) {
+            console.warn(
+                '[MissionQueries] ' +
+                'getTeamsForCharacterAllTimeIncludingDeprecated ' +
+                'failed:', e
+            );
+            return [];
+        }
+
+        if (!Array.isArray(teams) || teams.length === 0) {
+            return [];
+        }
+
+        var seenMissionIds = Object.create(null);
+        var result = [];
+
+        for (var t = 0; t < teams.length; t++) {
+            var team = teams[t];
+            if (!team || !team.id) { continue; }
+
+            var teamId = String(team.id);
+            var teamName = isNonEmptyString(team.name)
+                ? String(team.name)
+                : 'Unnamed Team';
+
+            var missions = getMissionsByTeam(teamId, {
+                includeArchived: true
+            });
+
+            for (var m = 0; m < missions.length; m++) {
+                var mission = missions[m];
+                if (!mission || !mission.id) { continue; }
+
+                var missionKey = normaliseId(mission.id);
+                if (missionKey === null) { continue; }
+                if (seenMissionIds[missionKey]) { continue; }
+                seenMissionIds[missionKey] = true;
+
+                result.push({
+                    mission: mission,
+                    teamId: teamId,
+                    teamName: teamName
+                });
+            }
+        }
+
+        result.sort(function(a, b) {
+            var teamCmp = a.teamName.localeCompare(b.teamName);
+            if (teamCmp !== 0) { return teamCmp; }
+
+            var ta = isNonEmptyString(a.mission.createdAt)
+                ? a.mission.createdAt
+                : '';
+            var tb = isNonEmptyString(b.mission.createdAt)
+                ? b.mission.createdAt
+                : '';
+            if (ta !== tb) { return tb.localeCompare(ta); }
+
+            return String(a.mission.id).localeCompare(
+                String(b.mission.id)
+            );
+        });
+
+        return result;
+    }
+
     // ============================================================
     // TYPE AND TAG READS
     // ============================================================
@@ -626,6 +765,7 @@
         // Relationship reads
         getMissionsByTeam: getMissionsByTeam,
         getMissionsBySupportPersonnel: getMissionsBySupportPersonnel,
+        getMissionsForCharacter: getMissionsForCharacter,
 
         // Type and tag reads
         getMissionsByType: getMissionsByType,
@@ -661,6 +801,7 @@
             'getArchivedMissions',
             'getMissionsByTeam',
             'getMissionsBySupportPersonnel',
+            'getMissionsForCharacter',
             'getMissionsByType',
             'getMissionsByTag',
             'searchMissions',
