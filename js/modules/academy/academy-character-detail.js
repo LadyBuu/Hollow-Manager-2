@@ -44,7 +44,22 @@
  *   The renderer emits markers only. The confirmation and the
  *   domain mutations live in the controller.
  *
- * (Rest of the header unchanged.)
+ * CHARACTER EXPORT BUTTON:
+ *   The header title row carries a third element after the role
+ *   badge: a small, secondary-styled Export button. Clicking it
+ *   produces a plain-text report of everything the application
+ *   knows about the character, downloaded as a .txt file. The
+ *   report is built by CharacterExport.exportCharacterText.
+ *
+ *   The button emits:
+ *     data-action="character-export"
+ *     data-character-id="<the character id>"
+ *
+ *   The People controller's dispatchAction routes the marker to
+ *   CharacterExport.exportCharacterText and reports the result
+ *   via NotificationSystem. The renderer does not build the
+ *   report and does not trigger the download; it emits the marker
+ *   and the id, nothing else.
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
@@ -192,6 +207,15 @@
     // ============================================================
     // HEADER
     // ============================================================
+    //
+    // The title row carries three elements, left to right:
+    //   1. the character name (h3)
+    //   2. the role badge (student / instructor)
+    //   3. the Export button
+    //
+    // The Export button emits the marker the People controller
+    // dispatches on. It is a read-only side action, styled
+    // `secondary` so it does not visually outrank Drop Out.
 
     function renderHeader(character, mode) {
         var displayRole = mode === 'instructor' ? 'instructor' : 'student';
@@ -206,6 +230,14 @@
         html += '<span class="' + getRoleBadgeClass(displayRole) + '">' +
                     escapeHtml(getRoleLabel(displayRole)) +
                 '</span>';
+        html += '<button type="button" ' +
+                    'class="small secondary academy-character-export-btn" ' +
+                    'data-action="character-export" ' +
+                    'data-character-id="' +
+                        escapeAttribute(character.id) + '" ' +
+                    'title="Export a full report for this character">' +
+                    'Export' +
+                '</button>';
         html += '</div>';
 
         html += '<div class="academy-character-detail-meta">';
@@ -1077,8 +1109,6 @@
                 '</span>';
 
         if (!isPickerOpen) {
-            // Clear Roster: shown only when there is something to
-            // clear. A group with no members has nothing to act on.
             if (members.length > 0) {
                 html += '<button type="button" class="small secondary ' +
                             'academy-teaching-group-clear-roster-btn" ' +
@@ -1101,10 +1131,6 @@
                     '</button>';
         }
 
-        // Delete Group: always available. Danger-styled. The
-        // controller confirms before dispatching; the confirmation
-        // names the group, its session count, and its member
-        // count.
         html += '<button type="button" class="small danger ' +
                     'academy-teaching-group-delete-btn" ' +
                     'data-action="teaching-groups-delete-group" ' +
@@ -1182,19 +1208,6 @@
     // ============================================================
     // CANDIDATE PICKER (multi-select)
     // ============================================================
-    //
-    // Two sections, each with a header, an action row, and a list:
-    //
-    //   eligible       checkboxes. Select all / Clear.
-    //   blocked        no checkboxes. Warning icon + reason.
-    //
-    // Search filters both sections. A section with zero visible
-    // rows hides itself entirely (header + actions + list). The
-    // "no matches" hint appears when the whole picker has zero
-    // visible rows.
-    //
-    // The Add button label reflects the currently-checked count.
-    // Its `disabled` attribute toggles with that count.
 
     function renderCandidatePicker(group, charId, pickerCandidates) {
         var hasVM = pickerCandidates &&
@@ -1234,7 +1247,6 @@
             return html;
         }
 
-        // ---- Header ----
         html += '<div class="academy-teaching-group-candidate-header">';
         html += '<span class="academy-teaching-group-candidate-title">' +
                     'Add students to ' +
@@ -1242,17 +1254,14 @@
                 '</span>';
         html += '</div>';
 
-        // ---- Search box ----
         html += '<input type="text" ' +
                     'class="academy-teaching-group-candidate-search" ' +
                     'placeholder="Search candidates..." ' +
                     'autocomplete="off" ' +
                     'spellcheck="false">';
 
-        // ---- Scrollable body ----
         html += '<div class="academy-teaching-group-candidate-body">';
 
-        // Eligible section
         if (totalEligible > 0) {
             html += '<div class="academy-teaching-group-candidate-section ' +
                         'academy-teaching-group-candidate-section-eligible" ' +
@@ -1290,7 +1299,6 @@
             html += '</div>';
         }
 
-        // Blocked section
         if (totalBlocked > 0) {
             html += '<div class="academy-teaching-group-candidate-section ' +
                         'academy-teaching-group-candidate-section-blocked" ' +
@@ -1322,7 +1330,6 @@
 
         html += '</div>';
 
-        // ---- Footer ----
         html += '<div class="academy-teaching-group-candidate-actions">';
         html += '<button type="button" class="small secondary" ' +
                     'data-action="teaching-groups-add-student-cancel" ' +
