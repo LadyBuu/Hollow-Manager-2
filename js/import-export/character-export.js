@@ -55,30 +55,24 @@
  *   two sections. A reader who wants "what were their grades?"
  *   skips to DISCIPLINES ENROLLED.
  *
- * TIMELINE:
- *   One line per dated fact, sorted ascending. Sourced from every
- *   domain that carries a year or a week:
+ * IDENTITY — WHAT IT CARRIES:
+ *   IDENTITY is not just the name and dates. It carries three
+ *   further groups, in order:
  *
- *     - Career status changes   (year)
- *     - Class enrolments        (week)
- *     - Team stints             (period)
- *     - Eliminations            (year, week)
- *     - Graduation              (year)
+ *     Physical     build, height, weight, eye/hair/skin colour,
+ *                  appearance notes
+ *     Personality  traits, ideals, bonds, flaws, alignment,
+ *                  likes, dislikes, habits, fears, goals, plus
+ *                  the four newer fields (authority,
+ *                  conflictStyle, socialStyle, quirks)
+ *     Combat       stats (STR / DEX / CON / INT / WIS / CHA),
+ *                  HP, MP, magic levels, weapons, special moves,
+ *                  combat notes
  *
- *   Facts with no date are omitted from the timeline but still
- *   appear in their domain section.
- *
- * GRADUATION:
- *   A character graduates from a class when the class's status is
- *   'graduated' AND the character is in the class's roster. The
- *   graduation year is the class's `year` field.
- *
- *   This is the same "graduate" definition GraduatesExport uses,
- *   minus the elimination filter: GraduatesExport excludes any
- *   character with an elimination record, because it is listing
- *   people who completed the course. This report is a biography,
- *   not a roster, so it lists the graduation fact regardless of
- *   whether the character was later eliminated.
+ *   Each group is emitted when it has at least one field of
+ *   content, and omitted when it has none. The labels match the
+ *   ones used by the character detail panel so the report and the
+ *   panel read as the same document.
  *
  * FAIL-OPEN:
  *   Every optional domain read is wrapped in try/catch and falls
@@ -108,7 +102,9 @@
  *   - window.AcademyRanking
  *   - window.AcademyGradeSchemes
  *   - window.CalendarConstants
- *   - window.AcademyUI
+ *   - window.CharacterConstants
+ *   - window.MagicConstants
+ *   - window.LocationQueries
  */
 
 (function() {
@@ -217,6 +213,14 @@
         return window.CalendarConstants || null;
     }
 
+    function getCharacterConstants() {
+        return window.CharacterConstants || null;
+    }
+
+    function getMagicConstants() {
+        return window.MagicConstants || null;
+    }
+
     // ============================================================
     // CONSTANTS
     // ============================================================
@@ -225,6 +229,8 @@
     var BANNER = new Array(BANNER_WIDTH + 1).join('=');
     var LABEL_WIDTH = 18;
     var FILENAME_PREFIX = 'character';
+
+    var DEFAULT_STAT_KEYS = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
 
     // ============================================================
     // SMALL HELPERS
@@ -263,8 +269,6 @@
 
     /**
      * Sanitise a display name for use in a filename.
-     * Strips characters illegal on Windows and macOS, collapses
-     * runs of separators, and trims leading/trailing separators.
      */
     function sanitiseForFilename(value) {
         var str = safeString(value);
@@ -281,8 +285,7 @@
 
     /**
      * Left-pad a label to LABEL_WIDTH, then a colon and a space.
-     * Multi-line values are collapsed to single spaces so a notes
-     * field cannot break the block layout.
+     * Multi-line values are collapsed to single spaces.
      */
     function line(label, value) {
         if (!hasText(value)) { return ''; }
@@ -310,7 +313,7 @@
 
     /**
      * An indented line. Two spaces of indent, then the label/value
-     * pair. Used for anything that sits under a sub-header.
+     * pair.
      */
     function indentedLine(label, value) {
         var inner = line(label, value);
@@ -319,8 +322,7 @@
     }
 
     /**
-     * Emit a multi-line text block, indented. Used for notes and
-     * free-form fields.
+     * Emit a multi-line text block, indented.
      */
     function indentBlock(label, text) {
         if (!hasText(text)) { return ''; }
@@ -330,6 +332,31 @@
             out += '    ' + lines[i] + '\n';
         }
         return out;
+    }
+
+    /**
+     * Emit a labelled list value inside a group. The label is
+     * indented four spaces, the value follows. Used for the
+     * physical / personality / combat sub-groups.
+     */
+    function groupLine(label, value) {
+        if (!hasText(value)) { return ''; }
+        var v = String(value).replace(/\s+/g, ' ').trim();
+        if (v === '') { return ''; }
+        var lbl = String(label);
+        while (lbl.length < LABEL_WIDTH) { lbl += ' '; }
+        return '    ' + lbl + ': ' + v + '\n';
+    }
+
+    /**
+     * Emit a group header inside a section.
+     *   Physical
+     *   ~~~~~~~~
+     */
+    function groupHeader(title) {
+        var underlineLen = Math.min(title.length, 40);
+        var underline = new Array(underlineLen + 1).join('~');
+        return '  ' + title + '\n' + '  ' + underline + '\n';
     }
 
     // ============================================================
@@ -374,15 +401,6 @@
             return false;
         }
         return TC.normalizeTeamType(teamType) === 'academic';
-    }
-
-    function formatTeamPeriod(team) {
-        if (!team) { return ''; }
-        var isAcademic = isAcademicTeamType(team.type);
-        if (isAcademic) {
-            return formatWeekRange(team.startPeriod, team.endPeriod);
-        }
-        return formatYearRange(team.startPeriod, team.endPeriod);
     }
 
     // ============================================================
@@ -431,12 +449,6 @@
         }
 
         // ---- Team stints (period-dated) ----
-        //
-        // Professional and temporary teams use year periods.
-        // Academic teams use week periods, which cannot be placed
-        // in a year-sorted timeline without a year — so academic
-        // stints are skipped in the timeline and appear only in
-        // the TEAMS section.
         var TeamQueries = getTeamQueries();
         if (TeamQueries &&
             typeof TeamQueries
@@ -682,6 +694,211 @@
     // IDENTITY
     // ============================================================
 
+    /**
+     * Emit the physical sub-group.
+     */
+    function buildIdentityPhysicalGroup(char) {
+        var out = '';
+        var physicalParts = [];
+
+        if (isNonEmptyString(char.build)) {
+            physicalParts.push(String(char.build));
+        }
+        if (isNonEmptyString(char.height)) {
+            physicalParts.push(String(char.height));
+        }
+        if (isNonEmptyString(char.weight)) {
+            physicalParts.push(String(char.weight));
+        }
+        if (physicalParts.length > 0) {
+            out += groupLine('Build', physicalParts.join(' \u00b7 '));
+        }
+
+        var colourParts = [];
+        if (isNonEmptyString(char.eyes)) { colourParts.push(String(char.eyes)); }
+        if (isNonEmptyString(char.hair)) { colourParts.push(String(char.hair)); }
+        if (isNonEmptyString(char.skin)) { colourParts.push(String(char.skin)); }
+        if (colourParts.length > 0) {
+            out += groupLine('Eyes / hair / skin',
+                colourParts.join(' / '));
+        }
+
+        if (isNonEmptyString(char.gender)) {
+            out += groupLine('Gender', char.gender);
+        }
+        if (isNonEmptyString(char.attraction)) {
+            out += groupLine('Attraction', char.attraction);
+        }
+        if (isNonEmptyString(char.sexuality)) {
+            out += groupLine('Sexuality', char.sexuality);
+        }
+
+        if (isNonEmptyString(char.appearanceNotes)) {
+            out += '\n';
+            out += '    ' + 'Appearance notes:' + '\n';
+            out += indentBlock('', char.appearanceNotes)
+                .replace(/^  /gm, '    ');
+        }
+
+        if (out === '') { return ''; }
+
+        return groupHeader('Physical') + out + '\n';
+    }
+
+    /**
+     * Emit the personality sub-group.
+     */
+    function buildIdentityPersonalityGroup(char) {
+        var p = isObject(char.personality) ? char.personality : {};
+
+        var out = '';
+        out += groupLine('Traits', p.traits);
+        out += groupLine('Ideals', p.ideals);
+        out += groupLine('Bonds', p.bonds);
+        out += groupLine('Flaws', p.flaws);
+        out += groupLine('Alignment', p.alignment);
+        out += groupLine('Likes', p.likes);
+        out += groupLine('Dislikes', p.dislikes);
+        out += groupLine('Habits', p.habits);
+        out += groupLine('Fears', p.fears);
+        out += groupLine('Goals', p.goals);
+        out += groupLine('Authority', p.authority);
+        out += groupLine('Conflict style', p.conflictStyle);
+        out += groupLine('Social style', p.socialStyle);
+        out += groupLine('Quirks', p.quirks);
+
+        if (out === '') { return ''; }
+
+        return groupHeader('Personality') + out + '\n';
+    }
+
+    /**
+     * Emit the combat sub-group.
+     */
+    function buildIdentityCombatGroup(char) {
+        var out = '';
+
+        // ---- Stats ----
+        var statKeys = DEFAULT_STAT_KEYS;
+        var CC = getCharacterConstants();
+        if (CC && Array.isArray(CC.STAT_KEYS) &&
+            CC.STAT_KEYS.length > 0) {
+            statKeys = CC.STAT_KEYS.slice();
+        }
+
+        var stats = isObject(char.stats) ? char.stats : {};
+        var statParts = [];
+        for (var s = 0; s < statKeys.length; s++) {
+            var k = statKeys[s];
+            var v = stats[k];
+            if (isFiniteNumber(v)) {
+                statParts.push(k.toUpperCase() + ' ' + v);
+            }
+        }
+        if (statParts.length > 0) {
+            out += groupLine('Stats', statParts.join(' \u00b7 '));
+        }
+
+        // ---- HP / MP ----
+        var hpmp = [];
+        if (isFiniteNumber(char.hp)) {
+            hpmp.push('HP ' + char.hp);
+        }
+        if (isFiniteNumber(char.mp)) {
+            hpmp.push('MP ' + char.mp);
+        }
+        if (hpmp.length > 0) {
+            out += groupLine('HP / MP', hpmp.join(' \u00b7 '));
+        }
+
+        // ---- Magic ----
+        var magicKeys = [];
+        var MC = getMagicConstants();
+        if (MC && typeof MC.getTypeKeys === 'function') {
+            try {
+                var mkeys = MC.getTypeKeys();
+                if (Array.isArray(mkeys)) { magicKeys = mkeys; }
+            } catch (e) { magicKeys = []; }
+        }
+
+        var magic = isObject(char.magic) ? char.magic : {};
+        var magicParts = [];
+        for (var m = 0; m < magicKeys.length; m++) {
+            var mk = magicKeys[m];
+            var mv = magic[mk];
+            if (isFiniteNumber(mv) && mv !== 0) {
+                var mlabel = mk.charAt(0).toUpperCase() + mk.slice(1);
+                magicParts.push(mlabel + ' ' + mv);
+            }
+        }
+        if (magicParts.length > 0) {
+            out += groupLine('Magic', magicParts.join(' \u00b7 '));
+        }
+
+        // ---- Weapons ----
+        if (Array.isArray(char.weapons) && char.weapons.length > 0) {
+            var weapons = [];
+            for (var w = 0; w < char.weapons.length; w++) {
+                var weapon = char.weapons[w];
+                if (!isObject(weapon)) { continue; }
+                var name = isNonEmptyString(weapon.name)
+                    ? String(weapon.name)
+                    : '';
+                if (name === '') { continue; }
+                if (isNonEmptyString(weapon.type)) {
+                    name += ' (' + weapon.type + ')';
+                }
+                if (isNonEmptyString(weapon.notes)) {
+                    name += ' \u2014 ' + weapon.notes;
+                }
+                weapons.push(name);
+            }
+            if (weapons.length > 0) {
+                out += groupLine('Weapons', weapons.join('; '));
+            }
+        }
+
+        // ---- Special moves ----
+        var sm = isObject(char.specialMoves) ? char.specialMoves : {};
+        var moveParts = [];
+
+        function listNames(list) {
+            if (!Array.isArray(list) || list.length === 0) {
+                return '';
+            }
+            var names = [];
+            for (var i = 0; i < list.length; i++) {
+                var item = list[i];
+                if (!isObject(item)) { continue; }
+                if (!isNonEmptyString(item.name)) { continue; }
+                var str = String(item.name);
+                if (isNonEmptyString(item.description)) {
+                    str += ' (' + item.description + ')';
+                }
+                names.push(str);
+            }
+            return names.join(', ');
+        }
+
+        var phys = listNames(sm.physical);
+        var mag = listNames(sm.magical);
+        if (phys) { moveParts.push('Physical \u2014 ' + phys); }
+        if (mag) { moveParts.push('Magical \u2014 ' + mag); }
+
+        if (moveParts.length > 0) {
+            out += groupLine('Moves', moveParts.join(' \u00b7 '));
+        }
+
+        // ---- Combat notes ----
+        if (isNonEmptyString(char.combatNotes)) {
+            out += groupLine('Combat notes', char.combatNotes);
+        }
+
+        if (out === '') { return ''; }
+
+        return groupHeader('Combat') + out + '\n';
+    }
+
     function buildIdentitySection(char, charId) {
         var out = '';
 
@@ -712,39 +929,6 @@
             out += line('Also known as', char.previousNames.join(', '));
         }
 
-        // ---- Physical ----
-        var physicalParts = [];
-        if (isNonEmptyString(char.build)) {
-            physicalParts.push(String(char.build));
-        }
-        if (isNonEmptyString(char.height)) {
-            physicalParts.push(String(char.height));
-        }
-        if (isNonEmptyString(char.weight)) {
-            physicalParts.push(String(char.weight));
-        }
-        if (physicalParts.length > 0) {
-            out += line('Physical', physicalParts.join(' \u00b7 '));
-        }
-
-        var colourParts = [];
-        if (isNonEmptyString(char.eyes)) { colourParts.push(String(char.eyes)); }
-        if (isNonEmptyString(char.hair)) { colourParts.push(String(char.hair)); }
-        if (isNonEmptyString(char.skin)) { colourParts.push(String(char.skin)); }
-        if (colourParts.length > 0) {
-            out += line('Eyes / hair / skin', colourParts.join(' / '));
-        }
-
-        if (isNonEmptyString(char.gender)) {
-            out += line('Gender', char.gender);
-        }
-        if (isNonEmptyString(char.attraction)) {
-            out += line('Attraction', char.attraction);
-        }
-        if (isNonEmptyString(char.sexuality)) {
-            out += line('Sexuality', char.sexuality);
-        }
-
         // ---- Dates ----
         if (isNonEmptyString(char.birthYear)) {
             out += line('Birth year', char.birthYear);
@@ -772,10 +956,18 @@
             out += '\n';
             out += indentBlock('Notes', char.notes);
         }
-        if (isNonEmptyString(char.appearanceNotes)) {
+
+        // ---- Physical / Personality / Combat ----
+        var physical = buildIdentityPhysicalGroup(char);
+        var personality = buildIdentityPersonalityGroup(char);
+        var combat = buildIdentityCombatGroup(char);
+
+        if (physical || personality || combat) {
             out += '\n';
-            out += indentBlock('Appearance notes', char.appearanceNotes);
         }
+        if (physical) { out += physical; }
+        if (personality) { out += personality; }
+        if (combat) { out += combat; }
 
         if (out === '') {
             return emptySectionBody();
@@ -807,7 +999,6 @@
             return emptySectionBody();
         }
 
-        // Sort classes by name
         var classEntries = [];
         for (var i = 0; i < classIds.length; i++) {
             var cls = null;
@@ -864,8 +1055,6 @@
                         earliest = s;
                     }
                     if (isNaN(e)) {
-                        // Ongoing interval. Leave latest null so
-                        // formatWeekRange prints "present".
                         latest = null;
                     } else if (latest !== null &&
                                !isNaN(e) && e > latest) {
@@ -908,6 +1097,43 @@
         return '';
     }
 
+    function buildGradeLine(grade) {
+        if (!grade) { return ''; }
+
+        var weekLabel = isFiniteNumber(grade.week) ||
+            isNonEmptyString(grade.week)
+            ? 'Wk ' + String(grade.week)
+            : 'Wk ?';
+
+        var typeLabel = isNonEmptyString(grade.type)
+            ? grade.type
+            : 'grade';
+
+        var scoreStr = '';
+        var pct = null;
+        if (isFiniteNumber(grade.score) &&
+            isFiniteNumber(grade.maxScore) &&
+            grade.maxScore > 0) {
+            scoreStr = grade.score + '/' + grade.maxScore;
+            pct = Math.round(
+                (grade.score / grade.maxScore) * 100
+            );
+        }
+
+        var parts = [weekLabel, typeLabel, scoreStr];
+        if (pct !== null) {
+            parts.push('(' + pct + '%)');
+        }
+
+        var line = '      ' + parts.join('  ');
+        if (isNonEmptyString(grade.notes)) {
+            line += ' \u2014 ' + String(grade.notes)
+                .replace(/\s+/g, ' ').trim();
+        }
+
+        return line + '\n';
+    }
+
     function buildDisciplinesEnrolledSection(char, charId) {
         var Enrol = getAcademyEnrolments();
         var Classes = getAcademyClasses();
@@ -929,7 +1155,6 @@
             return emptySectionBody();
         }
 
-        // Sort classes by name
         var classEntries = [];
         for (var i = 0; i < classIds.length; i++) {
             var cls = null;
@@ -963,7 +1188,6 @@
 
             if (intervals.length === 0) { continue; }
 
-            // Group intervals by disciplineId
             var byDiscipline = Object.create(null);
             var disciplineOrder = [];
             for (var iv = 0; iv < intervals.length; iv++) {
@@ -977,7 +1201,6 @@
                 byDiscipline[key].push(interval);
             }
 
-            // Sort disciplines alphabetically by resolved name
             var disciplineEntries = [];
             for (var d = 0; d < disciplineOrder.length; d++) {
                 var did = disciplineOrder[d];
@@ -1016,26 +1239,20 @@
 
                 out += '  ' + discName + '\n';
 
-                // Enrolment intervals for this discipline
                 for (var ii = 0; ii < entry.intervals.length; ii++) {
                     var intv = entry.intervals[ii];
-                    out += indentedLine(
-                        'Enrolled',
-                        formatWeekRange(
+                    out += '    ' + 'Enrolled'.padEnd(LABEL_WIDTH) +
+                        ': ' + formatWeekRange(
                             intv.startWeek, intv.endWeek
-                        )
-                    );
-                    out = '  ' + out.substring(0);
+                        ) + '\n';
                 }
 
-                // Grade scheme
                 var schemeName = getGradeSchemeName(entry.discipline);
                 if (schemeName) {
                     out += '    ' + 'Scheme'.padEnd(LABEL_WIDTH) +
                         ': ' + schemeName + '\n';
                 }
 
-                // Grades for this discipline in this class
                 if (Grades &&
                     typeof Grades.getStudentClassGrades === 'function') {
                     var rawGrades = [];
@@ -1058,12 +1275,14 @@
 
                     if (relevantGrades.length > 0) {
                         out += '    Grades:\n';
-                        for (var rg = 0; rg < relevantGrades.length; rg++) {
-                            var grade = relevantGrades[rg];
-                            out += buildGradeLine(grade);
+                        for (var rg = 0;
+                             rg < relevantGrades.length;
+                             rg++) {
+                            out += buildGradeLine(relevantGrades[rg]);
                         }
 
-                        if (typeof Grades.calculateSummary === 'function') {
+                        if (typeof Grades.calculateSummary ===
+                            'function') {
                             var summary = null;
                             try {
                                 summary = Grades.calculateSummary(
@@ -1094,43 +1313,6 @@
             return emptySectionBody();
         }
         return out;
-    }
-
-    function buildGradeLine(grade) {
-        if (!grade) { return ''; }
-
-        var weekLabel = isFiniteNumber(grade.week) ||
-            isNonEmptyString(grade.week)
-            ? 'Wk ' + String(grade.week)
-            : 'Wk ?';
-
-        var typeLabel = isNonEmptyString(grade.type)
-            ? grade.type
-            : 'grade';
-
-        var scoreStr = '';
-        var pct = null;
-        if (isFiniteNumber(grade.score) &&
-            isFiniteNumber(grade.maxScore) &&
-            grade.maxScore > 0) {
-            scoreStr = grade.score + '/' + grade.maxScore;
-            pct = Math.round(
-                (grade.score / grade.maxScore) * 100
-            );
-        }
-
-        var parts = [weekLabel, typeLabel, scoreStr];
-        if (pct !== null) {
-            parts.push('(' + pct + '%)');
-        }
-
-        var line = '      ' + parts.join('  ');
-        if (isNonEmptyString(grade.notes)) {
-            line += ' \u2014 ' + String(grade.notes)
-                .replace(/\s+/g, ' ').trim();
-        }
-
-        return line + '\n';
     }
 
     // ============================================================
@@ -1191,10 +1373,7 @@
 
             out += className + ' [' + cls.id + ']\n';
 
-            // Disciplines taught
             out += buildInstructorDisciplinesBlock(cls.id, charId);
-
-            // Commitments
             out += buildCommitmentsBlock(cls.id, charId);
 
             out += '\n';
@@ -1211,7 +1390,8 @@
 
         if (!Enrol ||
             typeof Enrol.getStudentDisciplineIds !== 'function') {
-            return indentedLine('Disciplines', '(enrolment module unavailable)');
+            return indentedLine('Disciplines',
+                '(enrolment module unavailable)');
         }
 
         var disciplineIds = [];
@@ -1244,7 +1424,6 @@
 
             out += '    ' + discName + '\n';
 
-            // Groups this instructor runs for this discipline
             if (TG &&
                 typeof TG.getGroupsForClassDisciplineInstructor ===
                     'function') {
@@ -1266,7 +1445,6 @@
                             buildInstructorGroupHeading(group, disc) +
                             '\n';
 
-                        // Members
                         var members = [];
                         try {
                             members = TG.getActiveMembers(
@@ -1282,7 +1460,6 @@
                                 }).join(', ') + '\n';
                         }
 
-                        // Sessions
                         if (TS &&
                             typeof TS.getSessionsForGroup ===
                                 'function') {
@@ -1295,7 +1472,9 @@
 
                             if (sessions.length > 0) {
                                 out += '          Sessions:\n';
-                                for (var s = 0; s < sessions.length; s++) {
+                                for (var s = 0;
+                                     s < sessions.length;
+                                     s++) {
                                     out +=
                                         '            ' +
                                         buildSessionLine(sessions[s]) +
@@ -1390,6 +1569,18 @@
     // ============================================================
     // COMMITMENTS
     // ============================================================
+    //
+    // Two functions:
+    //
+    //   buildCommitmentsSection(char, charId) — the top-level
+    //     COMMITMENTS section. Covers every commitment the
+    //     instructor owns, across every class.
+    //
+    //   buildCommitmentsBlock(classId, charId) — the class-scoped
+    //     block the CLASSES TAUGHT section emits beneath each
+    //     class. Filters to the commitments attached to that one
+    //     class and returns them in the indented sub-block
+    //     format the surrounding code uses.
 
     function buildCommitmentsSection(char, charId) {
         var Commit = getAcademyInstructorCommitments();
@@ -1476,10 +1667,9 @@
      * Differs from buildCommitmentsSection (the top-level section
      * builder) in two ways:
      *
-     *   1. It takes a classId and filters to the commitments
-     *      attached to that class. The top-level builder covers
-     *      every commitment the instructor owns, regardless of
-     *      class.
+     *   1. It takes a classId and filters to commitments attached
+     *      to that class. The top-level builder covers every
+     *      commitment the instructor owns, regardless of class.
      *
      *   2. It returns indented lines in the sub-block format the
      *      CLASSES TAUGHT section uses, not the top-level section
@@ -1490,8 +1680,8 @@
      * block is exactly the set the top-level builder would list,
      * just partitioned by class.
      *
-     * Returns '' when the class has no commitments, so the caller's
-     * blank-line handling stays correct.
+     * Returns '' when the class has no commitments, so the
+     * caller's blank-line handling stays correct.
      */
     function buildCommitmentsBlock(classId, charId) {
         var Commit = getAcademyInstructorCommitments();
@@ -1539,9 +1729,11 @@
         var out = '  ' + 'Commitments:' + '\n';
 
         for (var m = 0; m < mine.length; m++) {
-            var cm = mine[m];
+            var c2 = mine[m];
 
-            var kind = isNonEmptyString(cm.kind) ? cm.kind : 'commitment';
+            var kind = isNonEmptyString(c2.kind)
+                ? c2.kind
+                : 'commitment';
             var kindLabel;
             if (kind === 'officeHours') {
                 kindLabel = 'Office hours';
@@ -1551,18 +1743,20 @@
                 kindLabel = kind;
             }
 
-            var dayLabel = 'Day ' + String(cm.day || '?');
+            var dayLabel = 'Day ' + String(c2.day || '?');
             var AC = getCalendarConstants();
             if (AC && typeof AC.getDayName === 'function') {
-                var dn = AC.getDayName(cm.day);
+                var dn = AC.getDayName(c2.day);
                 if (isNonEmptyString(dn)) { dayLabel = dn; }
             }
 
             var timeLabel = '';
-            if (isFiniteNumber(cm.startTime)) {
-                var start = String(cm.startTime).padStart(2, '0');
-                var dur = isFiniteNumber(cm.duration) ? cm.duration : 1;
-                var end = String(cm.startTime + dur).padStart(2, '0');
+            if (isFiniteNumber(c2.startTime)) {
+                var start = String(c2.startTime).padStart(2, '0');
+                var dur = isFiniteNumber(c2.duration)
+                    ? c2.duration
+                    : 1;
+                var end = String(c2.startTime + dur).padStart(2, '0');
                 timeLabel = start + ':00\u2013' + end + ':00';
             }
 
@@ -1570,29 +1764,33 @@
             if (timeLabel) { lineText += ' ' + timeLabel; }
             out += '    ' + lineText + '\n';
 
-            if (isNonEmptyString(cm.characterId)) {
+            if (isNonEmptyString(c2.characterId)) {
                 out += '      ' + 'With'.padEnd(LABEL_WIDTH) +
-                    ': ' + resolveCharName(cm.characterId) + '\n';
+                    ': ' + resolveCharName(c2.characterId) + '\n';
             }
-            if (isNonEmptyString(cm.label)) {
+            if (isNonEmptyString(c2.label)) {
                 out += '      ' + 'Label'.padEnd(LABEL_WIDTH) +
-                    ': ' + cm.label + '\n';
+                    ': ' + c2.label + '\n';
             }
-            if (isNonEmptyString(cm.locationId)) {
+            if (isNonEmptyString(c2.locationId)) {
                 var Loc = window.LocationQueries;
-                if (Loc && typeof Loc.getLocationName === 'function') {
-                    var locName = Loc.getLocationName(cm.locationId);
-                    if (isNonEmptyString(locName) && locName !== 'Unknown') {
-                        out += '      ' + 'Location'.padEnd(LABEL_WIDTH) +
+                if (Loc &&
+                    typeof Loc.getLocationName === 'function') {
+                    var locName = Loc.getLocationName(c2.locationId);
+                    if (isNonEmptyString(locName) &&
+                        locName !== 'Unknown') {
+                        out += '      ' +
+                            'Location'.padEnd(LABEL_WIDTH) +
                             ': ' + locName + '\n';
                     }
                 }
             }
-            if (isFiniteNumber(cm.startWeek) ||
-                isFiniteNumber(cm.endWeek)) {
+            if (isFiniteNumber(c2.startWeek) ||
+                isFiniteNumber(c2.endWeek)) {
                 out += '      ' + 'Period'.padEnd(LABEL_WIDTH) +
-                    ': ' + formatWeekRange(cm.startWeek, cm.endWeek) +
-                    '\n';
+                    ': ' + formatWeekRange(
+                        c2.startWeek, c2.endWeek
+                    ) + '\n';
             }
         }
 
@@ -1602,63 +1800,6 @@
     // ============================================================
     // TEAMS
     // ============================================================
-
-    function buildTeamsSection(char, charId) {
-        var TeamQueries = getTeamQueries();
-        if (!TeamQueries ||
-            typeof TeamQueries
-                .getTeamsForCharacterAllTimeIncludingDeprecated !==
-                'function') {
-            return emptySectionBody();
-        }
-
-        var teams = [];
-        try {
-            teams = TeamQueries
-                .getTeamsForCharacterAllTimeIncludingDeprecated(charId)
-                || [];
-        } catch (e) { teams = []; }
-
-        if (teams.length === 0) {
-            return emptySectionBody();
-        }
-
-        // Group by type
-        var byType = Object.create(null);
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (!team) { continue; }
-            var type = isNonEmptyString(team.type) ? team.type : 'other';
-            if (!byType[type]) { byType[type] = []; }
-            byType[type].push(team);
-        }
-
-        var out = '';
-
-        var typeOrder = ['academic', 'professional', 'temporary', 'civilian'];
-        var emittedTypes = Object.create(null);
-
-        for (var to = 0; to < typeOrder.length; to++) {
-            var t = typeOrder[to];
-            if (byType[t]) {
-                out += emitTeamGroup(t, byType[t], charId);
-                emittedTypes[t] = true;
-            }
-        }
-
-        // Any other types not in the canonical order
-        var allTypes = Object.keys(byType);
-        for (var at = 0; at < allTypes.length; at++) {
-            var otherType = allTypes[at];
-            if (emittedTypes[otherType]) { continue; }
-            out += emitTeamGroup(otherType, byType[otherType], charId);
-        }
-
-        if (out === '') {
-            return emptySectionBody();
-        }
-        return out;
-    }
 
     function emitTeamGroup(typeLabel, teams, charId) {
         var displayType = isNonEmptyString(typeLabel)
@@ -1680,7 +1821,6 @@
 
             out += '  ' + name + ' [' + team.id + ']\n';
 
-            // Member record
             var TeamQueries = getTeamQueries();
             var records = [];
             if (TeamQueries &&
@@ -1734,6 +1874,61 @@
         return out;
     }
 
+    function buildTeamsSection(char, charId) {
+        var TeamQueries = getTeamQueries();
+        if (!TeamQueries ||
+            typeof TeamQueries
+                .getTeamsForCharacterAllTimeIncludingDeprecated !==
+                'function') {
+            return emptySectionBody();
+        }
+
+        var teams = [];
+        try {
+            teams = TeamQueries
+                .getTeamsForCharacterAllTimeIncludingDeprecated(charId)
+                || [];
+        } catch (e) { teams = []; }
+
+        if (teams.length === 0) {
+            return emptySectionBody();
+        }
+
+        var byType = Object.create(null);
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (!team) { continue; }
+            var type = isNonEmptyString(team.type) ? team.type : 'other';
+            if (!byType[type]) { byType[type] = []; }
+            byType[type].push(team);
+        }
+
+        var out = '';
+
+        var typeOrder = ['academic', 'professional', 'temporary', 'civilian'];
+        var emittedTypes = Object.create(null);
+
+        for (var to = 0; to < typeOrder.length; to++) {
+            var t = typeOrder[to];
+            if (byType[t]) {
+                out += emitTeamGroup(t, byType[t], charId);
+                emittedTypes[t] = true;
+            }
+        }
+
+        var allTypes = Object.keys(byType);
+        for (var at = 0; at < allTypes.length; at++) {
+            var otherType = allTypes[at];
+            if (emittedTypes[otherType]) { continue; }
+            out += emitTeamGroup(otherType, byType[otherType], charId);
+        }
+
+        if (out === '') {
+            return emptySectionBody();
+        }
+        return out;
+    }
+
     // ============================================================
     // SOCIAL
     // ============================================================
@@ -1768,18 +1963,18 @@
             var rel = vm.relationships[i];
             if (!rel) { continue; }
 
-            var line = '  ' + (rel.otherCharName || 'Unknown');
+            var lineText = '  ' + (rel.otherCharName || 'Unknown');
 
             if (isNonEmptyString(rel.typeLabel)) {
-                line += ' \u2014 ' + rel.typeLabel;
+                lineText += ' \u2014 ' + rel.typeLabel;
             }
             if (isNonEmptyString(rel.clarification)) {
-                line += ' (' + rel.clarification + ')';
+                lineText += ' (' + rel.clarification + ')';
             }
             if (isNonEmptyString(rel.period)) {
-                line += ' \u00b7 ' + rel.period;
+                lineText += ' \u00b7 ' + rel.period;
             }
-            out += line + '\n';
+            out += lineText + '\n';
 
             if (isNonEmptyString(rel.notes)) {
                 out += '      ' + String(rel.notes)
@@ -1815,7 +2010,6 @@
             return emptySectionBody();
         }
 
-        // Group by team
         var byTeam = Object.create(null);
         var teamOrder = [];
         for (var i = 0; i < entries.length; i++) {
@@ -1836,8 +2030,8 @@
         var MC = getMissionConstants();
 
         for (var t = 0; t < teamOrder.length; t++) {
-            var tid = teamOrder[t];
-            var group = byTeam[tid];
+            var tid2 = teamOrder[t];
+            var group = byTeam[tid2];
 
             out += 'Via ' + group.teamName + ':\n';
 
@@ -1894,7 +2088,6 @@
         var out = '';
 
         // ---- Eliminations ----
-        var EQ = getEliminationQueries();
         var eliminationLines = [];
 
         if (Array.isArray(char.eliminations)) {
@@ -1949,7 +2142,7 @@
         var rankLines = [];
 
         if (Ranking &&
-            typeof Ranking.getClassRankings === 'function' &&
+            typeof Ranking.getRankingRecords === 'function' &&
             Classes &&
             typeof Classes.getCharacterClasses === 'function') {
 
@@ -1965,15 +2158,17 @@
                     ? cls.name
                     : 'Unnamed Class';
 
-                var rankings = [];
+                // getRankingRecords with no week filter returns
+                // every ranking record for the class. We then filter
+                // to this character. This is one call per class,
+                // not one call per (class, week).
+                var records = [];
                 try {
-                    rankings = Ranking.getClassRankings(
-                        cls.id, null, false
-                    ) || [];
-                } catch (e) { rankings = []; }
+                    records = Ranking.getRankingRecords(cls.id) || [];
+                } catch (e) { records = []; }
 
-                for (var r = 0; r < rankings.length; r++) {
-                    var ranking = rankings[r];
+                for (var r = 0; r < records.length; r++) {
+                    var ranking = records[r];
                     if (!ranking) { continue; }
                     if (String(ranking.studentId) !== String(charId)) {
                         continue;
@@ -1991,8 +2186,10 @@
                         ranking.totalStudents > 0) {
                         lineText += ' of ' + ranking.totalStudents;
                     }
-                    if (isFiniteNumber(ranking.average)) {
-                        lineText += ', average ' + ranking.average;
+                    if (isFiniteNumber(ranking.overallScore)) {
+                        lineText += ', overall ' + ranking.overallScore;
+                    } else if (isFiniteNumber(ranking.academicAverage)) {
+                        lineText += ', academic ' + ranking.academicAverage;
                     }
 
                     rankLines.push(lineText);
@@ -2177,12 +2374,6 @@
     // PUBLIC API
     // ============================================================
 
-    /**
-     * Get the full report as a plain string. No download.
-     *
-     * @param {string} charId
-     * @returns {string} Empty string when the character is missing.
-     */
     function getCharacterReportText(charId) {
         if (!isNonEmptyString(charId)) { return ''; }
         var built = buildCharacterReport(charId);
@@ -2190,18 +2381,6 @@
         return built.text;
     }
 
-    /**
-     * Export the report to a .txt file and trigger a download.
-     *
-     * @param {string} charId
-     * @param {object} [options]
-     * @param {string} [options.filename]
-     * @returns {{
-     *   exported: boolean,
-     *   filename: string|null,
-     *   error: string|null
-     * }}
-     */
     function exportCharacterText(charId, options) {
         options = options || {};
 
@@ -2237,8 +2416,6 @@
             FILENAME_PREFIX + '-' + slug + '-' +
             String(charId) + '.txt';
 
-        // No BOM. Plain text does not need it, and it produces a
-        // phantom character in most Unix tooling.
         var blob;
         try {
             blob = new Blob([built.text], {
