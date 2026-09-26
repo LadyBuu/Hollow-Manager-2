@@ -28,6 +28,34 @@
  *   events. The controller mounts the HTML and routes the data-*
  *   markers below.
  *
+ * COLLAPSIBLE GROUP BLOCKS:
+ *   Each group is a self-contained collapsible block. The header
+ *   carries a caret that toggles the block's body (sessions list
+ *   + roster + add-student button).
+ *
+ *   State is per-group and is stored under the "tg:<groupId>" key
+ *   in AcademyUI's generic expansion map. The key is shared with
+ *   the instructor detail panel's group blocks, so collapsing a
+ *   group in one surface collapses the same group everywhere.
+ *   That is deliberate: the group identity is the same entity,
+ *   and a user who collapses "English A" in the instructor tab
+ *   should see the same group collapsed in the discipline panel.
+ *
+ *   The default is EXPANDED. A group the user has never touched
+ *   renders with its body open.
+ *
+ *   The toggle action is "teaching-groups-toggle-group". The
+ *   controller handles it. A fast-path handler that flips the
+ *   attribute in place is documented at the site in the
+ *   character-detail module; the same handler serves both
+ *   surfaces because the block markup is structurally identical.
+ *
+ *   When AcademyUI is unavailable, the block defaults to
+ *   expanded and the toggle is a no-op (the caret is still
+ *   rendered, but clicking it does nothing the module can
+ *   observe). This is the same fail-open policy the instructor
+ *   panel uses.
+ *
  * VM SHAPE (from buildSessionViewModel):
  *   {
  *     classId, className,
@@ -57,14 +85,14 @@
  *   currently open.
  *
  * EVENTS EMITTED (data-* attributes):
- *   [data-action="discipline-sessions-add-student"]      (click)
+ *   [data-action="discipline-sessions-add-student"]        (click)
  *   [data-action="discipline-sessions-add-student-cancel"] (click)
  *   [data-action="discipline-sessions-add-student-submit"] (click)
- *   [data-action="discipline-sessions-remove-student"]   (click)
- *   [data-action="discipline-sessions-add-student-toggle"] (click)
- *     Toggles the candidate checkbox. Handled by the controller's
- *     delegated input handler via the checkbox class, not by this
- *     marker. The marker is emitted for symmetry only.
+ *   [data-action="discipline-sessions-remove-student"]     (click)
+ *   [data-action="teaching-groups-toggle-group"]           (click)
+ *     Toggles the group block. Handled by the controller;
+ *     flips data-expanded on the block root and the caret glyph
+ *     in place. No re-render required.
  *
  * PICKER MARKUP:
  *   The candidate picker emits the same classes, data attributes,
@@ -95,6 +123,7 @@
  *   - window.AcademyClasses (for class existence)
  *   - window.AcademyDisciplines (for discipline existence)
  *   - window.CharacterQueries (for instructor and member names)
+ *   - window.AcademyUI (OPTIONAL; for collapse state reads)
  */
 
 (function() {
@@ -167,6 +196,33 @@
         } catch (e) {
             return hour + ':00';
         }
+    }
+
+    // ============================================================
+    // COLLAPSE STATE
+    // ============================================================
+    //
+    // Per-group collapse state, keyed "tg:<groupId>". Default is
+    // EXPANDED when the key is absent. When AcademyUI is
+    // unavailable, also defaults to expanded so the block renders
+    // fully rather than collapsing silently.
+    //
+    // The same key is read by academy-character-detail.js. A group
+    // collapsed in either surface is collapsed in both.
+
+    function readTeachingGroupExpanded(groupId) {
+        if (!isNonEmptyString(groupId)) { return true; }
+        var AcademyUI = window.AcademyUI;
+        if (!AcademyUI ||
+            typeof AcademyUI.getExpandedIds !== 'function') {
+            return true;
+        }
+        var stored = AcademyUI.getExpandedIds();
+        var key = 'tg:' + String(groupId);
+        if (!Object.prototype.hasOwnProperty.call(stored, key)) {
+            return true;
+        }
+        return stored[key] === true;
     }
 
     // ============================================================
@@ -515,19 +571,56 @@
     }
 
     // ============================================================
-    // RENDER — GROUP BLOCK
+    // RENDER — GROUP BLOCK (collapsible)
     // ============================================================
+    //
+    // Each group is a self-contained collapsible block.
+    //
+    //   [▾] Group name   Instructor   3 students
+    //   |  Sessions:
+    //   |    Tuesday, 11:00  2h
+    //   |    Thursday, 11:00 2h
+    //   |  Roster: Alice, Bob, Carol
+    //   |  [+ Add Student]
+    //
+    // The header row is the toggle. The body carries the sessions
+    // list, the roster, and (when open) the candidate picker.
+    //
+    // Collapse state is per-group and shared with the instructor
+    // detail panel (both read the "tg:<groupId>" key). See the
+    // file header for the rationale.
 
     function renderGroupBlock(group, vm) {
         if (!group || !group.groupId) { return ''; }
 
+        var isExpanded = readTeachingGroupExpanded(group.groupId);
+
         var html = '';
         html += '<div class="academy-discipline-session-group" ' +
                     'data-group-id="' +
-                        escapeAttribute(group.groupId) + '">';
+                        escapeAttribute(group.groupId) + '" ' +
+                    'data-expanded="' +
+                        escapeAttribute(isExpanded ? 'true' : 'false') + '">';
 
-        // ---- Group header ----
+        // ---- Group header (caret + name + instructor + count) ----
         html += '<div class="academy-discipline-session-group-header">';
+
+        html += '<button type="button" ' +
+                    'class="academy-discipline-session-group-toggle" ' +
+                    'data-action="teaching-groups-toggle-group" ' +
+                    'data-group-id="' +
+                        escapeAttribute(group.groupId) + '" ' +
+                    'aria-expanded="' +
+                        escapeAttribute(isExpanded ? 'true' : 'false') + '" ' +
+                    'title="' +
+                        escapeAttribute(isExpanded
+                            ? 'Collapse this group'
+                            : 'Expand this group') + '">';
+        html += '<span class="academy-discipline-session-group-caret">' +
+                    (isExpanded ? '\u25be' : '\u25b8') +
+                '</span>';
+        html += '</button>';
+
         html += '<span class="academy-discipline-session-group-name">' +
                     escapeHtml(group.displayName) +
                 '</span>';
@@ -549,20 +642,23 @@
                 '</span>';
         html += '</div>';
 
-        // ---- Sessions list ----
+        // ---- Body (collapsible) ----
+        html += '<div class="academy-discipline-session-group-body">';
+
+        // Sessions list
         html += renderSessionsList(group);
 
-        // ---- Roster ----
+        // Roster
         html += renderRoster(group, vm);
 
-        // ---- Candidate picker (when open) ----
+        // Candidate picker (when open)
         if (group.isPickerOpen === true) {
             html += renderCandidatePicker(
                 group, group.pickerCandidates
             );
         }
 
-        // ---- Add Student button (when picker is closed) ----
+        // Add Student button (when picker is closed)
         if (group.isPickerOpen !== true) {
             html += '<div class="academy-discipline-session-group-actions">';
             html += '<button type="button" class="small primary" ' +
@@ -574,7 +670,8 @@
             html += '</div>';
         }
 
-        html += '</div>';
+        html += '</div>'; // body
+        html += '</div>'; // block
         return html;
     }
 
