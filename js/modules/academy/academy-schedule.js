@@ -64,117 +64,21 @@
  *   group, studentId, week } shape this module has always
  *   returned. Every existing call site continues to work.
  *
- *   WHY THE PREDICATES MOVED OUT:
- *     The free-slots highlighter on the discipline grid needs to
- *     ask the SAME question the write path asks. When the answer
- *     lived here, the highlighter had its own answer — and the two
- *     disagreed, because the highlighter was discipline-scoped and
- *     week-scoped while the write path was academy-wide and
- *     range-scoped.
- *
- *     By moving the predicate into AcademyTeachingCollisions, both
- *     callers now use one implementation. They agree by
- *     construction.
- *
- *   THE RANGE RULE:
- *     The predicates are range-aware. A candidate that runs weeks
- *     5–40 collides with an instructor's session that runs weeks
- *     30–52 at the same (day, hour), even though the session is
- *     not active in weeks 5–29. The predicate unions the
- *     instructor's occurrences across the whole candidate range
- *     and checks overlap against any of them.
- *
- *     This is why the write path used to reject candidates the
- *     highlighter said were free: the highlighter was checking a
- *     single week (the display week), not the range.
- *
  * ALLOCATOR UNIFICATION:
  *   Group numbers are allocated exclusively by
  *   AcademyTeachingGroups.allocateGroupNumber(appData, ...). This
- *   module does NOT carry a local allocator. The two call sites
- *   that need a number — resolveOrCreateGroupAndSession (when
- *   creating a group) and createTeachingGroup — call the shared
- *   allocator with the appData snapshot the pipeline handed them.
- *
- *   resolveOrCreateGroupAndSession therefore takes appData, not
- *   academy. It resolves academy internally via
- *   getAcademySnapshot(appData), the same way every pipeline
- *   mutate callback in this file does.
+ *   module does NOT carry a local allocator.
  *
  * LOCATION DEPENDENCY:
  *   When a mutation supplies a locationId, AcademyLocations is
  *   MANDATORY at that moment. Lazy resolution solves load order;
- *   it does not make the dependency optional. A missing location
- *   provider, or a location that does not resolve, is a failure.
- *
- *   A null / empty / undefined locationId passes without consulting
- *   AcademyLocations. There is no reference to validate.
- *
- * DROP STUDENT FROM CLASS vs DROP STUDENT FROM GROUP:
- *   Two distinct operations, two distinct semantics:
- *
- *     dropStudentFromClass(classId, charId, effectiveWeek)
- *       The student leaves the class. Every enrolment interval
- *       they have in this class ends (across every discipline),
- *       every teaching-group membership they hold in this class
- *       ends (across every group), and the classId is removed
- *       from character.classIds. The student is no longer a
- *       member of the class.
- *
- *     dropStudentFromGroup(classId, groupId, charId, effectiveWeek)
- *       The student leaves ONE group. That group's membership
- *       interval for this character ends. Enrolments are
- *       untouched. Other groups are untouched. character.classIds
- *       is untouched. The student remains enrolled and remains
- *       a member of the class.
- *
- * APPLY REBALANCE PLAN:
- *   applyRebalancePlan(classId, disciplineId, week, plan) applies
- *   the output of AcademyBalanceSuggestions.suggest in ONE
- *   pipeline transaction.
- *
- *   WHAT IT DOES:
- *     For each group in the plan, its proposedMemberIds list is
- *     applied. Every group's roster becomes exactly the proposed
- *     list: current members who are not in the proposed list have
- *     their membership ended (endWeek = week - 1 on the active
- *     interval, OR the entry is removed entirely when its
- *     startWeek is at or after the effective week), and members in
- *     the proposed list who are not currently active in the group
- *     are added (startWeek = week, endWeek = null).
- *
- *   WHAT IT DOES NOT DO:
- *     - It does not touch groups not mentioned in the plan.
- *     - It does not touch sessions.
- *     - It does not touch enrolments.
- *     - It does not run the algorithm.
- *
- *   TRANSACTIONALITY:
- *     One pipeline. One transaction. Either every group's roster
- *     is updated, or none is.
+ *   it does not make the dependency optional.
  *
  * TRANSACTION MODEL:
  *   Every public function here is a single
  *   MutationPipeline.performMutation call, EXCEPT the three
  *   commitment forwarders, which delegate to the commitments
  *   module's own pipelines.
- *
- * INSTRUCTOR COMMITMENTS:
- *   The three forwarders exist so that the schedule module remains
- *   the single documented entry point for anything that shapes the
- *   instructor's weekly time.
- *
- *   No collision preflight runs on commitment create. Commitments
- *   may overlap class sessions and other commitments; the grid
- *   renders the overlap, the collision detector reports it, and
- *   the user decides.
- *
- *   Collision on the OTHER direction — a new class session that
- *   overlaps an existing commitment — IS rejected as an instructor
- *   collision. This is enforced by the predicate:
- *   AcademyTeachingCollisions.isInstructorBusy sees commitments
- *   because the projector folds them into the instructor's
- *   occurrence list.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.ObjectUtils
@@ -437,6 +341,141 @@
     }
 
     // ============================================================
+    // SNAPSHOT READERS
+    // ============================================================
+    //
+    // These functions read from an appData snapshot, not from
+    // window.data. They are used inside pipeline validate() and
+    // mutate() callbacks, where the authoritative view is the
+    // snapshot the pipeline hands to the callback.
+    //
+    // Reading window.data inside these callbacks would be a bug:
+    // a concurrent mutation could have changed live state between
+    // the snapshot being taken and the callback running, and the
+    // validate pass would see a different world than the mutate
+    // pass.
+
+    /**
+     * Read a teaching-group record from the snapshot.
+     *
+     * Returns the live record or null. A missing or malformed
+     * group store returns null.
+     */
+    function getGroupFromSnapshot(appData, groupId) {
+        if (!appData || !appData.academy || typeof appData.academy !== 'object') {
+            return null;
+        }
+        if (!isPlainObject(appData.academy.teachingGroups)) {
+            return null;
+        }
+        if (!isNonEmptyString(groupId)) {
+            return null;
+        }
+        var group = appData.academy.teachingGroups[String(groupId)];
+        if (!isPlainObject(group)) {
+            return null;
+        }
+        return group;
+    }
+
+    function findClassInSnapshot(appData, classId) {
+        if (!appData || !isPlainObject(appData.academy)) {
+            return null;
+        }
+        var store = appData.academy.graduatingClasses;
+        if (!isPlainObject(store)) { return null; }
+        if (!isNonEmptyString(classId)) { return null; }
+        var record = store[String(classId)];
+        if (!isPlainObject(record)) { return null; }
+        return record;
+    }
+
+    function findDisciplineInSnapshot(appData, disciplineId) {
+        if (!appData || typeof appData !== 'object') {
+            return null;
+        }
+        if (!isNonEmptyString(disciplineId)) {
+            return null;
+        }
+
+        var target = String(disciplineId);
+
+        if (appData.academy && typeof appData.academy === 'object') {
+            var academyList = appData.academy.disciplines;
+            if (Array.isArray(academyList)) {
+                for (var a = 0; a < academyList.length; a++) {
+                    var ad = academyList[a];
+                    if (ad && String(ad.id) === target) {
+                        return ad;
+                    }
+                }
+            }
+        }
+
+        if (appData.curriculum && typeof appData.curriculum === 'object') {
+            var legacyList = appData.curriculum.disciplines;
+            if (Array.isArray(legacyList)) {
+                for (var l = 0; l < legacyList.length; l++) {
+                    var ld = legacyList[l];
+                    if (ld && String(ld.id) === target) {
+                        return ld;
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    function findCharacterInSnapshot(appData, charId) {
+        if (!appData || !Array.isArray(appData.characters)) {
+            return null;
+        }
+        if (!isNonEmptyString(charId)) { return null; }
+        var target = String(charId);
+        for (var i = 0; i < appData.characters.length; i++) {
+            var c = appData.characters[i];
+            if (c && String(c.id) === target) {
+                return c;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Is the character enrolled in the given (class, discipline)
+     * pair during the given week, according to the snapshot?
+     */
+    function isEnrolledInSnapshot(
+        appData,
+        charId,
+        classId,
+        disciplineId,
+        week
+    ) {
+        var academy = getAcademySnapshot(appData);
+        if (!academy) { return false; }
+        var enrBucket = academy.enrolments &&
+            academy.enrolments[classId];
+        if (!isPlainObject(enrBucket)) { return false; }
+        var intervals = enrBucket[charId];
+        if (!Array.isArray(intervals)) { return false; }
+
+        var targetDiscipline = String(disciplineId);
+        for (var i = 0; i < intervals.length; i++) {
+            var entry = intervals[i];
+            if (!entry || typeof entry !== 'object') { continue; }
+            if (String(entry.disciplineId) !== targetDiscipline) {
+                continue;
+            }
+            if (weekInRange(week, entry.startWeek, entry.endWeek)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // ============================================================
     // LOCATION RESOLUTION
     // ============================================================
 
@@ -479,35 +518,7 @@
     // ============================================================
     // COLLISION DETECTION — THIN WRAPPERS
     // ============================================================
-    //
-    // The predicates live in AcademyTeachingCollisions. These
-    // functions call the predicates and reshape the result into
-    // the { session, group, commitment } / { session, group,
-    // studentId, week } shape this module has always returned.
-    //
-    // Every existing call site in this file was written against
-    // that shape and continues to work unchanged.
-    //
-    // The predicate is academy-wide and range-aware. See the file
-    // header for why that matters.
 
-    /**
-     * Find an instructor collision at a candidate slot.
-     *
-     * Returns null when no collision, or an object of the shape:
-     *   { session, group, commitment }
-     * where `session` is a session-shaped descriptor (or null for
-     * a commitment collision), `group` is a group descriptor (or
-     * null for a commitment collision), and `commitment` is the
-     * conflicting commitment record (or null for a session
-     * collision).
-     *
-     * @param {string} instructorId
-     * @param {object} candidate
-     *   { day, startTime, duration, startWeek, endWeek }
-     * @param {string|null} excludeGroupId
-     * @returns {object|null}
-     */
     function findInstructorCollision(
         instructorId,
         candidate,
@@ -539,33 +550,6 @@
         return reshapeInstructorConflict(conflict);
     }
 
-    /**
-     * Reshape an occurrence returned by the collision predicate
-     * into the descriptor shape this module has always returned.
-     *
-     * The occurrence carries `kind`:
-     *   'class'        → a teaching session
-     *   'officeHours'  → an instructor commitment (office hours)
-     *   'tutoring'     → an instructor commitment (tutoring)
-     *
-     * The old shape distinguished these by which field was
-     * populated. This function reconstructs that shape.
-     *
-     * `session` is the raw occurrence for class-kind conflicts;
-     * the callers that consume this field read `session.day`,
-     * `session.startTime`, `session.duration`, and `session.id` —
-     * all of which the class occurrence carries. For commitment
-     * conflicts, `session` is null.
-     *
-     * `group` is looked up from AcademyTeachingGroups for class
-     * conflicts. A class occurrence carries a groupId; a
-     * commitment does not.
-     *
-     * `commitment` is the raw occurrence for commitment conflicts.
-     * Its `kind` is 'officeHours' or 'tutoring'; the callers that
-     * consume it read `commitment.kind` to build the rejection
-     * message.
-     */
     function reshapeInstructorConflict(occurrence) {
         if (!isPlainObject(occurrence)) {
             return null;
@@ -581,9 +565,6 @@
             };
         }
 
-        // Default to class-kind. The predicate only returns an
-        // occurrence that was projected for this instructor, so
-        // 'class' is the only other possibility today.
         var session = occurrence;
         var group = null;
 
@@ -604,25 +585,6 @@
         };
     }
 
-    /**
-     * Find a student collision at a candidate slot.
-     *
-     * Returns null when no collision, or an object of the shape:
-     *   { session, group, studentId, week }
-     *
-     * The candidate slot's `startWeek` is stamped as the
-     * collision's `week`. The predicate does not carry a week for
-     * the conflicting occurrence (the occurrence is one week of a
-     * multi-week run); the caller wants to know when the candidate
-     * would overlap, and the candidate's own start week is the
-     * answer.
-     *
-     * @param {string} studentId
-     * @param {object} candidate
-     *   { day, startTime, duration, startWeek, endWeek }
-     * @param {string|null} excludeGroupId
-     * @returns {object|null}
-     */
     function findStudentCollision(
         studentId,
         candidate,
@@ -732,21 +694,6 @@
                 }
             };
         }
-
-        // The student-side check needs a group of students to
-        // collide with. When the candidate group has members, we
-        // check each of them; the write path already knows the
-        // candidate group and its roster.
-        //
-        // This mirrors the old behavior: the old function walked
-        // the candidate group's active members and looked for a
-        // shared student with an overlapping other session. The
-        // new predicate asks the same question from the student
-        // side: for each candidate-group member, is that student
-        // busy at the candidate slot?
-        //
-        // The first member found busy produces the collision. This
-        // matches the old "first shared student wins" semantics.
 
         var candidateStudentIds = getGroupActiveMembersAtWeek(
             candidateGroupId, candidate.startWeek
@@ -1494,9 +1441,8 @@
                         message: 'Academy store is not available.'
                     };
                 }
-                var g = academy.teachingGroups &&
-                    academy.teachingGroups[targetGroup];
-                if (!isPlainObject(g)) {
+                var g = getGroupFromSnapshot(appData, targetGroup);
+                if (!g) {
                     return {
                         valid: false,
                         message: 'Teaching group no longer exists.'
@@ -1523,8 +1469,8 @@
                 if (!academy) {
                     throw new Error('Academy store is not available.');
                 }
-                var g = academy.teachingGroups[targetGroup];
-                if (!isPlainObject(g)) {
+                var g = getGroupFromSnapshot(appData, targetGroup);
+                if (!g) {
                     throw new Error('Teaching group not found.');
                 }
                 if (!Array.isArray(g.members)) {
@@ -1784,14 +1730,13 @@
                         message: 'Academy store is not available.'
                     };
                 }
-                if (!isPlainObject(academy.teachingGroups) ||
-                    !isPlainObject(academy.teachingGroups[targetGroup])) {
+                var g = getGroupFromSnapshot(appData, targetGroup);
+                if (!g) {
                     return {
                         valid: false,
                         message: 'Teaching group no longer exists.'
                     };
                 }
-                var g = academy.teachingGroups[targetGroup];
                 if (String(g.classId) !== targetClass) {
                     return {
                         valid: false,
@@ -1831,7 +1776,7 @@
                 if (!academy) {
                     throw new Error('Academy store is not available.');
                 }
-                var g = academy.teachingGroups[targetGroup];
+                var g = getGroupFromSnapshot(appData, targetGroup);
                 if (!isPlainObject(g)) {
                     throw new Error('Teaching group not found.');
                 }
@@ -1925,15 +1870,14 @@
                         message: 'Academy store is not available.'
                     };
                 }
-                if (!isPlainObject(academy.teachingGroups) ||
-                    !academy.teachingGroups[targetGroup]) {
+                var g = getGroupFromSnapshot(appData, targetGroup);
+                if (!g) {
                     return {
                         valid: false,
                         message: 'Teaching group no longer exists.'
                     };
                 }
-                var snapshotGroup = academy.teachingGroups[targetGroup];
-                if (String(snapshotGroup.classId) !== targetClass) {
+                if (String(g.classId) !== targetClass) {
                     return {
                         valid: false,
                         message:
@@ -1949,7 +1893,7 @@
                     throw new Error('Academy store is not available.');
                 }
 
-                var group = academy.teachingGroups[targetGroup];
+                var group = getGroupFromSnapshot(appData, targetGroup);
                 if (!isPlainObject(group)) {
                     throw new Error('Teaching group not found.');
                 }
@@ -2002,24 +1946,6 @@
     // ============================================================
     // applyRebalancePlan
     // ============================================================
-    //
-    // Apply a rebalance plan produced by
-    // AcademyBalanceSuggestions.suggest in ONE transaction.
-    //
-    // See the file header for the full contract.
-    //
-    // THE END-MEMBERSHIP LOOP USES indexOf + splice:
-    //   An earlier revision used
-    //     group.members = group.members.filter(function(m) {
-    //       return m !== activeEntry;
-    //     });
-    //   That closure captures `activeEntry` from the enclosing
-    //   loop body. It works because the filter is invoked
-    //   synchronously, before the next iteration reassigns the
-    //   variable, but it looks like a stale-closure bug and is
-    //   fragile against any future refactor that defers the filter.
-    //   indexOf + splice is clearer and immune to the same class of
-    //   mistake.
 
     function applyRebalancePlan(classId, disciplineId, week, plan) {
         if (!isNonEmptyString(classId)) {
@@ -2229,7 +2155,7 @@
 
                 for (var ai2 = 0; ai2 < normalizedAssignments.length; ai2++) {
                     var na3 = normalizedAssignments[ai2];
-                    var group = academy.teachingGroups[na3.groupId];
+                    var group = getGroupFromSnapshot(appData, na3.groupId);
                     if (!isPlainObject(group)) {
                         throw new Error(
                             'Group not found during apply: ' +
@@ -2327,99 +2253,6 @@
 
             failureMessage: 'Failed to apply the rebalance plan.'
         });
-    }
-
-    function isEnrolledInSnapshot(
-        appData,
-        charId,
-        classId,
-        disciplineId,
-        week
-    ) {
-        var academy = getAcademySnapshot(appData);
-        if (!academy) { return false; }
-        var enrBucket = academy.enrolments &&
-            academy.enrolments[classId];
-        if (!isPlainObject(enrBucket)) { return false; }
-        var intervals = enrBucket[charId];
-        if (!Array.isArray(intervals)) { return false; }
-
-        var targetDiscipline = String(disciplineId);
-        for (var i = 0; i < intervals.length; i++) {
-            var entry = intervals[i];
-            if (!entry || typeof entry !== 'object') { continue; }
-            if (String(entry.disciplineId) !== targetDiscipline) {
-                continue;
-            }
-            if (weekInRange(week, entry.startWeek, entry.endWeek)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    function findClassInSnapshot(appData, classId) {
-        if (!appData || !isPlainObject(appData.academy)) {
-            return null;
-        }
-        var store = appData.academy.graduatingClasses;
-        if (!isPlainObject(store)) { return null; }
-        if (!isNonEmptyString(classId)) { return null; }
-        var record = store[String(classId)];
-        if (!isPlainObject(record)) { return null; }
-        return record;
-    }
-
-    function findDisciplineInSnapshot(appData, disciplineId) {
-        if (!appData || typeof appData !== 'object') {
-            return null;
-        }
-        if (!isNonEmptyString(disciplineId)) {
-            return null;
-        }
-
-        var target = String(disciplineId);
-
-        if (appData.academy && typeof appData.academy === 'object') {
-            var academyList = appData.academy.disciplines;
-            if (Array.isArray(academyList)) {
-                for (var a = 0; a < academyList.length; a++) {
-                    var ad = academyList[a];
-                    if (ad && String(ad.id) === target) {
-                        return ad;
-                    }
-                }
-            }
-        }
-
-        if (appData.curriculum && typeof appData.curriculum === 'object') {
-            var legacyList = appData.curriculum.disciplines;
-            if (Array.isArray(legacyList)) {
-                for (var l = 0; l < legacyList.length; l++) {
-                    var ld = legacyList[l];
-                    if (ld && String(ld.id) === target) {
-                        return ld;
-                    }
-                }
-            }
-        }
-
-        return null;
-    }
-
-    function findCharacterInSnapshot(appData, charId) {
-        if (!appData || !Array.isArray(appData.characters)) {
-            return null;
-        }
-        if (!isNonEmptyString(charId)) { return null; }
-        var target = String(charId);
-        for (var i = 0; i < appData.characters.length; i++) {
-            var c = appData.characters[i];
-            if (c && String(c.id) === target) {
-                return c;
-            }
-        }
-        return null;
     }
 
     // ============================================================
@@ -2989,9 +2822,9 @@
                 if (explicitInstructor !== null) {
                     targetInstructor = explicitInstructor;
                 } else if (explicitGroupId !== null) {
-                    var pinnedGroup = isPlainObject(academy.teachingGroups)
-                        ? academy.teachingGroups[String(explicitGroupId)]
-                        : null;
+                    var pinnedGroup = getGroupFromSnapshot(
+                        appData, explicitGroupId
+                    );
                     if (!isPlainObject(pinnedGroup)) {
                         throw new Error('__group_not_found__');
                     }
