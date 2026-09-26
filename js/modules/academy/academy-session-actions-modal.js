@@ -5,37 +5,60 @@
  * Path: js/modules/academy/academy-session-actions-modal.js
  *
  * The small action modal that opens when a user clicks an occupied
- * cell on the discipline schedule grid. It offers two actions on
+ * cell on the discipline schedule grid. It offers three actions on
  * the session that owns the cell:
  *
- *   Edit    — opens AcademySessionFormModal in edit mode.
- *   Delete  — confirms and removes the session record.
+ *   Edit                     — opens AcademySessionFormModal in
+ *                              edit mode.
+ *   Delete                   — confirms and removes the session
+ *                              record.
+ *   Add another instructor   — closes this modal and asks the
+ *                              caller to open the instructor
+ *                              picker pre-filled with the same
+ *                              day/hour. The picker creates a
+ *                              second session at the slot for a
+ *                              different instructor; the grid
+ *                              then renders two co-occupants in
+ *                              the cell.
  *
  * WHAT THIS MODULE OWNS:
  *   - The action modal shell.
- *   - Its content (session summary + two buttons + a cancel).
+ *   - Its content (session summary + three buttons + a cancel).
  *   - The delete confirm sub-state (inline, not a second modal).
  *   - Routing Edit to AcademySessionFormModal.
  *   - Routing Delete to AcademyTeachingSessions.removeSessionRecord.
+ *   - Routing Add-another-instructor to the caller-supplied
+ *     `onAddInstructor` callback.
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - The session edit form. AcademySessionFormModal owns it.
+ *   - The instructor picker. AcademyScheduleInstructorModal owns
+ *     it. This modal does not know what the picker is; it calls a
+ *     callback and the callback opens the picker.
  *   - The teaching-sessions store. AcademyTeachingSessions owns it.
  *   - The grid. CalendarRenderer owns it.
  *   - The click dispatch that opened this modal. The discipline
  *     controller owns it.
- *   - Collision checks on delete. Deleting a session does not
- *     require a collision check; the session is going away.
  *
  * WHY NO "MOVE" ACTION:
  *   AcademySessionFormModal's edit mode already exposes day, start
  *   hour, and location as editable fields. Duration is locked
  *   (deliberately — see that module's header). So "move" is not a
  *   distinct operation; it is "edit the day and start hour."
- *   Adding a separate Move button would open the same form with the
- *   same fields, which is misleading UI: the user would reasonably
- *   expect Move to be a different operation with different
- *   semantics, and it isn't. Edit covers it.
+ *
+ * ADD-ANOTHER-INSTRUCTOR CALLBACK:
+ *   The modal does not know how to open the instructor picker, and
+ *   it should not. The discipline controller passes a callback via
+ *   options.onAddInstructor. The callback receives (day, hour) and
+ *   is expected to open the picker itself.
+ *
+ *   When the callback is absent, the third button is not rendered.
+ *   That keeps the modal from offering an action it cannot perform.
+ *
+ *   The modal closes itself before invoking the callback. Ordering
+ *   matters: if the caller opens a new modal from inside the
+ *   callback and this modal has not closed yet, the two modals
+ *   stack. Closing first avoids that.
  *
  * DELETE CONFIRMATION:
  *   Inline, in the same modal. Clicking Delete swaps the modal body
@@ -43,20 +66,11 @@
  *   Delete Session). Confirm performs the removal and closes. Cancel
  *   returns to the action state.
  *
- *   This avoids the modal-on-modal problem that a second confirm
- *   modal would create. A single modal with a two-state body is
- *   simpler to reason about and does not require the shell to
- *   support stacked modals.
- *
  * ASYNC SAFETY:
  *   Every asynchronous callback captures the current
  *   `_sessionToken`. A new modal opened (or the current one closed)
  *   before the callback runs makes the callback a no-op. This
  *   prevents a stale removal from closing a freshly-opened modal.
- *
- *   The `_busy` flag additionally disables the controls while a
- *   removal is in flight, so a double-click cannot fire two
- *   removals.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -153,6 +167,7 @@
     var _contentEl = null;
     var _context = null;
     var _onClose = null;
+    var _onAddInstructor = null;
 
     var _contentClickHandler = null;
 
@@ -322,12 +337,13 @@
      *
      * @param {object} options
      * @param {string} options.sessionId   Required.
-     * @param {string} [options.classId]   Class context. Used only
-     *                                     for the "after edit" refresh
-     *                                     callback threading; the
-     *                                     session's group carries it.
+     * @param {string} [options.classId]   Class context.
+     * @param {function} [options.onAddInstructor] Called with
+     *   (day, hour) when the user clicks "Add another instructor
+     *   here". The callback is responsible for opening the
+     *   instructor picker. When absent, the button is not rendered.
      * @param {function} [options.onClose] Called once when the modal
-     *                                     closes for any reason.
+     *   closes for any reason.
      * @returns {object|null} The modal element, or null on failure.
      */
     function openModal(options) {
@@ -348,6 +364,10 @@
         _onClose = typeof options.onClose === 'function'
             ? options.onClose
             : null;
+        _onAddInstructor =
+            typeof options.onAddInstructor === 'function'
+                ? options.onAddInstructor
+                : null;
 
         _state = 'actions';
         _busy = false;
@@ -429,6 +449,7 @@
         _contentEl = null;
         _context = null;
         _onClose = null;
+        _onAddInstructor = null;
         _contentClickHandler = null;
         _state = 'actions';
         _busy = false;
@@ -469,16 +490,31 @@
         html += renderSessionSummary();
 
         html += '<div class="academy-session-actions">';
+
         html += '<button type="button" class="primary" ' +
                     'data-session-action="edit"' +
                     (_busy ? ' disabled' : '') + '>' +
                     'Edit Session' +
                 '</button>';
+
         html += '<button type="button" class="danger" ' +
                     'data-session-action="delete"' +
                     (_busy ? ' disabled' : '') + '>' +
                     'Delete Session' +
                 '</button>';
+
+        // The "add another instructor" action is only available
+        // when the caller supplied a callback. A modal that cannot
+        // perform the action does not offer it.
+        if (_onAddInstructor !== null) {
+            html += '<button type="button" class="secondary ' +
+                        'academy-session-actions-add-instructor" ' +
+                        'data-session-action="add-instructor"' +
+                        (_busy ? ' disabled' : '') + '>' +
+                        'Add another instructor here' +
+                    '</button>';
+        }
+
         html += '</div>';
 
         html += '</div>';
@@ -656,6 +692,12 @@
             handleConfirmDelete(myToken);
             return;
         }
+
+        if (action === 'add-instructor') {
+            e.preventDefault();
+            handleAddInstructor();
+            return;
+        }
     }
 
     // ============================================================
@@ -674,12 +716,10 @@
     //
     // Practical resolution: close this modal whenever the form
     // closes. Rationale: a user who opened Edit and then closed
-    // the form has either saved (done — no reason to keep the
-    // action menu open) or abandoned (also done — the action menu
-    // was intermediate). Either way, returning the user to the
-    // grid is the right end state. This is the simplest policy
-    // that does not require the form modal to grow an outcome
-    // channel.
+    // the form has either saved (done) or abandoned (also done).
+    // Either way, returning the user to the grid is the right end
+    // state. This is the simplest policy that does not require the
+    // form modal to grow an outcome channel.
 
     function handleEdit(myToken) {
         if (!_context) { return; }
@@ -746,6 +786,57 @@
                 _state = 'actions';
                 renderContent();
             });
+    }
+
+    // ============================================================
+    // ADD ANOTHER INSTRUCTOR
+    // ============================================================
+    //
+    // Close this modal first, then invoke the callback. Ordering
+    // matters: if the callback opens a new modal and this modal
+    // has not closed yet, the two modals stack in the DOM. Closing
+    // first avoids that.
+    //
+    // The session's day and startTime come from the captured
+    // `_context.session` — the same values the summary row shows.
+    // The callback receives them and is responsible for opening
+    // the instructor picker with `mode: 'picker'` and the same
+    // class / discipline / week the caller already knows about.
+    //
+    // Errors thrown by the callback are logged but not surfaced;
+    // the callback is expected to do its own user-facing error
+    // handling (the controller's callback notifies on failure).
+
+    function handleAddInstructor() {
+        if (!_context) { return; }
+        if (_onAddInstructor === null) { return; }
+
+        var session = _context.session;
+        var day = session.day;
+        var hour = session.startTime;
+
+        if (typeof day !== 'number' || typeof hour !== 'number') {
+            notify(
+                'Cannot determine the slot for this session.',
+                'error'
+            );
+            return;
+        }
+
+        // Capture the callback before closing, because closeModal
+        // resets module state.
+        var callback = _onAddInstructor;
+
+        closeModal();
+
+        try {
+            callback(day, hour);
+        } catch (e) {
+            console.warn(
+                '[AcademySessionActionsModal] onAddInstructor ' +
+                'threw:', e
+            );
+        }
     }
 
     // ============================================================
