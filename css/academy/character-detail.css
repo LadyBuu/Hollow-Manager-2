@@ -15,7 +15,8 @@
  *   - Schedule tab: host element
  *   - Teams tab: student team list
  *   - Teaching Groups tab: collapsible discipline containers,
- *     group blocks, inline candidate picker, roster
+ *     collapsible group blocks, sessions list, inline candidate
+ *     picker, roster
  *   - Enrollment modal (opened from the Disciplines tab)
  *
  * Load order: shared.css → academy.css → academy/character-detail.css
@@ -67,6 +68,15 @@
 .academy-character-detail-meta-item .meta-label {
     color: var(--text-dim);
     font-size: 0.65rem;
+}
+
+/* Character export button in the header title row. Inherits
+   .small.secondary; the extra class exists so a spacing rule
+   can offset it from the role badge without touching the
+   shared secondary button. */
+.academy-character-export-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
 }
 
 /* ============================================================
@@ -776,10 +786,13 @@
    Layout:
 
      [Discipline header — toggles collapse]   [N groups]
-        [Group block]
-           [Group name]  [N students]  [+ Add Student]
-           [Inline candidate picker, when open]
-           [Roster: one row per member, each with a Remove button]
+        [Group block — collapsible]
+           [▾] [Group name]  [N students]  [Clear] [+ Add] [✕]
+           |  Roster: Alice, Bob, Carol
+           |  Sessions:
+           |    Tuesday, 11:00  2h    [Edit] [Delete]
+           |    Thursday, 11:00 2h    [Edit] [Delete]
+           |  [+ Add Session]
         [Group block]
         ...
 
@@ -809,6 +822,28 @@
     border: 1px solid var(--border-soft);
     border-radius: var(--radius);
     overflow: hidden;
+}
+
+/* The header row wraps the discipline header button and the
+   "+ New Group" button. The header button is the collapse
+   toggle; the new-group button sits beside it. */
+.academy-teaching-group-discipline-header-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.academy-teaching-group-discipline-header-row
+    .academy-teaching-group-discipline-header {
+    flex: 1;
+    min-width: 0;
+}
+
+.academy-teaching-group-new-group-btn {
+    flex: 0 0 auto;
+    font-size: 0.62rem;
+    padding: 2px 8px;
+    white-space: nowrap;
 }
 
 .academy-teaching-group-discipline-header {
@@ -866,7 +901,7 @@
     padding: 4px 0;
 }
 
-/* ---------- Group block ---------- */
+/* ---------- Group block (collapsible) ---------- */
 
 .academy-teaching-group-block {
     background: var(--bg);
@@ -878,12 +913,63 @@
     gap: 6px;
 }
 
+/* The block body is what collapses. The header row stays
+   visible so the toggle and the action buttons remain
+   reachable. */
+.academy-teaching-group-body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.academy-teaching-group-block[data-expanded="false"]
+    .academy-teaching-group-body {
+    display: none;
+}
+
 .academy-teaching-group-header {
     display: flex;
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
 }
+
+/* ---------- Collapse toggle (caret button) ---------- */
+
+.academy-teaching-group-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    flex: 0 0 auto;
+    border-radius: 3px;
+    transition: color 0.15s, background 0.15s;
+}
+
+.academy-teaching-group-toggle:hover {
+    color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.academy-teaching-group-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+.academy-teaching-group-caret {
+    display: inline-block;
+    font-size: 0.7rem;
+    line-height: 1;
+    pointer-events: none;
+}
+
+/* ---------- Group name + count + actions ---------- */
 
 .academy-teaching-group-name {
     font-size: 0.75rem;
@@ -907,6 +993,139 @@
     white-space: nowrap;
     font-size: 0.62rem;
     padding: 2px 8px;
+}
+
+/* The clear-roster and delete buttons share the header row
+   with Add Student. Named here so the header's wrap behaviour
+   is predictable. */
+.academy-teaching-group-clear-roster-btn,
+.academy-teaching-group-delete-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    font-size: 0.62rem;
+    padding: 2px 8px;
+}
+
+/* ---------- Sessions list (inside a group block) ----------
+ *
+ *   Sessions                    3
+ *   Tuesday, 11:00  2h    [Edit] [Delete]
+ *   Thursday, 11:00 2h    [Edit] [Delete]
+ *   + Add Session
+ */
+
+.academy-teaching-group-sessions {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border-soft);
+}
+
+.academy-teaching-group-sessions-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 6px;
+    margin-bottom: 2px;
+}
+
+.academy-teaching-group-sessions-title {
+    font-size: 0.62rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.academy-teaching-group-sessions-count {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    padding: 0 6px;
+    border-radius: 8px;
+    font-variant-numeric: tabular-nums;
+}
+
+.academy-teaching-group-sessions-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.academy-teaching-group-session-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    background: var(--panel-alt);
+    border-left: 2px solid var(--info);
+    border-radius: 3px;
+    font-size: 0.72rem;
+    flex-wrap: wrap;
+}
+
+.academy-teaching-group-session-main {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.academy-teaching-group-session-time {
+    font-weight: 500;
+    color: var(--text);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.academy-teaching-group-session-duration {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    background: var(--panel);
+    padding: 0 5px;
+    border-radius: 6px;
+    border: 1px solid var(--border-soft);
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+.academy-teaching-group-session-location {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-style: italic;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.academy-teaching-group-session-actions {
+    display: flex;
+    gap: 4px;
+    flex: 0 0 auto;
+    margin-left: auto;
+}
+
+.academy-teaching-group-session-actions button {
+    font-size: 0.6rem;
+    padding: 1px 8px;
+    white-space: nowrap;
+}
+
+.academy-teaching-group-sessions-empty {
+    margin: 0;
+    padding: 4px 0;
+    font-size: 0.68rem;
+}
+
+.academy-teaching-group-add-session-btn {
+    align-self: flex-start;
+    font-size: 0.62rem;
+    padding: 3px 10px;
+    margin-top: 2px;
 }
 
 /* ---------- Inline candidate picker ---------- */
@@ -1012,7 +1231,7 @@
      - Instructor mode: "Assign to teach a discipline — [Name]"
    The modal does not change the header markup based on mode; it
    renders whatever title string it was given.
- */
+   ============================================================ */
 
 .academy-enroll-summary {
     font-size: 0.75rem;
@@ -1233,6 +1452,32 @@
 
     .academy-teaching-group-candidate-actions button.small {
         width: 100%;
+    }
+
+    /* ---------- Sessions list (mobile) ---------- */
+
+    .academy-teaching-group-session-row {
+        flex-wrap: wrap;
+        gap: 4px;
+    }
+
+    .academy-teaching-group-session-main {
+        flex-basis: 100%;
+    }
+
+    .academy-teaching-group-session-location {
+        white-space: normal;
+    }
+
+    .academy-teaching-group-session-actions {
+        margin-left: 0;
+        width: 100%;
+        justify-content: flex-end;
+    }
+
+    .academy-teaching-group-add-session-btn {
+        width: 100%;
+        text-align: center;
     }
 
     /* ---------- Grades editor (mobile) ---------- */
