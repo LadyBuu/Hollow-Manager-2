@@ -34,6 +34,36 @@
  *   The form is ALWAYS visible at the top. The result section is
  *   BELOW it and is REPLACED on every Run.
  *
+ * INCREMENTAL EDITING (this revision):
+ *   The form is now EDITABLE without losing the current plan.
+ *
+ *     Change the instructor   -> the input VM is REFETCHED with
+ *                                an instructorId filter, so the
+ *                                student pool reflects the
+ *                                selected instructor's groups.
+ *                                The current plan stays visible
+ *                                but is marked STALE.
+ *
+ *     Change the scope        -> the input VM is REFETCHED
+ *                                (scope affects which students
+ *                                are in scope), plan marked STALE.
+ *
+ *     Change the target size  -> plan marked STALE. No refetch
+ *                                (the pool did not change).
+ *
+ *   While stale:
+ *     - Apply is disabled.
+ *     - A small ribbon above the footer explains why.
+ *     - The plan's numbers are still visible so the user can
+ *       compare against the new settings before re-running.
+ *
+ *   Run clears the stale flag and replaces the plan.
+ *
+ *   The intent is: "I want to change my mind about which
+ *   instructor or which scope without losing the work I have
+ *   already seen." Previously, every change wiped the plan,
+ *   which made the form feel like a one-shot wizard.
+ *
  * MOVE DIAGNOSTICS:
  *   When the plan leaves a group over target, the algorithm may
  *   still be unable to improve it. Two reasons:
@@ -59,8 +89,9 @@
  *   could not balance.
  *
  * SCOPE:
- *   The scope selector is 'all' or 'local'. See the previous
- *   version of this header for the semantics; they are unchanged.
+ *   The scope selector is 'all' or 'local'. 'all' means every
+ *   group of the discipline. 'local' means only the groups owned
+ *   by the selected instructor.
  *
  * APPLY:
  *   On Apply, calls:
@@ -190,6 +221,10 @@
     var _planError = null;
     var _busy = false;
 
+    // _stale is true when the form has been edited since _plan was
+    // produced. Apply is disabled while stale. Run clears it.
+    var _stale = false;
+
     // ============================================================
     // HELPERS
     // ============================================================
@@ -236,6 +271,22 @@
                     ? g.instructorName
                     : id
             });
+        }
+
+        // When the input VM was refetched with an instructorId
+        // filter, the only instructor in the VM is the selected
+        // one. Merge in the full instructor list from the initial
+        // unfiltered VM so the dropdown does not lose its other
+        // options.
+        if (_context && Array.isArray(_context.allInstructors)) {
+            for (var j = 0; j < _context.allInstructors.length; j++) {
+                var cand = _context.allInstructors[j];
+                if (!cand || !isNonEmptyString(cand.id)) { continue; }
+                var cid = String(cand.id);
+                if (seen[cid]) { continue; }
+                seen[cid] = true;
+                result.push(cand);
+            }
         }
 
         result.sort(function(a, b) {
@@ -293,6 +344,10 @@
             if (s.currentGroupId === null ||
                 s.currentGroupId === undefined ||
                 s.currentGroupId === '') {
+                // Unassigned students are always in scope for
+                // local rebalance: they are the candidates for
+                // placement.
+                result.push(s);
                 continue;
             }
             if (instructorGroupIds[String(s.currentGroupId)] === true) {
@@ -381,6 +436,68 @@
     }
 
     // ============================================================
+    // INPUT VM REFETCH
+    // ============================================================
+    //
+    // Called whenever the instructor or the scope changes. The
+    // scope and instructor together decide which students the
+    // aggregator should return.
+    //
+    // When scope is 'all', no instructor filter is sent and the
+    // aggregator returns the full discipline pool.
+    //
+    // When scope is 'local' and an instructor is selected, the
+    // aggregator is asked for just that instructor's students
+    // (plus unassigned students, who are the candidates for
+    // placement).
+    //
+    // On refetch failure the previous _inputVM is retained. That
+    // is the honest fallback: the form still works, the user
+    // sees the last-known pool, and the next change retries.
+
+    function refetchInputVM() {
+        if (!_context) { return; }
+
+        var options = {};
+
+        if (_form.scope === SCOPE_LOCAL &&
+            isNonEmptyString(_form.instructorId)) {
+            options.instructorId = String(_form.instructorId);
+        }
+
+        var vm = null;
+        try {
+            vm = AcademyAggregator.getRebalanceInputViewModel(
+                _context.classId,
+                _context.disciplineId,
+                _context.week,
+                options
+            );
+        } catch (e) {
+            console.warn(
+                '[AcademyRebalanceModal] refetchInputVM threw:', e
+            );
+            vm = null;
+        }
+
+        if (vm) { _inputVM = vm; }
+    }
+
+    // ============================================================
+    // STALENESS
+    // ============================================================
+
+    function markStale() {
+        if (_plan !== null || _planError !== null) {
+            _stale = true;
+        }
+    }
+
+    function clearStale() {
+        _stale = false;
+    }
+
+    // ============================================================
     // ENTRY POINT
     // ============================================================
 
@@ -453,10 +570,17 @@
 
         closeModal();
 
+        // The full instructor list is captured from the initial
+        // UNFILTERED VM. Subsequent refetches may narrow the VM to
+        // one instructor; the dropdown should still offer every
+        // instructor that owns groups in this discipline.
+        var allInstructors = extractInstructorList(inputVM);
+
         _context = {
             classId: String(options.classId),
             disciplineId: String(options.disciplineId),
-            week: week
+            week: week,
+            allInstructors: allInstructors
         };
         _onClose = typeof options.onClose === 'function'
             ? options.onClose
@@ -475,6 +599,7 @@
         _plan = null;
         _planError = null;
         _busy = false;
+        _stale = false;
 
         _sessionToken++;
         var myToken = _sessionToken;
@@ -516,6 +641,33 @@
         Modal.showModal(shell);
 
         return shell;
+    }
+
+    function extractInstructorList(vm) {
+        if (!vm || !Array.isArray(vm.groups)) { return []; }
+
+        var seen = Object.create(null);
+        var result = [];
+
+        for (var i = 0; i < vm.groups.length; i++) {
+            var g = vm.groups[i];
+            if (!g || !isNonEmptyString(g.instructorId)) { continue; }
+            var id = String(g.instructorId);
+            if (seen[id]) { continue; }
+            seen[id] = true;
+            result.push({
+                id: id,
+                name: isNonEmptyString(g.instructorName)
+                    ? g.instructorName
+                    : id
+            });
+        }
+
+        result.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
+
+        return result;
     }
 
     function closeModal() {
@@ -586,6 +738,7 @@
         _plan = null;
         _planError = null;
         _busy = false;
+        _stale = false;
     }
 
     // ============================================================
@@ -1176,7 +1329,7 @@
         var applyDisabled = true;
         var applyLabel = 'Apply';
 
-        if (_plan !== null && _plan.ok === true && !isBusy()) {
+        if (_plan !== null && _plan.ok === true && !isBusy() && !_stale) {
             applyDisabled = false;
         }
         if (isBusy()) {
@@ -1185,6 +1338,12 @@
 
         var html = '';
         html += '<div class="modal-footer academy-rebalance-footer">';
+
+        if (_stale && _plan !== null) {
+            html += '<span class="academy-rebalance-stale-ribbon">' +
+                        'Settings changed \u2014 click Run to regenerate.' +
+                    '</span>';
+        }
 
         html += '<button type="button" class="secondary" ' +
                     'data-rebalance-action="close"' +
@@ -1266,13 +1425,17 @@
                 _form.scope = SCOPE_ALL;
             }
 
+            // Refetch the input VM so the pool of students
+            // reflects the new instructor's groups. This is what
+            // makes "change just the instructor" work without a
+            // full clear.
+            refetchInputVM();
+
             if (!_form.targetSizeTouched) {
                 _form.targetSize = computeDefaultTargetSize();
             }
 
-            _plan = null;
-            _planError = null;
-
+            markStale();
             renderContent();
             return;
         }
@@ -1284,13 +1447,15 @@
 
             _form.scope = value;
 
+            // Scope affects which students are in scope, so the
+            // input VM must be refetched.
+            refetchInputVM();
+
             if (!_form.targetSizeTouched) {
                 _form.targetSize = computeDefaultTargetSize();
             }
 
-            _plan = null;
-            _planError = null;
-
+            markStale();
             renderContent();
             return;
         }
@@ -1310,6 +1475,7 @@
             var parsed = parseInt(target.value, 10);
             if (!isNaN(parsed)) {
                 _form.targetSize = parsed;
+                markStale();
             }
             return;
         }
@@ -1369,6 +1535,7 @@
             _planError =
                 'Target size must be an integer between ' +
                 MIN_TARGET_SIZE + ' and ' + MAX_TARGET_SIZE + '.';
+            _stale = false;
             renderContent();
             return;
         }
@@ -1379,6 +1546,7 @@
         if (scopedGroups.length === 0) {
             _plan = null;
             _planError = 'No groups match the current filter.';
+            _stale = false;
             renderContent();
             return;
         }
@@ -1386,6 +1554,7 @@
         if (scopedStudents.length === 0) {
             _plan = null;
             _planError = 'No students match the current filter.';
+            _stale = false;
             renderContent();
             return;
         }
@@ -1426,6 +1595,7 @@
             _planError =
                 'The algorithm failed to produce a plan. ' +
                 'See the console for details.';
+            _stale = false;
             renderContent();
             return;
         }
@@ -1435,12 +1605,14 @@
             _planError = (plan && plan.reason)
                 ? plan.reason
                 : 'The algorithm could not produce a plan.';
+            _stale = false;
             renderContent();
             return;
         }
 
         _plan = plan;
         _planError = null;
+        clearStale();
         renderContent();
 
         void myToken;
@@ -1453,6 +1625,15 @@
     function handleApply(myToken) {
         if (!_context || !_plan) { return; }
         if (isBusy()) { return; }
+
+        if (_stale) {
+            notify(
+                'The plan is stale. Click Run to regenerate before ' +
+                'applying.',
+                'info'
+            );
+            return;
+        }
 
         if (_plan.ok !== true) {
             notify('The plan is not applicable.', 'error');
