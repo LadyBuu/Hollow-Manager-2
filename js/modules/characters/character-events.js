@@ -34,6 +34,25 @@
  *   The Physical and Personality tabs render a small ⟳ button
  *   (.field-random-btn) next to each pool-backed field. Clicking
  *   one rerolls only that field.
+ *
+ * SAVE RE-ENTRANCY (this revision):
+ *   handleSave() is guarded against re-entrant invocation by a
+ *   module-level _saveInFlight flag. A single user click cannot
+ *   produce two concurrent saves.
+ *
+ *   On success, the form is re-rendered ONLY when the save CREATED
+ *   a new character. For an EXISTING character, the form already
+ *   holds the values the user just submitted, and re-rendering it
+ *   from window.data creates an opportunity for a queued mutation
+ *   to overwrite the freshly-saved values with a stale snapshot.
+ *   This is the fix for the "rolled stats revert to previously
+ *   saved values" bug: the form was being rebuilt from a record
+ *   that a later mutation in the MutationPipeline queue had
+ *   already clobbered.
+ *
+ *   refreshUI() is render-only. It must not enqueue mutations.
+ *   If a read-only refresh needs a derived value, it computes it
+ *   and writes it to the DOM; it does not call performMutation.
  */
 
 (function() {
@@ -82,6 +101,11 @@
     var _socialCoreInitialized = false;
 
     var _characterEditListenerInstalled = false;
+
+    // Save re-entrancy guard. A single user click must not produce
+    // two concurrent saves. See the SAVE RE-ENTRANCY note in the
+    // file header.
+    var _saveInFlight = false;
 
     // ============================================================
     // LAZY DEPENDENCY ACCESSORS
@@ -225,8 +249,19 @@
     }
 
     // ============================================================
-    // UI REFRESH
+    // UI REFRESH - READ-ONLY
     // ============================================================
+    //
+    // refreshUI is a RENDER-ONLY function. It must not enqueue any
+    // mutation. If any of the callees below (CharacterList.render,
+    // CharacterClassView.renderAcademicTab, updateDashboardStats)
+    // is found to enqueue a mutation, that is the re-entrant caller
+    // and it must be fixed at its source, not here.
+    //
+    // Diagnostic: to find the re-entrant caller, add
+    //   console.trace('[MP] performMutation caller');
+    // at the top of MutationPipeline.enqueueMutation, then click
+    // Save once. The second and subsequent traces name the caller.
 
     function refreshUI(char) {
         if (window.CharacterList && typeof window.CharacterList.render === 'function') {
@@ -398,6 +433,7 @@
         removeAllEventListeners();
         _initialized = false;
         _socialEditId = null;
+        _saveInFlight = false;
     }
 
     // ============================================================
@@ -1680,15 +1716,52 @@
     // HANDLERS
     // ============================================================
 
+    /**
+     * Save the character form.
+     *
+     * RE-ENTRANCY GUARD:
+     *   A module-level _saveInFlight flag prevents a second save
+     *   from starting while the first is still in flight. The
+     *   MutationPipeline queue serialises mutations, so a re-entrant
+     *   save would run its mutation AFTER the first one has already
+     *   persisted. If the re-entrant save's DTO captured pre-roll
+     *   state, it would write that stale state back. The guard
+     *   stops the second save from being issued at all.
+     *
+     * NO RE-RENDER FOR EXISTING CHARACTERS:
+     *   On success, the form is re-rendered ONLY when the save
+     *   CREATED a new character. For an existing character, the
+     *   form already holds the values the user submitted.
+     *   Re-rendering it from window.data creates an opportunity for
+     *   a queued mutation to have already overwritten the record
+     *   with a stale snapshot. The user would then see the
+     *   previously saved values in the form. This is the fix for
+     *   the "rolled stats revert to previously saved values" bug.
+     *
+     *   When the save creates a new character, we DO need to
+     *   re-render: the form must adopt the new character's id, and
+     *   the "Create" button must become "Update".
+     */
     function handleSave() {
+        // ---- Re-entrancy guard ----
+        if (_saveInFlight) {
+            return;
+        }
+
         var dto = CharacterForm.collect();
         if (!dto) {
             notify('Failed to collect form data.', 'error');
             return;
         }
 
-        var editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        var editId = typeof window.getCurrentEditId === 'function'
+            ? window.getCurrentEditId()
+            : null;
         dto._editId = editId;
+
+        var wasEditing = editId !== null && editId !== undefined && editId !== '';
+
+        _saveInFlight = true;
 
         CharacterCRUD.save(dto)
             .then(function(result) {
@@ -1698,14 +1771,28 @@
                         if (typeof window.setCurrentEditId === 'function') {
                             window.setCurrentEditId(savedId);
                         }
+
+                        // Only re-render when we just created a new
+                        // character. For an existing character, the
+                        // form already holds the submitted values;
+                        // re-rendering it from window.data is what
+                        // lets a stale queued write surface.
+                        if (!wasEditing) {
+                            CharacterForm.render(savedId);
+                        }
+
                         var char = CharacterQueries.getCharacterById(savedId);
-                        CharacterForm.render(savedId);
                         refreshUI(char);
                     }
                 }
             })
             .catch(function() {
                 notify('An error occurred while saving.', 'error');
+            })
+            .then(function() {
+                // Always release the guard, whether the save
+                // succeeded, failed, or the success handler threw.
+                _saveInFlight = false;
             });
     }
 
