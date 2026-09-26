@@ -142,19 +142,38 @@
  *     - each group's sessions (via
  *       AcademyTeachingSessions.getSessionsForGroup)
  *
+ *   ELIMINATED STUDENTS:
+ *     A student who was enrolled at the start of the year but has
+ *     since been eliminated is NOT included in the rebalance
+ *     input. Enrolment is a year-level fact; participation is not.
+ *     An eliminated student cannot take the class, so they cannot
+ *     be placed into a group.
+ *
+ *     The check uses EliminationQueries.isCharacterEliminatedByWeek,
+ *     which applies the same boundary the roster derivation uses:
+ *     eliminated at week E counts for weeks > E, not for week E
+ *     itself. A student eliminated in week 4 is still eligible
+ *     during week 4 and ineligible from week 5 onward.
+ *
+ *     When EliminationQueries is not loaded, the check is skipped.
+ *     That preserves the pre-fix behavior rather than silently
+ *     excluding students on the basis of a module that is not
+ *     present.
+ *
  *   The VM also carries presentation metadata the rebalance modal
  *   needs: student names, group display names, group instructor
  *   names, group member counts. The algorithm ignores the metadata;
- *   it consumes only the students[].id, students[].occupied,
- *   groups[].groupId, and groups[].sessions fields.
+ *   it consumes only the students[].id, students[].currentGroupId,
+ *   students[].occupied, groups[].groupId, and groups[].sessions
+ *   fields.
  *
  *   The occupied list for a student INCLUDES the sessions of the
- *   groups they are already in. That is deliberate: the rebalance
- *   algorithm re-assigns everyone from scratch, so the algorithm
- *   needs to know the student's full occupied schedule in order to
- *   correctly determine whether they can sit in a candidate group.
- *   The caller that wants "rebalance but leave Alice alone" passes
- *   Alice in `excludedStudentIds`.
+ *   groups they are already in. That is deliberate: the algorithm
+ *   subtracts the current group's sessions before building the
+ *   allowed-groups matrix (see AcademyBalanceSuggestions), because
+ *   the rebalance is precisely the operation that relocates the
+ *   student. The caller that wants "rebalance but leave Alice
+ *   alone" passes Alice in `excludedStudentIds`.
  *
  *   Options:
  *     { excludedStudentIds?: string[], groupIds?: string[] }
@@ -891,7 +910,21 @@
     // Assembles the input object AcademyBalanceSuggestions.suggest
     // consumes. Does NOT run the algorithm.
     //
-    // See the file header for the full contract.
+    // ELIMINATED STUDENTS:
+    //   A student who is eliminated as of the rebalance week is
+    //   excluded. Enrolment is a year-level fact; participation is
+    //   not. An eliminated student cannot take the class, so they
+    //   cannot be placed into a group.
+    //
+    //   The check uses EliminationQueries.isCharacterEliminatedByWeek,
+    //   which applies the same boundary the roster derivation uses:
+    //   eliminated at week E counts for weeks > E, not for week E
+    //   itself.
+    //
+    //   When EliminationQueries is not loaded, the check is skipped.
+    //   That preserves the pre-fix behavior rather than silently
+    //   excluding students on the basis of a module that is not
+    //   present.
 
     function getRebalanceInputViewModel(
         classId,
@@ -938,6 +971,16 @@
         if (Array.isArray(options.groupIds)) {
             groupFilter = buildIdSet(options.groupIds);
         }
+
+        // ---- Elimination check availability ----
+        //
+        // Resolved once. If the module is not loaded, the check is
+        // skipped for every student. If it is loaded but throws for
+        // a specific student, that student is conservatively
+        // excluded.
+        var EQ = getEliminationQueries();
+        var eliminationCheckAvailable = EQ &&
+            typeof EQ.isCharacterEliminatedByWeek === 'function';
 
         var enrolledStudentIds = [];
         try {
@@ -1089,6 +1132,30 @@
             if (!char) { continue; }
 
             if (char.mode === 'instructor') { continue; }
+
+            // ---- Eliminated students cannot be rebalanced ----
+            //
+            // Enrolment is a year-level fact. Participation is not.
+            // A student eliminated at or before the rebalance week
+            // cannot take the class, so they cannot be placed into
+            // any group.
+            //
+            // If the elimination check throws for a specific
+            // student, that student is conservatively excluded.
+            // If the module is not loaded at all, the check is
+            // skipped entirely (the outer `eliminationCheckAvailable`
+            // guard).
+            if (eliminationCheckAvailable) {
+                var eliminatedNow = false;
+                try {
+                    eliminatedNow = EQ.isCharacterEliminatedByWeek(
+                        studentId, weekNum
+                    ) === true;
+                } catch (e) {
+                    eliminatedNow = true;
+                }
+                if (eliminatedNow) { continue; }
+            }
 
             var occupied = [];
             var occupiedUnavailable = false;
