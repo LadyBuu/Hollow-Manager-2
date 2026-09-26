@@ -27,6 +27,11 @@
  * TEACHING GROUP BULK ACTIONS:
  *   Each group block header carries, in order:
  *
+ *     Caret          toggles the block's body (roster + sessions).
+ *                    Emits data-action="teaching-groups-toggle-group".
+ *                    State is stored under the "tg:<groupId>" key in
+ *                    AcademyUI's expansion map. Default: expanded.
+ *
  *     Clear Roster   secondary. Shown only when the group has
  *                    members. Removes every member entry from
  *                    the group (hard delete). The group and its
@@ -43,6 +48,17 @@
  *
  *   The renderer emits markers only. The confirmation and the
  *   domain mutations live in the controller.
+ *
+ * COLLAPSE STATE:
+ *   Read through a local helper (readTeachingGroupExpanded) that
+ *   consults AcademyUI.isExpanded. When AcademyUI is unavailable
+ *   or the key is absent, the default is EXPANDED — a group the
+ *   user has never touched is always shown.
+ *
+ *   The controller handles the toggle action. A fast path that
+ *   flips the attribute and the caret in place (no re-render) is
+ *   documented at the handler site, because a full re-render
+ *   would reset scroll and drop any open candidate picker.
  *
  * CHARACTER EXPORT BUTTON:
  *   The header title row carries a third element after the role
@@ -129,6 +145,11 @@
         return String(vm.character.id);
     }
 
+    /**
+     * Discipline-level collapse state (existing behaviour). Keyed by
+     * character + discipline. Unrelated to the per-group collapse
+     * added in this revision.
+     */
     function isDisciplineExpanded(charId, disciplineId) {
         var AcademyUI = window.AcademyUI;
         if (!AcademyUI || typeof AcademyUI.isExpanded !== 'function') {
@@ -136,6 +157,28 @@
         }
         var key = 'teachingGroup:' + charId + ':' + disciplineId;
         return AcademyUI.isExpanded(key) === true;
+    }
+
+    /**
+     * Per-group collapse state. Keyed "tg:<groupId>". Defaults to
+     * EXPANDED when the key is absent (the common case: a user has
+     * never touched this group). When AcademyUI is unavailable,
+     * also defaults to expanded so the block renders fully rather
+     * than collapsing silently.
+     */
+    function readTeachingGroupExpanded(groupId) {
+        if (!isNonEmptyString(groupId)) { return true; }
+        var AcademyUI = window.AcademyUI;
+        if (!AcademyUI ||
+            typeof AcademyUI.getExpandedIds !== 'function') {
+            return true;
+        }
+        var stored = AcademyUI.getExpandedIds();
+        var key = 'tg:' + String(groupId);
+        if (!Object.prototype.hasOwnProperty.call(stored, key)) {
+            return true;
+        }
+        return stored[key] === true;
     }
 
     // ============================================================
@@ -1081,6 +1124,33 @@
         return html;
     }
 
+    // ============================================================
+    // TEACHING GROUP BLOCK (collapsible)
+    // ============================================================
+    //
+    // Each group is a self-contained collapsible block.
+    //
+    //   [▾] Group name   3 students   [Clear Roster] [+ Add Student] [✕]
+    //   |  Roster: Alice, Bob, Carol
+    //   |  Sessions:
+    //   |    Tuesday, 11:00  2h   [Edit] [Delete]
+    //   |    Thursday, 11:00 2h   [Edit] [Delete]
+    //   |  [+ Add Session]
+    //
+    // The header row is the toggle. The body carries the roster,
+    // the sessions list, and (when open) the candidate picker.
+    // Collapse state is per-group, stored under "tg:<groupId>".
+    //
+    // The header retains the existing Clear Roster / Add Student /
+    // Delete buttons. The caret is a new element, placed before
+    // the group name so it reads as a disclosure on the group
+    // label rather than as a fourth action.
+    //
+    // The candidate picker only renders when the block is expanded
+    // AND the picker is open for this group. A collapsed block
+    // with an open picker hides the picker until the block is
+    // re-expanded; the controller's state is not discarded.
+
     function renderTeachingGroupBlock(
         group,
         charId,
@@ -1094,12 +1164,34 @@
         var isPickerOpen = openPickerGroupId &&
             String(openPickerGroupId) === String(group.groupId);
 
+        var isExpanded = readTeachingGroupExpanded(group.groupId);
+
         var html = '';
         html += '<div class="academy-teaching-group-block" ' +
                     'data-group-id="' +
-                        escapeAttribute(group.groupId) + '">';
+                        escapeAttribute(group.groupId) + '" ' +
+                    'data-expanded="' +
+                        escapeAttribute(isExpanded ? 'true' : 'false') + '">';
 
+        // ---- Header (caret + name + count + actions) ----
         html += '<div class="academy-teaching-group-header">';
+
+        html += '<button type="button" ' +
+                    'class="academy-teaching-group-toggle" ' +
+                    'data-action="teaching-groups-toggle-group" ' +
+                    'data-group-id="' +
+                        escapeAttribute(group.groupId) + '" ' +
+                    'aria-expanded="' +
+                        escapeAttribute(isExpanded ? 'true' : 'false') + '" ' +
+                    'title="' +
+                        escapeAttribute(isExpanded
+                            ? 'Collapse this group'
+                            : 'Expand this group') + '">';
+        html += '<span class="academy-teaching-group-caret">' +
+                    (isExpanded ? '\u25be' : '\u25b8') +
+                '</span>';
+        html += '</button>';
+
         html += '<span class="academy-teaching-group-name">' +
                     escapeHtml(group.displayName) +
                 '</span>';
@@ -1144,6 +1236,9 @@
 
         html += '</div>';
 
+        // ---- Body (collapsible) ----
+        html += '<div class="academy-teaching-group-body">';
+
         if (isPickerOpen) {
             html += renderCandidatePicker(
                 group,
@@ -1169,6 +1264,8 @@
         }
 
         html += renderTeachingGroupSessionsList(group);
+
+        html += '</div>';
 
         html += '</div>';
         return html;
