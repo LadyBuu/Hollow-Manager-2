@@ -27,6 +27,16 @@
  *   - The relationship modal shell (#character-relationship-modal) is mounted here ONCE
  *   - The graph modal is created on demand by CharacterEvents
  *
+ * FORM ACTION BUTTONS:
+ *   The form-level actions (Delete / Cancel / Create-Update) live in the
+ *   form-actions row rendered by character-form.js. The module header
+ *   used to carry a duplicate "Save" button; it has been removed. The
+ *   header now carries only the character list controls.
+ *
+ *   Delete is only meaningful when editing an existing character. The
+ *   button is present in the DOM unconditionally and hidden by
+ *   CharacterEvents whenever a new character (no editId) is loaded.
+ *
  * CHARACTER CSV CONTROLS (this revision):
  *   The Import / Export / Template buttons for character CSVs moved
  *   from the global page header into the character module's page
@@ -328,10 +338,6 @@
                             <div class="form-header">
                                 <h3 id="form-title">No Character Selected</h3>
                                 <span id="current-char-name" class="char-name-display" style="display:none;"></span>
-                                <div class="form-actions">
-                                    <button type="button" id="delete-char-btn" class="danger small">Delete</button>
-                                    <button type="submit" id="save-char-btn" class="primary">Save</button>
-                                </div>
                             </div>
                             <div id="character-form-content">
                                 <p class="empty-state">Select a character from the list to view and edit details.</p>
