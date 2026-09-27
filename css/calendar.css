@@ -9,17 +9,6 @@
  * Covers:
  *   - The schedule grid and its cells
  *   - Header row
- *   - Occupied slots, empty slots, rest-day columns, blocke/**
- * css/calendar.css - Calendar Renderer Styles
- *
- * Path: css/calendar.css
- *
- * Styles for the pure calendar renderer in
- * modules/calendar/calendar-renderer.js.
- *
- * Covers:
- *   - The schedule grid and its cells
- *   - Header row
  *   - Occupied slots, empty slots, rest-day columns, blocked slots
  *   - Group color coding
  *   - Highlight tints (all-free, instructor-free, weeks-N, badge)
@@ -51,47 +40,13 @@
  *
  * HIGHLIGHT TINTS:
  *   The discipline grid may carry a `highlights` map. When
- *   present, cells are tinted based on their entry:
- *
- *     .schedule-highlight-all-free
- *       The instructor AND every named student are free. This is
- *       a candidate slot for the group.
- *
- *     .schedule-highlight-instructor-free
- *       The instructor is free, but one or more named students
- *       are occupied. The slot is not usable as-is.
- *
- *     .schedule-highlight-weeks-N  (N in 1..4)
- *       Applied alongside all-free; N is the number of weeks the
- *       slot stays free, capped at 4 for CSS brevity. The true
- *       count is shown in the badge, uncapped.
- *
- *   The highlight tints coexist with the group color classes.
- *   An occupied cell may carry both `.acad-group-color-N` and
- *   `.schedule-highlight-instructor-free`; the highlight tint
- *   sits on top of the group tint via the box-shadow ring and
- *   the increased background opacity. The group tint's
- *   `border-left-color` remains visible because the highlight
- *   tints do not set it.
+ *   present, cells are tinted based on their entry.
  *
  * RADIO LISTS (instructor picker, candidate picker):
- *   Both lists share the same defensive layout:
- *
- *     display: flex !important;
- *     flex-direction: row !important;
- *     align-items: flex-start !important;
- *     justify-content: flex-start !important;
- *
- *   and a fixed 14x14 radio whose width, height, margin, and
- *   min/max-width are pinned so a global `input { width: 100% }`
- *   rule cannot stretch it. The name span is `flex: 1 1 auto;
- *   min-width: auto` with `overflow-wrap: break-word` (never
- *   `anywhere`) so the name never wraps one character per line.
- *
- *   Do NOT change these without also changing the sibling block.
- *   The two radio lists must stay in sync; a divergence is the
- *   bug that shipped a centered radio and a right-shoved name
- *   twice in a row.
+ *   Both lists share the same defensive layout. The defensive
+ *   resets are duplicated across each radio-list block on purpose;
+ *   diverging them has broken the layout twice in the past. See
+ *   the SCHEDULE INSTRUCTOR MODAL section below.
  *
  * Loads after shared.css and academy.css.
  *
@@ -99,9 +54,7 @@
  *   Group colors and highlight tints use hardcoded rgba() values
  *   rather than tokens, so they carry explicit light-mode
  *   overrides in the [data-theme="light"] block at the bottom of
- *   this file. The base values are tuned for dark mode; the
- *   overrides raise opacity so the tint remains readable on a
- *   light background without losing the hue.
+ *   this file.
  */
 
 /* ============================================================
@@ -430,1941 +383,6 @@
     color: var(--accent);
 }
 
-.schedule-cell.schedule-highlight-all-free:hover,
-.schedule-cell.schedule-highlight-instructor-free:hover {
-    outline: 1px solid var(--accent);
-    outline-offset: -2px;
-}
-
-/* ============================================================
-   REST DAY COLUMN
-   ============================================================ */
-
-.schedule-rest-day {
-    background: var(--panel-alt);
-    color: var(--text-dim);
-    opacity: 0.65;
-}
-
-.schedule-rest-day.schedule-header {
-    background: var(--panel-alt);
-    font-style: italic;
-}
-
-.schedule-rest-day .schedule-empty-label {
-    display: none;
-}
-
-.schedule-rest-day[data-action] {
-    cursor: default;
-}
-
-/* ============================================================
-   BLOCKED SLOT
-   ============================================================ */
-
-.schedule-blocked {
-    background: var(--danger-soft);
-    border-left: 3px solid var(--danger);
-    color: var(--danger);
-    cursor: default;
-}
-
-.schedule-blocked-label {
-    font-weight: 600;
-    font-size: 0.65rem;
-    text-align: center;
-    color: var(--danger);
-}
-
-/* ============================================================
-   OCCUPIED SLOT - INNER ELEMENTS
-   ============================================================ */
-
-.schedule-discipline-name {
-    font-weight: 600;
-    font-size: 0.68rem;
-    color: var(--text);
-    line-height: 1.15;
-    word-break: break-word;
-    overflow-wrap: anywhere;
-    padding-right: 22px;
-}
-
-@media (min-width: 768px) {
-    .schedule-discipline-name {
-        font-size: 0.72rem;
-    }
-}
-
-.schedule-label {
-    font-size: 0.6rem;
-    color: var(--accent);
-    font-style: italic;
-    line-height: 1.1;
-}
-
-.schedule-group-label {
-    font-size: 0.6rem;
-    color: var(--text-dim);
-    line-height: 1.1;
-}
-
-.schedule-instructor {
-    font-size: 0.6rem;
-    color: var(--text-dim);
-    line-height: 1.1;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.schedule-duration {
-    font-size: 0.58rem;
-    color: var(--text-dim);
-    font-weight: 500;
-    position: absolute;
-    top: 3px;
-    right: 5px;
-    background: var(--panel-alt);
-    padding: 0 3px;
-    border-radius: 3px;
-    line-height: 1.4;
-}
-
-.schedule-continuation {
-    position: absolute;
-    bottom: 2px;
-    right: 4px;
-    font-size: 0.65rem;
-    color: var(--text-dim);
-    opacity: 0.7;
-    line-height: 1;
-    transition: color 0.15s ease, opacity 0.15s ease;
-}
-
-/* ============================================================
-   CO-OCCUPANT MARKER   ============================================================ */
-
-.schedule-co-occupant-marker {
-    position: absolute;
-    top: 3px;
-    right: 5px;
-    font-size: 0.58rem;
-    font-weight: 700;
-    color: var(--warning);
-    background: var(--warning-soft);
-    border: 1px solid var(--warning);
-    border-radius: 8px;
-    padding: 0 5px;
-    line-height: 1.4;
-    white-space: nowrap;
-    cursor: pointer;
-    font-family: inherit;
-}
-
-.schedule-co-occupant-marker:hover {
-    background: var(--warning);
-    color: var(--panel);
-}
-
-.schedule-occupied .schedule-duration ~ .schedule-co-occupant-marker {
-    top: 17px;
-}
-
-/* ============================================================
-   CO-OCCUPANTS PANEL
-   ============================================================ */
-
-.schedule-co-occupants-host {
-    display: block;
-}
-
-.schedule-co-occupants-host:empty {
-    display: none;
-}
-
-.schedule-co-occupants-panel {
-    margin-top: 10px;
-    padding: 10px 12px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--warning);
-    border-radius: var(--radius);
-}
-
-.schedule-co-occupants-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding-bottom: 6px;
-    margin-bottom: 8px;
-    border-bottom: 1px solid var(--border-soft);
-}
-
-.schedule-co-occupants-title {
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: var(--text);
-    flex: 0 0 auto;
-}
-
-.schedule-co-occupants-count {
-    font-size: 0.65rem;
-    color: var(--text-dim);
-    flex: 1;
-    min-width: 0;
-}
-
-.schedule-co-occupants-close {
-    flex: 0 0 auto;
-    background: transparent;
-    border: none;
-    color: var(--text-dim);
-    font-size: 1rem;
-    line-height: 1;
-    padding: 0 4px;
-    cursor: pointer;
-}
-
-.schedule-co-occupants-close:hover {
-    color: var(--text);
-}
-
-.schedule-co-occupants-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-
-.schedule-co-occupants-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 5px 8px;
-    background: var(--bg);
-    border-radius: 3px;
-    border-left: 2px solid var(--border);
-    font-size: 0.72rem;
-}
-
-.schedule-co-occupants-row-primary {
-    border-left-color: var(--warning);
-    background: var(--warning-soft);
-}
-
-.schedule-co-occupants-bullet {
-    flex: 0 0 auto;
-    font-size: 0.6rem;
-    color: var(--warning);
-    line-height: 1;
-}
-
-.schedule-co-occupants-discipline {
-    flex: 1;
-    min-width: 0;
-    font-weight: 500;
-    color: var(--text);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.schedule-co-occupants-instructor {
-    font-size: 0.65rem;
-    color: var(--text-dim);
-    white-space: nowrap;
-    flex: 0 0 auto;
-}
-
-.schedule-co-occupants-instructor-empty {
-    font-style: italic;
-    opacity: 0.7;
-}
-
-.schedule-co-occupants-duration {
-    font-size: 0.6rem;
-    color: var(--text-dim);
-    background: var(--panel);
-    padding: 0 5px;
-    border-radius: 6px;
-    border: 1px solid var(--border-soft);
-    white-space: nowrap;
-    flex: 0 0 auto;
-}
-
-/* ============================================================
-   DISCIPLINE HOURS PANEL
-   ============================================================ */
-
-.schedule-hours-panel {
-    margin-top: 10px;
-    padding: 10px 12px;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-}
-
-.schedule-hours-header {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    padding-bottom: 6px;
-    margin-bottom: 8px;
-    border-bottom: 1px solid var(--border-soft);
-    flex-wrap: wrap;
-}
-
-.schedule-hours-title {
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: var(--accent);
-    margin: 0;
-}
-
-.schedule-hours-hint {
-    font-size: 0.65rem;
-    color: var(--text-dim);
-    font-style: italic;
-}
-
-.schedule-hours-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-}
-
-.schedule-hours-row {
-    margin: 0;
-    padding: 0;
-}
-
-.schedule-hours-row-btn {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    width: 100%;
-    padding: 6px 10px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border-soft);
-    border-left-width: 3px;
-    border-radius: 4px;
-    font-size: 0.75rem;
-    font-family: inherit;
-    color: inherit;
-    text-align: left;
-    cursor: pointer;
-    transition: background 0.15s;
-}
-
-.schedule-hours-row-btn:hover {
-    background: var(--accent-soft);
-}
-
-.schedule-hours-row-under .schedule-hours-row-btn {
-    border-left-color: var(--warning);
-}
-
-.schedule-hours-row-met .schedule-hours-row-btn {
-    border-left-color: var(--accent);
-}
-
-.schedule-hours-row-over .schedule-hours-row-btn {
-    border-left-color: var(--info);
-}
-
-.schedule-hours-discipline {
-    flex: 1;
-    min-width: 0;
-    font-weight: 500;
-    color: var(--text);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.schedule-hours-counts {
-    flex: 0 0 auto;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-}
-
-.schedule-hours-scheduled {
-    color: var(--text);
-    font-weight: 600;
-}
-
-.schedule-hours-slash {
-    color: var(--text-dim);
-    padding: 0 2px;
-}
-
-.schedule-hours-target {
-    color: var(--text-dim);
-}
-
-.schedule-hours-unit {
-    color: var(--text-dim);
-    font-size: 0.65rem;
-    padding-left: 1px;
-}
-
-.schedule-hours-remaining {
-    flex: 0 0 auto;
-    font-size: 0.65rem;
-    color: var(--text-dim);
-    white-space: nowrap;
-}
-
-.schedule-hours-row-under .schedule-hours-remaining {
-    color: var(--warning);
-    font-weight: 600;
-}
-
-.schedule-hours-row-met .schedule-hours-remaining {
-    color: var(--accent);
-    font-weight: 600;
-}
-
-.schedule-hours-row-over .schedule-hours-remaining {
-    color: var(--info);
-    font-weight: 600;
-}
-
-.schedule-hours-caret {
-    flex: 0 0 auto;
-    font-size: 0.65rem;
-    color: var(--text-dim);
-}
-
-.schedule-hours-current-group {
-    margin: 2px 0 0 4px;
-    padding: 4px 8px 4px 10px;
-    border-left: 2px solid var(--border-soft);
-    font-size: 0.7rem;
-    color: var(--text-dim);
-}
-
-.schedule-hours-current-group-line {
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-    flex-wrap: wrap;
-}
-
-.schedule-hours-current-group-name {
-    font-weight: 600;
-    color: var(--text);
-}
-
-.schedule-hours-current-group-sep {
-    color: var(--text-dim);
-    font-size: 0.7rem;
-}
-
-.schedule-hours-current-group-instructor {
-    color: var(--text-dim);
-}
-
-.schedule-hours-current-group-meta {
-    margin-top: 1px;
-    font-size: 0.65rem;
-    color: var(--text-dim);
-}
-
-/* ============================================================
-   DISCIPLINE PICKER
-   ============================================================ */
-
-.schedule-discipline-picker-host {
-    display: block;
-}
-
-.schedule-discipline-picker-host:empty {
-    display: none;
-}
-
-.schedule-discipline-picker {
-    margin-top: 10px;
-    padding: 10px 12px;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--accent);
-    border-radius: var(--radius);
-}
-
-.schedule-discipline-picker-header {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    padding-bottom: 6px;
-    margin-bottom: 8px;
-    border-bottom: 1px solid var(--border-soft);
-    flex-wrap: wrap;
-}
-
-.schedule-discipline-picker-title {
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: var(--accent);
-    flex: 0 0 auto;
-}
-
-.schedule-discipline-picker-hint {
-    font-size: 0.65rem;
-    color: var(--text-dim);
-    font-style: italic;
-    flex: 1;
-    min-width: 0;
-}
-
-.schedule-discipline-picker-close {
-    flex: 0 0 auto;
-    background: transparent;
-    border: none;
-    color: var(--text-dim);
-    font-size: 1rem;
-    line-height: 1;
-    padding: 0 4px;
-    cursor: pointer;
-}
-
-.schedule-discipline-picker-close:hover {
-    color: var(--text);
-}
-
-.schedule-discipline-picker-empty {
-    margin: 0;
-    padding: 4px 0;
-}
-
-.schedule-discipline-picker-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-
-.schedule-discipline-picker-row {
-    margin: 0;
-    padding: 0;
-}
-
-.schedule-discipline-picker-row-btn {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    width: 100%;
-    padding: 8px 10px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border-soft);
-    border-left-width: 3px;
-    border-radius: 4px;
-    font-family: inherit;
-    color: inherit;
-    text-align: left;
-    cursor: pointer;
-    transition: background 0.15s;
-}
-
-.schedule-discipline-picker-row-btn:hover {
-    background: var(--accent-soft);
-}
-
-.schedule-discipline-picker-row-green
-    .schedule-discipline-picker-row-btn {
-    border-left-color: var(--accent);
-}
-
-.schedule-discipline-picker-row-red
-    .schedule-discipline-picker-row-btn {
-    border-left-color: var(--danger);
-    background: var(--danger-soft);
-    cursor: not-allowed;
-    opacity: 0.85;
-}
-
-.schedule-discipline-picker-row-red
-    .schedule-discipline-picker-row-btn:hover {
-    background: var(--danger-soft);
-}
-
-.schedule-discipline-picker-row-main {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    flex-wrap: wrap;
-    font-size: 0.75rem;
-}
-
-.schedule-discipline-picker-group-name {
-    font-weight: 600;
-    color: var(--text);
-    flex: 0 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.schedule-discipline-picker-instructor {
-    font-size: 0.65rem;
-    color: var(--text-dim);
-    flex: 0 1 auto;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.schedule-discipline-picker-members {
-    font-size: 0.65rem;
-    color: var(--text-dim);
-    flex: 0 0 auto;
-    margin-left: auto;
-    white-space: nowrap;
-}
-
-.schedule-discipline-picker-sessions {
-    list-style: none;
-    margin: 0;
-    padding: 0 0 0 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-
-.schedule-discipline-picker-session {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    padding: 2px 6px;
-    background: var(--bg);
-    border-radius: 3px;
-    font-size: 0.68rem;
-    flex-wrap: wrap;
-}
-
-.schedule-discipline-picker-session-conflict {
-    border-left: 2px solid var(--danger);
-    background: var(--danger-soft);
-}
-
-.schedule-discipline-picker-session-time {
-    color: var(--text);
-    white-space: nowrap;
-}
-
-.schedule-discipline-picker-session-duration {
-    font-size: 0.6rem;
-    color: var(--text-dim);
-    background: var(--panel);
-    padding: 0 5px;
-    border-radius: 6px;
-    border: 1px solid var(--border-soft);
-    white-space: nowrap;
-}
-
-.schedule-discipline-picker-session-location {
-    font-size: 0.6rem;
-    color: var(--text-dim);
-    font-style: italic;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.schedule-discipline-picker-conflict {
-    font-size: 0.65rem;
-    color: var(--danger);
-    font-weight: 600;
-    padding-top: 2px;
-}
-
-/* ============================================================
-   LEGEND
-   ============================================================ */
-
-.calendar-legend,
-.schedule-legend {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    padding: 8px 4px 4px;
-    font-size: 0.7rem;
-    color: var(--text-dim);
-}
-
-.legend-item {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-}
-
-.legend-color {
-    display: inline-block;
-    width: 12px;
-    height: 12px;
-    border-radius: 3px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border);
-}
-
-.legend-color.schedule-occupied {
-    background: var(--accent-soft);
-    border-left: 3px solid var(--accent);
-}
-
-.legend-color.schedule-blocked {
-    background: var(--danger-soft);
-    border-left: 3px solid var(--danger);
-}
-
-.legend-color.schedule-rest-day {
-    background: var(--panel-alt);
-    opacity: 0.65;
-}
-
-.legend-color.schedule-empty {
-    background: var(--panel);
-    border: 1px dashed var(--border);
-}
-
-.legend-color.schedule-highlight-all-free {
-    background: rgba(90, 170, 60, 0.22);
-    border: 1px solid rgba(90, 170, 60, 0.55);
-}
-
-.legend-color.schedule-highlight-instructor-free {
-    background: rgba(190, 170, 60, 0.18);
-    border: 1px solid rgba(190, 170, 60, 0.45);
-}
-
-.legend-color.acad-group-color-0,
-.legend-color.acad-group-color-1,
-.legend-color.acad-group-color-2,
-.legend-color.acad-group-color-3,
-.legend-color.acad-group-color-4,
-.legend-color.acad-group-color-5,
-.legend-color.acad-group-color-6,
-.legend-color.acad-group-color-7 {
-    width: 12px;
-    height: 12px;
-    border-left-width: 3px;
-    border-radius: 3px;
-}
-
-.legend-label {
-    color: var(--text-dim);
-}
-
-/* ============================================================
-   SCHEDULE ASSIGN / INSTRUCTOR MODALS
-   ============================================================ */
-
-#academy-schedule-assign-modal .modal-content,
-#academy-schedule-instructor-modal .modal-content {
-    min-width: 360px;
-    max-width: 520px;
-}
-
-@media (max-width: 480px) {
-    #academy-schedule-assign-modal .modal-content,
-    #academy-schedule-instructor-modal .modal-content {
-        min-width: 0;
-        width: 100%;
-    }
-}
-
-.academy-schedule-assign-summary {
-    margin: 0 0 12px;
-    padding: 8px 10px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border-soft);
-    border-radius: var(--radius);
-    font-size: 0.75rem;
-    color: var(--text-dim);
-    line-height: 1.3;
-}
-
-.academy-schedule-assign-summary strong {
-    color: var(--text);
-    font-weight: 600;
-}
-
-.academy-schedule-assign-discipline,
-.academy-schedule-assign-duration,
-.academy-schedule-assign-location,
-.academy-schedule-assign-group-select {
-    width: 100%;
-    max-width: 320px;
-}
-
-.academy-schedule-assign-group {
-    margin-bottom: 12px;
-}
-
-.academy-schedule-assign-group-select {
-    width: 100%;
-    max-width: 320px;
-}
-
-/* ---------- Instructor picker (assign modal) ---------- */
-
-.academy-schedule-assign-instructors {
-    margin-bottom: 12px;
-    text-align: left;         /* defeat a centered parent */
-}
-
-.academy-schedule-assign-instructors-label {
-    display: block;
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: var(--text);
-    margin-bottom: 4px;
-    text-align: left;
-}
-
-.academy-schedule-assign-instructors-hint {
-    font-size: 0.7rem;
-    color: var(--text-dim);
-    margin: 0 0 8px 0;
-    text-align: left;
-}
-
-.academy-schedule-assign-instructors-list {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 6px 8px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    width: 100%;
-    box-sizing: border-box;
-    text-align: left;
-}
-
-.academy-schedule-assign-instructor-option {
-    /* Flex row, left-aligned, never centered. */
-    display: flex !important;
-    flex-direction: row !important;
-    align-items: flex-start !important;
-    justify-content: flex-start !important;
-    gap: 8px;
-
-    padding: 6px 8px;
-    margin: 0;
-    border-radius: 3px;
-    cursor: pointer;
-    font-size: 0.78rem;
-    color: var(--text);
-    min-height: 28px;
-    box-sizing: border-box;
-    width: 100%;
-    text-align: left;
-}
-
-.academy-schedule-assign-instructor-option:hover {
-    background: var(--panel);
-}
-
-.academy-schedule-assign-instructor-radio {
-    flex: 0 0 auto;
-    display: inline-block;
-    width: 14px;
-    height: 14px;
-    min-width: 14px;
-    max-width: 14px;
-    margin: 0;
-    margin-top: 2px;
-    padding: 0;
-    accent-color: var(--accent);
-    cursor: pointer;
-    box-sizing: border-box;
-}
-
-.academy-schedule-assign-instructor-name {
-    flex: 1 1 auto;
-    min-width: auto;
-    display: inline-block;
-    white-space: normal;
-    overflow-wrap: break-word;
-    word-break: normal;
-    text-align: left;
-    line-height: 1.3;
-    color: var(--text);
-}
-
-.academy-schedule-assign-instructors-error {
-    margin-bottom: 12px;
-    padding: 8px 10px;
-    background: var(--warning-soft);
-    border: 1px solid var(--warning);
-    border-radius: 4px;
-    text-align: left;
-}
-
-.academy-schedule-assign-instructors-error-text {
-    margin: 0;
-    font-size: 0.75rem;
-    color: var(--warning);
-    text-align: left;
-}
-
-.academy-schedule-assign-instructor-single {
-    margin: 0;
-    padding: 6px 10px;
-    font-size: 0.78rem;
-    color: var(--text);
-    background: var(--panel-alt);
-    border: 1px solid var(--border-soft);
-    border-radius: 4px;
-    text-align: left;
-}
-
-.academy-schedule-assign-instructor-single-note {
-    font-size: 0.68rem;
-    color: var(--text-dim);
-    font-style: italic;
-    margin-left: 4px;
-}
-
-.academy-schedule-assign-collision {
-    margin: 12px 0 0;
-    padding: 10px 12px;
-    background: var(--danger-soft);
-    border-left: 3px solid var(--danger);
-    border-radius: var(--radius);
-}
-
-.academy-schedule-assign-collision-text {
-    margin: 0;
-    font-size: 0.72rem;
-    color: var(--danger);
-    line-height: 1.3;
-}
-
-.academy-schedule-assign-collision-question {
-    margin: 4px 0 0;
-    font-size: 0.72rem;
-    font-weight: 600;
-    color: var(--danger);
-    line-height: 1.3;
-}
-
-.academy-schedule-assign-remove-warning {
-    margin: 0 0 12px;
-    padding: 12px 14px;
-    background: var(--danger-soft);
-    border-left: 3px solid var(--danger);
-    border-radius: var(--radius);
-}
-
-.academy-schedule-assign-remove-warning-title {
-    margin: 0;
-    font-size: 0.82rem;
-    font-weight: 600;
-    color: var(--danger);
-    line-height: 1.3;
-}
-
-.academy-schedule-assign-remove-warning-text {
-    margin: 6px 0 0;
-    font-size: 0.72rem;
-    color: var(--text-dim);
-    line-height: 1.4;
-}
-
-.academy-schedule-assign-remove-detail {
-    margin: 0 0 12px;
-    padding: 10px 12px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border-soft);
-    border-radius: var(--radius);
-    font-size: 0.72rem;
-}
-
-.academy-schedule-assign-remove-detail-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 12px;
-    padding: 3px 0;
-}
-
-.academy-schedule-assign-remove-detail-row + .academy-schedule-assign-remove-detail-row {
-    border-top: 1px solid var(--border-soft);
-}
-
-.academy-schedule-assign-remove-detail-label {
-    color: var(--text-dim);
-    flex-shrink: 0;
-}
-
-.academy-schedule-assign-remove-detail-value {
-    color: var(--text);
-    font-weight: 600;
-    text-align: right;
-    word-break: break-word;
-}
-
-.academy-schedule-assign-footer {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 8px;
-}
-
-/* ============================================================
-   SCHEDULE INSTRUCTOR MODAL
-   ============================================================ */
-
-.academy-schedule-instructor-summary {
-    margin: 0 0 12px;
-    padding: 8px 10px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border-soft);
-    border-radius: var(--radius);
-    font-size: 0.75rem;
-    color: var(--text-dim);
-    line-height: 1.3;
-}
-
-.academy-schedule-instructor-summary strong {
-    color: var(--text);
-    font-weight: 600;
-}
-
-.academy-schedule-instructor-discipline,
-.academy-schedule-instructor-duration,
-.academy-schedule-instructor-location,
-.academy-schedule-instructor-group-select {
-    width: 100%;
-    max-width: 320px;
-}
-
-.academy-schedule-instructor-group {
-    margin-bottom: 12px;
-}
-
-.academy-schedule-instructor-group-select {
-    width: 100%;
-    max-width: 320px;
-}
-
-.academy-schedule-instructor-collision {
-    margin: 12px 0 0;
-    padding: 10px 12px;
-    background: var(--danger-soft);
-    border-left: 3px solid var(--danger);
-    border-radius: var(--radius);
-}
-
-.academy-schedule-instructor-collision-text {
-    margin: 0;
-    font-size: 0.72rem;
-    color: var(--danger);
-    line-height: 1.3;
-}
-
-.academy-schedule-instructor-collision-question {
-    margin: 4px 0 0;
-    font-size: 0.72rem;
-    font-weight: 600;
-    color: var(--danger);
-    line-height: 1.3;
-}
-
-.academy-schedule-instructor-footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-}
-
-/* ============================================================
-   TEACHING GROUP CANDIDATE PICKER
-   ============================================================ */
-
-.academy-teaching-group-candidate-picker {
-    margin: 8px 0;
-    padding: 10px 12px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--accent);
-    border-radius: var(--radius);
-    text-align: left;
-}
-
-.academy-teaching-group-candidate-header {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    padding-bottom: 6px;
-    margin-bottom: 8px;
-    border-bottom: 1px solid var(--border-soft);
-}
-
-.academy-teaching-group-candidate-title {
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: var(--accent);
-    flex: 1;
-    min-width: 0;
-    white-space: normal;
-    overflow-wrap: break-word;
-    text-align: left;
-}
-
-.academy-teaching-group-candidate-search {
-    width: 100%;
-    padding: 5px 8px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 6px;
-    font-size: 0.72rem;
-    font-family: inherit;
-    margin-bottom: 8px;
-    box-sizing: border-box;
-    text-align: left;
-}
-
-.academy-teaching-group-candidate-search:focus {
-    outline: none;
-    border-color: var(--accent);
-}
-
-.academy-teaching-group-candidate-body {
-    max-height: 320px;
-    overflow-y: auto;
-    padding: 2px;
-    background: var(--bg);
-    border-radius: 4px;
-    text-align: left;
-}
-
-.academy-teaching-group-candidate-section + 
-.academy-teaching-group-candidate-section {
-    margin-top: 8px;
-    padding-top: 8px;
-    border-top: 1px solid var(--border-soft);
-}
-
-.academy-teaching-group-candidate-section-header {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    padding: 4px 6px;
-    margin-bottom: 4px;
-    text-align: left;
-}
-
-.academy-teaching-group-candidate-section-title {
-    font-size: 0.65rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-dim);
-    flex: 1;
-    min-width: 0;
-    text-align: left;
-}
-
-.academy-teaching-group-candidate-section-blocked 
-.academy-teaching-group-candidate-section-title {
-    color: var(--danger);
-}
-
-.academy-teaching-group-candidate-section-count {
-    font-size: 0.62rem;
-    font-weight: 600;
-    color: var(--text-dim);
-    background: var(--panel);
-    padding: 1px 7px;
-    border-radius: 10px;
-    border: 1px solid var(--border-soft);
-    white-space: nowrap;
-    flex: 0 0 auto;
-}
-
-.academy-teaching-group-candidate-list {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-}
-
-.academy-teaching-group-candidate-row {
-    display: flex !important;
-    flex-direction: row !important;
-    align-items: flex-start !important;
-    justify-content: flex-start !important;
-    gap: 8px;
-
-    padding: 5px 8px;
-    margin: 0;
-    border-radius: 3px;
-    cursor: pointer;
-    font-size: 0.74rem;
-    color: var(--text);
-    min-height: 26px;
-    box-sizing: border-box;
-    width: 100%;
-    text-align: left;
-}
-
-.academy-teaching-group-candidate-row:hover {
-    background: var(--panel);
-}
-
-.academy-teaching-group-candidate-radio {
-    flex: 0 0 auto;
-    display: inline-block;
-    width: 14px;
-    height: 14px;
-    min-width: 14px;
-    max-width: 14px;
-    margin: 0;
-    margin-top: 2px;
-    padding: 0;
-    accent-color: var(--accent);
-    cursor: pointer;
-    box-sizing: border-box;
-}
-
-.academy-teaching-group-candidate-name {
-    flex: 1 1 auto;
-    min-width: auto;
-    display: inline-block;
-    white-space: normal;
-    overflow-wrap: break-word;
-    word-break: normal;
-    text-align: left;
-    line-height: 1.3;
-    color: var(--text);
-}
-
-.academy-teaching-group-candidate-status {
-    font-size: 0.6rem;
-    color: var(--text-dim);
-    background: var(--panel);
-    padding: 1px 6px;
-    border-radius: 8px;
-    border: 1px solid var(--border-soft);
-    white-space: nowrap;
-    flex: 0 0 auto;
-}
-
-/* ---- Blocked rows ---- */
-
-.academy-teaching-group-candidate-row-blocked {
-    cursor: not-allowed;
-    opacity: 0.85;
-    align-items: flex-start;
-    color: var(--text-dim);
-}
-
-.academy-teaching-group-candidate-row-blocked:hover {
-    background: transparent;
-}
-
-.academy-teaching-group-candidate-blocked-icon {
-    flex: 0 0 auto;
-    font-size: 0.75rem;
-    color: var(--danger);
-    line-height: 1.3;
-    margin-top: 1px;
-}
-
-.academy-teaching-group-candidate-blocked-main {
-    flex: 1 1 auto;
-    min-width: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    text-align: left;
-}
-
-.academy-teaching-group-candidate-blocked-name {
-    color: var(--text-dim);
-    font-weight: 500;
-    white-space: normal;
-    overflow-wrap: break-word;
-    line-height: 1.3;
-    text-align: left;
-}
-
-.academy-teaching-group-candidate-blocked-reason {
-    font-size: 0.62rem;
-    color: var(--danger);
-    font-style: italic;
-    line-height: 1.3;
-    white-space: normal;
-    overflow-wrap: break-word;
-    text-align: left;
-}
-
-/* ---- No-matches hint ---- */
-
-.academy-teaching-group-candidate-no-matches {
-    padding: 12px 8px;
-    text-align: center;
-    font-size: 0.72rem;
-    color: var(--text-dim);
-    font-style: italic;
-}
-
-/* ---- Actions ---- */
-
-.academy-teaching-group-candidate-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 6px;
-    margin-top: 8px;
-}
-
-.academy-teaching-group-candidate-actions 
-button[disabled] {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-
-/* ============================================================
-   LOADING / EMPTY STATES
-   ============================================================ */
-
-.loading-state {
-    padding: 12px;
-    text-align: center;
-    color: var(--text-dim);
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    font-size: 0.75rem;
-    font-style: italic;
-}
-
-@media (min-width: 768px) {
-    .loading-state {
-        padding: 20px;
-    }
-}
-
-/* ============================================================
-   MOBILE
-   ============================================================ */
-
-@media (max-width: 600px) {
-    .schedule-co-occupants-row {
-        flex-wrap: wrap;
-        gap: 4px;
-    }
-
-    .schedule-co-occupants-discipline {
-        flex-basis: 100%;
-        white-space: normal;
-    }
-
-    .schedule-co-occupants-instructor {
-        flex: 1;
-        min-width: 0;
-    }
-
-    .schedule-hours-row-btn {
-        flex-wrap: wrap;
-        gap: 6px;
-    }
-
-    .schedule-hours-discipline {
-        flex-basis: 100%;
-        white-space: normal;
-    }
-
-    .schedule-hours-counts {
-        flex: 1;
-    }
-
-    .schedule-hours-remaining {
-        flex: 0 0 auto;
-    }
-
-    .schedule-hours-current-group {
-        margin-left: 0;
-        padding-left: 6px;
-    }
-
-    .schedule-discipline-picker-row-main {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 2px;
-    }
-
-    .schedule-discipline-picker-members {
-        margin-left: 0;
-    }
-}
-
-/* ============================================================
-   REDUCED MOTION
-   ============================================================ */
-
-@media (prefers-reduced-motion: reduce) {
-    .schedule-slot,
-    .schedule-empty-label,
-    .schedule-continuation,
-    .schedule-hours-row-btn,
-    .schedule-discipline-picker-row-btn {
-        transition: none;
-    }
-}
-
-/* ============================================================
-   LIGHT MODE OVERRIDES
-   ============================================================
-   Group colors and highlight tints use hardcoded rgba() values
-   for their washes (the border-left colors are legible on both
-   backgrounds and do not need overriding). In light mode the
-   washes need higher opacity to remain visible against the
-   near-white panel. The hues are preserved.
- */
-
-[data-theme="light"] .acad-group-color-0 {
-    background: rgba(217, 119, 87, 0.20);
-}
-
-[data-theme="light"] .acad-group-color-1 {
-    background: rgba(111, 168, 220, 0.20);
-}
-
-[data-theme="light"] .acad-group-color-2 {
-    background: rgba(140, 187, 58, 0.22);
-}
-
-[data-theme="light"] .acad-group-color-3 {
-    background: rgba(197, 134, 192, 0.20);
-}
-
-[data-theme="light"] .acad-group-color-4 {
-    background: rgba(78, 201, 176, 0.22);
-}
-
-[data-theme="light"] .acad-group-color-5 {
-    background: rgba(200, 200, 140, 0.28);
-}
-
-[data-theme="light"] .acad-group-color-6 {
-    background: rgba(157, 124, 216, 0.20);
-}
-
-[data-theme="light"] .acad-group-color-7 {
-    background: rgba(224, 108, 117, 0.20);
-}
-
-[data-theme="light"] .schedule-cell.schedule-highlight-all-free {
-    background: rgba(70, 150, 40, 0.28);
-    box-shadow: inset 0 0 0 1px rgba(70, 150, 40, 0.65);
-}
-
-[data-theme="light"] .schedule-cell.schedule-highlight-instructor-free {
-    background: rgba(170, 150, 40, 0.24);
-    box-shadow: inset 0 0 0 1px rgba(170, 150, 40, 0.55);
-}
-
-[data-theme="light"] .schedule-cell.schedule-highlight-weeks-1,
-[data-theme="light"] .schedule-cell.schedule-highlight-weeks-2,
-[data-theme="light"] .schedule-cell.schedule-highlight-weeks-3,
-[data-theme="light"] .schedule-cell.schedule-highlight-weeks-4 {
-    background: rgba(70, 150, 40, 0.28);
-}
-
-[data-theme="light"] .schedule-highlight-badge {
-    background: rgba(70, 150, 40, 0.95);
-    color: #fff;
-}
-
-[data-theme="light"] .legend-color.schedule-highlight-all-free {
-    background: rgba(70, 150, 40, 0.28);
-    border-color: rgba(70, 150, 40, 0.65);
-}
-
-[data-theme="light"] .legend-color.schedule-highlight-instructor-free {
-    background: rgba(170, 150, 40, 0.24);
-    border-color: rgba(170, 150, 40, 0.55);
-}d slots
- *   - Group color coding
- *   - Highlight tints (all-free, instructor-free, weeks-N, badge)
- *   - The co-occupant marker and its detail panel
- *   - The discipline-hours panel, its rows, and its current-group
- *     sub-block
- *   - The discipline picker
- *   - The legend, the loading state
- *   - The schedule-assign and schedule-instructor modals
- *   - The teaching group candidate picker
- *
- * HORIZONTAL SCROLL:
- *   The grid's natural minimum width exceeds a phone's viewport.
- *   The wrapper (`.calendar-grid-wrapper`) owns horizontal
- *   scrolling. The grid itself sizes to `min-width: max-content`
- *   so it reaches its natural width, and the wrapper scrolls when
- *   that exceeds the viewport.
- *
- * HOUR COLUMN:
- *   The leading hour column is 72px on desktop and 56px on
- *   mobile. Both are sized to fit a two-digit 24-hour label
- *   (`00:00` through `23:00`) without truncation.
- *
- * GROUP COLOR CODING:
- *   Each occupied cell carries a `.acad-group-color-N` class
- *   resolved by the aggregator from the group's groupNumber.
- *   The palette below defines 0 through 7. The classes override
- *   `background` and `border-left-color` on `.schedule-occupied`.
- *
- * HIGHLIGHT TINTS:
- *   The discipline grid may carry a `highlights` map. When
- *   present, cells are tinted based on their entry:
- *
- *     .schedule-highlight-all-free
- *       The instructor AND every named student are free. This is
- *       a candidate slot for the group.
- *
- *     .schedule-highlight-instructor-free
- *       The instructor is free, but one or more named students
- *       are occupied. The slot is not usable as-is.
- *
- *     .schedule-highlight-weeks-N  (N in 1..4)
- *       Applied alongside all-free; N is the number of weeks the
- *       slot stays free, capped at 4 for CSS brevity. The true
- *       count is shown in the badge, uncapped.
- *
- *   The highlight tints coexist with the group color classes.
- *   An occupied cell may carry both `.acad-group-color-N` and
- *   `.schedule-highlight-instructor-free`; the highlight tint
- *   sits on top of the group tint via the box-shadow ring and
- *   the increased background opacity. The group tint's
- *   `border-left-color` remains visible because the highlight
- *   tints do not set it.
- *
- * RADIO LISTS (instructor picker, candidate picker):
- *   Both lists share the same defensive layout:
- *
- *     display: flex !important;
- *     flex-direction: row !important;
- *     align-items: flex-start !important;
- *     justify-content: flex-start !important;
- *
- *   and a fixed 14x14 radio whose width, height, margin, and
- *   min/max-width are pinned so a global `input { width: 100% }`
- *   rule cannot stretch it. The name span is `flex: 1 1 auto;
- *   min-width: auto` with `overflow-wrap: break-word` (never
- *   `anywhere`) so the name never wraps one character per line.
- *
- *   Do NOT change these without also changing the sibling block.
- *   The two radio lists must stay in sync; a divergence is the
- *   bug that shipped a centered radio and a right-shoved name
- *   twice in a row.
- *
- * Loads after shared.css and academy.css.
- */
-
-/* ============================================================
-   WRAPPER
-   ============================================================ */
-
-.calendar-grid-container {
-    width: 100%;
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-}
-
-.calendar-grid-wrapper {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    width: 100%;
-    overflow-x: auto;
-    overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-    min-width: 0;
-}
-
-.calendar-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding-bottom: 4px;
-    border-bottom: 1px solid var(--border-soft);
-}
-
-.calendar-title {
-    font-size: 0.85rem;
-    font-weight: 600;
-    color: var(--accent);
-    margin: 0;
-    font-family: 'Fraunces', serif;
-}
-
-@media (min-width: 768px) {
-    .calendar-title {
-        font-size: 1rem;
-    }
-}
-
-/* ============================================================
-   SCHEDULE GRID
-   ============================================================ */
-
-.schedule-grid {
-    display: grid;
-    grid-template-columns: 72px repeat(7, minmax(0, 1fr));
-    gap: 1px;
-    background: var(--border-soft);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    overflow: hidden;
-    min-width: max-content;
-}
-
-@media (max-width: 600px) {
-    .schedule-grid {
-        grid-template-columns: 56px repeat(7, 64px);
-    }
-}
-
-/* ============================================================
-   CELLS - SHARED
-   ============================================================ */
-
-.schedule-cell {
-    background: var(--panel);
-    padding: 4px 6px;
-    font-size: 0.68rem;
-    line-height: 1.2;
-    color: var(--text);
-    min-height: 32px;
-    position: relative;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-}
-
-@media (min-width: 768px) {
-    .schedule-cell {
-        padding: 6px 8px;
-        font-size: 0.72rem;
-        min-height: 40px;
-    }
-}
-
-/* ============================================================
-   HEADER ROW
-   ============================================================ */
-
-.schedule-header {
-    background: var(--panel-alt);
-    font-weight: 600;
-    color: var(--text-dim);
-    text-align: center;
-    align-items: center;
-    justify-content: center;
-    border-bottom: 1px solid var(--border);
-    min-height: 28px;
-}
-
-.schedule-day {
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    font-size: 0.62rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-@media (min-width: 768px) {
-    .schedule-day {
-        font-size: 0.68rem;
-    }
-}
-
-.schedule-time {
-    background: var(--panel-alt);
-    color: var(--text-dim);
-    font-weight: 500;
-    text-align: right;
-    padding-right: 4px;
-    align-items: flex-end;
-    justify-content: center;
-    font-size: 0.62rem;
-    white-space: nowrap;
-    font-variant-numeric: tabular-nums;
-}
-
-@media (min-width: 768px) {
-    .schedule-time {
-        font-size: 0.68rem;
-        padding-right: 6px;
-    }
-}
-
-.schedule-time.schedule-header {
-    background: var(--panel-alt);
-    border-bottom: 1px solid var(--border);
-}
-
-/* ============================================================
-   OCCUPIED SLOT
-   ============================================================ */
-
-.schedule-slot {
-    transition: background 0.15s ease, border-color 0.15s ease,
-                outline-color 0.15s ease, box-shadow 0.15s ease;
-}
-
-.schedule-occupied {
-    background: var(--accent-soft);
-    border-left: 3px solid var(--accent);
-    cursor: default;
-}
-
-.schedule-cell[data-action="schedule-slot-open"] {
-    cursor: pointer;
-}
-
-.schedule-cell[data-action="schedule-slot-open"]:hover {
-    background: var(--accent-hover);
-    outline: 1px solid var(--accent);
-    outline-offset: -2px;
-}
-
-.schedule-cell[data-action="schedule-slot-open"]:hover
-    .schedule-continuation {
-    color: var(--accent);
-    opacity: 1;
-}
-
-.schedule-cell[data-action="schedule-discipline-slot-open"] {
-    cursor: pointer;
-}
-
-.schedule-cell[data-action="schedule-discipline-slot-open"]:hover {
-    background: var(--accent-hover);
-    outline: 1px solid var(--accent);
-    outline-offset: -2px;
-}
-
-.schedule-cell[data-action="schedule-discipline-slot-open"]:hover
-    .schedule-continuation {
-    color: var(--accent);
-    opacity: 1;
-}
-
-/* ============================================================
-   GROUP COLOR CODING
-   ============================================================ */
-
-.acad-group-color-0 {
-    background: rgba(217, 119, 87, 0.14);
-    border-left-color: #d97757;
-}
-
-.acad-group-color-1 {
-    background: rgba(111, 168, 220, 0.14);
-    border-left-color: #6fa8dc;
-}
-
-.acad-group-color-2 {
-    background: rgba(140, 187, 58, 0.14);
-    border-left-color: #8cbb3a;
-}
-
-.acad-group-color-3 {
-    background: rgba(197, 134, 192, 0.14);
-    border-left-color: #c586c0;
-}
-
-.acad-group-color-4 {
-    background: rgba(78, 201, 176, 0.14);
-    border-left-color: #4ec9b0;
-}
-
-.acad-group-color-5 {
-    background: rgba(220, 220, 170, 0.14);
-    border-left-color: #dcdcaa;
-}
-
-.acad-group-color-6 {
-    background: rgba(157, 124, 216, 0.14);
-    border-left-color: #9d7cd8;
-}
-
-.acad-group-color-7 {
-    background: rgba(224, 108, 117, 0.14);
-    border-left-color: #e06c75;
-}
-
-/* ============================================================
-   HIGHLIGHT TINTS
-   ============================================================
-   Applied to any non-rest, non-block cell that carries a
-   highlight entry. This includes occupied cells: a slot occupied
-   by a DIFFERENT group of the same discipline may still be a
-   candidate for this instructor's session, and the highlight
-   tells the user whether this instructor and their students are
-   free.
-
-   TINTS:
-
-     all-free
-       Green wash + inset ring. The instructor AND every named
-       student are free. This is a direct candidate.
-
-     instructor-free
-       Yellow wash + inset ring. The instructor is free, but one
-       or more named students are occupied. The slot is a
-       partial fit.
-
-   STACKING:
-
-     Both tints use box-shadow for their ring, so they do not
-     clash with the group color classes' `background` and
-     `border-left-color`. When a cell carries both a group color
-     and a highlight tint, the tint sits on top of the group
-     wash; the group's left border stays visible underneath.
-
-   weeks-N:
-
-     The weeks-N variation is not a separate color. It exists so
-     the renderer can emit a class whose name carries the run
-     length (1..4, capped for CSS brevity) without inventing a
-     new visual for each length. The visible indicator of the
-     run is the badge; the class exists for a future caller that
-     wants to graduate the wash intensity.
- */
-
-.schedule-cell.schedule-highlight-all-free {
-    background: rgba(90, 170, 60, 0.22);
-    box-shadow: inset 0 0 0 1px rgba(90, 170, 60, 0.55);
-}
-
-.schedule-cell.schedule-highlight-instructor-free {
-    background: rgba(190, 170, 60, 0.18);
-    box-shadow: inset 0 0 0 1px rgba(190, 170, 60, 0.45);
-}
-
-/*
- * weeks-N classes are currently aliases of the all-free wash.
- * They are declared so the renderer can emit them without a
- * missing-class warning, and so a future pass can graduate the
- * wash by N without changing the renderer.
- */
-.schedule-cell.schedule-highlight-weeks-1,
-.schedule-cell.schedule-highlight-weeks-2,
-.schedule-cell.schedule-highlight-weeks-3,
-.schedule-cell.schedule-highlight-weeks-4 {
-    background: rgba(90, 170, 60, 0.22);
-}
-
-/*
- * The badge shows the length of the free run. It sits in the
- * top-right corner. It is rendered on both empty and occupied
- * cells when the cell's weeksFree is > 1.
- *
- * The badge is deliberately small and pointer-events:none so it
- * never intercepts a click on the cell. The cell's action (open
- * a session, assign a slot) is what matters; the badge is
- * information.
- */
-.schedule-highlight-badge {
-    position: absolute;
-    top: 2px;
-    right: 3px;
-    font-size: 0.58rem;
-    font-weight: 700;
-    padding: 0 4px;
-    border-radius: 6px;
-    background: rgba(90, 170, 60, 0.95);
-    color: #fff;
-    line-height: 1.35;
-    pointer-events: none;
-    z-index: 1;
-    white-space: nowrap;
-}
-
-/*
- * When the cell also carries a co-occupant marker, the badge and
- * the marker would collide in the top-right corner. The marker
- * takes precedence; the badge steps down one row. This is the
- * same reasoning that pushed .schedule-continuation to the
- * bottom-right.
- */
-.schedule-cell.schedule-highlight-all-free
-    .schedule-co-occupant-marker ~ .schedule-highlight-badge,
-.schedule-cell.schedule-highlight-instructor-free
-    .schedule-co-occupant-marker ~ .schedule-highlight-badge {
-    top: 17px;
-}
-
-/* ============================================================
-   EMPTY SLOT
-   ============================================================ */
-
-.schedule-empty {
-    background: var(--panel);
-    color: var(--text-dim);
-    cursor: default;
-}
-
-.schedule-empty-label {
-    color: var(--text-dim);
-    opacity: 0;
-    font-size: 0.85rem;
-    transition: opacity 0.15s ease, color 0.15s ease;
-    text-align: center;
-    margin: auto;
-}
-
-.schedule-cell[data-action="schedule-assign"],
-.schedule-cell[data-action="schedule-assign-instructor"] {
-    cursor: pointer;
-}
-
-.schedule-cell[data-action="schedule-discipline-assign"] {
-    cursor: pointer;
-}
-
-.schedule-cell[data-action="schedule-assign"]:hover,
-.schedule-cell[data-action="schedule-assign-instructor"]:hover,
-.schedule-cell[data-action="schedule-discipline-assign"]:hover {
-    background: var(--accent-soft);
-    outline: 1px dashed var(--accent);
-    outline-offset: -2px;
-}
-
-.schedule-cell[data-action="schedule-assign"]:hover .schedule-empty-label,
-.schedule-cell[data-action="schedule-assign-instructor"]:hover
-    .schedule-empty-label,
-.schedule-cell[data-action="schedule-discipline-assign"]:hover
-    .schedule-empty-label {
-    opacity: 1;
-    color: var(--accent);
-}
-
-/*
- * When a highlight tint is present on an empty cell, the empty
- * slot's hover state must not clobber the tint. The order of
- * these rules matters: the tint selectors are more specific
- * (two classes), so hover from a single-class selector loses.
- * If a future revision adds a hover rule with matching
- * specificity, keep hover AFTER the tint rules.
- */
 .schedule-cell.schedule-highlight-all-free:hover,
 .schedule-cell.schedule-highlight-instructor-free:hover {
     outline: 1px solid var(--accent);
@@ -3212,7 +1230,6 @@ button[disabled] {
 }
 
 .academy-schedule-assign-instructor-option {
-    /* Flex row, left-aligned, never centered. */
     display: flex !important;
     flex-direction: row !important;
     align-items: flex-start !important;
@@ -3236,9 +1253,6 @@ button[disabled] {
 }
 
 .academy-schedule-assign-instructor-radio {
-    /* Pin the control's size and reset every default that could
-       stretch it. `flex: 0 0 auto` means the radio demands its
-       natural size and never grows. */
     flex: 0 0 auto;
     display: inline-block;
     width: 14px;
@@ -3254,8 +1268,6 @@ button[disabled] {
 }
 
 .academy-schedule-assign-instructor-name {
-    /* Fills the remaining width. Never shrinks below its natural
-       content width. Wraps at word boundaries. Left-aligned. */
     flex: 1 1 auto;
     min-width: auto;
     display: inline-block;
@@ -3347,6 +1359,16 @@ button[disabled] {
     line-height: 1.4;
 }
 
+/* ============================================================
+   SCHEDULE ASSIGN MODAL — REMOVE DETAIL PANEL
+   ============================================================
+   The "remove student" and "remove group" modes render a small
+   read-only detail panel above the action buttons: a label/value
+   row per field. Visual language mirrors the assign modal's
+   summary block: label at left in muted text, value at right in
+   body text, thin separators between rows.
+ */
+
 .academy-schedule-assign-remove-detail {
     margin: 0 0 12px;
     padding: 10px 12px;
@@ -3364,7 +1386,8 @@ button[disabled] {
     padding: 3px 0;
 }
 
-.academy-schedule-assign-remove-detail-row + .academy-schedule-assign-remove-detail-row {
+.academy-schedule-assign-remove-detail-row
+    + .academy-schedule-assign-remove-detail-row {
     border-top: 1px solid var(--border-soft);
 }
 
@@ -3453,29 +1476,143 @@ button[disabled] {
     gap: 8px;
 }
 
+/* ---------- Discipline-scoped instructor picker ----------
+ *
+ * Rendered when the discipline grid's empty cell is clicked.
+ * Lists every instructor who teaches the clicked discipline for
+ * the clicked class at the current week, as a radio list.
+ *
+ * Layout mirrors the assign modal's instructor picker. The two
+ * blocks must stay in sync; the assign-modal block is the
+ * reference. If the layout ever drifts again, fix it here against
+ * the reference, not by re-inventing the resets.
+ */
+
+.academy-schedule-instructor-picker {
+    margin-bottom: 12px;
+    text-align: left;
+}
+
+.academy-schedule-instructor-picker-label {
+    display: block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 4px;
+    text-align: left;
+}
+
+.academy-schedule-instructor-picker-hint {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    margin: 0 0 8px 0;
+    text-align: left;
+}
+
+.academy-schedule-instructor-picker-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 8px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    width: 100%;
+    box-sizing: border-box;
+    text-align: left;
+}
+
+.academy-schedule-instructor-picker-option {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: flex-start !important;
+    justify-content: flex-start !important;
+    gap: 8px;
+
+    padding: 6px 8px;
+    margin: 0;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 0.78rem;
+    color: var(--text);
+    min-height: 28px;
+    box-sizing: border-box;
+    width: 100%;
+    text-align: left;
+}
+
+.academy-schedule-instructor-picker-option:hover {
+    background: var(--panel);
+}
+
+.academy-schedule-instructor-picker-radio {
+    flex: 0 0 auto;
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    min-width: 14px;
+    max-width: 14px;
+    margin: 0;
+    margin-top: 2px;
+    padding: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+    box-sizing: border-box;
+}
+
+.academy-schedule-instructor-picker-name {
+    flex: 1 1 auto;
+    min-width: auto;
+    display: inline-block;
+    white-space: normal;
+    overflow-wrap: break-word;
+    word-break: normal;
+    text-align: left;
+    line-height: 1.3;
+    color: var(--text);
+}
+
+/* ---------- Auto-selected single instructor ----------
+ *
+ * Rendered when the class-discipline has exactly one instructor
+ * this week. Same visual weight as the assign modal's
+ * single-instructor line.
+ */
+
+.academy-schedule-instructor-single {
+    margin-bottom: 12px;
+}
+
+.academy-schedule-instructor-single-label {
+    display: block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 4px;
+    text-align: left;
+}
+
+.academy-schedule-instructor-single-value {
+    margin: 0;
+    padding: 6px 10px;
+    font-size: 0.78rem;
+    color: var(--text);
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    text-align: left;
+}
+
+.academy-schedule-instructor-single-note {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    font-style: italic;
+    margin-left: 4px;
+}
+
 /* ============================================================
    TEACHING GROUP CANDIDATE PICKER
-   ============================================================
-   Two sections stacked in one bounded body:
-
-     Eligible        radios, selectable.
-     Would conflict  no radios; not selectable; conflict reason
-                     shown under each name.
-
-   Search filters both. Empty sections hide themselves.
-
-   Layout rules mirror the instructor radio list: name spans
-   never shrink below their natural width. min-width: auto plus
-   overflow-wrap: break-word (never `anywhere`).
-
-   HARD RESETS:
-     - The row is a flex container with `!important` on its
-       layout properties, so a rule elsewhere cannot center it.
-     - The radio is a fixed 14x14 box. Same reasoning as the
-       instructor radio above.
-     - text-align: left everywhere; a centered ancestor cannot
-       shove the name to the right.
- */
+   ============================================================ */
 
 .academy-teaching-group-candidate-picker {
     margin: 8px 0;
@@ -3793,6 +1930,14 @@ button[disabled] {
     .schedule-discipline-picker-members {
         margin-left: 0;
     }
+
+    .academy-schedule-instructor-picker-option {
+        padding: 5px 6px;
+    }
+
+    .academy-schedule-instructor-single-value {
+        font-size: 0.72rem;
+    }
 }
 
 /* ============================================================
@@ -3807,4 +1952,78 @@ button[disabled] {
     .schedule-discipline-picker-row-btn {
         transition: none;
     }
+}
+
+/* ============================================================
+   LIGHT MODE OVERRIDES
+   ============================================================
+   Group colors and highlight tints use hardcoded rgba() values
+   for their washes (the border-left colors are legible on both
+   backgrounds and do not need overriding). In light mode the
+   washes need higher opacity to remain visible against the
+   near-white panel. The hues are preserved.
+ */
+
+[data-theme="light"] .acad-group-color-0 {
+    background: rgba(217, 119, 87, 0.20);
+}
+
+[data-theme="light"] .acad-group-color-1 {
+    background: rgba(111, 168, 220, 0.20);
+}
+
+[data-theme="light"] .acad-group-color-2 {
+    background: rgba(140, 187, 58, 0.22);
+}
+
+[data-theme="light"] .acad-group-color-3 {
+    background: rgba(197, 134, 192, 0.20);
+}
+
+[data-theme="light"] .acad-group-color-4 {
+    background: rgba(78, 201, 176, 0.22);
+}
+
+[data-theme="light"] .acad-group-color-5 {
+    background: rgba(200, 200, 140, 0.28);
+}
+
+[data-theme="light"] .acad-group-color-6 {
+    background: rgba(157, 124, 216, 0.20);
+}
+
+[data-theme="light"] .acad-group-color-7 {
+    background: rgba(224, 108, 117, 0.20);
+}
+
+[data-theme="light"] .schedule-cell.schedule-highlight-all-free {
+    background: rgba(70, 150, 40, 0.28);
+    box-shadow: inset 0 0 0 1px rgba(70, 150, 40, 0.65);
+}
+
+[data-theme="light"] .schedule-cell.schedule-highlight-instructor-free {
+    background: rgba(170, 150, 40, 0.24);
+    box-shadow: inset 0 0 0 1px rgba(170, 150, 40, 0.55);
+}
+
+[data-theme="light"] .schedule-cell.schedule-highlight-weeks-1,
+[data-theme="light"] .schedule-cell.schedule-highlight-weeks-2,
+[data-theme="light"] .schedule-cell.schedule-highlight-weeks-3,
+[data-theme="light"] .schedule-cell.schedule-highlight-weeks-4 {
+    background: rgba(70, 150, 40, 0.28);
+}
+
+[data-theme="light"] .schedule-highlight-badge {
+    background: rgba(70, 150, 40, 0.95);
+    color: #fff;
+}
+
+[data-theme="light"] .legend-color.schedule-highlight-all-free {
+    background: rgba(70, 150, 40, 0.28);
+    border-color: rgba(70, 150, 40, 0.65);
+}
+
+[data-theme="light"] .legend-color.schedule-highlight-instructor-free {
+    background: rgba(170, 150, 40, 0.24);
+    border-color: rgba(170, 150, 40, 0.55);
 }
