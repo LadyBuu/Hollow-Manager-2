@@ -9,12 +9,14 @@
  *   - light      (soft cream; easy on the eyes)
  *   - vaporwave  (neon pink + cyan on violet night)
  *   - pastel     (pastel 80s magical girl; soft pink/lavender)
+ *   - carnival   (demented gothic carnival; "The Ringmaster")
  *
  * The toggle button cycles dark -> light -> vaporwave -> pastel
- * -> dark. setTheme() accepts any of the four explicitly.
+ * -> carnival -> dark. setTheme() accepts any of the five
+ * explicitly.
  *
  * FEATURES:
- *   - Cycles through all four themes
+ *   - Cycles through all five themes
  *   - Persists preference to localStorage
  *   - Respects system preference on first visit
  *   - Updates all UI elements that need to know the theme
@@ -22,8 +24,8 @@
  * USAGE:
  *   ThemeManager.init();
  *   ThemeManager.toggle();
- *   ThemeManager.setTheme('pastel');
- *   ThemeManager.getTheme(); // 'light' | 'dark' | 'vaporwave' | 'pastel'
+ *   ThemeManager.setTheme('carnival');
+ *   ThemeManager.getTheme(); // 'light' | 'dark' | 'vaporwave' | 'pastel' | 'carnival'
  */
 
 (function() {
@@ -37,14 +39,16 @@
         LIGHT: 'light',
         DARK: 'dark',
         VAPORWAVE: 'vaporwave',
-        PASTEL: 'pastel'
+        PASTEL: 'pastel',
+        CARNIVAL: 'carnival'
     };
     // Order the toggle cycles through.
     var CYCLE = [
         THEMES.DARK,
         THEMES.LIGHT,
         THEMES.VAPORWAVE,
-        THEMES.PASTEL
+        THEMES.PASTEL,
+        THEMES.CARNIVAL
     ];
 
     // Themes that are applied via the `data-theme` attribute.
@@ -52,7 +56,8 @@
     var ATTRIBUTE_THEMES = [
         THEMES.LIGHT,
         THEMES.VAPORWAVE,
-        THEMES.PASTEL
+        THEMES.PASTEL,
+        THEMES.CARNIVAL
     ];
 
     var _currentTheme = THEMES.DARK;
@@ -65,7 +70,8 @@
         return theme === THEMES.LIGHT ||
                theme === THEMES.DARK ||
                theme === THEMES.VAPORWAVE ||
-               theme === THEMES.PASTEL;
+               theme === THEMES.PASTEL ||
+               theme === THEMES.CARNIVAL;
     }
 
     function loadThemePreference() {
@@ -89,8 +95,9 @@
     }
 
     function getSystemPreference() {
-        // Only meaningful for the dark/light binary; vaporwave and
-        // pastel are opt-in and never chosen from system preference.
+        // Only meaningful for the dark/light binary; vaporwave,
+        // pastel, and carnival are opt-in and never chosen from
+        // system preference.
         if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
             return THEMES.LIGHT;
         }
@@ -133,6 +140,10 @@
             btn.textContent = '✿';
             btn.title = 'Switch to pastel mode';
             btn.setAttribute('aria-label', 'Switch to pastel mode');
+        } else if (next === THEMES.CARNIVAL) {
+            btn.textContent = '☠';
+            btn.title = 'Switch to carnival mode';
+            btn.setAttribute('aria-label', 'The Ringmaster');
         } else {
             btn.textContent = '☾';
             btn.title = 'Switch to dark mode';
