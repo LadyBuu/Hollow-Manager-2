@@ -26,6 +26,12 @@
  *   academy.css
  *   academy/<per-view>.css
  *   academy/modals.css            <- this file
+ *
+ * LIGHT MODE:
+ *   Almost every rule here uses theme tokens. The only hardcoded
+ *   colors are two danger-tinted rgba() values on the rebalance
+ *   modal's unplaceable disclosure, which carry explicit
+ *   [data-theme="light"] overrides at the bottom of the file.
  */
 
 /* ============================================================
@@ -972,4 +978,24 @@
     .academy-grade-delete-modal .modal-content {
         max-width: none;
     }
+}
+
+/* ============================================================
+   LIGHT MODE OVERRIDES
+   ============================================================
+   The rebalance modal's unplaceable disclosure uses two
+   hardcoded danger-tinted rgba() values. They are derived from
+   --danger and are legible in dark mode, but in light mode the
+   hue needs a slightly higher opacity against the near-white
+   panel to remain visible. The base rules above are unchanged;
+   these overrides only apply when data-theme="light" is set on
+   <html>.
+ */
+
+[data-theme="light"] .academy-rebalance-unplaceable-toggle:hover {
+    background: rgba(179, 43, 34, 0.12);
+}
+
+[data-theme="light"] .academy-rebalance-unplaceable-body {
+    border-top-color: rgba(179, 43, 34, 0.30);
 }
