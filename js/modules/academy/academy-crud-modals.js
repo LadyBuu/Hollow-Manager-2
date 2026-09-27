@@ -78,7 +78,7 @@
  *     - An action row (Select all / Clear) shown only when expanded.
  *     - A scrollable body of one-character-per-line checkbox rows.
  *
- *   INLINE STYLES, NOT CLASSES:
+ *   INLINE STYLES, TOKENS NOT HEX:
  *     Every structural element in the picker carries inline styles.
  *     This is deliberate: the class-based styling in
  *     css/academy/class-detail.css depends on that stylesheet being
@@ -88,16 +88,15 @@
  *     rows run together.
  *
  *     Inline styles on the elements beat every one of those failure
- *     modes. The trade-off is that the visual values are hard-coded
- *     instead of driven by the shared CSS tokens. Acceptable for a
- *     stopgap. Once the stylesheet is verified to load and the
- *     class-based rules are confirmed to fire, the inline styles can
- *     be removed and the classes reinstated.
+ *     modes. The values they use are CSS CUSTOM PROPERTY
+ *     REFERENCES — `var(--accent)`, `var(--panel)`, and so on — NOT
+ *     hardcoded hex. The tokens are declared in css/shared.css and
+ *     carry dark and light values. The picker re-themes with the
+ *     rest of the application.
  *
- *     The class names are still emitted alongside the inline styles,
- *     so the CSS file remains authoritative for anything the inline
- *     styles do not set. Nothing here prevents a future migration
- *     back to class-driven styling.
+ *     Do NOT reintroduce hex literals here. If a new color is
+ *     needed, add a token to shared.css in both :root and
+ *     [data-theme="light"] and reference it by name.
  *
  *   COLLAPSE:
  *     The container root carries data-expanded="true|false". The
@@ -1033,21 +1032,9 @@
     // match, the inline styles still enforce one-row-per-line and
     // the collapse.
     //
-    // The class names remain emitted alongside the inline styles,
-    // so a future migration back to class-driven styling only
-    // requires deleting the inline style attributes.
-
-    var PICKER_COLORS = {
-        bg: '#0a1505',
-        panel: '#0f1f08',
-        panelAlt: '#142a0c',
-        border: '#1f3a10',
-        borderSoft: '#172d0d',
-        text: '#d4e8c8',
-        textDim: '#7a9a6a',
-        accent: '#8cbb3a',
-        accentSoft: 'rgba(140, 187, 58, 0.12)'
-    };
+    // The styles reference CSS custom properties declared in
+    // css/shared.css. They re-theme with the rest of the app. Do
+    // not replace them with hex literals.
 
     function buildAddCharacterToClassHTML(vm) {
         var free = Array.isArray(vm.candidatesUnassigned)
@@ -1091,9 +1078,9 @@
                     'class="ac-add-character-search" ' +
                     'placeholder="Search characters..." ' +
                     'style="width:100%;padding:6px 8px;' +
-                    'background:' + PICKER_COLORS.bg + ';' +
-                    'border:1px solid ' + PICKER_COLORS.border + ';' +
-                    'color:' + PICKER_COLORS.text + ';' +
+                    'background:var(--bg);' +
+                    'border:1px solid var(--border);' +
+                    'color:var(--text);' +
                     'border-radius:6px;font-size:0.75rem;' +
                     'font-family:inherit;box-sizing:border-box;">';
         html += '</div>';
@@ -1145,8 +1132,8 @@
         var containerStyle =
             'display:block;' +
             'margin:0;' +
-            'background:' + PICKER_COLORS.bg + ';' +
-            'border:1px solid ' + PICKER_COLORS.border + ';' +
+            'background:var(--bg);' +
+            'border:1px solid var(--border);' +
             'border-radius:10px;' +
             'overflow:hidden;';
 
@@ -1157,13 +1144,13 @@
             'gap:8px;' +
             'width:100%;' +
             'padding:8px 10px;' +
-            'background:' + PICKER_COLORS.panelAlt + ';' +
+            'background:var(--panel-alt);' +
             'border:none;' +
             'border-bottom:1px solid ' +
                 (defaultExpanded
-                    ? PICKER_COLORS.border
+                    ? 'var(--border)'
                     : 'transparent') + ';' +
-            'color:' + PICKER_COLORS.text + ';' +
+            'color:var(--text);' +
             'font:inherit;' +
             'font-size:0.75rem;' +
             'text-align:left;' +
@@ -1175,7 +1162,7 @@
             'display:inline-block;' +
             'width:12px;' +
             'font-size:0.75rem;' +
-            'color:' + PICKER_COLORS.textDim + ';' +
+            'color:var(--text-dim);' +
             'flex:0 0 auto;' +
             'transition:transform 0.15s ease;' +
             'transform-origin:50% 50%;' +
@@ -1188,8 +1175,8 @@
             'font-size:0.72rem;' +
             'font-weight:600;' +
             'color:' + (columnKey === 'assigned'
-                ? PICKER_COLORS.textDim
-                : PICKER_COLORS.text) + ';' +
+                ? 'var(--text-dim)'
+                : 'var(--text)') + ';' +
             'text-transform:uppercase;' +
             'letter-spacing:0.04em;' +
             'white-space:nowrap;' +
@@ -1201,11 +1188,11 @@
             'flex:0 0 auto;' +
             'font-size:0.62rem;' +
             'font-weight:600;' +
-            'color:' + PICKER_COLORS.textDim + ';' +
-            'background:' + PICKER_COLORS.panel + ';' +
+            'color:var(--text-dim);' +
+            'background:var(--panel);' +
             'padding:1px 8px;' +
             'border-radius:10px;' +
-            'border:1px solid ' + PICKER_COLORS.borderSoft + ';' +
+            'border:1px solid var(--border-soft);' +
             'white-space:nowrap;';
 
         // Action row (Select all / Clear).
@@ -1213,8 +1200,8 @@
             'display:' + (defaultExpanded ? 'flex' : 'none') + ';' +
             'gap:4px;' +
             'padding:6px 10px;' +
-            'background:' + PICKER_COLORS.panel + ';' +
-            'border-bottom:1px solid ' + PICKER_COLORS.borderSoft + ';';
+            'background:var(--panel);' +
+            'border-bottom:1px solid var(--border-soft);';
 
         // Body (scrollable list).
         var bodyStyle =
@@ -1277,7 +1264,7 @@
             html += '<div class="ac-add-character-container-empty" ' +
                         'style="padding:16px 10px;text-align:center;' +
                         'font-size:0.7rem;' +
-                        'color:' + PICKER_COLORS.textDim + ';' +
+                        'color:var(--text-dim);' +
                         'font-style:italic;line-height:1.4;">' +
                         escapeHtml(emptyMessage) +
                     '</div>';
@@ -1317,14 +1304,14 @@
         var checkboxStyle =
             'width:auto;' +
             'margin:0;' +
-            'accent-color:' + PICKER_COLORS.accent + ';' +
+            'accent-color:var(--accent);' +
             'cursor:pointer;' +
             'flex:0 0 auto;';
 
         var nameStyle =
             'flex:1;' +
             'min-width:0;' +
-            'color:' + PICKER_COLORS.text + ';' +
+            'color:var(--text);' +
             'overflow:hidden;' +
             'text-overflow:ellipsis;' +
             'white-space:nowrap;';
@@ -1434,13 +1421,13 @@
                     : String(total);
 
                 if (checked > 0) {
-                    badge.style.color = PICKER_COLORS.accent;
-                    badge.style.background = PICKER_COLORS.accentSoft;
-                    badge.style.borderColor = PICKER_COLORS.accent;
+                    badge.style.color = 'var(--accent)';
+                    badge.style.background = 'var(--accent-soft)';
+                    badge.style.borderColor = 'var(--accent)';
                 } else {
-                    badge.style.color = PICKER_COLORS.textDim;
-                    badge.style.background = PICKER_COLORS.panel;
-                    badge.style.borderColor = PICKER_COLORS.borderSoft;
+                    badge.style.color = 'var(--text-dim)';
+                    badge.style.background = 'var(--panel)';
+                    badge.style.borderColor = 'var(--border-soft)';
                 }
             }
         }
@@ -1553,7 +1540,7 @@
         // header and whatever comes next. When collapsed, the
         // header abuts the container's bottom edge with no divider.
         headerEl.style.borderBottom = next
-            ? '1px solid ' + PICKER_COLORS.border
+            ? '1px solid var(--border)'
             : '1px solid transparent';
     }
 
@@ -1638,7 +1625,7 @@
                     noMatches.style.cssText =
                         'padding:16px 10px;text-align:center;' +
                         'font-size:0.7rem;' +
-                        'color:' + PICKER_COLORS.textDim + ';' +
+                        'color:var(--text-dim);' +
                         'font-style:italic;line-height:1.4;';
                     noMatches.textContent = 'No matches.';
                     body.appendChild(noMatches);
