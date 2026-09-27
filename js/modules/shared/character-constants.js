@@ -38,6 +38,35 @@
  *   If you edit a weight vector, re-run the collapse check (see the
  *   warning in the console on reload) before committing.
  *
+ * PHYSICAL CLASS ICONS (monochrome):
+ *   Every physical class carries a single-glyph monochrome icon.
+ *   The glyphs are plain Unicode symbols, not emoji. They inherit
+ *   `color` from their context, so they theme correctly in dark
+ *   and light modes.
+ *
+ *   Do NOT reintroduce emoji here. An emoji glyph ignores the
+ *   surrounding text color, renders in its own baked-in palette,
+ *   and appears identical in both themes — which is precisely the
+ *   behaviour the icon vocabulary is trying to avoid.
+ *
+ *   The glyph set is drawn from the same families used elsewhere
+ *   in the app (the v28 stats-config normalisation in
+ *   database.js):
+ *
+ *     †  U+2020  dagger          — blade classes
+ *     ‡  U+2021  double dagger   — paired blade classes
+ *     ◈  U+25C8  diamond in diamond — defensive classes
+ *     ➶  U+27B6  bow-arc arrow   — ranged classes
+ *     ✦  U+2726  four-point star — striking classes
+ *     ◉  U+25C9  fisheye lens    — observational classes
+ *     ▣  U+25A3  white square in square — tactical classes
+ *     ✪  U+272A  circled star    — command classes
+ *     ▤  U+25A4  book block      — scholarly classes
+ *
+ *   When adding a new physical class, pick from this set or add a
+ *   new monochrome glyph. Verify it renders as text (not emoji)
+ *   in both light and dark mode before committing.
+ *
  * DEPENDENCIES:
  *   - None (self-contained)
  */
@@ -99,76 +128,80 @@
     //     barbarian, fighter, brawler, tactician, scholar.
     //
     //   The other seven already satisfied it.
+    //
+    // ICONS:
+    //   Monochrome Unicode glyphs. See the ICONS block in the file
+    //   header for the vocabulary and the reason emoji are banned.
 
     var PHYSICAL_CLASSES = [
         {
-            id: 'barbarian', label: 'Barbarian', icon: '⚔',
+            id: 'barbarian', label: 'Barbarian', icon: '\u2020',
             description: 'Raw physical power, toughness, aggression',
             weights: { str: 0.45, con: 0.30, dex: 0.15, wis: 0.10, int: 0.00, cha: 0.00 },
             hpBonus: 8
         },
         {
-            id: 'fighter', label: 'Fighter', icon: '⚔',
+            id: 'fighter', label: 'Fighter', icon: '\u2021',
             description: 'Versatile trained combatant',
             weights: { str: 0.35, dex: 0.35, con: 0.20, wis: 0.05, int: 0.05, cha: 0.00 },
             hpBonus: 5
         },
         {
-            id: 'guardian', label: 'Guardian', icon: '🛡',
+            id: 'guardian', label: 'Guardian', icon: '\u25c8',
             description: 'Defensive fighter, protects others, holds ground',
             weights: { con: 0.35, str: 0.25, wis: 0.25, dex: 0.05, int: 0.05, cha: 0.05 },
             hpBonus: 10
         },
         {
-            id: 'rogue', label: 'Rogue', icon: '🗡',
+            id: 'rogue', label: 'Rogue', icon: '\u2021',
             description: 'Agility, precision, opportunism, clever tactics',
             weights: { dex: 0.35, int: 0.30, cha: 0.20, str: 0.05, con: 0.05, wis: 0.05 },
             hpBonus: 2
         },
         {
-            id: 'ranger', label: 'Ranger', icon: '🏹',
+            id: 'ranger', label: 'Ranger', icon: '\u27b6',
             description: 'Mobility, awareness, ranged combat, survival',
             weights: { wis: 0.35, dex: 0.30, con: 0.20, str: 0.10, int: 0.05, cha: 0.00 },
             hpBonus: 4
         },
         {
-            id: 'martialist', label: 'Martialist', icon: '✋',
+            id: 'martialist', label: 'Martialist', icon: '\u2726',
             description: 'Discipline, speed, control and unarmed combat',
             weights: { dex: 0.35, con: 0.30, wis: 0.25, str: 0.10, int: 0.00, cha: 0.00 },
             hpBonus: 5
         },
         {
-            id: 'brawler', label: 'Brawler', icon: '👊',
+            id: 'brawler', label: 'Brawler', icon: '\u2020',
             description: 'Close-range fighter relying on physical skill',
             weights: { str: 0.40, dex: 0.35, con: 0.20, wis: 0.05, int: 0.00, cha: 0.00 },
             hpBonus: 6
         },
         {
-            id: 'duelist', label: 'Duelist', icon: '🗡',
+            id: 'duelist', label: 'Duelist', icon: '\u2021',
             description: 'Precision fighter, confidence, reading opponents',
             weights: { dex: 0.35, cha: 0.30, int: 0.20, str: 0.10, wis: 0.05, con: 0.00 },
             hpBonus: 2
         },
         {
-            id: 'scout', label: 'Scout', icon: '👁',
+            id: 'scout', label: 'Scout', icon: '\u25c9',
             description: 'Reconnaissance, stealth and situational awareness',
             weights: { wis: 0.30, dex: 0.30, int: 0.25, con: 0.15, str: 0.00, cha: 0.00 },
             hpBonus: 3
         },
         {
-            id: 'tactician', label: 'Tactician', icon: '♟',
+            id: 'tactician', label: 'Tactician', icon: '\u25a3',
             description: 'Strategic combatant, planning and battlefield control',
             weights: { int: 0.35, cha: 0.30, wis: 0.25, con: 0.10, str: 0.00, dex: 0.00 },
             hpBonus: 2
         },
         {
-            id: 'leader', label: 'Leader', icon: '★',
+            id: 'leader', label: 'Leader', icon: '\u272a',
             description: 'Inspires, commands and coordinates others',
             weights: { cha: 0.40, wis: 0.25, int: 0.20, con: 0.15, str: 0.00, dex: 0.00 },
             hpBonus: 3
         },
         {
-            id: 'scholar', label: 'Scholar', icon: '📖',
+            id: 'scholar', label: 'Scholar', icon: '\u25a4',
             description: 'Knowledge-focused, analytical and academically capable',
             weights: { int: 0.45, wis: 0.30, cha: 0.15, con: 0.10, str: 0.00, dex: 0.00 },
             hpBonus: 1
@@ -424,6 +457,40 @@
             if (!cls.label || typeof cls.label !== 'string') {
                 errors.push('Physical class "' + cls.id + '" missing label.');
             }
+
+            // ---- Icon must be a monochrome glyph, not emoji ----
+            //
+            // An emoji icon is a multi-codepoint sequence that ends
+            // in U+FE0F (variation selector 16), or one whose first
+            // codepoint is in a known emoji range. Both cases render
+            // as a coloured pictograph and ignore the surrounding
+            // text color. The check is deliberately simple: reject
+            // anything longer than 2 codepoints, and reject any
+            // glyph whose codepoints are all above U+1F000. That
+            // catches every emoji in the current set and leaves the
+            // monochrome vocabulary (U+2020..U+27B6) untouched.
+            if (typeof cls.icon !== 'string' || cls.icon === '') {
+                errors.push('Physical class "' + cls.id + '" missing icon.');
+            } else {
+                var cps = [];
+                for (var ci = 0; ci < cls.icon.length; ci++) {
+                    cps.push(cls.icon.charCodeAt(ci));
+                }
+                if (cps.length > 2) {
+                    errors.push(
+                        'Physical class "' + cls.id + '" icon "' + cls.icon +
+                        '" has more than 2 codepoints; likely an emoji ' +
+                        'sequence. Use a single monochrome glyph.'
+                    );
+                } else if (cps.length > 0 && cps[0] >= 0x1F000) {
+                    errors.push(
+                        'Physical class "' + cls.id + '" icon "' + cls.icon +
+                        '" is in the emoji range (>= U+1F000). Use a ' +
+                        'monochrome glyph instead.'
+                    );
+                }
+            }
+
             if (!cls.weights || typeof cls.weights !== 'object') {
                 errors.push('Physical class "' + cls.id + '" missing weights.');
                 return;
