@@ -4,7 +4,7 @@
  * Tokens, reset, and cross-module primitives:
  *   - Custom properties (:root) — dark mode
  *   - Custom properties ([data-theme="light"]) — soft cream light mode
- *   - Custom properties ([data-theme="vaporwave"]) — neon pink/cyan on turquoise
+ *   - Custom properties ([data-theme="vaporwave"]) — neon pink/cyan on violet night
  *   - Global reset, scrollbar, focus-visible, reduced motion
  *   - Theme transition
  *   - Theme toggle button
@@ -327,144 +327,154 @@
 }
 
 /* ============================================================
-   TOKENS — VAPORWAVE (NEON PINK + CYAN ON TURQUOISE)
+   TOKENS — VAPORWAVE
    ============================================================
-   Activated by data-theme="vaporwave" on <html>.
+   Neon pink + electric cyan over a deep turquoise / violet
+   night palette.
 
-   A neon pink/cyan palette on a deep turquoise base. Both
-   accents are first-class: the "accent" slot is the neon pink,
-   the "info" slot is the neon cyan. Together they carry the
-   classic pink-and-blue vaporwave look, and the teal base hue
-   sits on the cyan side so the pink reads as the contrasting
-   accent rather than fighting the background.
+   Pink is the primary UI identity.
+   Cyan is the secondary interaction colour.
+   Violet provides depth without becoming a competing accent.
 
-   A third hue (aquamarine) is reserved for the warning slot so
-   warnings still read as distinct from both accents.
+   The base is deliberately violet-tinged rather than uniformly
+   teal, so the pink and cyan accents both sit on a neutral
+   atmospheric ground rather than fighting the background.
 
-   Contrast note: the neon accents are bright enough to read as
-   foreground on the teal base, but they are NOT dark enough to
-   carry body text. Body text uses the pale aqua; accents are
-   used for borders, fills, badges, and headings only.
- */
+   Semantic colour slots (danger / warning / magic types /
+   relationship types / graph statuses) remain distinguishable.
+   The theme re-skins their visual language; it does not erase
+   their meaning.
+   ============================================================ */
 
 [data-theme="vaporwave"] {
     /* --------------------------------------------------------
        BASE PALETTE
        -------------------------------------------------------- */
-    --bg: #04252b;              /* deep turquoise night */
-    --panel: #073842;           /* raised panel */
-    --panel-alt: #0a4a56;       /* recessed well */
-    --border: #1a6b78;          /* teal border */
-    --border-soft: #0f5560;
-    --text: #d6f5f0;            /* pale aqua ink */
-    --text-dim: #6fa8b0;        /* muted teal */
 
-    /* Neon pink — the primary accent */
+    --bg: #100b24;
+    --panel: #171238;
+    --panel-alt: #1d1747;
+
+    --border: #40316f;
+    --border-soft: #2b2354;
+
+    --text: #f4e9ff;
+    --text-dim: #a89ac7;
+
+    /* Hot neon pink */
     --accent: #ff4fd8;
-    --accent-soft: rgba(255, 79, 216, 0.16);
-    --accent-hover: rgba(255, 79, 216, 0.28);
+    --accent-soft: rgba(255, 79, 216, 0.15);
+    --accent-hover: rgba(255, 79, 216, 0.26);
 
-    /* Neon cyan — the secondary accent (info slot) */
-    --info: #2ee6ff;
-    --info-soft: rgba(46, 230, 255, 0.14);
-    --info-hover: rgba(46, 230, 255, 0.26);
+    /* Electric cyan */
+    --info: #35e7ff;
+    --info-soft: rgba(53, 231, 255, 0.14);
+    --info-hover: rgba(53, 231, 255, 0.25);
 
-    /* Danger: hot magenta-red, distinct from both accents */
-    --danger: #ff5c7a;
-    --danger-soft: rgba(255, 92, 122, 0.16);
-    --danger-hover: rgba(255, 92, 122, 0.28);
+    /* Hot coral-red */
+    --danger: #ff557f;
+    --danger-soft: rgba(255, 85, 127, 0.14);
+    --danger-hover: rgba(255, 85, 127, 0.25);
 
-    /* Warning: aquamarine — sits between the base teal and the
-       cyan accent, so it reads as a distinct third hue without
-       competing with either accent. */
-    --warning: #7fffd4;
-    --warning-soft: rgba(127, 255, 212, 0.16);
-    --warning-hover: rgba(127, 255, 212, 0.28);
+    /* Retro yellow */
+    --warning: #ffd166;
+    --warning-soft: rgba(255, 209, 102, 0.14);
+    --warning-hover: rgba(255, 209, 102, 0.25);
 
     /* --------------------------------------------------------
        OVERLAY / BACKDROP
        -------------------------------------------------------- */
-    --overlay: rgba(2, 15, 18, 0.85);
-    --overlay-light: rgba(2, 15, 18, 0.6);
+
+    --overlay: rgba(7, 4, 18, 0.88);
+    --overlay-light: rgba(7, 4, 18, 0.68);
 
     /* --------------------------------------------------------
        LAYOUT
        -------------------------------------------------------- */
+
     --radius: 10px;
-    --shadow: 0 4px 24px rgba(255, 79, 216, 0.12),
-              0 0 60px rgba(46, 230, 255, 0.06);
+
+    --shadow:
+        0 4px 24px rgba(0, 0, 0, 0.45),
+        0 0 45px rgba(255, 79, 216, 0.06);
 
     /* --------------------------------------------------------
        SCROLLBAR
        -------------------------------------------------------- */
+
     --scrollbar-track: var(--bg);
-    --scrollbar-thumb: var(--border);
+    --scrollbar-thumb: #40316f;
 
     /* --------------------------------------------------------
        GRAPH NODE PALETTE
        -------------------------------------------------------- */
+
     --graph-node-accent-fill: #ff4fd8;
-    --graph-node-accent-stroke: #c030a8;
-    --graph-node-info-fill: #2ee6ff;
-    --graph-node-info-stroke: #20a8c0;
+    --graph-node-accent-stroke: #b92e9c;
+
+    --graph-node-info-fill: #35e7ff;
+    --graph-node-info-stroke: #209cb0;
 
     /* --------------------------------------------------------
        GRAPH NODE STATUS COLORS
        -------------------------------------------------------- */
-    --graph-node-status-deceased:   #4a7a82;
-    --graph-node-status-instructor: #7fffd4;
+
+    --graph-node-status-deceased:   #625b78;
+    --graph-node-status-instructor: #c77dff;
     --graph-node-status-senior:     #ffd166;
-    --graph-node-status-junior:     #2ee6ff;
-    --graph-node-status-rookie:     #5cffb0;
+    --graph-node-status-junior:     #35e7ff;
+    --graph-node-status-rookie:     #61ffb0;
     --graph-node-status-student:    #ff4fd8;
-    --graph-node-status-support:    #ff9e4f;
-    --graph-node-status-civilian:   #6fa8b0;
-    --graph-node-status-other:      #6fa8b0;
+    --graph-node-status-support:    #ff9f68;
+    --graph-node-status-civilian:   #a89ac7;
+    --graph-node-status-other:      #a89ac7;
 
     /* --------------------------------------------------------
        MAGIC TYPE COLORS
        -------------------------------------------------------- */
 
     /* Elemental */
-    --magic-earth: #b08060;
-    --magic-water: #2ee6ff;
-    --magic-fire:  #ff7a4f;
-    --magic-air:   #a8e6ff;
-    --magic-metal: #b0c4d4;
-    --magic-wood:  #5cffb0;
+    --magic-earth: #b58a68;
+    --magic-water: #35e7ff;
+    --magic-fire:  #ff754f;
+    --magic-air:   #a9ecff;
+    --magic-metal: #b7c8d6;
+    --magic-wood:  #61ffb0;
 
     /* Body */
-    --magic-blood:   #ff5c7a;
-    --magic-bone:    #d6f5f0;
-    --magic-mind:    #c07bff;
-    --magic-morphic: #4fffd4;
-    --magic-life:    #5cffb0;
-    --magic-death:   #4a7a82;
+    --magic-blood:   #ff557f;
+    --magic-bone:    #eee6d8;
+    --magic-mind:    #c77dff;
+    --magic-morphic: #54f5d0;
+    --magic-life:    #61ffb0;
+    --magic-death:   #625b78;
 
     /* Aether */
-    --magic-space:        #2ee6ff;
+    --magic-space:        #35e7ff;
     --magic-time:         #ffd166;
-    --magic-dimension:    #c07bff;
-    --magic-void:         #04252b;
+    --magic-dimension:    #c77dff;
+    --magic-void:         #100b24;
     --magic-reality:      #ff4fd8;
-    --magic-transference: #ff5c7a;
+    --magic-transference: #ff557f;
 
     /* --------------------------------------------------------
        RELATIONSHIP COLORS
        -------------------------------------------------------- */
-    --relationship-familial:     #5cffb0;
+
+    --relationship-familial:     #61ffb0;
     --relationship-professional: #ffd166;
-    --relationship-romantic:     #ff5c7a;
-    --relationship-friendship:   #2ee6ff;
-    --relationship-mentor:       #c07bff;
-    --relationship-rivalry:      #ff9e4f;
-    --relationship-alliance:     #4fffd4;
-    --relationship-other:        #6fa8b0;
+    --relationship-romantic:     #ff557f;
+    --relationship-friendship:   #35e7ff;
+    --relationship-mentor:       #c77dff;
+    --relationship-rivalry:      #ff9f68;
+    --relationship-alliance:     #54f5d0;
+    --relationship-other:        #a89ac7;
 
     /* --------------------------------------------------------
        SUBTLE CHIP BACKGROUND
        -------------------------------------------------------- */
-    --chip-bg-subtle: rgba(255, 255, 255, 0.06);
+
+    --chip-bg-subtle: rgba(255, 255, 255, 0.07);
 }
 
 /* ============================================================
@@ -526,33 +536,49 @@ a,
 }
 
 /* ============================================================
-   VAPORWAVE BACKDROP GLOW
+   VAPORWAVE BACKDROP
    ============================================================
-   A soft two-tone gradient behind the app when the vaporwave
-   theme is active. The pink and cyan radials sit in opposite
-   corners so the base reads as pink-and-blue rather than one
-   dominant hue. Inert in every other theme.
+   Three overlapping radial fields:
+     - pink at the top-left
+     - cyan at the top-right
+     - violet at the bottom-center
+
+   Together they give the base an atmospheric pink-and-blue
+   quality rather than a flat uniform colour. The violet field
+   anchors the composition so the page does not read as two
+   isolated accent spots.
+
+   Inert in every other theme.
  */
 
 [data-theme="vaporwave"] body {
     background:
-        radial-gradient(circle at 15% 0%,
-            rgba(255, 79, 216, 0.18) 0%,
-            transparent 45%),
-        radial-gradient(circle at 85% 100%,
-            rgba(46, 230, 255, 0.20) 0%,
-            transparent 45%),
+        radial-gradient(
+            circle at 8% 5%,
+            rgba(255, 79, 216, 0.22) 0%,
+            transparent 32%
+        ),
+        radial-gradient(
+            circle at 92% 18%,
+            rgba(53, 231, 255, 0.18) 0%,
+            transparent 34%
+        ),
+        radial-gradient(
+            circle at 50% 110%,
+            rgba(120, 72, 220, 0.18) 0%,
+            transparent 42%
+        ),
         var(--bg);
+
     background-attachment: fixed;
 }
 
 /* ============================================================
    VAPORWAVE HEADING GLOW
    ============================================================
-   Neon text-shadow on headings so the two accents read as a
-   pair rather than a single tint. The pink shadow sits close,
-   the cyan shadow sits further out; together they read as a
-   pink core with a blue halo. Inert in every other theme.
+   A restrained two-layer text-shadow: pink core, cyan halo.
+   The glow is present but does not overwhelm the heading's own
+   legibility. Inert in every other theme.
  */
 
 [data-theme="vaporwave"] h1,
@@ -560,8 +586,8 @@ a,
 [data-theme="vaporwave"] h3,
 [data-theme="vaporwave"] h4 {
     text-shadow:
-        0 0 8px rgba(255, 79, 216, 0.45),
-        0 0 20px rgba(46, 230, 255, 0.25);
+        0 0 7px rgba(255, 79, 216, 0.42),
+        0 0 18px rgba(53, 231, 255, 0.18);
 }
 
 [data-theme="vaporwave"] #theme-toggle-btn {
@@ -1170,7 +1196,7 @@ main {
 [data-theme="vaporwave"] .modal-content {
     box-shadow:
         0 0 50px rgba(255, 79, 216, 0.18),
-        0 0 90px rgba(46, 230, 255, 0.10);
+        0 0 90px rgba(53, 231, 255, 0.10);
 }
 
 @media (min-width: 768px) {
