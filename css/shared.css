@@ -2,8 +2,10 @@
  * css/shared.css - Hollow Blades Manager Shared Styles
  *
  * Tokens, reset, and cross-module primitives:
- *   - Custom properties (:root) — dark mode + light mode
+ *   - Custom properties (:root) — dark mode
+ *   - Custom properties ([data-theme="light"]) — light mode
  *   - Global reset, scrollbar, focus-visible, reduced motion
+ *   - Theme transition
  *   - Theme toggle button
  *   - Buttons (all variants)
  *   - Header + burger navigation
@@ -27,6 +29,31 @@
  *   `data-theme="light"` on <html>. All colors are driven by the
  *   tokens below, so a single attribute swap re-themes the app.
  *   See js/utils/theme-manager.js for the toggle logic.
+ *
+ * DOMAIN COLOR TOKENS:
+ *   Beyond the base palette, this file declares four token
+ *   families that domain modules reference by name:
+ *
+ *     --graph-node-accent-* / --graph-node-info-*
+ *         Character network graph node fills and strokes
+ *         (character-views.js).
+ *
+ *     --graph-node-status-*
+ *         Social tab graph node fills by character status
+ *         (social-graph.js).
+ *
+ *     --magic-*
+ *         Magic type colors (magic-constants.js).
+ *
+ *     --relationship-*
+ *         Relationship type colors (social-constants.js).
+ *
+ *     --chip-bg-subtle
+ *         Inline title chip background on relationship rows
+ *         (social-views.js).
+ *
+ *   These are declared here, in both dark and light variants,
+ *   because they need to re-theme with everything else.
  */
 
 /* ============================================================
@@ -34,7 +61,9 @@
    ============================================================ */
 
 :root {
-    /* Colors */
+    /* --------------------------------------------------------
+       BASE PALETTE
+       -------------------------------------------------------- */
     --bg: #0a1505;
     --panel: #0f1f08;
     --panel-alt: #142a0c;
@@ -55,19 +84,111 @@
     --warning-soft: rgba(201, 162, 75, 0.12);
     --warning-hover: rgba(201, 162, 75, 0.20);
 
-    /* Overlay / backdrop */
+    /* --------------------------------------------------------
+       OVERLAY / BACKDROP
+       -------------------------------------------------------- */
     --overlay: rgba(0, 0, 0, 0.85);
     --overlay-light: rgba(0, 0, 0, 0.6);
 
-    /* Layout */
+    /* --------------------------------------------------------
+       LAYOUT
+       -------------------------------------------------------- */
     --radius: 10px;
     --shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
     --header-height-mobile: 36px;
     --header-height-desktop: 48px;
 
-    /* Scrollbar */
+    /* --------------------------------------------------------
+       SCROLLBAR
+       -------------------------------------------------------- */
     --scrollbar-track: var(--bg);
     --scrollbar-thumb: var(--border);
+
+    /* --------------------------------------------------------
+       GRAPH NODE PALETTE (character network graph)
+       --------------------------------------------------------
+       Used by character-views.js for the two-tone node circles
+       (lighter fill, darker stroke). Consumed inline in SVG
+       presentation attributes. */
+
+    --graph-node-accent-fill: #8cbb3a;
+    --graph-node-accent-stroke: #6a9b2a;
+    --graph-node-info-fill: #4a9bc7;
+    --graph-node-info-stroke: #3a7ba7;
+
+    /* --------------------------------------------------------
+       GRAPH NODE STATUS COLORS (social tab graph)
+       --------------------------------------------------------
+       Read by social-graph.js getNodeColor(). Each status carries
+       a token name. Consumed inline by the SVG node fill. */
+
+    --graph-node-status-deceased:   #666666;
+    --graph-node-status-instructor: #9b59b6;
+    --graph-node-status-senior:     #c9a24b;
+    --graph-node-status-junior:     #4a9bc7;
+    --graph-node-status-rookie:     #27ae60;
+    --graph-node-status-student:    #8cbb3a;
+    --graph-node-status-support:    #e67e22;
+    --graph-node-status-civilian:   #7f8c8d;
+    --graph-node-status-other:      #7f8c8d;
+
+    /* --------------------------------------------------------
+       MAGIC TYPE COLORS
+       --------------------------------------------------------
+       Read by MagicConstants.getTypeColor(). Each type carries
+       the token name in its `color` field. Consumed inline by
+       character-stats-view.js and anywhere else that renders a
+       magic type color. */
+
+    /* Elemental */
+    --magic-earth: #8B7355;
+    --magic-water: #4A9BC7;
+    --magic-fire:  #E67E22;
+    --magic-air:   #A8D5E2;
+    --magic-metal: #95A5A6;
+    --magic-wood:  #27AE60;
+
+    /* Body */
+    --magic-blood:   #C0392B;
+    --magic-bone:    #F5F5DC;
+    --magic-mind:    #8E44AD;
+    --magic-morphic: #1ABC9C;
+    --magic-life:    #2ECC71;
+    --magic-death:   #2C3E50;
+
+    /* Aether */
+    --magic-space:        #3498DB;
+    --magic-time:         #F39C12;
+    --magic-dimension:    #9B59B6;
+    --magic-void:         #1A1A2E;
+    --magic-reality:      #F1C40F;
+    --magic-transference: #E74C3C;
+
+    /* --------------------------------------------------------
+       RELATIONSHIP COLORS
+       --------------------------------------------------------
+       Read by SocialConstants.getColor(). Each relationship type
+       carries the token name in its `color` field. Consumed inline
+       by character-views.js (relationship rows, graph edges) and
+       by social-views.js. */
+
+    --relationship-familial:     #8cbb3a;
+    --relationship-professional: #c9a24b;
+    --relationship-romantic:     #c1453c;
+    --relationship-friendship:   #4a9bc7;
+    --relationship-mentor:       #9b59b6;
+    --relationship-rivalry:      #e67e22;
+    --relationship-alliance:     #27ae60;
+    --relationship-other:        #7f8c8d;
+
+    /* --------------------------------------------------------
+       SUBTLE CHIP BACKGROUND
+       --------------------------------------------------------
+       Used by social-views.js for the inline "title" chip on a
+       relationship row. A low-contrast wash that lifts a small
+       pill off the panel behind it. */
+
+    --chip-bg-subtle: rgba(255, 255, 255, 0.05);
 }
 
 /* ============================================================
@@ -80,7 +201,9 @@
  */
 
 [data-theme="light"] {
-    /* Colors */
+    /* --------------------------------------------------------
+       BASE PALETTE
+       -------------------------------------------------------- */
     --bg: #f5f7f0;
     --panel: #ffffff;
     --panel-alt: #eef2e6;
@@ -101,13 +224,101 @@
     --warning-soft: rgba(156, 122, 30, 0.14);
     --warning-hover: rgba(156, 122, 30, 0.22);
 
-    /* Overlay / backdrop — lighter in light mode so the panel
-       behind stays legible. */
+    /* --------------------------------------------------------
+       OVERLAY / BACKDROP
+       --------------------------------------------------------
+       Lighter in light mode so the panel behind stays legible. */
     --overlay: rgba(30, 45, 20, 0.55);
     --overlay-light: rgba(30, 45, 20, 0.4);
 
-    /* Layout */
+    /* --------------------------------------------------------
+       LAYOUT
+       -------------------------------------------------------- */
     --shadow: 0 4px 20px rgba(30, 45, 20, 0.10);
+
+    /* --------------------------------------------------------
+       GRAPH NODE PALETTE (LIGHT MODE)
+       --------------------------------------------------------
+       Darker strokes, richer fills so nodes read against the
+       near-white background. */
+
+    --graph-node-accent-fill: #6f9b28;
+    --graph-node-accent-stroke: #4d7218;
+    --graph-node-info-fill: #3a7ba7;
+    --graph-node-info-stroke: #2a5c80;
+
+    /* --------------------------------------------------------
+       GRAPH NODE STATUS COLORS (LIGHT MODE)
+       --------------------------------------------------------
+       Deepened for legibility against a near-white background.
+       The identity of each status is preserved: senior is still
+       gold-tinged, student is still green, etc. */
+
+    --graph-node-status-deceased:   #8a8a8a;
+    --graph-node-status-instructor: #7a4090;
+    --graph-node-status-senior:     #9c7a1e;
+    --graph-node-status-junior:     #2d6fa8;
+    --graph-node-status-rookie:     #1e8b4a;
+    --graph-node-status-student:    #5a8a1a;
+    --graph-node-status-support:    #c25e0e;
+    --graph-node-status-civilian:   #5a6a6c;
+    --graph-node-status-other:      #5a6a6c;
+
+    /* --------------------------------------------------------
+       MAGIC TYPE COLORS (LIGHT MODE)
+       --------------------------------------------------------
+       Adjusted for readability on a near-white background.
+       Colors are slightly deepened, and hues that were nearly
+       invisible on white (bone, void) are re-tuned. The type's
+       IDENTITY is preserved — fire is still orange, death is
+       still dark, etc. */
+
+    /* Elemental */
+    --magic-earth: #6B5638;
+    --magic-water: #2d7ab5;
+    --magic-fire:  #C25E0E;
+    --magic-air:   #5B8AA0;
+    --magic-metal: #6A7A7B;
+    --magic-wood:  #1F8B4A;
+
+    /* Body */
+    --magic-blood:   #9C2A1E;
+    --magic-bone:    #9A9170;
+    --magic-mind:    #6E2F8A;
+    --magic-morphic: #128C72;
+    --magic-life:    #1E9E4F;
+    --magic-death:   #3A5068;
+
+    /* Aether */
+    --magic-space:        #2172A8;
+    --magic-time:         #C47810;
+    --magic-dimension:    #7A4090;
+    --magic-void:         #38384D;
+    --magic-reality:      #C49A0A;
+    --magic-transference: #B83830;
+
+    /* --------------------------------------------------------
+       RELATIONSHIP COLORS (LIGHT MODE)
+       --------------------------------------------------------
+       Slightly deepened for contrast against a light panel. The
+       pairing matches the dark-mode palette one-for-one. */
+
+    --relationship-familial:     #5a8a1a;
+    --relationship-professional: #9c7a1e;
+    --relationship-romantic:     #b32b22;
+    --relationship-friendship:   #2d6fa8;
+    --relationship-mentor:       #7a4090;
+    --relationship-rivalry:      #c25e0e;
+    --relationship-alliance:     #1e8b4a;
+    --relationship-other:        #5a6a6c;
+
+    /* --------------------------------------------------------
+       SUBTLE CHIP BACKGROUND (LIGHT MODE)
+       --------------------------------------------------------
+       A faint black wash reads correctly on a light panel; the
+       dark-mode white wash was invisible. */
+
+    --chip-bg-subtle: rgba(0, 0, 0, 0.05);
 }
 
 /* ============================================================
