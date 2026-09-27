@@ -18,6 +18,16 @@
  *   - The CHARACTER-FORM graph is rendered separately by character-views.js
  *   - This file renders the standalone Social tab's graph
  * 
+ * NODE COLORS:
+ *   Node fill is a CSS custom property reference, resolved by the
+ *   browser at paint time. The tokens are declared in
+ *   css/shared.css with dark and light variants. See
+ *   --graph-node-status-* in shared.css.
+ *
+ *   Do NOT reintroduce hex literals in getNodeColor. If a new
+ *   status needs its own node color, add a token to shared.css in
+ *   both :root and [data-theme="light"] and reference it here.
+ * 
  * DEPENDENCIES:
  *   - window.SocialQueries (from social-queries.js) - MANDATORY
  *   - window.SocialAggregator (from social-aggregator.js) - MANDATORY
@@ -534,28 +544,43 @@
     // ============================================================
     // NODE COLOR
     // ============================================================
+    //
+    // Node fills are CSS custom property references, resolved at
+    // paint time. The tokens are declared in css/shared.css under
+    // --graph-node-status-* with dark and light variants.
+    //
+    // Do NOT reintroduce hex literals here. If a new status needs
+    // its own node color, add a token to shared.css in both
+    // :root and [data-theme="light"] and reference it by name.
 
     function getNodeColor(deceased, status) {
         if (deceased) {
-            return '#666666';
+            return 'var(--graph-node-status-deceased)';
         }
 
         var statusLower = String(status).toLowerCase();
 
-        var colorMap = {
-            'instructor': '#9b59b6',
-            'teacher': '#9b59b6',
-            'professor': '#9b59b6',
-            'senior': '#c9a24b',
-            'junior': '#4a9bc7',
-            'rookie': '#27ae60',
-            'trainee': '#8cbb3a',
-            'student': '#8cbb3a',
-            'support': '#e67e22',
-            'civilian': '#7f8c8d'
-        };
-
-        return colorMap[statusLower] || '#7f8c8d';
+        switch (statusLower) {
+            case 'instructor':
+            case 'teacher':
+            case 'professor':
+                return 'var(--graph-node-status-instructor)';
+            case 'senior':
+                return 'var(--graph-node-status-senior)';
+            case 'junior':
+                return 'var(--graph-node-status-junior)';
+            case 'rookie':
+                return 'var(--graph-node-status-rookie)';
+            case 'trainee':
+            case 'student':
+                return 'var(--graph-node-status-student)';
+            case 'support':
+                return 'var(--graph-node-status-support)';
+            case 'civilian':
+                return 'var(--graph-node-status-civilian)';
+            default:
+                return 'var(--graph-node-status-other)';
+        }
     }
 
     // ============================================================
@@ -622,7 +647,7 @@
         container.textContent = '';
 
         types.forEach(function(t) {
-            var color = t.color || '#7f8c8d';
+            var color = t.color || 'var(--relationship-other)';
 
             var span = document.createElement('span');
             span.style.cssText = 'display:inline-flex;align-items:center;gap:4px;margin-right:8px;font-size:0.7rem;';
