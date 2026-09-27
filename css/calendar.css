@@ -40,21 +40,68 @@
  *
  * HIGHLIGHT TINTS:
  *   The discipline grid may carry a `highlights` map. When
- *   present, cells are tinted based on their entry.
+ *   present, cells are tinted based on their entry:
+ *
+ *     .schedule-highlight-all-free
+ *       The instructor AND every named student are free. This is
+ *       a candidate slot for the group.
+ *
+ *     .schedule-highlight-instructor-free
+ *       The instructor is free, but one or more named students
+ *       are occupied. The slot is not usable as-is.
+ *
+ *     .schedule-highlight-weeks-N  (N in 1..4)
+ *       Applied alongside all-free; N is the number of weeks the
+ *       slot stays free, capped at 4 for CSS brevity. The true
+ *       count is shown in the badge, uncapped.
+ *
+ *   The highlight tints coexist with the group color classes.
+ *   An occupied cell may carry both `.acad-group-color-N` and
+ *   `.schedule-highlight-instructor-free`; the highlight tint
+ *   sits on top of the group tint via the box-shadow ring and
+ *   the increased background opacity. The group tint's
+ *   `border-left-color` remains visible because the highlight
+ *   tints do not set it.
  *
  * RADIO LISTS (instructor picker, candidate picker):
- *   Both lists share the same defensive layout. The defensive
- *   resets are duplicated across each radio-list block on purpose;
- *   diverging them has broken the layout twice in the past. See
- *   the SCHEDULE INSTRUCTOR MODAL section below.
+ *   Both lists share the same defensive layout:
+ *
+ *     display: flex !important;
+ *     flex-direction: row !important;
+ *     align-items: flex-start !important;
+ *     justify-content: flex-start !important;
+ *
+ *   and a fixed 14x14 radio whose width, height, margin, and
+ *   min/max-width are pinned so a global `input { width: 100% }`
+ *   rule cannot stretch it. The name span is `flex: 1 1 auto;
+ *   min-width: auto` with `overflow-wrap: break-word` (never
+ *   `anywhere`) so the name never wraps one character per line.
+ *
+ *   Do NOT change these without also changing the sibling block.
+ *   The two radio lists must stay in sync; a divergence is the
+ *   bug that shipped a centered radio and a right-shoved name
+ *   twice in a row.
  *
  * Loads after shared.css and academy.css.
+ *
+ * DARK-MODE GRID SURFACE:
+ *   In dark mode the schedule grid sits on a slightly lighter
+ *   surface than the page background so the group-color washes
+ *   read against it. See the DARK-MODE GRID SURFACE block below.
  *
  * LIGHT MODE:
  *   Group colors and highlight tints use hardcoded rgba() values
  *   rather than tokens, so they carry explicit light-mode
  *   overrides in the [data-theme="light"] block at the bottom of
- *   this file.
+ *   this file. The base values are tuned for dark mode; the
+ *   overrides raise opacity so the tint remains readable on a
+ *   light background without losing the hue.
+ *
+ * VAPORWAVE:
+ *   The same group colors and highlight tints carry a vaporwave
+ *   override block at the bottom of this file. The washes are
+ *   re-derived from the neon palette so they read as neon rather
+ *   than mud against the indigo base.
  */
 
 /* ============================================================
@@ -102,14 +149,31 @@
 }
 
 /* ============================================================
-   SCHEDULE GRID
-   ============================================================ */
+   DARK-MODE GRID SURFACE
+   ============================================================
+   The schedule grid's own background is the gap color that
+   shows between cells. In dark mode it was effectively the
+   page background, which made the group-color washes read as
+   muddy against it. Raising it one step lighter gives the
+   washes a neutral mid-tone to sit on, so the colors pop
+   without changing the cell backgrounds themselves.
+
+   This only affects dark mode. Light and vaporwave have their
+   own grid surface expectations and are not touched here.
+ */
+
+:root {
+    /* One step lighter than --bg, one step darker than --panel.
+       Used only as the grid's gap color. */
+    --schedule-grid-gap: #17280b;
+    --schedule-grid-cell: #132509;
+}
 
 .schedule-grid {
     display: grid;
     grid-template-columns: 72px repeat(7, minmax(0, 1fr));
     gap: 1px;
-    background: var(--border-soft);
+    background: var(--schedule-grid-gap);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     overflow: hidden;
@@ -146,6 +210,19 @@
         font-size: 0.72rem;
         min-height: 40px;
     }
+}
+
+/*
+ * Empty cells in dark mode use the dedicated grid-cell surface,
+ * not the general panel. The gap color sits behind; the cell
+ * sits one step above it. The group-color washes then apply on
+ * top of this base, which is what makes them readable.
+ *
+ * Light and vaporwave do not set --schedule-grid-cell, so the
+ * var() falls back to --panel, which is correct for both.
+ */
+.schedule-cell.schedule-empty {
+    background: var(--schedule-grid-cell, var(--panel));
 }
 
 /* ============================================================
@@ -296,7 +373,42 @@
 
 /* ============================================================
    HIGHLIGHT TINTS
-   ============================================================ */
+   ============================================================
+   Applied to any non-rest, non-block cell that carries a
+   highlight entry. This includes occupied cells: a slot occupied
+   by a DIFFERENT group of the same discipline may still be a
+   candidate for this instructor's session, and the highlight
+   tells the user whether this instructor and their students are
+   free.
+
+   TINTS:
+
+     all-free
+       Green wash + inset ring. The instructor AND every named
+       student are free. This is a direct candidate.
+
+     instructor-free
+       Yellow wash + inset ring. The instructor is free, but one
+       or more named students are occupied. The slot is a
+       partial fit.
+
+   STACKING:
+
+     Both tints use box-shadow for their ring, so they do not
+     clash with the group color classes' `background` and
+     `border-left-color`. When a cell carries both a group color
+     and a highlight tint, the tint sits on top of the group
+     wash; the group's left border stays visible underneath.
+
+   weeks-N:
+
+     The weeks-N variation is not a separate color. It exists so
+     the renderer can emit a class whose name carries the run
+     length (1..4, capped for CSS brevity) without inventing a
+     new visual for each length. The visible indicator of the
+     run is the badge; the class exists for a future caller that
+     wants to graduate the wash intensity.
+ */
 
 .schedule-cell.schedule-highlight-all-free {
     background: rgba(90, 170, 60, 0.22);
@@ -308,6 +420,12 @@
     box-shadow: inset 0 0 0 1px rgba(190, 170, 60, 0.45);
 }
 
+/*
+ * weeks-N classes are currently aliases of the all-free wash.
+ * They are declared so the renderer can emit them without a
+ * missing-class warning, and so a future pass can graduate the
+ * wash by N without changing the renderer.
+ */
 .schedule-cell.schedule-highlight-weeks-1,
 .schedule-cell.schedule-highlight-weeks-2,
 .schedule-cell.schedule-highlight-weeks-3,
@@ -315,6 +433,16 @@
     background: rgba(90, 170, 60, 0.22);
 }
 
+/*
+ * The badge shows the length of the free run. It sits in the
+ * top-right corner. It is rendered on both empty and occupied
+ * cells when the cell's weeksFree is > 1.
+ *
+ * The badge is deliberately small and pointer-events:none so it
+ * never intercepts a click on the cell. The cell's action (open
+ * a session, assign a slot) is what matters; the badge is
+ * information.
+ */
 .schedule-highlight-badge {
     position: absolute;
     top: 2px;
@@ -331,6 +459,13 @@
     white-space: nowrap;
 }
 
+/*
+ * When the cell also carries a co-occupant marker, the badge and
+ * the marker would collide in the top-right corner. The marker
+ * takes precedence; the badge steps down one row. This is the
+ * same reasoning that pushed .schedule-continuation to the
+ * bottom-right.
+ */
 .schedule-cell.schedule-highlight-all-free
     .schedule-co-occupant-marker ~ .schedule-highlight-badge,
 .schedule-cell.schedule-highlight-instructor-free
@@ -383,6 +518,14 @@
     color: var(--accent);
 }
 
+/*
+ * When a highlight tint is present on an empty cell, the empty
+ * slot's hover state must not clobber the tint. The order of
+ * these rules matters: the tint selectors are more specific
+ * (two classes), so hover from a single-class selector loses.
+ * If a future revision adds a hover rule with matching
+ * specificity, keep hover AFTER the tint rules.
+ */
 .schedule-cell.schedule-highlight-all-free:hover,
 .schedule-cell.schedule-highlight-instructor-free:hover {
     outline: 1px solid var(--accent);
@@ -1230,6 +1373,7 @@
 }
 
 .academy-schedule-assign-instructor-option {
+    /* Flex row, left-aligned, never centered. */
     display: flex !important;
     flex-direction: row !important;
     align-items: flex-start !important;
@@ -1253,6 +1397,9 @@
 }
 
 .academy-schedule-assign-instructor-radio {
+    /* Pin the control's size and reset every default that could
+       stretch it. `flex: 0 0 auto` means the radio demands its
+       natural size and never grows. */
     flex: 0 0 auto;
     display: inline-block;
     width: 14px;
@@ -1268,6 +1415,8 @@
 }
 
 .academy-schedule-assign-instructor-name {
+    /* Fills the remaining width. Never shrinks below its natural
+       content width. Wraps at word boundaries. Left-aligned. */
     flex: 1 1 auto;
     min-width: auto;
     display: inline-block;
@@ -1359,16 +1508,6 @@
     line-height: 1.4;
 }
 
-/* ============================================================
-   SCHEDULE ASSIGN MODAL — REMOVE DETAIL PANEL
-   ============================================================
-   The "remove student" and "remove group" modes render a small
-   read-only detail panel above the action buttons: a label/value
-   row per field. Visual language mirrors the assign modal's
-   summary block: label at left in muted text, value at right in
-   body text, thin separators between rows.
- */
-
 .academy-schedule-assign-remove-detail {
     margin: 0 0 12px;
     padding: 10px 12px;
@@ -1386,8 +1525,7 @@
     padding: 3px 0;
 }
 
-.academy-schedule-assign-remove-detail-row
-    + .academy-schedule-assign-remove-detail-row {
+.academy-schedule-assign-remove-detail-row + .academy-schedule-assign-remove-detail-row {
     border-top: 1px solid var(--border-soft);
 }
 
@@ -1476,143 +1614,29 @@
     gap: 8px;
 }
 
-/* ---------- Discipline-scoped instructor picker ----------
- *
- * Rendered when the discipline grid's empty cell is clicked.
- * Lists every instructor who teaches the clicked discipline for
- * the clicked class at the current week, as a radio list.
- *
- * Layout mirrors the assign modal's instructor picker. The two
- * blocks must stay in sync; the assign-modal block is the
- * reference. If the layout ever drifts again, fix it here against
- * the reference, not by re-inventing the resets.
- */
-
-.academy-schedule-instructor-picker {
-    margin-bottom: 12px;
-    text-align: left;
-}
-
-.academy-schedule-instructor-picker-label {
-    display: block;
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: var(--text);
-    margin-bottom: 4px;
-    text-align: left;
-}
-
-.academy-schedule-instructor-picker-hint {
-    font-size: 0.7rem;
-    color: var(--text-dim);
-    margin: 0 0 8px 0;
-    text-align: left;
-}
-
-.academy-schedule-instructor-picker-list {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 6px 8px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    width: 100%;
-    box-sizing: border-box;
-    text-align: left;
-}
-
-.academy-schedule-instructor-picker-option {
-    display: flex !important;
-    flex-direction: row !important;
-    align-items: flex-start !important;
-    justify-content: flex-start !important;
-    gap: 8px;
-
-    padding: 6px 8px;
-    margin: 0;
-    border-radius: 3px;
-    cursor: pointer;
-    font-size: 0.78rem;
-    color: var(--text);
-    min-height: 28px;
-    box-sizing: border-box;
-    width: 100%;
-    text-align: left;
-}
-
-.academy-schedule-instructor-picker-option:hover {
-    background: var(--panel);
-}
-
-.academy-schedule-instructor-picker-radio {
-    flex: 0 0 auto;
-    display: inline-block;
-    width: 14px;
-    height: 14px;
-    min-width: 14px;
-    max-width: 14px;
-    margin: 0;
-    margin-top: 2px;
-    padding: 0;
-    accent-color: var(--accent);
-    cursor: pointer;
-    box-sizing: border-box;
-}
-
-.academy-schedule-instructor-picker-name {
-    flex: 1 1 auto;
-    min-width: auto;
-    display: inline-block;
-    white-space: normal;
-    overflow-wrap: break-word;
-    word-break: normal;
-    text-align: left;
-    line-height: 1.3;
-    color: var(--text);
-}
-
-/* ---------- Auto-selected single instructor ----------
- *
- * Rendered when the class-discipline has exactly one instructor
- * this week. Same visual weight as the assign modal's
- * single-instructor line.
- */
-
-.academy-schedule-instructor-single {
-    margin-bottom: 12px;
-}
-
-.academy-schedule-instructor-single-label {
-    display: block;
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: var(--text);
-    margin-bottom: 4px;
-    text-align: left;
-}
-
-.academy-schedule-instructor-single-value {
-    margin: 0;
-    padding: 6px 10px;
-    font-size: 0.78rem;
-    color: var(--text);
-    background: var(--panel-alt);
-    border: 1px solid var(--border-soft);
-    border-radius: 4px;
-    text-align: left;
-}
-
-.academy-schedule-instructor-single-note {
-    font-size: 0.68rem;
-    color: var(--text-dim);
-    font-style: italic;
-    margin-left: 4px;
-}
-
 /* ============================================================
    TEACHING GROUP CANDIDATE PICKER
-   ============================================================ */
+   ============================================================
+   Two sections stacked in one bounded body:
+
+     Eligible        radios, selectable.
+     Would conflict  no radios; not selectable; conflict reason
+                     shown under each name.
+
+   Search filters both. Empty sections hide themselves.
+
+   Layout rules mirror the instructor radio list: name spans
+   never shrink below their natural width. min-width: auto plus
+   overflow-wrap: break-word (never `anywhere`).
+
+   HARD RESETS:
+     - The row is a flex container with `!important` on its
+       layout properties, so a rule elsewhere cannot center it.
+     - The radio is a fixed 14x14 box. Same reasoning as the
+       instructor radio above.
+     - text-align: left everywhere; a centered ancestor cannot
+       shove the name to the right.
+ */
 
 .academy-teaching-group-candidate-picker {
     margin: 8px 0;
@@ -1930,14 +1954,6 @@ button[disabled] {
     .schedule-discipline-picker-members {
         margin-left: 0;
     }
-
-    .academy-schedule-instructor-picker-option {
-        padding: 5px 6px;
-    }
-
-    .academy-schedule-instructor-single-value {
-        font-size: 0.72rem;
-    }
 }
 
 /* ============================================================
@@ -1961,7 +1977,7 @@ button[disabled] {
    for their washes (the border-left colors are legible on both
    backgrounds and do not need overriding). In light mode the
    washes need higher opacity to remain visible against the
-   near-white panel. The hues are preserved.
+   warm cream panel. The hues are preserved.
  */
 
 [data-theme="light"] .acad-group-color-0 {
@@ -2026,4 +2042,80 @@ button[disabled] {
 [data-theme="light"] .legend-color.schedule-highlight-instructor-free {
     background: rgba(170, 150, 40, 0.24);
     border-color: rgba(170, 150, 40, 0.55);
+}
+
+/* ============================================================
+   VAPORWAVE OVERRIDES
+   ============================================================
+   Group colors and highlight tints use hardcoded rgba() values
+   for their washes (the border-left colors are legible on the
+   indigo base, so only the wash needs overriding). In vaporwave
+   the base is a deep indigo, so the washes need higher opacity
+   and a slight hue shift to read as neon rather than mud. The
+   hues are preserved: group 0 stays warm, group 1 stays blue,
+   etc.
+ */
+
+[data-theme="vaporwave"] .acad-group-color-0 {
+    background: rgba(255, 122, 79, 0.22);
+}
+
+[data-theme="vaporwave"] .acad-group-color-1 {
+    background: rgba(46, 230, 255, 0.22);
+}
+
+[data-theme="vaporwave"] .acad-group-color-2 {
+    background: rgba(92, 255, 176, 0.20);
+}
+
+[data-theme="vaporwave"] .acad-group-color-3 {
+    background: rgba(192, 123, 255, 0.22);
+}
+
+[data-theme="vaporwave"] .acad-group-color-4 {
+    background: rgba(79, 255, 212, 0.20);
+}
+
+[data-theme="vaporwave"] .acad-group-color-5 {
+    background: rgba(255, 209, 102, 0.22);
+}
+
+[data-theme="vaporwave"] .acad-group-color-6 {
+    background: rgba(157, 124, 216, 0.24);
+}
+
+[data-theme="vaporwave"] .acad-group-color-7 {
+    background: rgba(255, 92, 122, 0.22);
+}
+
+[data-theme="vaporwave"] .schedule-cell.schedule-highlight-all-free {
+    background: rgba(92, 255, 176, 0.26);
+    box-shadow: inset 0 0 0 1px rgba(92, 255, 176, 0.65);
+}
+
+[data-theme="vaporwave"] .schedule-cell.schedule-highlight-instructor-free {
+    background: rgba(255, 209, 102, 0.24);
+    box-shadow: inset 0 0 0 1px rgba(255, 209, 102, 0.55);
+}
+
+[data-theme="vaporwave"] .schedule-cell.schedule-highlight-weeks-1,
+[data-theme="vaporwave"] .schedule-cell.schedule-highlight-weeks-2,
+[data-theme="vaporwave"] .schedule-cell.schedule-highlight-weeks-3,
+[data-theme="vaporwave"] .schedule-cell.schedule-highlight-weeks-4 {
+    background: rgba(92, 255, 176, 0.26);
+}
+
+[data-theme="vaporwave"] .schedule-highlight-badge {
+    background: rgba(92, 255, 176, 0.95);
+    color: #1a1030;
+}
+
+[data-theme="vaporwave"] .legend-color.schedule-highlight-all-free {
+    background: rgba(92, 255, 176, 0.26);
+    border-color: rgba(92, 255, 176, 0.65);
+}
+
+[data-theme="vaporwave"] .legend-color.schedule-highlight-instructor-free {
+    background: rgba(255, 209, 102, 0.24);
+    border-color: rgba(255, 209, 102, 0.55);
 }
