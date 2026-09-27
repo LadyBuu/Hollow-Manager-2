@@ -7,13 +7,14 @@
  * THEMES:
  *   - dark       (default; deep green)
  *   - light      (soft cream; easy on the eyes)
- *   - vaporwave  (neon pink + cyan on deep indigo)
+ *   - vaporwave  (neon pink + cyan on violet night)
+ *   - pastel     (pastel 80s magical girl; soft pink/lavender)
  *
- * The toggle button cycles dark -> light -> vaporwave -> dark.
- * setTheme() accepts any of the three explicitly.
+ * The toggle button cycles dark -> light -> vaporwave -> pastel
+ * -> dark. setTheme() accepts any of the four explicitly.
  *
  * FEATURES:
- *   - Cycles through all three themes
+ *   - Cycles through all four themes
  *   - Persists preference to localStorage
  *   - Respects system preference on first visit
  *   - Updates all UI elements that need to know the theme
@@ -21,8 +22,8 @@
  * USAGE:
  *   ThemeManager.init();
  *   ThemeManager.toggle();
- *   ThemeManager.setTheme('vaporwave');
- *   ThemeManager.getTheme(); // 'light' | 'dark' | 'vaporwave'
+ *   ThemeManager.setTheme('pastel');
+ *   ThemeManager.getTheme(); // 'light' | 'dark' | 'vaporwave' | 'pastel'
  */
 
 (function() {
@@ -35,14 +36,24 @@
     var THEMES = {
         LIGHT: 'light',
         DARK: 'dark',
-        VAPORWAVE: 'vaporwave'
+        VAPORWAVE: 'vaporwave',
+        PASTEL: 'pastel'
     };
     // Order the toggle cycles through.
-    var CYCLE = [THEMES.DARK, THEMES.LIGHT, THEMES.VAPORWAVE];
+    var CYCLE = [
+        THEMES.DARK,
+        THEMES.LIGHT,
+        THEMES.VAPORWAVE,
+        THEMES.PASTEL
+    ];
 
     // Themes that are applied via the `data-theme` attribute.
     // 'dark' is the default and is applied by REMOVING the attribute.
-    var ATTRIBUTE_THEMES = [THEMES.LIGHT, THEMES.VAPORWAVE];
+    var ATTRIBUTE_THEMES = [
+        THEMES.LIGHT,
+        THEMES.VAPORWAVE,
+        THEMES.PASTEL
+    ];
 
     var _currentTheme = THEMES.DARK;
 
@@ -53,7 +64,8 @@
     function isValidTheme(theme) {
         return theme === THEMES.LIGHT ||
                theme === THEMES.DARK ||
-               theme === THEMES.VAPORWAVE;
+               theme === THEMES.VAPORWAVE ||
+               theme === THEMES.PASTEL;
     }
 
     function loadThemePreference() {
@@ -77,8 +89,8 @@
     }
 
     function getSystemPreference() {
-        // Only meaningful for the dark/light binary; vaporwave is
-        // opt-in and never chosen from system preference.
+        // Only meaningful for the dark/light binary; vaporwave and
+        // pastel are opt-in and never chosen from system preference.
         if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
             return THEMES.LIGHT;
         }
@@ -117,6 +129,10 @@
             btn.textContent = '◈';
             btn.title = 'Switch to vaporwave mode';
             btn.setAttribute('aria-label', 'Switch to vaporwave mode');
+        } else if (next === THEMES.PASTEL) {
+            btn.textContent = '✿';
+            btn.title = 'Switch to pastel mode';
+            btn.setAttribute('aria-label', 'Switch to pastel mode');
         } else {
             btn.textContent = '☾';
             btn.title = 'Switch to dark mode';
