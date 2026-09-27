@@ -20,6 +20,13 @@
  *   - All user-controlled content uses textContent
  *   - No inline event binding here (delegated to SocialEvents)
  * 
+ * COLOR FALLBACKS:
+ *   Relationship colors come from SocialQueries / SocialConstants,
+ *   which return var(--relationship-*) strings. The fallback for a
+ *   missing color is var(--relationship-other), a CSS custom
+ *   property reference — NOT a hex literal. Do NOT reintroduce hex
+ *   fallbacks here; the tokens handle dark and light variants.
+ * 
  * DEPENDENCIES:
  *   - window.SocialQueries (from social-queries.js) - MANDATORY
  *   - window.SocialAggregator (from social-aggregator.js) - MANDATORY
@@ -434,7 +441,7 @@
     function renderTypeGroup(group, contextCharId) {
         var typeId = group.typeId;
         var label = group.typeLabel;
-        var color = group.typeColor || '#7f8c8d';
+        var color = group.typeColor || 'var(--relationship-other)';
 
         var isCollapsed = isTypeCollapsed(typeId);
         var caret = isCollapsed ? '▸' : '▾';
@@ -478,6 +485,9 @@
      * 
      * Displays:
      *   name1 →/↔/← name2   [Title]     period     [Edit] [Delete]
+     * 
+     * The Title chip's background is a theme token, not a
+     * dark-mode-specific white wash.
      */
     function renderRelationshipRow(vm, color, contextCharId) {
         if (!vm) { return ''; }
@@ -495,7 +505,7 @@
         html += '<span style="color:var(--text-dim);font-size:0.9rem;">' + escapeHtml(arrow) + '</span>';
         html += '<span style="font-weight:600;">' + escapeHtml(vm.name2) + '</span>';
         if (title) {
-            html += '<span style="color:' + escapeHtml(color) + ';font-size:0.7rem;background:rgba(255,255,255,0.05);padding:1px 6px;border-radius:4px;">' + escapeHtml(title) + '</span>';
+            html += '<span style="color:' + escapeHtml(color) + ';font-size:0.7rem;background:var(--chip-bg-subtle);padding:1px 6px;border-radius:4px;">' + escapeHtml(title) + '</span>';
         }
         html += '</span>';
 
@@ -614,11 +624,15 @@
                 (conn.relationships || []).forEach(function(rel) {
                     if (!rel) { return; }
 
+                    // Fallback for a missing type color is a token
+                    // reference, not a hex literal.
+                    var relColor = rel.typeColor || 'var(--relationship-other)';
+
                     var relDiv = document.createElement('div');
-                    relDiv.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:2px 4px;margin:2px 0;border-left:2px solid ' + (rel.typeColor || '#7f8c8d') + ';font-size:0.7rem;';
+                    relDiv.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:2px 4px;margin:2px 0;border-left:2px solid ' + relColor + ';font-size:0.7rem;';
 
                     var relText = document.createElement('span');
-                    relText.style.cssText = 'color:' + (rel.typeColor || '#7f8c8d') + ';';
+                    relText.style.cssText = 'color:' + relColor + ';';
                     var dirText = rel.isDirectional ? (rel.directionText || ' → ') : ' ↔ ';
                     relText.textContent = dirText + rel.typeLabel + (rel.clarification ? ' (' + rel.clarification + ')' : '');
                     relDiv.appendChild(relText);
