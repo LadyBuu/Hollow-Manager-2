@@ -2,6 +2,22 @@
  * modules/shared/magic-constants.js - Magic Constants
  * Single source of truth for all magic-related constants
  * Path: js/modules/shared/magic-constants.js
+ *
+ * COLOR TOKENS:
+ *   Each magic type carries a CSS custom property REFERENCE as its
+ *   `color` field — a string of the form "var(--magic-<type>)".
+ *   The actual color values are declared in css/shared.css, with
+ *   separate values for dark and light mode. Consumers that read
+ *   getTypeColor(key) get a var() string and can drop it straight
+ *   into an inline style or SVG presentation attribute.
+ *
+ *   Do NOT reintroduce hex literals here. If a new type is added,
+ *   add its token to css/shared.css in both :root and
+ *   [data-theme="light"] and reference it by name.
+ *
+ *   The category colors (elemental / body / aether) reference
+ *   existing app tokens (--accent / --danger / --info) and do not
+ *   need their own declarations.
  */
 
 (function() {
@@ -33,45 +49,45 @@
 
     var MAGIC_TYPES = {
         // Elemental
-        earth: { id: 'earth', label: 'Earth', category: 'elemental', color: '#8B7355',
+        earth: { id: 'earth', label: 'Earth', category: 'elemental', color: 'var(--magic-earth)',
                  description: 'Control over stone, soil, and metal' },
-        water: { id: 'water', label: 'Water', category: 'elemental', color: '#4A9BC7',
+        water: { id: 'water', label: 'Water', category: 'elemental', color: 'var(--magic-water)',
                  description: 'Control over water, ice, and fluids' },
-        fire:  { id: 'fire',  label: 'Fire',  category: 'elemental', color: '#E67E22',
+        fire:  { id: 'fire',  label: 'Fire',  category: 'elemental', color: 'var(--magic-fire)',
                  description: 'Control over fire, heat, and combustion' },
-        air:   { id: 'air',   label: 'Air',   category: 'elemental', color: '#A8D5E2',
+        air:   { id: 'air',   label: 'Air',   category: 'elemental', color: 'var(--magic-air)',
                  description: 'Control over air, wind, and weather' },
-        metal: { id: 'metal', label: 'Metal', category: 'elemental', color: '#95A5A6',
+        metal: { id: 'metal', label: 'Metal', category: 'elemental', color: 'var(--magic-metal)',
                  description: 'Control over refined metals and alloys' },
-        wood:  { id: 'wood',  label: 'Wood',  category: 'elemental', color: '#27AE60',
+        wood:  { id: 'wood',  label: 'Wood',  category: 'elemental', color: 'var(--magic-wood)',
                  description: 'Control over wood, plants, and growth' },
 
         // Body
-        blood:   { id: 'blood',   label: 'Blood',   category: 'body', color: '#C0392B',
+        blood:   { id: 'blood',   label: 'Blood',   category: 'body', color: 'var(--magic-blood)',
                    description: 'Control over blood, circulation, and vitality' },
-        bone:    { id: 'bone',    label: 'Bone',    category: 'body', color: '#F5F5DC',
+        bone:    { id: 'bone',    label: 'Bone',    category: 'body', color: 'var(--magic-bone)',
                    description: 'Control over bone, structure, and skeleton' },
-        mind:    { id: 'mind',    label: 'Mind',    category: 'body', color: '#8E44AD',
+        mind:    { id: 'mind',    label: 'Mind',    category: 'body', color: 'var(--magic-mind)',
                    description: 'Control over thoughts, memory, and consciousness' },
-        morphic: { id: 'morphic', label: 'Morphic', category: 'body', color: '#1ABC9C',
+        morphic: { id: 'morphic', label: 'Morphic', category: 'body', color: 'var(--magic-morphic)',
                    description: 'Control over shape, form, and transformation' },
-        life:    { id: 'life',    label: 'Life',    category: 'body', color: '#2ECC71',
+        life:    { id: 'life',    label: 'Life',    category: 'body', color: 'var(--magic-life)',
                    description: 'Control over growth, healing, and vitality' },
-        death:   { id: 'death',   label: 'Death',   category: 'body', color: '#2C3E50',
+        death:   { id: 'death',   label: 'Death',   category: 'body', color: 'var(--magic-death)',
                    description: 'Control over decay, entropy, and mortality' },
 
         // Aether
-        space:        { id: 'space',        label: 'Space',        category: 'aether', color: '#3498DB',
+        space:        { id: 'space',        label: 'Space',        category: 'aether', color: 'var(--magic-space)',
                         description: 'Control over distance, position, and dimensions' },
-        time:         { id: 'time',         label: 'Time',         category: 'aether', color: '#F39C12',
+        time:         { id: 'time',         label: 'Time',         category: 'aether', color: 'var(--magic-time)',
                         description: 'Control over temporal flow and causality' },
-        dimension:    { id: 'dimension',    label: 'Dimension',    category: 'aether', color: '#9B59B6',
+        dimension:    { id: 'dimension',    label: 'Dimension',    category: 'aether', color: 'var(--magic-dimension)',
                         description: 'Control over alternate realities and planes' },
-        void:         { id: 'void',         label: 'Void',         category: 'aether', color: '#1A1A2E',
+        void:         { id: 'void',         label: 'Void',         category: 'aether', color: 'var(--magic-void)',
                         description: 'Control over nothingness and absence' },
-        reality:      { id: 'reality',      label: 'Reality',      category: 'aether', color: '#F1C40F',
+        reality:      { id: 'reality',      label: 'Reality',      category: 'aether', color: 'var(--magic-reality)',
                         description: 'Control over fundamental existence' },
-        transference: { id: 'transference', label: 'Transference', category: 'aether', color: '#E74C3C',
+        transference: { id: 'transference', label: 'Transference', category: 'aether', color: 'var(--magic-transference)',
                         description: 'Control over energy, matter, and essence transfer' }
     };
 
@@ -112,7 +128,6 @@
     // ============================================================
     // BROAD MAGICAL CLASSES (3)
     // ============================================================
-    // Derived from the category with the highest total proficiency.
 
     var MAGIC_BROAD_CLASSES = [
         {
@@ -138,8 +153,6 @@
     // ============================================================
     // FINE MAGICAL CLASSES (18)
     // ============================================================
-    // One per proficiency. Derived from the highest proficiency within
-    // the winning category.
 
     var MAGIC_FINE_CLASSES = {
         // Elemental
@@ -173,8 +186,6 @@
 
     var MAGIC_MAX = 10;
     var BALANCED_MAGE_THRESHOLD = 3;
-
-    // Below this value, no fine class is shown (broad class still applies)
     var MAGIC_FINE_CLASS_MIN = 3;
 
     var MAGIC_CATEGORY_MULTIPLIERS = {
@@ -256,9 +267,17 @@
         return _typeLabelMap[key] || key;
     }
 
+    /**
+     * Get the color for a magic type.
+     *
+     * Returns a CSS custom property reference (e.g. "var(--magic-fire)")
+     * for known types. Returns a var() for the "other" fallback when
+     * the key is unknown, so a caller can drop the result straight
+     * into an inline style without a broken value.
+     */
     function getTypeColor(key) {
-        if (!key || typeof key !== 'string') { return '#7f8c8d'; }
-        return _typeColorMap[key] || '#7f8c8d';
+        if (!key || typeof key !== 'string') { return 'var(--text-dim)'; }
+        return _typeColorMap[key] || 'var(--text-dim)';
     }
 
     function getTypeCategory(key) {
@@ -373,7 +392,6 @@
     function validateConstants() {
         var errors = [];
 
-        // --- Types ---
         if (!MAGIC_TYPES || typeof MAGIC_TYPES !== 'object') {
             errors.push('MAGIC_TYPES is missing or invalid.');
         }
@@ -397,19 +415,27 @@
             if (!type.category || typeof type.category !== 'string') {
                 errors.push('Magic type "' + key + '" missing category.');
             }
+            // Color must be a var() reference now, not a hex literal.
+            if (typeof type.color !== 'string' ||
+                type.color.indexOf('var(--') !== 0) {
+                errors.push(
+                    'Magic type "' + key + '" color must be a CSS ' +
+                    'custom property reference (e.g. "var(--magic-' + key + ')"); ' +
+                    'got "' + type.color + '".'
+                );
+            }
         });
 
-        // --- Categories ---
         if (!MAGIC_CATEGORIES || typeof MAGIC_CATEGORIES !== 'object') {
             errors.push('MAGIC_CATEGORIES is missing or invalid.');
         }
 
-        var categoryKeys = Object.keys(MAGIC_CATEGORIES);
-        if (categoryKeys.length === 0) {
+        var categoryKeysLocal = Object.keys(MAGIC_CATEGORIES);
+        if (categoryKeysLocal.length === 0) {
             errors.push('MAGIC_CATEGORIES is empty.');
         }
 
-        categoryKeys.forEach(function(key) {
+        categoryKeysLocal.forEach(function(key) {
             var cat = MAGIC_CATEGORIES[key];
             if (!cat) {
                 errors.push('Category "' + key + '" has no definition.');
@@ -423,7 +449,6 @@
             }
         });
 
-        // --- Broad classes ---
         if (!Array.isArray(MAGIC_BROAD_CLASSES) || MAGIC_BROAD_CLASSES.length !== 3) {
             errors.push('MAGIC_BROAD_CLASSES must contain exactly 3 entries.');
         }
@@ -442,7 +467,6 @@
             }
         });
 
-        // --- Fine classes ---
         MAGIC_TYPE_KEYS.forEach(function(typeKey) {
             if (!MAGIC_FINE_CLASSES[typeKey]) {
                 errors.push('Fine class missing for type "' + typeKey + '".');
@@ -460,8 +484,7 @@
             }
         });
 
-        // --- Category multipliers ---
-        categoryKeys.forEach(function(key) {
+        categoryKeysLocal.forEach(function(key) {
             if (MAGIC_CATEGORY_MULTIPLIERS[key] === undefined) {
                 errors.push('MAGIC_CATEGORY_MULTIPLIERS missing key "' + key + '".');
             } else if (typeof MAGIC_CATEGORY_MULTIPLIERS[key] !== 'number' || MAGIC_CATEGORY_MULTIPLIERS[key] <= 0) {
@@ -469,12 +492,10 @@
             }
         });
 
-        // --- Proficiency levels ---
         if (!Array.isArray(MAGIC_PROFICIENCY_LEVELS) || MAGIC_PROFICIENCY_LEVELS.length === 0) {
             errors.push('MAGIC_PROFICIENCY_LEVELS must be a non-empty array.');
         }
 
-        // Check coverage: 0..MAGIC_MAX with no gaps or overlaps
         var covered = new Array(MAGIC_MAX + 1).fill(0);
         MAGIC_PROFICIENCY_LEVELS.forEach(function(level) {
             for (var v = level.min; v <= level.max; v++) {
@@ -485,15 +506,14 @@
                 covered[v]++;
             }
         });
-        for (var v = 0; v <= MAGIC_MAX; v++) {
-            if (covered[v] === 0) {
-                errors.push('Proficiency value ' + v + ' not covered by any level.');
-            } else if (covered[v] > 1) {
-                errors.push('Proficiency value ' + v + ' covered by multiple levels.');
+        for (var vv = 0; vv <= MAGIC_MAX; vv++) {
+            if (covered[vv] === 0) {
+                errors.push('Proficiency value ' + vv + ' not covered by any level.');
+            } else if (covered[vv] > 1) {
+                errors.push('Proficiency value ' + vv + ' covered by multiple levels.');
             }
         }
 
-        // --- Configuration ---
         if (typeof MAGIC_MAX !== 'number' || MAGIC_MAX < 0) {
             errors.push('MAGIC_MAX must be a non-negative number.');
         }
