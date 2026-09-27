@@ -27,11 +27,12 @@
  *   academy/<per-view>.css
  *   academy/modals.css            <- this file
  *
- * LIGHT MODE:
+ * THEME OVERRIDES:
  *   Almost every rule here uses theme tokens. The only hardcoded
  *   colors are two danger-tinted rgba() values on the rebalance
  *   modal's unplaceable disclosure, which carry explicit
- *   [data-theme="light"] overrides at the bottom of the file.
+ *   [data-theme="light"] and [data-theme="vaporwave"] overrides
+ *   at the bottom of the file.
  */
 
 /* ============================================================
@@ -986,8 +987,8 @@
    The rebalance modal's unplaceable disclosure uses two
    hardcoded danger-tinted rgba() values. They are derived from
    --danger and are legible in dark mode, but in light mode the
-   hue needs a slightly higher opacity against the near-white
-   panel to remain visible. The base rules above are unchanged;
+   hue needs a slightly higher opacity against the cream panel
+   to remain visible. The base rules above are unchanged;
    these overrides only apply when data-theme="light" is set on
    <html>.
  */
@@ -998,4 +999,25 @@
 
 [data-theme="light"] .academy-rebalance-unplaceable-body {
     border-top-color: rgba(179, 43, 34, 0.30);
+}
+
+/* ============================================================
+   VAPORWAVE OVERRIDES
+   ============================================================
+   The rebalance modal's unplaceable disclosure uses two
+   hardcoded danger-tinted rgba() values. They are derived from
+   --danger and are legible in dark and light modes, but in
+   vaporwave the danger token is a hot magenta-red (#ff5c7a)
+   and the base rules' rgba values were tuned for the darker
+   dark-mode red. These overrides re-derive the wash from the
+   vaporwave danger hue so the tint reads as the same color
+   family as the rest of the theme.
+ */
+
+[data-theme="vaporwave"] .academy-rebalance-unplaceable-toggle:hover {
+    background: rgba(255, 92, 122, 0.18);
+}
+
+[data-theme="vaporwave"] .academy-rebalance-unplaceable-body {
+    border-top-color: rgba(255, 92, 122, 0.35);
 }
