@@ -5,6 +5,7 @@
  *   - Custom properties (:root) — dark mode
  *   - Custom properties ([data-theme="light"]) — soft cream light mode
  *   - Custom properties ([data-theme="vaporwave"]) — neon pink/cyan on violet night
+ *   - Custom properties ([data-theme="pastel"]) — pastel 80s magical-girl
  *   - Global reset, scrollbar, focus-visible, reduced motion
  *   - Theme transition
  *   - Theme toggle button
@@ -26,10 +27,10 @@
  * Load order: shared.css MUST load first.
  *
  * THEME SYSTEM:
- *   Dark mode is the default. Light and vaporwave are activated
- *   by setting `data-theme="light"` / `data-theme="vaporwave"`
- *   on <html>. All colors are driven by the tokens below, so a
- *   single attribute swap re-themes the app.
+ *   Dark mode is the default. The other three themes are
+ *   activated by setting data-theme="light" / "vaporwave" /
+ *   "pastel" on <html>. All colors are driven by the tokens
+ *   below, so a single attribute swap re-themes the app.
  *   See js/utils/theme-manager.js for the toggle logic.
  *
  * DOMAIN COLOR TOKENS:
@@ -478,6 +479,165 @@
 }
 
 /* ============================================================
+   TOKENS — PASTEL 80s MAGICAL GIRL
+   ============================================================
+   Activated by data-theme="pastel" on <html>.
+
+   Soft bubblegum pink, lavender, powder blue, and cream. This
+   is the daytime-saturday-cartoon counterpart to the vaporwave
+   theme: same pink-and-blue heritage, but rendered as a retro
+   magical-girl control panel rather than a neon terminal.
+
+   Pink is the heroine. Cyan/powder-blue and lavender are her
+   supporting cast. Cream gives the whole thing somewhere to
+   breathe. Nothing is neon; every accent sits at bubblegum or
+   powder saturation, not laser saturation.
+
+   Semantic colour slots keep their identities (danger is rose,
+   warning is muted gold, success is mint), so a rose badge
+   still reads as a warning at a glance rather than blending
+   into the pink chrome.
+   ============================================================ */
+
+[data-theme="pastel"] {
+    /* --------------------------------------------------------
+       BASE PALETTE
+       -------------------------------------------------------- */
+    --bg: #fff1f7;              /* very pale blush */
+    --panel: #fff8fb;           /* white with a pink tint */
+    --panel-alt: #fce5f0;       /* recessed wells */
+
+    --border: #e7a9c4;          /* dusty rose */
+    --border-soft: #f3cbdc;
+
+    --text: #4f3850;            /* warm dark mauve, not black */
+    --text-dim: #987b91;
+
+    /* Bubblegum / rose pink — the primary accent */
+    --accent: #ed72aa;
+    --accent-soft: rgba(237, 114, 170, 0.16);
+    --accent-hover: rgba(237, 114, 170, 0.28);
+
+    /* Powder blue — the secondary accent */
+    --info: #79c9df;
+    --info-soft: rgba(121, 201, 223, 0.16);
+    --info-hover: rgba(121, 201, 223, 0.28);
+
+    /* Rose-red — danger, distinct from the accent pink by being
+       warmer and deeper, so a danger badge never disappears
+       against the chrome. */
+    --danger: #e87591;
+    --danger-soft: rgba(232, 117, 145, 0.16);
+    --danger-hover: rgba(232, 117, 145, 0.28);
+
+    /* Muted gold — the 80s cartoon "warning" yellow, not a
+       saturated hazard yellow. */
+    --warning: #d9a84a;
+    --warning-soft: rgba(217, 168, 74, 0.16);
+    --warning-hover: rgba(217, 168, 74, 0.28);
+
+    /* --------------------------------------------------------
+       OVERLAY / BACKDROP
+       -------------------------------------------------------- */
+    --overlay: rgba(92, 50, 78, 0.28);
+    --overlay-light: rgba(92, 50, 78, 0.20);
+
+    /* --------------------------------------------------------
+       LAYOUT
+       -------------------------------------------------------- */
+    --radius: 10px;
+    --shadow:
+        0 4px 16px rgba(153, 86, 119, 0.16),
+        0 0 24px rgba(237, 114, 170, 0.10);
+
+    /* --------------------------------------------------------
+       SCROLLBAR
+       -------------------------------------------------------- */
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: var(--border);
+
+    /* --------------------------------------------------------
+       GRAPH NODE PALETTE
+       -------------------------------------------------------- */
+    --graph-node-accent-fill: #ed72aa;
+    --graph-node-accent-stroke: #c9538a;
+
+    --graph-node-info-fill: #79c9df;
+    --graph-node-info-stroke: #57a5bb;
+
+    /* --------------------------------------------------------
+       GRAPH NODE STATUS COLORS
+       --------------------------------------------------------
+       Soft pastel variants. The identity of each status is
+       preserved: senior is still gold-tinged, student is still
+       pink, rookie is still green, etc. Saturation is dialed
+       down to match the pastel chrome.
+       -------------------------------------------------------- */
+    --graph-node-status-deceased:   #a994b2;
+    --graph-node-status-instructor: #a982d6;
+    --graph-node-status-senior:     #d6a84f;
+    --graph-node-status-junior:     #72bad0;
+    --graph-node-status-rookie:     #76b99f;
+    --graph-node-status-student:    #ed72aa;
+    --graph-node-status-support:    #d991ad;
+    --graph-node-status-civilian:   #9f8ca1;
+    --graph-node-status-other:      #9f8ca1;
+
+    /* --------------------------------------------------------
+       MAGIC TYPE COLORS
+       --------------------------------------------------------
+       Pastel variants of the elemental/body/aether palette. The
+       hues are pulled toward the pink/blue/lavender core of the
+       theme but each type keeps its elemental identity.
+       -------------------------------------------------------- */
+
+    /* Elemental */
+    --magic-earth: #b98c72;
+    --magic-water: #73c8e5;
+    --magic-fire:  #e99a72;
+    --magic-air:   #b9dfe8;
+    --magic-metal: #9eabbc;
+    --magic-wood:  #86b99a;
+
+    /* Body */
+    --magic-blood:   #d86f83;
+    --magic-bone:    #e6d7c3;
+    --magic-mind:    #ad8bd0;
+    --magic-morphic: #82bda9;
+    --magic-life:    #82bd88;
+    --magic-death:   #83728f;
+
+    /* Aether */
+    --magic-space:        #73c8df;
+    --magic-time:         #d6b45c;
+    --magic-dimension:    #a889cf;
+    --magic-void:         #75657e;
+    --magic-reality:      #e36fa6;
+    --magic-transference: #d88978;
+
+    /* --------------------------------------------------------
+       RELATIONSHIP COLORS
+       --------------------------------------------------------
+       The eight relationship types stay distinguishable. The
+       palette leans on mint, gold, rose, powder blue, lavender,
+       and peach, matching the magical-girl palette's range.
+       -------------------------------------------------------- */
+    --relationship-familial:     #82bda9;
+    --relationship-professional: #d5b35c;
+    --relationship-romantic:     #df7698;
+    --relationship-friendship:   #76bfd6;
+    --relationship-mentor:       #a68bc9;
+    --relationship-rivalry:      #d99678;
+    --relationship-alliance:     #82bda9;
+    --relationship-other:        #9e8b9b;
+
+    /* --------------------------------------------------------
+       SUBTLE CHIP BACKGROUND
+       -------------------------------------------------------- */
+    --chip-bg-subtle: rgba(237, 114, 170, 0.10);
+}
+
+/* ============================================================
    THEME TRANSITION
    ============================================================
    Smooth color transitions when the theme attribute flips.
@@ -593,6 +753,69 @@ a,
 [data-theme="vaporwave"] #theme-toggle-btn {
     color: var(--accent);
     border-color: var(--accent);
+}
+
+/* ============================================================
+   PASTEL BACKDROP
+   ============================================================
+   Three soft radial fields:
+     - bubblegum pink at the top-left
+     - powder blue at the top-right
+     - lavender at the bottom-center
+
+   The fields are wider and softer than the vaporwave backdrop —
+   pastel wants atmospheric glow, not distinct colour spots.
+   Inert in every other theme.
+ */
+
+[data-theme="pastel"] body {
+    background:
+        radial-gradient(
+            circle at 15% 10%,
+            rgba(255, 182, 213, 0.55) 0%,
+            transparent 34%
+        ),
+        radial-gradient(
+            circle at 85% 15%,
+            rgba(177, 225, 239, 0.45) 0%,
+            transparent 32%
+        ),
+        radial-gradient(
+            circle at 50% 100%,
+            rgba(211, 181, 235, 0.35) 0%,
+            transparent 38%
+        ),
+        var(--bg);
+
+    background-attachment: fixed;
+}
+
+/* ============================================================
+   PASTEL HEADING GLOW
+   ============================================================
+   A soft, warm-magenta heading colour with a very gentle pink
+   halo. This is the magical-girl equivalent of the vaporwave
+   neon glow — present, but not trying to electrocute anything.
+   The white offset shadow gives the letters a subtle "sticker"
+   lift against the blush background. Inert in every other
+   theme.
+ */
+
+[data-theme="pastel"] h1,
+[data-theme="pastel"] h2,
+[data-theme="pastel"] h3,
+[data-theme="pastel"] h4 {
+    color: #c6538b;
+    text-shadow:
+        1px 1px 0 rgba(255, 255, 255, 0.9),
+        0 0 10px rgba(237, 114, 170, 0.18);
+}
+
+[data-theme="pastel"] #theme-toggle-btn {
+    color: #d95791;
+    border-color: #ed72aa;
+    background: rgba(255, 255, 255, 0.55);
+    box-shadow: 0 0 10px rgba(237, 114, 170, 0.15);
 }
 
 /* ============================================================
@@ -1197,6 +1420,12 @@ main {
     box-shadow:
         0 0 50px rgba(255, 79, 216, 0.18),
         0 0 90px rgba(53, 231, 255, 0.10);
+}
+
+[data-theme="pastel"] .modal-content {
+    box-shadow:
+        0 4px 24px rgba(153, 86, 119, 0.18),
+        0 0 40px rgba(237, 114, 170, 0.12);
 }
 
 @media (min-width: 768px) {
