@@ -48,6 +48,18 @@
  *     renders a single flat list under "Membership", because the
  *     split cannot be resolved without a reference year. It does
  *     NOT invent a year.
+ *
+ * GRAPH NODE COLORS:
+ *   The character network graph renders into an SVG. SVG fill and
+ *   stroke are set via presentation attributes, which accept CSS
+ *   custom property references in modern browsers. The four node
+ *   colors (accent fill/stroke, info fill/stroke) are read from
+ *   tokens declared in css/shared.css, so they re-theme with the
+ *   rest of the app. See --graph-node-* in shared.css.
+ *
+ *   Do NOT reintroduce hex literals here. If a new node color is
+ *   needed, add a token to shared.css in both :root and
+ *   [data-theme="light"] and reference it by name.
  */
 
 (function() {
@@ -816,6 +828,12 @@
      * Render the character's network graph.
      * Delegates to SocialGraph if it supports a char-scoped render.
      * Otherwise renders an inline scoped graph here.
+     *
+     * NODE COLORS:
+     *   Node fill and stroke are read from the --graph-node-* tokens
+     *   declared in css/shared.css. Those tokens have dark and light
+     *   variants. Do NOT inline hex literals here; add a token to
+     *   shared.css and reference it.
      */
     function renderCharacterGraph(charId) {
         var svg = document.getElementById('character-graph-svg');
@@ -934,8 +952,16 @@
                 ? Math.max(28, Math.min(40, 28 + connCount * 2))
                 : Math.max(20, Math.min(32, 20 + connCount * 2));
 
-            var fill = isCenter ? '#8cbb3a' : '#4a9bc7';
-            var stroke = isCenter ? '#6a9b2a' : '#3a7ba7';
+            // Node colors come from theme tokens. Dark and light
+            // variants are declared in css/shared.css under
+            // --graph-node-accent-fill, --graph-node-accent-stroke,
+            // --graph-node-info-fill, --graph-node-info-stroke.
+            var fill = isCenter
+                ? 'var(--graph-node-accent-fill)'
+                : 'var(--graph-node-info-fill)';
+            var stroke = isCenter
+                ? 'var(--graph-node-accent-stroke)'
+                : 'var(--graph-node-info-stroke)';
 
             // Short label
             var label = name;
