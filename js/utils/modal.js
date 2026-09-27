@@ -20,6 +20,13 @@
  *   - Accessibility: ARIA attributes, focus management, focus trapping
  *   - Focus management: saves previous focus, restores on close
  * 
+ * STYLES:
+ *   Modal appearance is governed by css/shared.css. This module no
+ *   longer injects a stylesheet at runtime. The modal chrome
+ *   (.modal, .modal-content, .modal-header, .close-modal, etc.) is
+ *   declared in shared.css alongside the theme tokens, so light and
+ *   dark themes are handled by the same cascade.
+ * 
  * CONTENT WRAPPER CONTRACT:
  *   - createModal() returns a BARE .modal shell. It does NOT pre-create
  *     a .modal-content element, and it does NOT inject a close button.
@@ -37,26 +44,6 @@
  *   - showModal() REMOVES the `hidden` class so the modal can be shown.
  *   - hideModal() RE-ADDS the `hidden` class after the animation.
  *   - This keeps the CSS state and JS state in sync.
- * 
- * VISIBILITY CONVENTION:
- *   This module uses the same convention as css/shared.css:
- *   `.modal` is visible by default; `.hidden` hides it. The
- *   injected stylesheet below declares `.modal { display: flex }`,
- *   `.modal.hidden { display: none !important }`, and a redundant
- *   `.modal.visible { display: flex }` for callers that prefer
- *   the explicit-visible convention. All three work together, and
- *   neither convention conflicts with the other.
- * 
- *   A previous version of this file declared `.modal { display:
- *   none }` with `.modal.visible { display: flex }`. That worked
- *   for callers that went through Modal.showModal (which sets
- *   inline `display: flex` and adds `.visible`), but it silently
- *   broke any modal authored as `<div class="modal hidden">` in
- *   the DOM and toggled by removing `.hidden` — because the
- *   injected `display: none` overrode shared.css's
- *   `display: flex`. The missions module's form and detail
- *   modals are authored that way. This file now uses the
- *   shared.css convention so both authoring styles work.
  * 
  * IDEMPOTENCY:
  *   - Each setup function (modalClickOutside, modalEscapeKey) tracks its
@@ -281,10 +268,6 @@
     // HIDDEN CLASS MANAGEMENT
     // ============================================================
 
-    /**
-     * Remove the `hidden` CSS class from a modal.
-     * Called by showModal() so the modal can actually be displayed.
-     */
     function _clearHiddenClass(modal) {
         if (!modal || !modal.classList) return;
         if (modal.classList.contains('hidden')) {
@@ -292,11 +275,6 @@
         }
     }
 
-    /**
-     * Re-add the `hidden` CSS class to a modal.
-     * Called by hideModal() after the hide animation finishes,
-     * so the modal's state stays consistent with the CSS contract.
-     */
     function _restoreHiddenClass(modal) {
         if (!modal || !modal.classList) return;
         if (!modal.classList.contains('hidden')) {
@@ -522,10 +500,6 @@
      * 
      * IDEMPOTENT: calling multiple times on the same modal is safe.
      * The listener is installed only once; subsequent calls are no-ops.
-     * 
-     * @param {HTMLElement} modal - Modal element
-     * @param {Function} onClose - Optional callback when closed
-     * @returns {Function} Cleanup function
      */
     function modalClickOutside(modal, onClose) {
         if (!modal) return function() {};
@@ -565,10 +539,6 @@
      * 
      * IDEMPOTENT: calling multiple times on the same modal is safe.
      * The listener is installed only once; subsequent calls are no-ops.
-     * 
-     * @param {HTMLElement} modal - Modal element
-     * @param {Function} onClose - Optional callback when closed
-     * @returns {Function} Cleanup function
      */
     function modalEscapeKey(modal, onClose) {
         if (!modal) return function() {};
@@ -610,9 +580,6 @@
      * IDEMPOTENT: safe to call multiple times on the same modal.
      * Each sub-function is individually idempotent, so this is a
      * silent no-op when called on an already-setup modal.
-     * 
-     * @param {HTMLElement} modal - Modal element
-     * @param {Function} onClose - Optional callback when closed
      */
     function modalSetup(modal, onClose) {
         if (!modal) return;
@@ -644,169 +611,6 @@
     }
 
     // ============================================================
-    // CSS (injected for self-containment)
-    // ============================================================
-    //
-    // VISIBILITY CONVENTION:
-    //   This stylesheet declares the same convention as shared.css:
-    //     - `.modal` is visible by default (display: flex).
-    //     - `.modal.hidden` hides it (display: none !important).
-    //     - `.modal.visible` is redundant but retained for callers
-    //       that add it explicitly.
-    //
-    //   Why not `display: none` by default with a `.visible` gate:
-    //     That convention requires every modal to go through
-    //     Modal.showModal (which adds `.visible`). Modals authored
-    //     as `<div class="modal hidden">` in the DOM and toggled
-    //     by removing `.hidden` — the missions module's approach —
-    //     never get `.visible` added, and so never become visible.
-    //     Aligning with shared.css means both authoring styles work
-    //     without a per-caller adaptation.
-
-    function injectStyles() {
-        var style = document.getElementById('modal-styles');
-        if (style) return;
-
-        style = document.createElement('style');
-        style.id = 'modal-styles';
-        style.textContent = `
-            .modal {
-                position: fixed;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                background: rgba(0, 0, 0, 0.6);
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                z-index: 9999;
-                padding: 20px;
-                box-sizing: border-box;
-                animation: modalFadeIn 0.3s ease;
-                backdrop-filter: blur(4px);
-                -webkit-backdrop-filter: blur(4px);
-            }
-
-            .modal.hidden {
-                display: none !important;
-            }
-
-            .modal.visible {
-                display: flex;
-            }
-
-            .modal .modal-content {
-                background: var(--panel, #2d2d2d);
-                border-radius: 12px;
-                max-width: 600px;
-                width: 100%;
-                max-height: 90vh;
-                overflow-y: auto;
-                padding: 24px;
-                position: relative;
-                border: 1px solid var(--border, #444);
-                box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-                animation: modalSlideIn 0.3s ease;
-                box-sizing: border-box;
-            }
-
-            .modal .modal-content.wide {
-                max-width: 800px;
-            }
-
-            .modal .modal-content.small {
-                max-width: 400px;
-            }
-
-            .modal .modal-content .modal-header {
-                margin-bottom: 16px;
-                padding-right: 32px;
-            }
-
-            .modal .modal-content .modal-header h3 {
-                margin: 0;
-                font-size: 1.1rem;
-                font-weight: 600;
-            }
-
-            .modal .modal-content .modal-body {
-                margin-bottom: 16px;
-            }
-
-            .modal .modal-content .form-actions {
-                display: flex;
-                gap: 8px;
-                justify-content: flex-end;
-                margin-top: 16px;
-                padding-top: 16px;
-                border-top: 1px solid var(--border, #444);
-            }
-
-            .modal .modal-content .modal-body .detail-row {
-                display: flex;
-                justify-content: space-between;
-                padding: 4px 0;
-                border-bottom: 1px solid var(--border-soft, #333);
-            }
-
-            .modal .modal-content .modal-body .detail-row .label {
-                color: var(--text-dim, #888);
-                font-size: 0.8rem;
-            }
-
-            .modal .modal-content .modal-body .empty-state {
-                color: var(--text-dim, #888);
-                text-align: center;
-                padding: 20px;
-                font-style: italic;
-            }
-
-            @keyframes modalFadeIn {
-                from { opacity: 0; }
-                to { opacity: 1; }
-            }
-
-            @keyframes modalSlideIn {
-                from {
-                    transform: translateY(20px) scale(0.95);
-                    opacity: 0;
-                }
-                to {
-                    transform: translateY(0) scale(1);
-                    opacity: 1;
-                }
-            }
-
-            @media (max-width: 600px) {
-                .modal {
-                    padding: 10px;
-                }
-
-                .modal .modal-content {
-                    padding: 16px;
-                    max-height: 95vh;
-                }
-            }
-        `;
-        document.head.appendChild(style);
-    }
-
-    // ============================================================
-    // INITIALIZATION
-    // ============================================================
-
-    function init() {
-        injectStyles();
-    }
-
-    if (document.readyState === 'complete' || document.readyState === 'interactive') {
-        init();
-    } else {
-        document.addEventListener('DOMContentLoaded', init);
-    }
-
-    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -821,7 +625,6 @@
         getActiveModal: getActiveModal,
         isShowing: isShowing,
         closeAllModals: closeAllModals,
-        init: init,
         ANIMATION_DURATION: ANIMATION_DURATION
     };
 
