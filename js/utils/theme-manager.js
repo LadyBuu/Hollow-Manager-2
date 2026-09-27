@@ -2,10 +2,18 @@
  * utils/theme-manager.js - Theme Management
  * Path: js/utils/theme-manager.js
  *
- * Manages light/dark theme switching with persistence.
+ * Manages theme switching with persistence.
+ *
+ * THEMES:
+ *   - dark       (default; deep green)
+ *   - light      (soft cream; easy on the eyes)
+ *   - vaporwave  (neon pink + cyan on deep indigo)
+ *
+ * The toggle button cycles dark -> light -> vaporwave -> dark.
+ * setTheme() accepts any of the three explicitly.
  *
  * FEATURES:
- *   - Toggle between light and dark themes
+ *   - Cycles through all three themes
  *   - Persists preference to localStorage
  *   - Respects system preference on first visit
  *   - Updates all UI elements that need to know the theme
@@ -13,8 +21,8 @@
  * USAGE:
  *   ThemeManager.init();
  *   ThemeManager.toggle();
- *   ThemeManager.setTheme('light');
- *   ThemeManager.getTheme(); // 'light' | 'dark'
+ *   ThemeManager.setTheme('vaporwave');
+ *   ThemeManager.getTheme(); // 'light' | 'dark' | 'vaporwave'
  */
 
 (function() {
@@ -24,17 +32,34 @@
     window.__themeManagerLoaded = true;
 
     var STORAGE_KEY = 'hollow-manager-theme';
-    var THEMES = { LIGHT: 'light', DARK: 'dark' };
+    var THEMES = {
+        LIGHT: 'light',
+        DARK: 'dark',
+        VAPORWAVE: 'vaporwave'
+    };
+    // Order the toggle cycles through.
+    var CYCLE = [THEMES.DARK, THEMES.LIGHT, THEMES.VAPORWAVE];
+
+    // Themes that are applied via the `data-theme` attribute.
+    // 'dark' is the default and is applied by REMOVING the attribute.
+    var ATTRIBUTE_THEMES = [THEMES.LIGHT, THEMES.VAPORWAVE];
+
     var _currentTheme = THEMES.DARK;
 
     // ============================================================
     // PERSISTENCE
     // ============================================================
 
+    function isValidTheme(theme) {
+        return theme === THEMES.LIGHT ||
+               theme === THEMES.DARK ||
+               theme === THEMES.VAPORWAVE;
+    }
+
     function loadThemePreference() {
         try {
             var stored = localStorage.getItem(STORAGE_KEY);
-            if (stored === THEMES.LIGHT || stored === THEMES.DARK) {
+            if (isValidTheme(stored)) {
                 return stored;
             }
         } catch (e) {
@@ -52,6 +77,8 @@
     }
 
     function getSystemPreference() {
+        // Only meaningful for the dark/light binary; vaporwave is
+        // opt-in and never chosen from system preference.
         if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
             return THEMES.LIGHT;
         }
@@ -66,8 +93,8 @@
         _currentTheme = theme;
         var root = document.documentElement;
 
-        if (theme === THEMES.LIGHT) {
-            root.setAttribute('data-theme', 'light');
+        if (ATTRIBUTE_THEMES.indexOf(theme) !== -1) {
+            root.setAttribute('data-theme', theme);
         } else {
             root.removeAttribute('data-theme');
         }
@@ -80,14 +107,20 @@
         var btn = document.getElementById('theme-toggle-btn');
         if (!btn) return;
 
-        if (_currentTheme === THEMES.LIGHT) {
-            btn.textContent = '☾';
-            btn.title = 'Switch to dark mode';
-            btn.setAttribute('aria-label', 'Switch to dark mode');
-        } else {
+        // The icon previews the NEXT theme in the cycle.
+        var next = nextTheme();
+        if (next === THEMES.LIGHT) {
             btn.textContent = '☀';
             btn.title = 'Switch to light mode';
             btn.setAttribute('aria-label', 'Switch to light mode');
+        } else if (next === THEMES.VAPORWAVE) {
+            btn.textContent = '◈';
+            btn.title = 'Switch to vaporwave mode';
+            btn.setAttribute('aria-label', 'Switch to vaporwave mode');
+        } else {
+            btn.textContent = '☾';
+            btn.title = 'Switch to dark mode';
+            btn.setAttribute('aria-label', 'Switch to dark mode');
         }
     }
 
@@ -106,16 +139,21 @@
     // ============================================================
 
     function setTheme(theme) {
-        if (theme !== THEMES.LIGHT && theme !== THEMES.DARK) {
+        if (!isValidTheme(theme)) {
             return;
         }
         applyTheme(theme);
         saveThemePreference(theme);
     }
 
+    function nextTheme() {
+        var idx = CYCLE.indexOf(_currentTheme);
+        if (idx === -1) idx = 0;
+        return CYCLE[(idx + 1) % CYCLE.length];
+    }
+
     function toggle() {
-        var next = _currentTheme === THEMES.LIGHT ? THEMES.DARK : THEMES.LIGHT;
-        setTheme(next);
+        setTheme(nextTheme());
     }
 
     function getTheme() {
