@@ -2,8 +2,9 @@
  * css/shared.css - Hollow Blades Manager Shared Styles
  *
  * Tokens, reset, and cross-module primitives:
- *   - Custom properties (:root)
+ *   - Custom properties (:root) — dark mode + light mode
  *   - Global reset, scrollbar, focus-visible, reduced motion
+ *   - Theme toggle button
  *   - Buttons (all variants)
  *   - Header + burger navigation
  *   - Main layout container
@@ -13,16 +14,23 @@
  *   - Form primitives (form-group, form-grid, form-actions)
  *   - Section helpers (section-divider, section-label)
  *   - Modal shell
+ *   - Notification system
  *   - Generic badges + legacy badge aliases
  *
  * Every other CSS file (dashboard.css, characters.css, etc.)
  * depends on this one but not on each other.
  *
  * Load order: shared.css MUST load first.
+ *
+ * THEME SYSTEM:
+ *   Dark mode is the default. Light mode is activated by setting
+ *   `data-theme="light"` on <html>. All colors are driven by the
+ *   tokens below, so a single attribute swap re-themes the app.
+ *   See js/utils/theme-manager.js for the toggle logic.
  */
 
 /* ============================================================
-   TOKENS
+   TOKENS — DARK MODE (DEFAULT)
    ============================================================ */
 
 :root {
@@ -47,11 +55,117 @@
     --warning-soft: rgba(201, 162, 75, 0.12);
     --warning-hover: rgba(201, 162, 75, 0.20);
 
+    /* Overlay / backdrop */
+    --overlay: rgba(0, 0, 0, 0.85);
+    --overlay-light: rgba(0, 0, 0, 0.6);
+
     /* Layout */
     --radius: 10px;
     --shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
     --header-height-mobile: 36px;
     --header-height-desktop: 48px;
+
+    /* Scrollbar */
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: var(--border);
+}
+
+/* ============================================================
+   TOKENS — LIGHT MODE
+   ============================================================
+   Activated by data-theme="light" on <html>. Every color token
+   is inverted or adjusted for contrast on a light background.
+   The accent hues stay in the same family so domain semantics
+   (e.g. "green = success") remain intact across themes.
+ */
+
+[data-theme="light"] {
+    /* Colors */
+    --bg: #f5f7f0;
+    --panel: #ffffff;
+    --panel-alt: #eef2e6;
+    --border: #c5d4b8;
+    --border-soft: #dde5d3;
+    --text: #1a2e0f;
+    --text-dim: #5a7248;
+    --accent: #4f7a12;
+    --accent-soft: rgba(79, 122, 18, 0.14);
+    --accent-hover: rgba(79, 122, 18, 0.22);
+    --info: #2d6fa8;
+    --info-soft: rgba(45, 111, 168, 0.14);
+    --info-hover: rgba(45, 111, 168, 0.22);
+    --danger: #b32b22;
+    --danger-soft: rgba(179, 43, 34, 0.14);
+    --danger-hover: rgba(179, 43, 34, 0.22);
+    --warning: #9c7a1e;
+    --warning-soft: rgba(156, 122, 30, 0.14);
+    --warning-hover: rgba(156, 122, 30, 0.22);
+
+    /* Overlay / backdrop — lighter in light mode so the panel
+       behind stays legible. */
+    --overlay: rgba(30, 45, 20, 0.55);
+    --overlay-light: rgba(30, 45, 20, 0.4);
+
+    /* Layout */
+    --shadow: 0 4px 20px rgba(30, 45, 20, 0.10);
+}
+
+/* ============================================================
+   THEME TRANSITION
+   ============================================================
+   Smooth color transitions when the theme attribute flips.
+   Limited to color properties so layout does not animate.
+   Respects prefers-reduced-motion.
+ */
+
+html {
+    transition: background-color 0.25s ease, color 0.25s ease;
+}
+
+body {
+    transition: background-color 0.25s ease, color 0.25s ease;
+}
+
+button,
+input,
+select,
+textarea,
+a,
+.panel,
+.modal,
+.modal-content,
+.notification,
+.activity-item,
+.stat-card,
+.quick-link,
+.empty-state,
+.loading-state {
+    transition:
+        background-color 0.2s ease,
+        border-color 0.2s ease,
+        color 0.2s ease,
+        box-shadow 0.2s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    html,
+    body,
+    button,
+    input,
+    select,
+    textarea,
+    a,
+    .panel,
+    .modal,
+    .modal-content,
+    .notification,
+    .activity-item,
+    .stat-card,
+    .quick-link,
+    .empty-state,
+    .loading-state {
+        transition: none !important;
+    }
 }
 
 /* ============================================================
@@ -67,20 +181,20 @@
     width: 10px;
 }
 ::-webkit-scrollbar-track {
-    background: var(--bg);
+    background: var(--scrollbar-track);
     border-radius: 6px;
 }
 ::-webkit-scrollbar-thumb {
-    background: var(--border);
+    background: var(--scrollbar-thumb);
     border-radius: 6px;
-    border: 2px solid var(--bg);
+    border: 2px solid var(--scrollbar-track);
 }
 ::-webkit-scrollbar-thumb:hover {
     background: var(--accent);
 }
 * {
     scrollbar-width: thin;
-    scrollbar-color: var(--border) var(--bg);
+    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
 html,
@@ -198,6 +312,23 @@ button.info:hover {
 button.small {
     padding: 4px 10px;
     font-size: 0.72rem;
+}
+
+/* ============================================================
+   THEME TOGGLE BUTTON
+   ============================================================
+   Lives in the header-actions cluster. Shows ☀ in dark mode
+   (click to go light) and ☾ in light mode (click to go dark).
+   Sized to match the other small header buttons.
+ */
+
+#theme-toggle-btn {
+    font-size: 0.7rem;
+    padding: 3px 8px;
+    min-width: 28px;
+    text-align: center;
+    line-height: 1;
+    font-family: 'Inter', sans-serif;
 }
 
 /* ============================================================
@@ -577,21 +708,43 @@ main {
 
 /* ============================================================
    MODAL SHELL
-   ============================================================ */
+   ============================================================
+   Owned by shared.css. Previously these rules were injected
+   from js/utils/modal.js; they now live here so a single
+   stylesheet governs modal appearance in both themes.
+
+   VISIBILITY CONVENTION:
+     - .modal is visible by default (display: flex).
+     - .modal.hidden hides it (display: none !important).
+     - .modal.visible is a redundant explicit form, kept for
+       callers that prefer it.
+
+   The JS module (Modal) manages the class toggle; this file
+   only describes what each state looks like.
+ */
 
 .modal {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.85);
+    background: var(--overlay-light);
     z-index: 200;
     display: flex;
     align-items: center;
     justify-content: center;
     padding: 8px;
     overflow-y: auto;
+    box-sizing: border-box;
+    animation: modalFadeIn 0.25s ease;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
 }
+
 .modal.hidden {
     display: none !important;
+}
+
+.modal.visible {
+    display: flex;
 }
 
 .modal-content {
@@ -603,9 +756,16 @@ main {
     width: 100%;
     max-height: 95vh;
     overflow-y: auto;
-    box-shadow: 0 0 50px rgba(0, 0, 0, 0.6);
+    box-shadow: 0 0 50px rgba(0, 0, 0, 0.35);
     margin: auto;
+    box-sizing: border-box;
+    animation: modalSlideIn 0.25s ease;
 }
+
+[data-theme="light"] .modal-content {
+    box-shadow: 0 0 50px rgba(30, 45, 20, 0.18);
+}
+
 @media (min-width: 768px) {
     .modal-content {
         padding: 16px;
@@ -661,6 +821,170 @@ main {
 }
 .modal-body .detail-row .label {
     color: var(--text-dim);
+}
+
+@keyframes modalFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes modalSlideIn {
+    from {
+        transform: translateY(20px) scale(0.95);
+        opacity: 0;
+    }
+    to {
+        transform: translateY(0) scale(1);
+        opacity: 1;
+    }
+}
+
+@media (max-width: 600px) {
+    .modal {
+        padding: 8px;
+    }
+    .modal-content {
+        padding: 10px;
+        max-height: 98vh;
+    }
+}
+
+/* ============================================================
+   NOTIFICATION SYSTEM
+   ============================================================
+   Owned by shared.css. Previously these rules were injected
+   from js/utils/notification.js; they now live here so a
+   single stylesheet governs notification appearance in both
+   themes.
+ */
+
+.notification-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 10000;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 400px;
+    width: 100%;
+    pointer-events: none;
+}
+
+.notification-container .notification {
+    pointer-events: auto;
+    padding: 12px 16px;
+    border-radius: 8px;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    opacity: 0;
+    transform: translateX(20px);
+    transition: opacity 0.3s ease, transform 0.3s ease;
+    max-width: 400px;
+    min-width: 200px;
+}
+
+.notification-container .notification.visible {
+    opacity: 1;
+    transform: translateX(0);
+}
+
+.notification-container .notification.hiding {
+    opacity: 0;
+    transform: translateX(20px);
+}
+
+.notification-container .notification .notification-icon {
+    font-size: 18px;
+    line-height: 1.4;
+    flex-shrink: 0;
+    width: 24px;
+    text-align: center;
+}
+
+.notification-container .notification .notification-content {
+    flex: 1;
+    font-size: 14px;
+    line-height: 1.4;
+    word-wrap: break-word;
+}
+
+.notification-container .notification .notification-close {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 16px;
+    padding: 0 4px;
+    line-height: 1.4;
+    flex-shrink: 0;
+    opacity: 0.6;
+    transition: opacity 0.2s;
+}
+
+.notification-container .notification .notification-close:hover {
+    opacity: 1;
+    background: none;
+    border-color: transparent;
+}
+
+.notification-container .notification-success {
+    border-left: 4px solid var(--accent);
+}
+.notification-container .notification-success .notification-icon {
+    color: var(--accent);
+}
+
+.notification-container .notification-error {
+    border-left: 4px solid var(--danger);
+}
+.notification-container .notification-error .notification-icon {
+    color: var(--danger);
+}
+
+.notification-container .notification-warning {
+    border-left: 4px solid var(--warning);
+}
+.notification-container .notification-warning .notification-icon {
+    color: var(--warning);
+}
+
+.notification-container .notification-info {
+    border-left: 4px solid var(--info);
+}
+.notification-container .notification-info .notification-icon {
+    color: var(--info);
+}
+
+@media (max-width: 480px) {
+    .notification-container {
+        top: 10px;
+        right: 10px;
+        left: 10px;
+        max-width: none;
+        width: auto;
+    }
+    .notification-container .notification {
+        max-width: none;
+        min-width: auto;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .notification-container .notification {
+        transition: none;
+    }
+    .modal {
+        animation: none;
+    }
+    .modal-content {
+        animation: none;
+    }
 }
 
 /* ============================================================
