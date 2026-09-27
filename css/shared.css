@@ -6,6 +6,7 @@
  *   - Custom properties ([data-theme="light"]) — soft cream light mode
  *   - Custom properties ([data-theme="vaporwave"]) — neon pink/cyan on violet night
  *   - Custom properties ([data-theme="pastel"]) — pastel 80s magical-girl
+ *   - Custom properties ([data-theme="carnival"]) — demented gothic carnival
  *   - Global reset, scrollbar, focus-visible, reduced motion
  *   - Theme transition
  *   - Theme toggle button
@@ -27,11 +28,11 @@
  * Load order: shared.css MUST load first.
  *
  * THEME SYSTEM:
- *   Dark mode is the default. The other three themes are
+ *   Dark mode is the default. The other four themes are
  *   activated by setting data-theme="light" / "vaporwave" /
- *   "pastel" on <html>. All colors are driven by the tokens
- *   below, so a single attribute swap re-themes the app.
- *   See js/utils/theme-manager.js for the toggle logic.
+ *   "pastel" / "carnival" on <html>. All colors are driven by
+ *   the tokens below, so a single attribute swap re-themes the
+ *   app. See js/utils/theme-manager.js for the toggle logic.
  *
  * DOMAIN COLOR TOKENS:
  *   Beyond the base palette, this file declares four token
@@ -638,6 +639,173 @@
 }
 
 /* ============================================================
+   TOKENS — CARNIVAL ("THE RINGMASTER")
+   ============================================================
+   Activated by data-theme="carnival" on <html>.
+
+   Demented gothic carnival. Dirty white, blood red, charcoal,
+   near-black, and a very restrained muted grey. The red is
+   deliberately an old-painted-signage red (#b51f2d), not a
+   modern UI red and not pure #ff0000 — the latter would read
+   as a generic Halloween site rather than an unsettling
+   travelling-carnival poster.
+
+   The palette is brutally limited on purpose:
+     dirty white  →  carnival canvas / signage
+     blood red    →  active states, danger, selection
+     charcoal     →  panels and UI structure
+     near-black   →  depth, overlays, shadows
+     muted grey   →  secondary information
+     tiny gold    →  warnings and ornament only
+
+   Striped decoration (vertical dirty-white/red stripes) is
+   applied to the main nav and a few select surfaces further
+   down this file. Everything else stays charcoal so the app
+   does not become visually hostile.
+   ============================================================ */
+
+[data-theme="carnival"] {
+    /* --------------------------------------------------------
+       BASE PALETTE
+       -------------------------------------------------------- */
+    --bg: #181719;              /* near-black charcoal */
+    --panel: #242225;           /* charcoal panel */
+    --panel-alt: #302d30;       /* recessed well */
+
+    --border: #625c60;
+    --border-soft: #413d40;
+
+    --text: #eee9e5;            /* dirty white */
+    --text-dim: #aaa3a0;
+
+    /* Carnival red — the primary accent */
+    --accent: #b51f2d;
+    --accent-soft: rgba(181, 31, 45, 0.16);
+    --accent-hover: rgba(181, 31, 45, 0.28);
+
+    /* Dirty white — the secondary accent */
+    --info: #ddd7d0;
+    --info-soft: rgba(221, 215, 208, 0.14);
+    --info-hover: rgba(221, 215, 208, 0.26);
+
+    /* Danger: a hotter red, distinct from the accent by being
+       brighter and less brown, so a danger badge never blends
+       into the carnival-red chrome. */
+    --danger: #d12d3c;
+    --danger-soft: rgba(209, 45, 60, 0.16);
+    --danger-hover: rgba(209, 45, 60, 0.28);
+
+    /* Muted carnival gold — the only non-red chromatic accent.
+       Reserved for warnings and ornament. */
+    --warning: #c39b55;
+    --warning-soft: rgba(195, 155, 85, 0.16);
+    --warning-hover: rgba(195, 155, 85, 0.28);
+
+    /* --------------------------------------------------------
+       OVERLAY / BACKDROP
+       -------------------------------------------------------- */
+    --overlay: rgba(0, 0, 0, 0.78);
+    --overlay-light: rgba(0, 0, 0, 0.68);
+
+    /* --------------------------------------------------------
+       LAYOUT
+       -------------------------------------------------------- */
+    --radius: 10px;
+    --shadow:
+        0 4px 14px rgba(0, 0, 0, 0.65),
+        0 0 18px rgba(181, 31, 45, 0.08);
+
+    /* --------------------------------------------------------
+       SCROLLBAR
+       -------------------------------------------------------- */
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: var(--border);
+
+    /* --------------------------------------------------------
+       GRAPH NODE PALETTE
+       -------------------------------------------------------- */
+    --graph-node-accent-fill: #b51f2d;
+    --graph-node-accent-stroke: #7f1721;
+
+    --graph-node-info-fill: #ddd7d0;
+    --graph-node-info-stroke: #a49d96;
+
+    /* --------------------------------------------------------
+       GRAPH NODE STATUS COLORS
+       --------------------------------------------------------
+       The status palette is intentionally desaturated. Only
+       "student" carries the carnival red; the rest sit in muted
+       greys, dirty whites, and one gold, so the graph reads as
+       a haunted poster rather than a rainbow.
+       -------------------------------------------------------- */
+    --graph-node-status-deceased:   #4a4649;
+    --graph-node-status-instructor: #d2ccc7;
+    --graph-node-status-senior:     #c49a58;
+    --graph-node-status-junior:     #aaa5a1;
+    --graph-node-status-rookie:     #92998e;
+    --graph-node-status-student:    #c62b39;
+    --graph-node-status-support:    #a89591;
+    --graph-node-status-civilian:   #777174;
+    --graph-node-status-other:      #777174;
+
+    /* --------------------------------------------------------
+       MAGIC TYPE COLORS
+       --------------------------------------------------------
+       Magic types are desaturated to a limited carnival palette.
+       Fire, blood, reality, and transference carry the red
+       family. Everything else sits in muted earths, greys, and
+       dirty whites so the elemental taxonomy still reads but
+       does not fight the chrome.
+       -------------------------------------------------------- */
+
+    /* Elemental */
+    --magic-earth: #806c5c;
+    --magic-water: #737e84;
+    --magic-fire:  #c43a32;
+    --magic-air:   #c9c5c0;
+    --magic-metal: #a5a4a2;
+    --magic-wood:  #6f7c68;
+
+    /* Body */
+    --magic-blood:   #b51f2d;
+    --magic-bone:    #ddd5ca;
+    --magic-mind:    #81757d;
+    --magic-morphic: #777e76;
+    --magic-life:    #788c73;
+    --magic-death:   #595359;
+
+    /* Aether */
+    --magic-space:        #747b82;
+    --magic-time:         #b89a61;
+    --magic-dimension:    #83787f;
+    --magic-void:         #090909;
+    --magic-reality:      #c32b39;
+    --magic-transference: #a85f55;
+
+    /* --------------------------------------------------------
+       RELATIONSHIP COLORS
+       --------------------------------------------------------
+       Eight relationship types, but a brutally limited palette.
+       Two reds (romantic, rivalry), one gold (professional),
+       and five muted greys/dirty-whites. The distinction comes
+       from the grey temperature, not from chromatic variety.
+       -------------------------------------------------------- */
+    --relationship-familial:     #87927f;
+    --relationship-professional: #bda064;
+    --relationship-romantic:     #c52c3b;
+    --relationship-friendship:   #929a9e;
+    --relationship-mentor:       #aaa29d;
+    --relationship-rivalry:      #bd4548;
+    --relationship-alliance:     #858d83;
+    --relationship-other:        #777174;
+
+    /* --------------------------------------------------------
+       SUBTLE CHIP BACKGROUND
+       -------------------------------------------------------- */
+    --chip-bg-subtle: rgba(238, 233, 229, 0.08);
+}
+
+/* ============================================================
    THEME TRANSITION
    ============================================================
    Smooth color transitions when the theme attribute flips.
@@ -816,6 +984,152 @@ a,
     border-color: #ed72aa;
     background: rgba(255, 255, 255, 0.55);
     box-shadow: 0 0 10px rgba(237, 114, 170, 0.15);
+}
+
+/* ============================================================
+   CARNIVAL BACKDROP
+   ============================================================
+   The unmistakable tent-stripe look, applied as a very faint
+   diagonal stripe field so the base reads as carnival canvas
+   without overwhelming the content layer. A radial blood-red
+   glow sits behind the top of the page, as if a single red
+   lantern were lit somewhere above the fold.
+
+   Inert in every other theme.
+ */
+
+[data-theme="carnival"] body {
+    background:
+        repeating-linear-gradient(
+            105deg,
+            rgba(245, 241, 235, 0.055) 0,
+            rgba(245, 241, 235, 0.055) 22px,
+            rgba(181, 31, 45, 0.055) 22px,
+            rgba(181, 31, 45, 0.055) 44px
+        ),
+        radial-gradient(
+            circle at 50% 0%,
+            rgba(181, 31, 45, 0.12),
+            transparent 42%
+        ),
+        var(--bg);
+
+    background-attachment: fixed;
+}
+
+/* ============================================================
+   CARNIVAL HEADINGS
+   ============================================================
+   Old circus signage: dirty white letters with a hard red
+   drop-shadow and a faint red ambient halo. No neon. The
+   offset shadow reads as paint, not as electricity.
+
+   Inert in every other theme.
+ */
+
+[data-theme="carnival"] h1,
+[data-theme="carnival"] h2,
+[data-theme="carnival"] h3,
+[data-theme="carnival"] h4 {
+    color: #eee9e5;
+    text-shadow:
+        2px 2px 0 #7f1721,
+        0 0 8px rgba(181, 31, 45, 0.25);
+}
+
+[data-theme="carnival"] #theme-toggle-btn {
+    color: #eee9e5;
+    border-color: #b51f2d;
+    background: #242225;
+    box-shadow:
+        inset 0 0 0 1px rgba(238, 233, 229, 0.05),
+        0 0 10px rgba(181, 31, 45, 0.18);
+}
+
+/* ============================================================
+   CARNIVAL STRIPED NAV
+   ============================================================
+   The main navigation uses actual alternating dirty-white/red
+   vertical stripes — the unmistakable carnival-tent look. This
+   is the only place in the app that gets the full stripe
+   treatment; everything else stays charcoal so the UI does not
+   become visual noise.
+
+   The active tab is a solid dirty-white plate so it reads as
+   "lit up" against the stripes. Inactive tabs are charcoal
+   with dirty-white labels so they sit back.
+
+   Inert in every other theme.
+ */
+
+[data-theme="carnival"] header nav {
+    background:
+        repeating-linear-gradient(
+            90deg,
+            rgba(238, 233, 229, 0.10) 0,
+            rgba(238, 233, 229, 0.10) 14px,
+            rgba(181, 31, 45, 0.14) 14px,
+            rgba(181, 31, 45, 0.14) 28px
+        ),
+        #1c1a1d;
+
+    border-top: 1px solid #413d40;
+    border-bottom: 1px solid #413d40;
+    padding: 4px 6px;
+}
+
+[data-theme="carnival"] header nav a {
+    color: #d8d2cc;
+    background: rgba(24, 23, 25, 0.72);
+    border: 1px solid #413d40;
+    border-radius: 3px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-weight: 600;
+    font-size: 0.68rem;
+}
+
+[data-theme="carnival"] header nav a:hover {
+    color: #eee9e5;
+    background: rgba(48, 45, 48, 0.9);
+    border-color: #625c60;
+}
+
+[data-theme="carnival"] header nav a.active {
+    color: #1c1a1d;
+    background: #ddd7d0;
+    border-color: #ddd7d0;
+    box-shadow:
+        inset 0 -2px 0 #b51f2d,
+        0 0 10px rgba(181, 31, 45, 0.28);
+}
+
+/* ============================================================
+   CARNIVAL PANEL TEXTURE
+   ============================================================
+   A very faint vertical stripe texture on the primary surface
+   classes. Barely visible; the point is that panels do not
+   read as perfectly flat, the way canvas does not.
+
+   Scoped to the surface classes that appear across the app
+   (.panel, .card, .modal-content, .section). The .modal shell
+   is excluded on purpose — it is the overlay, not a panel.
+
+   Inert in every other theme.
+ */
+
+[data-theme="carnival"] .panel,
+[data-theme="carnival"] .card,
+[data-theme="carnival"] .modal-content,
+[data-theme="carnival"] .section {
+    background:
+        linear-gradient(
+            90deg,
+            rgba(255, 255, 255, 0.018) 50%,
+            rgba(0, 0, 0, 0.018) 50%
+        ),
+        var(--panel);
+    background-size: 8px 100%;
 }
 
 /* ============================================================
@@ -1426,6 +1740,12 @@ main {
     box-shadow:
         0 4px 24px rgba(153, 86, 119, 0.18),
         0 0 40px rgba(237, 114, 170, 0.12);
+}
+
+[data-theme="carnival"] .modal-content {
+    box-shadow:
+        0 0 40px rgba(0, 0, 0, 0.65),
+        0 0 30px rgba(181, 31, 45, 0.14);
 }
 
 @media (min-width: 768px) {
